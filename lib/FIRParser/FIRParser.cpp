@@ -2137,9 +2137,7 @@ FIRModuleParser::parsePortList(SmallVectorImpl<PortInfoAndLoc> &result,
     if (isOutput)
       type = FlipType::get(type);
 
-    // FIXME: We should persist the info loc into the IR, not just the name
-    // and type.
-    result.push_back({{name, type}, info.getFIRLoc()});
+    result.push_back({{name, type, info.getLoc()}, info.getFIRLoc()});
   }
 
   return success();

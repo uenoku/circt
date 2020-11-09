@@ -48,8 +48,10 @@ FIRRTLType getAsPassiveResult(FIRRTLType input);
 struct ModulePortInfo {
   StringAttr name;
   FIRRTLType type;
+  Location loc;
 
   StringRef getName() const { return name ? name.getValue() : ""; }
+  Location getLoc() const { return loc; }
 
   /// Return true if this is a simple output-only port.
   bool isOutput() { return type.isa<FlipType>(); }

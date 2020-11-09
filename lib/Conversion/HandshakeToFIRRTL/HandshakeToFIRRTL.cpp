@@ -154,6 +154,7 @@ static std::string getSubModuleName(Operation *oldOp) {
 static FModuleOp createTopModuleOp(handshake::FuncOp funcOp, unsigned numClocks,
                                    ConversionPatternRewriter &rewriter) {
   llvm::SmallVector<ModulePortInfo, 8> ports;
+  Location funcOpLoc = funcOp.getLoc();
 
   // Add all inputs of funcOp.
   unsigned argIndex = 0;
@@ -165,7 +166,7 @@ static FModuleOp createTopModuleOp(handshake::FuncOp funcOp, unsigned numClocks,
       funcOp.emitError("Unsupported data type. Supported data types: integer "
                        "(signed, unsigned, signless), index, none.");
 
-    ports.push_back({portName, bundlePortType});
+    ports.push_back({portName, bundlePortType, arg.getLoc()});
     ++argIndex;
   }
 
@@ -178,24 +179,24 @@ static FModuleOp createTopModuleOp(handshake::FuncOp funcOp, unsigned numClocks,
       funcOp.emitError("Unsupported data type. Supported data types: integer "
                        "(signed, unsigned, signless), index, none.");
 
-    ports.push_back({portName, bundlePortType});
+    ports.push_back({portName, bundlePortType, funcOpLoc});
     ++argIndex;
   }
 
   // Add clock and reset signals.
   if (numClocks == 1) {
-    ports.push_back(
-        {rewriter.getStringAttr("clock"), rewriter.getType<ClockType>()});
-    ports.push_back(
-        {rewriter.getStringAttr("reset"), rewriter.getType<UIntType>(1)});
+    ports.push_back({rewriter.getStringAttr("clock"),
+                     rewriter.getType<ClockType>(), funcOpLoc});
+    ports.push_back({rewriter.getStringAttr("reset"),
+                     rewriter.getType<UIntType>(1), funcOpLoc});
   } else if (numClocks > 1) {
     for (unsigned i = 0; i < numClocks; ++i) {
       auto clockName = "clock" + std::to_string(i);
       auto resetName = "reset" + std::to_string(i);
-      ports.push_back(
-          {rewriter.getStringAttr(clockName), rewriter.getType<ClockType>()});
-      ports.push_back(
-          {rewriter.getStringAttr(resetName), rewriter.getType<UIntType>(1)});
+      ports.push_back({rewriter.getStringAttr(clockName),
+                       rewriter.getType<ClockType>(), funcOpLoc});
+      ports.push_back({rewriter.getStringAttr(resetName),
+                       rewriter.getType<UIntType>(1), funcOpLoc});
     }
   }
 
@@ -264,9 +265,12 @@ static FModuleOp createSubModuleOp(FModuleOp topModuleOp, Operation *oldOp,
       oldOp->emitError("Unsupported data type. Supported data types: integer "
                        "(signed, unsigned, signless), index, none.");
 
-    ports.push_back({portName, bundlePortType});
+    ports.push_back(
+        {portName, bundlePortType, oldOp->getOperand(argIndex).getLoc()});
     ++argIndex;
   }
+
+  unsigned oldOpOperandsSize = oldOp->getOperands().size();
 
   // Add all outputs of oldOp.
   for (auto portType : oldOp->getResults().getTypes()) {
@@ -277,16 +281,17 @@ static FModuleOp createSubModuleOp(FModuleOp topModuleOp, Operation *oldOp,
       oldOp->emitError("Unsupported data type. Supported data types: integer "
                        "(signed, unsigned, signless), index, none.");
 
-    ports.push_back({portName, bundlePortType});
+    ports.push_back({portName, bundlePortType,
+                     oldOp->getResult(argIndex - oldOpOperandsSize).getLoc()});
     ++argIndex;
   }
 
   // Add clock and reset signals.
   if (hasClock) {
-    ports.push_back(
-        {rewriter.getStringAttr("clock"), rewriter.getType<ClockType>()});
-    ports.push_back(
-        {rewriter.getStringAttr("reset"), rewriter.getType<UIntType>(1)});
+    ports.push_back({rewriter.getStringAttr("clock"),
+                     rewriter.getType<ClockType>(), oldOp->getLoc()});
+    ports.push_back({rewriter.getStringAttr("reset"),
+                     rewriter.getType<UIntType>(1), oldOp->getLoc()});
   }
 
   return rewriter.create<FModuleOp>(

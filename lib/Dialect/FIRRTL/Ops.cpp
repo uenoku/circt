@@ -213,7 +213,12 @@ void firrtl::getModulePortInfo(Operation *op,
                           intType.getWidth());
     }
 
-    results.push_back({getFIRRTLNameAttr(argAttrs), type});
+    Location loc = op->getLoc();
+    if (auto moduleOp = dyn_cast<FModuleOp>(op)) {
+      loc = moduleOp.getArgument(i).getLoc();
+    }
+
+    results.push_back({getFIRRTLNameAttr(argAttrs), type, loc});
   }
 }
 
