@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/SV/SVOps.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/RTL/RTLOps.h"
 #include "circt/Dialect/RTL/RTLTypes.h"
 #include "mlir/IR/Builders.h"
@@ -198,6 +199,42 @@ void IfOp::build(OpBuilder &odsBuilder, OperationState &result, Value cond,
   }
 }
 
+/// Replaces the given op with the contents of the given single-block region,
+/// using the operands of the block terminator to replace operation results.
+static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
+                                Region &region, ValueRange blockArgs = {}) {
+  assert(llvm::hasSingleElement(region) && "expected single-region block");
+  Block *block = &region.front();
+  Operation *terminator = block->getTerminator();
+  ValueRange results = terminator->getOperands();
+  rewriter.mergeBlockBefore(block, op, blockArgs);
+  rewriter.replaceOp(op, results);
+  rewriter.eraseOp(terminator);
+}
+
+void IfOp::getCanonicalizationPatterns(OwningRewritePatternList &results,
+                                       MLIRContext *context) {
+  struct RemoveStaticCondition : public OpRewritePattern<IfOp> {
+    using OpRewritePattern<IfOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(IfOp op,
+                                  PatternRewriter &rewriter) const override {
+      auto constant = op.cond().getDefiningOp<comb::ConstantOp>();
+      if (!constant)
+        return failure();
+
+      if (constant.getValue().isAllOnesValue())
+        replaceOpWithRegion(rewriter, op, op.thenRegion());
+      else if (!op.elseRegion().empty())
+        replaceOpWithRegion(rewriter, op, op.elseRegion());
+      else
+        rewriter.eraseOp(op);
+
+      return success();
+    }
+  };
+  results.insert<RemoveStaticCondition>(context);
+}
 //===----------------------------------------------------------------------===//
 // AlwaysOp
 
