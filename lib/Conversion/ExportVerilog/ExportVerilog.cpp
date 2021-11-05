@@ -1739,9 +1739,21 @@ SubExprInfo ExprEmitter::visitTypeOp(ArraySliceOp op) {
 
 SubExprInfo ExprEmitter::visitTypeOp(ArrayGetOp op) {
   emitSubExpr(op.input(), Selection, OOLUnary);
-  os << '[';
-  emitSubExpr(op.index(), LowestPrecedence, OOLBinary);
-  os << ']';
+
+  if (op.index().getDefiningOp() && isa<MuxOp>(op.index().getDefiningOp())) {
+    // If index is MuxOp, the width is weirdly inferred by
+    // verilator. See https://github.com/llvm/circt/issues/2087
+
+    // Force to emit the sign of index for now.
+    bool isSigned = op.index().getType().isSignedInteger();
+    os << '[' << (isSigned ? "$signed" : "$unsigned") << '(';
+    emitSubExpr(op.index(), LowestPrecedence, OOLBinary);
+    os << ")]";
+  } else {
+    os << '[';
+    emitSubExpr(op.index(), LowestPrecedence, OOLBinary);
+    os << ']';
+  }
   return {Selection, IsUnsigned};
 }
 

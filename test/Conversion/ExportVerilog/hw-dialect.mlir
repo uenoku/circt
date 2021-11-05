@@ -917,3 +917,12 @@ hw.module @parameterizedTypes<param: i32 = 1, wire: i32 = 2>
   %paramWire = sv.wire : !hw.inout<!hw.int<#hw.param.decl.ref<"wire">>>
 
 }
+
+// CHECK-LABEL: ArrayAccessByMux
+hw.module @ArrayAccessByMux(%array: !hw.array<4xi6>, %c: i1, %d: i2) -> (b: i6) {
+  // CHECK: assign b = array[$unsigned(c ? 2'h0 : d)];
+  %c0_i2 = hw.constant 0 : i2
+  %0 = comb.mux %c, %c0_i2, %d : i2
+  %1 = hw.array_get %array[%0] : !hw.array<4xi6>
+  hw.output %1 : i6
+}
