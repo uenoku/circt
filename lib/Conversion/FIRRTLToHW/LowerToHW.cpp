@@ -1295,6 +1295,8 @@ private:
   /// This is true if we've emitted `INIT_RANDOM_PROLOG_ into an initial
   /// block in this module already.
   bool randomizePrologEmitted;
+
+  DenseMap<Block *, std::pair<Value, unsigned>> blockRandomValueAndRemain;
 };
 } // end anonymous namespace
 
@@ -1963,13 +1965,30 @@ void FIRRTLLowering::initializeRegister(Value reg, Value resetSignal) {
   std::function<Value(IntegerType)> getRandomValue =
       [&](IntegerType type) -> Value {
     assert(type.getWidth() != 0 && "zero bit width's not supported");
-    auto rand32 = getRandom32Val();
-    if (type.getWidth() <= 32)
-      return builder.createOrFold<comb::ExtractOp>(type, rand32, 0);
+    auto &randomValueAndRemain = blockRandomValueAndRemain[builder.getBlock()];
 
+    if (randomValueAndRemain.second >= type.getWidth()) {
+      auto value = builder.createOrFold<comb::ExtractOp>(
+          type, randomValueAndRemain.first, 32 - randomValueAndRemain.second);
+
+      randomValueAndRemain.second -= type.getWidth();
+      return value;
+    }
+
+    if (randomValueAndRemain.second == 0) {
+      randomValueAndRemain = {getRandom32Val(), 32};
+      return getRandomValue(type);
+    }
+
+    auto currentWidth = builder.getIntegerType(randomValueAndRemain.second);
+    auto value = builder.createOrFold<comb::ExtractOp>(
+        currentWidth, randomValueAndRemain.first,
+        32 - randomValueAndRemain.second);
+    randomValueAndRemain = {getRandom32Val(), 32};
     // Get the top part.
-    auto rest = getRandomValue(builder.getIntegerType(type.getWidth() - 32));
-    return builder.createOrFold<comb::ConcatOp>(rand32, rest);
+    auto rest = getRandomValue(
+        builder.getIntegerType(type.getWidth() - currentWidth.getWidth()));
+    return builder.createOrFold<comb::ConcatOp>(value, rest);
   };
 
   // Get a random value with the specified width, combining or truncating
