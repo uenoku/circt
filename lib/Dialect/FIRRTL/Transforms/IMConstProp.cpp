@@ -14,7 +14,9 @@
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/Support/Debug.h"
 
+#define DEBUG_TYPE "firrtl-imconstprop"
 using namespace circt;
 using namespace firrtl;
 
@@ -643,6 +645,14 @@ void IMConstPropPass::visitOperation(Operation *op) {
 }
 
 void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
+  // For debug.
+  LLVM_DEBUG(module.walk([&](Operation *op) {
+    llvm::dbgs() << "Print Users: " << *op << "\n";
+    for (auto e : llvm::enumerate(op->getUsers())) {
+      llvm::dbgs() << "User " << e.index() << ": " << *e.value() << "\n";
+    }
+    llvm::dbgs() << "\n";
+  }));
   auto *body = module.getBody();
   // If a module is unreachable, just ignore it.
   if (!executableBlocks.count(body))
