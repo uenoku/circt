@@ -1116,7 +1116,7 @@ bool TypeLoweringVisitor::visitExpr(BitCastOp op) {
   // UInt type result. That is, first bitcast the aggregate type to a UInt.
   // Attempt to get the bundle types.
   SmallVector<FlatBundleFieldEntry> fields;
-  if (peelType(op.input().getType(), fields, preserveAggregate)) {
+  if (peelType(op.input().getType(), fields, false)) {
     size_t uptoBits = 0;
     // Loop over the leaf aggregates and concat each of them to get a UInt.
     // Bitcast the fields to handle nested aggregate types.
