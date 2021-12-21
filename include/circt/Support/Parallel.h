@@ -31,14 +31,11 @@ void parallelForEach(mlir::MLIRContext *context, RandomAccessRangeT &&range,
   estimatedTime.reserve(indexes.size());
   for (auto i : indexes)
     estimatedTime.push_back(estimate(range[i]));
-  if (getenv("ORDER")){
-    llvm::dbgs() << "SORT!" << "\n";
-    // Sort indexes in descending order of the estimated execution time.
-    llvm::sort(std::begin(indexes), std::end(indexes),
-               [&](size_t lhs, size_t rhs) {
-                 return estimatedTime[lhs] > estimatedTime[rhs];
-               });
-  }
+
+  llvm::sort(std::begin(indexes), std::end(indexes),
+             [&](size_t lhs, size_t rhs) {
+               return estimatedTime[lhs] > estimatedTime[rhs];
+             });
 
   mlir::parallelForEach(context, indexes, [&](size_t i) { func(range[i]); });
 }

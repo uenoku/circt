@@ -4465,6 +4465,7 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
   SharedEmitterState emitter(module, options, std::move(globalNames));
   emitter.gatherFiles(true);
 
+  // Make sure that emitter.files is moved here.
   SmallVector<std::pair<StringAttr, FileInfo>> files(
       std::move_iterator(emitter.files.begin()),
       std::move_iterator(emitter.files.end()));
@@ -4476,10 +4477,12 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
         createSplitOutputFile(it.first, it.second, dirname, emitter);
       },
       [&](auto &it) -> unsigned {
-        unsigned estim = 0;
-        for (auto op : it.second.ops)
-          estim += emitter.moduleSizeTable[op.op];
-        return estim;
+        unsigned totalSize = 0;
+        for (auto &fileInfo : it.second.ops) {
+          auto it = emitter.moduleSizeTable.find(fileInfo.op);
+          totalSize += it == emitter.moduleSizeTable.end() ? 0 : it->second;
+        }
+        return totalSize;
       });
   // Write the file list.
   SmallString<128> filelistPath(dirname);
