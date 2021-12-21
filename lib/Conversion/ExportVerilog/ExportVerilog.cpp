@@ -4492,7 +4492,7 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
     return failure();
   }
 
-  for (const auto &it : emitter.files) {
+  for (const auto &it : files) {
     if (it.second.addToFilelist)
       output->os() << it.first << "\n";
   }
