@@ -4465,6 +4465,7 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
   SharedEmitterState emitter(module, options, std::move(globalNames));
   emitter.gatherFiles(true);
 
+  // Create a vector from emitter.files so that we can access by random index.
   // Make sure that emitter.files is moved here.
   SmallVector<std::pair<StringAttr, FileInfo>> files(
       std::move_iterator(emitter.files.begin()),
@@ -4478,8 +4479,8 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
       },
       [&](auto &it) -> unsigned {
         unsigned totalSize = 0;
-        for (auto &fileInfo : it.second.ops) {
-          auto it = emitter.moduleSizeTable.find(fileInfo.op);
+        for (auto &opFileInfo : it.second.ops) {
+          auto it = emitter.moduleSizeTable.find(opFileInfo.op);
           totalSize += it == emitter.moduleSizeTable.end() ? 0 : it->second;
         }
         return totalSize;
