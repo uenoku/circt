@@ -2665,6 +2665,13 @@ void VerbatimExprOp::getAsmResultNames(
     setNameFn(getResult(), name);
 }
 
+FIRRTLType MultibitMuxOp::inferReturnType(ValueRange operands,
+                                          ArrayRef<NamedAttribute> attrs,
+                                          Optional<Location> loc) {
+  if (operands.size() < 2)
+    return FIRRTLType();
+  return operands[1].getType().cast<FIRRTLType>();
+}
 //===----------------------------------------------------------------------===//
 // VerbatimWireOp
 //===----------------------------------------------------------------------===//

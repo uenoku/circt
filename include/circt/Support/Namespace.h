@@ -56,9 +56,10 @@ public:
       return inserted.first->getKey();
 
     // Try different suffixes until we get a collision-free one.
-    size_t i = 0;
     if (tryName.empty())
       name.toVector(tryName); // toStringRef may leave tryName unfilled
+
+    size_t& i = hoge[tryName];
     tryName.push_back('_');
     size_t baseLength = tryName.size();
     for (;;) {
@@ -72,6 +73,7 @@ public:
 
 protected:
   llvm::StringSet<> internal;
+  llvm::StringMap<size_t> hoge;
 };
 
 } // namespace circt

@@ -327,6 +327,7 @@ struct TypeLoweringVisitor : public FIRRTLVisitor<TypeLoweringVisitor, bool> {
   bool visitDecl(RegResetOp op);
   bool visitExpr(InvalidValueOp op);
   bool visitExpr(SubaccessOp op);
+  bool visitExpr(MultibitMuxOp op);
   bool visitExpr(MuxPrimOp op);
   bool visitExpr(mlir::UnrealizedConversionCastOp op);
   bool visitExpr(BitCastOp op);
@@ -1261,22 +1262,29 @@ bool TypeLoweringVisitor::visitExpr(SubaccessOp op) {
     return true;
   }
 
-  // Reads.  All writes have been eliminated before now
-  auto selectWidth = llvm::Log2_64_Ceil(vType.getNumElements());
-
-  // We have at least one element
-  Value mux = builder->create<SubindexOp>(input, 0);
-  // Build up the mux
-  for (size_t index = 1, e = vType.getNumElements(); index < e; ++index) {
-    auto cond = builder->create<EQPrimOp>(
-        op.index(), builder->createOrFold<ConstantOp>(
-                        UIntType::get(op.getContext(), selectWidth),
-                        APInt(selectWidth, index)));
+  // Construct a multibit mux
+  SmallVector<Value> operands;
+  for (size_t index = 0, e = vType.getNumElements(); index < e; ++index) {
     auto access = builder->create<SubindexOp>(input, index);
-    mux = builder->create<MuxPrimOp>(cond, access, mux);
+    operands.push_back(access);
   }
-  op.replaceAllUsesWith(mux);
+  Value multibitMux = builder->create<MultibitMuxOp>(op.index(), operands);
+  op.replaceAllUsesWith(multibitMux);
   return true;
+}
+
+bool TypeLoweringVisitor::visitExpr(MultibitMuxOp op) {
+  auto clone = [&](FlatBundleFieldEntry field, StringRef name,
+                   ArrayAttr attrs) -> Operation * {
+    SmallVector<Value> newOperands;
+    newOperands.reserve(op.operands().size());
+    for (auto operand : op.operands()) {
+      auto operandField = getSubWhatever(operand, field.index);
+      newOperands.push_back(operandField);
+    }
+    return builder->create<MultibitMuxOp>(op.index(), newOperands);
+  };
+  return lowerProducer(op, clone);
 }
 
 //===----------------------------------------------------------------------===//

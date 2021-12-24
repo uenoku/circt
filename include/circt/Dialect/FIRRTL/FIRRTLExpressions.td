@@ -242,6 +242,32 @@ def SubaccessOp : FIRRTLExprOp<"subaccess", [
   let hasCanonicalizeMethod = true;
 }
 
+def MultibitMuxOp : FIRRTLExprOp<"multibit_mux", [NoSideEffect]> {
+  let summary = "Extract a dynamic element of a vector value";
+  let description = [{
+    The subaccess expression dynamically refers to a subelement of a
+    vector-typed expression using a calculated index. The index must be an
+    expression with an unsigned integer type.
+    ```
+      %result = firrtl.multibit_mux %idx,  : t1, t2
+    ```
+    }];
+
+  let arguments = (ins FIRRTLType:$index, Variadic<FIRRTLType>:$operands);
+  let results = (outs FIRRTLType:$result);
+
+  let assemblyFormat =
+     "$index `,` $operands attr-dict `:` type($index) `,` type($operands)";
+
+  code inferTypeDecl = [{
+    /// Infer the return type of this operation.
+    static FIRRTLType inferReturnType(ValueRange operands,
+                                      ArrayRef<NamedAttribute> attrs,
+                                      Optional<Location> loc);
+  }];
+  let hasFolder = true;
+}
+
 //===----------------------------------------------------------------------===//
 // Primitive Operations
 //===----------------------------------------------------------------------===//

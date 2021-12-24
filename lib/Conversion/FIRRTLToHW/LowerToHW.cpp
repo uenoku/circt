@@ -1282,6 +1282,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   }
   LogicalResult visitExpr(TailPrimOp op);
   LogicalResult visitExpr(MuxPrimOp op);
+  LogicalResult visitExpr(MultibitMuxOp op);
   LogicalResult visitExpr(VerbatimExprOp op);
 
   // Statements
@@ -3026,6 +3027,23 @@ LogicalResult FIRRTLLowering::visitExpr(MuxPrimOp op) {
 
   return setLoweringTo<comb::MuxOp>(op, ifTrue.getType(), cond, ifTrue,
                                     ifFalse);
+}
+
+LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
+  auto index = getLoweredValue(op.index());
+  if (!index)
+    return failure();
+  SmallVector<Value> loweredOperands;
+  loweredOperands.reserve(op.operands().size());
+
+  for (auto operand : op.operands()) {
+    auto lowered = getLoweredAndExtendedValue(operand, op.getType());
+    if (!lowered)
+      return failure();
+    loweredOperands.push_back(lowered);
+  }
+  Value array = builder.create<hw::ArrayCreateOp>(loweredOperands);
+  return setLoweringTo<hw::ArrayGetOp>(op, array, index);
 }
 
 LogicalResult FIRRTLLowering::visitExpr(VerbatimExprOp op) {

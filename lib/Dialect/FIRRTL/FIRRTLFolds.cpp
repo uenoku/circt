@@ -1360,6 +1360,20 @@ LogicalResult SubaccessOp::canonicalize(SubaccessOp op,
       });
 }
 
+OpFoldResult MultibitMuxOp::fold(ArrayRef<Attribute> operands) {
+  if (auto constIndex = getConstant(operands[0])) {
+    // The SubindexOp require the index value to be unsigned 32-bits
+    // integer.
+    auto value = constIndex->getExtValue();
+    if (0 <= value && static_cast<unsigned>(value) + 1 < operands.size())
+      return operands[value + 1];
+
+    // What's is the expected behaivor?
+    return {};
+  }
+  return {};
+}
+
 //===----------------------------------------------------------------------===//
 // Declarations
 //===----------------------------------------------------------------------===//
