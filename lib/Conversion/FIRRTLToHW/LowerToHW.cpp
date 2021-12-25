@@ -3030,7 +3030,10 @@ LogicalResult FIRRTLLowering::visitExpr(MuxPrimOp op) {
 }
 
 LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
-  auto index = getLoweredValue(op.index());
+  auto index = getLoweredAndExtOrTruncValue(
+      op.index(), UIntType::get(op.getContext(), getBitWidthFromVectorSize(
+                                                     op.operands().size())));
+
   if (!index)
     return failure();
   SmallVector<Value> loweredOperands;
