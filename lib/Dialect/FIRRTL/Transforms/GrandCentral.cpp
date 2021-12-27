@@ -526,7 +526,7 @@ private:
   Optional<Attribute> fromAttr(Attribute attr);
 
   /// Mapping of ID to leaf ground type associated with that ID.
-  DenseMap<Attribute, Value> leafMap;
+  DenseMap<Attribute, FieldRef> leafMap;
 
   /// Mapping of ID to parent instance and module.  If this module is the top
   /// module, then the first tuple member will be None.
@@ -746,7 +746,9 @@ bool GrandCentralPass::traverseField(Attribute field, IntegerAttr id,
                                      VerbatimBuilder &path) {
   return TypeSwitch<Attribute, bool>(field)
       .Case<AugmentedGroundTypeAttr>([&](auto ground) {
-        Value leafValue = leafMap.lookup(ground.getID());
+        FieldRef fieldRef = leafMap.lookup(ground.getID());
+        Value leafValue = fieldRef.getValue();
+        unsigned fieldID = fieldRef.getFieldID();
         assert(leafValue && "leafValue not found");
 
         auto builder =
@@ -778,6 +780,30 @@ bool GrandCentralPass::traverseField(Attribute field, IntegerAttr id,
           path += getInnerRefTo(module, blockArg.getArgNumber());
         } else {
           path += getInnerRefTo(leafValue.getDefiningOp());
+        }
+
+        FIRRTLType tpe = leafValue.getType().cast<FIRRTLType>();
+        // TODO(uenoku): Traverse to the ground type
+        while (fieldID) {
+          TypeSwitch<FIRRTLType>(tpe)
+              .template Case<FVectorType>([&](FVectorType vector) {
+                unsigned index = vector.getIndexForFieldID(fieldID);
+                tpe = vector.getSubTypeByFieldID(fieldID);
+                fieldID -= vector.getFieldID(index);
+                path.append("[" + Twine(index) + "]");
+              })
+              .template Case<BundleType>([&](BundleType bundle) {
+                unsigned index = bundle.getIndexForFieldID(fieldID);
+                tpe = bundle.getSubTypeByFieldID(fieldID);
+                fieldID -= bundle.getFieldID(index);
+                // TODO: Handle invalid field names somewhere.
+                path.append("[" + Twine(bundle.getElement(index).name) + "]");
+              })
+              .Default([&](auto op) {
+                leafValue.getDefiningOp()->emitError()
+                    << "invalid annotation" << ground;
+                return false;
+              });
         }
 
         // Assemble the verbatim op.
@@ -839,8 +865,32 @@ Optional<TypeSum> GrandCentralPass::computeField(Attribute field,
           [&](AugmentedGroundTypeAttr ground) -> Optional<TypeSum> {
             // Traverse to generate mappings.
             traverseField(field, id, path);
-            auto value = leafMap.lookup(ground.getID());
+            auto fieldRef = leafMap.lookup(ground.getID());
+            auto value = fieldRef.getValue();
+            auto fieldID = fieldRef.getFieldID();
             auto tpe = value.getType().cast<FIRRTLType>();
+            while (fieldID) {
+              TypeSwitch<FIRRTLType>(tpe)
+                  .Case<FVectorType>([&](FVectorType vector) {
+                    unsigned index = vector.getIndexForFieldID(fieldID);
+                    tpe = vector.getSubTypeByFieldID(fieldID);
+                    fieldID -= vector.getFieldID(index);
+                    // path.append("[" + Twine(index) + "]");
+                  })
+                  .Case<BundleType>([&](BundleType bundle) {
+                    unsigned index = bundle.getIndexForFieldID(fieldID);
+                    tpe = bundle.getSubTypeByFieldID(fieldID);
+                    fieldID -= bundle.getFieldID(index);
+                    // TODO: Handle invalid field names somewhere.
+                    // path.append("[" + Twine(bundle.getElement(index).name) +
+                    //           "]");
+                  })
+                  .Default([&](auto op) {
+                    value.getDefiningOp()->emitError()
+                        << "invalid annotation" << ground;
+                    return None;
+                  });
+            }
             if (!tpe.isGround()) {
               value.getDefiningOp()->emitOpError()
                   << "cannot be added to interface with id '"
@@ -1195,7 +1245,8 @@ void GrandCentralPass::runOnOperation() {
             auto maybeID = getID(op, annotation);
             if (!maybeID)
               return false;
-            leafMap[maybeID.getValue()] = op.getResult();
+            leafMap[maybeID.getValue()] = {op.getResult(),
+                                           annotation.getFieldID()};
             return true;
           });
         })
@@ -1249,7 +1300,8 @@ void GrandCentralPass::runOnOperation() {
                 auto maybeID = getID(op, annotation);
                 if (!maybeID)
                   return false;
-                leafMap[maybeID.getValue()] = op.getArgument(i);
+                leafMap[maybeID.getValue()] = {op.getArgument(i),
+                                               annotation.getFieldID()};
 
                 return true;
               });
@@ -1431,20 +1483,27 @@ void GrandCentralPass::runOnOperation() {
     sort();
     llvm::dbgs() << "leafMap:\n";
     for (auto id : ids) {
-      auto value = leafMap.lookup(id);
+      auto fieldRef = leafMap.lookup(id);
+      auto value = fieldRef.getValue();
+      auto fieldID = fieldRef.getValue();
       if (auto blockArg = value.dyn_cast<BlockArgument>()) {
         FModuleOp module = cast<FModuleOp>(blockArg.getOwner()->getParentOp());
         llvm::dbgs() << "  - " << id.getValue() << ": "
                      << module.getName() + ">" +
-                            module.getPortName(blockArg.getArgNumber())
-                     << "\n";
-      } else
+                            module.getPortName(blockArg.getArgNumber());
+        if (fieldID)
+          llvm::dbgs() << "@" << fieldID;
+        llvm::dbgs() << "\n";
+      } else {
         llvm::dbgs() << "  - " << id.getValue() << ": "
                      << value.getDefiningOp()
                             ->getAttr("name")
                             .cast<StringAttr>()
-                            .getValue()
-                     << "\n";
+                            .getValue();
+        if (fieldID)
+          llvm::dbgs() << "@" << fieldID;
+        llvm::dbgs() << "\n";
+      }
     }
   });
 
