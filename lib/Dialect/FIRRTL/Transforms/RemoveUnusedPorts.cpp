@@ -132,12 +132,15 @@ void RemoveUnusedPortsPass::visitOperation(Operation *op) {
     return;
   }
 
-  if (llvm::all_of(op->getOperands(),
-                   [&](Value value) { return isAssumedDead(value); }))
-    return;
+  // if (llvm::all_of(op->getOperands(),
+  //                  [&](Value value) { return isAssumedDead(value); }))
+  //   return;
 
-  for (auto operand : op->getOperands())
-    markAlive(operand);
+  if (llvm::any_of(op->getResults(),
+                   [&](Value value) { return isKnownAlive(value); })) {
+    for (auto operand : op->getOperands())
+      markAlive(operand);
+  }
 }
 
 void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
@@ -177,7 +180,8 @@ void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
 
     // Mark don't touch results as overdefined
     if (hasDontTouch(modulePortVal)) {
-      LLVM_DEBUG(llvm::dbgs() << fModule.getName() << " " << resultNo << " has Dont\n";);
+      LLVM_DEBUG(llvm::dbgs()
+                     << fModule.getName() << " " << resultNo << " has Dont\n";);
       markAlive(modulePortVal);
       markAlive(instancePortVal);
     }
@@ -225,10 +229,9 @@ void RemoveUnusedPortsPass::runOnOperation() {
   // If a value changed liveness then reprocess any of its users.
   while (!worklist.empty()) {
     Value changedVal = worklist.pop_back_val();
-    for (Operation *user : changedVal.getUsers()) {
+    for (Operation *user : changedVal.getUsers())
       // if (isBlockExecutable(user->getBlock()))
       visitOperation(user);
-    }
     visitValue(changedVal);
   }
 
