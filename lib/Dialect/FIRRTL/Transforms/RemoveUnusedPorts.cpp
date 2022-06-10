@@ -381,6 +381,10 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
 
   // Delete ports from the module.
   module.erasePorts(removalPortIndexes);
+
+  for (auto arg : module.getArguments())
+    liveSet.insert({arg, true});
+
   LLVM_DEBUG(llvm::for_each(removalPortIndexes, [&](unsigned index) {
                llvm::dbgs() << "Delete port: " << ports[index].name << "\n";
              }););
