@@ -36,7 +36,7 @@ struct RemoveUnusedPortsPass
                                InstanceGraphNode *instanceGraphNode);
 
   void markAlive(Value value) {
-    if (liveSet.contains(value))
+    if (liveSet.count(value))
       return;
     LLVM_DEBUG(llvm::dbgs() << "ALIVE: " << value << "\n");
     if (auto arg = value.dyn_cast<BlockArgument>()) {
@@ -45,16 +45,16 @@ struct RemoveUnusedPortsPass
               << cast<FModuleOp>(arg.getParentBlock()->getParentOp()).getName()
               << "\n";);
     }
-    liveSet.insert(value);
+    liveSet.insert({value, false});
     worklist.push_back(value);
   }
   bool isKnownAlive(Value value) const {
     assert(value);
-    return liveSet.contains(value);
+    return liveSet.count(value);
   }
   bool isAssumedDead(Value value) const {
     assert(value);
-    return !liveSet.contains(value);
+    return !liveSet.count(value);
   }
   bool isBlockExecutable(Block *block) const {
     return executableBlocks.count(block);
@@ -89,7 +89,7 @@ private:
   /// A worklist of values whose liveness recently changed, indicating the
   /// users need to be reprocessed.
   SmallVector<Value, 64> worklist;
-  llvm::DenseSet<Value> liveSet;
+  llvm::DenseMap<Value, bool> liveSet;
 };
 } // namespace
 
@@ -239,6 +239,9 @@ void RemoveUnusedPortsPass::runOnOperation() {
 
   LLVM_DEBUG(llvm::dbgs() << "===----- Remove unused ports -----==="
                           << "\n");
+  for (auto alive : liveSet) {
+    LLVM_DEBUG(llvm::dbgs() << "FINAL ALIVE " << alive.first << "\n";);
+  }
   // Iterate in the reverse order of instance graph iterator, i.e. from leaves
   // to top.
   for (auto module : circuit.getBody()->getOps<FModuleOp>())
@@ -300,13 +303,15 @@ void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
   for (auto &op : llvm::make_early_inc_range(llvm::reverse(*body))) {
     // Connects to values that we found to be constant can be dropped.
     if (auto connect = dyn_cast<FConnectLike>(op)) {
-      if (isAssumedDead(connect.dest()))
+      if (isAssumedDead(connect.dest())) {
+        LLVM_DEBUG(llvm::dbgs() << "DEAD: " << connect.dest() << "\n";);
         connect.erase();
+      }
       continue;
     }
 
-    if (isAssumedDead(op.getResult(0))) {
-      llvm::dbgs() << "DEAD: " << op << "\n";
+    if (isWireOrRegOrNode(&op) && isAssumedDead(op.getResult(0))) {
+      LLVM_DEBUG(llvm::dbgs() << "DEAD: " << op << "\n";);
       // Users must be already erased.
       assert(op.use_empty() && "no user");
       op.erase();
@@ -356,6 +361,14 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
       // assert(isKnownAlive(wire));
       assert(isAssumedDead(result));
       assert(isAssumedDead(wire));
+    } else {
+      isKnownAlive(result);
+      for (auto *use : instanceGraphNode->uses()) {
+        auto instance = ::cast<InstanceOp>(*use->getInstance());
+        auto result = instance.getResult(index);
+        LLVM_DEBUG(llvm::dbgs() << "Checking... " << result << "\n";);
+        assert(isKnownAlive(result));
+      }
     }
   }
 
@@ -384,10 +397,14 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
       WireOp wire = builder.create<WireOp>(result.getType(), foo,
                                            NameKindEnum::DroppableName);
       result.replaceAllUsesWith(wire);
+      assert(isAssumedDead(result) && "must be dead");
+      liveSet.erase(result);
     }
-
     // Create a new instance op without unused ports.
     auto newInstance = instance.erasePorts(builder, removalPortIndexes);
+    // WARNING:
+    for (auto newResult : newInstance.getResults())
+      markAlive(newResult);
     instanceGraph->replaceInstance(instance, newInstance);
     // Remove old one.
     instance.erase();
