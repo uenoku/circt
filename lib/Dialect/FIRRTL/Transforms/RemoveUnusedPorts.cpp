@@ -132,11 +132,11 @@ void RemoveUnusedPortsPass::visitOperation(Operation *op) {
   if (auto connectOp = dyn_cast<FConnectLike>(op))
     return visitConnect(connectOp);
 
-  if (!mlir::MemoryEffectOpInterface::hasNoEffect(op)) {
-    // If the op has side effects, then we already marked its results and
-    // operands alive.
-    return;
-  }
+  // if (!mlir::MemoryEffectOpInterface::hasNoEffect(op)) {
+  //   // If the op has side effects, then we already marked its results and
+  //   // operands alive.
+  //   return;
+  // }
 
   // if (llvm::all_of(op->getOperands(),
   //                  [&](Value value) { return isAssumedDead(value); }))
@@ -305,15 +305,8 @@ void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
       continue;
     }
 
-    if (isWireOrRegOrNode(&op) && isAssumedDead(op.getResult(0))) {
-      if (!op.use_empty()) {
-        auto diag = op.emitError();
-        diag << "invalid";
-        for (auto user : op.getUsers()) {
-          diag.attachNote(user->getLoc()) << "user " << user;
-        }
-        continue;
-      }
+    if (isAssumedDead(op.getResult(0))) {
+      llvm::dbgs() << "DEAD: " << op << "\n";
       // Users must be already erased.
       assert(op.use_empty() && "no user");
       op.erase();
@@ -361,8 +354,8 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
       result.replaceAllUsesWith(wire);
       removalPortIndexes.push_back(index);
       // assert(isKnownAlive(wire));
-      // assert(isAssumedDead(result));
-      // assert(isAssumedDead(wire));
+      assert(isAssumedDead(result));
+      assert(isAssumedDead(wire));
     }
   }
 
