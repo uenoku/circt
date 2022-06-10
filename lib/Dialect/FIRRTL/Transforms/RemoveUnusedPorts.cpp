@@ -52,6 +52,7 @@ struct RemoveUnusedPortsPass
   void visitConnect(FConnectLike connect);
   void markBlockExecutable(Block *block);
   void markWireOrReg(Operation *op);
+  void markMemOp(MemOp op);
   void markInstanceOp(InstanceOp instanceOp);
   void markUnknownSideEffectOp(Operation *op);
   void rewriteModule(FModuleOp module);
@@ -93,6 +94,14 @@ void RemoveUnusedPortsPass::markWireOrReg(Operation *op) {
 
   if (!isDeletableWireOrRegOrNode(op))
     markAlive(resultValue);
+}
+
+void RemoveUnusedPortsPass::markMemOp(MemOp mem) {
+  for (auto result : mem.getResults())
+    for (auto user : result.getUsers()) {
+      if (auto subfield = dyn_cast<SubfieldOp>(user))
+        markAlive(subfield);
+    }
 }
 
 void RemoveUnusedPortsPass::markUnknownSideEffectOp(Operation *op) {
@@ -182,6 +191,8 @@ void RemoveUnusedPortsPass::markBlockExecutable(Block *block) {
     else if (isa<FConnectLike>(op)) {
       // Nothing to do for connect like op.
       continue;
+    } else if (auto mem = dyn_cast<MemOp>(op)) {
+      markMemOp(mem);
     } else if (!mlir::MemoryEffectOpInterface::hasNoEffect(&op)) {
       markUnknownSideEffectOp(&op);
     }
@@ -322,10 +333,7 @@ void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
         isAssumedDead(op.getResult(0))) {
       llvm::dbgs() << "Op is assumed to be dead: " << op << "\n";
       // Users must be already erased.
-      if(!op.use_empty()){
-        module.dump();
-      }
-      assert(op.use_empty());
+      assert(op.use_empty() && "no user");
       op.erase();
     }
 
