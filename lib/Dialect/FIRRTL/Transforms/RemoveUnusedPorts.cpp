@@ -23,9 +23,9 @@
 using namespace circt;
 using namespace firrtl;
 
-/// Return true if this is a wire or register.
-static bool isWireOrReg(Operation *op) {
-  return isa<WireOp>(op) || isa<RegResetOp>(op) || isa<RegOp>(op);
+/// Return true if this is a wire or a register or a node.
+static bool isWireOrRegOrNode(Operation *op) {
+  return isa<WireOp, RegResetOp, RegOp, NodeOp>(op);
 }
 
 namespace {
@@ -36,7 +36,7 @@ struct RemoveUnusedPortsPass
                                InstanceGraphNode *instanceGraphNode);
 
   void markAlive(Value value) {
-    if (liveSet.count(value))
+    if (liveSet.contains(value))
       return;
     LLVM_DEBUG(llvm::dbgs() << "ALIVE: " << value << "\n");
     if (auto arg = value.dyn_cast<BlockArgument>()) {
@@ -48,8 +48,14 @@ struct RemoveUnusedPortsPass
     liveSet.insert(value);
     worklist.push_back(value);
   }
-  bool isKnownAlive(Value value) { return liveSet.count(value); }
-  bool isAssumedDead(Value value) { return !isKnownAlive(value); }
+  bool isKnownAlive(Value value) const {
+    assert(value);
+    return liveSet.contains(value);
+  }
+  bool isAssumedDead(Value value) const {
+    assert(value);
+    return !liveSet.contains(value);
+  }
   bool isBlockExecutable(Block *block) const {
     return executableBlocks.count(block);
   }
@@ -83,14 +89,14 @@ private:
   /// A worklist of values whose liveness recently changed, indicating the
   /// users need to be reprocessed.
   SmallVector<Value, 64> worklist;
-  DenseSet<Value> liveSet;
+  llvm::DenseSet<Value> liveSet;
 };
 } // namespace
 
 /// Return true if this is a wire or register we're allowed to delete.
 static bool isDeletableWireOrRegOrNode(Operation *op) {
-  if (auto wire = dyn_cast<FNamableOp>(op))
-    if (!wire.hasDroppableName())
+  if (auto name = dyn_cast<FNamableOp>(op))
+    if (!name.hasDroppableName())
       return false;
   return !hasDontTouch(op);
 }
@@ -136,11 +142,11 @@ void RemoveUnusedPortsPass::visitOperation(Operation *op) {
   //                  [&](Value value) { return isAssumedDead(value); }))
   //   return;
 
-  if (llvm::any_of(op->getResults(),
-                   [&](Value value) { return isKnownAlive(value); })) {
-    for (auto operand : op->getOperands())
-      markAlive(operand);
-  }
+  // if (llvm::any_of(op->getResults(),
+  //                  [&](Value value) { return isKnownAlive(value); })) {
+  //   for (auto operand : op->getOperands())
+  //     markAlive(operand);
+  // }
 }
 
 void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
@@ -193,13 +199,10 @@ void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
 void RemoveUnusedPortsPass::markBlockExecutable(Block *block) {
   if (!executableBlocks.insert(block).second)
     return; // Already executable.
-  // llvm::dbgs() << "Mark executable!"
-  //              << "\n";
 
   for (auto &op : *block) {
     // Handle each of the special operations in the firrtl dialect.
-    // llvm::dbgs() << "FOO " << op << '\n';
-    if (isWireOrReg(&op) || isa<NodeOp>(op))
+    if (isWireOrRegOrNode(&op))
       markWireOrReg(&op);
     else if (auto instance = dyn_cast<InstanceOp>(op))
       markInstanceOp(instance);
@@ -229,10 +232,9 @@ void RemoveUnusedPortsPass::runOnOperation() {
   // If a value changed liveness then reprocess any of its users.
   while (!worklist.empty()) {
     Value changedVal = worklist.pop_back_val();
-    for (Operation *user : changedVal.getUsers())
-      // if (isBlockExecutable(user->getBlock()))
-      visitOperation(user);
     visitValue(changedVal);
+    for (Operation *user : changedVal.getUsers())
+      visitOperation(user);
   }
 
   LLVM_DEBUG(llvm::dbgs() << "===----- Remove unused ports -----==="
@@ -249,12 +251,9 @@ void RemoveUnusedPortsPass::runOnOperation() {
 }
 
 void RemoveUnusedPortsPass::visitValue(Value value) {
-  //  if (isKnownAlive(value))
-  //    return;
-  //
-  markAlive(value);
+  assert(isKnownAlive(value) && "only alive values reach here");
 
-  /// Driving result ports propagates the value to each instance using the
+  /// Driving input ports propagates the liveness to each instance using the
   // module.
   if (auto blockArg = value.dyn_cast<BlockArgument>()) {
     for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
@@ -262,26 +261,19 @@ void RemoveUnusedPortsPass::visitValue(Value value) {
     return;
   }
 
-  auto src = value.cast<mlir::OpResult>();
-
   // Driving an instance argument port drives the corresponding argument of the
   // referenced module.
-  if (auto instance = src.getDefiningOp<InstanceOp>()) {
+  if (auto instance = value.getDefiningOp<InstanceOp>()) {
+    auto instanceResult = value.cast<mlir::OpResult>();
     // Update the src, when its an instance op.
     auto module =
         dyn_cast<FModuleOp>(*instanceGraph->getReferencedModule(instance));
     if (!module)
       return;
 
-    BlockArgument modulePortVal = module.getArgument(src.getResultNumber());
+    BlockArgument modulePortVal =
+        module.getArgument(instanceResult.getResultNumber());
     return markAlive(modulePortVal);
-  }
-  // Driving result ports propagates the value to each instance using the
-  // module.
-  if (auto blockArg = src.dyn_cast<BlockArgument>()) {
-    for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
-      markAlive(userOfResultPort);
-    return;
   }
 
   if (auto op = value.getDefiningOp())
@@ -298,33 +290,34 @@ void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
 }
 
 void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
-  // module.dump();
   auto *body = module.getBody();
   // If a module is unreachable, just ignore it.
   // TODO: Erase this module from circuit op.
   if (!executableBlocks.count(body))
     return;
 
-  // Walk the IR bottom-up when folding.  We often fold entire chains of
-  // operations into constants, which make the intermediate nodes dead.  Going
-  // bottom up eliminates the users of the intermediate ops, allowing us to
-  // aggressively delete them.
+  // Walk the IR bottom-up when deleting operations.
   for (auto &op : llvm::make_early_inc_range(llvm::reverse(*body))) {
     // Connects to values that we found to be constant can be dropped.
     if (auto connect = dyn_cast<FConnectLike>(op)) {
-      if (auto *destOp = connect.dest().getDefiningOp()) {
-        if (isAssumedDead(connect.dest()))
-          connect.erase();
-      }
+      if (isAssumedDead(connect.dest()))
+        connect.erase();
       continue;
     }
 
-    if ((isWireOrReg(&op) || isa<NodeOp>(op)) &&
-        isAssumedDead(op.getResult(0))) {
-      llvm::dbgs() << "Op is assumed to be dead: " << op << "\n";
+    if (isWireOrRegOrNode(&op) && isAssumedDead(op.getResult(0))) {
+      if (!op.use_empty()) {
+        auto diag = op.emitError();
+        diag << "invalid";
+        for (auto user : op.getUsers()) {
+          diag.attachNote(user->getLoc()) << "user " << user;
+        }
+        continue;
+      }
       // Users must be already erased.
       assert(op.use_empty() && "no user");
       op.erase();
+      continue;
     }
 
     // We only fold single-result ops and instances in practice, because they
@@ -357,16 +350,19 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
 
   for (auto e : llvm::enumerate(ports)) {
     unsigned index = e.index();
-    auto arg = module.getArgument(index);
-    if (isAssumedDead(arg)) {
-      auto result = module.getArgument(index);
-      SmallString<16> foo;
-      foo = "dead_port_";
-      foo += e.value().name.getValue();
-      WireOp wire = builder.create<WireOp>(result.getType(), foo,
-                                           NameKindEnum::DroppableName);
+    auto result = module.getArgument(index);
+    if (hasDontTouch(result))
+      assert(isKnownAlive(result) && "DontTouch");
+    if (isAssumedDead(result)) {
+      // SmallString<16> foo;
+      // foo = "dead_port_";
+      // foo += e.value().name.getValue();
+      WireOp wire = builder.create<WireOp>(result.getType());
       result.replaceAllUsesWith(wire);
       removalPortIndexes.push_back(index);
+      // assert(isKnownAlive(wire));
+      // assert(isAssumedDead(result));
+      // assert(isAssumedDead(wire));
     }
   }
 
@@ -384,8 +380,10 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
   for (auto *use : instanceGraphNode->uses()) {
     auto instance = ::cast<InstanceOp>(*use->getInstance());
     ImplicitLocOpBuilder builder(instance.getLoc(), instance);
+    builder.setInsertionPointToStart(instance->getBlock());
     for (auto index : removalPortIndexes) {
       auto result = instance.getResult(index);
+      assert(isAssumedDead(result) && "must be dead");
       SmallString<16> foo;
       foo += module.getName();
       foo += "_dead_port_";
@@ -396,7 +394,8 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
     }
 
     // Create a new instance op without unused ports.
-    instance.erasePorts(builder, removalPortIndexes);
+    auto newInstance = instance.erasePorts(builder, removalPortIndexes);
+    instanceGraph->replaceInstance(instance, newInstance);
     // Remove old one.
     instance.erase();
   }
