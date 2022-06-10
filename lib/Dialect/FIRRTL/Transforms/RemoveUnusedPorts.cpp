@@ -339,8 +339,6 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
                           << "\n");
   // This tracks port indexes that can be erased.
   SmallVector<unsigned> removalPortIndexes;
-  // This tracks constant values of output ports. None indicates an invalid
-  // value.
   auto ports = module.getPorts();
 
   ImplicitLocOpBuilder builder(module.getLoc(), module.getContext());
@@ -383,7 +381,7 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
   module.erasePorts(removalPortIndexes);
 
   for (auto arg : module.getArguments())
-    liveSet.insert({arg, true});
+    markAlive(arg);
 
   LLVM_DEBUG(llvm::for_each(removalPortIndexes, [&](unsigned index) {
                llvm::dbgs() << "Delete port: " << ports[index].name << "\n";
@@ -394,6 +392,10 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
     auto instance = ::cast<InstanceOp>(*use->getInstance());
     ImplicitLocOpBuilder builder(instance.getLoc(), instance);
     builder.setInsertionPointToStart(instance->getBlock());
+    for (auto e : llvm::enumerate(ports)) {
+      auto result = instance.getResult(e.index());
+      liveSet.erase(result);
+    }
     for (auto index : removalPortIndexes) {
       auto result = instance.getResult(index);
       assert(isAssumedDead(result) && "must be dead");
@@ -405,7 +407,6 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
                                            NameKindEnum::DroppableName);
       result.replaceAllUsesWith(wire);
       assert(isAssumedDead(result) && "must be dead");
-      liveSet.erase(result);
     }
     // Create a new instance op without unused ports.
     auto newInstance = instance.erasePorts(builder, removalPortIndexes);
