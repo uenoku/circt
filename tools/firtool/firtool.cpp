@@ -578,8 +578,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
     pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
         createSimpleCanonicalizerPass());
     if (removeUnusedPorts)
-      pm.nest<firrtl::CircuitOp>().addPass(
-          firrtl::createRemoveUnusedPortsPass());
+      pm.nest<firrtl::CircuitOp>().addPass(firrtl::createInterModuleDCEPass());
   }
 
   if (emitOMIR)

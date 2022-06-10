@@ -81,6 +81,14 @@ def RemoveUnusedPorts : Pass<"firrtl-remove-unused-ports", "firrtl::CircuitOp"> 
   ];
 }
 
+def InterModuleDCE : Pass<"firrtl-inter-module-dce", "firrtl::CircuitOp"> {
+  let summary = "Inter module dce";
+  let constructor = "circt::firrtl::createInterModuleDCEPass()";
+  let statistics = [
+    Statistic<"numRemovedPorts", "num-removed-ports", "Number of ports erased">,
+  ];
+}
+
 def Inliner : Pass<"firrtl-inliner", "firrtl::CircuitOp"> {
   let summary = "Performs inlining, flattening, and dead module elimination";
   let description = [{
