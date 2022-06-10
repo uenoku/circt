@@ -182,7 +182,7 @@ void RemoveUnusedPortsPass::markBlockExecutable(Block *block) {
     else if (isa<FConnectLike>(op)) {
       // Nothing to do for connect like op.
       continue;
-    } else if (mlir::MemoryEffectOpInterface::hasNoEffect(&op)) {
+    } else if (!mlir::MemoryEffectOpInterface::hasNoEffect(&op)) {
       markUnknownSideEffectOp(&op);
     }
   }
@@ -322,6 +322,9 @@ void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
         isAssumedDead(op.getResult(0))) {
       llvm::dbgs() << "Op is assumed to be dead: " << op << "\n";
       // Users must be already erased.
+      if(!op.use_empty()){
+        module.dump();
+      }
       assert(op.use_empty());
       op.erase();
     }
