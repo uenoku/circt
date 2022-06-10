@@ -360,7 +360,6 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
       assert(isAssumedDead(result));
       assert(isAssumedDead(wire));
     } else {
-      isKnownAlive(result);
       for (auto *use : instanceGraphNode->uses()) {
         auto instance = ::cast<InstanceOp>(*use->getInstance());
         auto result = instance.getResult(index);
