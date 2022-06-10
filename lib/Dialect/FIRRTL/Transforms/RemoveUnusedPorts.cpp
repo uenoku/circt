@@ -38,6 +38,13 @@ struct RemoveUnusedPortsPass
   void markAlive(Value value) {
     if (liveSet.count(value))
       return;
+    LLVM_DEBUG(llvm::dbgs() << "ALIVE: " << value << "\n");
+    if (auto arg = value.dyn_cast<BlockArgument>()) {
+      LLVM_DEBUG(
+          llvm::dbgs()
+              << cast<FModuleOp>(arg.getParentBlock()->getParentOp()).getName()
+              << "\n";);
+    }
     liveSet.insert(value);
     worklist.push_back(value);
   }
@@ -170,6 +177,7 @@ void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
 
     // Mark don't touch results as overdefined
     if (hasDontTouch(modulePortVal)) {
+      LLVM_DEBUG(llvm::dbgs() << fModule.getName() << " " << resultNo << " has Dont\n";);
       markAlive(modulePortVal);
       markAlive(instancePortVal);
     }
@@ -181,9 +189,12 @@ void RemoveUnusedPortsPass::markInstanceOp(InstanceOp instance) {
 void RemoveUnusedPortsPass::markBlockExecutable(Block *block) {
   if (!executableBlocks.insert(block).second)
     return; // Already executable.
+  // llvm::dbgs() << "Mark executable!"
+  //              << "\n";
 
   for (auto &op : *block) {
     // Handle each of the special operations in the firrtl dialect.
+    // llvm::dbgs() << "FOO " << op << '\n';
     if (isWireOrReg(&op) || isa<NodeOp>(op))
       markWireOrReg(&op);
     else if (auto instance = dyn_cast<InstanceOp>(op))
@@ -206,8 +217,9 @@ void RemoveUnusedPortsPass::runOnOperation() {
   for (auto module : circuit.getBody()->getOps<FModuleOp>()) {
     // FIXME: For now, mark every module as executable.
     markBlockExecutable(module.getBody());
-    for (auto port : module.getBody()->getArguments())
-      markAlive(port);
+    if (module.isPublic())
+      for (auto port : module.getBody()->getArguments())
+        markAlive(port);
   }
 
   // If a value changed liveness then reprocess any of its users.
@@ -269,10 +281,9 @@ void RemoveUnusedPortsPass::visitValue(Value value) {
     return;
   }
 
-  if (auto op = value.getDefiningOp()) {
+  if (auto op = value.getDefiningOp())
     for (auto operand : op->getOperands())
       markAlive(operand);
-  }
 }
 
 void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
@@ -281,30 +292,6 @@ void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
     return;
 
   markAlive(connect.src());
-
-  // // Driving result ports propagates the value to each instance using the
-  // // module.
-  // if (auto blockArg = connect.src().dyn_cast<BlockArgument>()) {
-  //   for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
-  //     markAlive(userOfResultPort);
-  //   return;
-  // }
-
-  // auto src = connect.src().cast<mlir::OpResult>();
-
-  // // Driving an instance argument port drives the corresponding argument of
-  // the
-  // // referenced module.
-  // if (auto instance = src.getDefiningOp<InstanceOp>()) {
-  //   // Update the src, when its an instance op.
-  //   auto module =
-  //       dyn_cast<FModuleOp>(*instanceGraph->getReferencedModule(instance));
-  //   if (!module)
-  //     return;
-
-  //   BlockArgument modulePortVal = module.getArgument(src.getResultNumber());
-  //   return markAlive(modulePortVal);
-  // }
 }
 
 void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
