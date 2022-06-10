@@ -47,6 +47,7 @@ struct RemoveUnusedPortsPass
     return executableBlocks.count(block);
   }
   void visitOperation(Operation *op);
+  void visitValue(Value value);
   void visitWireOrReg(Operation *op);
   void visitConnect(FConnectLike connect);
   void markBlockExecutable(Block *block);
@@ -104,6 +105,7 @@ void RemoveUnusedPortsPass::markUnknownSideEffectOp(Operation *op) {
 }
 
 void RemoveUnusedPortsPass::visitOperation(Operation *op) {
+  LLVM_DEBUG(llvm::dbgs() << "Visit: " << *op << "\n");
   // If this is a operation with special handling, handle it specially.
   if (auto connectOp = dyn_cast<FConnectLike>(op))
     return visitConnect(connectOp);
@@ -191,11 +193,10 @@ void RemoveUnusedPortsPass::runOnOperation() {
   instanceGraph = &getAnalysis<InstanceGraph>();
   // Mark the ports of public modules as ailve.
   for (auto module : circuit.getBody()->getOps<FModuleOp>()) {
-    if (module.isPublic()) {
-      markBlockExecutable(module.getBody());
-      for (auto port : module.getBody()->getArguments())
-        markAlive(port);
-    }
+    // FIXME: For now, mark every module as executable.
+    markBlockExecutable(module.getBody());
+    for (auto port : module.getBody()->getArguments())
+      markAlive(port);
   }
 
   // If a value changed liveness then reprocess any of its users.
@@ -205,13 +206,7 @@ void RemoveUnusedPortsPass::runOnOperation() {
       // if (isBlockExecutable(user->getBlock()))
       visitOperation(user);
     }
-    if (auto op = changedVal.getDefiningOp()) {
-      for (auto operand : op->getOperands())
-        markAlive(operand);
-    }
-  }
-  for(auto live: liveSet){
-    live.dump();
+    visitValue(changedVal);
   }
 
   LLVM_DEBUG(llvm::dbgs() << "===----- Remove unused ports -----==="
@@ -227,22 +222,21 @@ void RemoveUnusedPortsPass::runOnOperation() {
                         [&](auto op) { rewriteModule(op); });
 }
 
-void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
-  // If the dest is dead, then we don't have to propagate liveness.
-  if (!isAssumedDead(connect.dest()))
-    return;
+void RemoveUnusedPortsPass::visitValue(Value value) {
+  //  if (isKnownAlive(value))
+  //    return;
+  //
+  markAlive(value);
 
-  markAlive(connect.src());
-
-  // Driving result ports propagates the value to each instance using the
+  /// Driving result ports propagates the value to each instance using the
   // module.
-  if (auto blockArg = connect.src().dyn_cast<BlockArgument>()) {
+  if (auto blockArg = value.dyn_cast<BlockArgument>()) {
     for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
       markAlive(userOfResultPort);
     return;
   }
 
-  auto src = connect.src().cast<mlir::OpResult>();
+  auto src = value.cast<mlir::OpResult>();
 
   // Driving an instance argument port drives the corresponding argument of the
   // referenced module.
@@ -256,15 +250,59 @@ void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
     BlockArgument modulePortVal = module.getArgument(src.getResultNumber());
     return markAlive(modulePortVal);
   }
+  // Driving result ports propagates the value to each instance using the
+  // module.
+  if (auto blockArg = src.dyn_cast<BlockArgument>()) {
+    for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
+      markAlive(userOfResultPort);
+    return;
+  }
+
+  if (auto op = value.getDefiningOp()) {
+    for (auto operand : op->getOperands())
+      markAlive(operand);
+  }
+}
+
+void RemoveUnusedPortsPass::visitConnect(FConnectLike connect) {
+  // If the dest is dead, then we don't have to propagate liveness.
+  if (isAssumedDead(connect.dest()))
+    return;
+
+  markAlive(connect.src());
+
+  // // Driving result ports propagates the value to each instance using the
+  // // module.
+  // if (auto blockArg = connect.src().dyn_cast<BlockArgument>()) {
+  //   for (auto userOfResultPort : resultPortToInstanceResultMapping[blockArg])
+  //     markAlive(userOfResultPort);
+  //   return;
+  // }
+
+  // auto src = connect.src().cast<mlir::OpResult>();
+
+  // // Driving an instance argument port drives the corresponding argument of
+  // the
+  // // referenced module.
+  // if (auto instance = src.getDefiningOp<InstanceOp>()) {
+  //   // Update the src, when its an instance op.
+  //   auto module =
+  //       dyn_cast<FModuleOp>(*instanceGraph->getReferencedModule(instance));
+  //   if (!module)
+  //     return;
+
+  //   BlockArgument modulePortVal = module.getArgument(src.getResultNumber());
+  //   return markAlive(modulePortVal);
+  // }
 }
 
 void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
+  // module.dump();
   auto *body = module.getBody();
   // If a module is unreachable, just ignore it.
   // TODO: Erase this module from circuit op.
   if (!executableBlocks.count(body))
     return;
-  module.dump();
 
   // Walk the IR bottom-up when folding.  We often fold entire chains of
   // operations into constants, which make the intermediate nodes dead.  Going
@@ -282,6 +320,7 @@ void RemoveUnusedPortsPass::rewriteModule(FModuleOp module) {
 
     if ((isWireOrReg(&op) || isa<NodeOp>(op)) &&
         isAssumedDead(op.getResult(0))) {
+      llvm::dbgs() << "Op is assumed to be dead: " << op << "\n";
       // Users must be already erased.
       assert(op.use_empty());
       op.erase();
@@ -320,7 +359,11 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
     auto arg = module.getArgument(index);
     if (isAssumedDead(arg)) {
       auto result = module.getArgument(index);
-      WireOp wire = builder.create<WireOp>(result.getType());
+      SmallString<16> foo;
+      foo = "dead_port_";
+      foo += e.value().name.getValue();
+      WireOp wire = builder.create<WireOp>(result.getType(), foo,
+                                           NameKindEnum::DroppableName);
       result.replaceAllUsesWith(wire);
       removalPortIndexes.push_back(index);
     }
@@ -342,7 +385,12 @@ void RemoveUnusedPortsPass::removeUnusedModulePorts(
     ImplicitLocOpBuilder builder(instance.getLoc(), instance);
     for (auto index : removalPortIndexes) {
       auto result = instance.getResult(index);
-      WireOp wire = builder.create<WireOp>(result.getType());
+      SmallString<16> foo;
+      foo += module.getName();
+      foo += "_dead_port_";
+      foo += std::to_string(index);
+      WireOp wire = builder.create<WireOp>(result.getType(), foo,
+                                           NameKindEnum::DroppableName);
       result.replaceAllUsesWith(wire);
     }
 
