@@ -2309,6 +2309,7 @@ public:
   struct ValuesToEmitRecord {
     Value value;
     SmallString<8> typeString;
+    unsigned declNameWidth = 0, typeWidth = 0;
   };
 
   NameCollector(ModuleEmitter &moduleEmitter, ModuleNameManager &names)
@@ -2359,6 +2360,18 @@ void NameCollector::collectNames(Block &block) {
     }
   }
 
+  unsigned processed = 0;
+  auto setWidth = [&]() {
+    for (; processed < valuesToEmit.size(); ++processed) {
+      // assert(maxDeclNameWidth != 0);
+      valuesToEmit[processed].declNameWidth = maxDeclNameWidth;
+      // assert(maxTypeWidth != 0);
+      valuesToEmit[processed].typeWidth = maxTypeWidth;
+    }
+    maxDeclNameWidth = 0;
+    maxTypeWidth = 0;
+  };
+
   // Loop over all of the results of all of the ops. Anything that defines a
   // value needs to be noticed.
   for (auto &op : block) {
@@ -2374,9 +2387,12 @@ void NameCollector::collectNames(Block &block) {
       // If this is an expression emitted inline or unused, it doesn't need a
       // name.
       if (isExpr) {
+        assert(op.getNumResults() == 1);
         // If this expression is dead, or can be emitted inline, ignore it.
-        if (result.use_empty() || isInlineExpr)
+        if (result.use_empty() || isInlineExpr) {
+          setWidth();
           continue;
+        }
 
         // Remember that this expression should be emitted out of line.
         moduleEmitter.outOfLineExpressions.insert(&op);
@@ -2391,13 +2407,15 @@ void NameCollector::collectNames(Block &block) {
         // block at the top of the module).
         // Procedural blocks always emit out of line variable declarations,
         // because Verilog requires that they all be at the top of a block.
-        if (!isBlockProcedural)
+        if (!isBlockProcedural) {
+          setWidth();
           continue;
+        }
       }
 
       // Measure this name and the length of its type, and ensure it is
       // emitted later.
-      valuesToEmit.push_back(ValuesToEmitRecord{result, {}});
+      valuesToEmit.push_back(ValuesToEmitRecord{result, {}, 0, 0});
       auto &typeString = valuesToEmit.back().typeString;
 
       StringRef declName = getVerilogDeclWord(&op, moduleEmitter.state.options);
@@ -2439,6 +2457,7 @@ void NameCollector::collectNames(Block &block) {
       continue;
     }
   }
+  setWidth();
 }
 
 //===----------------------------------------------------------------------===//
@@ -3691,17 +3710,19 @@ void StmtEmitter::collectNamesEmitDecls(Block &block) {
   if (valuesToEmit.empty())
     return;
 
-  size_t maxDeclNameWidth = collector.getMaxDeclNameWidth();
-  size_t maxTypeWidth = collector.getMaxTypeWidth();
+  /* collector.getMaxDeclNameWidth(); */
+  /* size_t maxTypeWidth = collector.getMaxTypeWidth(); */
 
-  if (maxTypeWidth > 0) // add a space if any type exists
-    maxTypeWidth += 1;
+  // if (maxTypeWidth > 0) // add a space if any type exists
+  //   maxTypeWidth += 1;
 
   SmallPtrSet<Operation *, 8> opsForLocation;
 
   // Okay, now that we have measured the things to emit, emit the things.
   for (const auto &record : valuesToEmit) {
     statementBeginning = rearrangableStream.getCursor();
+    unsigned typeWidth = record.typeWidth + 1;
+    unsigned declNameWidth = record.declNameWidth;
 
     // We have two different sorts of things that we proactively emit:
     // declarations (wires, regs, localpamarams, etc) and expressions that
@@ -3723,15 +3744,15 @@ void StmtEmitter::collectNamesEmitDecls(Block &block) {
     if (!isZeroBitType(type)) {
       indent() << word;
       auto extraIndent = word.empty() ? 0 : 1;
-      os.indent(maxDeclNameWidth - word.size() + extraIndent);
+      os.indent(declNameWidth - word.size() + extraIndent);
     } else {
       indent() << "// Zero width: " << word << ' ';
     }
 
     // Emit the type.
     os << record.typeString;
-    if (record.typeString.size() < maxTypeWidth)
-      os.indent(maxTypeWidth - record.typeString.size());
+    if (record.typeString.size() < typeWidth)
+      os.indent(typeWidth - record.typeString.size());
 
     // Emit the name.
     os << names.getName(record.value);
