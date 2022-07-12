@@ -3485,7 +3485,7 @@ LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
   // We lowered multbit mux into array indexing with vendor pragmas in the
   // following form. SV attributes are used to attach pragamas.
   //
-  // wire GEN:
+  // wire GEN;
   // (* synopsys infer_mux_override *)
   // assign GEN = array[index] (* cadence map_to_mux *);
 
