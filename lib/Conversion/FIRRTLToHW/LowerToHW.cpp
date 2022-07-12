@@ -3482,7 +3482,7 @@ LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
     loweredInputs.push_back(lowered);
   }
 
-  // We lowered multbit mux into array indexing with vendor pragmas in the
+  // We lower multbit mux into array indexing with vendor pragmas in the
   // following form. SV attributes are used to attach pragamas.
   //
   // wire GEN;
@@ -3492,9 +3492,11 @@ LogicalResult FIRRTLLowering::visitExpr(MultibitMuxOp op) {
   Value array = builder.create<hw::ArrayCreateOp>(loweredInputs);
   auto valWire = builder.create<sv::WireOp>(lowerType(op.getType()));
   auto arrayGet = builder.create<hw::ArrayGetOp>(array, index);
+  // Add "cadence map_to_mux" to the array_get op.
   circt::sv::setSVAttributes(arrayGet, {"cadence map_to_mux"});
 
   auto assign = builder.create<sv::AssignOp>(valWire, arrayGet);
+  // Add "synopsys infer_mux_override" to the assignment op.
   circt::sv::setSVAttributes(assign, {"synopsys infer_mux_override"});
 
   Value inBoundsRead = builder.create<sv::ReadInOutOp>(valWire);

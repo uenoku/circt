@@ -49,8 +49,7 @@ void circt::sv::setSVAttributes(mlir::Operation *op,
         op->getContext(), StringAttr::get(op->getContext(), str),
         StringAttr()));
 
-  return op->setAttr(sv::SVAttributeAttr::getSVAttributesAttrName(),
-                     mlir::ArrayAttr::get(context, svAttrs));
+  setSVAttributes(op, mlir::ArrayAttr::get(context, svAttrs));
 }
 
 void SVDialect::registerAttributes() {
