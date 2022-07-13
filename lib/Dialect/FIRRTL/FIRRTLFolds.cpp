@@ -1833,3 +1833,40 @@ LogicalResult RegOp::canonicalize(RegOp op, PatternRewriter &rewriter) {
 
   return failure();
 }
+
+//===----------------------------------------------------------------------===//
+// Verification Ops.
+//===----------------------------------------------------------------------===//
+
+static LogicalResult eraseIfZeroOrNotZero(Operation *op, Value value,
+                                          PatternRewriter &rewriter,
+                                          bool eraseIfZero) {
+  if (auto constant = value.getDefiningOp<firrtl::ConstantOp>())
+    if (constant.value().isZero() == eraseIfZero) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+  return failure();
+}
+
+template <class Op, bool EraseIfZero = false>
+static LogicalResult canonicalizeImmediateVerifOp(Op op,
+                                                  PatternRewriter &rewriter) {
+  return eraseIfZeroOrNotZero(op, op.predicate(), rewriter, EraseIfZero);
+}
+
+void AssertOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                           MLIRContext *context) {
+  results.add(canonicalizeImmediateVerifOp<AssertOp>);
+}
+
+void AssumeOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                           MLIRContext *context) {
+  results.add(canonicalizeImmediateVerifOp<AssumeOp>);
+}
+
+void CoverOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                          MLIRContext *context) {
+  results.add(canonicalizeImmediateVerifOp<CoverOp, /* EraseIfZero = */ true>);
+}
