@@ -22,6 +22,12 @@ bool hasSVAttributes(mlir::Operation *op);
 mlir::ArrayAttr getSVAttributes(mlir::Operation *op);
 void setSVAttributes(mlir::Operation *op, mlir::Attribute);
 
+/// Helper functions to handle comments attribute.
+bool hasSVComments(mlir::Operation *op);
+std::pair<mlir::StringAttr, mlir::StringAttr>
+getSVComments(mlir::Operation *op);
+void setSVComments(mlir::Operation *op, mlir::Attribute);
+
 } // namespace sv
 
 } // namespace circt

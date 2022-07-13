@@ -4270,7 +4270,7 @@ void ModuleEmitter::emitHWModule(HWModuleOp module) {
   SmallPtrSet<Operation *, 8> moduleOpSet;
   moduleOpSet.insert(module);
 
-  emitComment(module.commentAttr());
+  emitComment(module->getAttrOfType<StringAttr>("comment.prologue"));
 
   if (hasSVAttributes(module))
     emitError(module, "SV attributes emission is unimplemented for the op");

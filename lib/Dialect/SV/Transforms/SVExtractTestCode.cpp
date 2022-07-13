@@ -166,7 +166,8 @@ static hw::HWModuleOp createModuleForCut(hw::HWModuleOp op,
       b.getStringAttr(getVerilogModuleNameAttr(op).getValue() + suffix), ports);
   if (path)
     newMod->setAttr("output_file", path);
-  newMod.commentAttr(b.getStringAttr("VCS coverage exclude_file"));
+  newMod->setAttr("comment.prologue",
+                  b.getStringAttr("VCS coverage exclude_file"));
 
   // Update the mapping from old values to cloned values
   for (auto port : llvm::enumerate(inputs))

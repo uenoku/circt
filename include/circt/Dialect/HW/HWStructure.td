@@ -59,8 +59,7 @@ def HWModuleOp : HWModuleOpBase<"module",
     connections within the module.
   }];
   let arguments = (ins StrArrayAttr:$argNames, StrArrayAttr:$resultNames,
-                       ParamDeclArrayAttr:$parameters,
-                       StrAttr:$comment);
+                       ParamDeclArrayAttr:$parameters);
   let results = (outs);
   let regions = (region SizedRegion<1>:$body);
 
@@ -68,12 +67,10 @@ def HWModuleOp : HWModuleOpBase<"module",
   let builders = [
     OpBuilder<(ins "StringAttr":$name, "ArrayRef<PortInfo>":$ports,
                    CArg<"ArrayAttr", "{}">:$parameters,
-                   CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes,
-                   CArg<"StringAttr", "{}">:$comment)>,
+                   CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes)>,
     OpBuilder<(ins "StringAttr":$name, "const ModulePortInfo &":$ports,
                    CArg<"ArrayAttr", "{}">:$parameters,
-                   CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes,
-                   CArg<"StringAttr", "{}">:$comment)>
+                   CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes)>
   ];
 
   let extraModuleClassDeclaration = [{

@@ -62,3 +62,17 @@ def SVAttributeAttr : AttrDef<SVDialect, "SVAttribute"> {
         getSVAttributesAttrName() { return "sv.attributes"; }
   }];
 }
+
+def SVCommentsAttr : AttrDef<SVDialect, "SVComments"> {
+  let summary = "a comment";
+  let mnemonic = "comment";
+  let description = [{}];
+  let parameters = (ins "::mlir::StringAttr":$prologue,
+                        "::mlir::StringAttr":$epilogue);
+
+  let assemblyFormat = [{ `<` $prologue `,` $epilogue`>` }];
+  let extraClassDeclaration = [{
+    static inline llvm::StringRef
+        getSVCommentsAttrName() { return "sv.comments"; }
+  }];
+}

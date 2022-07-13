@@ -1150,7 +1150,7 @@ hw.module @parameterizedTypes<param: i32 = 1, wire: i32 = 2>
 // CHECK-NEXT:  // hello
 // CHECK-NEXT:  module moduleWithComment
 hw.module @moduleWithComment()
-  attributes {comment = "moduleWithComment has a comment\nhello"} {}
+  attributes {comment.prologue = "moduleWithComment has a comment\nhello"} {}
 
 
 // CHECK-LABEL: module Foo(

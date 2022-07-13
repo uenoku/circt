@@ -511,8 +511,8 @@ void HWMemSimImplPass::runOnOperation() {
             oldModule.getLoc(), nameAttr, oldModule.getPorts());
         if (auto outdir = oldModule->getAttr("output_file"))
           newModule->setAttr("output_file", outdir);
-        newModule.commentAttr(
-            builder.getStringAttr("VCS coverage exclude_file"));
+        newModule->setAttr("comment.prologue",
+                           builder.getStringAttr("VCS coverage exclude_file"));
 
         HWMemSimImpl(getContext(), replSeqMem, ignoreReadEnableMem)
             .generateMemory(newModule, mem);
