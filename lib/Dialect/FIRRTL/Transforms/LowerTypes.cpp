@@ -513,6 +513,33 @@ void TypeLoweringVisitor::lowerBlock(Block *block) {
   }
 }
 
+std::pair<InnerSymAttr, SmallVector<Attribute>>
+getFieldSymbols(mlir::ArrayAttr annotations, SmallString<16> baseSymName) {
+  SmallVector<Attribute> retval;
+  SmallVector<InnerSymPropertiesAttr> attrs;
+  for (auto opAttr : annotations) {
+    unsigned fieldID = 0;
+    auto annotation = opAttr.dyn_cast<DictionaryAttr>();
+    if (auto id = annotation.getAs<IntegerAttr>("circt.fieldID"))
+      fieldID = id.getInt();
+
+    if (Annotation(opAttr).isClass(dontTouchAnnoClass)) {
+      auto str = baseSymName + (Twine("__subfield_") + Twine(fieldID)).str();
+      attrs.push_back(InnerSymPropertiesAttr::get(
+          annotations.getContext(),
+          StringAttr::get(annotation.getContext(), str), fieldID,
+          StringAttr::get(annotation.getContext(), "public")));
+      continue;
+    }
+
+    retval.push_back(opAttr);
+  }
+  InnerSymAttr ret;
+  if (!attrs.empty())
+    ret = InnerSymAttr::get(annotations.getContext(), attrs);
+  return {ret, retval};
+}
+
 ArrayAttr TypeLoweringVisitor::filterAnnotations(
     MLIRContext *ctxt, ArrayAttr annotations, FIRRTLType srcType,
     FlatBundleFieldEntry field, bool &needsSym, StringRef sym) {
@@ -584,9 +611,6 @@ bool TypeLoweringVisitor::lowerProducer(
   auto srcType = op->getResult(0).getType().cast<FIRRTLType>();
   SmallVector<FlatBundleFieldEntry, 8> fieldTypes;
 
-  if (!peelType(srcType, fieldTypes, aggregatePreservationMode))
-    return false;
-
   SmallVector<Value> lowered;
   // Loop over the leaf aggregates.
   SmallString<16> loweredName;
@@ -605,6 +629,27 @@ bool TypeLoweringVisitor::lowerProducer(
   auto baseNameLen = loweredName.size();
   auto baseSymNameLen = loweredSymName.size();
   auto oldAnno = op->getAttr("annotations").dyn_cast_or_null<ArrayAttr>();
+
+  if (!peelType(srcType, fieldTypes, aggregatePreservationMode)) {
+    // If the type is not aggregate, just return false.
+    if (!srcType.isa<FVectorType, BundleType>())
+      return false;
+
+    if (oldAnno) {
+      auto [innerSym, newAnnotation] = getFieldSymbols(oldAnno, loweredSymName);
+      if (innerSym && !op->hasAttr(cache.innerSymAttr)) {
+        op->setAttr(cache.innerSymAttr, innerSym);
+      }
+
+      // Update annotation.
+      op->setAttr("annotations",
+                  ArrayAttr::get(op->getContext(), newAnnotation));
+    }
+
+    // In aggregate preservation mode, add field sensitive symbols that are
+    // attached to subfields.
+    return false;
+  }
 
   for (auto field : fieldTypes) {
     if (!loweredName.empty()) {
@@ -746,8 +791,25 @@ bool TypeLoweringVisitor::lowerArg(FModuleLike module, size_t argIndex,
   // Flatten any bundle types.
   SmallVector<FlatBundleFieldEntry> fieldTypes;
   auto srcType = newArgs[argIndex].type.cast<FIRRTLType>();
-  if (!peelType(srcType, fieldTypes, getPreservatinoModeForModule(module)))
+  if (!peelType(srcType, fieldTypes, getPreservatinoModeForModule(module))) {
+    if (!srcType.isa<FVectorType, BundleType>())
+      return false;
+
+    auto oldAnno = newArgs[argIndex].annotations.getArrayAttr();
+    SmallString<16> loweredSymName(uniqueName());
+    if (!oldAnno.empty()) {
+      auto [innerSym, newAnnotation] = getFieldSymbols(oldAnno, loweredSymName);
+      if (innerSym && (!newArgs[argIndex].sym ||
+                       newArgs[argIndex].sym.getValue().empty())) {
+        newArgs[argIndex].subfieldSyms = innerSym;
+      }
+
+      // Update annotation.
+      newArgs[argIndex].annotations =
+          AnnotationSet(ArrayAttr::get(oldAnno.getContext(), newAnnotation));
+    }
     return false;
+  }
 
   for (const auto &field : llvm::enumerate(fieldTypes)) {
     auto newValue = addArg(module, 1 + argIndex + field.index(), argsRemoved,

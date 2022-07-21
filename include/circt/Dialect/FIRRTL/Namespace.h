@@ -58,8 +58,9 @@ struct ModuleNamespace : public Namespace {
 
   void addPorts(ArrayRef<PortInfo> ports) {
     for (auto port : ports)
-      if (port.sym)
+      if (port.sym) {
         nextIndex.insert({port.sym.getValue(), 0});
+      }
   }
 
   /// Populate the namespace with the body of a module-like operation.
