@@ -2,9 +2,9 @@
 
 // CHECK-LABEL: module large_use_in_procedural
 hw.module @large_use_in_procedural(%clock: i1, %a: i1) {
-  // CHECK: wire [[GEN_0:.*]];
-  // CHECK: wire [[GEN_1:long_concat]];
-  // CHECK: reg [[REG:.+]];
+  // CHECK-DAG: wire [[GEN_1:long_concat]];
+  // CHECK-DAG: wire [[GEN_0:.*]];
+  // CHECK-DAG: reg [[REG:.+]];
 
   // CHECK: assign [[GEN_1]] = a + a + a + a + a;
   // CHECK: always

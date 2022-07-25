@@ -50,10 +50,10 @@ module attributes {circt.loweringOptions = "disallowLocalVariables,spillWiresAtP
 
   // CHECK-LABEL:  hw.module @SpillTemporary
   hw.module @SpillTemporary(%a: i4, %b: i4) -> (c: i1) {
-    // CHECK-NEXT:  %0 = sv.wire
-    // CHECK-NEXT:  %1 = comb.add %a, %b
-    // CHECK-NEXT:  sv.assign %0, %1
-    // CHECK-NEXT:  %2 = sv.read_inout %0
+    // CHECK-NEXT:  %0 = comb.add %a, %b
+    // CHECK-NEXT:  %[[GEN:.+]] = sv.wire
+    // CHECK-NEXT:  sv.assign %1, %[[GEN:.+]]
+    // CHECK-NEXT:  %2 = sv.read_inout %1
     // CHECK-NEXT:  %3 = comb.extract %2 from 3
     // CHECK-NEXT:  hw.output %3
     %0 = comb.add %a, %b : i4
@@ -63,11 +63,11 @@ module attributes {circt.loweringOptions = "disallowLocalVariables,spillWiresAtP
 
   // CHECK-LABEL:  hw.module @SpillTemporaryInProceduralRegion
   hw.module @SpillTemporaryInProceduralRegion(%a: i4, %b: i4, %fd: i32) -> () {
-    // CHECK-NEXT: %0 = sv.wire
     // CHECK-NEXT: %r = sv.reg
-    // CHECK-NEXT: %1 = comb.add %a, %b
-    // CHECK-NEXT: sv.assign %0, %1
-    // CHECK-NEXT: %2 = sv.read_inout %0
+    // CHECK-NEXT: %[[VAL:.+]] = comb.add %a, %b
+    // CHECK-NEXT: %[[GEN:.+]] = sv.wire
+    // CHECK-NEXT: sv.assign %[[GEN]], %[[VAL]]
+    // CHECK-NEXT: %2 = sv.read_inout %[[GEN]]
     // CHECK-NEXT: %3 = comb.extract %2 from 3
     // CHECK-NEXT: sv.initial {
     // CHECK-NEXT:   sv.passign %r, %3
@@ -83,11 +83,11 @@ module attributes {circt.loweringOptions = "disallowLocalVariables,spillWiresAtP
 
   // CHECK-LABEL: @SpillTemporaryWireForMultipleUseExpression
   hw.module @SpillTemporaryWireForMultipleUseExpression(%a: i4, %b: i4) -> (c: i4, d: i4) {
-    // CHECK-NEXT: %0 = sv.wire
-    // CHECK-NEXT: %1 = comb.add %a, %b
-    // CHECK-NEXT: sv.assign %0, %1
-    // CHECK-NEXT: %2 = sv.read_inout %0
-    // CHECK-NEXT: %3 = sv.read_inout %0
+    // CHECK-NEXT: %[[VAL:.+]] = comb.add %a, %b
+    // CHECK-NEXT: %[[GEN:.+]] = sv.wire
+    // CHECK-NEXT: sv.assign %[[GEN]], %[[VAL]]
+    // CHECK-NEXT: %2 = sv.read_inout %[[GEN]]
+    // CHECK-NEXT: %3 = sv.read_inout %[[GEN]]
     // CHECK-NEXT: hw.output %3, %2
     %0 = comb.add %a, %b : i4
     hw.output %0, %0 : i4, i4

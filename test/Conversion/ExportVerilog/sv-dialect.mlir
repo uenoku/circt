@@ -1453,7 +1453,7 @@ hw.module @ReuseExistingInOut(%clock: i1, %a: i1) -> (out1: i1) {
 // CHECK-DAG: wire [[GEN1:.+]];
 // CHECK-DAG: assign [[GEN0]] = {{.+}} | {{.+}} | {{.+}}
 // CHECK-DAG: assign [[GEN1]] = {{.+}} | {{.+}} | {{.+}}
-// CHECK: assign out = {[[GEN1]], [[GEN0]]}
+// CHECK: assign out = {[[GEN0]], [[GEN1]]}
 hw.module @Verilator3405(
   %0: i1, %1: i1, %2: i1, %3: i1, %4: i1, %5: i1, %6: i1, %7: i1, %8: i1,
   %9: i1, %10: i1, %11: i1, %12: i1, %13: i1, %14: i1, %15: i1, %16: i1,

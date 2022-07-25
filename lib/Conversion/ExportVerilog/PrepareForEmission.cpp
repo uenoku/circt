@@ -251,14 +251,34 @@ static Value lowerFullyAssociativeOp(Operation &op, OperandRange operands,
   return newOp->getResult(0);
 }
 
+// Find the firt operation that is neither logic ops nor expressions assigned to
+// logic ops in order to put "automatic logic" to the head of statetemens.
+static std::pair<Block *, Block::iterator>
+findLogicOpInsertionPoint(Operation *op) {
+  // We have to skip `ifdef.procedural` because it is a just macro.
+  if (isa<IfDefProceduralOp>(op->getParentOp()))
+    return findLogicOpInsertionPoint(op->getParentOp());
+  return {op->getBlock(),
+          std::find_if(op->getBlock()->begin(), op->getIterator(),
+                       [](Operation &it) { return !isa<LogicOp>(&it); })};
+}
+
 /// When we find that an operation is used before it is defined in a graph
 /// region, we emit an explicit wire to resolve the issue.
 static void lowerUsersToTemporaryWire(Operation &op,
-                                      bool isProceduralRegion = false) {
+                                      bool isProceduralRegion = false,
+                                      bool shouldEmitBlockBegin = false) {
   Block *block = op.getBlock();
   auto builder = ImplicitLocOpBuilder::atBlockBegin(op.getLoc(), block);
 
   auto createWireForResult = [&](Value result, StringAttr name) {
+    // For constant, use local param op.
+    if (auto constantOp = result.getDefiningOp<ConstantOp>()) {
+      auto localparam = builder.create<LocalParamOp>(
+          constantOp.getType(), constantOp.getValueAttr(), "");
+      result.replaceAllUsesWith(localparam);
+      return;
+    }
     Value newWire;
     // If the op is in a procedural region, use logic op.
     if (isProceduralRegion)
@@ -272,12 +292,19 @@ static void lowerUsersToTemporaryWire(Operation &op,
       use.set(newWireRead);
       newWireRead->moveBefore(use.getOwner());
     }
+
     Operation *connect;
     if (isProceduralRegion)
       connect = builder.create<BPAssignOp>(newWire, result);
     else
       connect = builder.create<AssignOp>(newWire, result);
     connect->moveAfter(&op);
+
+    if (isProceduralRegion) {
+      auto [block, it] = findLogicOpInsertionPoint(&op);
+      newWire.getDefiningOp()->moveBefore(block, it);
+    } else if (!shouldEmitBlockBegin)
+      newWire.getDefiningOp()->moveAfter(&op);
   };
 
   // If the op has a single result and a namehint, give the name to its
@@ -498,6 +525,13 @@ void ExportVerilog::prepareHWModule(Block &block,
       lowerBoundInstance(instance);
     }
 
+    if (isProceduralRegion) {
+      if (auto logic = dyn_cast<LogicOp>(op)) {
+        auto [block, it] = findLogicOpInsertionPoint(logic);
+        op.moveBefore(block, it);
+      }
+    }
+
     // Force any expression used in the event control of an always process to be
     // a trivial wire, if the corresponding option is set.
     if (!options.allowExprInEventControl) {
@@ -687,7 +721,7 @@ void ExportVerilog::prepareHWModule(Block &block,
       }
 
       // Otherwise, we need to lower this to a wire to resolve this.
-      lowerUsersToTemporaryWire(op);
+      lowerUsersToTemporaryWire(op, false, true);
     }
   }
 }
