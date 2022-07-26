@@ -17,16 +17,18 @@ hw.module @M1<param1: i42>(%clock : i1, %cond : i1, %val : i8) {
   // CHECK: localparam [41:0]{{ *}} param_y = param1;
   %param_y = sv.localparam : i42 { value = #hw.param.decl.ref<"param1">: i42 }
 
-  // CHECK:       logic{{ *}} [7:0]{{ *}} logic_op;
+  // OLD:         logic{{ *}} [7:0]{{ *}} logic_op;
+  // NEW:         logic{{ *}} [7:0]{{ *}} logic_op = val;
   // CHECK-NEXT:  struct packed {logic b; } logic_op_struct;
-  // CHECK: assign logic_op = val;
+  // OLD: assign logic_op = val;
   %logic_op = sv.logic : !hw.inout<i8>
   %logic_op_struct = sv.logic : !hw.inout<struct<b: i1>>
   sv.assign %logic_op, %val: i8
 
   // CHECK:      always @(posedge clock) begin
   sv.always posedge %clock {
-    // CHECK-NEXT: automatic logic [7:0]                     logic_op_procedural;
+    // OLD-NEXT: automatic logic [7:0]                     logic_op_procedural;
+    // NEW-NEXT: automatic logic [7:0]                     logic_op_procedural = val;
     // CHECK-NEXT: automatic       struct packed {logic b; } logic_op_struct_procedural
 
     // CHECK: force forceWire = cond;
@@ -34,7 +36,7 @@ hw.module @M1<param1: i42>(%clock : i1, %cond : i1, %val : i8) {
     %logic_op_procedural = sv.logic : !hw.inout<i8>
     %logic_op_struct_procedural = sv.logic : !hw.inout<struct<b: i1>>
 
-    // CHECK-NEXT: logic_op_procedural = val;
+    // OLD-NEXT: logic_op_procedural = val;
     sv.bpassign %logic_op_procedural, %val: i8
   // CHECK-NEXT:   `ifndef SYNTHESIS
     sv.ifdef.procedural "SYNTHESIS" {
@@ -752,16 +754,13 @@ hw.module @issue720(%clock: i1, %arg1: i1, %arg2: i1, %arg3: i1) {
 
   // CHECK: always @(posedge clock) begin
   sv.always posedge %clock  {
-    // OLD:   automatic logic _GEN = arg1 & arg2;
-    // NEW:   automatic logic _GEN;
+    // CHECK:   automatic logic _GEN = arg1 & arg2;
 
     // CHECK:   if (arg1)
     // CHECK:     $fatal;
     sv.if %arg1  {
       sv.fatal 1
     }
-
-    // NEW: _GEN = arg1 & arg2;
 
     // CHECK:   if (_GEN)
     // CHECK:     $fatal;
@@ -1084,26 +1083,18 @@ hw.module @DontDuplicateSideEffectingVerbatim() {
   %b = sv.reg sym @regSym : !hw.inout<i42>
 
   sv.initial {
-    // OLD: automatic logic [41:0] _SIDEEFFECT = SIDEEFFECT;
-    // OLD-NEXT: automatic logic [41:0] _GEN = b;
-    // NEW: automatic logic [41:0] _GEN;
-    // NEW-NEXT: automatic logic [41:0] _GEN_0;
-    // NEW-NEXT: _GEN = SIDEEFFECT;
-    // NEW-NEXT: _GEN_0 = b;
+    // CHECK: automatic logic [41:0] _SIDEEFFECT = SIDEEFFECT;
+    // CHECK-NEXT: automatic logic [41:0] _GEN = b;
     %tmp = sv.verbatim.expr.se "SIDEEFFECT" : () -> i42
     %verb_tmp = sv.verbatim.expr.se "{{0}}" : () -> i42 {symbols = [#hw.innerNameRef<@DontDuplicateSideEffectingVerbatim::@regSym>]}
-    // OLD: a = _SIDEEFFECT;
-    // NEW: a = _GEN;
+    // CHECK: a = _SIDEEFFECT;
     sv.bpassign %a, %tmp : i42
-    // OLD: a = _SIDEEFFECT;
-    // NEW: a = _GEN;
+    // CHECK: a = _SIDEEFFECT;
     sv.bpassign %a, %tmp : i42
 
-    // OLD: a = _GEN;
-    // NEW: a = _GEN_0;
+    // CHECK: a = _GEN;
     sv.bpassign %a, %verb_tmp : i42
-    // OLD: a = _GEN;
-    // NEW: a = _GEN_0;
+    // CHECK: a = _GEN;
     sv.bpassign %a, %verb_tmp : i42
     %tmp2 = sv.verbatim.expr "NO_EFFECT_" : () -> i42
     // CHECK: a = NO_EFFECT_;
@@ -1154,19 +1145,18 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
   %regValue = sv.reg : !hw.inout<i42>
   // CHECK: initial begin
   sv.initial {
-    // OLD: automatic logic [63:0] _THING = `THING;
-    // OLD: automatic logic [41:0] _GEN = 42'(a + a);
-    // OLD: automatic logic [41:0] _GEN_0 = 42'(_GEN + b);
-    // OLD: automatic logic [41:0] _GEN_1;
-    // NEW: automatic logic [63:0] _GEN;
-    // NEW: automatic logic [41:0] _GEN_0;
-    // NEW: automatic logic [41:0] _GEN_1;
-    // NEW: automatic logic [41:0] _GEN_2;
+    // CHECK-DAG: automatic logic [63:0] _THING = `THING;
+    // CHECK-DAG: automatic logic [41:0] [[GEN_0:.+]] = 42'(a + a);
+    // CHECK-DAG: automatic logic [41:0] [[GEN_1:.+]] = 42'([[GEN_0]] + b);
+    // CHECK-DAG: automatic logic [41:0] [[GEN_2:.+]];
+    //  automatic logic [41:0] _GEN;
+    //  automatic logic [63:0] _THING = `THING;
+    //  automatic logic [41:0] _GEN_0 = 42'(a + a);
+    //  automatic logic [41:0] _GEN_1 = 42'(_GEN_0 + b);
+
     %thing = sv.verbatim.expr "`THING" : () -> i64
 
-    // OLD: regValue = _THING[44:3];
-    // NEW: _GEN = `THING;
-    // regValue = _GEN[44:3];
+    // CHECK: regValue = _THING[44:3];
     %v = comb.extract %thing from 3 : (i64) -> i42
     sv.bpassign %regValue, %v : i42
 
@@ -1174,23 +1164,21 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
     // inline because it just references ports.
     %tmp = comb.add %a, %a : i42
     sv.bpassign %regValue, %tmp : i42
-    // OLD: regValue = _GEN;
-    // NEW: _GEN = `THING;
-    // NEW: regValue = _GEN;
+    // CHECK: regValue = [[GEN_0]];
 
     // tmp2 is as well.  This can be emitted inline because it just references
     // a port and an already-emitted-inline variable 'a'.
     %tmp2 = comb.add %tmp, %b : i42
     sv.bpassign %regValue, %tmp2 : i42
-    // CHECK: regValue = _GEN_0;
+    // CHECK: regValue = [[GEN_1]];
 
     %tmp3 = comb.add %tmp2, %b : i42
     sv.bpassign %regValue, %tmp3 : i42
-    // CHECK: regValue = 42'(_GEN_0 + b);
+    // CHECK: regValue = 42'([[GEN_2]] + b);
 
     // CHECK: `ifdef FOO
     sv.ifdef.procedural "FOO" {
-      // CHECK: _GEN_1 = 42'(a + a);
+      // CHECK: [[GEN_2]] = 42'(a + a);
       // tmp is multi-use so it needs a temporary, but cannot be emitted inline
       // because it is in an ifdef.
       %tmp4 = comb.add %a, %a : i42

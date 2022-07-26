@@ -2797,6 +2797,60 @@ void StmtEmitter::emitStatementExpression(Operation *op) {
   emitLocationInfoAndNewLine(emittedExprs);
 }
 
+/// Given an operation corresponding to a VerilogExpression, determine whether
+/// it is safe to emit inline into a 'localparam' or 'automatic logic' varaible
+/// initializer in a procedural region.
+///
+/// We can't emit exprs inline when they refer to something else that can't be
+/// emitted inline, when they're in a general #ifdef region,
+static bool
+isExpressionEmittedInlineIntoProceduralDeclaration(Operation *op,
+                                                   StmtEmitter &stmtEmitter) {
+  if (!isVerilogExpression(op))
+    return false;
+
+  // If the expression exists in an #ifdef region, then bail.  Emitting it
+  // inline would cause it to be executed unconditionally, because the
+  // declarations are outside the #ifdef.
+  if (isa<IfDefProceduralOp>(op->getParentOp()))
+    return false;
+
+  // This expression tree can be emitted into the initializer if all leaf
+  // references are safe to refer to from here.  They are only safe if they are
+  // defined in an enclosing scope (guaranteed to already be live by now) or if
+  // they are defined in this block and already emitted to an inline automatic
+  // logic variable.
+  SmallVector<Value, 8> exprsToScan(op->getOperands());
+
+  // This loop is guaranteed to terminate because we're only scanning up
+  // single-use expressions and other things that 'isExpressionEmittedInline'
+  // returns success for.  Cycles won't get in here.
+  while (!exprsToScan.empty()) {
+    Operation *expr = exprsToScan.pop_back_val().getDefiningOp();
+    if (!expr)
+      continue; // Ports are always safe to reference.
+
+    // If this is an internal node in the expression tree, process its operands.
+    if (isExpressionEmittedInline(expr)) {
+      exprsToScan.append(expr->getOperands().begin(),
+                         expr->getOperands().end());
+      continue;
+    }
+
+    // Otherwise, this isn't an inlinable expression.  If it is defined outside
+    // this block, then it is live-in.
+    if (expr->getBlock() != op->getBlock())
+      continue;
+
+    // Otherwise, if it is defined in this block then it is only ok to reference
+    // if it has already been emitted into an automatic logic.
+    if (!stmtEmitter.emitter.expressionsEmittedIntoDecl.count(expr))
+      return false;
+  }
+
+  return true;
+}
+
 LogicalResult StmtEmitter::emitDecl(Operation *op) {
   // TODO: Once ExportVerilog simplification finished, remove this condition.
   if (!state.options.spillWiresAtPrepare)
@@ -2855,26 +2909,43 @@ LogicalResult StmtEmitter::emitDecl(Operation *op) {
                        if (hasSVAttributes(user))
                          return false;
 
-                       // Wire
-                       if (auto assign = dyn_cast<AssignOp>(user)) {
-                         singleAssign = assign;
-                         return assign == op->getNextNode();
-                       }
-
-                       // Logic
-                       if (auto bpassign = dyn_cast<BPAssignOp>(user)) {
-                         singleAssign = bpassign;
-                         return bpassign == op->getNextNode();
+                       if (isa<AssignOp, BPAssignOp>(user)) {
+                         if (!singleAssign)
+                           singleAssign = user;
+                         return singleAssign == user;
                        }
 
                        return isa<ReadInOutOp>(user);
                      }) &&
         singleAssign) {
-      os << " = ";
-      assert(singleAssign);
-      emitExpression(singleAssign->getOperand(1), opsForLocation,
-                     ForceEmitMultiUse);
-      emitter.assignsInlined.insert(singleAssign);
+
+      if (isa<LogicOp>(op) && singleAssign->getBlock() == op->getBlock() &&
+          llvm::all_of(op->getUsers(),
+                       [&](Operation *user) {
+                         if (user == singleAssign)
+                           return true;
+                         return user->getBlock() == singleAssign->getBlock() &&
+                                singleAssign->isBeforeInBlock(user);
+                       }) &&
+          (!singleAssign->getOperand(1).getDefiningOp() ||
+           isExpressionEmittedInlineIntoProceduralDeclaration(
+               singleAssign->getOperand(1).getDefiningOp(), *this))) {
+        os << " = ";
+        emitExpression(singleAssign->getOperand(1), opsForLocation,
+                       ForceEmitMultiUse);
+
+        // Remember that we emitted this inline into the declaration so we don't
+        // emit it and we know the value is available for other declaration
+        // expressions who might want to reference it.
+        emitter.expressionsEmittedIntoDecl.insert(op);
+        emitter.assignsInlined.insert(singleAssign);
+      } else if (isa<WireOp>(op) && singleAssign == op->getNextNode()) {
+        os << " = ";
+        assert(singleAssign);
+        emitExpression(singleAssign->getOperand(1), opsForLocation,
+                       ForceEmitMultiUse);
+        emitter.assignsInlined.insert(singleAssign);
+      }
     }
   }
 
@@ -3965,60 +4036,6 @@ void StmtEmitter::emitStatement(Operation *op) {
 
   emitOpError(op, "cannot emit this operation to Verilog");
   indent() << "unknown MLIR operation " << op->getName().getStringRef() << "\n";
-}
-
-/// Given an operation corresponding to a VerilogExpression, determine whether
-/// it is safe to emit inline into a 'localparam' or 'automatic logic' varaible
-/// initializer in a procedural region.
-///
-/// We can't emit exprs inline when they refer to something else that can't be
-/// emitted inline, when they're in a general #ifdef region,
-static bool
-isExpressionEmittedInlineIntoProceduralDeclaration(Operation *op,
-                                                   StmtEmitter &stmtEmitter) {
-  if (!isVerilogExpression(op))
-    return false;
-
-  // If the expression exists in an #ifdef region, then bail.  Emitting it
-  // inline would cause it to be executed unconditionally, because the
-  // declarations are outside the #ifdef.
-  if (isa<IfDefProceduralOp>(op->getParentOp()))
-    return false;
-
-  // This expression tree can be emitted into the initializer if all leaf
-  // references are safe to refer to from here.  They are only safe if they are
-  // defined in an enclosing scope (guaranteed to already be live by now) or if
-  // they are defined in this block and already emitted to an inline automatic
-  // logic variable.
-  SmallVector<Value, 8> exprsToScan(op->getOperands());
-
-  // This loop is guaranteed to terminate because we're only scanning up
-  // single-use expressions and other things that 'isExpressionEmittedInline'
-  // returns success for.  Cycles won't get in here.
-  while (!exprsToScan.empty()) {
-    Operation *expr = exprsToScan.pop_back_val().getDefiningOp();
-    if (!expr)
-      continue; // Ports are always safe to reference.
-
-    // If this is an internal node in the expression tree, process its operands.
-    if (isExpressionEmittedInline(expr)) {
-      exprsToScan.append(expr->getOperands().begin(),
-                         expr->getOperands().end());
-      continue;
-    }
-
-    // Otherwise, this isn't an inlinable expression.  If it is defined outside
-    // this block, then it is live-in.
-    if (expr->getBlock() != op->getBlock())
-      continue;
-
-    // Otherwise, if it is defined in this block then it is only ok to reference
-    // if it has already been emitted into an automatic logic.
-    if (!stmtEmitter.emitter.expressionsEmittedIntoDecl.count(expr))
-      return false;
-  }
-
-  return true;
 }
 
 /// Emit the declaration for the temporary operation. If the operation is not
