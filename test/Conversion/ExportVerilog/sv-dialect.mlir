@@ -1,4 +1,5 @@
-// RUN: circt-opt %s -export-verilog -verify-diagnostics --lowering-options=exprInEventControl,explicitBitcast,maximumNumberOfTermsInConcat=10 | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s -export-verilog -verify-diagnostics --lowering-options=exprInEventControl,explicitBitcast,maximumNumberOfTermsInConcat=10 | FileCheck %s --strict-whitespace --check-prefixes=CHECK,OLD
+// RUN: circt-opt %s -export-verilog -verify-diagnostics --lowering-options=exprInEventControl,explicitBitcast,maximumNumberOfTermsInConcat=10,spillWiresAtPrepare | FileCheck %s --check-prefixes=CHECK,NEW
 
 // CHECK-LABEL: module M1
 // CHECK-NEXT:    #(parameter [41:0] param1) (
@@ -27,8 +28,8 @@ hw.module @M1<param1: i42>(%clock : i1, %cond : i1, %val : i8) {
   sv.always posedge %clock {
     // CHECK-NEXT: automatic logic [7:0]                     logic_op_procedural;
     // CHECK-NEXT: automatic       struct packed {logic b; } logic_op_struct_procedural
-    // CHECK-EMPTY:
-    // CHECK-NEXT: force forceWire = cond;
+
+    // CHECK: force forceWire = cond;
     sv.force %forceWire, %cond : i1
     %logic_op_procedural = sv.logic : !hw.inout<i8>
     %logic_op_struct_procedural = sv.logic : !hw.inout<struct<b: i1>>
@@ -289,8 +290,7 @@ hw.module @M1<param1: i42>(%clock : i1, %cond : i1, %val : i8) {
   sv.initial {
     sv.verbatim "`define THING 1"
     // CHECK-NEXT: automatic logic _GEN;
-    // CHECK-EMPTY:
-    // CHECK-NEXT: `define THING
+    // CHECK:     `define THING
     %thing = sv.verbatim.expr "`THING" : () -> i42
     // CHECK-NEXT: wire42 = `THING;
     sv.bpassign %wire42, %thing : i42
@@ -486,8 +486,7 @@ hw.module @reg_0(%in4: i4, %in8: i8) -> (a: i8, b: i8) {
   // CHECK-NEXT: reg [41:0][7:0] myRegArray1;
   %myRegArray1 = sv.reg {sv.attributes = #sv.attributes<[#sv.attribute<"dont_merge">, #sv.attribute<"dont_retime"="true">]>} : !hw.inout<array<42 x i8>>
 
-  // CHECK-EMPTY:
-  // CHECK-NEXT: /* assign_attr */
+  // CHECK:      /* assign_attr */
   // CHECK-NEXT: assign myReg = in8;
   sv.assign %myReg, %in8 {sv.attributes = #sv.attributes<[#sv.attribute<"assign_attr">], emitAsComments>} : i8
 
@@ -510,8 +509,7 @@ hw.module @reg_1(%in4: i4, %in8: i8) -> (a : i3, b : i5) {
   // CHECK: reg [17:0] myReg2
   %myReg2 = sv.reg : !hw.inout<i18>
 
-  // CHECK-EMPTY:
-  // CHECK-NEXT: assign myReg2[4'h7 +: 8] = in8;
+  // CHECK:      assign myReg2[4'h7 +: 8] = in8;
   // CHECK-NEXT: assign myReg2[4'h7 -: 8] = in8;
 
   %c2_i3 = hw.constant 7 : i4
@@ -531,8 +529,7 @@ hw.module @reg_1(%in4: i4, %in8: i8) -> (a : i3, b : i5) {
 // CHECK-LABEL: module struct_field_inout1(
 hw.module @struct_field_inout1(%a : !hw.inout<struct<b: i1>>) {
   // CHECK: inout struct packed {logic b; } a);
-  // CHECK-EMPTY:
-  // CHECK-NEXT: assign a.b = 1'h1;
+  // CHECK: assign a.b = 1'h1;
   %true = hw.constant true
   %0 = sv.struct_field_inout %a["b"] : !hw.inout<struct<b: i1>>
   sv.assign %0, %true : i1
@@ -541,8 +538,7 @@ hw.module @struct_field_inout1(%a : !hw.inout<struct<b: i1>>) {
 // CHECK-LABEL: module struct_field_inout2(
 hw.module @struct_field_inout2(%a: !hw.inout<struct<b: !hw.struct<c: i1>>>) {
   // CHECK: inout struct packed {struct packed {logic c; } b; } a);
-  // CHECK-EMPTY:
-  // CHECK-NEXT: assign a.b.c = 1'h1;
+  // CHECK: assign a.b.c = 1'h1;
   %true = hw.constant true
   %0 = sv.struct_field_inout %a["b"] : !hw.inout<struct<b: !hw.struct<c: i1>>>
   %1 = sv.struct_field_inout %0["c"] : !hw.inout<struct<c: i1>>
@@ -603,7 +599,8 @@ hw.module @exprInlineTestIssue439(%clk: i1) {
   sv.always posedge %clk {
     %c = hw.constant 0 : i32
 
-    // CHECK: localparam [31:0] _GEN = 32'h0;
+    // OLD: localparam [31:0] _GEN = 32'h0;
+    // NEW: localparam [31:0] _GEN = 0;
     %e = comb.extract %c from 0 : (i32) -> i16
     %f = comb.add %e, %e : i16
     sv.fwrite %fd, "%d"(%f) : i16
@@ -755,13 +752,16 @@ hw.module @issue720(%clock: i1, %arg1: i1, %arg2: i1, %arg3: i1) {
 
   // CHECK: always @(posedge clock) begin
   sv.always posedge %clock  {
-    // CHECK:   automatic logic _GEN = arg1 & arg2;
+    // OLD:   automatic logic _GEN = arg1 & arg2;
+    // NEW:   automatic logic _GEN;
 
     // CHECK:   if (arg1)
     // CHECK:     $fatal;
     sv.if %arg1  {
       sv.fatal 1
     }
+
+    // NEW: _GEN = arg1 & arg2;
 
     // CHECK:   if (_GEN)
     // CHECK:     $fatal;
@@ -945,7 +945,8 @@ hw.module @ConstResetValueMustBeInlined(%clock: i1, %reset: i1, %d: i42) -> (q: 
 
 // CHECK-LABEL: module OutOfLineConstantsInAlwaysSensitivity
 hw.module @OutOfLineConstantsInAlwaysSensitivity() {
-  // CHECK-NEXT: localparam _GEN = 1'h0;
+  // OLD-NEXT: localparam _GEN = 1'h0;
+  // NEW-NEXT: localparam _GEN = 0;
   // CHECK-NEXT: always_ff @(posedge _GEN)
   %clock = hw.constant 0 : i1
   sv.alwaysff(posedge %clock) {}
@@ -1083,18 +1084,26 @@ hw.module @DontDuplicateSideEffectingVerbatim() {
   %b = sv.reg sym @regSym : !hw.inout<i42>
 
   sv.initial {
-    // CHECK: automatic logic [41:0] _SIDEEFFECT = SIDEEFFECT;
+    // OLD: automatic logic [41:0] _SIDEEFFECT = SIDEEFFECT;
+    // OLD-NEXT: automatic logic [41:0] _GEN = b;
+    // NEW: automatic logic [41:0] _GEN;
+    // NEW-NEXT: automatic logic [41:0] _GEN_0;
+    // NEW-NEXT: _GEN = SIDEEFFECT;
+    // NEW-NEXT: _GEN_0 = b;
     %tmp = sv.verbatim.expr.se "SIDEEFFECT" : () -> i42
-    // CHECK: automatic logic [41:0] _GEN = b;
     %verb_tmp = sv.verbatim.expr.se "{{0}}" : () -> i42 {symbols = [#hw.innerNameRef<@DontDuplicateSideEffectingVerbatim::@regSym>]}
-    // CHECK: a = _SIDEEFFECT;
+    // OLD: a = _SIDEEFFECT;
+    // NEW: a = _GEN;
     sv.bpassign %a, %tmp : i42
-    // CHECK: a = _SIDEEFFECT;
+    // OLD: a = _SIDEEFFECT;
+    // NEW: a = _GEN;
     sv.bpassign %a, %tmp : i42
 
-    // CHECK: a = _GEN;
+    // OLD: a = _GEN;
+    // NEW: a = _GEN_0;
     sv.bpassign %a, %verb_tmp : i42
-    // CHECK: a = _GEN;
+    // OLD: a = _GEN;
+    // NEW: a = _GEN_0;
     sv.bpassign %a, %verb_tmp : i42
     %tmp2 = sv.verbatim.expr "NO_EFFECT_" : () -> i42
     // CHECK: a = NO_EFFECT_;
@@ -1145,13 +1154,19 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
   %regValue = sv.reg : !hw.inout<i42>
   // CHECK: initial begin
   sv.initial {
-    // CHECK: automatic logic [63:0] _THING = `THING;
-    // CHECK: automatic logic [41:0] _GEN = 42'(a + a);
-    // CHECK: automatic logic [41:0] _GEN_0 = 42'(_GEN + b);
-    // CHECK: automatic logic [41:0] _GEN_1;
+    // OLD: automatic logic [63:0] _THING = `THING;
+    // OLD: automatic logic [41:0] _GEN = 42'(a + a);
+    // OLD: automatic logic [41:0] _GEN_0 = 42'(_GEN + b);
+    // OLD: automatic logic [41:0] _GEN_1;
+    // NEW: automatic logic [63:0] _GEN;
+    // NEW: automatic logic [41:0] _GEN_0;
+    // NEW: automatic logic [41:0] _GEN_1;
+    // NEW: automatic logic [41:0] _GEN_2;
     %thing = sv.verbatim.expr "`THING" : () -> i64
 
-    // CHECK: regValue = _THING[44:3];
+    // OLD: regValue = _THING[44:3];
+    // NEW: _GEN = `THING;
+    // regValue = _GEN[44:3];
     %v = comb.extract %thing from 3 : (i64) -> i42
     sv.bpassign %regValue, %v : i42
 
@@ -1159,7 +1174,9 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
     // inline because it just references ports.
     %tmp = comb.add %a, %a : i42
     sv.bpassign %regValue, %tmp : i42
-    // CHECK: regValue = _GEN;
+    // OLD: regValue = _GEN;
+    // NEW: _GEN = `THING;
+    // NEW: regValue = _GEN;
 
     // tmp2 is as well.  This can be emitted inline because it just references
     // a port and an already-emitted-inline variable 'a'.
@@ -1524,7 +1541,7 @@ sv.bind #hw.innerNameRef<@NastyPortParent::@foo>
 // CHECK-NEXT:  );
 
 // CHECK-LABEL:  hw.module @issue595
-// CHECK-NEXT:    %0 = sv.wire  {hw.verilogName = "_GEN"} : !hw.inout<i32>
+// CHECK:     sv.wire  {hw.verilogName = "_GEN"} : !hw.inout<i32>
 
 // CHECK-LABEL: hw.module @extInst2
 // CHECK-SAME: (%signed: i1 {hw.verilogName = "signed_0"}

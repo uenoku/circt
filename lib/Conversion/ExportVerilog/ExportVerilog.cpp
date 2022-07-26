@@ -2877,7 +2877,6 @@ LogicalResult StmtEmitter::emitDecl(Operation *op) {
         singleAssign) {
       os << " = ";
       assert(singleAssign);
-      singleAssign->dump();
       emitExpression(singleAssign->getOperand(1), opsForLocation,
                      ForceEmitMultiUse);
       emitter.assignsInlined.insert(singleAssign);
