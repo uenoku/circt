@@ -310,10 +310,7 @@ static void lowerUsersToTemporaryWire(Operation &op,
   // If the op has a single result and a namehint, give the name to its
   // temporary wire.
   if (op.getNumResults() == 1) {
-    auto namehint = op.getAttrOfType<StringAttr>("sv.namehint");
-    // Remove a namehint from the op because the name is moved to the wire.
-    if (namehint)
-      op.removeAttr("sv.namehint");
+    auto namehint = inferStructuralNameForTemporary(op.getResult(0));
     createWireForResult(op.getResult(0), namehint);
     return;
   }
