@@ -1174,20 +1174,20 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
 
     %tmp3 = comb.add %tmp2, %b : i42
     sv.bpassign %regValue, %tmp3 : i42
-    // CHECK: regValue = 42'([[GEN_2]] + b);
+    // CHECK: regValue = 42'([[GEN_1]] + b);
 
     // CHECK: `ifdef FOO
     sv.ifdef.procedural "FOO" {
-      // CHECK: [[GEN_2]] = 42'(a + a);
+      // NEW: [[GEN_2]] = 42'(a + a);
       // tmp is multi-use so it needs a temporary, but cannot be emitted inline
       // because it is in an ifdef.
       %tmp4 = comb.add %a, %a : i42
       sv.bpassign %regValue, %tmp4 : i42
-      // CHECK: regValue = _GEN_1;
+      // CHECK: regValue = [[GEN_2]];
 
       %tmp5 = comb.add %tmp4, %b : i42
       sv.bpassign %regValue, %tmp5 : i42
-      // CHECK: regValue = 42'(_GEN_1 + b);
+      // CHECK: regValue = 42'([[GEN_2]] + b);
     }
   }
 
