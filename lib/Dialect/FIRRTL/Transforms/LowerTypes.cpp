@@ -388,11 +388,9 @@ private:
       llvm::function_ref<Operation *(const FlatBundleFieldEntry &, ArrayAttr)>
           clone);
   /// Copy annotations from \p annotations to \p loweredAttrs, except
-  /// annotations with "target" key, that do not match the field suffix. Also if
-  /// the target contains a DontTouch, remove it and set the flag.
+  /// annotations with "target" key, that do not match the field suffix.
   ArrayAttr filterAnnotations(MLIRContext *ctxt, ArrayAttr annotations,
-                              FIRRTLType srcType, FlatBundleFieldEntry field,
-                              StringRef sym);
+                              FIRRTLType srcType, FlatBundleFieldEntry field);
 
   PreserveAggregate::PreserveMode
   getPreservatinoModeForModule(FModuleLike moduleLike);
@@ -489,8 +487,7 @@ void TypeLoweringVisitor::lowerBlock(Block *block) {
 ArrayAttr TypeLoweringVisitor::filterAnnotations(MLIRContext *ctxt,
                                                  ArrayAttr annotations,
                                                  FIRRTLType srcType,
-                                                 FlatBundleFieldEntry field,
-                                                 StringRef sym) {
+                                                 FlatBundleFieldEntry field) {
   SmallVector<Attribute> retval;
   if (!annotations || annotations.empty())
     return ArrayAttr::get(ctxt, retval);
@@ -589,7 +586,7 @@ bool TypeLoweringVisitor::lowerProducer(
     // For all annotations on the parent op, filter them based on the target
     // attribute.
     ArrayAttr loweredAttrs =
-        filterAnnotations(context, oldAnno, srcType, field, loweredSymName);
+        filterAnnotations(context, oldAnno, srcType, field);
     auto *newOp = clone(field, loweredAttrs);
 
     // Carry over the name, if present.
@@ -648,29 +645,28 @@ TypeLoweringVisitor::addArg(Operation *module, unsigned insertPt,
   // Save the name attribute for the new argument.
   auto name = builder->getStringAttr(oldArg.name.getValue() + field.suffix);
 
-  SmallString<16> symtmp;
-  StringRef sym;
   bool oldArgHadSym = oldArg.sym && !oldArg.sym.getValue().empty();
-  if (oldArgHadSym) {
-    symtmp = (oldArg.sym.getValue() + field.suffix).str();
-    sym = symtmp;
-  } else
-    sym = name.getValue();
-
-  // Populate the new arg attributes.
-  auto newAnnotations = filterAnnotations(
-      context, oldArg.annotations.getArrayAttr(), srcType, field, sym);
-  // Flip the direction if the field is an output.
-  auto direction = (Direction)((unsigned)oldArg.direction ^ field.isOutput);
-
-  StringAttr newSym = {};
   if (oldArgHadSym) {
     module->emitError("LowerTypes cannot lower symbols on aggregate values");
     encounteredError = true;
   }
-  return std::make_pair(newValue,
-                        PortInfo{name, field.type, direction, newSym,
-                                 oldArg.loc, AnnotationSet(newAnnotations)});
+
+  // Populate the new arg attributes.
+  auto newAnnotations = filterAnnotations(
+      context, oldArg.annotations.getArrayAttr(), srcType, field);
+  // Flip the direction if the field is an output.
+  auto direction = (Direction)((unsigned)oldArg.direction ^ field.isOutput);
+
+  if (oldArgHadSym) {
+    module->emitError("LowerTypes cannot lower symbols on aggregate values");
+    encounteredError = true;
+  }
+  return std::make_pair(newValue, PortInfo{name,
+                                           field.type,
+                                           direction,
+                                           {},
+                                           oldArg.loc,
+                                           AnnotationSet(newAnnotations)});
 }
 
 // Lower arguments with bundle type by flattening them.
@@ -1164,7 +1160,7 @@ bool TypeLoweringVisitor::visitDecl(InstanceOp op) {
         resultTypes.push_back(field.type);
         auto annos = filterAnnotations(
             context, oldPortAnno[i].dyn_cast_or_null<ArrayAttr>(), srcType,
-            field, "");
+            field);
         newPortAnno.push_back(annos);
       }
     }

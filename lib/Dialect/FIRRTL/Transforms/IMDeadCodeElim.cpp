@@ -293,8 +293,7 @@ void IMDeadCodeElimPass::rewriteModuleBody(FModuleOp module) {
     }
 
     // Delete dead wires, regs and nodes.
-    if (isWireOrRegOrNode(&op) && !hasDontTouch(&op) &&
-        isAssumedDead(op.getResult(0))) {
+    if (isWireOrRegOrNode(&op) && isAssumedDead(op.getResult(0))) {
       LLVM_DEBUG(llvm::dbgs() << "DEAD: " << op << "\n";);
       assert(op.use_empty() && "users should be already removed");
       op.erase();
