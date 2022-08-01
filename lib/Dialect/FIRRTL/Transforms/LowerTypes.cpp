@@ -42,7 +42,6 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/APSInt.h"
-#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Parallel.h"
 
@@ -377,10 +376,6 @@ struct TypeLoweringVisitor : public FIRRTLVisitor<TypeLoweringVisitor, bool> {
   bool visitStmt(StrictConnectOp op);
   bool visitStmt(WhenOp op);
 
-  DenseMap<hw::InnerRefAttr, SmallVector<AnnoTarget>> &getRenames() {
-    return innerRefRenames;
-  };
-
 private:
   void processUsers(Value val, ArrayRef<Value> mapping);
   bool processSAPath(Operation *);
@@ -418,33 +413,6 @@ private:
 
   /// The builder is set and maintained in the main loop.
   ImplicitLocOpBuilder *builder;
-
-  /// Record how a given hw::InnerRefAttr (a tuple of Module Name and Component
-  /// Name) are renamed to one or more targets.  The hw::InnerRefAttr always
-  /// uses the original inner symbol.  This is done with the assistance of the
-  /// origSymbols member below.
-  DenseMap<hw::InnerRefAttr, SmallVector<AnnoTarget>> innerRefRenames;
-
-  /// A disjoint-set datastructure consiting of each set of renamed symbols.
-  /// The leader is the original symbol.  This is used to recover the original
-  /// symbol from any point in the recursive lowering.  This original symbol is
-  /// then used to choose the key for innerRefRenames which enables hierarchical
-  /// paths (which are updated later and use the original symbol) to be updated
-  /// after each module is lowered.
-  ///
-  /// E.g., if the original wire is:
-  ///
-  ///     %a = firrtl.wire sym @a !firrtl.bundle<a: uint<1>, b: bundle<c: uint>>
-  ///
-  /// Then origSymbols will contain a disjoint set, where "a" is the leader:
-  ///
-  ///     [ "a", "a_a", "a_b", "a_b_c" ]
-  ///
-  /// Note: this will contain _all intermediary symbols_ that are created during
-  /// recursive lowering and not just the final, lowered symbols.  However, only
-  /// final renames will be recorded in innerRefRenames because innerRefRenames
-  /// is only updated when the type is a ground type.
-  llvm::EquivalenceClasses<StringRef> origSymbols;
 
   // Keep a symbol table around for resolving symbols
   SymbolTable &symTbl;
@@ -619,23 +587,8 @@ bool TypeLoweringVisitor::lowerProducer(
       newOp->setAttr(cache.nameKindAttr, nameKindAttr);
     // Carry over the inner_sym name, if present.
     if (op->hasAttr(cache.innerSymAttr)) {
-      auto newName = StringAttr::get(context, loweredSymName);
-      newOp->setAttr(cache.innerSymAttr, InnerSymAttr::get(newName));
-      assert(!loweredSymName.empty());
-
-      // If this operation has an inner symbol, then update the origSymbols
-      // disjoint set to make sure that all derived symbols are associated with
-      // the original symbol.
-      if (innerSymAttr) {
-        origSymbols.unionSets(innerSymAttr.getValue(), newName.getValue());
-        if (field.type.isGround()) {
-          auto module = op->getParentOfType<FModuleOp>();
-          auto key = origSymbols.findLeader(innerSymAttr.getValue());
-          StringAttr keyAttr = StringAttr::get(module.getContext(), *key);
-          innerRefRenames[hw::InnerRefAttr::get(module.getNameAttr(), keyAttr)]
-              .push_back(OpAnnoTarget(newOp));
-        }
-      }
+      op->emitError() << "LowerTypes cannot lowerd symbols on aggregate values";
+      return false;
     }
     lowered.push_back(newOp->getResult(0));
   }
@@ -704,20 +657,9 @@ TypeLoweringVisitor::addArg(Operation *module, unsigned insertPt,
 
   StringAttr newSym = {};
   if (oldArgHadSym) {
-    newSym = StringAttr::get(context, sym);
-  }
-  if (oldArgHadSym) {
-    origSymbols.unionSets(oldArg.sym.getValue(), newSym.getValue());
-    if (field.type.isGround()) {
-      auto moduleLike = cast<FModuleLike>(module);
-      auto key = origSymbols.findLeader(oldArg.sym.getValue());
-      StringAttr keyAttr = StringAttr::get(moduleLike.getContext(), *key);
-      assert(insertPt >= insertPtOffset + 1 && "insertPtOffset is too large");
-      auto value = PortAnnoTarget(module, insertPt - 1 - insertPtOffset);
-      innerRefRenames[hw::InnerRefAttr::get(moduleLike.moduleNameAttr(),
-                                            keyAttr)]
-          .push_back(value);
-    }
+    module->emitError("LowerTypes cannot lower symbols on aggregate values");
+    // FIXME: Should emit proper errors.
+    return {newValue, {}};
   }
   return std::make_pair(newValue,
                         PortInfo{name, field.type, direction, newSym,
@@ -1349,6 +1291,7 @@ void LowerTypesPass::runOnOperation() {
 
     std::lock_guard<std::mutex> lg(nlaAppendLock);
     // This section updates shared data structures using a lock.
+    /*
     for (const auto &keyValue : tl.getRenames()) {
       innerRefRenames.insert(keyValue);
     }
@@ -1373,6 +1316,7 @@ void LowerTypesPass::runOnOperation() {
         llvm::dbgs() << "]\n";
       }
     });
+    */
   };
   parallelForEach(&getContext(), ops.begin(), ops.end(), lowerModules);
 
