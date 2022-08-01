@@ -376,6 +376,8 @@ struct TypeLoweringVisitor : public FIRRTLVisitor<TypeLoweringVisitor, bool> {
   bool visitStmt(StrictConnectOp op);
   bool visitStmt(WhenOp op);
 
+  bool isFailed() const { return encounteredError; }
+
 private:
   void processUsers(Value val, ArrayRef<Value> mapping);
   bool processSAPath(Operation *);
@@ -419,6 +421,9 @@ private:
 
   // Cache some attributes
   const AttrCache &cache;
+
+  // Set true if the lowering failed.
+  bool encounteredError = false;
 };
 } // namespace
 
@@ -545,6 +550,13 @@ bool TypeLoweringVisitor::lowerProducer(
   if (!peelType(srcType, fieldTypes, aggregatePreservationMode))
     return false;
 
+  // If an aggregate value has a symbol, bail out.
+  if (op->hasAttr(cache.innerSymAttr)) {
+    op->emitError() << "LowerTypes cannot lowerd symbols on aggregate values";
+    encounteredError = true;
+    return false;
+  }
+
   SmallVector<Value> lowered;
   // Loop over the leaf aggregates.
   SmallString<16> loweredName;
@@ -585,11 +597,7 @@ bool TypeLoweringVisitor::lowerProducer(
       newOp->setAttr(cache.nameAttr, StringAttr::get(context, loweredName));
     if (nameKindAttr)
       newOp->setAttr(cache.nameKindAttr, nameKindAttr);
-    // Carry over the inner_sym name, if present.
-    if (op->hasAttr(cache.innerSymAttr)) {
-      op->emitError() << "LowerTypes cannot lowerd symbols on aggregate values";
-      return false;
-    }
+
     lowered.push_back(newOp->getResult(0));
   }
 
@@ -657,10 +665,8 @@ TypeLoweringVisitor::addArg(Operation *module, unsigned insertPt,
 
   StringAttr newSym = {};
   if (oldArgHadSym) {
-    assert(false);
     module->emitError("LowerTypes cannot lower symbols on aggregate values");
-    // FIXME: Should emit proper errors.
-    return {newValue, {}};
+    encounteredError = true;
   }
   return std::make_pair(newValue,
                         PortInfo{name, field.type, direction, newSym,
@@ -1276,146 +1282,22 @@ void LowerTypesPass::runOnOperation() {
                    if (auto module = dyn_cast<FModuleLike>(op))
                      ops.push_back(module);
                  });
-  auto *nlaTable = &getAnalysis<NLATable>();
 
   LLVM_DEBUG(llvm::dbgs() << "Recording Inner Symbol Renames:\n");
 
-  // Lower each module and return a list of Nlas which need to be updated with
-  // the new symbol names.
-  DenseMap<hw::InnerRefAttr, SmallVector<AnnoTarget>> innerRefRenames;
-  std::mutex nlaAppendLock;
   // This lambda, executes in parallel for each Op within the circt.
-  auto lowerModules = [&](FModuleLike op) -> void {
+  auto lowerModules = [&](FModuleLike op) -> LogicalResult {
     auto tl = TypeLoweringVisitor(&getContext(), preserveAggregate,
                                   preservePublicTypes, symTbl, cache);
     tl.lowerModule(op);
 
-    std::lock_guard<std::mutex> lg(nlaAppendLock);
-    // This section updates shared data structures using a lock.
-    /*
-    for (const auto &keyValue : tl.getRenames()) {
-      innerRefRenames.insert(keyValue);
-    }
-
-    LLVM_DEBUG({
-      auto &renames = tl.getRenames();
-      if (!renames.empty())
-        llvm::dbgs() << "  - Module: @" << op.moduleName() << "\n";
-      for (auto keyValue : renames) {
-        llvm::dbgs() << "    - @" << keyValue.first.getName().getValue()
-                     << ": [";
-        llvm::interleaveComma(
-            keyValue.second, llvm::dbgs(), [&](AnnoTarget target) {
-              if (auto port = target.dyn_cast<PortAnnoTarget>()) {
-                auto module = cast<FModuleLike>(port.getOp());
-                llvm::dbgs() << FlatSymbolRefAttr::get(
-                    module.getContext(), module.getPortName(port.getPortNo()));
-              } else
-                llvm::dbgs() << FlatSymbolRefAttr::get(
-                    target.getOp()->getAttrOfType<StringAttr>("name"));
-            });
-        llvm::dbgs() << "]\n";
-      }
-    });
-    */
+    return LogicalResult::failure(tl.isFailed());
   };
-  parallelForEach(&getContext(), ops.begin(), ops.end(), lowerModules);
 
-  // Update all the hierarchical paths based on the innerRefRenames map.
-  // Iterate over each InnerRefAttr that was updated.  Replace any hierarchical
-  // paths that end in this InnerRefAttr with all values in the innerRefRenames
-  // map.
-  LLVM_DEBUG(llvm::dbgs() << "Updating hierarhical paths:\n");
-  CircuitNamespace circtNamespace(getOperation());
-  for (auto pair : innerRefRenames) {
-    auto [oldRef, newRefs] = pair;
-    // Lookup all NLAs which participate in the module of the old InnerRefAttr,
-    // but only visit ones which end in this old InnerRefAttr.
-    //
-    // TODO: A utility on the NLATable for this query would refactor this.
-    ArrayRef<HierPathOp> foo = nlaTable->lookup(oldRef.getModule());
-    for (auto path : SmallVector<HierPathOp>(foo.begin(), foo.end())) {
-      // Skip this hierarchical path if it targets the wrong InnerRefAttr.
-      // (This also covers the case of not visiting any NLAs which end at
-      // modules and do not target something inside the module.)
-      if (oldRef != path.getNamepath().getValue().back())
-        continue;
-
-      // Split the old hierarchical path into one hierarchical path for each new
-      // InnerRefAttr.  Update the symbols in any NLAs which use the old
-      // InnerRefAttr to the correct new InnerRefAttr.
-      auto namepath = path.getNamepath().getValue();
-      // Grab the old namepath.  We reuse all but the last element of this.
-      SmallVector<Attribute> newNamepath{namepath.begin(), namepath.end()};
-      ImplicitLocOpBuilder builder(path.getLoc(), path);
-      builder.setInsertionPointAfter(path);
-      StringAttr oldSym;
-      assert(!newRefs.empty() && "LowerTypes should not delete InnerRefAttrs");
-      for (auto &target : newRefs) {
-        // Drop the last part of the namepath so we can replace it.
-        newNamepath.pop_back();
-
-        // Re-use the old hierarchical path symbol for the first new
-        // hierarchical path.  Generate a new symbol for any later paths.
-        StringAttr newSym;
-        if (!oldSym) {
-          oldSym = path.getNameAttr();
-          newSym = oldSym;
-          // Delete the old hierarchical path from the NLA and symbol tables.
-          nlaTable->erase(path, &symTbl);
-        } else
-          newSym =
-              builder.getStringAttr(circtNamespace.newName(oldSym.getValue()));
-
-        // This is the new annotation sequence.  Put the update method into a
-        // lambda to enable reuse for operation and port annotations.
-        SmallVector<Annotation> newAnnotations;
-        auto updateNLASymbol = [&](Annotation anno) -> bool {
-          auto sym = anno.getMember<FlatSymbolRefAttr>("circt.nonlocal");
-          if (!sym || sym.getAttr() != oldSym)
-            return false;
-          anno.setMember("circt.nonlocal", FlatSymbolRefAttr::get(newSym));
-          newAnnotations.push_back(anno);
-          return true;
-        };
-
-        // Update annotations the operation or on the port.
-        HierPathOp newPath;
-        TypeSwitch<AnnoTarget>(target)
-            .Case<OpAnnoTarget>([&](OpAnnoTarget target) {
-              auto *op = target.getOp();
-              newNamepath.push_back(hw::InnerRefAttr::get(
-                  target.getModule().moduleNameAttr(), getInnerSymName(op)));
-              newPath = builder.create<HierPathOp>(
-                  newSym, builder.getArrayAttr(newNamepath));
-              AnnotationSet annotations(op);
-              annotations.removeAnnotations(updateNLASymbol);
-              annotations.addAnnotations(newAnnotations);
-              annotations.applyToOperation(op);
-            })
-            .Case<PortAnnoTarget>([&](PortAnnoTarget target) {
-              auto op = cast<FModuleLike>(target.getOp());
-              auto portIdx = target.getPortNo();
-              newNamepath.push_back(
-                  hw::InnerRefAttr::get(target.getModule().moduleNameAttr(),
-                                        op.getPortSymbolAttr(portIdx)));
-              newPath = builder.create<HierPathOp>(
-                  newSym, builder.getArrayAttr(newNamepath));
-              auto annotations = AnnotationSet::forPort(op, portIdx);
-              annotations.removeAnnotations(updateNLASymbol);
-              annotations.addAnnotations(newAnnotations);
-              annotations.applyToPort(op, portIdx);
-            })
-            .Default([](auto) {
-              llvm_unreachable("match on unkonwn AnnoTarget type");
-            });
-
-        // Add the new hierarchical path to the NLA Table and Symbol Table.
-        nlaTable->addNLA(newPath);
-        symTbl.insert(newPath);
-      }
-    }
-  }
+  auto result = failableParallelForEach(&getContext(), ops.begin(), ops.end(),
+                                        lowerModules);
+  if (failed(result))
+    signalPassFailure();
 }
 
 /// This is the pass constructor.
