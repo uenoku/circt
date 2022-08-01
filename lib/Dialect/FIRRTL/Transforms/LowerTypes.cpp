@@ -657,6 +657,7 @@ TypeLoweringVisitor::addArg(Operation *module, unsigned insertPt,
 
   StringAttr newSym = {};
   if (oldArgHadSym) {
+    assert(false);
     module->emitError("LowerTypes cannot lower symbols on aggregate values");
     // FIXME: Should emit proper errors.
     return {newValue, {}};
