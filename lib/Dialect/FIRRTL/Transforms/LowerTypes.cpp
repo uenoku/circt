@@ -395,7 +395,7 @@ private:
   /// the target contains a DontTouch, remove it and set the flag.
   ArrayAttr filterAnnotations(MLIRContext *ctxt, ArrayAttr annotations,
                               FIRRTLType srcType, FlatBundleFieldEntry field,
-                              bool &needsSym, StringRef sym);
+                              StringRef sym);
 
   PreserveAggregate::PreserveMode
   getPreservatinoModeForModule(FModuleLike moduleLike);
@@ -513,9 +513,11 @@ void TypeLoweringVisitor::lowerBlock(Block *block) {
   }
 }
 
-ArrayAttr TypeLoweringVisitor::filterAnnotations(
-    MLIRContext *ctxt, ArrayAttr annotations, FIRRTLType srcType,
-    FlatBundleFieldEntry field, bool &needsSym, StringRef sym) {
+ArrayAttr TypeLoweringVisitor::filterAnnotations(MLIRContext *ctxt,
+                                                 ArrayAttr annotations,
+                                                 FIRRTLType srcType,
+                                                 FlatBundleFieldEntry field,
+                                                 StringRef sym) {
   SmallVector<Attribute> retval;
   if (!annotations || annotations.empty())
     return ArrayAttr::get(ctxt, retval);
@@ -556,14 +558,6 @@ ArrayAttr TypeLoweringVisitor::filterAnnotations(
       newAnno.setMember("circt.fieldID",
                         builder->getI32IntegerAttr(newFieldID));
       retval.push_back(newAnno.getDict());
-      continue;
-    }
-    if (Annotation(opAttr).isClass(dontTouchAnnoClass)) {
-      // This is intended to cover the case of a non-local DontTouchAnnotation
-      // (which is represented as an annotation) being converted to a symbol on
-      // a ground type.  This code will, however, also lower any local
-      // DontTouchAnnotation (even though this should not exist at this point).
-      needsSym = true;
       continue;
     }
 
@@ -611,12 +605,11 @@ bool TypeLoweringVisitor::lowerProducer(
       loweredSymName.resize(baseSymNameLen);
       loweredSymName += field.suffix;
     }
-    bool needsSym = false;
 
     // For all annotations on the parent op, filter them based on the target
     // attribute.
-    ArrayAttr loweredAttrs = filterAnnotations(context, oldAnno, srcType, field,
-                                               needsSym, loweredSymName);
+    ArrayAttr loweredAttrs =
+        filterAnnotations(context, oldAnno, srcType, field, loweredSymName);
     auto *newOp = clone(field, loweredAttrs);
 
     // Carry over the name, if present.
@@ -625,7 +618,7 @@ bool TypeLoweringVisitor::lowerProducer(
     if (nameKindAttr)
       newOp->setAttr(cache.nameKindAttr, nameKindAttr);
     // Carry over the inner_sym name, if present.
-    if (needsSym || op->hasAttr(cache.innerSymAttr)) {
+    if (op->hasAttr(cache.innerSymAttr)) {
       auto newName = StringAttr::get(context, loweredSymName);
       newOp->setAttr(cache.innerSymAttr, InnerSymAttr::get(newName));
       assert(!loweredSymName.empty());
@@ -703,16 +696,14 @@ TypeLoweringVisitor::addArg(Operation *module, unsigned insertPt,
   } else
     sym = name.getValue();
 
-  bool needsSym = false;
   // Populate the new arg attributes.
-  auto newAnnotations =
-      filterAnnotations(context, oldArg.annotations.getArrayAttr(), srcType,
-                        field, needsSym, sym);
+  auto newAnnotations = filterAnnotations(
+      context, oldArg.annotations.getArrayAttr(), srcType, field, sym);
   // Flip the direction if the field is an output.
   auto direction = (Direction)((unsigned)oldArg.direction ^ field.isOutput);
 
   StringAttr newSym = {};
-  if (needsSym || oldArgHadSym) {
+  if (oldArgHadSym) {
     newSym = StringAttr::get(context, sym);
   }
   if (oldArgHadSym) {
@@ -1203,7 +1194,6 @@ bool TypeLoweringVisitor::visitDecl(InstanceOp op) {
       getPreservatinoModeForModule(op.getReferencedModule(symTbl));
 
   endFields.push_back(0);
-  bool needsSymbol = false;
   for (size_t i = 0, e = op.getNumResults(); i != e; ++i) {
     auto srcType = op.getType(i).cast<FIRRTLType>();
 
@@ -1225,7 +1215,7 @@ bool TypeLoweringVisitor::visitDecl(InstanceOp op) {
         resultTypes.push_back(field.type);
         auto annos = filterAnnotations(
             context, oldPortAnno[i].dyn_cast_or_null<ArrayAttr>(), srcType,
-            field, needsSymbol, "");
+            field, "");
         newPortAnno.push_back(annos);
       }
     }
@@ -1237,10 +1227,7 @@ bool TypeLoweringVisitor::visitDecl(InstanceOp op) {
   if (skip) {
     return false;
   }
-  if (!sym || sym.getValue().empty())
-    if (needsSymbol)
-      sym = StringAttr::get(builder->getContext(),
-                            "sym" + op.getNameAttr().getValue());
+
   // FIXME: annotation update
   auto newInstance = builder->create<InstanceOp>(
       resultTypes, op.getModuleNameAttr(), op.getNameAttr(),
