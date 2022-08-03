@@ -80,6 +80,43 @@ static bool shouldSpillWire(Operation &op, const LoweringOptions &options) {
       op.getNumResults() == 1 &&
       llvm::any_of(op.getResult(0).getUsers(), isConcat))
     return true;
+  return false;
+}
+
+static bool isVerilogUnaryOperator(Operation *op) {
+  if (isa<comb::ParityOp>(op))
+    return true;
+
+  if (auto xorOp = dyn_cast<comb::XorOp>(op))
+    return xorOp.isBinaryNot();
+
+  if (auto icmpOp = dyn_cast<comb::ICmpOp>(op))
+    return icmpOp.isEqualAllOnes() || icmpOp.isNotEqualZero();
+
+  return false;
+}
+
+static bool isWorthSpilling(Operation &op, const LoweringOptions &options,
+                            DenseMap<Value, unsigned> &expressionSize) {
+  if (!isVerilogExpression(&op))
+    return false;
+  if (!isVerilogExpression(&op) || op.getNumResults() != 1)
+    return false;
+
+  unsigned &size = expressionSize[op.getResult(0)];
+  size = 1;
+
+  if (isa<WireOp, RegOp, LogicOp, ReadInOutOp>(op))
+    return false;
+
+  llvm::for_each(op.getOperands(),
+                 [&](Value operand) { size += expressionSize[operand]; });
+
+  if (size >= 20 ||
+      (size >= 5 && op.getAttrOfType<StringAttr>("sv.namehint"))) {
+    size = 1;
+    return true;
+  }
 
   return false;
 }
@@ -507,8 +544,7 @@ static bool reuseExistingInOut(Operation *op) {
 
 /// For each module we emit, do a prepass over the structure, pre-lowering and
 /// otherwise rewriting operations we don't want to emit.
-void ExportVerilog::prepareHWModule(Block &block,
-                                    const LoweringOptions &options) {
+static void prepareHWModuleBody(Block &block, const LoweringOptions &options) {
 
   // First step, check any nested blocks that exist in this region.  This walk
   // can pull things out to our level of the hierarchy.
@@ -516,7 +552,7 @@ void ExportVerilog::prepareHWModule(Block &block,
     // If the operations has regions, prepare each of the region bodies.
     for (auto &region : op.getRegions()) {
       if (!region.empty())
-        prepareHWModule(region.front(), options);
+        prepareHWModuleBody(region.front(), options);
     }
   }
 
@@ -747,6 +783,30 @@ void ExportVerilog::prepareHWModule(Block &block,
   }
 }
 
+static void prettifyHWModuleBody(Block &block, const LoweringOptions &options,
+                                 DenseMap<Value, unsigned> &exprSize) {
+  bool isProceduralRegion = block.getParentOp()->hasTrait<ProceduralRegion>();
+  for (auto &op : llvm::make_early_inc_range(block)) {
+    if (!isProceduralRegion && options.disallowLocalVariables)
+      if (isWorthSpilling(op, options, exprSize)) {
+        lowerUsersToTemporaryWire(op);
+        continue;
+      }
+    // If the operations has regions, prepare each of the region bodies.
+    for (auto &region : op.getRegions()) {
+      if (!region.empty())
+        prettifyHWModuleBody(region.front(), options, exprSize);
+    }
+  }
+}
+
+void ExportVerilog::prepareHWModule(HWModuleOp module,
+                                    const LoweringOptions &options) {
+  prepareHWModuleBody(*module.getBodyBlock(), options);
+  DenseMap<Value, unsigned> exprSize;
+  prettifyHWModuleBody(*module.getBodyBlock(), options, exprSize);
+}
+
 namespace {
 
 struct TestPrepareForEmissionPass
@@ -757,7 +817,7 @@ struct TestPrepareForEmissionPass
     LoweringOptions options = getLoweringCLIOption(
         cast<mlir::ModuleOp>(module->getParentOp()),
         [&](llvm::Twine twine) { module.emitError(twine); });
-    prepareHWModule(*module.getBodyBlock(), options);
+    prepareHWModule(module, options);
   }
 };
 } // end anonymous namespace
