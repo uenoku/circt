@@ -21,6 +21,9 @@
 #include "ExportVerilogInternals.h"
 #include "circt/Conversion/ExportVerilog.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/Comb/CombVisitors.h"
+#include "circt/Dialect/HW/HWVisitors.h"
+#include "circt/Dialect/SV/SVVisitors.h"
 #include "circt/Support/LoweringOptions.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -96,29 +99,73 @@ static bool isVerilogUnaryOperator(Operation *op) {
   return false;
 }
 
+class ExpressionSpiller
+    : public TypeOpVisitor<ExpressionSpiller, unsigned>,
+      public CombinationalVisitor<ExpressionSpiller, unsigned>,
+      public Visitor<ExpressionSpiller, unsigned> {
+  friend class TypeOpVisitor<ExpressionSpiller, unsigned>;
+  friend class CombinationalVisitor<ExpressionSpiller, unsigned>;
+  friend class Visitor<ExpressionSpiller, unsigned>;
+  unsigned visitUnhandledExpr(Operation *op);
+  unsigned visitInvalidComb(Operation *op) { return dispatchTypeOpVisitor(op); }
+  unsigned visitUnhandledComb(Operation *op) { return visitUnhandledExpr(op); }
+  unsigned visitInvalidTypeOp(Operation *op) { return dispatchSVVisitor(op); }
+  unsigned visitUnhandledTypeOp(Operation *op) {
+    return visitUnhandledExpr(op);
+  }
+};
+struct ExprSizeEstimator {
+  DenseMap<Value, unsigned> &expressionSize;
+  unsigned caclulateExpressionSize(Value value) const {
+    if (expressionSize.count(value))
+      return expressionSize.lookup(value);
+    if (auto port = value.dyn_cast<BlockArgument>()) {
+      return 5;
+    }
+
+    auto *op = value.getDefiningOp();
+
+    // Try estimate the length of the expression.
+    // TODO: Consider using visitors.
+
+    // Declarations
+    if (auto name = op->getAttrOfType<StringAttr>("name"))
+      return name.getValue().size();
+
+    // Read.
+    if (isa<ReadInOutOp>(op))
+      return caclulateExpressionSize(value);
+
+    // Otherwise, we estimate the size of expression.
+    unsigned size = 1;
+    for (auto value : op->getOperands()) {
+      // Add two as a delimater and space.
+      size += caclulateExpressionSize(value) + 2;
+    }
+    return size;
+  }
+};
+
 static bool isWorthSpilling(Operation &op, const LoweringOptions &options,
                             DenseMap<Value, unsigned> &expressionSize) {
-  if (!isVerilogExpression(&op))
-    return false;
   if (!isVerilogExpression(&op) || op.getNumResults() != 1)
     return false;
 
   unsigned &size = expressionSize[op.getResult(0)];
   size = 1;
 
-  if (isa<WireOp, RegOp, LogicOp, ReadInOutOp>(op))
+  if (isa<WireOp, RegOp, LogicOp>(op))
     return false;
 
   llvm::for_each(op.getOperands(),
                  [&](Value operand) { size += expressionSize[operand]; });
 
-  if (size >= 20 ||
-      (size >= 5 && op.getAttrOfType<StringAttr>("sv.namehint"))) {
-    size = 1;
-    return true;
+  if (auto namehint = op.getAttrOfType<StringAttr>("sv.namehint")) {
+    if (namehint.getValue().size() < size) {
+      return true;
+    }
   }
-
-  return false;
+  return size >= options.emittedLineLength;
 }
 
 // Given an invisible instance, make sure all inputs are driven from
