@@ -291,9 +291,10 @@ static cl::opt<bool> disableIMDCE("disable-imdce",
                                   cl::cat(mainCategory));
 
 static cl::opt<bool>
-    disableMergeConnections("disable-merge-connections",
-                            cl::desc("Disable the MergeConnections pass"),
-                            cl::init(false), cl::Hidden, cl::cat(mainCategory));
+    disableSimplifyAggregates("disable-simplify-aggregates",
+                              cl::desc("Disable the SimplifyAggregates pass"),
+                              cl::init(false), cl::Hidden,
+                              cl::cat(mainCategory));
 
 static cl::opt<bool>
     mergeConnectionsAgggresively("merge-connections-aggressive-merging",
@@ -703,9 +704,9 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
 
   if (!disableOptimization &&
       preserveAggregate != firrtl::PreserveAggregate::None &&
-      !disableMergeConnections)
+      !disableSimplifyAggregates)
     pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
-        firrtl::createMergeConnectionsPass(mergeConnectionsAgggresively));
+        firrtl::createSimplifyAggregatesPass(mergeConnectionsAgggresively));
 
   // Lower if we are going to verilog or if lowering was specifically requested.
   if (outputFormat != OutputIRFir) {

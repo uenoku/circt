@@ -107,4 +107,15 @@ firrtl.circuit "Test"   {
     firrtl.strictconnect %2, %invalid_ui1 : !firrtl.uint<1>
     firrtl.strictconnect %1, %invalid_ui1 : !firrtl.uint<1>
   }
+
+  // COMMON-LABEL:  firrtl.module @MultibitMux
+  // COMMON-NEXT:      %0 = firrtl.subaccess %a[%sel] : !firrtl.vector<uint<1>, 3>, !firrtl.uint<2>
+  // COMMON-NEXT:      firrtl.strictconnect %b, %0 : !firrtl.uint<1>
+  firrtl.module @MultibitMux(in %a: !firrtl.vector<uint<1>, 3>, in %sel: !firrtl.uint<2>, out %b: !firrtl.uint<1>) {
+    %0 = firrtl.subindex %a[2] : !firrtl.vector<uint<1>, 3>
+    %1 = firrtl.subindex %a[1] : !firrtl.vector<uint<1>, 3>
+    %2 = firrtl.subindex %a[0] : !firrtl.vector<uint<1>, 3>
+    %3 = firrtl.multibit_mux %sel, %0, %1, %2 : !firrtl.uint<2>, !firrtl.uint<1>
+    firrtl.strictconnect %b, %3 : !firrtl.uint<1>
+  }
 }

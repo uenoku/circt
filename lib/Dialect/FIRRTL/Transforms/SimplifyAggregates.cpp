@@ -1,13 +1,14 @@
-//===- MergeConnections.cpp - Merge expanded connections --------*- C++ -*-===//
+//===- SimplifyAggregates.cpp - Simplify aggregate expressions --*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 //
-// This pass merges expanded connections into one connection.
-// LowerTypes fully expands aggregate connections even when semantically
-// not necessary to expand because it is required for ExpandWhen.
+// This pass performs simplifications regarding aggregate operations.
+// For example, field level connections are merged into one connection.
+// LowerTypes fully expands aggregate connections even when semantically not
+// necessary to expand because it is required for ExpandWhen.
 //
 // More specifically this pass folds the following patterns:
 //   %dest(0) <= v0
@@ -28,7 +29,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
-#define DEBUG_TYPE "firrtl-merge-connections"
+#define DEBUG_TYPE "firrtl-simplify-aggregates"
 
 using namespace circt;
 using namespace firrtl;
@@ -49,9 +50,9 @@ namespace {
 // Pass Infrastructure
 //===----------------------------------------------------------------------===//
 
-// A helper struct to merge connections.
-struct MergeConnection {
-  MergeConnection(FModuleOp moduleOp, bool enableAggressiveMerging)
+// A helper struct to simplify aggregates.
+struct SimplifyAggregate {
+  SimplifyAggregate(FModuleOp moduleOp, bool enableAggressiveMerging)
       : moduleOp(moduleOp), enableAggressiveMerging(enableAggressiveMerging) {}
 
   // Return true if something is changed.
@@ -60,6 +61,8 @@ struct MergeConnection {
 
   // Return true if the given connect op is merged.
   bool peelConnect(StrictConnectOp connect);
+
+  bool simplifyMultibitMux(MultibitMuxOp multibitMux);
 
   // A map from a destination FieldRef to a pair of (i) the number of
   // connections seen so far and (ii) the vector to store subconnections.
@@ -74,7 +77,7 @@ struct MergeConnection {
   bool enableAggressiveMerging = false;
 };
 
-bool MergeConnection::peelConnect(StrictConnectOp connect) {
+bool SimplifyAggregate::peelConnect(StrictConnectOp connect) {
   // Ignore connections between different types because it will produce a
   // partial connect. Also ignore non-passive connections or non-integer
   // connections.
@@ -244,12 +247,44 @@ bool MergeConnection::peelConnect(StrictConnectOp connect) {
   return true;
 }
 
-bool MergeConnection::run() {
+// Return true if multibit mux was folded into subaccess op.
+// If multbit mux inputs are `a[n-1], a[n-2], ..., a[1], a[0]`, we can fold
+// multibit into subaccess op.
+bool SimplifyAggregate::simplifyMultibitMux(MultibitMuxOp multibitMux) {
+
+  // Sample the last element of multibit mux inputs.
+  auto subindex = multibitMux.getInputs().back().getDefiningOp<SubindexOp>();
+  if (subindex.getIndex() != 0)
+    return false;
+  for (auto [idx, value] :
+       llvm::enumerate(multibitMux.getInputs().drop_back())) {
+    auto sub = value.getDefiningOp<SubindexOp>();
+    if (!sub || sub.getIndex() + idx + 1 != multibitMux.getInputs().size())
+      return false;
+  }
+
+  builder->setInsertionPointAfter(multibitMux);
+  builder->setLoc(multibitMux.getLoc());
+  Value subaccess =
+      builder->create<SubaccessOp>(subindex.getInput(), multibitMux.getIndex());
+  multibitMux.replaceAllUsesWith(subaccess);
+  return true;
+}
+
+bool SimplifyAggregate::run() {
   ImplicitLocOpBuilder theBuilder(moduleOp.getLoc(), moduleOp.getContext());
   builder = &theBuilder;
   auto *body = moduleOp.getBodyBlock();
-  // Merge connections by forward iterations.
   for (auto it = body->begin(), e = body->end(); it != e;) {
+    // Fold multibit mux into subaccess.
+    if (auto multibitMux = dyn_cast<MultibitMuxOp>(*it)) {
+      if (simplifyMultibitMux(multibitMux)) {
+        it++;
+        multibitMux.erase();
+        continue;
+      }
+    }
+    // Merge field-level connections into aggregate level connections.
     auto connectOp = dyn_cast<StrictConnectOp>(*it);
     if (!connectOp) {
       it++;
@@ -275,9 +310,9 @@ bool MergeConnection::run() {
   return changed;
 }
 
-struct MergeConnectionsPass
-    : public MergeConnectionsBase<MergeConnectionsPass> {
-  MergeConnectionsPass(bool enableAggressiveMergingFlag) {
+struct SimplifyAggregatesPass
+    : public SimplifyAggregatesBase<SimplifyAggregatesPass> {
+  SimplifyAggregatesPass(bool enableAggressiveMergingFlag) {
     enableAggressiveMerging = enableAggressiveMergingFlag;
   }
   void runOnOperation() override;
@@ -285,12 +320,12 @@ struct MergeConnectionsPass
 
 } // namespace
 
-void MergeConnectionsPass::runOnOperation() {
-  LLVM_DEBUG(llvm::dbgs() << "===----- Running MergeConnections "
+void SimplifyAggregatesPass::runOnOperation() {
+  LLVM_DEBUG(llvm::dbgs() << "===----- Running SimplifyAggregates "
                              "--------------------------------------===\n"
                           << "Module: '" << getOperation().getName() << "'\n";);
 
-  MergeConnection mergeConnection(getOperation(), enableAggressiveMerging);
+  SimplifyAggregate mergeConnection(getOperation(), enableAggressiveMerging);
   bool changed = mergeConnection.run();
 
   if (!changed)
@@ -298,6 +333,6 @@ void MergeConnectionsPass::runOnOperation() {
 }
 
 std::unique_ptr<mlir::Pass>
-circt::firrtl::createMergeConnectionsPass(bool enableAggressiveMerging) {
-  return std::make_unique<MergeConnectionsPass>(enableAggressiveMerging);
+circt::firrtl::createSimplifyAggregatesPass(bool enableAggressiveMerging) {
+  return std::make_unique<SimplifyAggregatesPass>(enableAggressiveMerging);
 }
