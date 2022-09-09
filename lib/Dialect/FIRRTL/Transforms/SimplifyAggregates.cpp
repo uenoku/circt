@@ -253,20 +253,22 @@ bool SimplifyAggregate::peelConnect(StrictConnectOp connect) {
 bool SimplifyAggregate::simplifyMultibitMux(MultibitMuxOp multibitMux) {
 
   // Sample the last element of multibit mux inputs.
-  auto subindex = multibitMux.getInputs().back().getDefiningOp<SubindexOp>();
-  if (subindex.getIndex() != 0)
+  auto lastSubindex =
+      multibitMux.getInputs().back().getDefiningOp<SubindexOp>();
+  if (lastSubindex.getIndex() != 0)
     return false;
   for (auto [idx, value] :
        llvm::enumerate(multibitMux.getInputs().drop_back())) {
-    auto sub = value.getDefiningOp<SubindexOp>();
-    if (!sub || sub.getIndex() + idx + 1 != multibitMux.getInputs().size())
+    auto subindex = value.getDefiningOp<SubindexOp>();
+    if (!subindex || lastSubindex.getInput() != subindex.getInput() ||
+        subindex.getIndex() + idx + 1 != multibitMux.getInputs().size())
       return false;
   }
 
   builder->setInsertionPointAfter(multibitMux);
   builder->setLoc(multibitMux.getLoc());
-  Value subaccess =
-      builder->create<SubaccessOp>(subindex.getInput(), multibitMux.getIndex());
+  Value subaccess = builder->create<SubaccessOp>(lastSubindex.getInput(),
+                                                 multibitMux.getIndex());
   multibitMux.replaceAllUsesWith(subaccess);
   return true;
 }
