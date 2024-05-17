@@ -27,6 +27,9 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Chrono.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/Mutex.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
@@ -188,6 +191,8 @@ struct LoweringState {
 
 struct LowerClassesPass : public LowerClassesBase<LowerClassesPass> {
   void runOnOperation() override;
+
+  llvm::sys::TimePoint<> start;
 
 private:
   LogicalResult processPaths(InstanceGraph &instanceGraph,
@@ -581,6 +586,15 @@ LogicalResult LowerClassesPass::processPaths(
                               pathInfoTable, symbolTable, owningModules)))
     return failure();
 
+  if (result.wasInterrupted())
+    return failure();
+
+  printLog("Before LocalPathTrakcers::run");
+  if (failed(LocalPathTrackers::run(circuit, instanceGraph, namespaces, cache,
+                                    pathInfoTable, symbolTable, owningModules)))
+    return failure();
+
+  printLog("Before instance graph traversal");
   // For each module that will be passing through a base path, compute its
   // descendants that need this base path passed through.
   for (auto rootModule : pathInfoTable.getAltBasePathRoots()) {
@@ -618,12 +632,15 @@ LogicalResult LowerClassesPass::processPaths(
     }
   }
 
+  printLog("End instance graph traversal");
   return success();
 }
 
 /// Lower FIRRTL Class and Object ops to OM Class and Object ops
 void LowerClassesPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
+  using TimePoint = llvm::sys::TimePoint<>;
+  start = TimePoint::clock::now();
 
   // Get the CircuitOp.
   CircuitOp circuit = getOperation();
@@ -634,14 +651,23 @@ void LowerClassesPass::runOnOperation() {
 
   hw::InnerSymbolNamespaceCollection namespaces;
   HierPathCache cache(circuit, symbolTable);
+  auto printLog = [&](StringRef name) {
+    using namespace std::chrono;
+    auto elapsed =
+        duration<double>(TimePoint::clock::now() - start) / seconds(1);
+    llvm::errs() << "[LowerClass] " << name << " "
+                 << llvm::format("%.3f [sec]", elapsed) << "\n";
+  };
 
-  // Fill `shouldCreateClassMemo`.
+  printLog("Start!");
   for (auto moduleLike : circuit.getOps<FModuleLike>())
     shouldCreateClassMemo.insert({moduleLike, false});
-  parallelForEach(
-      circuit.getContext(), circuit.getOps<FModuleLike>(), [&](FModuleLike op) {
-        shouldCreateClassMemo[op] = shouldCreateClassImpl(op, instanceGraph);
-      });
+
+  parallelForEach(circuit.getContext(), circuit.getOps<FModuleLike>(),
+                  [&](FModuleLike op) {
+                    shouldCreateClassMemo[op] = shouldCreateClassImpl(op);
+                  });
+  printLog("Before processPath");
 
   // Rewrite all path annotations into inner symbol targets.
   PathInfoTable pathInfoTable;
@@ -655,6 +681,8 @@ void LowerClassesPass::runOnOperation() {
 
   // Create new OM Class ops serially.
   DenseMap<StringAttr, firrtl::ClassType> classTypeTable;
+
+  printLog("Before create classes");
   for (auto moduleLike : circuit.getOps<FModuleLike>()) {
     if (shouldCreateClass(moduleLike)) {
       auto omClass = createClass(moduleLike, pathInfoTable);
@@ -692,6 +720,7 @@ void LowerClassesPass::runOnOperation() {
     }
   }
 
+  printLog("Before lower classes");
   // Move ops from FIRRTL Class to OM Class in parallel.
   mlir::parallelForEach(ctx, loweringState.classLoweringStateTable,
                         [this, &pathInfoTable](auto &entry) {
@@ -717,6 +746,7 @@ void LowerClassesPass::runOnOperation() {
     if (isa<FModuleOp, om::ClassLike>(op))
       objectContainers.push_back(&op);
 
+  printLog("Before update instances");
   // Update Object creation ops in Classes or Modules in parallel.
   if (failed(
           mlir::failableParallelForEach(ctx, objectContainers, [&](auto *op) {
@@ -725,6 +755,7 @@ void LowerClassesPass::runOnOperation() {
           })))
     return signalPassFailure();
 
+  printLog("Before coverting types");
   // Convert to OM ops and types in Classes or Modules in parallel.
   if (failed(
           mlir::failableParallelForEach(ctx, objectContainers, [&](auto *op) {
@@ -732,6 +763,7 @@ void LowerClassesPass::runOnOperation() {
           })))
     return signalPassFailure();
 
+  printLog("End!");
   // We keep the instance graph up to date, so mark that analysis preserved.
   markAnalysesPreserved<InstanceGraph>();
 }
