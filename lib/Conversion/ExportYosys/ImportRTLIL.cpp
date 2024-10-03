@@ -692,7 +692,6 @@ static LogicalResult cleanUpHWModule(hw::HWModuleOp module) {
   llvm::MapVector<sv::WireOp, SmallVector<std::pair<Range, sv::AssignOp>>>
       writes;
   llvm::MapVector<sv::WireOp, SmallVector<std::pair<Range, Value>>> reads;
-  module.dump();
   module.walk([&](sv::WireOp wire) { writes.insert({wire, {}}); });
   module.walk([&](sv::AssignOp assign) {
     auto range = getRoot(assign.getDest());
@@ -705,6 +704,7 @@ static LogicalResult cleanUpHWModule(hw::HWModuleOp module) {
       reads[range.root].emplace_back(range, read);
   });
   for (auto &[wire, elements] : writes) {
+    // Sort by start index.
     llvm::sort(elements.begin(), elements.end(),
                [](const auto &lhs, const auto &rhs) {
                  return lhs.first.start < rhs.first.start;
@@ -718,12 +718,12 @@ static LogicalResult cleanUpHWModule(hw::HWModuleOp module) {
       }
       currentIdx += elem.first.width;
     }
+
     if (failed)
-      return failure();
+      continue;
 
     // Fully written.
     if (currentIdx == hw::getBitWidth(wire.getType().getElementType())) {
-      wire.dump();
       OpBuilder builder(wire);
       SmallVector<Value> concatInputs;
       for (auto elem : elements) {
