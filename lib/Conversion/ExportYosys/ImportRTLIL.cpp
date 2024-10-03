@@ -800,6 +800,7 @@ LogicalResult ImportRTLILModule::importBody(
       return failure();
   }
 
+  // Clean up the module by removing SV constructs.
   if (auto hwModule = dyn_cast<hw::HWModuleOp>(*module))
     if (failed(cleanUpHWModule(hwModule)))
       return failure();
