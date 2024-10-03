@@ -1,4 +1,4 @@
-//===- LowerFirMem.cpp - Seq FIRRTL memory lowering -----------------------===//
+//===- ImportRTLIL.cpp - RTLIL import implementation ----------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This transform translate Seq FirMem ops to instances of HW generated modules.
+// This file implements the import of RTLIL designs into CIRCT.
 //
 //===----------------------------------------------------------------------===//
+
 #include "RTLILConverterInternal.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -38,6 +39,8 @@ using namespace rtlil;
 
 namespace {
 class ImportRTLILModule;
+
+// Base class for cell pattern handling
 class CellPatternBase {
 public:
   CellPatternBase(StringRef typeName, ArrayRef<StringRef> inputPortNames,
@@ -55,6 +58,7 @@ private:
   SmallVector<SmallString<4>> inputPortNames;
   SmallString<4> outputPortName;
 };
+
 struct ImportRTLILDesign {
   RTLIL::Design *design;
   ImportRTLILDesign(RTLIL::Design *design) : design(design) {}
@@ -63,6 +67,7 @@ struct ImportRTLILDesign {
   ModuleMappingTy moduleMapping;
 };
 
+// Class for importing a single RTLIL module
 class ImportRTLILModule {
 public:
   ImportRTLILModule(MLIRContext *context, const ImportRTLILDesign &importer,
@@ -170,6 +175,7 @@ private:
     return builder->create<comb::ConcatOp>(builder->getUnknownLoc(), chunks);
   }
 
+  // Get the value of a port of a cell.
   Value getPortValue(RTLIL::Cell *cell, StringRef portName) {
     return getValueForSigSpec(cell->getPort(getEscapedName(portName)));
   }
@@ -194,14 +200,12 @@ private:
   template <typename OpName>
   void addOpPattern(StringRef typeName, ArrayRef<StringRef> inputPortNames,
                     StringRef outputPortName);
-  template <typename OpName>
-  void addOpPatternBinary(StringRef typeName);
+  template <typename OpName> void addOpPatternBinary(StringRef typeName);
 
   void registerPatterns();
 };
 
-template <typename OpName>
-struct CellOpPattern : public CellPatternBase {
+template <typename OpName> struct CellOpPattern : public CellPatternBase {
   using CellPatternBase::CellPatternBase;
   Value convert(Cell *cell, OpBuilder &builder, Location location,
                 ValueRange inputValues) override {
@@ -209,8 +213,7 @@ struct CellOpPattern : public CellPatternBase {
   }
 };
 
-template <bool isAnd>
-struct AndOrNotOpPattern : public CellPatternBase {
+template <bool isAnd> struct AndOrNotOpPattern : public CellPatternBase {
   using CellPatternBase::CellPatternBase;
   Value convert(Cell *cell, OpBuilder &builder, Location location,
                 ValueRange inputValues) override {
@@ -242,6 +245,7 @@ struct NandOpPattern : public CellPatternBase {
     return comb::createOrFoldNot(location, aOrB, builder, false);
   }
 };
+
 struct NotOpPattern : public CellPatternBase {
   using CellPatternBase::CellPatternBase;
   Value convert(Cell *cell, OpBuilder &builder, Location location,
@@ -294,8 +298,7 @@ struct XnorOpPattern : public CellPatternBase {
 };
 
 // TODO: Add async.
-template <bool resetValueConst>
-struct DFFPattern : public CellPatternBase {
+template <bool resetValueConst> struct DFFPattern : public CellPatternBase {
   using CellPatternBase::CellPatternBase;
   Value convert(Cell *cell, OpBuilder &builder, Location location,
                 ValueRange inputValues) override {
@@ -366,10 +369,10 @@ void ImportRTLILModule::registerPatterns() {
   addPattern<NandOpPattern>("$_NAND_", ArrayRef<StringRef>{"A", "B"}, "Y");
   addPattern<NotOpPattern>("$_NOT_", ArrayRef<StringRef>{"A"}, "Y");
   addPattern<MuxOpPattern>("$_MUX_", ArrayRef<StringRef>{"A", "B", "S"}, "Y");
-  addPattern<DFFPattern<false>>("$_SDFF_PP0_",
-                                ArrayRef<StringRef>{"C", "D", "R"}, "Q");
-  addPattern<DFFPattern<true>>("$_SDFF_PP1_",
-                               ArrayRef<StringRef>{"C", "D", "R"}, "Q");
+  addPattern<DFFPattern</*resetValueConst=*/false>>(
+      "$_SDFF_PP0_", ArrayRef<StringRef>{"C", "D", "R"}, "Q");
+  addPattern<DFFPattern</*resetValueConst=*/true>>(
+      "$_SDFF_PP1_", ArrayRef<StringRef>{"C", "D", "R"}, "Q");
   addPattern<ResetlessDFFPattern>("$_DFF_P_", ArrayRef<StringRef>{"C", "D"},
                                   "Q");
 }
@@ -392,6 +395,7 @@ ImportRTLILModule::ImportRTLILModule(MLIRContext *context,
     auto *wire = rtlilModule->wires_[port];
     assert(wire->port_input || wire->port_output);
 
+    // Port id is 1-indexed.
     size_t portId = wire->port_id - 1;
     size_t argNum = (wire->port_output ? numOutput : numInput)++;
     ports[portId].name = getStringAttr(wire->name);
@@ -419,6 +423,7 @@ ImportRTLILModule::ImportRTLILModule(MLIRContext *context,
     module = moduleBuilder.create<hw::HWModuleOp>(UnknownLoc::get(context),
                                                   modName, ports, paramArgs);
 }
+
 mlir::TypedValue<hw::InOutType>
 ImportRTLILModule::getInOutValue(Location loc, const SigSpec &sigSpec) {
   if (sigSpec.is_wire())
@@ -586,7 +591,7 @@ LogicalResult ImportRTLILModule::importCell(
     }
 
     if (cellName.getValue().starts_with("$")) {
-      // Yosys std cells. Just lower it to external module instances.
+      // Yosys std cells. Just lower it to external module instances for now.
       auto &extMod = exeternalModules[cellName];
       if (!extMod) {
         OpBuilder::InsertionGuard guard(*builder);
@@ -659,7 +664,9 @@ static Range getRoot(Value value) {
   auto width =
       hw::getBitWidth(cast<hw::InOutType>(value.getType()).getElementType());
   return TypeSwitch<Operation *, Range>(op)
-      .Case<sv::WireOp>([&](auto op) { return Range{op, 0, width}; })
+      .Case<sv::WireOp>([&](auto op) {
+        return Range{op, 0, width};
+      })
       .Case<sv::ArrayIndexInOutOp>([&](sv::ArrayIndexInOutOp op) {
         auto result = getRoot(op.getInput());
         auto index = getConstantValue(op.getIndex());
@@ -815,8 +822,6 @@ LogicalResult CellPatternBase::convert(ImportRTLILModule &importer,
   auto lhsValue = importer.getInOutValue(location, lhsSig);
   return importer.connect(location, lhsValue, rhsValue);
 }
-
-static LogicalResult postProcess(mlir::ModuleOp module) {}
 
 LogicalResult ImportRTLILDesign::run(mlir::ModuleOp module) {
   SmallVector<ImportRTLILModule> modules;
