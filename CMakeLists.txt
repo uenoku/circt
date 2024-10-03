@@ -540,7 +540,7 @@ endif()
 #-------------------------------------------------------------------------------
 # slang Verilog Frontend
 #-------------------------------------------------------------------------------
-option(CIRCT_SLANG_FRONTEND_ENABLED "Enables the slang Verilog frontend." ON)
+option(CIRCT_SLANG_FRONTEND_ENABLED "Enables the slang Verilog frontend." OFF)
 option(CIRCT_SLANG_BUILD_FROM_SOURCE
   "Build slang from source instead of finding an installed package" ON)
 
@@ -613,15 +613,11 @@ else()
   set(ARCILATOR_JIT_ENABLED 0)
 endif()
 
-option(CIRCT_YOSYS_INTEGRATION_ENABLED "Enables the Yosys integration." ON)
+option(CIRCT_YOSYS_INTEGRATION_ENABLED "Enables the Yosys integration." OFF)
 llvm_canonicalize_cmake_booleans(CIRCT_YOSYS_INTEGRATION_ENABLED)
 
-option(CIRCT_YOSYS_BUILD_FROM_SOURCE
-  "Build yosys from source instead of finding an installed package" OFF)
-
-llvm_canonicalize_cmake_booleans(CIRCT_YOSYS_BACKEND_ENABLED)
-
 if(CIRCT_YOSYS_INTEGRATION_ENABLED)
+  # TODO: Switch to use the installed yosys
   # FIXME: Yosys doesn't use cmake so need to manually configure
   message(STATUS "Yosys integration is enabled")
   include(ExternalProject)
@@ -633,7 +629,7 @@ if(CIRCT_YOSYS_INTEGRATION_ENABLED)
     INSTALL_DIR "${CMAKE_BINARY_DIR}/third-party/yosys"
     # CONFIGURE_COMMAND sed -i "s/ENABLE_LIBYOSYS := 0/ENABLE_LIBYOSYS := 1/" Makefile && make config-gcc # TODO: Switch `make config-clang` or `make config-gcc` based on CXX_COMPILER
     CONFIGURE_COMMAND make config-gcc && echo "ENABLE_LIBYOSYS := 1" >> Makefile.conf && echo "PREFIX := ${CMAKE_BINARY_DIR}" >> Makefile.conf
-    BUILD_COMMAND make -j12 # TODO: Make the number of workers configurable.
+    BUILD_COMMAND make # TODO: Make the number of workers configurable.
     INSTALL_COMMAND make install
     TEST_COMMAND ""
     BUILD_BYPRODUCTS "${CMAKE_BINARY_DIR}/third-party/yosys/libyosys.so"

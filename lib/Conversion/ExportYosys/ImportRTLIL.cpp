@@ -29,7 +29,7 @@
 #include "kernel/rtlil.h"
 #include "kernel/yosys.h"
 
-#define DEBUG_TYPE "export-yosys"
+#define DEBUG_TYPE "yosys-optimizer"
 
 using namespace circt;
 using namespace hw;

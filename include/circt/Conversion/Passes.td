@@ -795,9 +795,9 @@ def LowerSimToSV: Pass<"lower-sim-to-sv",  "mlir::ModuleOp"> {
 //===----------------------------------------------------------------------===//
 
 #ifdef CIRCT_YOSYS_INTEGRATION_ENABLED
-def ExportYosys: Pass<"export-yosys",  "mlir::ModuleOp"> {
+def YosysOptimizer: Pass<"yosys-optimizer",  "mlir::ModuleOp"> {
   let summary = "Translate core dialects into yosys's RTL IR";
-  let constructor = "createExportYosys()";
+  let constructor = "createYosysOptimizer()";
   let options = [
     ListOption<"passes", "passes", "std::string",
                "Specify Yosys passes to run">,
@@ -814,9 +814,9 @@ def ExportYosys: Pass<"export-yosys",  "mlir::ModuleOp"> {
   ];
 }
 
-def ExportYosysParallel: Pass<"export-yosys-parallel",  "mlir::ModuleOp"> {
+def YosysOptimizerParallel: Pass<"yosys-optimizer-parallel",  "mlir::ModuleOp"> {
   let summary = "Translate core dialects into yosys's RTL IR";
-  let constructor = "createExportYosysParallel()";
+  let constructor = "createYosysOptimizerParallel()";
   let options = [
     ListOption<"passes", "passes", "std::string",
                "Specify Yosys passes to run">,

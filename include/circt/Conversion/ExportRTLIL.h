@@ -28,8 +28,8 @@ namespace circt {
 #define GEN_PASS_DECL_EXPORTYOSYSPARALLEL
 #include "circt/Conversion/Passes.h.inc"
 
-std::unique_ptr<mlir::Pass> createExportYosys();
-std::unique_ptr<mlir::Pass> createExportYosysParallel();
+std::unique_ptr<mlir::Pass> createYosysOptimizer();
+std::unique_ptr<mlir::Pass> createYosysOptimizerParallel();
 
 /// Register the `(import|export)-rtlil` MLIR translation.
 void registerRTLILImport();

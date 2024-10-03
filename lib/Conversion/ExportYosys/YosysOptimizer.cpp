@@ -35,7 +35,7 @@
 #include "kernel/rtlil.h"
 #include "kernel/yosys.h"
 
-#define DEBUG_TYPE "export-yosys"
+#define DEBUG_TYPE "yosys-optimizer"
 
 using namespace circt;
 using namespace hw;
@@ -44,24 +44,26 @@ using namespace Yosys;
 using namespace rtlil;
 
 namespace {
-#define GEN_PASS_DEF_EXPORTYOSYS
-#define GEN_PASS_DEF_EXPORTYOSYSPARALLEL
+#define GEN_PASS_DECL_YOSYSOPTIMIZER
+#define GEN_PASS_DECL_YOSYSOPTIMIZERPARALLEL
+#define GEN_PASS_DEF_YOSYSOPTIMIZER
+#define GEN_PASS_DEF_YOSYSOPTIMIZERPARALLEL
 #include "circt/Conversion/Passes.h.inc"
 
-struct ExportYosysPass : public impl::ExportYosysBase<ExportYosysPass> {
+struct YosysOptimizerPass
+    : public impl::YosysOptimizerBase<YosysOptimizerPass> {
   void runOnOperation() override;
 };
-struct ExportYosysParallelPass
-    : public impl::ExportYosysParallelBase<ExportYosysParallelPass> {
+struct YosysOptimizerParallelPass
+    : public impl::YosysOptimizerParallelBase<YosysOptimizerParallelPass> {
   void runOnOperation() override;
 };
 
 } // namespace
 
-void ExportYosysPass::runOnOperation() {
+void YosysOptimizerPass::runOnOperation() {
   init_yosys(redirectLog.getValue());
-  auto theDesign =
-      circt::rtlil::exportRTLILDesign(getOperation());
+  auto theDesign = circt::rtlil::exportRTLILDesign(getOperation());
   if (failed(theDesign))
     return signalPassFailure();
 
@@ -126,7 +128,7 @@ LogicalResult runYosys(Location loc, StringRef inputFilePath,
   return success(exitCode == 0);
 }
 
-void ExportYosysParallelPass::runOnOperation() {
+void YosysOptimizerParallelPass::runOnOperation() {
   // Set up yosys.
   init_yosys(false);
   auto &theInstanceGraph = getAnalysis<hw::InstanceGraph>();
@@ -187,11 +189,11 @@ void ExportYosysParallelPass::runOnOperation() {
   std::string commands;
   bool first = true;
   for (const auto &i : passes) {
-    if (first) {
+    if (first)
       first = false;
-    } else {
+    else
       commands += "; ";
-    }
+
     commands += i;
   }
   if (failed(mlir::failableParallelForEachN(
@@ -219,21 +221,26 @@ void ExportYosysParallelPass::runOnOperation() {
               op.emitError() << "Found error in yosys"
                              << "\n";
 
+            // TODO: Get the result and update the IR.
             return result;
           })))
     return signalPassFailure();
+
+  emitError(getOperation().getLoc())
+      << "Currently `yosys-optimizer-parallel` doesn't update the result IR.";
+  return signalPassFailure();
 }
 
 //===----------------------------------------------------------------------===//
 // Pass Infrastructure
 //===----------------------------------------------------------------------===//
 
-std::unique_ptr<mlir::Pass> circt::createExportYosys() {
-  return std::make_unique<ExportYosysPass>();
+std::unique_ptr<mlir::Pass> circt::createYosysOptimizer() {
+  return std::make_unique<YosysOptimizerPass>();
 }
 
-std::unique_ptr<mlir::Pass> circt::createExportYosysParallel() {
-  return std::make_unique<ExportYosysParallelPass>();
+std::unique_ptr<mlir::Pass> circt::createYosysOptimizerParallel() {
+  return std::make_unique<YosysOptimizerParallelPass>();
 }
 
 /// Entry point as an MLIR translation.

@@ -2,7 +2,7 @@
 // REQUIRES: circt-lec-jit
 
 // Run synthesis and check the LEC.
-// RUN: circt-opt --pass-pipeline='builtin.module(export-yosys{passes=synth},canonicalize)' -o %t.mlir %s
+// RUN: circt-opt --pass-pipeline='builtin.module(yosys-optimizer{passes=synth},canonicalize)' -o %t.mlir %s
 // RUN: circt-lec %s %t.mlir -c1=Arith -c2=Arith --shared-libs=%libz3 | FileCheck %s --check-prefix=Comb
 // RUN: circt-lec %s %t.mlir -c1=ICmp -c2=ICmp --shared-libs=%libz3 | FileCheck %s --check-prefix=ICmp
 // Comb: c1 == c2

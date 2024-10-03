@@ -768,8 +768,8 @@ int main(int argc, char **argv) {
     registerLowerVerifToSVPass();
     registerLowerLTLToCorePass();
     registerConvertHWToBTOR2Pass();
-    registerExportYosysPass();
-    registerExportYosysParallelPass();
+    registerYosysOptimizerPass();
+    registerYosysOptimizerParallelPass();
   }
 
   // Register any pass manager command line options.
