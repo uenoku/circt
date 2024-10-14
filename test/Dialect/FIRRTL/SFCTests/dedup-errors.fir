@@ -2,7 +2,6 @@
 ; Tests extracted from:
 ;   - test/scala/firrtlTests/transforms/DedupTests.scala
 
-FIRRTL version 4.0.0
 ; "modules should not be deduped if the NoCircuitDedupAnnotation is supplied"
 ;
 ; CHECK-LABEL: firrtl.circuit "Top"
@@ -23,7 +22,7 @@ circuit Top: %[[
     output b: UInt<1>
     b <= a
   ; CHECK: firrtl.module @Top(
-  public module Top:
+  module Top:
     input a: UInt<1>
     output b: UInt<1>
 

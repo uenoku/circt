@@ -4,7 +4,6 @@
 ; RUN: firtool %s --format=fir --ir-sv -disable-mem-randomization --disable-reg-randomization | FileCheck %s --check-prefix COMMON --implicit-check-not RANDOMIZE_MEM --implicit-check-not RANDOMIZE_REG
 ; RUN: firtool %s --format=fir --ir-sv -disable-all-randomization | FileCheck %s --check-prefix COMMON --implicit-check-not RANDOMIZE_MEM --implicit-check-not RANDOMIZE_REG
 
-FIRRTL version 4.0.0
 circuit Qux: %[[{
     "class": "sifive.enterprise.firrtl.MarkDUTAnnotation",
     "target":"~Qux|Qux"
@@ -12,7 +11,7 @@ circuit Qux: %[[{
   {
     "class": "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"
   }]]
-  public module Qux: 
+  module Qux: 
     input clock: Clock
     input rAddr: UInt<2>
     input rEn: UInt<1>

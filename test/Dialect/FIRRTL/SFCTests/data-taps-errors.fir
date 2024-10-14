@@ -1,6 +1,5 @@
 ; RUN: firtool %s --split-input-file -verify-diagnostics
 
-FIRRTL version 4.0.0
 circuit TapBetweenWhens : %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -13,10 +12,10 @@ circuit TapBetweenWhens : %[[
     ]
   }
 ]]
-  public module TapBetweenWhens :
+  module TapBetweenWhens :
     input c1: UInt<1>
     input c2: UInt<1>
-    output o: UInt<1>
+    output o: UInt
 
     when c1:
       ; expected-error @below {{This value is involved with a Wiring Problem where the destination}}
@@ -33,7 +32,6 @@ circuit TapBetweenWhens : %[[
 
 ; // -----
 
-FIRRTL version 4.0.0
 circuit NoSafeInsertionPoint : %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -46,7 +44,7 @@ circuit NoSafeInsertionPoint : %[[
     ]
   }
 ]]
-  public module NoSafeInsertionPoint :
+  module NoSafeInsertionPoint :
     input c: UInt<1>
     output o: UInt<1>
 
@@ -62,7 +60,6 @@ circuit NoSafeInsertionPoint : %[[
 
 ; // -----
 
-FIRRTL version 4.0.0
 ; expected-error @below {{Unable to apply annotation}}
 circuit Top : %[[
   {
@@ -155,7 +152,7 @@ circuit Top : %[[
 
     inst b of Bar
 
-  public module Top:
+  module Top:
 
     inst foo of Foo
 

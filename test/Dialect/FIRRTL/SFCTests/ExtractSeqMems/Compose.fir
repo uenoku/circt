@@ -19,7 +19,6 @@
 ; - Inject DUT Hierarchy
 ; - Prefixing
 
-FIRRTL version 4.0.0
 circuit TestHarness : %[[
   {
     "class":"sifive.enterprise.firrtl.NestedPrefixModulesAnnotation",
@@ -120,7 +119,7 @@ circuit TestHarness : %[[
   ; TESTHARNESS: Prefix_DUTModule dut
   ; TESTHARNESS-NOT: mem_ext mem_ext
   ; TESTHARNESS-NOT: Prefix_mem_ext mem_ext
-  public module TestHarness :
+  module TestHarness :
     input clock : Clock
     input reset : UInt<1>
     output io : { foo : { flip addr : UInt<3>, flip dataIn : UInt<8>, flip wen : UInt<1>, dataOut : UInt<8>}, bar : { flip addr : UInt<3>, flip dataIn : UInt<8>, flip wen : UInt<1>, dataOut : UInt<8>}}

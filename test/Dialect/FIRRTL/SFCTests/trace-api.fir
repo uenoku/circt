@@ -1,7 +1,6 @@
 ; RUN: firtool --output-annotation-file=Baz.anno.json %s | FileCheck %s
 
 ; Test that a wire in an inlined instance get the proper Trace Annotation.
-FIRRTL version 4.0.0
 circuit Foo: %[[
   {
     "class":"chisel3.experimental.Trace$TraceNameAnnotation",
@@ -33,7 +32,7 @@ circuit Foo: %[[
     baz.a <= a
     b <= baz.b
 
-  public module Foo:
+  module Foo:
     input a: UInt<1>
     output b: UInt<1>
 

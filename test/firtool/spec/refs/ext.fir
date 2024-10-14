@@ -1,6 +1,5 @@
 ; RUN: firtool %s
 ; RUN: firtool %s -preserve-aggregate=all -scalarize-public-modules=false
-FIRRTL version 3.0.0
 circuit MyExternalModuleWithRefs :
   ; SPEC EXAMPLE BEGIN
   extmodule MyExternalModuleWithRefs :

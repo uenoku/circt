@@ -1,6 +1,5 @@
 ; RUN: firtool --verilog %s --split-input-file | FileCheck %s
 
-FIRRTL version 4.0.0
 circuit Top : %[[
   {
     "class": "sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -80,7 +79,7 @@ circuit Top : %[[
 
     inst b of Bar
 
-  public module Top:
+  module Top:
 
     inst foo of Foo
 
@@ -123,7 +122,6 @@ circuit Top : %[[
 
 ; XMR references should work through 'when's.
 ; https://github.com/llvm/circt/issues/4334
-FIRRTL version 4.0.0
 circuit Top : %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -166,9 +164,9 @@ circuit Top : %[[
   ; CHECK-EMPTY:
   ; CHECK-NEXT:    assign o = 3'h2;
   ; CHECK-NEXT:  endmodule
-  public module Top :
+  module Top :
     input c: UInt<1>
-    output o: UInt<3>
+    output o: UInt
 
     wire val : UInt<3>
     val <= UInt(1)

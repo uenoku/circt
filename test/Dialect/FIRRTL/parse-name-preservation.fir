@@ -1,7 +1,6 @@
 ; RUN: firtool --parse-only %s | FileCheck %s
-FIRRTL version 4.0.0
 circuit Bar :
-  public module Bar :
+  module Bar :
     input in: UInt<1>
 
     ; Should create a "tap" node with the same type and a symbol when the type

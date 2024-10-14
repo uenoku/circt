@@ -1,8 +1,7 @@
 ; RUN: circt-translate %s --import-firrtl | FileCheck %s --strict-whitespace
-FIRRTL version 4.0.0
 
 circuit Foo:
-  public module Foo:
+  module Foo:
     mem memory:
       data-type => UInt<8>
       depth => 2147483648

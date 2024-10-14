@@ -1,8 +1,7 @@
 ; RUN: firtool %s --annotation-file %s.anno.json -repl-seq-mem -repl-seq-mem-file="test.conf" |  FileCheck %s
 
-FIRRTL version 4.0.0
 circuit test:
-  public module test:
+  module test:
     input clock: Clock
     input rAddr: UInt<4>
     input rEn: UInt<1>

@@ -1,7 +1,6 @@
 ; RUN: firtool %s --format=fir  --annotation-file %s.anno.json --verilog |  FileCheck %s
 ; XFAIL: true
 
-FIRRTL version 4.0.0
 circuit test:
   module memoryTest1:
     input clock: Clock
@@ -64,7 +63,7 @@ circuit test:
     memory.w.data <= wData
 
 
-  public module test: 
+  module test: 
     input clock: Clock
     input rAddr: UInt<4>
     input rEn: UInt<1>

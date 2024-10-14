@@ -18,7 +18,6 @@
 ; NOREF-DAG: firrtl.matchingconnect %[[A]],
 ; NOREF-DAG: %[[B:.+]] = firrtl.subfield %[[OUT_PORT]][b]
 ; NOREF-DAG: firrtl.matchingconnect %[[B]],
-FIRRTL version 4.0.0
 circuit Top : %[[
   {
     "class": "sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -35,7 +34,7 @@ circuit Top : %[[
     input x: {a : UInt<2>, flip b: UInt<2>}
     x.b <= UInt<2>(2)
 
-  public module Top :
+  module Top :
     input x: {a : UInt<2>, flip b: UInt<2>}
     output tap : {a : UInt<2>, b: UInt<2>}
 
@@ -51,7 +50,6 @@ circuit Top : %[[
 
 ; CHECK-LABEL: circuit "Local"
 ; NOREF-LABEL: circuit "Local"
-FIRRTL version 4.0.0
 circuit Local: %[[
   {
     "class": "sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -69,7 +67,7 @@ circuit Local: %[[
     ]
   }
 ]]
-  public module Local:
+  module Local:
     input x: {a : UInt<2>, flip b: UInt<2>}
     output tap : {a : UInt<2>, b: UInt<2>}
 

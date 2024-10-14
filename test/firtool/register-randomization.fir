@@ -3,9 +3,8 @@
 ; RUN: firtool -preserve-values=none -verilog %s | FileCheck %s --check-prefix=NONE
 ; RUN: firtool -preserve-values=all -verilog %s --lowering-options=disallowLocalVariables| FileCheck %s --check-prefix=LOCAL
 
-FIRRTL version 4.0.0
 circuit Foo:
-  public module Foo:
+  module Foo:
     input clock: Clock
     input d: UInt<33>
     input d0: UInt<60000>

@@ -1727,6 +1727,9 @@ private:
   // the representation simpler and more consistent.
   void emitInvalidate(Value val) { emitInvalidate(val, foldFlow(val)); }
 
+  /// Emit the logic for a partial connect using standard connect.
+  void emitPartialConnect(ImplicitLocOpBuilder &builder, Value dst, Value src);
+
   /// Parse an @info marker if present and inform locationProcessor about it.
   ParseResult parseOptionalInfo() {
     LocationAttr loc;
@@ -1890,6 +1893,77 @@ void FIRStmtParser::emitInvalidate(Value val, Flow flow) {
           emitInvalidate(subindex, flow);
         }
       });
+}
+
+void FIRStmtParser::emitPartialConnect(ImplicitLocOpBuilder &builder, Value dst,
+                                       Value src) {
+  auto dstType = type_dyn_cast<FIRRTLBaseType>(dst.getType());
+  auto srcType = type_dyn_cast<FIRRTLBaseType>(src.getType());
+  if (!dstType || !srcType)
+    return emitConnect(builder, dst, src);
+
+  if (type_isa<AnalogType>(dstType)) {
+    builder.create<AttachOp>(ArrayRef<Value>{dst, src});
+  } else if (dstType == srcType && !dstType.containsAnalog()) {
+    emitConnect(builder, dst, src);
+  } else if (auto dstBundle = type_dyn_cast<BundleType>(dstType)) {
+    auto srcBundle = type_cast<BundleType>(srcType);
+    auto numElements = dstBundle.getNumElements();
+    for (size_t dstIndex = 0; dstIndex < numElements; ++dstIndex) {
+      // Find a matching field by name in the other bundle.
+      auto &dstElement = dstBundle.getElements()[dstIndex];
+      auto name = dstElement.name;
+      auto maybe = srcBundle.getElementIndex(name);
+      // If there was no matching field name, don't connect this one.
+      if (!maybe)
+        continue;
+      auto dstRef = moduleContext.getCachedSubaccess(dst, dstIndex);
+      if (!dstRef) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointAfterValue(dst);
+        dstRef = builder.create<SubfieldOp>(dst, dstIndex);
+      }
+      // We are pulling two fields from the cache. If the dstField was a
+      // pointer into the cache, then the lookup for srcField might invalidate
+      // it. So, we just copy dstField into a local.
+      auto dstField = dstRef;
+      auto srcIndex = *maybe;
+      auto &srcField = moduleContext.getCachedSubaccess(src, srcIndex);
+      if (!srcField) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointAfterValue(src);
+        srcField = builder.create<SubfieldOp>(src, srcIndex);
+      }
+      if (!dstElement.isFlip)
+        emitPartialConnect(builder, dstField, srcField);
+      else
+        emitPartialConnect(builder, srcField, dstField);
+    }
+  } else if (auto dstVector = type_dyn_cast<FVectorType>(dstType)) {
+    auto srcVector = type_cast<FVectorType>(srcType);
+    auto dstNumElements = dstVector.getNumElements();
+    auto srcNumEelemnts = srcVector.getNumElements();
+    // Partial connect will connect all elements up to the end of the array.
+    auto numElements = std::min(dstNumElements, srcNumEelemnts);
+    for (size_t i = 0; i != numElements; ++i) {
+      auto &dstRef = moduleContext.getCachedSubaccess(dst, i);
+      if (!dstRef) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointAfterValue(dst);
+        dstRef = builder.create<SubindexOp>(dst, i);
+      }
+      auto dstField = dstRef; // copy to ensure not invalidated
+      auto &srcField = moduleContext.getCachedSubaccess(src, i);
+      if (!srcField) {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointAfterValue(src);
+        srcField = builder.create<SubindexOp>(src, i);
+      }
+      emitPartialConnect(builder, dstField, srcField);
+    }
+  } else {
+    emitConnect(builder, dst, src);
+  }
 }
 
 //===-------------------------------
@@ -2595,6 +2669,7 @@ FIRStmtParser::parseExpWithLeadingKeyword(FIRToken keyword) {
   case FIRToken::l_square:   // exp `[` index `]`
   case FIRToken::kw_is:      // exp is invalid
   case FIRToken::less_equal: // exp <= thing
+  case FIRToken::less_minus: // exp <- thing
     break;
   }
 
@@ -4006,6 +4081,7 @@ ParseResult FIRStmtParser::parseLayerBlockOrGroup(unsigned indent) {
 }
 
 /// leading-exp-stmt ::= exp '<=' exp info?
+///                  ::= exp '<-' exp info?
 ///                  ::= exp 'is' 'invalid' info?
 ParseResult FIRStmtParser::parseLeadingExpStmt(Value lhs) {
   auto loc = getToken().getLoc();
@@ -4021,8 +4097,20 @@ ParseResult FIRStmtParser::parseLeadingExpStmt(Value lhs) {
     return success();
   }
 
-  if (parseToken(FIRToken::less_equal, "expected '<=' in statement"))
-    return failure();
+  auto kind = getToken().getKind();
+  switch (kind) {
+  case FIRToken::less_equal:
+    break;
+  case FIRToken::less_minus:
+    if (removedFeature({2, 0, 0}, "partial connects"))
+      return failure();
+    break;
+  default:
+    return emitError() << "unexpected token '" << getToken().getSpelling()
+                       << "' in statement",
+           failure();
+  }
+  consumeToken();
 
   Value rhs;
   if (parseExp(rhs, "unexpected token in statement") || parseOptionalInfo())
@@ -4038,10 +4126,19 @@ ParseResult FIRStmtParser::parseLeadingExpStmt(Value lhs) {
   if (lhsType.containsReference() || rhsType.containsReference())
     return emitError(loc, "cannot connect types containing references");
 
-  if (!areTypesEquivalent(lhsType, rhsType))
-    return emitError(loc, "cannot connect non-equivalent type ")
-           << rhsType << " to " << lhsType;
-  emitConnect(builder, lhs, rhs);
+  if (kind == FIRToken::less_equal) {
+    if (!areTypesEquivalent(lhsType, rhsType))
+      return emitError(loc, "cannot connect non-equivalent type ")
+             << rhsType << " to " << lhsType;
+    emitConnect(builder, lhs, rhs);
+  } else {
+    assert(kind == FIRToken::less_minus && "unexpected kind");
+    if (!areTypesWeaklyEquivalent(lhsType, rhsType))
+      return emitError(loc,
+                       "cannot partially connect non-weakly-equivalent type ")
+             << rhsType << " to " << lhsType;
+    emitPartialConnect(builder, lhs, rhs);
+  }
   return success();
 }
 
@@ -5564,7 +5661,7 @@ FIRCircuitParser::parseModuleBody(const SymbolTable &circuitSymTbl,
         printfLoc = printFOp.getLoc();
     });
 
-    if (numVerifPrintfs > 0) {
+    if (false && numVerifPrintfs > 0) {
       auto diag =
           mlir::emitError(deferredModule.moduleOp.getLoc(), "module contains ")
           << numVerifPrintfs
@@ -5595,17 +5692,17 @@ ParseResult FIRCircuitParser::parseCircuit(
     mlir::TimingScope &ts) {
 
   auto indent = getIndentation();
-  if (parseToken(FIRToken::kw_FIRRTL, "expected 'FIRRTL'"))
-    return failure();
-  if (!indent.has_value())
-    return emitError("'FIRRTL' must be first token on its line");
-  if (parseToken(FIRToken::kw_version, "expected version after 'FIRRTL'") ||
-      parseVersionLit("expected version literal"))
-    return failure();
-  indent = getIndentation();
+  if (consumeIf(FIRToken::kw_FIRRTL)) {
+    if (!indent.has_value())
+      return emitError("'FIRRTL' must be first token on its line"), failure();
+    if (parseToken(FIRToken::kw_version, "expected version after 'FIRRTL'") ||
+        parseVersionLit("expected version literal"))
+      return failure();
+    indent = getIndentation();
+  }
 
   if (!indent.has_value())
-    return emitError("'circuit' must be first token on its line");
+    return emitError("'circuit' must be first token on its line"), failure();
   unsigned circuitIndent = *indent;
 
   LocWithInfo info(getToken().getLoc(), this);
@@ -5831,7 +5928,8 @@ circt::firrtl::importFIRFile(SourceMgr &sourceMgr, MLIRContext *context,
                           /*column=*/0)));
   SharedParserConstants state(context, options);
   FIRLexer lexer(sourceMgr, context);
-  if (FIRCircuitParser(state, lexer, *module, minimumFIRVersion)
+  FIRVersion version = defaultFIRVersion;
+  if (FIRCircuitParser(state, lexer, *module, version)
           .parseCircuit(annotationsBufs, omirBufs, ts))
     return nullptr;
 

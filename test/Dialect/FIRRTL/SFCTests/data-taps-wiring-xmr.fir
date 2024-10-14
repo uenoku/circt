@@ -1,6 +1,5 @@
 ; RUN: firtool %s --split-input-file | FileCheck %s
 
-FIRRTL version 4.0.0
 circuit SinkThroughWhens: %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -35,7 +34,7 @@ circuit SinkThroughWhens: %[[
       inst leaf of Leaf
       leaf.c <= c
 
-  public module SinkThroughWhens :
+  module SinkThroughWhens :
     input c: UInt<1>
 
     wire val : UInt<3>
@@ -46,7 +45,6 @@ circuit SinkThroughWhens: %[[
 
 ; // -----
 
-FIRRTL version 4.0.0
 circuit TapWhenVal : %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -60,7 +58,7 @@ circuit TapWhenVal : %[[
   }
 ]]
 ; CHECK-LABEL: module TapWhenVal
-  public module TapWhenVal :
+  module TapWhenVal :
     input c: UInt<1>
     output o: UInt<1>
 
@@ -76,7 +74,6 @@ circuit TapWhenVal : %[[
 
 ; // -----
 
-FIRRTL version 4.0.0
 circuit TapIntoWhen : %[[
   {
     "class":"sifive.enterprise.grandcentral.DataTapsAnnotation",
@@ -90,7 +87,7 @@ circuit TapIntoWhen : %[[
   }
 ]]
 ; CHECK-LABEL: module TapIntoWhen
-  public module TapIntoWhen :
+  module TapIntoWhen :
     input c: UInt<1>
     output o: UInt<1>
 

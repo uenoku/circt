@@ -7,9 +7,8 @@
 
 ; Every async reset reg should generate its own always block.
 ; CHECK-LABEL: module Foo(
-FIRRTL version 4.0.0
 circuit Foo:
-  public module Foo:
+  module Foo:
     input clock0 : Clock
     input clock1 : Clock
     input syncReset : UInt<1>

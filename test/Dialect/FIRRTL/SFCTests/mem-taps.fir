@@ -3,7 +3,6 @@
 ; RUN: firtool --verilog -allow-adding-ports-on-public-modules -lower-annotations-no-ref-type-ports %s | FileCheck %s --check-prefix=NOREFS
 ; RUN: firtool -allow-adding-ports-on-public-modules --parse-only %s | circt-opt --firrtl-probes-to-signals | firtool --verilog --format=mlir | FileCheck %s --check-prefix=PROBESTOSIGNALS
 
-FIRRTL version 4.0.0
 circuit Top : %[[
   {
     "class": "sifive.enterprise.firrtl.MarkDUTAnnotation",
@@ -40,7 +39,7 @@ circuit Top : %[[
       infer mport write = rf[io.addr], clock
       write <= io.dataIn
 
-  public module Top :
+  module Top :
     input clock : Clock
     input reset : UInt<1>
     output io : { flip addr : UInt<3>, flip dataIn : UInt<8>, flip wen : UInt<1>, dataOut : UInt<8>}
