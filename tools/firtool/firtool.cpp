@@ -757,6 +757,7 @@ int main(int argc, char **argv) {
     registerExportSplitChiselInterfacePass();
     registerExportSplitVerilogPass();
     registerExportVerilogPass();
+    registerYosysOptimizerPass();
 
     // Conversion passes:
     registerPrepareForEmissionPass();

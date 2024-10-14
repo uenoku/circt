@@ -195,6 +195,7 @@ struct ExportRTLILModule
   // HW stmt op.
   LogicalResult visitStmt(OutputOp op);
   LogicalResult visitStmt(InstanceOp op);
+  LogicalResult visitStmt(hw::WireOp op);
 
   // HW expr ops.
   LogicalResult visitTypeOp(AggregateConstantOp op);
@@ -394,6 +395,13 @@ LogicalResult ExportRTLILModule::visitStmt(OutputOp op) {
   }
 
   return success();
+}
+
+LogicalResult ExportRTLILModule::visitStmt(hw::WireOp op) {
+  auto result = getValue(op.getInput());
+  if (failed(result))
+    return failure();
+  return setLowering(op, result.value());
 }
 
 LogicalResult ExportRTLILModule::visitStmt(InstanceOp op) {
@@ -758,11 +766,10 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemWriteOp op) {
   if (!firmem)
     return failure();
   SmallVector<std::pair<llvm::StringRef, mlir::Value>> ports{
-      {"ADDR", op.getAddress()},
-      {"CLK", op.getClk()},
-      {"DATA", op.getData()},
-      {"EN", op.getData()}};
+      {"ADDR", op.getAddress()}, {"CLK", op.getClk()}, {"DATA", op.getData()}};
+
   OpBuilder builder(module.getContext());
+
   auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
   auto widthConst = builder.getI32IntegerAttr(
       llvm::Log2_64_Ceil(firmem.getType().getDepth()));
@@ -783,10 +790,21 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemWriteOp op) {
   if (failed(cell))
     return cell;
 
+  // Handle enable signal.
+  SigSpec ret;
+  SigSpec enable;
   if (op.getEnable()) {
-    auto enable = getValue(op.getEnable());
-  }
+    auto result = getValue(op.getEnable());
+    if (failed(result))
+      return result;
+    enable = result.value();
+  } else
+    enable = SigSpec(getConstant(APInt(1, 1)));
 
+  for (unsigned i = 0; i < firmem.getType().getWidth(); i++)
+    ret.append(enable);
+
+  (*cell)->connections_.insert({getEscapedName("EN"), ret});
   return success();
 }
 LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
@@ -823,20 +841,16 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   auto memName = builder.getStringAttr(it->second.mem->name.str());
   auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
   SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
-      {"ABITS", widthConst},
-      {"CLK_ENABLE", op.getEnable() ? trueConst : falseConst},
-      {"CLK_POLARITY", falseConst},
-      {"TRANSPARENT", falseConst},
-      {"MEMID", memName},
-      {"WIDTH", width}};
+      {"ABITS", widthConst},        {"CLK_ENABLE", trueConst},
+      {"CLK_POLARITY", falseConst}, {"TRANSPARENT", falseConst},
+      {"MEMID", memName},           {"WIDTH", width}};
 
   auto cell = createCell(op->getLoc(), "$memrd", "mem_read", parameters, ports);
   if (failed(cell))
     return cell;
-  if (!op.getEnable()) {
+  if (!op.getEnable())
     (*cell)->connections_.insert(
         {getEscapedName("EN"), SigSpec(getConstant(APInt(1, 1)))});
-  }
 
   return success();
 }
