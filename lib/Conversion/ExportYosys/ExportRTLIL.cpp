@@ -586,7 +586,7 @@ LogicalResult ExportRTLILModule::visitComb(ShrUOp op) {
 LogicalResult ExportRTLILModule::visitComb(ShrSOp op) {
   return emitBinaryOp(op, [&](auto name, auto l, auto r, const auto &loc) {
     // TODO: Make sure it's correct
-    return rtlilModule->Sshr(name, l, r, false, loc);
+    return rtlilModule->Sshr(name, l, r, true, loc);
   });
 }
 
@@ -842,7 +842,7 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   auto memName = builder.getStringAttr(it->second.mem->name.str());
   auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
   SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
-      {"ABITS", widthConst},        {"CLK_ENABLE", trueConst},
+      {"ABITS", widthConst},        {"CLK_ENABLE", /*trueConst*/falseConst},
       {"CLK_POLARITY", falseConst}, {"TRANSPARENT", falseConst},
       {"MEMID", memName},           {"WIDTH", width}};
 
