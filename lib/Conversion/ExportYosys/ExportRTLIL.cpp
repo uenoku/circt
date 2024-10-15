@@ -807,6 +807,7 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemWriteOp op) {
   (*cell)->connections_.insert({getEscapedName("EN"), ret});
   return success();
 }
+
 LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   // rtlilModule->addCell("$memrd", id)
   // Memrd
@@ -855,7 +856,89 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   return success();
 }
 LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
-  return failure();
+
+  auto firmem = op.getMemory().getDefiningOp<seq::FirMemOp>();
+  if (!firmem)
+    return failure();
+  {
+    // Read.
+    SmallVector<std::pair<llvm::StringRef, mlir::Value>> ports{
+        {"ADDR", op.getAddress()},
+        {"CLK", op.getClk()},
+        {"DATA", op.getReadData()}};
+    if (op.getEnable())
+      ports.emplace_back("EN", op.getEnable());
+    OpBuilder builder(module.getContext());
+    auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
+    auto falseConst = builder.getIntegerAttr(builder.getI1Type(), 0);
+
+    auto widthConst = builder.getI32IntegerAttr(
+        llvm::Log2_64_Ceil(firmem.getType().getDepth()));
+
+    auto it = memoryMapping.find(firmem);
+    assert(it != memoryMapping.end() && "firmem should be visited");
+    auto memName = builder.getStringAttr(it->second.mem->name.str());
+    auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
+    SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
+        {"ABITS", widthConst},        {"CLK_ENABLE", trueConst},
+        {"CLK_POLARITY", falseConst}, {"TRANSPARENT", falseConst},
+        {"MEMID", memName},           {"WIDTH", width}};
+
+    auto cell =
+        createCell(op->getLoc(), "$memrd", "mem_read", parameters, ports);
+    if (failed(cell))
+      return cell;
+    if (!op.getEnable())
+      (*cell)->connections_.insert(
+          {getEscapedName("EN"), SigSpec(getConstant(APInt(1, 1)))});
+  }
+  {
+    // Write.
+    SmallVector<std::pair<llvm::StringRef, mlir::Value>> ports{
+        {"ADDR", op.getAddress()},
+        {"CLK", op.getClk()},
+        {"DATA", op.getWriteData()}};
+
+    OpBuilder builder(module.getContext());
+
+    auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
+    auto widthConst = builder.getI32IntegerAttr(
+        llvm::Log2_64_Ceil(firmem.getType().getDepth()));
+
+    auto it = memoryMapping.find(firmem);
+    assert(it != memoryMapping.end() && "firmem should be visited");
+    auto memName = builder.getStringAttr(it->second.mem->name.str());
+    auto portId = builder.getI32IntegerAttr(++it->second.portId);
+    auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
+    SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
+        {"ABITS", widthConst},       {"CLK_ENABLE", trueConst},
+        {"CLK_POLARITY", trueConst}, {"MEMID", memName},
+        {"PORTID", portId},          {"WIDTH", width},
+        {"PRIORITY_MASK", trueConst}};
+
+    auto cell =
+        createCell(op->getLoc(), "$memwr_v2", "mem_write", parameters, ports);
+    if (failed(cell))
+      return cell;
+
+    // Handle enable signal.
+    SigSpec ret;
+    SigSpec enable;
+    if (op.getEnable()) {
+      auto result = getValue(op.getEnable());
+      if (failed(result))
+        return result;
+      enable = result.value();
+    } else
+      enable = SigSpec(getConstant(APInt(1, 1)));
+
+    for (unsigned i = 0; i < firmem.getType().getWidth(); i++)
+      ret.append(enable);
+
+    (*cell)->connections_.insert({getEscapedName("EN"), ret});
+  }
+
+  return success();
 }
 
 LogicalResult ExportRTLILModule::visitSeq(seq::FromClockOp op) {

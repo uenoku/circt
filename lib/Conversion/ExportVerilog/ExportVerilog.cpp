@@ -2969,7 +2969,7 @@ void ExprEmitter::printConstantArray(ArrayAttr elementValues, Type elementType,
                                      bool printAsPattern, Operation *op) {
   if (printAsPattern && !isAssignmentLikeContext)
     emitAssignmentPatternContextError(op);
-  StringRef openDelim = printAsPattern ? "'{" : "{";
+  StringRef openDelim = printAsPattern ? "{" : "{";
 
   emitBracedList(
       elementValues, [&]() { ps << openDelim; },
