@@ -849,6 +849,7 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   auto cell = createCell(op->getLoc(), "$memrd", "mem_read", parameters, ports);
   if (failed(cell))
     return cell;
+
   (*cell)->connections_.insert(
       {getEscapedName("EN"), SigSpec(RTLIL::Const(RTLIL::State::Sx, 1))});
   (*cell)->connections_.insert(
