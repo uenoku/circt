@@ -21,7 +21,9 @@
 #include "circt/Dialect/Seq/SeqAttributes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqPasses.h"
+#include "circt/Support/InstanceGraph.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Path.h"
@@ -155,8 +157,7 @@ Value HWMemSimImpl::addPipelineStages(ImplicitLocOpBuilder &b,
   for (unsigned i = 0; i < stages; ++i) {
     auto regName =
         b.getStringAttr(moduleNamespace.newName("_" + name + "_d" + Twine(i)));
-    auto reg = b.create<sv::RegOp>(data.getType(), regName,
-                                   hw::InnerSymAttr::get(regName));
+    auto reg = b.create<sv::RegOp>(data.getType(), regName);
     regs.push_back(reg);
     registers.push_back(reg);
   }
@@ -589,7 +590,7 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem) {
       b.create<sv::VerbatimOp>("`INIT_RANDOM_PROLOG_");
 
       // Memory randomization logic.  The entire memory is randomized.
-      if (!disableMemRandomization) {
+      if (false && !disableMemRandomization) {
         b.create<sv::IfDefProceduralOp>("RANDOMIZE_MEM_INIT", [&]() {
           auto outerLoopIndVarType =
               b.getIntegerType(llvm::Log2_64_Ceil(mem.depth + 1));
@@ -637,7 +638,7 @@ void HWMemSimImpl::generateMemory(HWModuleOp op, FirMemory mem) {
       //
       // TODO: This shares a lot of common logic with LowerToHW.  Combine
       // these two in a common randomization utility.
-      if (!disableRegRandomization) {
+      if (false && !disableRegRandomization) {
         b.create<sv::IfDefProceduralOp>("RANDOMIZE_REG_INIT", [&]() {
           unsigned bits = randomWidth;
           for (sv::RegOp &reg : randRegs)
@@ -718,6 +719,7 @@ void HWMemSimImplPass::runOnOperation() {
 
   SmallVector<HWModuleGeneratedOp> toErase;
   bool anythingChanged = false;
+  SmallVector<hw::HWModuleOp> modulesToInline;
 
   for (auto op :
        llvm::make_early_inc_range(topModule.getOps<HWModuleGeneratedOp>())) {
@@ -747,6 +749,7 @@ void HWMemSimImplPass::runOnOperation() {
         newModule.setCommentAttr(
             builder.getStringAttr("VCS coverage exclude_file"));
         newModule.setPrivate();
+        modulesToInline.push_back(newModule);
 
         HWMemSimImpl(readEnableMode, addMuxPragmas, disableMemRandomization,
                      disableRegRandomization,
@@ -760,6 +763,30 @@ void HWMemSimImplPass::runOnOperation() {
     }
   }
 
+  circt::igraph::InstanceGraph instanceGraph(topModule);
+  for (auto module : modulesToInline) {
+    auto *node = instanceGraph[module];
+    for (auto *inst : llvm::make_early_inc_range(node->uses())) {
+      auto instance = dyn_cast<InstanceOp>(*inst->getInstance());
+      assert(instance && module);
+      auto cloned = module.clone();
+
+      mlir::IRRewriter rewriter(instance.getContext());
+      rewriter.inlineBlockBefore(cloned.getBodyBlock(), instance,
+                                 instance.getOperands());
+      cloned.erase();
+
+      auto output = cast<hw::OutputOp>(*std::prev(instance->getIterator()));
+      for (auto [result, operand] :
+           llvm::zip(instance.getResults(), output.getOperands()))
+        result.replaceAllUsesWith(operand);
+      inst->erase();
+      rewriter.eraseOp(output);
+      rewriter.eraseOp(instance);
+    }
+    instanceGraph.erase(node);
+    module.erase();
+  }
   if (!anythingChanged)
     markAllAnalysesPreserved();
 }

@@ -71,9 +71,9 @@ public:
 
   /// Information required to lower a single memory in a module.
   using MemoryConfig =
-      std::tuple<FirMemConfig *, hw::HWModuleGeneratedOp, seq::FirMemOp>;
+      std::tuple<FirMemConfig *, hw::HWModuleLike, seq::FirMemOp>;
 
-  FirMemLowering(ModuleOp circuit);
+  FirMemLowering(ModuleOp circuit, bool createWrapperModuleAndPreserveFirMem = false);
 
   /**
    * Groups memories by their kind from the whole design.
@@ -89,7 +89,7 @@ public:
   /**
    * Creates the generated module for a given configuration.
    */
-  hw::HWModuleGeneratedOp createMemoryModule(FirMemConfig &mem,
+  hw::HWModuleLike createMemoryModule(FirMemConfig &mem,
                                              ArrayRef<seq::FirMemOp> memOps);
 
 private:
@@ -110,6 +110,7 @@ private:
   DenseMap<hw::HWModuleOp, size_t> moduleIndex;
 
   hw::HWGeneratorSchemaOp schemaOp;
+  bool createWrapperModuleAndPreserveFirMem = false;
 };
 
 } // namespace circt

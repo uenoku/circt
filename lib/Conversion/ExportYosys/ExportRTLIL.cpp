@@ -16,12 +16,14 @@
 #include "circt/Dialect/HW/HWVisitors.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVOps.h"
+#include "circt/Dialect/SV/SVVisitors.h"
 #include "circt/Dialect/Seq/SeqVisitor.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "circt/Support/Namespace.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/Debug.h"
 
 // Yosys headers.
@@ -53,7 +55,8 @@ struct ExportRTLILModule
     : public hw::TypeOpVisitor<ExportRTLILModule, LogicalResult>,
       public hw::StmtVisitor<ExportRTLILModule, LogicalResult>,
       public comb::CombinationalVisitor<ExportRTLILModule, LogicalResult>,
-      public seq::SeqOpVisitor<ExportRTLILModule, LogicalResult> {
+      public seq::SeqOpVisitor<ExportRTLILModule, LogicalResult>,
+      public sv::Visitor<ExportRTLILModule, LogicalResult> {
 
   FailureOr<RTLIL::Cell *>
   createCell(Location loc, llvm::StringRef cellName,
@@ -150,6 +153,7 @@ struct ExportRTLILModule
   using hw::StmtVisitor<ExportRTLILModule, LogicalResult>::visitStmt;
   using comb::CombinationalVisitor<ExportRTLILModule, LogicalResult>::visitComb;
   using seq::SeqOpVisitor<ExportRTLILModule, LogicalResult>::visitSeq;
+  using sv::Visitor<ExportRTLILModule, LogicalResult>::visitSV;
 
   LogicalResult visitOp(Operation *op) {
     return dispatchCombinationalVisitor(op);
@@ -176,9 +180,13 @@ struct ExportRTLILModule
     return visitUnhandledExpr(op);
   }
   LogicalResult visitInvalidSeqOp(Operation *op) {
-    return visitUnhandledExpr(op);
+    return dispatchSVVisitor(op);
   }
   LogicalResult visitUnhandledSeqOp(Operation *op) {
+    return visitUnhandledExpr(op);
+  }
+  LogicalResult visitInvalidSV(Operation *op) { return visitUnhandledExpr(op); }
+  LogicalResult visitUnhandledSV(Operation *op) {
     return visitUnhandledExpr(op);
   }
 
@@ -190,6 +198,11 @@ struct ExportRTLILModule
 
   LogicalResult visitTypeOp(ConstantOp op) {
     return setLowering(op, getConstant(op.getValueAttr()));
+  }
+
+  LogicalResult visitSV(sv::ConstantXOp op) {
+    return setLowering(
+        op, RTLIL::Const(RTLIL::State::Sx, hw::getBitWidth(op.getType())));
   }
 
   // HW stmt op.
@@ -365,13 +378,16 @@ LogicalResult ExportRTLILModule::lowerBody() {
               return WalkResult::advance();
 
             if (isa<comb::CombDialect, hw::HWDialect, seq::SeqDialect>(
-                    op->getDialect())) {
+                    op->getDialect()) ||
+                isa<sv::ConstantXOp>(op)) {
               LLVM_DEBUG(llvm::dbgs() << "Visiting " << *op << "\n");
               if (failed(visitOp(op))) {
                 op->emitError() << "lowering failed";
                 return WalkResult::interrupt();
               }
               LLVM_DEBUG(llvm::dbgs() << "Success \n");
+              // FIRRTLMem_T_2355_12x37.Memory
+              // FIRRTLMem_T_24x1.Memory
             } else {
               // Ignore Verif, LTL and Sim etc.
             }
@@ -718,6 +734,9 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemOp op) {
   mem->width = op.getType().getWidth();
   mem->size = op.getType().getDepth();
   mem->name = getNewName("Memory");
+  if (op.getReadLatency() > 1 || op.getWriteLatency() != 1) {
+    return op.emitError() << "memory with latency is not supported";
+  }
   rtlilModule->memories[mem->name] = mem;
   MemoryInfo memInfo;
   memInfo.mem = mem;
@@ -777,16 +796,17 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemWriteOp op) {
   auto it = memoryMapping.find(firmem);
   assert(it != memoryMapping.end() && "firmem should be visited");
   auto memName = builder.getStringAttr(it->second.mem->name.str());
-  auto portId = builder.getI32IntegerAttr(++it->second.portId);
+  auto portId = builder.getI32IntegerAttr(it->second.portId++);
   auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
   SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
       {"ABITS", widthConst},       {"CLK_ENABLE", trueConst},
       {"CLK_POLARITY", trueConst}, {"MEMID", memName},
-      {"PORTID", portId},          {"WIDTH", width},
-      {"PRIORITY_MASK", trueConst}};
+      {"PORTID", portId},          {"WIDTH", width}};
 
   auto cell =
       createCell(op->getLoc(), "$memwr_v2", "mem_write", parameters, ports);
+  (*cell)->parameters.insert(
+      std::make_pair("\\PRIORITY_MASK", RTLIL::Const(RTLIL::State::Sx, 1)));
   if (failed(cell))
     return cell;
 
@@ -804,6 +824,9 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemWriteOp op) {
   for (unsigned i = 0; i < firmem.getType().getWidth(); i++)
     ret.append(enable);
 
+  //  auto cell = createCell(op->getLoc(), "$mux", "mux",
+  //                         {{"B", op.getAddress()}, {"S", op.getEnable()}});
+  //
   (*cell)->connections_.insert({getEscapedName("EN"), ret});
   return success();
 }
@@ -831,8 +854,8 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   // if (op.getEnable())
   //   ports.emplace_back("EN", op.getEnable());
   OpBuilder builder(module.getContext());
-  auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
-  auto falseConst = builder.getIntegerAttr(builder.getI1Type(), 0);
+  auto trueConst = builder.getIntegerAttr(builder.getI32Type(), 1);
+  auto falseConst = builder.getIntegerAttr(builder.getI32Type(), 0);
 
   auto widthConst = builder.getI32IntegerAttr(
       llvm::Log2_64_Ceil(firmem.getType().getDepth()));
@@ -964,6 +987,7 @@ void circt::rtlil::init_yosys(bool enableLog) {
   if (enableLog)
     Yosys::log_streams.push_back(&std::cerr);
   Yosys::log_error_stderr = true;
+  Yosys::log_verbose_level = 30;
   Yosys::yosys_setup();
 }
 
@@ -1015,7 +1039,116 @@ circt::rtlil::exportRTLILDesign(ArrayRef<hw::HWModuleLike> modules,
 
 mlir::FailureOr<std::unique_ptr<Yosys::RTLIL::Design>>
 circt::rtlil::exportRTLILDesign(mlir::ModuleOp module) {
+  // For the fair comparison
+  // circt::seq::createWrapperModuleForFirMem(module);
+  module.walk([&](seq::FirMemReadOp op) {
+    auto mem = op.getMemory().getDefiningOp<seq::FirMemOp>();
+    if (!mem)
+      return;
+    if (mem.getReadLatency() != 1)
+      return;
+    OpBuilder builder(op);
+    Value newResult =
+        builder.create<seq::FirRegOp>(op.getLoc(), op.getResult(), op.getClk(),
+                                      builder.getStringAttr("read_pipe"));
+    if (op.getEnable()) {
+      auto mux = builder.create<comb::MuxOp>(op.getLoc(), op.getEnable(),
+                                             op.getResult(), newResult);
+      cast<seq::FirRegOp>(newResult.getDefiningOp())
+          .getNextMutable()
+          .assign(mux);
+    }
+    op.getResult().replaceAllUsesWith(newResult);
+  });
+
+  module.walk([&](seq::FirMemReadOp op) {
+    auto mem = op.getMemory().getDefiningOp<seq::FirMemOp>();
+    if (!mem)
+      return;
+    if (mem.getReadLatency() != 0)
+      return;
+    OpBuilder builder(op);
+    if (op.getEnable()) {
+      auto x = builder.create<sv::ConstantXOp>(op.getLoc(),
+                                               op.getResult().getType());
+      auto mux = builder.create<comb::MuxOp>(op.getLoc(), op.getEnable(),
+                                             op.getResult(), x);
+      op.getResult().replaceAllUsesWith(mux);
+    }
+  });
+
+  // module.walk([&](Operation *op) {
+  //  auto assign = [](auto op) {
+  //    OpBuilder builder(op);
+  //    if (!op.getEnable())
+  //      return;
+  //    auto x =
+  //        builder.create<sv::ConstantXOp>(op.getLoc(),
+  //        op.getData().getType());
+  //    auto newData = builder.create<comb::MuxOp>(op.getLoc(), op.getEnable(),
+  //                                               op.getData(), x);
+  //    op.getDataMutable().assign(newData);
+
+  //    auto x2 = builder.create<sv::ConstantXOp>(op.getLoc(),
+  //                                              op.getAddress().getType());
+  //    auto newAddr = builder.create<comb::MuxOp>(op.getLoc(), op.getEnable(),
+  //                                               op.getAddress(), x2);
+  //    op.getAddressMutable().assign(newAddr);
+  //  };
+  //  if (auto memWrite = dyn_cast<seq::FirMemWriteOp>(op)) {
+  //    assign(memWrite);
+  //  }
+  //  if (auto memReadWrite = dyn_cast<seq::FirMemReadWriteOp>(op)) {
+
+  //    if (!memReadWrite.getEnable())
+  //      return;
+
+  //    OpBuilder builder(op);
+  //    auto x = builder.create<sv::ConstantXOp>(
+  //        memReadWrite.getLoc(), memReadWrite.getWriteData().getType());
+  //    auto newData = builder.create<comb::MuxOp>(
+  //        memReadWrite.getLoc(), memReadWrite.getEnable(),
+  //        memReadWrite.getWriteData(), x);
+  //    memReadWrite.getWriteDataMutable().assign(newData);
+
+  //    auto x2 = builder.create<sv::ConstantXOp>(
+  //        memReadWrite.getLoc(), memReadWrite.getAddress().getType());
+  //    auto newAddr = builder.create<comb::MuxOp>(memReadWrite.getLoc(),
+  //                                               memReadWrite.getEnable(),
+  //                                               memReadWrite.getAddress(),
+  //                                               x2);
+  //    memReadWrite.getAddressMutable().assign(newAddr);
+  //  }
+  //});
+  // module.dump();
+  // module.verify();
   hw::InstanceGraph instanceGraph(module);
+  DenseMap<Operation *, size_t> depth;
+
+  size_t sz = 1;
+  llvm::errs() << "depth " << sz << " ======= \n";
+  for (auto *node : llvm::post_order(&instanceGraph)) {
+    if (!node || !node->getModule())
+      continue;
+
+    auto module = dyn_cast_or_null<HWModuleOp>(*node->getModule());
+    if (!module || module.getNumOutputPorts() == 0)
+      continue;
+    depth[module] = std::max(depth[module], 1ul);
+    if (depth[module] == sz && !module.getModuleName().contains("_")) {
+      llvm::errs() << module.getModuleName() << "\n";
+    }
+    for (auto inst : node->uses()) {
+      if (!inst->getParent() || !inst->getParent()->getModule())
+        continue;
+      auto parent =
+          dyn_cast_or_null<HWModuleOp>(*inst->getParent()->getModule());
+      if (!parent)
+        continue;
+      depth[parent] = std::max(depth[parent], depth[module] + 1ul);
+    }
+  }
+
   SmallVector<hw::HWModuleLike> modules(module.getOps<hw::HWModuleLike>());
   return exportRTLILDesign(modules, {}, instanceGraph);
 }

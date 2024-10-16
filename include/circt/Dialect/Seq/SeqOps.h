@@ -70,6 +70,8 @@ createConstantInitialValue(OpBuilder builder, Operation *constantLike);
 // initial op.
 Value unwrapImmutableValue(mlir::TypedValue<seq::ImmutableType> immutableVal);
 
+LogicalResult createWrapperModuleForFirMem(mlir::ModuleOp);
+
 } // namespace seq
 } // namespace circt
 

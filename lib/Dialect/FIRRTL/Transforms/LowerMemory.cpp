@@ -188,7 +188,6 @@ LowerMemoryPass::getMemoryModulePorts(const FirMemory &mem) {
 
   return ports;
 }
-
 FMemModuleOp
 LowerMemoryPass::emitMemoryModule(MemOp op, const FirMemory &mem,
                                   const SmallVectorImpl<PortInfo> &ports) {

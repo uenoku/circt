@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "FirMemLowering.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
@@ -18,8 +19,11 @@ using llvm::MapVector;
 
 #define DEBUG_TYPE "lower-seq-firmem"
 
-FirMemLowering::FirMemLowering(ModuleOp circuit)
-    : context(circuit.getContext()), circuit(circuit) {
+FirMemLowering::FirMemLowering(ModuleOp circuit,
+                               bool createWrapperModuleAndPreserveFirMem)
+    : context(circuit.getContext()), circuit(circuit),
+      createWrapperModuleAndPreserveFirMem(
+          createWrapperModuleAndPreserveFirMem) {
   symbolCache.addDefinitions(circuit);
   globalNamespace.add(symbolCache);
 
@@ -140,7 +144,7 @@ FlatSymbolRefAttr FirMemLowering::getOrCreateSchema() {
 }
 
 /// Create the `HWModuleGeneratedOp` for a single memory parametrization.
-HWModuleGeneratedOp
+HWModuleLike
 FirMemLowering::createMemoryModule(FirMemConfig &mem,
                                    ArrayRef<seq::FirMemOp> memOps) {
   auto schemaSymRef = getOrCreateSchema();
@@ -291,6 +295,15 @@ FirMemLowering::createMemoryModule(FirMemConfig &mem,
     loc = FusedLoc::get(context, locs);
   }
 
+  if (createWrapperModuleAndPreserveFirMem) {
+    // Create the module.
+    auto genOp = builder.create<hw::HWModuleOp>(
+        loc,
+        builder.getStringAttr(schemaSymRef.getValue() + "_" + name.getValue()),
+        ports);
+    return genOp;
+  }
+
   // Create the module.
   auto genOp = builder.create<hw::HWModuleGeneratedOp>(
       loc, schemaSymRef, name, ports, StringRef{}, ArrayAttr{}, genAttrs);
@@ -304,7 +317,7 @@ FirMemLowering::createMemoryModule(FirMemConfig &mem,
 /// corresponding generated module.
 void FirMemLowering::lowerMemoriesInModule(
     HWModuleOp module,
-    ArrayRef<std::tuple<FirMemConfig *, HWModuleGeneratedOp, FirMemOp>> mems) {
+    ArrayRef<std::tuple<FirMemConfig *, HWModuleLike, FirMemOp>> mems) {
   LLVM_DEBUG(llvm::dbgs() << "Lowering " << mems.size() << " memories in "
                           << module.getName() << "\n");
 
@@ -330,11 +343,29 @@ void FirMemLowering::lowerMemoriesInModule(
     auto addInput = [&](Value value) { inputs.push_back(value); };
     auto addOutput = [&](Value value) { outputs.push_back(value); };
 
+    FirMemOp memCloned;
+    if (createWrapperModuleAndPreserveFirMem) {
+      OpBuilder builder = OpBuilder::atBlockBegin(genOp.getBodyBlock());
+      memCloned = cast<FirMemOp>(builder.clone(*memOp));
+    }
+    SmallVector<Value> results;
+
     // Add the read ports.
     for (auto *op : memOp->getUsers()) {
       auto port = dyn_cast<FirMemReadOp>(op);
       if (!port)
         continue;
+
+      if (createWrapperModuleAndPreserveFirMem) {
+        OpBuilder builder = OpBuilder::atBlockBegin(genOp.getBodyBlock());
+        Value addr = genOp.getBodyBlock()->getArgument(inputs.size());
+        Value en = genOp.getBodyBlock()->getArgument(inputs.size() + 1);
+        Value clk = genOp.getBodyBlock()->getArgument(inputs.size() + 2);
+        auto value = builder.create<FirMemReadOp>(memOp.getLoc(), memCloned,
+                                                  addr, clk, en);
+        results.push_back(value);
+      }
+
       addInput(port.getAddress());
       addInput(valueOrOne(port.getEnable()));
       addInput(port.getClk());
@@ -346,6 +377,22 @@ void FirMemLowering::lowerMemoriesInModule(
       auto port = dyn_cast<FirMemReadWriteOp>(op);
       if (!port)
         continue;
+      if (createWrapperModuleAndPreserveFirMem) {
+        OpBuilder builder = OpBuilder::atBlockBegin(genOp.getBodyBlock());
+        Value addr = genOp.getBodyBlock()->getArgument(inputs.size());
+        Value en = genOp.getBodyBlock()->getArgument(inputs.size() + 1);
+        Value clk = genOp.getBodyBlock()->getArgument(inputs.size() + 2);
+        Value wmode = genOp.getBodyBlock()->getArgument(inputs.size() + 3);
+        Value wdata = genOp.getBodyBlock()->getArgument(inputs.size() + 4);
+
+        Value mask;
+        if (config->maskBits > 1)
+          mask = genOp.getBodyBlock()->getArgument(inputs.size() + 5);
+
+        auto value = builder.create<FirMemReadWriteOp>(
+            memOp.getLoc(), memCloned, addr, clk, en, wmode, wdata, mask);
+        results.push_back(value);
+      }
       addInput(port.getAddress());
       addInput(valueOrOne(port.getEnable()));
       addInput(port.getClk());
@@ -361,12 +408,37 @@ void FirMemLowering::lowerMemoriesInModule(
       auto port = dyn_cast<FirMemWriteOp>(op);
       if (!port)
         continue;
+      if (createWrapperModuleAndPreserveFirMem) {
+        OpBuilder builder = OpBuilder::atBlockBegin(genOp.getBodyBlock());
+        Value addr = genOp.getBodyBlock()->getArgument(inputs.size());
+        Value en = genOp.getBodyBlock()->getArgument(inputs.size() + 1);
+        Value clk = genOp.getBodyBlock()->getArgument(inputs.size() + 2);
+        Value data = genOp.getBodyBlock()->getArgument(inputs.size() + 3);
+        Value mask;
+        if (config->maskBits > 1)
+          mask = genOp.getBodyBlock()->getArgument(inputs.size() + 4);
+        builder.create<FirMemWriteOp>(memOp.getLoc(), memCloned, addr, clk, en,
+                                      data, mask);
+      }
       addInput(port.getAddress());
       addInput(valueOrOne(port.getEnable()));
       addInput(port.getClk());
       addInput(port.getData());
       if (config->maskBits > 1)
         addInput(valueOrOne(port.getMask(), config->maskBits));
+    }
+
+    if (createWrapperModuleAndPreserveFirMem) {
+      assert(results.size() == outputs.size() &&
+             "Expected as many results as outputs");
+
+      // Get terminator and remove
+      auto *terminator = genOp.getBodyBlock()->getTerminator();
+      terminator->erase();
+      OpBuilder builder = OpBuilder::atBlockEnd(genOp.getBodyBlock());
+      builder.create<hw::OutputOp>(genOp.getLoc(), results);
+      // Move to the first block
+      memCloned->moveBefore(&genOp.getBodyBlock()->front());
     }
 
     // Create the module instance.
@@ -391,4 +463,30 @@ void FirMemLowering::lowerMemoriesInModule(
       user->erase();
     memOp.erase();
   }
+}
+
+LogicalResult circt::seq::createWrapperModuleForFirMem(ModuleOp module) {
+  FirMemLowering memLowering(module, true);
+
+  auto modules = llvm::to_vector(module.getOps<HWModuleOp>());
+
+  // Identify memories and group them by module.
+  auto uniqueMems = memLowering.collectMemories(modules);
+  MapVector<HWModuleOp, SmallVector<FirMemLowering::MemoryConfig>> memsByModule;
+  for (auto &[config, memOps] : uniqueMems) {
+    // Create the `HWModuleGeneratedOp`s for each unique configuration.
+    auto genOp = memLowering.createMemoryModule(config, memOps);
+
+    // Group memories by their parent module for parallelism.
+    for (auto memOp : memOps) {
+      auto parent = memOp->getParentOfType<HWModuleOp>();
+      memsByModule[parent].emplace_back(&config, genOp, memOp);
+    }
+  }
+  for (auto module : modules) {
+    if (auto *it = memsByModule.find(module); it != memsByModule.end()) {
+      memLowering.lowerMemoriesInModule(module, it->second);
+    }
+  }
+  return success();
 }
