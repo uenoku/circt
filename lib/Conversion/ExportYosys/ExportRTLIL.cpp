@@ -827,9 +827,9 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   if (!firmem)
     return failure();
   SmallVector<std::pair<llvm::StringRef, mlir::Value>> ports{
-      {"ADDR", op.getAddress()}, {"CLK", op.getClk()}, {"DATA", op.getData()}};
-  if (op.getEnable())
-    ports.emplace_back("EN", op.getEnable());
+      {"ADDR", op.getAddress()}, {"DATA", op.getData()}};
+  // if (op.getEnable())
+  //   ports.emplace_back("EN", op.getEnable());
   OpBuilder builder(module.getContext());
   auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
   auto falseConst = builder.getIntegerAttr(builder.getI1Type(), 0);
@@ -842,21 +842,22 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadOp op) {
   auto memName = builder.getStringAttr(it->second.mem->name.str());
   auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
   SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
-      {"ABITS", widthConst},        {"CLK_ENABLE", /*trueConst*/falseConst},
+      {"ABITS", widthConst},        {"CLK_ENABLE", falseConst},
       {"CLK_POLARITY", falseConst}, {"TRANSPARENT", falseConst},
       {"MEMID", memName},           {"WIDTH", width}};
 
   auto cell = createCell(op->getLoc(), "$memrd", "mem_read", parameters, ports);
   if (failed(cell))
     return cell;
-  if (!op.getEnable())
-    (*cell)->connections_.insert(
-        {getEscapedName("EN"), SigSpec(getConstant(APInt(1, 1)))});
+  (*cell)->connections_.insert(
+      {getEscapedName("EN"), SigSpec(RTLIL::Const(RTLIL::State::Sx, 1))});
+  (*cell)->connections_.insert(
+      {getEscapedName("CLK"), SigSpec(RTLIL::Const(RTLIL::State::Sx, 1))});
 
   return success();
 }
-LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
 
+LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
   auto firmem = op.getMemory().getDefiningOp<seq::FirMemOp>();
   if (!firmem)
     return failure();
@@ -864,10 +865,10 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
     // Read.
     SmallVector<std::pair<llvm::StringRef, mlir::Value>> ports{
         {"ADDR", op.getAddress()},
-        {"CLK", op.getClk()},
+        //    {"CLK", op.getClk()},
         {"DATA", op.getReadData()}};
-    if (op.getEnable())
-      ports.emplace_back("EN", op.getEnable());
+    // if (op.getEnable())
+    //   ports.emplace_back("EN", op.getEnable());
     OpBuilder builder(module.getContext());
     auto trueConst = builder.getIntegerAttr(builder.getI1Type(), 1);
     auto falseConst = builder.getIntegerAttr(builder.getI1Type(), 0);
@@ -880,7 +881,7 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
     auto memName = builder.getStringAttr(it->second.mem->name.str());
     auto width = builder.getI32IntegerAttr(firmem.getType().getWidth());
     SmallVector<std::pair<llvm::StringRef, Attribute>> parameters{
-        {"ABITS", widthConst},        {"CLK_ENABLE", trueConst},
+        {"ABITS", widthConst},        {"CLK_ENABLE", falseConst},
         {"CLK_POLARITY", falseConst}, {"TRANSPARENT", falseConst},
         {"MEMID", memName},           {"WIDTH", width}};
 
@@ -888,9 +889,10 @@ LogicalResult ExportRTLILModule::visitSeq(seq::FirMemReadWriteOp op) {
         createCell(op->getLoc(), "$memrd", "mem_read", parameters, ports);
     if (failed(cell))
       return cell;
-    if (!op.getEnable())
-      (*cell)->connections_.insert(
-          {getEscapedName("EN"), SigSpec(getConstant(APInt(1, 1)))});
+    (*cell)->connections_.insert(
+        {getEscapedName("EN"), SigSpec(RTLIL::Const(RTLIL::State::Sx, 1))});
+    (*cell)->connections_.insert(
+        {getEscapedName("CLK"), SigSpec(RTLIL::Const(RTLIL::State::Sx, 1))});
   }
   {
     // Write.
