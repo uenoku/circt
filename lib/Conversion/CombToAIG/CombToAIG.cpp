@@ -183,16 +183,16 @@ struct CombShlOpConversion : OpConversionPattern<ShlOp> {
                              int id, int level, ArrayRef<Value> bits,
                              ArrayRef<Value> results) {
     auto selector = bits[level];
-    if (level == 0) {
+    if (level == 0)
       return rewriter.createOrFold<comb::MuxOp>(
           loc, selector, results[2 * id + 1], results[2 * id]);
-    }
 
     auto lhs = constructTree(rewriter, loc, 2 * id, level - 1, bits, results);
     auto rhs =
         constructTree(rewriter, loc, 2 * id + 1, level - 1, bits, results);
     return rewriter.createOrFold<comb::MuxOp>(loc, selector, lhs, rhs);
   }
+
   LogicalResult
   matchAndRewrite(ShlOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -294,7 +294,7 @@ struct CombSubOpConversion : OpConversionPattern<SubOp> {
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
     // Since `-rhs = ~rhs + 1`, we can rewrite `sub(lhs, rhs)` as
-    // sub(lhs, rhs) => add(lhs, -rhs) => add(lhs, add(~rhs, 1)) 
+    // sub(lhs, rhs) => add(lhs, -rhs) => add(lhs, add(~rhs, 1))
     // => add(lhs, ~rhs, 1)
     auto notRhs = rewriter.create<aig::AndInverterOp>(op.getLoc(), rhs,
                                                       /*invert=*/true);
