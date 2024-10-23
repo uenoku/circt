@@ -204,13 +204,9 @@ struct CombShlOpConversion : OpConversionPattern<ShlOp> {
     auto allZero = rewriter.create<hw::ConstantOp>(
         op.getLoc(), IntegerType::get(rewriter.getContext(), width), 0);
 
-    // This represents a binary tree. The leaf nodes are the bits of the input
-    // value. The internal nodes are the muxes.
     SmallVector<Value> nodes;
     nodes.reserve(leafSize);
 
-    // Initialize nodes[leafSize - 1 : 2*leafSize - 1] which represents the leaf
-    // nodes.
     for (int64_t i = 0; i < width; ++i) {
       auto zeros = rewriter.createOrFold<hw::ConstantOp>(
           op.getLoc(), IntegerType::get(rewriter.getContext(), i), 0);
