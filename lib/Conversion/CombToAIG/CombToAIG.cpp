@@ -179,6 +179,20 @@ struct CombICmpOpConversion : OpConversionPattern<ICmpOp> {
 
 struct CombShlOpConversion : OpConversionPattern<ShlOp> {
   using OpConversionPattern<ShlOp>::OpConversionPattern;
+  static Value constructTree(ConversionPatternRewriter &rewriter, Location loc,
+                             int id, int level, ArrayRef<Value> bits,
+                             ArrayRef<Value> results) {
+    auto selector = bits[level];
+    if (level == 0) {
+      return rewriter.createOrFold<comb::MuxOp>(
+          loc, selector, results[2 * id + 1], results[2 * id]);
+    }
+
+    auto lhs = constructTree(rewriter, loc, 2 * id, level - 1, bits, results);
+    auto rhs =
+        constructTree(rewriter, loc, 2 * id + 1, level - 1, bits, results);
+    return rewriter.createOrFold<comb::MuxOp>(loc, selector, lhs, rhs);
+  }
   LogicalResult
   matchAndRewrite(ShlOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -193,30 +207,27 @@ struct CombShlOpConversion : OpConversionPattern<ShlOp> {
     // This represents a binary tree. The leaf nodes are the bits of the input
     // value. The internal nodes are the muxes.
     SmallVector<Value> nodes;
-    nodes.resize(2 * leafSize - 1, allZero);
+    nodes.reserve(leafSize);
 
     // Initialize nodes[leafSize - 1 : 2*leafSize - 1] which represents the leaf
     // nodes.
     for (int64_t i = 0; i < width; ++i) {
       auto zeros = rewriter.createOrFold<hw::ConstantOp>(
           op.getLoc(), IntegerType::get(rewriter.getContext(), i), 0);
-      auto extract =
-          rewriter.createOrFold<comb::ExtractOp>(op.getLoc(), lhs, 0, width - i);
+      auto extract = rewriter.createOrFold<comb::ExtractOp>(op.getLoc(), lhs, 0,
+                                                            width - i);
       auto concat =
           rewriter.createOrFold<comb::ConcatOp>(op.getLoc(), extract, zeros);
-      nodes[leafSize + i - 1] = concat;
+      nodes.push_back(concat);
     }
 
-    for (int64_t i = leafSize - 1; i > 0; --i) {
-      // 3, 2, 1
-      // 0, 0, 1
-      auto selector =
-          bits[llvm::Log2_64_Ceil(width) - llvm::Log2_64_Ceil(i + 1)];
-      auto mux = rewriter.createOrFold<comb::MuxOp>(op.getLoc(), selector,
-                                              nodes[2 * i], nodes[2 * i - 1]);
-      nodes[i - 1] = mux;
-    }
-    rewriter.replaceOp(op, nodes[0]);
+    nodes.resize(leafSize, allZero);
+
+    auto level = llvm::Log2_64_Ceil(width);
+    auto result =
+        constructTree(rewriter, op.getLoc(), 0, level - 1, bits, nodes);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
