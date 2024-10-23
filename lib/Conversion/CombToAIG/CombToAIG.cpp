@@ -153,7 +153,7 @@ struct CombICmpOpConversion : OpConversionPattern<ICmpOp> {
       // a >= b  ==> (~a[n] &  b[n]) | (a[n] & b[n] & a[n-1:0] >= b[n-1:0])
       // a >  b  ==> (~a[n] &  b[n]) | (a[n] & b[n] & a[n-1:0] > b[n-1:0])
 
-      auto width = op.getType().getIntOrFloatBitWidth();
+      auto width = lhs.getType().getIntOrFloatBitWidth();
       Value acc =
           rewriter.create<hw::ConstantOp>(op.getLoc(), op.getType(), includeEq);
 
@@ -286,6 +286,59 @@ struct CombXorOpConversion : OpConversionPattern<XorOp> {
   }
 };
 
+struct CombSubOpConversion : OpConversionPattern<SubOp> {
+  using OpConversionPattern<SubOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(SubOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+    // Since `-rhs = ~rhs + 1`, we can rewrite `sub(lhs, rhs)` as
+    // sub(lhs, rhs) => add(lhs, -rhs) => add(lhs, add(~rhs, 1)) 
+    // => add(lhs, ~rhs, 1)
+    auto notRhs = rewriter.create<aig::AndInverterOp>(op.getLoc(), rhs,
+                                                      /*invert=*/true);
+    auto one = rewriter.create<hw::ConstantOp>(op.getLoc(), op.getType(), 1);
+    rewriter.replaceOpWithNewOp<comb::AddOp>(op, ValueRange{lhs, notRhs, one},
+                                             true);
+    return success();
+  }
+};
+
+template <typename OpTy>
+struct CombLowerVariadicOp : OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+  using OpAdaptor = typename OpConversionPattern<OpTy>::OpAdaptor;
+  LogicalResult
+  matchAndRewrite(OpTy op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto result = lowerFullyAssociativeOp(op, op.getOperands(), rewriter);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+  static Value lowerFullyAssociativeOp(OpTy op, OperandRange operands,
+                                       ConversionPatternRewriter &rewriter) {
+    Value lhs, rhs;
+    switch (operands.size()) {
+    case 0:
+      assert(0 && "cannot be called with empty operand range");
+      break;
+    case 1:
+      return operands[0];
+    case 2:
+      lhs = operands[0];
+      rhs = operands[1];
+      return rewriter.create<OpTy>(op.getLoc(), ValueRange{lhs, rhs}, true);
+    default:
+      auto firstHalf = operands.size() / 2;
+      lhs =
+          lowerFullyAssociativeOp(op, operands.take_front(firstHalf), rewriter);
+      rhs =
+          lowerFullyAssociativeOp(op, operands.drop_front(firstHalf), rewriter);
+      return rewriter.create<OpTy>(op.getLoc(), ValueRange{lhs, rhs}, true);
+    }
+  }
+};
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -305,7 +358,9 @@ struct ConvertCombToAIGPass
 static void populateCombToAIGConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<CombAndOpConversion, CombOrOpConversion, CombXorOpConversion,
                CombMuxOpConversion, CombAddOpConversion, CombICmpOpConversion,
-               CombShlOpConversion>(patterns.getContext());
+               CombShlOpConversion, CombSubOpConversion,
+               CombLowerVariadicOp<AddOp>, CombLowerVariadicOp<MulOp>>(
+      patterns.getContext());
 }
 
 void ConvertCombToAIGPass::runOnOperation() {
@@ -317,9 +372,8 @@ void ConvertCombToAIGPass::runOnOperation() {
   target.addLegalDialect<aig::AIGDialect>();
 
   // This is test only option to keep bitwise logic instead of lowering to AIG.
-  if (keepBitwiseLogic) {
+  if (keepBitwiseLogic)
     target.addLegalOp<comb::MuxOp, comb::XorOp, comb::AndOp, comb::OrOp>();
-  }
 
   RewritePatternSet patterns(&getContext());
   populateCombToAIGConversionPatterns(patterns);
