@@ -80,7 +80,7 @@ hw.module @shl(in %lhs: i4, in %rhs: i4, out out: i4) {
   hw.output %0 : i4
 }
 
-hw.module @shl5(in %lhs: i5, in %rhs: i5, out out: i5) {
-  %0 = comb.shl %lhs, %rhs : i5
-  hw.output %0 : i5
+hw.module @shl2(in %lhs: i2, in %rhs: i2, out out: i2) {
+  %0 = comb.shl %lhs, %rhs : i2
+  hw.output %0 : i2
 }
