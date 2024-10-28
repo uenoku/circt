@@ -120,7 +120,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     circt::aig::PrintResourceUsageAnalysisOptions options;
     options.topModuleName = topModuleName;
     options.outputJSONFile = resourceUsageOutputFile;
-    options.onlySummary = true;
+    options.printSummary = true;
     pm.addPass(circt::aig::createPrintResourceUsageAnalysis(options));
   }
 

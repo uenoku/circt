@@ -63,7 +63,7 @@ public:
   ResourceUsageAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
 
   struct ResourceUsage {
-    ResourceUsage(size_t numAndInverterGates, size_t numDFFBits)
+    ResourceUsage(uint64_t numAndInverterGates, uint64_t numDFFBits)
         : numAndInverterGates(numAndInverterGates), numDFFBits(numDFFBits) {}
     ResourceUsage() = default;
     ResourceUsage &operator+=(const ResourceUsage &other) {
@@ -72,17 +72,19 @@ public:
       return *this;
     }
 
-    size_t getNumAndInverterGates() const { return numAndInverterGates; }
-    size_t getNumDFFBits() const { return numDFFBits; }
+    uint64_t getNumAndInverterGates() const { return numAndInverterGates; }
+    uint64_t getNumDFFBits() const { return numDFFBits; }
 
   private:
-    size_t numAndInverterGates = 0;
-    size_t numDFFBits = 0;
+    uint64_t numAndInverterGates = 0;
+    uint64_t numDFFBits = 0;
   };
 
   struct ModuleResourceUsage {
-    ModuleResourceUsage(ResourceUsage local, ResourceUsage total)
-        : local(local), total(total) {}
+    ModuleResourceUsage(StringAttr moduleName, ResourceUsage local,
+                        ResourceUsage total)
+        : moduleName(moduleName), local(local), total(total) {}
+    StringAttr moduleName;
     ResourceUsage local, total;
     struct InstanceResource {
       StringAttr moduleName, instanceName;
@@ -92,6 +94,7 @@ public:
           : moduleName(moduleName), instanceName(instanceName), usage(usage) {}
     };
     SmallVector<InstanceResource> instances;
+    DenseMap<mlir::FileLineColLoc, ResourceUsage> locationUsage;
     ResourceUsage getTotal() const { return total; }
     void emitJSON(raw_ostream &os) const;
   };

@@ -25,7 +25,7 @@ def PrintResourceUsageAnalysis : Pass<"aig-print-resource-usage-analysis", "mlir
   let options = [
     Option<"outputJSONFile", "json-file", "std::string", "", "Output JSON file">,
     Option<"topModuleName", "top-name", "std::string", "", "Top module name">,
-    Option<"onlySummary", "only-summary", "bool", "true", "Only print summary in stderr">
+    Option<"printSummary", "print-summary", "bool", "true", "Print summary in stderr">
   ];
 }
 

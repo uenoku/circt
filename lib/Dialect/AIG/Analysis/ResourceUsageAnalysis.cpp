@@ -38,7 +38,7 @@ circt::aig::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp top) {
       return it->second.get();
   }
   auto *topNode = instanceGraph->lookup(top.getModuleNameAttr());
-  size_t countAndInverterGates = 0, numDFFBits = 0;
+  uint64_t countAndInverterGates = 0, numDFFBits = 0;
   top.walk([&](Operation *op) {
     TypeSwitch<Operation *>(op)
         .Case<aig::AndInverterOp>([&](auto aigOp) {
@@ -64,7 +64,8 @@ circt::aig::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp top) {
   });
 
   ResourceUsage local(countAndInverterGates, numDFFBits);
-  auto moduleUsage = std::make_unique<ModuleResourceUsage>(local, local);
+  auto moduleUsage = std::make_unique<ModuleResourceUsage>(
+      top.getModuleNameAttr(), local, local);
 
   for (auto *child : *topNode) {
     auto targetMod = child->getTarget();
@@ -104,9 +105,15 @@ static llvm::json::Object getModuleResourceUsageJSON(
   llvm::json::Object obj;
   obj["local"] = getModuleResourceUsageJSON(usage.local);
   obj["total"] = getModuleResourceUsageJSON(usage.total);
+  obj["moduleName"] = usage.moduleName.getValue();
   SmallVector<llvm::json::Value> instances;
-  for (const auto &instance : usage.instances)
-    instances.push_back(getModuleResourceUsageJSON(*instance.usage));
+  for (const auto &instance : usage.instances) {
+    llvm::json::Object child;
+    child["instanceName"] = instance.instanceName.getValue();
+    child["moduleName"] = instance.moduleName.getValue();
+    child["usage"] = getModuleResourceUsageJSON(*instance.usage);
+    instances.push_back(std::move(child));
+  }
   obj["instances"] = llvm::json::Array(std::move(instances));
   return obj;
 }
@@ -130,9 +137,10 @@ namespace {
 struct PrintResourceUsageAnalysisPass
     : public impl::PrintResourceUsageAnalysisBase<
           PrintResourceUsageAnalysisPass> {
-  using PrintResourceUsageAnalysisBase::onlySummary;
-  using PrintResourceUsageAnalysisBase::outputJSONFile;
   using PrintResourceUsageAnalysisBase::PrintResourceUsageAnalysisBase;
+
+  using PrintResourceUsageAnalysisBase::printSummary;
+  using PrintResourceUsageAnalysisBase::outputJSONFile;
   using PrintResourceUsageAnalysisBase::topModuleName;
   void runOnOperation() override;
 };
@@ -153,16 +161,25 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
   }
   auto &resourceUsageAnalysis = getAnalysis<ResourceUsageAnalysis>();
   auto usage = resourceUsageAnalysis.getResourceUsage(top);
-  if (onlySummary) {
+
+  if (printSummary) {
     llvm::errs() << "// ------ ResourceUsageAnalysis Summary -----\n";
     llvm::errs() << "Top module: " << topModuleName << "\n";
     llvm::errs() << "Total number of and-inverter gates: "
                  << usage->getTotal().getNumAndInverterGates() << "\n";
     llvm::errs() << "Total number of DFF bits: "
                  << usage->getTotal().getNumDFFBits() << "\n";
-  } else if (!outputJSONFile.empty()) {
+  
+  }
+  if (!outputJSONFile.empty()) {
     std::error_code ec;
     llvm::raw_fd_ostream os(outputJSONFile, ec);
+    if (ec) {
+      emitError(UnknownLoc::get(&getContext()))
+          << "failed to open output JSON file '" << outputJSONFile << "': "
+          << ec.message();
+      return signalPassFailure();
+    }
     usage->emitJSON(os);
   }
 }
