@@ -113,3 +113,14 @@ hw.module @parity(in %input: i4, out out: i1) {
   %0 = comb.parity %input : i4
   hw.output %0 : i1
 }
+
+// RUN: circt-lec %t.mlir %s -c1=div_mod_table -c2=div_mod_table --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_DIV_MOD_TABLE
+// COMB_DIV_MOD_TABLE: c1 == c2
+hw.module @div_mod_table(in %lhs: i3, in %rhs: i3, out out_div_1: i3, out out_mod_1: i3) {
+  %c0_i3 = hw.constant 0 : i3
+  %ne = comb.icmp ne %rhs, %c0_i3 : i3
+  verif.assume %ne: i1
+  %0 = comb.divu %lhs, %rhs : i3
+  %1 = comb.modu %lhs, %rhs : i3
+  hw.output %0, %1: i3, i3
+}
