@@ -124,3 +124,11 @@ hw.module @div_mod_table(in %lhs: i3, in %rhs: i3, out out_div_1: i3, out out_mo
   %1 = comb.modu %lhs, %rhs : i3
   hw.output %0, %1: i3, i3
 }
+
+// RUN: circt-lec %t.mlir %s -c1=div_mod_table -c2=div_mod_table --shared-libs=%libz3 | FileCheck %s --check-prefix=HW_ARRAY_GET
+// HW_ARRAY_GET: c1 == c2
+hw.module @ArrayGet(in %idx: i2, in %a_0: i4, in %a_1: i4, in %a_2: i4, in %a_3: i4, out b: i4) {
+  %0 = hw.array_create %a_0, %a_1, %a_2, %a_3 : i4
+  %1 = hw.array_get %0[%idx] : !hw.array<4xi4>, i2
+  hw.output %1 : i4
+}

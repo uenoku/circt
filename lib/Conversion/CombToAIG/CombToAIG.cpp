@@ -377,6 +377,125 @@ private:
   }
 };
 
+struct HWArrayGetOpConversion : OpConversionPattern<hw::ArrayGetOp> {
+  using OpConversionPattern<hw::ArrayGetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(hw::ArrayGetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getType().isInteger())
+      return rewriter.notifyMatchFailure(op.getLoc(),
+                                         "only 1-d vector is supported now");
+    SmallVector<Value> results;
+    if (auto array = op.getInput().getDefiningOp<hw::ArrayCreateOp>()) {
+      results.append(array.getInputs().begin(), array.getInputs().end());
+      std::reverse(results.begin(), results.end());
+    } else if (auto arrayConstant =
+                   op.getInput().getDefiningOp<hw::AggregateConstantOp>()) {
+
+      for (auto elem :
+           arrayConstant.getFieldsAttr().getAsValueRange<IntegerAttr>()) {
+        results.push_back(rewriter.create<hw::ConstantOp>(op.getLoc(), elem));
+      }
+
+      std::reverse(results.begin(), results.end());
+    } else {
+      auto elemType =
+          cast<hw::ArrayType>(op.getInput().getType()).getElementType();
+      auto e = cast<hw::ArrayType>(op.getInput().getType()).getNumElements();
+      auto bitcasted = rewriter.create<hw::BitcastOp>(
+          op.getLoc(),
+          rewriter.getIntegerType(hw::getBitWidth(op.getInput().getType())),
+          op.getInput());
+      for (size_t i = 0; i < e; ++i) {
+        results.push_back(rewriter.createOrFold<comb::ExtractOp>(
+            op.getLoc(), bitcasted, i * elemType.getIntOrFloatBitWidth(),
+            elemType.getIntOrFloatBitWidth()));
+      }
+
+      std::reverse(results.begin(), results.end());
+    }
+
+    auto bits = extractBits(rewriter, op.getIndex());
+    auto result = constructMuxTree(
+        rewriter, op.getLoc(),
+        type_cast<hw::ArrayType>(op.getInput().getType()).getNumElements(),
+        bits, results, results.back());
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+/*
+struct HWArraySliceOpConversion : OpConversionPattern<hw::ArraySliceOp> {
+  using OpConversionPattern<hw::ArraySliceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(hw::ArraySliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op.getType().isInteger())
+      return rewriter.notifyMatchFailure(op.getLoc(),
+                                         "only 1-d vector is supported now");
+    SmallVector<Value> results;
+    op.getLowIndex();
+    op.getInput();
+    auto e = cast<hw::ArrayType>(op.getType()).getNumElements();
+    for (size_t i = 0; i < e; ++i) {
+      auto index = rewriter.createOrFold<comb::AddOp>(
+          op.getLoc(), op.getLowIndex(),
+          rewriter.create<hw::ConstantOp>(
+              op.getLoc(),
+              APInt(op.getLowIndex().getType().getIntOrFloatBitWidth(), i)),
+          true);
+      results.push_back(rewriter.createOrFold<hw::ArrayGetOp>(
+          op.getLoc(), op.getInput(), index));
+    }
+    std::reverse(results.begin(), results.end());
+    rewriter.replaceOpWithNewOp<hw::ArrayCreateOp>(op, results);
+    return success();
+  }
+};
+*/
+
+/*
+struct HWArrayCreateOpConversion : OpConversionPattern<hw::ArrayCreateOp> {
+  using OpConversionPattern<hw::ArrayCreateOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(hw::ArrayCreateOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!cast<hw::ArrayType>(op.getType()).getElementType().isInteger())
+      return rewriter.notifyMatchFailure(op.getLoc(),
+                                         "only 1-d vector is supported now");
+    SmallVector<Value> results;
+    if (auto array = op.getInput().getDefiningOp<hw::ArrayCreateOp>()) {
+      results.append(array.getInputs().begin(), array.getInputs().end());
+      std::reverse(results.begin(), results.end());
+    } else if (auto arrayConstant =
+                   op.getInput().getDefiningOp<hw::AggregateConstantOp>()) {
+
+      for (auto elem :
+           arrayConstant.getFieldsAttr().getAsValueRange<IntegerAttr>()) {
+        results.push_back(rewriter.create<hw::ConstantOp>(op.getLoc(), elem));
+      }
+
+      std::reverse(results.begin(), results.end());
+    } else {
+      return failure();
+    }
+
+    auto bits = extractBits(rewriter, op.getIndex());
+    auto result = constructMuxTree(
+        rewriter, op.getLoc(),
+        type_cast<hw::ArrayType>(op.getInput().getType()).getNumElements(),
+        bits, results, results.back());
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+}*/
+
 /// Lower a comb::AndOp operation to aig::AndInverterOp
 struct CombAndOpConversion : OpConversionPattern<AndOp> {
   using OpConversionPattern<AndOp>::OpConversionPattern;
@@ -765,7 +884,7 @@ static void populateCombToAIGConversionPatterns(RewritePatternSet &patterns) {
       // Bitwise Logical Ops
       CombAndOpConversion, CombOrOpConversion, CombXorOpConversion,
       CombMuxOpConversion, CombParityOpConversion,
-      // Arithmatic Ops
+      // Airthmatic Ops
       CombAddOpConversion, CombSubOpConversion, CombICmpOpConversion,
       CombMulOpConversion, CombDivModUOpConversion<DivUOp, true>,
       CombDivModUOpConversion<ModUOp, false>,
@@ -773,23 +892,28 @@ static void populateCombToAIGConversionPatterns(RewritePatternSet &patterns) {
       CombDivModUOpTableConversion<ModUOp, false>,
       // Shift Ops
       CombShiftOpConversion<ShlOp, true>, CombShiftOpConversion<ShrUOp, false>,
-      // This is not Correct
+      // This is NOT Correct: Delete this before submitting PR!
       CombShiftOpConversion<ShrSOp, false>,
+      // Array Op
+      HWArrayGetOpConversion,
       // Variadic ops that must be lowered to binary operations
       CombLowerVariadicOp<AddOp>, CombLowerVariadicOp<MulOp>,
       CombLowerVariadicOp<XorOp>>(patterns.getContext());
 }
 
 void ConvertCombToAIGPass::runOnOperation() {
-  // if (!getOperation().getModuleName().starts_with("SiFive_") ||
-  //     getOperation().getNumOutputPorts() == 0)
-  //   return markAllAnalysesPreserved();
+  if (!getOperation().getModuleName().starts_with("SiFive_") ||
+      getOperation().getNumOutputPorts() == 0)
+    return markAllAnalysesPreserved();
   ConversionTarget target(getContext());
   target.addIllegalDialect<comb::CombDialect>();
   // Extract, Concat and Replicate just pass through so we can keep them.
   target.addLegalOp<comb::ExtractOp, comb::ConcatOp, comb::ReplicateOp,
                     hw::ConstantOp>();
 
+  // Do we want to legalize this in CombToAIG as well? In that case maybe we
+  // should rename CombToAIG to CoreToAIG.
+  target.addIllegalOp<hw::ArrayGetOp, hw::ArraySliceOp>();
   target.addLegalDialect<aig::AIGDialect, hw::HWDialect>();
 
   // This is a test only option to keep bitwise logical ops instead of lowering
