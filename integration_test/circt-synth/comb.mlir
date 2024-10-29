@@ -64,6 +64,23 @@ hw.module @bit_logical(in %arg0: i32, in %arg1: i32, in %arg2: i32, in %arg3: i3
   hw.output %0, %1, %2, %3 : i32, i32, i32, i32
 }
 
+// RUN: circt-lec %t.mlir %s -c1=div_mod_u2 -c2=div_mod_u2 --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_DIV_MOD_U_2
+// COMB_DIV_MOD_U_2: c1 == c2
+
+hw.module @div_mod_u2(in %lhs: i2, in %rhs: i1, out out_div_1: i4) {
+  %c0_i2 = hw.constant 0 : i2
+  %false = hw.constant false
+
+  // Pre-condition for LEC. If rhs is zero, the division and modulus operations
+  // are undefined so we assume rhs is not zero in this test case.
+  verif.assume %rhs : i1
+
+  %3 = comb.concat %false, %rhs, %c0_i2 : i1, i1, i2
+  %lhs2 = comb.concat  %lhs, %c0_i2 :  i2, i2
+  %4 = comb.divu %lhs2, %3 : i4
+  hw.output %4 : i4
+}
+
 // RUN: circt-lec %t.mlir %s -c1=div_mod_u -c2=div_mod_u --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_DIV_MOD_U
 // COMB_DIV_MOD_U: c1 == c2
 hw.module @div_mod_u(in %lhs: i4, in %rhs: i1, out out_div_1: i4, out out_mod_1: i4, out out_div_2: i4, out out_mod_2: i4) {

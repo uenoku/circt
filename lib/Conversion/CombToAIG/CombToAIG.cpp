@@ -52,9 +52,40 @@ static SmallVector<Value> extractBits(ConversionPatternRewriter &rewriter,
 
   // Extract individual bits
   for (int64_t i = 0; i < width; ++i)
-    bits.push_back(rewriter.create<comb::ExtractOp>(val.getLoc(), val, i, 1));
+    bits.push_back(
+        rewriter.createOrFold<comb::ExtractOp>(val.getLoc(), val, i, 1));
 
   return bits;
+}
+
+static Value constructMuxTree(ConversionPatternRewriter &rewriter, Location loc,
+                              int64_t width, ArrayRef<Value> bits,
+                              ArrayRef<Value> nodes, Value allZero) {
+  // assert(width == bits.size());
+  //  Lambda to get the result for a given index
+  auto getResult = [&](size_t id) -> Value {
+    // Out of bounds index is undefined, so return all-zero for now.
+    return id < nodes.size() ? nodes[id] : allZero;
+  };
+
+  // Recursive helper function to construct the mux tree
+  std::function<Value(size_t, size_t)> constructTreeHelper =
+      [&](size_t id, size_t level) -> Value {
+    // Base case: at the lowest level, return the result
+    if (level == 0)
+      return getResult(id);
+
+    auto selector = bits[level - 1];
+
+    // Recursive case: create muxes for true and false branches
+    auto trueVal = constructTreeHelper(2 * id + 1, level - 1);
+    auto falseVal = constructTreeHelper(2 * id, level - 1);
+
+    // Combine the results with a mux
+    return rewriter.createOrFold<comb::MuxOp>(loc, selector, trueVal, falseVal);
+  };
+
+  return constructTreeHelper(0, llvm::Log2_64_Ceil(width));
 }
 
 //===----------------------------------------------------------------------===//
@@ -344,37 +375,6 @@ private:
 
     return nodes;
   }
-
-  static Value constructMuxTree(ConversionPatternRewriter &rewriter,
-                                Location loc, int64_t width,
-                                ArrayRef<Value> bits, ArrayRef<Value> nodes,
-                                Value allZero) {
-    // Lambda to get the result for a given index
-    auto getResult = [&](size_t id) -> Value {
-      // Out of bounds index is undefined, so return all-zero for now.
-      return id < nodes.size() ? nodes[id] : allZero;
-    };
-
-    // Recursive helper function to construct the mux tree
-    std::function<Value(size_t, size_t)> constructTreeHelper =
-        [&](size_t id, size_t level) -> Value {
-      // Base case: at the lowest level, return the result
-      if (level == 0)
-        return getResult(id);
-
-      auto selector = bits[level - 1];
-
-      // Recursive case: create muxes for true and false branches
-      auto trueVal = constructTreeHelper(2 * id + 1, level - 1);
-      auto falseVal = constructTreeHelper(2 * id, level - 1);
-
-      // Combine the results with a mux
-      return rewriter.createOrFold<comb::MuxOp>(loc, selector, trueVal,
-                                                falseVal);
-    };
-
-    return constructTreeHelper(0, llvm::Log2_64_Ceil(width));
-  }
 };
 
 /// Lower a comb::AndOp operation to aig::AndInverterOp
@@ -500,6 +500,7 @@ struct CombDivModUOpConversion : OpConversionPattern<OpTy> {
   LogicalResult
   matchAndRewrite(OpTy op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    op.emitWarning() << *op << "\n";
     hw::ConstantOp rhsConstantOp =
         adaptor.getRhs().template getDefiningOp<hw::ConstantOp>();
     APInt rhsValue;
@@ -507,9 +508,12 @@ struct CombDivModUOpConversion : OpConversionPattern<OpTy> {
     if (rhsConstantOp) {
       rhsValue = rhsConstantOp.getValue();
     } else {
+      /*
       auto concat = adaptor.getRhs().template getDefiningOp<comb::ConcatOp>();
       if (!concat)
-        return failure();
+        return rewriter.notifyMatchFailure(
+            op, "currently divisor that has non-power-of-two constant as "
+                "rhs is not supported");
 
       // If the rhs is known to be either zero or a constant power of two,
       // we can ignore the zero division since it's undefined.
@@ -524,7 +528,8 @@ struct CombDivModUOpConversion : OpConversionPattern<OpTy> {
         } else if (bit.getType().getIntOrFloatBitWidth() == 1) {
           if (nonZeroBit != -1)
             // If there are two unknown bits, unsupported.
-            return failure();
+            return rewriter.notifyMatchFailure(
+                op, "currently divisor with non-constant rhs is not supported");
           nonZeroBit = numBits;
         } else {
           return rewriter.notifyMatchFailure(
@@ -539,10 +544,13 @@ struct CombDivModUOpConversion : OpConversionPattern<OpTy> {
         rhsValue =
             APInt(op.getType().getIntOrFloatBitWidth(), 1).shl(nonZeroBit);
       }
+      */
     }
 
-    if (!rhsValue.isPowerOf2())
-      return failure();
+    if (!rhsValue.isPowerOf2()) {
+      return rewriter.notifyMatchFailure(
+          op, "currently divisor with non-power-of-2 is not supported");
+    }
 
     size_t shiftAmount = rhsValue.ceilLogBase2();
     size_t width = op.getType().getIntOrFloatBitWidth();
@@ -565,6 +573,115 @@ struct CombDivModUOpConversion : OpConversionPattern<OpTy> {
       rewriter.replaceOpWithNewOp<comb::ConcatOp>(
           op, op.getType(), ArrayRef<Value>{constZero, lowerBits});
     }
+    return success();
+  }
+};
+
+// When rhs is not power of two and the number of unknown bits are small (<=6),
+// create a mux tree that emulates all possible cases.
+// TODO: This is probably not most efficient so consider revisiting this.
+template <typename OpTy, bool isDivOp>
+struct CombDivModUOpTableConversion : OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+  using OpAdaptor = typename OpConversionPattern<OpTy>::OpAdaptor;
+  LogicalResult
+  matchAndRewrite(OpTy op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (auto rhsConstantOp =
+            adaptor.getRhs().template getDefiningOp<hw::ConstantOp>())
+      // Let the other pattern matches this.
+      if (rhsConstantOp.getValue().isPowerOf2())
+        return failure();
+
+    auto width = op.getType().getIntOrFloatBitWidth();
+
+    SmallVector<Value> lhsBits, rhsBits;
+    auto getBits = [&](auto &&recurse, llvm::SmallVectorImpl<Value> &results,
+                       Value elem) -> size_t {
+      if (auto concat = elem.getDefiningOp<comb::ConcatOp>()) {
+        size_t numUnknownBits = 0;
+        for (auto c : llvm::reverse(concat.getInputs())) {
+          if (c.getType().isInteger(0))
+            continue;
+          numUnknownBits += recurse(recurse, results, c);
+        }
+        return numUnknownBits;
+      }
+      results.push_back(elem);
+      return elem.getDefiningOp<hw::ConstantOp>()
+                 ? 0
+                 : elem.getType().getIntOrFloatBitWidth();
+    };
+
+    auto numLhsUnknownBits = getBits(getBits, lhsBits, op.getLhs());
+    auto numRhsUnknownBits = getBits(getBits, rhsBits, op.getRhs());
+    // std::reverse(lhsBits.begin(), lhsBits.end());
+    // std::reverse(rhsBits.begin(), rhsBits.end());
+
+    // Give up if there are too many unknown bits.
+    if (numLhsUnknownBits + numRhsUnknownBits > 6)
+      return failure();
+
+    auto subStituteMask = [width](llvm::SmallVectorImpl<Value> &bits,
+                                  size_t mask) -> APInt {
+      size_t pos = 0, unknownPos = 0;
+      APInt result(width, 0);
+      for (auto elem : bits) {
+        auto elemWidth = elem.getType().getIntOrFloatBitWidth();
+        if (auto constant = elem.getDefiningOp<hw::ConstantOp>()) {
+          result |= constant.getValue().zext(width) << APInt(width, pos);
+        } else {
+          size_t usedMask = (1 << (elemWidth + unknownPos)) - (1 << unknownPos);
+          result |= APInt(width, ((usedMask & mask) >> unknownPos) << pos);
+          unknownPos += elemWidth;
+        }
+        pos += elemWidth;
+      }
+      return result;
+    };
+
+    SmallVector<Value> results;
+    auto allZero =
+        rewriter.create<hw::ConstantOp>(op.getLoc(), APInt::getZero(width));
+    for (size_t lhsMask = 0, e = 1 << numLhsUnknownBits; lhsMask < e;
+         ++lhsMask) {
+      auto lhsValue = subStituteMask(lhsBits, lhsMask);
+      for (size_t rhsMask = 0, e2 = 1 << numRhsUnknownBits; rhsMask < e2;
+           ++rhsMask) {
+        APInt rhsValue = subStituteMask(rhsBits, rhsMask);
+        llvm::errs() << lhsValue.getZExtValue() << " "
+                     << rhsValue.getZExtValue() << "\n";
+        if (rhsValue.isZero()) {
+          // Undefined value. Just use zero for now.
+          results.push_back(allZero);
+        } else {
+          APInt result =
+              isDivOp ? lhsValue.udiv(rhsValue) : lhsValue.urem(rhsValue);
+          results.push_back(
+              rewriter.create<hw::ConstantOp>(op.getLoc(), result));
+        }
+      }
+    }
+    SmallVector<Value> tableInputs;
+    for (auto &bits : {lhsBits, rhsBits}) {
+      SmallVector<Value> tmp;
+      for (auto bit : bits) {
+        if (!bit.getDefiningOp<hw::ConstantOp>()) {
+          auto extracted = extractBits(rewriter, bit);
+          tmp.append(extracted);
+        }
+      }
+      std::reverse(tmp.begin(), tmp.end());
+      tableInputs.append(tmp.begin(), tmp.end());
+    }
+    std::reverse(tableInputs.begin(), tableInputs.end());
+    assert(numLhsUnknownBits + numRhsUnknownBits == tableInputs.size());
+    auto muxed = constructMuxTree(rewriter, op->getLoc(),
+                                  1 << (numLhsUnknownBits + numRhsUnknownBits),
+                                  tableInputs, results, allZero);
+
+    rewriter.replaceOp(op, muxed);
     return success();
   }
 };
@@ -652,6 +769,8 @@ static void populateCombToAIGConversionPatterns(RewritePatternSet &patterns) {
       CombAddOpConversion, CombSubOpConversion, CombICmpOpConversion,
       CombMulOpConversion, CombDivModUOpConversion<DivUOp, true>,
       CombDivModUOpConversion<ModUOp, false>,
+      CombDivModUOpTableConversion<DivUOp, true>,
+      CombDivModUOpTableConversion<ModUOp, false>,
       // Shift Ops
       CombShiftOpConversion<ShlOp, true>, CombShiftOpConversion<ShrUOp, false>,
       // This is not Correct
@@ -662,9 +781,9 @@ static void populateCombToAIGConversionPatterns(RewritePatternSet &patterns) {
 }
 
 void ConvertCombToAIGPass::runOnOperation() {
-  if (/*!getOperation().getModuleName().starts_with("SiFive_") ||*/
-      getOperation().getNumOutputPorts() == 0)
-    return markAllAnalysesPreserved();
+  // if (!getOperation().getModuleName().starts_with("SiFive_") ||
+  //     getOperation().getNumOutputPorts() == 0)
+  //   return markAllAnalysesPreserved();
   ConversionTarget target(getContext());
   target.addIllegalDialect<comb::CombDialect>();
   // Extract, Concat and Replicate just pass through so we can keep them.
@@ -680,8 +799,16 @@ void ConvertCombToAIGPass::runOnOperation() {
 
   RewritePatternSet patterns(&getContext());
   populateCombToAIGConversionPatterns(patterns);
+  mlir::ConversionConfig config;
+  DenseSet<Operation *> unr;
+  config.unlegalizedOps = &unr;
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
-                                          std::move(patterns))))
+                                          std::move(patterns), config))) {
+    for (auto *op : unr) {
+      if (llvm::isa_and_nonnull<CombDialect>(op->getDialect()))
+        llvm::errs() << *op << "\n";
+    }
     return signalPassFailure();
+  }
 }

@@ -112,3 +112,9 @@ hw.module @icmp_signed_compare(in %lhs: i2, in %rhs: i2, out out_ugt: i1, out ou
   // %ule = comb.icmp sle %lhs, %rhs : i2
   hw.output %ugt, %uge, %ult, %ule : i1, i1, i1, i1
 }
+
+// CHECK-LABEL: divu
+hw.module @divu(in %lhs: i2, in %rhs: i2, out out: i2) {
+  %0 = comb.divu %lhs, %rhs : i2
+  hw.output %0 : i2
+}
