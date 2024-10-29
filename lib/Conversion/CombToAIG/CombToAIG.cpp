@@ -620,7 +620,7 @@ struct CombDivModUOpTableConversion : OpConversionPattern<OpTy> {
     // std::reverse(rhsBits.begin(), rhsBits.end());
 
     // Give up if there are too many unknown bits.
-    if (numLhsUnknownBits + numRhsUnknownBits > 6)
+    if (numLhsUnknownBits + numRhsUnknownBits > 7)
       return failure();
 
     auto subStituteMask = [width](llvm::SmallVectorImpl<Value> &bits,
