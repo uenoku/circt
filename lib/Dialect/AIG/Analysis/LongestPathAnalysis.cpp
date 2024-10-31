@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the resource usage analysis.
+// This file defines the critical path analysis.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,19 +26,19 @@
 using namespace circt;
 using namespace aig;
 
-LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
-                                             mlir::AnalysisManager &am)
-    : instanceGraph(&am.getAnalysis<igraph::InstanceGraph>()) {}
-
-LongestPathAnalysis::ModuleInfo *
-LongestPathAnalysis::getModuleInfo(hw::HWModuleOp module) {
-  {
-    auto it = moduleInfoCache.find(module.getModuleNameAttr());
-    if (it != moduleInfoCache.end())
-      return it->second.get();
-  }
-  auto *topNode = instanceGraph->lookup(module.getModuleNameAttr());
-}
+// LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
+//                                              mlir::AnalysisManager &am)
+//     : instanceGraph(&am.getAnalysis<igraph::InstanceGraph>()) {}
+// 
+// LongestPathAnalysis::ModuleInfo *
+// LongestPathAnalysis::getModuleInfo(hw::HWModuleOp module) {
+//   {
+//     auto it = moduleInfoCache.find(module.getModuleNameAttr());
+//     if (it != moduleInfoCache.end())
+//       return it->second.get();
+//   }
+//   auto *topNode = instanceGraph->lookup(module.getModuleNameAttr());
+// }
 
 /*
 static llvm::json::Object
@@ -135,3 +135,65 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
 }
 
 */
+
+namespace circt {
+namespace aig {
+#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
+#include "circt/Dialect/AIG/AIGPasses.h.inc"
+} // namespace aig
+} // namespace circt
+
+using namespace circt;
+using namespace aig;
+
+namespace {
+struct PrintResourceUsageAnalysisPass
+    : public impl::PrintResourceUsageAnalysisBase<
+          PrintResourceUsageAnalysisPass> {
+  using PrintResourceUsageAnalysisBase::PrintResourceUsageAnalysisBase;
+
+  using PrintResourceUsageAnalysisBase::printSummary;
+  using PrintResourceUsageAnalysisBase::outputJSONFile;
+  using PrintResourceUsageAnalysisBase::topModuleName;
+  void runOnOperation() override;
+};
+} // namespace
+
+void PrintResourceUsageAnalysisPass::runOnOperation() {
+  auto mod = getOperation();
+  if (topModuleName.empty()) {
+    mod.emitError()
+        << "'top-name' option is required for PrintResourceUsageAnalysis";
+    return signalPassFailure();
+  }
+  auto &symTbl = getAnalysis<mlir::SymbolTable>();
+  auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName);
+  if (!top) {
+    mod.emitError() << "top module '" << topModuleName << "' not found";
+    return signalPassFailure();
+  }
+  auto &resourceUsageAnalysis = getAnalysis<ResourceUsageAnalysis>();
+  auto usage = resourceUsageAnalysis.getResourceUsage(top);
+
+  if (printSummary) {
+    llvm::errs() << "// ------ ResourceUsageAnalysis Summary -----\n";
+    llvm::errs() << "Top module: " << topModuleName << "\n";
+    llvm::errs() << "Total number of and-inverter gates: "
+                 << usage->getTotal().getNumAndInverterGates() << "\n";
+    llvm::errs() << "Total number of DFF bits: "
+                 << usage->getTotal().getNumDFFBits() << "\n";
+  
+  }
+  if (!outputJSONFile.empty()) {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(outputJSONFile, ec);
+    if (ec) {
+      emitError(UnknownLoc::get(&getContext()))
+          << "failed to open output JSON file '" << outputJSONFile << "': "
+          << ec.message();
+      return signalPassFailure();
+    }
+    usage->emitJSON(os);
+  }
+}
+

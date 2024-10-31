@@ -29,4 +29,13 @@ def PrintResourceUsageAnalysis : Pass<"aig-print-resource-usage-analysis", "mlir
   ];
 }
 
+def PrintGlobalPathAnalysis : Pass<"aig-print-global-path-analysis", "mlir::ModuleOp"> {
+  let summary = "Print resource usage of AIG operations";
+  let options = [
+    Option<"outputJSONFile", "json-file", "std::string", "", "Output JSON file">,
+    Option<"topModuleName", "top-name", "std::string", "", "Top module name">,
+    Option<"printSummary", "print-summary", "bool", "true", "Print summary in stderr">
+  ];
+}
+
 #endif // CIRCT_DIALECT_AIG_AIGPASSES_TD

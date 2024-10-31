@@ -57,23 +57,28 @@ private:
   DenseMap<OperationName, size_t> opCounts;
   DenseMap<OperationName, DenseMap<size_t, size_t>> operandCounts;
 };*/
+
 class LongestPathAnalysis {
 public:
   LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
-
   struct InNode {
     OpOperand to;
     size_t bitPos;
+    size_t width;
   };
+
   struct OutNode {
     Value from;
     size_t bitPos;
+    size_t width;
   };
 
   struct Edge {
-    OutNode from;
-    InNode to;
+    OutNode *from;
+    InNode *to;
     uint64_t weight;
+
+    LogicalResult verify();
   };
 
   struct Path {
@@ -81,17 +86,48 @@ public:
     uint64_t getWegithSum() const;
   };
 
-  struct ModuleInfo {
-    DenseMap<OutNode, SmallVector<InNode>> inEdges;
-    SmallVector<OutNode> inputs;
-    DenseMap<InNode, SmallVector<OutNode>> outEdges;
-    SmallVector<Path> internalPaths; // Paths closed under this hierarchy.
+  using WeightType = uint64_t;
+
+  struct ElaboratedObject {
+    struct ElaboratedEdge {
+      ElaboratedObject *node;
+      size_t weight;
+    };
+
+    SmallVector<ElaboratedEdge *> inEdges, outEdges;
+
+    bool isPrimaryInput() const { return inEdges.empty(); }
+    bool isPrimaryOutput() const { return outEdges.empty(); }
+
+    // Represent an elaborated object "path.name[bitPos:bitPos+width]"
+    ArrayAttr path;
+    StringAttr name;
+    size_t bitPos;
+    size_t width;
+
+    Value value; // This must be BlockArgument(port) or register.
+    size_t arrivalTime;
   };
 
-  ModuleInfo *getModuleInfo(hw::HWModuleOp module);
+  struct ArrivalTimeStat {
+    double avg, stddev;
+  };
+
+  ArrivalTimeStat getAverageArrivalTime(Value value) const;
+  ArrivalTimeStat getAverageArrivalTime(Value value, size_t bitPos = 0,
+                                        size_t width = 1) const;
+
+  struct ModuleInfo {
+    DenseMap<OutNode, SmallVector<InNode>> inEdges;
+    DenseMap<InNode, SmallVector<OutNode>> outEdges;
+    SmallVector<Path> internalPaths; // Paths closed within this module.
+  };
+
+  ModuleInfo *getModuleInfo(hw::HWModuleOp top);
+  DenseMap<StringAttr, std::unique_ptr<ModuleInfo>> moduleInfoCache;
+  DenseMap<StringAttr, std::unique_ptr<ElaboratedInfo>> moduleInfo;
 
 private:
-  DenseMap<StringAttr, std::unique_ptr<ModuleInfo>> moduleInfoCache;
   igraph::InstanceGraph *instanceGraph;
 };
 
