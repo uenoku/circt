@@ -32,8 +32,8 @@
 using namespace circt;
 using namespace aig;
 
-Value createOrReuseExtract(PatternRewriter &rewriter, Location loc,
-                           Value operand, size_t lowBit, size_t width) {
+Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
+                           size_t lowBit, size_t width) {
   if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
     SmallVector<Value> newOperands;
     for (auto operand : llvm::reverse(concatOp.getOperands())) {
@@ -182,6 +182,33 @@ namespace aig {
 
 using namespace circt;
 using namespace aig;
+
+struct LocalPathAnalysisTransform {
+  struct BitRange {
+    Value operand;
+    size_t lowBit;
+    size_t width;
+  };
+  DenseMap<BitRange, Value> bitRangeToValue;
+  Value getOrCreateBitRange(OpBuilder &builder, Value operand, size_t lowBit,
+                            size_t width);
+  LogicalResult lower(OpBuilder &builder, aig::AndInverterOp op);
+};
+
+// LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
+//                                                 aig::AndInverterOp op) {
+//   auto loc = op.getLoc();
+//   // Replace with DelayOp.
+//   // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
+//   uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
+//   SmallVector<int64_t> delays(op.getOperands().size(), delay);
+//   auto delaysAttr = builder.getDenseI64ArrayAttr(delays);
+//   Value delayOp = builder.create<aig::DelayOp>(loc, op.getType(),
+//                                                op.getOperands(), delaysAttr);
+//
+//   op.getResult().replaceAllUsesWith(delayOp.getResult());
+//   return success();
+// }
 
 struct LongestPathAnalysisImpl {
   LongestPathAnalysisImpl(mlir::ModuleOp mod,
@@ -373,7 +400,6 @@ struct ExtractConcatConversion : OpRewritePattern<comb::ExtractOp> {
     auto concatOp = op.getInput().getDefiningOp<comb::ConcatOp>();
     if (!concatOp)
       return failure();
-    SmallVector<Value> newOperands;
     size_t lowBit = op.getLowBit();
     size_t width = op.getType().getIntOrFloatBitWidth();
     auto newOp =
@@ -423,7 +449,39 @@ struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
 LogicalResult
 LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
                                       mlir::FrozenRewritePatternSet &frozen) {
-  PatternRewriter rewriter(getContext());
+  OpBuilder rewriter(getContext());
+  rewriter.setInsertionPointToStart(mod.getBodyBlock());
+  auto replaceWithConcat = [&](Value value) {
+    SmallVector<Value> newOperands;
+
+    if (!value.getType().isInteger()) {
+      return success(isa<seq::ClockType>(value.getType()));
+    }
+
+    for (size_t i = 0, e = value.getType().getIntOrFloatBitWidth(); i != e;
+         ++i) {
+      newOperands.push_back(
+          createOrReuseExtract(rewriter, value.getLoc(), value, i, 1));
+    }
+    std::reverse(newOperands.begin(), newOperands.end());
+    auto newOp = rewriter.create<comb::ConcatOp>(value.getLoc(), newOperands);
+    value.replaceUsesWithIf(newOp, [&](OpOperand &use) {
+      return !isa<comb::ExtractOp>(use.getOwner());
+    });
+    return success();
+  };
+
+  // for (auto &blockArgument : mod.getBodyBlock()->getArguments()) {
+  //   if (failed(replaceWithConcat(blockArgument)))
+  //     return failure();
+  // }
+
+  // mod.walk([&](Operation *op) {
+  //   if (isa<seq::CompRegOp, seq::FirRegOp>(op))
+  //     if (failed(replaceWithConcat(op->getResult(0))))
+  //       return WalkResult::interrupt();
+  //   return WalkResult::advance();
+  // });
 
   // AndInverterToDelayConversion aigToDelay(getContext());
   mlir::GreedyRewriteConfig config;
@@ -431,6 +489,7 @@ LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
   config.maxIterations = 1;
   if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config)))
     return failure();
+
   return success();
 }
 
@@ -438,7 +497,7 @@ LogicalResult LongestPathAnalysisImpl::run() {
   RewritePatternSet patterns(getContext());
   patterns.add<AndInverterToDelayConversion, ShrinkDelayPattern,
                ExtractDelayConversion, ExtractConcatConversion,
-               ExtractReplicateConversion /*, DelayConcatConversion*/>(
+               ExtractReplicateConversion, DelayConcatConversion>(
       getContext());
   mlir::FrozenRewritePatternSet frozen(std::move(patterns));
   std::mutex mutex;
