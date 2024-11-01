@@ -32,6 +32,38 @@
 using namespace circt;
 using namespace aig;
 
+Value createOrReuseExtract(PatternRewriter &rewriter, Location loc,
+                           Value operand, size_t lowBit, size_t width) {
+  if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
+    SmallVector<Value> newOperands;
+    for (auto operand : llvm::reverse(concatOp.getOperands())) {
+      auto opWidth = operand.getType().getIntOrFloatBitWidth();
+      if (width == 0)
+        break;
+
+      if (lowBit >= opWidth) {
+        lowBit -= opWidth;
+        continue;
+      }
+
+      if (lowBit == 0 && width == opWidth)
+        return operand;
+
+      // lowBit < width
+      size_t extractWidth = std::min(opWidth - lowBit, width);
+      newOperands.push_back(
+          createOrReuseExtract(rewriter, loc, operand, lowBit, extractWidth));
+      width -= extractWidth;
+    }
+
+    std::reverse(newOperands.begin(), newOperands.end());
+    return rewriter.create<comb::ConcatOp>(loc, newOperands);
+  }
+
+  return rewriter.createOrFold<comb::ExtractOp>(
+      loc, rewriter.getIntegerType(width), operand, lowBit);
+}
+
 // LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
 //                                              mlir::AnalysisManager &am)
 //     : instanceGraph(&am.getAnalysis<igraph::InstanceGraph>()) {}
@@ -153,8 +185,9 @@ using namespace aig;
 
 struct LongestPathAnalysisImpl {
   LongestPathAnalysisImpl(mlir::ModuleOp mod,
-                          igraph::InstanceGraph *instanceGraph)
-      : mod(mod), instanceGraph(instanceGraph) {}
+                          igraph::InstanceGraph *instanceGraph,
+                          StringAttr topModuleName)
+      : mod(mod), instanceGraph(instanceGraph), topModuleName(topModuleName) {}
   LogicalResult rewrite(mlir::ModuleOp mod);
   LogicalResult rewriteLocal(hw::HWModuleOp mod,
                              mlir::FrozenRewritePatternSet &frozen);
@@ -167,6 +200,7 @@ struct LongestPathAnalysisImpl {
 
 private:
   mlir::ModuleOp mod;
+  StringAttr topModuleName;
   igraph::InstanceGraph *instanceGraph;
 };
 
@@ -191,7 +225,7 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
                                 PatternRewriter &rewriter) const override {
     SmallVector<int64_t> newDelays;
     SmallVector<Value> newOperands;
-    DenseMap<Value, size_t> operandToIdx;
+    DenseMap<std::tuple<Value, size_t, size_t>, size_t> operandToIdx;
     SmallVector<std::pair<Value, int64_t>> worklist;
     bool changed = false;
     for (auto [operand, delay] :
@@ -208,18 +242,29 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
       } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
         // Delay of constant is 0.
         changed = true;
-      } else if (auto replicateOp = operand.getDefiningOp<comb::ReplicateOp>();
-                 false) {
+      } else if (auto replicateOp =
+                     operand.getDefiningOp<comb::ReplicateOp>()) {
         worklist.push_back({replicateOp.getInput(), delay});
       } else {
-        if (operandToIdx.count(operand)) {
-          newDelays[operandToIdx[operand]] =
-              std::max(newDelays[operandToIdx[operand]], delay);
+        std::tuple<Value, size_t, size_t> operandTuple;
+        if (auto extractOp = operand.getDefiningOp<comb::ExtractOp>()) {
+          operandTuple =
+              std::make_tuple(operand, extractOp.getLowBit(),
+                              extractOp.getType().getIntOrFloatBitWidth());
+        } else {
+          operandTuple = std::make_tuple(
+              operand, 0, operand.getType().getIntOrFloatBitWidth());
+        }
+        if (operandToIdx.count(operandTuple)) {
+          newDelays[operandToIdx[operandTuple]] =
+              std::max(newDelays[operandToIdx[operandTuple]], delay);
           changed = true;
         } else {
-          operandToIdx[operand] = newOperands.size();
+          operandToIdx[operandTuple] = newOperands.size();
           newDelays.push_back(delay);
-          newOperands.push_back(operand);
+          newOperands.push_back(createOrReuseExtract(
+              rewriter, op.getLoc(), operand, std::get<1>(operandTuple),
+              std::get<2>(operandTuple)));
         }
       }
     }
@@ -267,8 +312,8 @@ struct DelayConcatConversion : OpRewritePattern<aig::DelayOp> {
       newOperands.push_back(operand);
       for (auto rest : op.getOperands().drop_front(concatIdx + 1)) {
         // FIXME: Reuse extracted op if possible.
-        newOperands.push_back(rewriter.createOrFold<comb::ExtractOp>(
-            op.getLoc(), rest, bitPos, bitWidth));
+        newOperands.push_back(createOrReuseExtract(rewriter, op.getLoc(), rest,
+                                                   bitPos, bitWidth));
       }
       newOperands.push_back(operand);
       bitPos += bitWidth;
@@ -293,9 +338,22 @@ struct ExtractDelayConversion : OpRewritePattern<comb::ExtractOp> {
     if (!delayOp)
       return failure();
     SmallVector<Value> newOperands;
-    for (auto operand : delayOp.getOperands())
-      newOperands.push_back(rewriter.create<comb::ExtractOp>(
-          op.getLoc(), op.getType(), operand, op.getLowBitAttr()));
+
+    for (auto operand : delayOp.getOperands()) {
+      if (operand.getType() != op.getType()) {
+        if (operand.getType().isInteger(1)) {
+          newOperands.push_back(operand);
+          continue;
+        } else {
+          operand = rewriter.create<comb::ReplicateOp>(
+              op.getLoc(), delayOp.getType(), operand);
+        }
+      }
+
+      newOperands.push_back(
+          createOrReuseExtract(rewriter, op.getLoc(), operand, op.getLowBit(),
+                               op.getType().getIntOrFloatBitWidth()));
+    }
     rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(), newOperands,
                                               delayOp.getDelays());
     return success();
@@ -306,6 +364,11 @@ struct ExtractConcatConversion : OpRewritePattern<comb::ExtractOp> {
   using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(comb::ExtractOp op,
                                 PatternRewriter &rewriter) const override {
+    if (op.getType() == op.getInput().getType()) {
+      rewriter.replaceOp(op, op.getInput());
+      return success();
+    }
+
     // TODO: It's not pretty to replicate extract op.
     auto concatOp = op.getInput().getDefiningOp<comb::ConcatOp>();
     if (!concatOp)
@@ -313,30 +376,13 @@ struct ExtractConcatConversion : OpRewritePattern<comb::ExtractOp> {
     SmallVector<Value> newOperands;
     size_t lowBit = op.getLowBit();
     size_t width = op.getType().getIntOrFloatBitWidth();
-    for (auto operand : concatOp.getOperands()) {
-      auto opWidth = operand.getType().getIntOrFloatBitWidth();
-      if (width == 0)
-        break;
-
-      if (lowBit >= opWidth) {
-        lowBit -= opWidth;
-        continue;
-      }
-
-      // lowBit < width
-      size_t extractWidth = std::min(opWidth - lowBit, width);
-      newOperands.push_back(rewriter.create<comb::ExtractOp>(
-          op.getLoc(), operand, lowBit, extractWidth));
-      width -= extractWidth;
-    }
-    std::reverse(newOperands.begin(), newOperands.end());
-
     auto newOp =
-        rewriter.createOrFold<comb::ConcatOp>(op.getLoc(), newOperands);
+        createOrReuseExtract(rewriter, op.getLoc(), concatOp, lowBit, width);
     rewriter.replaceOp(op, newOp);
     return success();
   }
 };
+
 struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
   using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(comb::ExtractOp op,
@@ -361,8 +407,8 @@ struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
 
       // lowBit < width
       size_t extractWidth = std::min(opWidth - lowBit, width);
-      newOperands.push_back(rewriter.create<comb::ExtractOp>(
-          op.getLoc(), operand, lowBit, extractWidth));
+      newOperands.push_back(createOrReuseExtract(rewriter, op.getLoc(), operand,
+                                                 lowBit, extractWidth));
       width -= extractWidth;
     }
     std::reverse(newOperands.begin(), newOperands.end());
@@ -396,24 +442,25 @@ LogicalResult LongestPathAnalysisImpl::run() {
       getContext());
   mlir::FrozenRewritePatternSet frozen(std::move(patterns));
   std::mutex mutex;
+  SmallVector<hw::HWModuleOp> underHierarchy;
+  for (auto *node : llvm::post_order(instanceGraph->lookup(topModuleName)))
+    if (node && node->getModule())
+      if (auto hwMod = dyn_cast<hw::HWModuleOp>(*node->getModule()))
+        underHierarchy.push_back(hwMod);
 
   auto result = mlir::failableParallelForEach(
-      getContext(), mod.getBody()->getOps<hw::HWModuleOp>(),
-      [&](hw::HWModuleOp mod) {
-
+      getContext(), underHierarchy, [&](hw::HWModuleOp mod) {
         auto startTime = std::chrono::high_resolution_clock::now();
         {
           std::lock_guard<std::mutex> lock(mutex);
           llvm::errs() << mod.getName() << " start\n";
         }
 
-
         auto result = rewriteLocal(mod, frozen);
 
         auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration =
-            std::chrono::duration_cast<std::chrono::milliseconds>(endTime -
-                                                                startTime);
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            endTime - startTime);
         {
           std::lock_guard<std::mutex> lock(mutex);
           llvm::errs() << mod.getName() << " end, time: " << duration.count()
@@ -421,7 +468,7 @@ LogicalResult LongestPathAnalysisImpl::run() {
         }
 
         return result;
-    });
+      });
   return success();
 }
 
@@ -492,7 +539,9 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
     llvm::errs() << "Cloned subhierarchy\n";
   }
 
-  LongestPathAnalysisImpl longestPathAnalysis(workSpaceMod, &instanceGraph);
+  LongestPathAnalysisImpl longestPathAnalysis(
+      workSpaceMod, &instanceGraph,
+      StringAttr::get(&getContext(), topModuleName));
   if (failed(longestPathAnalysis.run()))
     return signalPassFailure();
 

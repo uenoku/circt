@@ -84,7 +84,7 @@ def AndInverterOp : AIGOp<"and_inv", [SameOperandsAndResultType, Pure]> {
   let hasCanonicalizeMethod = 1;
 }
 
-def DelayOp : AIGOp<"analysis.delay", [SameOperandsAndResultType, Pure]> {
+def DelayOp : AIGOp<"analysis.delay", [Pure]> {
   let summary = "AIG dialect delay operation (analysis only)";
   let description = [{
     The `aig.delay` operation represents an arrival time to each operand.
@@ -103,7 +103,7 @@ def DelayOp : AIGOp<"analysis.delay", [SameOperandsAndResultType, Pure]> {
   // TODO: Restrict to HWIntegerType.
   let arguments = (ins Variadic<AnyType>:$inputs, DenseI64ArrayAttr:$delays);
   let results = (outs AnyType:$result);
-  let assemblyFormat = "$inputs $delays attr-dict `:` type($result)";
+  let assemblyFormat = "$inputs $delays attr-dict `:` functional-type($inputs, $result)";
 }
 
 #endif // CIRCT_DIALECT_AIG_OPS_TD

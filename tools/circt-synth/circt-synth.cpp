@@ -118,7 +118,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
   mpm.addPass(circt::createConvertCombToAIG());
   mpm.addPass(createCSEPass());
   mpm.addPass(createCanonicalizerPass());
-  mpm.addPass(circt::aig::createLowerVariadic());
+  // mpm.addPass(circt::aig::createLowerVariadic());
   if (enableWordToBits)
     mpm.addPass(circt::aig::createLowerWordToBits());
 
