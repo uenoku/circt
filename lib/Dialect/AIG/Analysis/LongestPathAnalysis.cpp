@@ -28,6 +28,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/raw_ostream.h"
 
+#define DEBUG_TYPE "aig-longest-path-analysis"
 using namespace circt;
 using namespace aig;
 
@@ -207,7 +208,8 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
       } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
         // Delay of constant is 0.
         changed = true;
-      } else if (auto replicateOp = operand.getDefiningOp<comb::ReplicateOp>()) {
+      } else if (auto replicateOp = operand.getDefiningOp<comb::ReplicateOp>();
+                 false) {
         worklist.push_back({replicateOp.getInput(), delay});
       } else {
         if (operandToIdx.count(operand)) {
@@ -225,6 +227,7 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
     // Nothing changed.
     if (!changed)
       return failure();
+
     if (newOperands.empty()) {
       // Everything is constant.
       rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, op.getType(), 0);
@@ -242,11 +245,41 @@ struct DelayConcatConversion : OpRewritePattern<aig::DelayOp> {
   using OpRewritePattern<aig::DelayOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(DelayOp op,
                                 PatternRewriter &rewriter) const override {
-    SmallVector<int64_t> newDelays;
-    SmallVector<Value> newOperands;
-    DenseMap<Value, size_t> operandToIdx;
-    SmallVector<std::pair<Value, int64_t>> worklist;
-    bool changed = false;
+    size_t concatIdx = 0;
+    comb::ConcatOp concatOp;
+    for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+      if ((concatOp = operand.getDefiningOp<comb::ConcatOp>())) {
+        concatIdx = i;
+        break;
+      }
+    }
+
+    if (!concatOp)
+      return failure();
+
+    SmallVector<Value> newOperands(op.getOperands().take_front(concatIdx));
+    newOperands.reserve(op.getNumOperands());
+    SmallVector<Value> results;
+    results.reserve(concatOp.getNumOperands());
+    size_t bitPos = 0;
+    for (auto operand : llvm::reverse(concatOp.getOperands())) {
+      auto bitWidth = operand.getType().getIntOrFloatBitWidth();
+      newOperands.push_back(operand);
+      for (auto rest : op.getOperands().drop_front(concatIdx + 1)) {
+        // FIXME: Reuse extracted op if possible.
+        newOperands.push_back(rewriter.createOrFold<comb::ExtractOp>(
+            op.getLoc(), rest, bitPos, bitWidth));
+      }
+      newOperands.push_back(operand);
+      bitPos += bitWidth;
+      auto result = rewriter.createOrFold<aig::DelayOp>(
+          op.getLoc(), op.getType(), newOperands, op.getDelays());
+      results.push_back(result);
+      newOperands.resize(concatIdx);
+    }
+
+    std::reverse(results.begin(), results.end());
+    rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, op.getType(), results);
     return success();
   }
 };
@@ -259,12 +292,11 @@ struct ExtractDelayConversion : OpRewritePattern<comb::ExtractOp> {
     auto delayOp = op.getInput().getDefiningOp<DelayOp>();
     if (!delayOp)
       return failure();
-    // SmallVector<Value> newOperands;
-    // for (auto operand : delayOp.getOperands())
-    //   newOperands.push_back(rewriter.create<comb::ExtractOp>(
-    //       op.getLoc(), op.getType(), operand, op.getLowBitAttr()));
-    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(),
-                                              delayOp.getOperands(),
+    SmallVector<Value> newOperands;
+    for (auto operand : delayOp.getOperands())
+      newOperands.push_back(rewriter.create<comb::ExtractOp>(
+          op.getLoc(), op.getType(), operand, op.getLowBitAttr()));
+    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(), newOperands,
                                               delayOp.getDelays());
     return success();
   }
@@ -345,8 +377,12 @@ struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
 LogicalResult
 LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
                                       mlir::FrozenRewritePatternSet &frozen) {
+  PatternRewriter rewriter(getContext());
+
+  // AndInverterToDelayConversion aigToDelay(getContext());
   mlir::GreedyRewriteConfig config;
   config.useTopDownTraversal = true;
+  config.maxIterations = 1;
   if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config)))
     return failure();
   return success();
@@ -356,12 +392,36 @@ LogicalResult LongestPathAnalysisImpl::run() {
   RewritePatternSet patterns(getContext());
   patterns.add<AndInverterToDelayConversion, ShrinkDelayPattern,
                ExtractDelayConversion, ExtractConcatConversion,
-               ExtractReplicateConversion>(getContext());
+               ExtractReplicateConversion /*, DelayConcatConversion*/>(
+      getContext());
   mlir::FrozenRewritePatternSet frozen(std::move(patterns));
+  std::mutex mutex;
 
   auto result = mlir::failableParallelForEach(
       getContext(), mod.getBody()->getOps<hw::HWModuleOp>(),
-      [&](hw::HWModuleOp mod) { return rewriteLocal(mod, frozen); });
+      [&](hw::HWModuleOp mod) {
+
+        auto startTime = std::chrono::high_resolution_clock::now();
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          llvm::errs() << mod.getName() << " start\n";
+        }
+
+
+        auto result = rewriteLocal(mod, frozen);
+
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(endTime -
+                                                                startTime);
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          llvm::errs() << mod.getName() << " end, time: " << duration.count()
+                       << "ms\n";
+        }
+
+        return result;
+    });
   return success();
 }
 
@@ -416,6 +476,7 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
     builder.setInsertionPointToStart(workSpaceBlock);
     workSpaceMod = getOperation();
   } else {
+    llvm::errs() << "Clone subhierarchy\n";
     workSpaceBlock = new Block();
     builder.setInsertionPointToStart(workSpaceBlock);
     workSpaceMod = builder.create<mlir::ModuleOp>(
@@ -428,6 +489,7 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
           builder.clone(*hwMod);
         }
     }
+    llvm::errs() << "Cloned subhierarchy\n";
   }
 
   LongestPathAnalysisImpl longestPathAnalysis(workSpaceMod, &instanceGraph);
