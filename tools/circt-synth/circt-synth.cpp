@@ -96,6 +96,15 @@ static cl::opt<std::string>
                             cl::desc("Output file for resource usage"),
                             cl::init("-"), cl::cat(mainCategory));
 
+static cl::opt<bool>
+    printLongestPath("print-longest-path",
+                     cl::desc("Print longest path of AIG operations"),
+                     cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string>
+    longestPathOutputFile("longest-path-output",
+                          cl::desc("Output file for longest path"),
+                          cl::init("-"), cl::cat(mainCategory));
+
 static cl::opt<std::string> topModuleName("top-module",
                                           cl::desc("Top module name"),
                                           cl::init(""), cl::cat(mainCategory));
@@ -123,6 +132,14 @@ static void populateSynthesisPipeline(PassManager &pm) {
     options.printSummary = true;
     pm.addPass(circt::aig::createPrintResourceUsageAnalysis(options));
   }
+
+  if (printLongestPath) {
+    circt::aig::PrintLongestPathAnalysisOptions options;
+    options.topModuleName = topModuleName;
+    options.outputJSONFile = longestPathOutputFile;
+    options.printSummary = true;
+    pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
+  } 
 
   if (convertToComb) {
     mpm.addPass(circt::createConvertAIGToComb());

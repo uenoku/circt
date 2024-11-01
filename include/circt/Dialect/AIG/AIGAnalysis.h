@@ -61,6 +61,7 @@ private:
 class LongestPathAnalysis {
 public:
   LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
+  /*
   struct InNode {
     OpOperand to;
     size_t bitPos;
@@ -120,12 +121,13 @@ public:
   struct ModuleInfo {
     DenseMap<OutNode, SmallVector<InNode>> inEdges;
     DenseMap<InNode, SmallVector<OutNode>> outEdges;
-    SmallVector<Path> internalPaths; // Paths closed within this module.
+    SmallVector<Path> internalPaths; // Paths closed within this hierarchy.
   };
 
   ModuleInfo *getModuleInfo(hw::HWModuleOp top);
   DenseMap<StringAttr, std::unique_ptr<ModuleInfo>> moduleInfoCache;
   DenseMap<StringAttr, std::unique_ptr<ElaboratedInfo>> moduleInfo;
+  */
 
 private:
   igraph::InstanceGraph *instanceGraph;

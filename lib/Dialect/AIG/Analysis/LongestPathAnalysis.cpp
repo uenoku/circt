@@ -14,13 +14,18 @@
 #include "circt/Dialect/AIG/AIGAnalysis.h"
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/JSON.h"
+
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace circt;
@@ -29,7 +34,7 @@ using namespace aig;
 // LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
 //                                              mlir::AnalysisManager &am)
 //     : instanceGraph(&am.getAnalysis<igraph::InstanceGraph>()) {}
-// 
+//
 // LongestPathAnalysis::ModuleInfo *
 // LongestPathAnalysis::getModuleInfo(hw::HWModuleOp module) {
 //   {
@@ -119,7 +124,7 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
                  << usage->getTotal().getNumAndInverterGates() << "\n";
     llvm::errs() << "Total number of DFF bits: "
                  << usage->getTotal().getNumDFFBits() << "\n";
-  
+
   }
   if (!outputJSONFile.empty()) {
     std::error_code ec;
@@ -133,12 +138,11 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
     usage->emitJSON(os);
   }
 }
-
 */
 
 namespace circt {
 namespace aig {
-#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
+#define GEN_PASS_DEF_PRINTLONGESTPATHANALYSIS
 #include "circt/Dialect/AIG/AIGPasses.h.inc"
 } // namespace aig
 } // namespace circt
@@ -146,54 +150,309 @@ namespace aig {
 using namespace circt;
 using namespace aig;
 
-namespace {
-struct PrintResourceUsageAnalysisPass
-    : public impl::PrintResourceUsageAnalysisBase<
-          PrintResourceUsageAnalysisPass> {
-  using PrintResourceUsageAnalysisBase::PrintResourceUsageAnalysisBase;
+struct LongestPathAnalysisImpl {
+  LongestPathAnalysisImpl(mlir::ModuleOp mod,
+                          igraph::InstanceGraph *instanceGraph)
+      : mod(mod), instanceGraph(instanceGraph) {}
+  LogicalResult rewrite(mlir::ModuleOp mod);
+  LogicalResult rewriteLocal(hw::HWModuleOp mod,
+                             mlir::FrozenRewritePatternSet &frozen);
+  LogicalResult inlineOnLevel(hw::HWModuleOp mod,
+                              mlir::FrozenRewritePatternSet &frozen);
 
-  using PrintResourceUsageAnalysisBase::printSummary;
-  using PrintResourceUsageAnalysisBase::outputJSONFile;
-  using PrintResourceUsageAnalysisBase::topModuleName;
+  LogicalResult run();
+
+  mlir::MLIRContext *getContext() { return mod.getContext(); }
+
+private:
+  mlir::ModuleOp mod;
+  igraph::InstanceGraph *instanceGraph;
+};
+
+struct AndInverterToDelayConversion : OpRewritePattern<aig::AndInverterOp> {
+  using OpRewritePattern<aig::AndInverterOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(AndInverterOp op,
+                                PatternRewriter &rewriter) const override {
+    // Replace with DelayOp.
+    // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
+    uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
+    SmallVector<int64_t> delays(op.getOperands().size(), delay);
+    auto delaysAttr = rewriter.getDenseI64ArrayAttr(delays);
+    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(),
+                                              op.getOperands(), delaysAttr);
+    return success();
+  }
+};
+
+struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
+  using OpRewritePattern<aig::DelayOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(DelayOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<int64_t> newDelays;
+    SmallVector<Value> newOperands;
+    DenseMap<Value, size_t> operandToIdx;
+    SmallVector<std::pair<Value, int64_t>> worklist;
+    bool changed = false;
+    for (auto [operand, delay] :
+         llvm::reverse(llvm::zip(op.getOperands(), op.getDelays())))
+      worklist.push_back({operand, delay});
+
+    while (!worklist.empty()) {
+      auto [operand, delay] = worklist.pop_back_val();
+      if (auto delayOp = operand.getDefiningOp<DelayOp>()) {
+        for (auto [dOpOperand, dOpDelay] : llvm::reverse(
+                 llvm::zip(delayOp.getOperands(), delayOp.getDelays())))
+          worklist.push_back({dOpOperand, dOpDelay + delay});
+        changed = true;
+      } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
+        // Delay of constant is 0.
+        changed = true;
+      } else if (auto replicateOp = operand.getDefiningOp<comb::ReplicateOp>()) {
+        worklist.push_back({replicateOp.getInput(), delay});
+      } else {
+        if (operandToIdx.count(operand)) {
+          newDelays[operandToIdx[operand]] =
+              std::max(newDelays[operandToIdx[operand]], delay);
+          changed = true;
+        } else {
+          operandToIdx[operand] = newOperands.size();
+          newDelays.push_back(delay);
+          newOperands.push_back(operand);
+        }
+      }
+    }
+
+    // Nothing changed.
+    if (!changed)
+      return failure();
+    if (newOperands.empty()) {
+      // Everything is constant.
+      rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, op.getType(), 0);
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<aig::DelayOp>(
+        op, op.getType(), newOperands,
+        rewriter.getDenseI64ArrayAttr(newDelays));
+    return success();
+  }
+};
+
+struct DelayConcatConversion : OpRewritePattern<aig::DelayOp> {
+  using OpRewritePattern<aig::DelayOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(DelayOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<int64_t> newDelays;
+    SmallVector<Value> newOperands;
+    DenseMap<Value, size_t> operandToIdx;
+    SmallVector<std::pair<Value, int64_t>> worklist;
+    bool changed = false;
+    return success();
+  }
+};
+
+struct ExtractDelayConversion : OpRewritePattern<comb::ExtractOp> {
+  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(comb::ExtractOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: It's not pretty to replicate extract op.
+    auto delayOp = op.getInput().getDefiningOp<DelayOp>();
+    if (!delayOp)
+      return failure();
+    // SmallVector<Value> newOperands;
+    // for (auto operand : delayOp.getOperands())
+    //   newOperands.push_back(rewriter.create<comb::ExtractOp>(
+    //       op.getLoc(), op.getType(), operand, op.getLowBitAttr()));
+    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(),
+                                              delayOp.getOperands(),
+                                              delayOp.getDelays());
+    return success();
+  }
+};
+
+struct ExtractConcatConversion : OpRewritePattern<comb::ExtractOp> {
+  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(comb::ExtractOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: It's not pretty to replicate extract op.
+    auto concatOp = op.getInput().getDefiningOp<comb::ConcatOp>();
+    if (!concatOp)
+      return failure();
+    SmallVector<Value> newOperands;
+    size_t lowBit = op.getLowBit();
+    size_t width = op.getType().getIntOrFloatBitWidth();
+    for (auto operand : concatOp.getOperands()) {
+      auto opWidth = operand.getType().getIntOrFloatBitWidth();
+      if (width == 0)
+        break;
+
+      if (lowBit >= opWidth) {
+        lowBit -= opWidth;
+        continue;
+      }
+
+      // lowBit < width
+      size_t extractWidth = std::min(opWidth - lowBit, width);
+      newOperands.push_back(rewriter.create<comb::ExtractOp>(
+          op.getLoc(), operand, lowBit, extractWidth));
+      width -= extractWidth;
+    }
+    std::reverse(newOperands.begin(), newOperands.end());
+
+    auto newOp =
+        rewriter.createOrFold<comb::ConcatOp>(op.getLoc(), newOperands);
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
+  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(comb::ExtractOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: It's not pretty to replicate extract op.
+    auto replicateOp = op.getInput().getDefiningOp<comb::ReplicateOp>();
+    if (!replicateOp)
+      return failure();
+    SmallVector<Value> newOperands;
+    size_t lowBit = op.getLowBit();
+    size_t width = op.getType().getIntOrFloatBitWidth();
+    for (size_t i = 0, e = replicateOp.getMultiple(); i != e; ++i) {
+      auto operand = replicateOp.getInput();
+      auto opWidth = operand.getType().getIntOrFloatBitWidth();
+      if (width == 0)
+        break;
+
+      if (lowBit >= opWidth) {
+        lowBit -= opWidth;
+        continue;
+      }
+
+      // lowBit < width
+      size_t extractWidth = std::min(opWidth - lowBit, width);
+      newOperands.push_back(rewriter.create<comb::ExtractOp>(
+          op.getLoc(), operand, lowBit, extractWidth));
+      width -= extractWidth;
+    }
+    std::reverse(newOperands.begin(), newOperands.end());
+
+    auto newOp =
+        rewriter.createOrFold<comb::ConcatOp>(op.getLoc(), newOperands);
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+
+LogicalResult
+LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
+                                      mlir::FrozenRewritePatternSet &frozen) {
+  mlir::GreedyRewriteConfig config;
+  config.useTopDownTraversal = true;
+  if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config)))
+    return failure();
+  return success();
+}
+
+LogicalResult LongestPathAnalysisImpl::run() {
+  RewritePatternSet patterns(getContext());
+  patterns.add<AndInverterToDelayConversion, ShrinkDelayPattern,
+               ExtractDelayConversion, ExtractConcatConversion,
+               ExtractReplicateConversion>(getContext());
+  mlir::FrozenRewritePatternSet frozen(std::move(patterns));
+
+  auto result = mlir::failableParallelForEach(
+      getContext(), mod.getBody()->getOps<hw::HWModuleOp>(),
+      [&](hw::HWModuleOp mod) { return rewriteLocal(mod, frozen); });
+  return success();
+}
+
+namespace {
+
+struct PrintLongestPathAnalysisPass
+    : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
+  using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
+  LogicalResult rewrite(mlir::ModuleOp mod,
+                        igraph::InstanceGraph &instanceGraph);
+  LogicalResult rewrite(hw::HWModuleOp mod);
+
+  using PrintLongestPathAnalysisBase::outputJSONFile;
+  using PrintLongestPathAnalysisBase::printSummary;
+  using PrintLongestPathAnalysisBase::topModuleName;
   void runOnOperation() override;
 };
 } // namespace
 
-void PrintResourceUsageAnalysisPass::runOnOperation() {
-  auto mod = getOperation();
+LogicalResult
+PrintLongestPathAnalysisPass::rewrite(mlir::ModuleOp mod,
+                                      igraph::InstanceGraph &instanceGraph) {
+  return success();
+}
+
+LogicalResult PrintLongestPathAnalysisPass::rewrite(hw::HWModuleOp mod) {
+  return success();
+}
+
+void PrintLongestPathAnalysisPass::runOnOperation() {
   if (topModuleName.empty()) {
-    mod.emitError()
-        << "'top-name' option is required for PrintResourceUsageAnalysis";
+    getOperation().emitError()
+        << "'top-name' option is required for PrintLongestPathAnalysis";
     return signalPassFailure();
   }
+
   auto &symTbl = getAnalysis<mlir::SymbolTable>();
+  auto &instanceGraph = getAnalysis<igraph::InstanceGraph>();
   auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName);
   if (!top) {
-    mod.emitError() << "top module '" << topModuleName << "' not found";
+    getOperation().emitError()
+        << "top module '" << topModuleName << "' not found";
     return signalPassFailure();
   }
-  auto &resourceUsageAnalysis = getAnalysis<ResourceUsageAnalysis>();
-  auto usage = resourceUsageAnalysis.getResourceUsage(top);
+
+  bool isInplace = true;
+  Block *workSpaceBlock;
+  OpBuilder builder(&getContext());
+  mlir::ModuleOp workSpaceMod;
+  if (isInplace) {
+    workSpaceBlock = getOperation().getBody();
+    builder.setInsertionPointToStart(workSpaceBlock);
+    workSpaceMod = getOperation();
+  } else {
+    workSpaceBlock = new Block();
+    builder.setInsertionPointToStart(workSpaceBlock);
+    workSpaceMod = builder.create<mlir::ModuleOp>(
+        UnknownLoc::get(&getContext()), "workSpace");
+    builder.setInsertionPointToStart(workSpaceMod.getBody());
+    // Clone subhierarchy under top module.
+    for (auto *node : llvm::post_order(instanceGraph.lookup(top))) {
+      if (node && node->getModule())
+        if (auto hwMod = dyn_cast<hw::HWModuleOp>(*node->getModule())) {
+          builder.clone(*hwMod);
+        }
+    }
+  }
+
+  LongestPathAnalysisImpl longestPathAnalysis(workSpaceMod, &instanceGraph);
+  if (failed(longestPathAnalysis.run()))
+    return signalPassFailure();
+
+  // TODO: Clean up symbol uses in the cloned subhierarchy.
 
   if (printSummary) {
-    llvm::errs() << "// ------ ResourceUsageAnalysis Summary -----\n";
+    llvm::errs() << "// ------ LongestPathAnalysis Summary -----\n";
     llvm::errs() << "Top module: " << topModuleName << "\n";
-    llvm::errs() << "Total number of and-inverter gates: "
-                 << usage->getTotal().getNumAndInverterGates() << "\n";
-    llvm::errs() << "Total number of DFF bits: "
-                 << usage->getTotal().getNumDFFBits() << "\n";
-  
   }
+
   if (!outputJSONFile.empty()) {
     std::error_code ec;
     llvm::raw_fd_ostream os(outputJSONFile, ec);
     if (ec) {
       emitError(UnknownLoc::get(&getContext()))
-          << "failed to open output JSON file '" << outputJSONFile << "': "
-          << ec.message();
+          << "failed to open output JSON file '" << outputJSONFile
+          << "': " << ec.message();
       return signalPassFailure();
     }
-    usage->emitJSON(os);
+  }
+
+  if (!isInplace) {
+    workSpaceBlock->erase();
   }
 }
-

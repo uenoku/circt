@@ -29,8 +29,8 @@ def PrintResourceUsageAnalysis : Pass<"aig-print-resource-usage-analysis", "mlir
   ];
 }
 
-def PrintGlobalPathAnalysis : Pass<"aig-print-global-path-analysis", "mlir::ModuleOp"> {
-  let summary = "Print resource usage of AIG operations";
+def PrintLongestPathAnalysis : Pass<"aig-print-longest-path-analysis", "mlir::ModuleOp"> {
+  let summary = "Print longest path analysis of AIG operations";
   let options = [
     Option<"outputJSONFile", "json-file", "std::string", "", "Output JSON file">,
     Option<"topModuleName", "top-name", "std::string", "", "Top module name">,
