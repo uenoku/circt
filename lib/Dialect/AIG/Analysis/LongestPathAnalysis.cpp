@@ -21,6 +21,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/AnalysisManager.h"
+#include "mlir/Transforms/CSE.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/JSON.h"
 
@@ -46,8 +47,10 @@ Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
         continue;
       }
 
-      if (lowBit == 0 && width == opWidth)
-        return operand;
+      if (lowBit == 0 && width == opWidth) {
+        newOperands.push_back(operand);
+        break;
+      }
 
       // lowBit < width
       size_t extractWidth = std::min(opWidth - lowBit, width);
@@ -55,6 +58,8 @@ Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
           createOrReuseExtract(rewriter, loc, operand, lowBit, extractWidth));
       width -= extractWidth;
     }
+    if (newOperands.size() == 1)
+      return newOperands.front();
 
     std::reverse(newOperands.begin(), newOperands.end());
     return rewriter.create<comb::ConcatOp>(loc, newOperands);
@@ -193,22 +198,85 @@ struct LocalPathAnalysisTransform {
   Value getOrCreateBitRange(OpBuilder &builder, Value operand, size_t lowBit,
                             size_t width);
   LogicalResult lower(OpBuilder &builder, aig::AndInverterOp op);
+
+  LogicalResult run(hw::HWModuleOp mod);
 };
 
-// LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
-//                                                 aig::AndInverterOp op) {
-//   auto loc = op.getLoc();
-//   // Replace with DelayOp.
-//   // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
-//   uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
-//   SmallVector<int64_t> delays(op.getOperands().size(), delay);
-//   auto delaysAttr = builder.getDenseI64ArrayAttr(delays);
-//   Value delayOp = builder.create<aig::DelayOp>(loc, op.getType(),
-//                                                op.getOperands(), delaysAttr);
-//
-//   op.getResult().replaceAllUsesWith(delayOp.getResult());
-//   return success();
-// }
+LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
+                                                aig::AndInverterOp op) {
+  auto loc = op.getLoc();
+  builder.setInsertionPoint(op);
+  // Replace with DelayOp.
+  // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
+  uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
+  SmallVector<int64_t> delays(op.getOperands().size(), delay);
+  auto delaysAttr = builder.getDenseI64ArrayAttr(delays);
+  Value delayOp = builder.create<aig::DelayOp>(loc, op.getType(),
+                                               op.getOperands(), delaysAttr);
+
+  op.getResult().replaceAllUsesWith(delayOp);
+  return success();
+}
+
+// Extract must be up. Concat must be down.
+
+// ExtractOp(Concat(a, b, c)) -> Concat(Extract(b), Extract(c))
+// ExtractOp(AndDelay(a, b, c)) -> AndDelay(Extract(b))
+// ConcatOp(AndDelay(a, b, c), AndDelay(d, e, f)) -> keep as is
+// AndDelay(Concat(delay_a, delay_b, delay_c), Concat(delay_d, delay_e,
+// delay_f))
+//   -> Concat(AndDelay(delay_a, delay_d), AndDelay(delay_b, delay_e),
+//             AndDelay(delay_c, delay_f))
+
+static bool isRootValue(Value value) {
+  if (auto arg = value.dyn_cast<BlockArgument>())
+    return true;
+  return isa<seq::CompRegOp, seq::FirRegOp>(value.getDefiningOp());
+}
+/*
+LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
+  // NOTE: The result IR could be huge so instead of relying on
+  // GreedyRewriteDriver and DialectConversion manually iterate over the
+  // operations.
+
+  SmallVector<Operation *> needToLegalize;
+  OpBuilder builder(mod.getContext());
+  // 1. Replace AndInverterOp with DelayOp.
+  mod.walk([&](AndInverterOp op) {
+    if (failed(lower(builder, op)))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+
+  DenseSet<Value> legalizedValues;
+
+  mod.walk([&](Operation *op) {
+    // 2. Hoist Concat and Sink ExtractOp.
+    if (auto extractOp = dyn_cast<comb::ExtractOp>(op)) {
+      if (isRootValue(extractOp.getInput())) {
+        legalizedValues.insert(extractOp.getInput());
+        return WalkResult::advance();
+      }
+
+      // ExtractOp(AndDelay(a, b, c)) -> AndDelay(Extract(b))
+      if (auto delayOp = extractOp.getInput().getDefiningOp<aig::DelayOp>()) {
+        auto newOperands = delayOp.getOperands();
+        newOperands[extractOp.getLowBit() / delayOp.getDelays()[0]] =
+            extractOp.getInput();
+        auto newOp = builder.create<aig::DelayOp>(
+            extractOp.getLoc(), extractOp.getType(), newOperands,
+            delayOp.getDelays());
+      } else if (auto concatOp =
+                     extractOp.getInput().getDefiningOp<comb::ConcatOp>()) {
+        auto newOperands = concatOp.getOperands();
+        newOperands[extractOp.getLowBit() / concatOp.getOperands()[0]
+                                                .getType()
+                                                .getIntOrFloatBitWidth()] =
+            extractOp.getInput();
+      }
+    }
+  });
+}*/
 
 struct LongestPathAnalysisImpl {
   LongestPathAnalysisImpl(mlir::ModuleOp mod,
@@ -254,6 +322,8 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
     SmallVector<Value> newOperands;
     DenseMap<std::tuple<Value, size_t, size_t>, size_t> operandToIdx;
     SmallVector<std::pair<Value, int64_t>> worklist;
+    DenseMap<Value, int64_t> observedMaxDelay;
+
     bool changed = false;
     for (auto [operand, delay] :
          llvm::reverse(llvm::zip(op.getOperands(), op.getDelays())))
@@ -261,11 +331,23 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
 
     while (!worklist.empty()) {
       auto [operand, delay] = worklist.pop_back_val();
+
+      if (observedMaxDelay[operand] > delay) {
+        continue;
+      }
+
+      observedMaxDelay[operand] = delay;
+
       if (auto delayOp = operand.getDefiningOp<DelayOp>()) {
         for (auto [dOpOperand, dOpDelay] : llvm::reverse(
-                 llvm::zip(delayOp.getOperands(), delayOp.getDelays())))
+                 llvm::zip(delayOp.getOperands(), delayOp.getDelays()))) {
+          if (observedMaxDelay[dOpOperand] > dOpDelay + delay) {
+            continue;
+          }
+          observedMaxDelay[dOpOperand] = dOpDelay + delay;
           worklist.push_back({dOpOperand, dOpDelay + delay});
-        changed = true;
+          changed = true;
+        }
       } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
         // Delay of constant is 0.
         changed = true;
@@ -282,6 +364,7 @@ struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
           operandTuple = std::make_tuple(
               operand, 0, operand.getType().getIntOrFloatBitWidth());
         }
+
         if (operandToIdx.count(operandTuple)) {
           newDelays[operandToIdx[operandTuple]] =
               std::max(newDelays[operandToIdx[operandTuple]], delay);
@@ -483,10 +566,21 @@ LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
   //   return WalkResult::advance();
   // });
 
+  RewritePatternSet patterns2(getContext());
+  patterns2.add<AndInverterToDelayConversion>(getContext());
+
+  mlir::FrozenRewritePatternSet frozen2(std::move(patterns2));
+
   // AndInverterToDelayConversion aigToDelay(getContext());
   mlir::GreedyRewriteConfig config;
   config.useTopDownTraversal = true;
-  config.maxIterations = 1;
+  if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen2, config)))
+    return failure();
+
+  mlir::PatternRewriter rewriter2(mod.getContext());
+  mlir::DominanceInfo domInfo(mod);
+  mlir::eliminateCommonSubExpressions(rewriter2, domInfo, mod);
+
   if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config)))
     return failure();
 
@@ -495,10 +589,10 @@ LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
 
 LogicalResult LongestPathAnalysisImpl::run() {
   RewritePatternSet patterns(getContext());
-  patterns.add<AndInverterToDelayConversion, ShrinkDelayPattern,
-               ExtractDelayConversion, ExtractConcatConversion,
-               ExtractReplicateConversion, DelayConcatConversion>(
-      getContext());
+
+  patterns
+      .add<ShrinkDelayPattern, ExtractDelayConversion, ExtractConcatConversion,
+           ExtractReplicateConversion, DelayConcatConversion>(getContext());
   mlir::FrozenRewritePatternSet frozen(std::move(patterns));
   std::mutex mutex;
   SmallVector<hw::HWModuleOp> underHierarchy;
@@ -506,6 +600,7 @@ LogicalResult LongestPathAnalysisImpl::run() {
     if (node && node->getModule())
       if (auto hwMod = dyn_cast<hw::HWModuleOp>(*node->getModule()))
         underHierarchy.push_back(hwMod);
+  llvm::errs() << "Under hierarchy: " << underHierarchy.size() << "\n";
 
   auto result = mlir::failableParallelForEach(
       getContext(), underHierarchy, [&](hw::HWModuleOp mod) {
@@ -528,6 +623,8 @@ LogicalResult LongestPathAnalysisImpl::run() {
 
         return result;
       });
+  if (succeeded(result))
+    return failure();
   return success();
 }
 
