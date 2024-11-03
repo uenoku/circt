@@ -24,6 +24,7 @@
 #include "mlir/Pass/AnalysisManager.h"
 #include "mlir/Transforms/CSE.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/JSON.h"
 
 #include "mlir/Transforms/DialectConversion.h"
@@ -483,6 +484,7 @@ LogicalResult LocalPathAnalysisTransform::splitDelayOp(
       createConcat(builder, op.getLoc(), op.getType(), results));
   return success();
 }
+struct InputNode;
 
 struct Node {
   enum Kind {
@@ -501,6 +503,9 @@ struct Node {
 
   size_t getWidth() const { return width; }
   Kind getKind() const { return kind; }
+
+  virtual void
+  populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results){};
 
   virtual Node *query(size_t bitOffset) = 0;
   virtual ~Node() {}
@@ -532,9 +537,15 @@ struct InputNode : Node {
     assert(bitOffset == 0 && "input node has no bit offset");
     return this;
   }
+  size_t getBitPos() const { return bitPos; }
   void dump() const override {
     llvm::dbgs() << "(input node " << value << " " << bitPos << ")\n";
   }
+
+  void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
+    results.push_back(std::make_pair(0, this));
+  }
+
   // ~InputNode() {
   //   llvm::dbgs() << "destroy input node " << value << "\n";
   // }
@@ -557,6 +568,12 @@ struct DelayNode : Node {
     edges.push_back(std::make_pair(delay, node));
   }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
+
+  void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
+    auto &computedResult = getComputedResult();
+    results.append(computedResult.begin(), computedResult.end());
+  }
+
   void computeResult() {
     computedResult =
         std::make_optional(SmallVector<std::pair<int64_t, InputNode *>>());
@@ -702,8 +719,14 @@ struct ExtractNode : Node {
 };
 
 struct Graph {
+  SmallVector<Value>
+      inputValues; // Ports + Instance outputs + Registers outputs.
+  SmallVector<Operation *>
+      outputOperations; // HW output, Instance inputs, Register inputs.
+
   DenseMap<Value, Node *> valueToNodes;
   DenseMap<std::tuple<Operation *, size_t, size_t>, OutputNode *> outputNodes;
+  LogicalResult commitToHWModule(hw::HWModuleOp mod);
   // llvm::SpecificBumpPtrAllocator<DelayNode> delayAllocator;
   // llvm::SpecificBumpPtrAllocator<ConcatNode> concatAllocator;
   // llvm::SpecificBumpPtrAllocator<ReplicateNode> replicateAllocator;
@@ -741,6 +764,7 @@ struct Graph {
     return node;
   }*/
   void addInputNode(Value value) {
+    inputValues.push_back(value);
     auto width = getBitWidth(value);
     assert(isRootValue(value) && "only root values can be input nodes");
     SmallVector<Node *> nodes;
@@ -858,13 +882,14 @@ struct Graph {
   }
 };
 
+LogicalResult Graph::commitToHWModule(hw::HWModuleOp mod) { return success(); }
+
 LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
   // mod.dump();
   Graph graph;
   for (auto arg : mod.getBodyBlock()->getArguments()) {
     graph.addInputNode(arg);
   }
-
   SmallVector<Operation *> interestingOps;
   // Add input nodes.
   mod.walk([&](Operation *op) {
@@ -875,6 +900,9 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
     } else if (isa<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
                    hw::ConstantOp, aig::AndInverterOp>(op)) {
       interestingOps.push_back(op);
+    }
+    if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp, hw::OutputOp>(op)) {
+      graph.outputOperations.push_back(op);
     }
   });
 
@@ -903,6 +931,56 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
 
   // });
   // llvm::dbgs() << "done\n";
+  bool modifyModule = true;
+  if (modifyModule) {
+    OpBuilder builder(mod.getContext());
+    DenseMap<InputNode *, Value> inputNodeToValue;
+    for (auto op : graph.outputOperations) {
+      builder.setInsertionPoint(op);
+      size_t idx = 0;
+      for (auto operand : llvm::make_early_inc_range(op->getOperands())) {
+        auto guard = llvm::make_scope_exit([&]() { ++idx; });
+        auto *node = graph.valueToNodes[operand];
+        SmallVector<Value> operands;
+        for (auto i = 0; i < node->getWidth(); ++i) {
+          auto *result = node->query(i);
+          assert(result && "result not found");
+          SmallVector<std::pair<int64_t, InputNode *>> delays;
+          result->populateResults(delays);
+          SmallVector<Value> delayOperands;
+          SmallVector<int64_t> operandDelays;
+          for (auto [delay, inputNode] : delays) {
+            auto &value = inputNodeToValue[inputNode];
+            if (!value) {
+              value = getBitWidth(inputNode->value) == 1
+                          ? inputNode->value
+                          : builder.createOrFold<comb::ExtractOp>(
+                                op->getLoc(), inputNode->value,
+                                inputNode->getBitPos(), 1);
+            }
+            operandDelays.push_back(delay);
+            delayOperands.push_back(value);
+          }
+
+          operands.push_back(builder.create<aig::DelayOp>(
+              op->getLoc(),
+              isa<seq::ClockType>(operand.getType()) ? operand.getType()
+                                                     : builder.getI1Type(),
+              delayOperands, operandDelays));
+        }
+        if (operands.size() == 1) {
+          op->setOperand(idx, operands.front());
+          continue;
+        }
+
+        std::reverse(operands.begin(), operands.end());
+        auto delayOp = builder.createOrFold<comb::ConcatOp>(
+            op->getLoc(), operand.getType(), operands);
+        op->setOperand(idx, delayOp);
+      }
+    }
+  }
+
   return success();
 }
 
