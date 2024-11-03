@@ -114,16 +114,18 @@ static cl::opt<std::string> topModuleName("top-module",
 //===----------------------------------------------------------------------===//
 
 static void populateSynthesisPipeline(PassManager &pm) {
-  auto &mpm = pm.nest<hw::HWModuleOp>();
-  mpm.addPass(circt::createConvertCombToAIG());
-  mpm.addPass(createCSEPass());
-  mpm.addPass(createCanonicalizerPass());
-  // mpm.addPass(circt::aig::createLowerVariadic());
-  if (enableWordToBits)
-    mpm.addPass(circt::aig::createLowerWordToBits());
+  {
+    auto &mpm = pm.nest<hw::HWModuleOp>();
+    mpm.addPass(circt::createConvertCombToAIG());
+    mpm.addPass(createCSEPass());
+    mpm.addPass(createCanonicalizerPass());
+    // mpm.addPass(circt::aig::createLowerVariadic());
+    if (enableWordToBits)
+      mpm.addPass(circt::aig::createLowerWordToBits());
 
-  mpm.addPass(createCSEPass());
-  mpm.addPass(createCanonicalizerPass());
+    mpm.addPass(createCSEPass());
+    mpm.addPass(createCanonicalizerPass());
+  }
 
   if (printResourceUsage) {
     circt::aig::PrintResourceUsageAnalysisOptions options;
@@ -139,9 +141,13 @@ static void populateSynthesisPipeline(PassManager &pm) {
     options.outputJSONFile = longestPathOutputFile;
     options.printSummary = true;
     pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
-  } 
+    auto &mpm = pm.nest<hw::HWModuleOp>();
+    mpm.addPass(createCSEPass());
+    mpm.addPass(createCanonicalizerPass());
+  }
 
   if (convertToComb) {
+    auto &mpm = pm.nest<hw::HWModuleOp>();
     mpm.addPass(circt::createConvertAIGToComb());
     mpm.addPass(createCSEPass());
   }
