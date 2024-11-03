@@ -18,6 +18,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/InstanceGraph.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/AnalysisManager.h"
@@ -33,11 +34,19 @@
 using namespace circt;
 using namespace aig;
 
+static size_t getBitWidth(Value value) {
+  if (auto vecType = value.getType().dyn_cast<seq::ClockType>())
+    return 1;
+  return value.getType().getIntOrFloatBitWidth();
+}
+
 static bool isRootValue(Value value) {
   if (auto arg = value.dyn_cast<BlockArgument>())
     return true;
-  return isa<seq::CompRegOp, seq::FirRegOp>(value.getDefiningOp());
+  return isa<seq::CompRegOp, seq::FirRegOp, hw::InstanceOp, seq::FirMemReadOp>(
+      value.getDefiningOp());
 }
+
 Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
                            size_t lowBit, size_t width) {
   if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
@@ -490,15 +499,9 @@ struct Node {
   Node(Kind kind, size_t width) : kind(kind), width(width) {}
   size_t getWidth() const { return width; }
   Kind getKind() const { return kind; }
-  struct InputNode;
-
-  std::optional<SmallVector<std::pair<size_t, InputNode *>>> computedResult;
 
   virtual Node *query(size_t bitOffset) = 0;
-  virtual ~Node() {
-    if (computedResult)
-      computedResult.reset();
-  }
+  virtual ~Node() {}
   virtual void dump() const = 0;
 };
 
@@ -519,7 +522,7 @@ struct InputNode : Node {
   Value value; // port, instance output, or register.
   size_t bitPos;
   InputNode(Value value, size_t bitPos)
-      : value(value), bitPos(bitPos), Node(Kind::Input, 1) {}
+      : Node(Kind::Input, 1), value(value), bitPos(bitPos) {}
 
   static bool classof(const Node *e) { return e->getKind() == Kind::Input; }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
@@ -530,6 +533,9 @@ struct InputNode : Node {
   void dump() const override {
     llvm::dbgs() << "(input node " << value << " " << bitPos << ")\n";
   }
+  // ~InputNode() {
+  //   llvm::dbgs() << "destroy input node " << value << "\n";
+  // }
 };
 
 struct DelayNode : Node {
@@ -537,9 +543,9 @@ struct DelayNode : Node {
   DelayNode &operator=(const DelayNode &other) = default;
   DelayNode(const DelayNode &other) = default;
   DelayNode(Value value, size_t bitPos)
-      : value(value), bitPos(bitPos), Node(Kind::Delay, 1), edges() {}
+      : Node(Kind::Delay, 1), value(value), bitPos(bitPos), edges(),
+        computedResult() {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Delay; }
-  SmallVector<std::pair<int64_t, Node *>> edges;
 
   Node *query(size_t bitOffset) override {
     assert(bitOffset == 0 && "delay node has no bit offset");
@@ -549,7 +555,44 @@ struct DelayNode : Node {
     edges.push_back(std::make_pair(delay, node));
   }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
-  ~DelayNode() override { edges.clear(); }
+  void computeResult() {
+    computedResult =
+        std::make_optional(SmallVector<std::pair<int64_t, InputNode *>>());
+    llvm::MapVector<InputNode *, int64_t> maxDelays;
+    for (auto [delay, node] : edges) {
+      if (auto *inputNode = dyn_cast<InputNode>(node))
+        maxDelays[inputNode] = std::max(maxDelays[inputNode], delay);
+      else if (auto *delayNode = dyn_cast<DelayNode>(node)) {
+        for (auto [newDelay, inputNode] : delayNode->getComputedResult())
+          maxDelays[inputNode] =
+              std::max(maxDelays[inputNode], delay + newDelay);
+      } else if (auto *concatNode = dyn_cast<ConstantNode>(node)) {
+        continue;
+      } else
+        llvm_unreachable("unknown node type");
+    }
+
+    for (auto [inputNode, delay] : maxDelays)
+      computedResult->push_back(std::make_pair(delay, inputNode));
+  }
+
+  const SmallVector<std::pair<int64_t, InputNode *>> &getComputedResult() {
+    if (!computedResult)
+      computeResult();
+
+    assert(computedResult && "result not computed");
+    return computedResult.value();
+  }
+
+  std::optional<SmallVector<std::pair<int64_t, InputNode *>>> computedResult;
+
+  ~DelayNode() override {
+    // llvm::dbgs() << "destroy delay node " << value << " " << this << "\n";
+    edges.clear();
+    computedResult.reset();
+    // llvm::dbgs() << "done";
+  }
+
   void dump() const override {
     llvm::dbgs() << "(delay node " << value << " " << bitPos << "\n";
     for (auto edge : edges) {
@@ -563,6 +606,7 @@ struct DelayNode : Node {
 private:
   Value value;
   size_t bitPos;
+  SmallVector<std::pair<int64_t, Node *>> edges;
 };
 
 struct OutputNode : Node {
@@ -570,20 +614,20 @@ struct OutputNode : Node {
   size_t operandIdx;
   size_t bitPos;
   OutputNode(Operation *op, size_t operandIdx, size_t bitPos)
-      : op(op), operandIdx(operandIdx), bitPos(bitPos), Node(Kind::Output, 1) {}
+      : Node(Kind::Output, 1), op(op), operandIdx(operandIdx), bitPos(bitPos) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Output; }
   Node *query(size_t bitOffset) override {
     assert(bitOffset == 0 && "delay node has no bit offset");
     return this;
   }
+  ~OutputNode() = default;
 };
 
 struct ConcatNode : Node {
   Value value;
   SmallVector<Node *> nodes;
   ConcatNode(Value value, ArrayRef<Node *> nodes)
-      : value(value), nodes(nodes),
-        Node(Kind::Concat, value.getType().getIntOrFloatBitWidth()) {}
+      : Node(Kind::Concat, getBitWidth(value)), value(value), nodes(nodes) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Concat; }
   ~ConcatNode() override { nodes.clear(); }
   ConcatNode(const ConcatNode &other) = default;
@@ -611,8 +655,7 @@ struct ReplicateNode : Node {
   Value value;
   Node *node;
   ReplicateNode(Value value, Node *node)
-      : value(value), node(node),
-        Node(Kind::Replicate, value.getType().getIntOrFloatBitWidth()) {
+      : Node(Kind::Replicate, getBitWidth(value)), value(value), node(node) {
     assert(node->getWidth() == value.getDefiningOp<comb::ReplicateOp>()
                                    .getInput()
                                    .getType()
@@ -620,7 +663,7 @@ struct ReplicateNode : Node {
            "replicate node width must match the input width");
   }
   static bool classof(const Node *e) { return e->getKind() == Kind::Replicate; }
-  ~ReplicateNode() override = default;
+  ~ReplicateNode() = default;
   ReplicateNode(const ReplicateNode &other) = default;
   ReplicateNode &operator=(const ReplicateNode &other) = default;
   Node *query(size_t bitOffset) override {
@@ -640,10 +683,10 @@ struct ExtractNode : Node {
   ExtractNode(const ExtractNode &other) = default;
   ExtractNode &operator=(const ExtractNode &other) = default;
   ExtractNode(Value value, size_t lowBit, Node *input)
-      : value(value), lowBit(lowBit), input(input),
-        Node(Kind::Extract, value.getType().getIntOrFloatBitWidth()) {}
+      : Node(Kind::Extract, getBitWidth(value)), value(value), lowBit(lowBit),
+        input(input) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Extract; }
-  ~ExtractNode() override = default;
+  ~ExtractNode() = default;
 
   Node *query(size_t bitOffset) override {
     // exract(a, 2) : i4 -> query(2)
@@ -659,28 +702,30 @@ struct ExtractNode : Node {
 struct Graph {
   DenseMap<Value, Node *> valueToNodes;
   DenseMap<std::tuple<Operation *, size_t, size_t>, OutputNode *> outputNodes;
-  llvm::SpecificBumpPtrAllocator<DelayNode> delayAllocator;
-  llvm::SpecificBumpPtrAllocator<ConcatNode> concatAllocator;
-  llvm::SpecificBumpPtrAllocator<ReplicateNode> replicateAllocator;
-  llvm::SpecificBumpPtrAllocator<ExtractNode> extractAllocator;
-  llvm::SpecificBumpPtrAllocator<InputNode> inputAllocator;
-  llvm::SpecificBumpPtrAllocator<OutputNode> outputAllocator;
-  llvm::SpecificBumpPtrAllocator<ConstantNode> constantAllocator;
+  // llvm::SpecificBumpPtrAllocator<DelayNode> delayAllocator;
+  // llvm::SpecificBumpPtrAllocator<ConcatNode> concatAllocator;
+  // llvm::SpecificBumpPtrAllocator<ReplicateNode> replicateAllocator;
+  // llvm::SpecificBumpPtrAllocator<ExtractNode> extractAllocator;
+  // llvm::SpecificBumpPtrAllocator<InputNode> inputAllocator;
+  // llvm::SpecificBumpPtrAllocator<OutputNode> outputAllocator;
+  // llvm::SpecificBumpPtrAllocator<ConstantNode> constantAllocator;
+
+  // SmallVector<std::unique_ptr<Node>> nodes;
 
   // For multiple objects:
-  template <typename NodeTy, typename AllocatorTy, typename... Args>
-  NodeTy *allocateAndConstruct(AllocatorTy &allocator, size_t count,
-                               Args &&...args) {
-    // Allocate array of objects
-    NodeTy *nodes = allocator.Allocate(count);
+  // template <typename NodeTy, typename AllocatorTy, typename... Args>
+  // NodeTy *allocateAndConstruct(AllocatorTy &allocator, size_t count,
+  //                              Args &&...args) {
+  //   // Allocate array of objects
+  //   NodeTy *nodes = allocator.Allocate(count);
 
-    // Construct each object
-    for (size_t i = 0; i < count; ++i) {
-      new (&nodes[i]) NodeTy(std::forward<Args>(args)...);
-    }
+  //   // Construct each object
+  //   for (size_t i = 0; i < count; ++i) {
+  //     new (&nodes[i]) NodeTy(std::forward<Args>(args)...);
+  //   }
 
-    return nodes;
-  }
+  //   return nodes;
+  // }
   /*
   template <typename NodeTy, typename AllocatorTy, typename... Args>
   NodeTy *allocateAndConstruct(AllocatorTy &allocator, size_t width = 1,
@@ -694,14 +739,12 @@ struct Graph {
     return node;
   }*/
   void addInputNode(Value value) {
-    auto width = value.getType().getIntOrFloatBitWidth();
+    auto width = getBitWidth(value);
     assert(isRootValue(value) && "only root values can be input nodes");
-    InputNode *node =
-        allocateAndConstruct<InputNode>(inputAllocator, width, value, 0);
     SmallVector<Node *> nodes;
     for (auto i = 0; i < width; ++i) {
-      node[i].setBitPos(i);
-      nodes.push_back(node + i);
+      auto nodePtr = allocateNode<InputNode>(value, i);
+      nodes.push_back(nodePtr);
     }
 
     // Why not ArrayRef(node, width) works?
@@ -715,41 +758,62 @@ struct Graph {
 
   ConstantNode dummy{0, nullptr};
   void addConstantNode(Value value) {
-    auto *node = allocateAndConstruct<ConstantNode>(
-        constantAllocator, 1, value.getType().getIntOrFloatBitWidth(), &dummy);
-    setResultValue2(value, node);
+    auto *nodePtr = allocateNode<ConstantNode>(
+        value.getType().getIntOrFloatBitWidth(), &dummy);
+    setResultValue2(value, nodePtr);
+  }
+
+  // FIXME: SpecificBumpPtrAllocator crashes for some reason. For now use unique
+  // ptrs.
+
+  template <typename NodeTy, typename... Args>
+  NodeTy *allocateNode(Args &&...args) {
+    auto nodePtr = std::make_unique<NodeTy>(std::forward<Args>(args)...);
+    nodePool.push_back(std::move(nodePtr));
+    return cast<NodeTy>(nodePool.back().get());
+  }
+
+  SmallVector<std::unique_ptr<Node>> nodePool;
+
+  void setResultValue(Value value, Node *nodePtr) {
+    auto result = valueToNodes.insert(std::make_pair(value, nodePtr));
+    assert(result.second && "value already exists");
   }
 
   void setResultValue(Value value, ArrayRef<Node *> nodes) {
-    if (value.getType().getIntOrFloatBitWidth() == 1 || nodes.size() == 1) {
+    if (getBitWidth(value) == 1 || nodes.size() == 1) {
       auto result = valueToNodes.insert(std::make_pair(value, nodes[0]));
       assert(result.second && "value already exists");
       return;
     }
 
-    auto *node =
-        allocateAndConstruct<ConcatNode>(concatAllocator, 1, value, nodes);
-    auto result = valueToNodes.insert(std::make_pair(value, node));
+    auto nodePtr = allocateNode<ConcatNode>(value, nodes);
+    auto result = valueToNodes.insert(std::make_pair(value, nodePtr));
     assert(result.second && "value already exists");
   }
 
   LogicalResult addDelayNode(Value value, mlir::OperandRange inputs) {
     size_t width = value.getType().getIntOrFloatBitWidth();
-    auto *nodes =
-        allocateAndConstruct<DelayNode>(delayAllocator, width, value, 0);
+    // auto *nodes =
+    //     allocateAndConstruct<DelayNode>(delayAllocator, width, value, 0);
     SmallVector<Node *> nodePtrs;
     for (auto i = 0; i < width; ++i) {
-      nodes[i].setBitPos(i);
+      auto nodePtr = allocateNode<DelayNode>(value, i);
       for (auto operand : inputs) {
-        llvm::errs() << "operand: " << operand << "\n";
+        if (valueToNodes.find(operand) == valueToNodes.end())
+          llvm::errs() << "operand: " << operand << "\n";
         auto *inputNode = valueToNodes[operand];
         assert(inputNode && "input node not found");
 
         auto *node = inputNode->query(i);
-        nodes[i].addEdge(node, 0);
+        assert(node);
+        uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(inputs.size()));
+        nodePtr->addEdge(node, delay);
       }
 
-      nodePtrs.push_back(nodes + i);
+      (void)nodePtr->computeResult();
+
+      nodePtrs.push_back(nodePtr);
     }
 
     setResultValue(value, nodePtrs);
@@ -762,7 +826,7 @@ struct Graph {
     SmallVector<Node *> nodes;
     for (auto operand : llvm::reverse(inputs)) {
       auto *inputNode = valueToNodes[operand];
-      llvm::dbgs() << "inputNode: " << operand << "\n";
+      // llvm::dbgs() << "inputNode: " << operand << "\n";
       assert(inputNode && "input node not found");
       nodes.push_back(inputNode);
     }
@@ -774,10 +838,8 @@ struct Graph {
   LogicalResult addExtractNode(Value value, Value operand, size_t lowBit) {
     auto *inputNode = valueToNodes[operand];
     assert(inputNode && "input node not found");
-    inputNode->dump();
-    ExtractNode *node = nullptr;
-    node = allocateAndConstruct<ExtractNode>(extractAllocator, 1, value, lowBit,
-                                             inputNode);
+    // inputNode->dump();
+    auto *node = allocateNode<ExtractNode>(value, lowBit, inputNode);
     assert(node);
 
     setResultValue2(value, node);
@@ -787,8 +849,7 @@ struct Graph {
   LogicalResult addReplicateNode(Value value, Value operand) {
     auto *inputNode = valueToNodes[operand];
     assert(inputNode && "input node not found");
-    auto *node = allocateAndConstruct<ReplicateNode>(replicateAllocator, 1,
-                                                     value, inputNode);
+    auto *node = allocateNode<ReplicateNode>(value, inputNode);
     assert(node && "node allocation failed");
     setResultValue2(value, node);
     return success();
@@ -796,28 +857,36 @@ struct Graph {
 };
 
 LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
-  mod.dump();
+  // mod.dump();
   Graph graph;
   for (auto arg : mod.getBodyBlock()->getArguments()) {
     graph.addInputNode(arg);
   }
 
+  SmallVector<Operation *> interestingOps;
   // Add input nodes.
   mod.walk([&](Operation *op) {
-    if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp>(op)) {
+    if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp, seq::FirMemReadOp>(
+        op)) {
       for (auto result : op->getResults())
         graph.addInputNode(result);
+    } else if (isa<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
+                   hw::ConstantOp, aig::AndInverterOp>(op)) {
+      interestingOps.push_back(op);
     }
   });
 
-  // Add delay nodes.
-  mod.walk([&](Operation *op) {
+  auto isOperandReady = [&](Value value, Operation *op) {
+    return isRootValue(value);
+  };
+  mlir::computeTopologicalSorting(interestingOps, isOperandReady);
+
+  for (auto op : interestingOps) {
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
       graph.addDelayNode(andInverterOp, andInverterOp.getInputs());
     } else if (auto concatOp = dyn_cast<comb::ConcatOp>(op)) {
       graph.addConcatNode(concatOp, concatOp.getInputs());
     } else if (auto extractOp = dyn_cast<comb::ExtractOp>(op)) {
-      llvm::dbgs() << "extractOp: " << *op << "\n";
       graph.addExtractNode(extractOp, extractOp.getInput(),
                            extractOp.getLowBit());
     } else if (auto replicateOp = dyn_cast<comb::ReplicateOp>(op)) {
@@ -825,8 +894,13 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
     } else if (auto constantOp = dyn_cast<hw::ConstantOp>(op)) {
       graph.addConstantNode(constantOp);
     }
-  });
-  llvm::dbgs() << "done\n";
+  }
+
+  // Add delay nodes.
+  // mod.walk([&](Operation *op) {
+
+  // });
+  // llvm::dbgs() << "done\n";
   return success();
 }
 
