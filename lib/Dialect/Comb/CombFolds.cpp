@@ -914,8 +914,7 @@ OpFoldResult AndOp::fold(FoldAdaptor adaptor) {
 ///
 /// For example for `or(a[0], a[1], ..., a[n-1])` this function returns `a`
 /// (assuming the bit-width of `a` is `n`).
-template <typename Op>
-static Value getCommonOperand(Op op) {
+template <typename Op> static Value getCommonOperand(Op op) {
   if (!op.getType().isInteger(1))
     return Value();
 
