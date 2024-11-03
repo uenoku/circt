@@ -537,7 +537,7 @@ struct DelayNode : Node {
   DelayNode &operator=(const DelayNode &other) = default;
   DelayNode(const DelayNode &other) = default;
   DelayNode(Value value, size_t bitPos)
-      : value(value), bitPos(bitPos), Node(Kind::Delay, 1) {}
+      : value(value), bitPos(bitPos), Node(Kind::Delay, 1), edges() {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Delay; }
   SmallVector<std::pair<int64_t, Node *>> edges;
 
