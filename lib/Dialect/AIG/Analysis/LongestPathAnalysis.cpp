@@ -491,13 +491,13 @@ struct Node {
   size_t getWidth() const { return width; }
   Kind getKind() const { return kind; }
   struct InputNode;
-   
 
   std::optional<SmallVector<std::pair<size_t, InputNode *>>> computedResult;
 
   virtual Node *query(size_t bitOffset) = 0;
   virtual ~Node() {
-    computedResult.reset();
+    if (computedResult)
+      computedResult.reset();
   }
   virtual void dump() const = 0;
 };
@@ -549,9 +549,7 @@ struct DelayNode : Node {
     edges.push_back(std::make_pair(delay, node));
   }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
-  ~DelayNode() override {
-    edges.clear();
-  }
+  ~DelayNode() override { edges.clear(); }
   void dump() const override {
     llvm::dbgs() << "(delay node " << value << " " << bitPos << "\n";
     for (auto edge : edges) {
@@ -587,7 +585,7 @@ struct ConcatNode : Node {
       : value(value), nodes(nodes),
         Node(Kind::Concat, value.getType().getIntOrFloatBitWidth()) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Concat; }
-  ~ConcatNode() override = default;
+  ~ConcatNode() override { nodes.clear(); }
   ConcatNode(const ConcatNode &other) = default;
   ConcatNode &operator=(const ConcatNode &other) = default;
   Node *query(size_t bitOffset) override {
