@@ -496,7 +496,9 @@ struct Node {
   };
   Kind kind;
   size_t width;
-  Node(Kind kind, size_t width) : kind(kind), width(width) {}
+  circt::igraph::InstancePath path;
+  Node(Kind kind, size_t width) : kind(kind), width(width), path() {}
+
   size_t getWidth() const { return width; }
   Kind getKind() const { return kind; }
 
@@ -867,7 +869,7 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
   // Add input nodes.
   mod.walk([&](Operation *op) {
     if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp, seq::FirMemReadOp>(
-        op)) {
+            op)) {
       for (auto result : op->getResults())
         graph.addInputNode(result);
     } else if (isa<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
