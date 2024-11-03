@@ -33,6 +33,11 @@
 using namespace circt;
 using namespace aig;
 
+static bool isRootValue(Value value) {
+  if (auto arg = value.dyn_cast<BlockArgument>())
+    return true;
+  return isa<seq::CompRegOp, seq::FirRegOp>(value.getDefiningOp());
+}
 Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
                            size_t lowBit, size_t width) {
   if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
@@ -304,6 +309,7 @@ struct LocalPathAnalysisTransform {
   LogicalResult lower(OpBuilder &builder, aig::AndInverterOp op);
   LogicalResult splitDelayOp(OpBuilder &builder, aig::DelayOp delayOp,
                              ArrayRef<size_t> splitPos,
+                             ArrayRef<int64_t> newDelays,
                              ArrayRef<Value> newOperands);
 
   template <typename... Args>
@@ -316,6 +322,7 @@ struct LocalPathAnalysisTransform {
   Value createDelay(OpBuilder &builder, Args &&...args);
 
   LogicalResult run(hw::HWModuleOp mod);
+  LogicalResult buildGraph(hw::HWModuleOp mod);
 
   Value createOrReuseExtract2(OpBuilder &rewriter, Location loc, Value operand,
                               size_t lowBit, size_t width) {
@@ -398,15 +405,14 @@ Value LocalPathAnalysisTransform::createExtract(OpBuilder &builder,
   return newExtractOp;
 }
 
-LogicalResult
-LocalPathAnalysisTransform::splitDelayOp(OpBuilder &builder, aig::DelayOp op,
-                                         ArrayRef<size_t> splitPos,
-                                         ArrayRef<Value> newOperandValues) {
+LogicalResult LocalPathAnalysisTransform::splitDelayOp(
+    OpBuilder &builder, aig::DelayOp op, ArrayRef<size_t> splitPos,
+    ArrayRef<int64_t> newDelays, ArrayRef<Value> newOperandValues) {
   // Delay(Delay(d), Delay(e), Concat(a, b, c)) -> Concat(Dealy(e), Delay(a),
   // Delay(b), Delay(c))
   if (splitPos.size() <= 1) {
     auto value = createDelay(builder, op.getLoc(), op.getType(),
-                             newOperandValues, op.getDelays());
+                             newOperandValues, newDelays);
     op.getResult().replaceAllUsesWith(value);
     return success();
   }
@@ -439,7 +445,7 @@ LocalPathAnalysisTransform::splitDelayOp(OpBuilder &builder, aig::DelayOp op,
     }
     results.push_back(createDelay(builder, op.getLoc(),
                                   builder.getIntegerType(width), newOperands,
-                                  op.getDelays()));
+                                  newDelays));
   }
 
   // for (auto operand : llvm::reverse(newOperands)) {
@@ -466,6 +472,293 @@ LocalPathAnalysisTransform::splitDelayOp(OpBuilder &builder, aig::DelayOp op,
 
   op.getResult().replaceAllUsesWith(
       createConcat(builder, op.getLoc(), op.getType(), results));
+  return success();
+}
+
+struct Node {
+  enum Kind {
+    Input,
+    Delay,
+    Output,
+    Concat,
+    Replicate,
+    Extract,
+  };
+  Kind kind;
+  size_t width;
+  Node(Kind kind, size_t width) : kind(kind), width(width) {}
+  Kind getKind() const { return kind; }
+  struct InputNode;
+  std::optional<SmallVector<std::pair<size_t, InputNode *>>> computedResult;
+
+  virtual Node *query(size_t bitOffset) = 0;
+  virtual ~Node() = default;
+  virtual void dump() const = 0;
+};
+
+struct InputNode : Node {
+  Value value; // port, instance output, or register.
+  size_t bitPos;
+  InputNode(Value value, size_t bitPos)
+      : value(value), bitPos(bitPos), Node(Kind::Input, 1) {}
+
+  static bool classof(const Node *e) { return e->getKind() == Kind::Input; }
+  void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
+  Node *query(size_t bitOffset) override {
+    assert(bitOffset == 0 && "input node has no bit offset");
+    return this;
+  }
+  void dump() const override {
+    llvm::dbgs() << "(input node " << value << " " << bitPos << ")\n";
+  }
+};
+
+struct DelayNode : Node {
+
+  DelayNode &operator=(const DelayNode &other) = default;
+  DelayNode(const DelayNode &other) = default;
+  DelayNode(Value value, size_t bitPos)
+      : value(value), bitPos(bitPos), Node(Kind::Delay, 1) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Delay; }
+  SmallVector<std::pair<int64_t, Node *>> edges;
+
+  Node *query(size_t bitOffset) override {
+    assert(bitOffset == 0 && "delay node has no bit offset");
+    return this;
+  }
+  void addEdge(Node *node, int64_t delay) {
+    edges.push_back(std::make_pair(delay, node));
+  }
+  void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
+  ~DelayNode() override = default;
+  void dump() const override {
+    llvm::dbgs() << "(delay node " << value << " " << bitPos << "\n";
+    for (auto edge : edges) {
+      llvm::dbgs() << "edge: delay " << edge.first;
+      edge.second->dump();
+      llvm::dbgs() << "\n";
+    }
+    llvm::dbgs() << ")\n";
+  }
+
+private:
+  Value value;
+  size_t bitPos;
+};
+
+struct OutputNode : Node {
+  Operation *op;
+  size_t operandIdx;
+  size_t bitPos;
+  OutputNode(Operation *op, size_t operandIdx, size_t bitPos)
+      : op(op), operandIdx(operandIdx), bitPos(bitPos), Node(Kind::Output, 1) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Output; }
+  Node *query(size_t bitOffset) override {
+    assert(bitOffset == 0 && "delay node has no bit offset");
+    return this;
+  }
+};
+
+struct ConcatNode : Node {
+  Value value;
+  SmallVector<Node *> nodes;
+  ConcatNode(Value value, ArrayRef<Node *> nodes)
+      : value(value), nodes(nodes),
+        Node(Kind::Concat, value.getType().getIntOrFloatBitWidth()) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Concat; }
+  ~ConcatNode() override = default;
+  ConcatNode(const ConcatNode &other) = default;
+  ConcatNode &operator=(const ConcatNode &other) = default;
+  Node *query(size_t bitOffset) override {
+    assert(bitOffset == 0 && "delay node has no bit offset");
+    return this;
+  }
+  void dump() const override {
+    llvm::dbgs() << "(concat node " << value << "\n";
+    for (auto node : nodes) {
+      node->dump();
+    }
+    llvm::dbgs() << ")\n";
+  }
+};
+
+struct ReplicateNode : Node {
+  Value value;
+  Node *node;
+  ReplicateNode(Value value, Node *node)
+      : value(value), node(node),
+        Node(Kind::Replicate, value.getType().getIntOrFloatBitWidth()) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Replicate; }
+  void dump() const override {
+    llvm::dbgs() << "(replicate node " << value << "\n";
+    node->dump();
+    llvm::dbgs() << ")\n";
+  }
+};
+
+struct ExtractNode : Node {
+  Value value;
+  size_t lowBit;
+  Node *input;
+  ExtractNode(const ExtractNode &other) = default;
+  ExtractNode &operator=(const ExtractNode &other) = default;
+  ExtractNode(Value value, size_t lowBit, Node *input)
+      : value(value), lowBit(lowBit), input(input), Node(Kind::Extract, 1) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Extract; }
+  ~ExtractNode() override = default;
+
+  Node *query(size_t bitOffset) override {
+    assert(bitOffset >= lowBit && "bit offset is out of range");
+    return input->query(bitOffset - lowBit);
+  }
+  void dump() const override {
+    llvm::dbgs() << "(extract node " << value << " " << lowBit << "\n";
+    input->dump();
+    llvm::dbgs() << ")\n";
+  }
+};
+
+struct Graph {
+  DenseMap<Value, Node *> valueToNodes;
+  DenseMap<std::tuple<Operation *, size_t, size_t>, OutputNode *> outputNodes;
+  llvm::SpecificBumpPtrAllocator<DelayNode> delayAllocator;
+  llvm::SpecificBumpPtrAllocator<ConcatNode> concatAllocator;
+  llvm::SpecificBumpPtrAllocator<ReplicateNode> replicateAllocator;
+  llvm::SpecificBumpPtrAllocator<ExtractNode> extractAllocator;
+  llvm::SpecificBumpPtrAllocator<InputNode> inputAllocator;
+  llvm::SpecificBumpPtrAllocator<OutputNode> outputAllocator;
+
+  // For multiple objects:
+  template <typename NodeTy, typename AllocatorTy, typename... Args>
+  NodeTy *allocateAndConstruct(AllocatorTy &allocator, size_t count,
+                               Args &&...args) {
+    // Allocate array of objects
+    NodeTy *nodes = allocator.Allocate(count);
+
+    // Construct each object
+    for (size_t i = 0; i < count; ++i) {
+      new (&nodes[i]) NodeTy(std::forward<Args>(args)...);
+    }
+
+    return nodes;
+  }
+  /*
+  template <typename NodeTy, typename AllocatorTy, typename... Args>
+  NodeTy *allocateAndConstruct(AllocatorTy &allocator, size_t width = 1,
+                               Args &&...args) {
+    auto *node = allocator.Allocate(width);
+    for (auto i = 0; i < width; ++i) {
+      NodeTy nodeTy(std::forward<Args>(args)...);
+      node[i] = nodeTy;
+    }
+
+    return node;
+  }*/
+  void addInputNode(Value value) {
+    auto width = value.getType().getIntOrFloatBitWidth();
+    assert(isRootValue(value) && "only root values can be input nodes");
+    InputNode *node =
+        allocateAndConstruct<InputNode>(inputAllocator, width, value, 0);
+    SmallVector<Node *> nodes;
+    for (auto i = 0; i < width; ++i) {
+      node[i].setBitPos(i);
+      nodes.push_back(node + i);
+    }
+
+    // Why not ArrayRef(node, width) works?
+    setResultValue(value, nodes);
+  }
+
+  void setResultValue(Value value, Node *node) {
+    auto result = valueToNodes.insert(std::make_pair(value, node));
+    assert(result.second && "value already exists");
+  }
+
+  void setResultValue(Value value, ArrayRef<Node *> nodes) {
+    if (value.getType().getIntOrFloatBitWidth() == 1 || nodes.size() == 1) {
+      auto result = valueToNodes.insert(std::make_pair(value, nodes[0]));
+      assert(result.second && "value already exists");
+      return;
+    }
+    auto *node =
+        allocateAndConstruct<ConcatNode>(concatAllocator, 1, value, nodes);
+    auto result = valueToNodes.insert(std::make_pair(value, node));
+    assert(result.second && "value already exists");
+  }
+
+  LogicalResult addDelayNode(Value value, mlir::OperandRange inputs) {
+    size_t width = value.getType().getIntOrFloatBitWidth();
+    auto *nodes =
+        allocateAndConstruct<DelayNode>(delayAllocator, width, value, 0);
+    for (auto i = 0; i < width; ++i) {
+      nodes[i].setBitPos(i);
+      for (auto operand : inputs) {
+        llvm::errs() << "operand: " << operand << "\n";
+        auto *inputNode = valueToNodes[operand];
+        assert(inputNode && "input node not found");
+
+        auto *node = inputNode->query(i);
+        nodes[i].addEdge(node, 0);
+      }
+    }
+
+    setResultValue(value, nodes);
+
+    return success();
+  }
+
+  LogicalResult addConcatNode(Value value, mlir::OperandRange inputs) {
+    size_t width = value.getType().getIntOrFloatBitWidth();
+    SmallVector<Node *> nodes;
+    for (auto operand : inputs) {
+      auto *inputNode = valueToNodes[operand];
+      assert(inputNode && "input node not found");
+      nodes.push_back(inputNode);
+    }
+
+    setResultValue(value, nodes);
+    return success();
+  }
+  LogicalResult addExtractNode(Value value, Value operand, size_t lowBit) {
+    auto *inputNode = valueToNodes[operand];
+    assert(inputNode && "input node not found");
+    inputNode->dump();
+    ExtractNode *node = nullptr;
+    node = allocateAndConstruct<ExtractNode>(extractAllocator, 1, value, lowBit,
+                                             inputNode);
+    assert(node);
+
+    setResultValue(value, node);
+  }
+};
+
+LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
+  mod.dump();
+  Graph graph;
+  for (auto arg : mod.getBodyBlock()->getArguments()) {
+    graph.addInputNode(arg);
+  }
+
+  // Add input nodes.
+  mod.walk([&](Operation *op) {
+    if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp>(op)) {
+      for (auto result : op->getResults())
+        graph.addInputNode(result);
+    }
+  });
+
+  // Add delay nodes.
+  mod.walk([&](Operation *op) {
+    if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
+      graph.addDelayNode(andInverterOp, andInverterOp.getInputs());
+    } else if (auto concatOp = dyn_cast<comb::ConcatOp>(op)) {
+      graph.addConcatNode(concatOp, concatOp.getInputs());
+    } else if (auto extractOp = dyn_cast<comb::ExtractOp>(op)) {
+      llvm::dbgs() << "extractOp: " << *op << "\n";
+      graph.addExtractNode(extractOp, extractOp.getInput(),
+                           extractOp.getLowBit());
+    }
+  });
   return success();
 }
 
@@ -496,13 +789,8 @@ LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
 //   -> Concat(AndDelay(delay_a, delay_d), AndDelay(delay_b, delay_e),
 //             AndDelay(delay_c, delay_f))
 
-static bool isRootValue(Value value) {
-  if (auto arg = value.dyn_cast<BlockArgument>())
-    return true;
-  return isa<seq::CompRegOp, seq::FirRegOp>(value.getDefiningOp());
-}
-
 LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
+  return buildGraph(mod);
 
   // NOTE: The result IR could be huge so instead of relying on
   // GreedyRewriteDriver and DialectConversion manually iterate over the
@@ -670,12 +958,26 @@ LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
     }
     while (!delayOps.empty()) {
       auto delayOp = delayOps.pop_back_val();
+      LLVM_DEBUG(llvm::dbgs() << "delayOp: " << delayOp << "\n");
       builder.setInsertionPoint(delayOp);
       // Split delay op.
       SetVector<size_t> splitPos;
       SmallVector<Value> newOperands;
+      DenseMap<Value, size_t> opToIdx;
+      SmallVector<int64_t> delays;
       bool changed = false;
-      for (auto operand : delayOp.getInputs()) {
+      auto addToNewOperands = [&](Value op, int64_t delay) {
+        if (!opToIdx.contains(op)) {
+          newOperands.push_back(op);
+          delays.push_back(delay);
+          opToIdx[op] = newOperands.size() - 1;
+        } else {
+          auto idx = opToIdx[op];
+          delays[idx] = std::max(delays[idx], delay);
+        }
+      };
+      for (auto [operand, delay] :
+           llvm::zip(delayOp.getInputs(), delayOp.getDelays())) {
         if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
           size_t bitPos = 0;
           for (auto concatOperand : llvm::reverse(concatOp.getOperands())) {
@@ -683,8 +985,9 @@ LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
             splitPos.insert(bitPos);
           }
 
-          changed = true;
-          newOperands.push_back(concatOp);
+          changed = concatOp.getOperands().size() > 1;
+          addToNewOperands(concatOp, delay);
+
         } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
           // Delay of constant is 0.
           changed = true;
@@ -692,16 +995,23 @@ LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
         } else if (auto replicateOp =
                        operand.getDefiningOp<comb::ReplicateOp>()) {
           changed = true;
-          newOperands.push_back(replicateOp.getInput());
+          addToNewOperands(replicateOp.getInput(), delay);
+        } else if (auto newDelayOp = operand.getDefiningOp<aig::DelayOp>()) {
+          for (auto [newOperand, newDelay] :
+               llvm::zip(newDelayOp.getInputs(), newDelayOp.getDelays())) {
+            addToNewOperands(newOperand, delay + newDelay);
+          }
+
+          changed = true;
         } else {
-          newOperands.push_back(operand);
+          addToNewOperands(operand, delay);
         }
       }
       if (!changed)
         continue;
       auto vector = splitPos.takeVector();
       std::sort(vector.begin(), vector.end());
-      splitDelayOp(builder, delayOp, vector, newOperands);
+      splitDelayOp(builder, delayOp, vector, delays, newOperands);
     }
   }
   mlir::PatternRewriter rewriter(mod.getContext());
@@ -726,18 +1036,18 @@ LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
     return WalkResult::advance();
   });
 
-  while (!finalize.empty()) {
-    auto op = finalize.pop_back_val();
-    if (auto delayOp = dyn_cast<aig::DelayOp>(op)) {
-      // llvm::errs() << "delayOp: " << delayOp << "\n";
-      rewriter.setInsertionPoint(delayOp);
-      shrinkDelayPattern.matchAndRewrite(delayOp, rewriter);
-      continue;
-    }
-    for (auto operand : op->getOperands())
-      if (auto operandOp = operand.getDefiningOp())
-        finalize.insert(operandOp);
-  }
+  // while (!finalize.empty()) {
+  //   auto op = finalize.pop_back_val();
+  //   if (auto delayOp = dyn_cast<aig::DelayOp>(op)) {
+  //     // llvm::errs() << "delayOp: " << delayOp << "\n";
+  //     rewriter.setInsertionPoint(delayOp);
+  //     shrinkDelayPattern.matchAndRewrite(delayOp, rewriter);
+  //     continue;
+  //   }
+  //   for (auto operand : op->getOperands())
+  //     if (auto operandOp = operand.getDefiningOp())
+  //       finalize.insert(operandOp);
+  // }
   // mlir::applyPatternsAndFoldGreedily(mod, frozen, config);
 
   // AndInverterToDelayConversion aigToDelay(getContext());
@@ -1036,7 +1346,6 @@ LogicalResult LongestPathAnalysisImpl::run() {
 }
 
 namespace {
-
 struct PrintLongestPathAnalysisPass
     : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
   using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
