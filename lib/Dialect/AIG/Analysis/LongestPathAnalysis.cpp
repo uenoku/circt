@@ -89,13 +89,15 @@ struct Node {
   virtual ~Node() {}
   virtual void dump() const = 0;
   virtual void print(llvm::raw_ostream &os) const { assert(false); };
-  virtual Node *clone(DenseMap<Node *, Node *> &mapping);
+  virtual void walk(llvm::function_ref<void(Node *)>) = 0;
+  virtual void map(DenseMap<InputNode *, Node *> &nodeToNewNode) {
+    assert(false);
+  };
 };
 
 struct DebugNode : Node {
-  DebugNode(StringAttr name, size_t bitPos, Node *input)
-      : Node(Kind::Debug, 1, input->getGraph()), name(name), bitPos(bitPos),
-        input(input) {}
+  DebugNode(Graph *graph, StringAttr name, size_t bitPos, Node *input)
+      : Node(graph, Kind::Debug, 1), name(name), bitPos(bitPos), input(input) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Debug; }
   void dump() const override {
     llvm::dbgs() << "(debug node " << name << " " << bitPos << ")";
@@ -116,13 +118,16 @@ private:
 };
 
 struct ConstantNode : Node {
-  ConstantNode(size_t width, ConstantNode *boolNode)
-      : Node(Kind::Constant, width, boolNode->getGraph()), boolNode(boolNode) {}
+  ConstantNode(Graph *graph, size_t width, ConstantNode *boolNode)
+      : Node(graph, Kind::Constant, width), boolNode(boolNode) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Constant; }
   void dump() const override {
     llvm::dbgs() << "(constant node " << width << ")";
   }
   Node *query(size_t bitOffset) override { return boolNode; }
+
+  void walk(llvm::function_ref<void(Node *)>) override;
+  void map(DenseMap<InputNode *, Node *> &nodeToNewNode) override {}
 
 private:
   ConstantNode *boolNode = nullptr;
@@ -131,9 +136,10 @@ private:
 struct InputNode : Node {
   Value value; // port, instance output, or register.
   size_t bitPos;
-  InputNode(Value value, size_t bitPos, Graph *graph)
-      : Node(Kind::Input, 1, graph), value(value), bitPos(bitPos) {}
+  InputNode(Graph *graph, Value value, size_t bitPos)
+      : Node(graph, Kind::Input, 1), value(value), bitPos(bitPos) {}
 
+  void walk(llvm::function_ref<void(Node *)>) override;
   static bool classof(const Node *e) { return e->getKind() == Kind::Input; }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
   Node *query(size_t bitOffset) override {
@@ -175,6 +181,8 @@ struct InputNode : Node {
        << "])";
   }
 
+  void map(DenseMap<InputNode *, Node *> &nodeToNewNode) override {}
+
   void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
     results.push_back(std::make_pair(0, this));
   }
@@ -184,19 +192,33 @@ struct DelayNode : Node {
 
   DelayNode &operator=(const DelayNode &other) = default;
   DelayNode(const DelayNode &other) = default;
-  DelayNode(Value value, size_t bitPos, Graph *graph)
-      : Node(Kind::Delay, 1, graph), value(value), bitPos(bitPos), edges(),
+  DelayNode(Graph *graph, Value value, size_t bitPos)
+      : Node(graph, Kind::Delay, 1), value(value), bitPos(bitPos), edges(),
         computedResult() {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Delay; }
+  SmallVector<std::pair<int64_t, Node *>> getEdges() const { return edges; }
+  void walk(llvm::function_ref<void(Node *)>) override;
+  Value getValue() const { return value; }
+  size_t getBitPos() const { return bitPos; }
 
   Node *query(size_t bitOffset) override {
     assert(bitOffset == 0 && "delay node has no bit offset");
     return this;
   }
   void addEdge(Node *node, int64_t delay) {
+    revertComputedResult();
     edges.push_back(std::make_pair(delay, node));
   }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
+
+  void map(DenseMap<InputNode *, Node *> &nodeToNewNode) override {
+    revertComputedResult();
+    for (auto &edge : edges) {
+      if (auto *newNode = dyn_cast<InputNode>(edge.second))
+        if (auto *newEdgeNode = nodeToNewNode[newNode])
+          edge.second = newEdgeNode;
+    }
+  }
 
   void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
     auto &computedResult = getComputedResult();
@@ -273,18 +295,17 @@ struct OutputNode : Node {
 
   std::optional<SmallVector<std::pair<int64_t, InputNode *>>> computedResult;
 
-  Node *clone(DenseMap<Node *, Node *> &mapping) {
-    auto it = mapping.find(this);
-    if (it != mapping.end())
-      return it->second;
+  void walk(llvm::function_ref<void(Node *)>) override;
 
-    auto newNode = node->clone(mapping);
-
-    return nullptr;
+  void map(DenseMap<InputNode *, Node *> &nodeToNewNode) override {
+    if (auto *inputNode = dyn_cast<InputNode>(node))
+      if (auto *newNode = nodeToNewNode[inputNode])
+        node = newNode;
   }
 
-  OutputNode(Operation *op, size_t operandIdx, size_t bitPos, Node *node)
-      : Node(Kind::Output, node->getWidth(), node->getGraph()), op(op),
+  OutputNode(Graph *graph, Operation *op, size_t operandIdx, size_t bitPos,
+             Node *node)
+      : Node(graph, Kind::Output, node->getWidth()), op(op),
         operandIdx(operandIdx), bitPos(bitPos), node(node) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Output; }
   Node *query(size_t bitOffset) override {
@@ -361,13 +382,21 @@ struct OutputNode : Node {
 struct ConcatNode : Node {
   Value value;
   SmallVector<Node *> nodes;
-  ConcatNode(Value value, ArrayRef<Node *> nodes, Graph *graph)
-      : Node(Kind::Concat, getBitWidth(value), graph), value(value),
+  ConcatNode(Graph *graph, Value value, ArrayRef<Node *> nodes)
+      : Node(graph, Kind::Concat, getBitWidth(value)), value(value),
         nodes(nodes) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Concat; }
+  void walk(llvm::function_ref<void(Node *)>) override;
   ~ConcatNode() override { nodes.clear(); }
   ConcatNode(const ConcatNode &other) = default;
   ConcatNode &operator=(const ConcatNode &other) = default;
+
+  void map(DenseMap<InputNode *, Node *> &nodeToNewNode) override {
+    for (auto &node : nodes)
+      if (auto *newNode = dyn_cast<InputNode>(node))
+        if (auto *newEdgeNode = nodeToNewNode[newNode])
+          node = newEdgeNode;
+  }
   Node *query(size_t bitOffset) override {
     // TODO: bisect
     for (auto node : nodes) {
@@ -390,8 +419,8 @@ struct ConcatNode : Node {
 struct ReplicateNode : Node {
   Value value;
   Node *node;
-  ReplicateNode(Value value, Node *node, Graph *graph)
-      : Node(Kind::Replicate, getBitWidth(value), graph), value(value),
+  ReplicateNode(Graph *graph, Value value, Node *node)
+      : Node(graph, Kind::Replicate, getBitWidth(value)), value(value),
         node(node) {
     assert(node->getWidth() == value.getDefiningOp<comb::ReplicateOp>()
                                    .getInput()
@@ -406,6 +435,7 @@ struct ReplicateNode : Node {
   Node *query(size_t bitOffset) override {
     return node->query(bitOffset % node->getWidth());
   }
+  void walk(llvm::function_ref<void(Node *)>) override;
   void dump() const override {
     llvm::dbgs() << "(replicate node " << value << "\n";
     node->dump();
@@ -419,10 +449,11 @@ struct ExtractNode : Node {
   Node *input;
   ExtractNode(const ExtractNode &other) = default;
   ExtractNode &operator=(const ExtractNode &other) = default;
-  ExtractNode(Value value, size_t lowBit, Node *input)
-      : Node(Kind::Extract, getBitWidth(value), input->getGraph()),
-        value(value), lowBit(lowBit), input(input) {}
+  ExtractNode(Graph *graph, Value value, size_t lowBit, Node *input)
+      : Node(graph, Kind::Extract, getBitWidth(value)), value(value),
+        lowBit(lowBit), input(input) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Extract; }
+  void walk(llvm::function_ref<void(Node *)>) override;
   ~ExtractNode() = default;
 
   Node *query(size_t bitOffset) override {
@@ -466,6 +497,23 @@ struct Graph {
   static bool isLocalOutput(Operation *op) {
     return !isa<hw::InstanceOp>(op) && !isa<hw::OutputOp>(op);
   }
+  void accumulateLocalPaths(Operation *outOp) {
+    for (auto [idx, op] : llvm::enumerate(outOp->getOperands())) {
+      size_t width = getBitWidth(op);
+      auto *inNode = valueToNodes[op];
+      for (size_t i = 0; i < width; ++i) {
+        auto outputNode = outputNodes.at({outOp, idx, i});
+        bool isClosed =
+            llvm::all_of(outputNode->getComputedResult(), [&](auto &pair) {
+              return isLocalInput(pair.second->value);
+            });
+
+        if (isClosed) {
+          locallyClosedOutputs.insert(outputNode);
+        }
+      }
+    }
+  }
   void accumulateLocalPaths() {
     for (auto outOp : outputOperations) {
       // These are not local paths.
@@ -473,47 +521,68 @@ struct Graph {
         continue;
       }
 
-      for (auto [idx, op] : llvm::enumerate(outOp->getOperands())) {
-        size_t width = getBitWidth(op);
-        auto *inNode = valueToNodes[op];
-        for (size_t i = 0; i < width; ++i) {
-          auto outputNode = outputNodes.at({outOp, idx, i});
-          bool isClosed =
-              llvm::all_of(outputNode->getComputedResult(), [&](auto &pair) {
-                return isLocalInput(pair.second->value);
-              });
-
-          if (isClosed) {
-            locallyClosedOutputs.insert(outputNode);
-          }
-        }
-      }
+      accumulateLocalPaths(outOp);
     }
   }
 
-  LogicalResult inlineGraph(hw::InstanceOp instanceOp, Graph *childGraph) {
+  LogicalResult
+  inlineGraph(hw::InstanceOp instanceOp, Graph *childGraph,
+              DenseMap<InputNode *, OutputNode *> &nodeToNewNode) {
     auto childArgs = childGraph->theModule.getBodyBlock()->getArguments();
     auto childOutputs = childGraph->theModule.getBodyBlock()->getTerminator();
 
-    // We need to clone the subgraph of the child graph which are reachable from
-    // input and output nodes.
-    DenseMap<Node *, Node *> nodeToNewNode;
+    // This stores the cloned child graph.
+    DenseMap<Node *, Node *> clonedResult;
+    auto callBack = [&](Node *node) {
+      auto &result = clonedResult[node];
+      if (result)
+        return;
+
+      result =
+          TypeSwitch<Node *, Node *>(node)
+              .Case<InputNode>([&](InputNode *node) {
+                return allocateNode<InputNode>(node->value, node->bitPos);
+              })
+              .Case<OutputNode>([&](OutputNode *node) {
+                return allocateNode<OutputNode>(node->op, node->operandIdx,
+                                                node->bitPos,
+                                                clonedResult[node->node]);
+              })
+              .Case<ConstantNode>([&](ConstantNode *node) {
+                return allocateNode<ConstantNode>(node->width, &dummy);
+              })
+              .Case<DelayNode>([&](DelayNode *node) {
+                auto delayNode = allocateNode<DelayNode>(node->getValue(),
+                                                         node->getBitPos());
+                for (auto [delay, inputNode] : node->getEdges()) {
+                  delayNode->addEdge(clonedResult[inputNode], delay);
+                }
+                return delayNode;
+              })
+              .Case<ConcatNode>([&](ConcatNode *node) {
+                SmallVector<Node *> nodes;
+                for (auto child : node->nodes)
+                  nodes.push_back(clonedResult[child]);
+                return allocateNode<ConcatNode>(node->value, nodes);
+              })
+              .Case<ExtractNode>([&](ExtractNode *node) {
+                return allocateNode<ExtractNode>(node->value, node->lowBit,
+                                                 clonedResult[node->input]);
+              })
+              .Case<ReplicateNode>([&](ReplicateNode *node) {
+                return allocateNode<ReplicateNode>(node->value,
+                                                   clonedResult[node->node]);
+              });
+    };
 
     for (auto [operand, childArg] :
          llvm::zip(instanceOp->getOpOperands(), childArgs)) {
       size_t width = getBitWidth(childArg);
+      auto *inputNodes = childGraph->valueToNodes[childArg];
       for (size_t i = 0; i < width; ++i) {
-        auto *inputNodes = childGraph->valueToNodes[childArg];
-        assert(inputNodes && "node not found");
-        auto *inputNode = cast<InputNode>(inputNodes->query(i));
-        assert(inputNode && "result not found");
         auto *outputNode =
-            outputNodes.at({instanceOp, operand.getOperandNumber(), i});
-
-        // auto *debugNode = allocateNode<DebugNode>(outputNode->getName(), i,
-        //                                           outputNode->query(0));
-
-        nodeToNewNode[inputNode] = outputNode->query(0);
+            outputNodes.at({operand.getOwner(), operand.getOperandNumber(), i});
+        clonedResult[inputNodes->query(i)] = outputNode->query(0);
       }
     }
 
@@ -523,10 +592,11 @@ struct Graph {
       for (size_t i = 0; i < width; ++i) {
         auto *outputNode = childGraph->outputNodes.at(
             {childOutput.getOwner(), childOutput.getOperandNumber(), i});
+        outputNode->walk(callBack);
         auto inputNode =
             cast<InputNode>(valueToNodes.at(instanceResult)->query(i));
 
-        nodeToNewNode[inputNode] = outputNode->query(0);
+        nodeToNewNode[inputNode] = cast<OutputNode>(clonedResult[outputNode]);
       }
     }
 
@@ -535,6 +605,99 @@ struct Graph {
 
   LogicalResult
   inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children) {
+    // We need to clone the subgraph of the child graph which are reachable from
+    // input and output nodes.
+    DenseMap<InputNode *, Node *> nodeToNewNode;
+    // This stores the cloned child graph.
+    DenseMap<Node *, Node *> clonedResult;
+    auto callBack = [&](Node *node) {
+      auto &result = clonedResult[node];
+      if (result)
+        return;
+
+      result =
+          TypeSwitch<Node *, Node *>(node)
+              .Case<InputNode>([&](InputNode *node) {
+                return allocateNode<InputNode>(node->value, node->bitPos);
+              })
+              .Case<OutputNode>([&](OutputNode *node) {
+                return allocateNode<OutputNode>(node->op, node->operandIdx,
+                                                node->bitPos,
+                                                clonedResult[node->node]);
+              })
+              .Case<ConstantNode>([&](ConstantNode *node) {
+                return allocateNode<ConstantNode>(node->width, &dummy);
+              })
+              .Case<DelayNode>([&](DelayNode *node) {
+                auto delayNode = allocateNode<DelayNode>(node->getValue(),
+                                                         node->getBitPos());
+                for (auto [delay, inputNode] : node->getEdges()) {
+                  delayNode->addEdge(clonedResult[inputNode], delay);
+                }
+                return delayNode;
+              })
+              .Case<ConcatNode>([&](ConcatNode *node) {
+                SmallVector<Node *> nodes;
+                for (auto child : node->nodes)
+                  nodes.push_back(clonedResult[child]);
+                return allocateNode<ConcatNode>(node->value, nodes);
+              })
+              .Case<ExtractNode>([&](ExtractNode *node) {
+                return allocateNode<ExtractNode>(node->value, node->lowBit,
+                                                 clonedResult[node->input]);
+              })
+              .Case<ReplicateNode>([&](ReplicateNode *node) {
+                return allocateNode<ReplicateNode>(node->value,
+                                                   clonedResult[node->node]);
+              });
+    };
+
+    for (auto [instanceOp, childGraph] : children) {
+      auto childArgs = childGraph->theModule.getBodyBlock()->getArguments();
+      auto childOutputs = childGraph->theModule.getBodyBlock()->getTerminator();
+
+      clonedResult.clear();
+      for (auto [operand, childArg] :
+           llvm::zip(instanceOp->getOpOperands(), childArgs)) {
+        size_t width = getBitWidth(childArg);
+        auto *inputNodes = childGraph->valueToNodes[childArg];
+        for (size_t i = 0; i < width; ++i) {
+          auto *outputNode = outputNodes.at(
+              {operand.getOwner(), operand.getOperandNumber(), i});
+          clonedResult[inputNodes->query(i)] = outputNode->query(0);
+        }
+      }
+
+      for (auto [instanceResult, childOutput] :
+           llvm::zip(instanceOp.getResults(), childOutputs->getOpOperands())) {
+        size_t width = getBitWidth(childOutput.get());
+        for (size_t i = 0; i < width; ++i) {
+          auto *outputNode = childGraph->outputNodes.at(
+              {childOutput.getOwner(), childOutput.getOperandNumber(), i});
+          outputNode->walk(callBack);
+          auto inputNode =
+              cast<InputNode>(valueToNodes.at(instanceResult)->query(i));
+
+          nodeToNewNode[inputNode] = clonedResult[outputNode]->query(0);
+        }
+      }
+    }
+
+    auto *terminator = theModule.getBodyBlock()->getTerminator();
+    for (auto op : outputOperations) {
+      for (size_t i = 0; i < getBitWidth(op->getOpOperands().front().get());
+           ++i) {
+        auto outPutNode = outputNodes.at(
+            {op, op->getOpOperands().front().getOperandNumber(), i});
+        outPutNode->walk([&](Node *node) { node->map(nodeToNewNode); });
+      }
+    }
+
+    outputOperations.erase(
+        llvm::remove_if(outputOperations, [&](Operation *op) {
+          return isa<hw::InstanceOp>(op);
+        }),
+        outputOperations.end());
 
     return success();
   }
@@ -594,7 +757,7 @@ struct Graph {
     assert(result.second && "value already exists");
   }
 
-  ConstantNode dummy{0, nullptr};
+  ConstantNode dummy{this, 0, nullptr};
   void addConstantNode(Value value) {
     auto *nodePtr = allocateNode<ConstantNode>(
         value.getType().getIntOrFloatBitWidth(), &dummy);
@@ -893,14 +1056,30 @@ LogicalResult LongestPathAnalysisImpl::run() {
       childInstances.push_back({instanceOp, childGraph.get()});
     }
     // Inline the child graph into the parent graph.
-    for (auto [instanceOp, childGraph] : childInstances)
+    for (auto [instanceOp, childGraph] : childInstances) {
+      llvm::dbgs() << "Inlining " << moduleOp.getModuleName() << " "
+                   << instanceOp << "\n";
       graph->inlineGraph({{instanceOp, childGraph}});
+    }
 
     // Accumulate local paths.
     graph->accumulateLocalPaths();
 
     for (auto outputNode : graph->locallyClosedOutputs) {
       results.emplace_back(outputNode);
+    }
+  }
+
+  auto top = underHierarchy.back();
+  auto &topGraph = moduleToGraph.at(top.getModuleNameAttr());
+
+  for (auto &outputNode :
+       topGraph->theModule.getBodyBlock()->getTerminator()->getOpOperands()) {
+    for (size_t i = 0; i < getBitWidth(outputNode.get()); ++i) {
+      auto *output = topGraph->outputNodes.at(
+          {topGraph->theModule.getBodyBlock()->getTerminator(),
+           outputNode.getOperandNumber(), i});
+      results.emplace_back(output);
     }
   }
 
@@ -1018,4 +1197,44 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
   if (!isInplace) {
     workSpaceBlock->erase();
   }
+}
+
+void InputNode::walk(llvm::function_ref<void(Node *)> callback) {
+  callback(this);
+}
+
+void OutputNode::walk(llvm::function_ref<void(Node *)> callback) {
+  node->walk(callback);
+  callback(this);
+}
+
+void DelayNode::walk(llvm::function_ref<void(Node *)> callback) {
+  for (auto [delay, inputNode] : edges) {
+    inputNode->walk(callback);
+  }
+
+  callback(this);
+}
+
+void ConcatNode::walk(llvm::function_ref<void(Node *)> callback) {
+  for (auto node : nodes) {
+    node->walk(callback);
+  }
+  callback(this);
+}
+
+void ExtractNode::walk(llvm::function_ref<void(Node *)> callback) {
+  input->walk(callback);
+  callback(this);
+}
+
+void ReplicateNode::walk(llvm::function_ref<void(Node *)> callback) {
+  node->walk(callback);
+  callback(this);
+}
+
+void ConstantNode::walk(llvm::function_ref<void(Node *)> callback) {
+  callback(this);
+  if (boolNode)
+    boolNode->walk(callback);
 }
