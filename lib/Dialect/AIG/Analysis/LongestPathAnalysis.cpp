@@ -27,8 +27,6 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/JSON.h"
 
-#include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "aig-longest-path-analysis"
@@ -48,252 +46,10 @@ static bool isRootValue(Value value) {
       value.getDefiningOp());
 }
 
-Value createOrReuseExtract(OpBuilder &rewriter, Location loc, Value operand,
-                           size_t lowBit, size_t width) {
-  if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
-    SmallVector<Value> newOperands;
-    for (auto operand : llvm::reverse(concatOp.getOperands())) {
-      auto opWidth = operand.getType().getIntOrFloatBitWidth();
-      if (width == 0)
-        break;
-
-      if (lowBit >= opWidth) {
-        lowBit -= opWidth;
-        continue;
-      }
-
-      if (lowBit == 0 && width == opWidth) {
-        newOperands.push_back(operand);
-        break;
-      }
-
-      // lowBit < width
-      size_t extractWidth = std::min(opWidth - lowBit, width);
-      newOperands.push_back(
-          createOrReuseExtract(rewriter, loc, operand, lowBit, extractWidth));
-      width -= extractWidth;
-      lowBit = 0;
-    }
-    if (newOperands.size() == 1)
-      return newOperands.front();
-
-    std::reverse(newOperands.begin(), newOperands.end());
-    return rewriter.create<comb::ConcatOp>(loc, newOperands);
-  }
-
-  return rewriter.createOrFold<comb::ExtractOp>(
-      loc, rewriter.getIntegerType(width), operand, lowBit);
-}
-struct ShrinkDelayPattern : OpRewritePattern<aig::DelayOp> {
-  using OpRewritePattern<aig::DelayOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(DelayOp op,
-                                PatternRewriter &rewriter) const override {
-    SmallVector<int64_t> newDelays;
-    SmallVector<Value> newOperands;
-    DenseMap<std::tuple<Value, size_t, size_t>, size_t> operandToIdx;
-    SmallVector<std::tuple<Value, int64_t, size_t>> worklist;
-    DenseMap<Value, int64_t> observedMaxDelay;
-    // if (!llvm::any_of(op.getResult().getUsers(), [](Operation *user) {
-    //       return isa<seq::FirRegOp, hw::OutputOp, hw::InstanceOp>(user);
-    //     }))
-    //   return failure();
-
-    bool changed = false;
-    for (auto [operand, delay] :
-         llvm::reverse(llvm::zip(op.getOperands(), op.getDelays())))
-      worklist.push_back({operand, delay, 0});
-
-    while (!worklist.empty()) {
-      auto [operand, delay, depth] = worklist.pop_back_val();
-
-      if (observedMaxDelay[operand] > delay) {
-        continue;
-      }
-
-      observedMaxDelay[operand] = delay;
-
-      if (auto delayOp = operand.getDefiningOp<DelayOp>()) {
-        for (auto [dOpOperand, dOpDelay] : llvm::reverse(
-                 llvm::zip(delayOp.getOperands(), delayOp.getDelays()))) {
-          if (observedMaxDelay[dOpOperand] > dOpDelay + delay) {
-            continue;
-          }
-          observedMaxDelay[dOpOperand] = dOpDelay + delay;
-          worklist.push_back({dOpOperand, dOpDelay + delay, depth + 1});
-          changed = true;
-        }
-      } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
-        // Delay of constant is 0.
-        changed = true;
-      } else if (auto replicateOp =
-                     operand.getDefiningOp<comb::ReplicateOp>()) {
-        worklist.push_back({replicateOp.getInput(), delay, depth + 1});
-        changed = true;
-      } else {
-        std::tuple<Value, size_t, size_t> operandTuple;
-        if (auto extractOp = operand.getDefiningOp<comb::ExtractOp>()) {
-          operandTuple =
-              std::make_tuple(extractOp.getInput(), extractOp.getLowBit(),
-                              extractOp.getType().getIntOrFloatBitWidth());
-        } else {
-          operandTuple = std::make_tuple(
-              operand, 0, operand.getType().getIntOrFloatBitWidth());
-        }
-
-        if (operandToIdx.count(operandTuple)) {
-          newDelays[operandToIdx[operandTuple]] =
-              std::max(newDelays[operandToIdx[operandTuple]], delay);
-          changed = true;
-        } else {
-          operandToIdx[operandTuple] = newOperands.size();
-          newDelays.push_back(delay);
-          if (std::get<1>(operandTuple) == 0 &&
-              std::get<2>(operandTuple) ==
-                  operand.getType().getIntOrFloatBitWidth()) {
-            newOperands.push_back(operand);
-          } else {
-            if (operand.getType() != op.getType()) {
-              auto replicateOp = rewriter.create<comb::ReplicateOp>(
-                  op.getLoc(), op.getType(), operand);
-              operand = replicateOp.getResult();
-            }
-            newOperands.push_back(createOrReuseExtract(
-                rewriter, op.getLoc(), operand, std::get<1>(operandTuple),
-                std::get<2>(operandTuple)));
-          }
-        }
-      }
-    }
-
-    // Nothing changed.
-    if (!changed)
-      return failure();
-
-    if (newOperands.empty()) {
-      // Everything is constant.
-      rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, op.getType(), 0);
-      return success();
-    }
-
-    rewriter.replaceOpWithNewOp<aig::DelayOp>(
-        op, op.getType(), newOperands,
-        rewriter.getDenseI64ArrayAttr(newDelays));
-    return success();
-  }
-};
-
-// LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
-//                                              mlir::AnalysisManager &am)
-//     : instanceGraph(&am.getAnalysis<igraph::InstanceGraph>()) {}
-//
-// LongestPathAnalysis::ModuleInfo *
-// LongestPathAnalysis::getModuleInfo(hw::HWModuleOp module) {
-//   {
-//     auto it = moduleInfoCache.find(module.getModuleNameAttr());
-//     if (it != moduleInfoCache.end())
-//       return it->second.get();
-//   }
-//   auto *topNode = instanceGraph->lookup(module.getModuleNameAttr());
-// }
-
-/*
-static llvm::json::Object
-getModuleResourceUsageJSON(const ResourceUsageAnalysis::ResourceUsage &usage) {
-  llvm::json::Object obj;
-  obj["numAndInverterGates"] = usage.getNumAndInverterGates();
-  obj["numDFFBits"] = usage.getNumDFFBits();
-  return obj;
-}
-
-// This creates a fully-elaborated information but should be ok for now.
-static llvm::json::Object getModuleResourceUsageJSON(
-    const ResourceUsageAnalysis::ModuleResourceUsage &usage) {
-  llvm::json::Object obj;
-  obj["local"] = getModuleResourceUsageJSON(usage.local);
-  obj["total"] = getModuleResourceUsageJSON(usage.total);
-  obj["moduleName"] = usage.moduleName.getValue();
-  SmallVector<llvm::json::Value> instances;
-  for (const auto &instance : usage.instances) {
-    llvm::json::Object child;
-    child["instanceName"] = instance.instanceName.getValue();
-    child["moduleName"] = instance.moduleName.getValue();
-    child["usage"] = getModuleResourceUsageJSON(*instance.usage);
-    instances.push_back(std::move(child));
-  }
-  obj["instances"] = llvm::json::Array(std::move(instances));
-  return obj;
-}
-
-void ResourceUsageAnalysis::ModuleResourceUsage::emitJSON(
-    raw_ostream &os) const {
-  os << getModuleResourceUsageJSON(*this);
-}
-
-namespace circt {
-namespace aig {
-#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
-#include "circt/Dialect/AIG/AIGPasses.h.inc"
-} // namespace aig
-} // namespace circt
-
-using namespace circt;
-using namespace aig;
-
-namespace {
-struct PrintResourceUsageAnalysisPass
-    : public impl::PrintResourceUsageAnalysisBase<
-          PrintResourceUsageAnalysisPass> {
-  using PrintResourceUsageAnalysisBase::PrintResourceUsageAnalysisBase;
-
-  using PrintResourceUsageAnalysisBase::printSummary;
-  using PrintResourceUsageAnalysisBase::outputJSONFile;
-  using PrintResourceUsageAnalysisBase::topModuleName;
-  void runOnOperation() override;
-};
-} // namespace
-
-void PrintResourceUsageAnalysisPass::runOnOperation() {
-  auto mod = getOperation();
-  if (topModuleName.empty()) {
-    mod.emitError()
-        << "'top-name' option is required for PrintResourceUsageAnalysis";
-    return signalPassFailure();
-  }
-  auto &symTbl = getAnalysis<mlir::SymbolTable>();
-  auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName);
-  if (!top) {
-    mod.emitError() << "top module '" << topModuleName << "' not found";
-    return signalPassFailure();
-  }
-  auto &resourceUsageAnalysis = getAnalysis<ResourceUsageAnalysis>();
-  auto usage = resourceUsageAnalysis.getResourceUsage(top);
-
-  if (printSummary) {
-    llvm::errs() << "// ------ ResourceUsageAnalysis Summary -----\n";
-    llvm::errs() << "Top module: " << topModuleName << "\n";
-    llvm::errs() << "Total number of and-inverter gates: "
-                 << usage->getTotal().getNumAndInverterGates() << "\n";
-    llvm::errs() << "Total number of DFF bits: "
-                 << usage->getTotal().getNumDFFBits() << "\n";
-
-  }
-  if (!outputJSONFile.empty()) {
-    std::error_code ec;
-    llvm::raw_fd_ostream os(outputJSONFile, ec);
-    if (ec) {
-      emitError(UnknownLoc::get(&getContext()))
-          << "failed to open output JSON file '" << outputJSONFile << "': "
-          << ec.message();
-      return signalPassFailure();
-    }
-    usage->emitJSON(os);
-  }
-}
-*/
-
 namespace circt {
 namespace aig {
 #define GEN_PASS_DEF_PRINTLONGESTPATHANALYSIS
+#define GEN_PASS_DEF_PRINTGLOBALDATAPATHANALYSIS
 #include "circt/Dialect/AIG/AIGPasses.h.inc"
 } // namespace aig
 } // namespace circt
@@ -301,189 +57,6 @@ namespace aig {
 using namespace circt;
 using namespace aig;
 
-struct LocalPathAnalysisTransform {
-  struct BitRange {
-    Value operand;
-    size_t lowBit;
-    size_t width;
-  };
-  SetVector<comb::ExtractOp> extractOps;
-  SetVector<comb::ConcatOp> concatOps;
-  SetVector<comb::ReplicateOp> replicateOps;
-  SetVector<aig::DelayOp> delayOps;
-  SmallVector<Operation *> pendingOps;
-
-  // DenseMap<BitRange, Value> bitRangeToValue;
-  Value getOrCreateBitRange(OpBuilder &builder, Value operand, size_t lowBit,
-                            size_t width);
-  LogicalResult lower(OpBuilder &builder, aig::AndInverterOp op);
-  LogicalResult splitDelayOp(OpBuilder &builder, aig::DelayOp delayOp,
-                             ArrayRef<size_t> splitPos,
-                             ArrayRef<int64_t> newDelays,
-                             ArrayRef<Value> newOperands);
-
-  template <typename... Args>
-  Value createReplicate(OpBuilder &builder, Args &&...args);
-  template <typename... Args>
-  Value createConcat(OpBuilder &builder, Args &&...args);
-  template <typename... Args>
-  Value createExtract(OpBuilder &builder, Args &&...args);
-  template <typename... Args>
-  Value createDelay(OpBuilder &builder, Args &&...args);
-
-  LogicalResult run(hw::HWModuleOp mod);
-  LogicalResult buildGraph(hw::HWModuleOp mod);
-
-  Value createOrReuseExtract2(OpBuilder &rewriter, Location loc, Value operand,
-                              size_t lowBit, size_t width) {
-    if (operand.getType().getIntOrFloatBitWidth() < lowBit + width)
-      llvm::dbgs() << "createOrReuseExtract: " << operand << " " << lowBit
-                   << " " << width << "\n";
-    if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
-      SmallVector<Value> newOperands;
-      for (auto operand : llvm::reverse(concatOp.getOperands())) {
-        auto opWidth = operand.getType().getIntOrFloatBitWidth();
-        if (width == 0)
-          break;
-
-        if (lowBit >= opWidth) {
-          lowBit -= opWidth;
-          continue;
-        }
-
-        if (lowBit == 0 && width == opWidth) {
-          newOperands.push_back(operand);
-          break;
-        }
-
-        // lowBit < width
-        size_t extractWidth = std::min(opWidth - lowBit, width);
-        newOperands.push_back(
-            createExtract(rewriter, loc, operand, lowBit, extractWidth));
-        width -= extractWidth;
-        lowBit = 0;
-      }
-      if (newOperands.size() == 1)
-        return newOperands.front();
-
-      std::reverse(newOperands.begin(), newOperands.end());
-      return createConcat(rewriter, loc, newOperands);
-    }
-
-    return createExtract(rewriter, loc, operand, lowBit, width);
-  }
-};
-
-template <typename... Args>
-Value LocalPathAnalysisTransform::createReplicate(OpBuilder &builder,
-                                                  Args &&...args) {
-  auto newReplicateOp =
-      builder.createOrFold<comb::ReplicateOp>(std::forward<Args>(args)...);
-  if (auto replicateOp =
-          newReplicateOp.template getDefiningOp<comb::ReplicateOp>())
-    replicateOps.insert(replicateOp);
-  return newReplicateOp;
-}
-
-template <typename... Args>
-Value LocalPathAnalysisTransform::createDelay(OpBuilder &builder,
-                                              Args &&...args) {
-  auto newDelayOp =
-      builder.createOrFold<aig::DelayOp>(std::forward<Args>(args)...);
-  if (auto delayOp = newDelayOp.template getDefiningOp<aig::DelayOp>())
-    delayOps.insert(delayOp);
-  return newDelayOp;
-}
-
-template <typename... Args>
-Value LocalPathAnalysisTransform::createConcat(OpBuilder &builder,
-                                               Args &&...args) {
-  auto newConcatOp =
-      builder.createOrFold<comb::ConcatOp>(std::forward<Args>(args)...);
-  if (auto concatOp = newConcatOp.template getDefiningOp<comb::ConcatOp>())
-    concatOps.insert(concatOp);
-  return newConcatOp;
-}
-
-template <typename... Args>
-Value LocalPathAnalysisTransform::createExtract(OpBuilder &builder,
-                                                Args &&...args) {
-  auto newExtractOp =
-      builder.createOrFold<comb::ExtractOp>(std::forward<Args>(args)...);
-  if (auto extractOp = newExtractOp.template getDefiningOp<comb::ExtractOp>())
-    extractOps.insert(extractOp);
-  return newExtractOp;
-}
-
-LogicalResult LocalPathAnalysisTransform::splitDelayOp(
-    OpBuilder &builder, aig::DelayOp op, ArrayRef<size_t> splitPos,
-    ArrayRef<int64_t> newDelays, ArrayRef<Value> newOperandValues) {
-  // Delay(Delay(d), Delay(e), Concat(a, b, c)) -> Concat(Dealy(e), Delay(a),
-  // Delay(b), Delay(c))
-  if (splitPos.size() <= 1) {
-    auto value = createDelay(builder, op.getLoc(), op.getType(),
-                             newOperandValues, newDelays);
-    op.getResult().replaceAllUsesWith(value);
-    return success();
-  }
-
-  SmallVector<Value> newOperands;
-  newOperands.reserve(newOperands.size());
-  SmallVector<Value> results;
-  results.reserve(splitPos.size() - 1);
-  // size_t bitPos = 0;
-  // size_t width = splitPos[0];
-  // llvm::dbgs() << "splitDelayOp: " << op << " " << splitPos.size() << " "
-  //              << bitPos << " " << width << "\n";
-  // for (auto splitPos : splitPos)
-  //   llvm::dbgs() << "splitPos: " << splitPos << "\n";
-  for (auto i = 0; i < splitPos.size(); ++i) {
-    newOperands.resize(0);
-    auto bitPos = i == 0 ? 0 : splitPos[i - 1];
-    auto width = splitPos[i] - bitPos;
-    // llvm::dbgs() << "width: " << width << " " << bitPos << "\n";
-    for (auto operand : newOperandValues) {
-      if (operand.getType().isInteger(1)) {
-        newOperands.push_back(operand);
-      } else {
-        if (operand.getType() != op.getType())
-          operand =
-              createReplicate(builder, op.getLoc(), op.getType(), operand);
-        newOperands.push_back(createOrReuseExtract2(builder, op.getLoc(),
-                                                    operand, bitPos, width));
-      }
-    }
-    results.push_back(createDelay(builder, op.getLoc(),
-                                  builder.getIntegerType(width), newOperands,
-                                  newDelays));
-  }
-
-  // for (auto operand : llvm::reverse(newOperands)) {
-  //   auto bitWidth = operand.getType().getIntOrFloatBitWidth();
-  //   newOperands.push_back(operand);
-  //   // FIXME: This has to a bug!
-  //   for (auto rest : op.getOperands()) {
-  //     if (rest == concatOp)
-  //       continue;
-  //     // FIXME: Reuse extracted op if possible.
-  //     newOperands.push_back(
-  //         createOrReuseExtract(builder, op.getLoc(), rest, bitPos,
-  //         bitWidth));
-  //   }
-  //   newOperands.push_back(operand);
-  //   bitPos += bitWidth;
-  //   auto result = builder.createOrFold<aig::DelayOp>(
-  //       op.getLoc(), operand.getType(), newOperands, op.getDelays());
-  //   results.push_back(result);
-  //   newOperands.resize(concatIdx);
-  // }
-
-  std::reverse(results.begin(), results.end());
-
-  op.getResult().replaceAllUsesWith(
-      createConcat(builder, op.getLoc(), op.getType(), results));
-  return success();
-}
 struct InputNode;
 
 struct Node {
@@ -510,6 +83,7 @@ struct Node {
   virtual Node *query(size_t bitOffset) = 0;
   virtual ~Node() {}
   virtual void dump() const = 0;
+  virtual void print(llvm::raw_ostream &os) const { assert(false); };
 };
 
 struct ConstantNode : Node {
@@ -539,16 +113,42 @@ struct InputNode : Node {
   }
   size_t getBitPos() const { return bitPos; }
   void dump() const override {
-    llvm::dbgs() << "(input node " << value << " " << bitPos << ")\n";
+    llvm::dbgs() << "(input node " << value << " " << bitPos << ")";
+  }
+
+  StringRef getName() const {
+    if (auto arg = value.dyn_cast<BlockArgument>()) {
+      auto op = cast<hw::HWModuleOp>(arg.getParentBlock()->getParentOp());
+      return op.getArgName(arg.getArgNumber());
+    }
+    return TypeSwitch<Operation *, StringRef>(value.getDefiningOp())
+        .Case<seq::CompRegOp, seq::FirRegOp>(
+            [](auto op) { return op.getNameAttr().getValue(); })
+        .Default([](auto op) { return ""; });
+  }
+
+  llvm::json::Object getJSONObject() {
+    llvm::json::Object result;
+    std::string pathString;
+    llvm::raw_string_ostream os(pathString);
+    path.print(os);
+    result["hierarchy"] = std::move(pathString);
+    result["name"] = getName();
+    result["bitPosition"] = bitPos;
+    return result;
+  }
+
+  void print(llvm::raw_ostream &os) const override {
+    std::string pathString;
+    llvm::raw_string_ostream osPath(pathString);
+    path.print(osPath);
+    os << "InputNode(" << pathString << "." << getName() << "[" << bitPos
+       << "])";
   }
 
   void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
     results.push_back(std::make_pair(0, this));
   }
-
-  // ~InputNode() {
-  //   llvm::dbgs() << "destroy input node " << value << "\n";
-  // }
 };
 
 struct DelayNode : Node {
@@ -572,6 +172,16 @@ struct DelayNode : Node {
   void populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results) {
     auto &computedResult = getComputedResult();
     results.append(computedResult.begin(), computedResult.end());
+  }
+  void revertComputedResult() { computedResult.reset(); }
+
+  void shrinkEdges() {
+    // This removes intermediate nodes in the graph.
+    SmallVector<std::pair<int64_t, InputNode *>> maxDelays;
+    populateResults(maxDelays);
+    edges.clear();
+    for (auto [delay, inputNode] : maxDelays)
+      addEdge(inputNode, delay);
   }
 
   void computeResult() {
@@ -606,10 +216,8 @@ struct DelayNode : Node {
   std::optional<SmallVector<std::pair<int64_t, InputNode *>>> computedResult;
 
   ~DelayNode() override {
-    // llvm::dbgs() << "destroy delay node " << value << " " << this << "\n";
     edges.clear();
     computedResult.reset();
-    // llvm::dbgs() << "done";
   }
 
   void dump() const override {
@@ -619,7 +227,7 @@ struct DelayNode : Node {
       edge.second->dump();
       llvm::dbgs() << "\n";
     }
-    llvm::dbgs() << ")\n";
+    llvm::dbgs() << ")";
   }
 
 private:
@@ -632,13 +240,82 @@ struct OutputNode : Node {
   Operation *op;
   size_t operandIdx;
   size_t bitPos;
-  OutputNode(Operation *op, size_t operandIdx, size_t bitPos)
-      : Node(Kind::Output, 1), op(op), operandIdx(operandIdx), bitPos(bitPos) {}
+  Node *node;
+
+  std::optional<SmallVector<std::pair<int64_t, InputNode *>>> computedResult;
+
+  OutputNode(Operation *op, size_t operandIdx, size_t bitPos, Node *node)
+      : Node(Kind::Output, node->getWidth()), op(op), operandIdx(operandIdx),
+        bitPos(bitPos), node(node) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Output; }
   Node *query(size_t bitOffset) override {
     assert(bitOffset == 0 && "delay node has no bit offset");
-    return this;
+    return node->query(0);
   }
+
+  void dump() const override {
+    llvm::dbgs() << "(output node " << op << " " << operandIdx << " " << bitPos
+                 << "\n";
+    node->dump();
+    llvm::dbgs() << ")";
+  }
+
+  void print(llvm::raw_ostream &os) const override {
+    std::string pathString;
+    llvm::raw_string_ostream osPath(pathString);
+    path.print(osPath);
+    os << "OutputNode(" << pathString << "." << getName() << "[" << bitPos
+       << "])";
+  }
+
+  StringRef getName() const {
+    return TypeSwitch<Operation *, StringRef>(op)
+        .Case<seq::CompRegOp, seq::FirRegOp>(
+            [&](auto op) { return op.getNameAttr().getValue(); })
+        .Case<hw::OutputOp>([&](hw::OutputOp op) {
+          auto hwModule = cast<hw::HWModuleOp>(op.getParentOp());
+          return hwModule.getOutputNameAttr(operandIdx).getValue();
+        })
+        .Default([&](auto op) { return ""; });
+  }
+
+  void populateResults(
+      SmallVector<std::pair<int64_t, InputNode *>> &results) override {
+    node->populateResults(results);
+  }
+
+  const SmallVector<std::pair<int64_t, InputNode *>> &getComputedResult() {
+    if (!computedResult) {
+      // TODO: compute result
+      computedResult =
+          std::make_optional(SmallVector<std::pair<int64_t, InputNode *>>());
+      populateResults(computedResult.value());
+    }
+
+    assert(computedResult && "result not computed");
+    return computedResult.value();
+  }
+
+  llvm::json::Object getJSONObject() {
+    llvm::json::Object result;
+    std::string pathString;
+    llvm::raw_string_ostream os(pathString);
+    path.print(os);
+    result["hierarchy"] = std::move(pathString);
+    result["name"] = getName();
+    result["bitPosition"] = bitPos;
+    SmallVector<llvm::json::Value> fanIn;
+    for (auto [delay, inputNode] : getComputedResult()) {
+      llvm::json::Object fanInObj;
+      fanInObj["delay"] = delay;
+      fanInObj["node"] = inputNode->getJSONObject();
+      fanIn.push_back(std::move(fanInObj));
+    }
+
+    result["fanIns"] = llvm::json::Array(std::move(fanIn));
+    return result;
+  }
+
   ~OutputNode() = default;
 };
 
@@ -666,7 +343,7 @@ struct ConcatNode : Node {
     for (auto node : nodes) {
       node->dump();
     }
-    llvm::dbgs() << ")\n";
+    llvm::dbgs() << ")";
   }
 };
 
@@ -691,7 +368,7 @@ struct ReplicateNode : Node {
   void dump() const override {
     llvm::dbgs() << "(replicate node " << value << "\n";
     node->dump();
-    llvm::dbgs() << ")\n";
+    llvm::dbgs() << ")";
   }
 };
 
@@ -714,19 +391,69 @@ struct ExtractNode : Node {
   void dump() const override {
     llvm::dbgs() << "(extract node " << value << " " << lowBit << "\n";
     input->dump();
-    llvm::dbgs() << ")\n";
+    llvm::dbgs() << ")";
   }
 };
 
 struct Graph {
+  Graph(hw::HWModuleOp mod) : theModule(mod) {}
   SmallVector<Value>
       inputValues; // Ports + Instance outputs + Registers outputs.
   SmallVector<Operation *>
       outputOperations; // HW output, Instance inputs, Register inputs.
 
-  DenseMap<Value, Node *> valueToNodes;
   DenseMap<std::tuple<Operation *, size_t, size_t>, OutputNode *> outputNodes;
+  DenseMap<Value, Node *> valueToNodes;
   LogicalResult commitToHWModule(hw::HWModuleOp mod);
+  hw::HWModuleOp theModule;
+  LogicalResult buildGraph();
+
+  hw::HWModuleOp getModule() { return theModule; }
+
+  SetVector<OutputNode *> locallyClosedOutputs;
+  SetVector<InputNode *> locallyClosedInputs;
+
+  struct LocalPath {
+    OutputNode *fanOut;
+    LocalPath(OutputNode *fanOut) : fanOut(fanOut) {}
+  };
+
+  SmallVector<LocalPath> localPaths;
+  static bool isLocalInput(Value value) {
+    return value.getDefiningOp() && !isa<hw::InstanceOp>(value.getDefiningOp());
+  }
+  static bool isLocalOutput(Operation *op) {
+    return !isa<hw::InstanceOp>(op) && !isa<hw::OutputOp>(op);
+  }
+  void accumulateLocalPaths() {
+    for (auto outOp : outputOperations) {
+      // These are not local paths.
+      if (isLocalOutput(outOp)) {
+        continue;
+      }
+      for (auto [idx, op] : llvm::enumerate(outOp->getOperands())) {
+        size_t width = getBitWidth(op);
+        auto *inNode = valueToNodes[op];
+        for (size_t i = 0; i < width; ++i) {
+          auto outputNode = outputNodes.at({outOp, idx, i});
+          bool isClosed =
+              llvm::all_of(outputNode->getComputedResult(), [&](auto &pair) {
+                return isLocalInput(pair.second->value);
+              });
+
+          if (isClosed) {
+            locallyClosedOutputs.insert(outputNode);
+          }
+        }
+      }
+    }
+  }
+
+  LogicalResult
+  inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children) {
+    return success();
+  }
+
   // llvm::SpecificBumpPtrAllocator<DelayNode> delayAllocator;
   // llvm::SpecificBumpPtrAllocator<ConcatNode> concatAllocator;
   // llvm::SpecificBumpPtrAllocator<ReplicateNode> replicateAllocator;
@@ -789,8 +516,20 @@ struct Graph {
     setResultValue2(value, nodePtr);
   }
 
-  // FIXME: SpecificBumpPtrAllocator crashes for some reason. For now use unique
-  // ptrs.
+  void addOutputNode(OpOperand &operand) {
+    auto operandOp = operand.getOwner();
+    size_t width = getBitWidth(operand.get());
+    for (size_t i = 0; i < width; ++i) {
+      auto *outputNode =
+          allocateNode<OutputNode>(operandOp, operand.getOperandNumber(), i,
+                                   valueToNodes.at(operand.get())->query(i));
+      outputNodes.insert(
+          {{operandOp, operand.getOperandNumber(), i}, outputNode});
+    }
+  }
+
+  // FIXME: SpecificBumpPtrAllocator crashes for some reason. For now use
+  // unique ptrs.
 
   template <typename NodeTy, typename... Args>
   NodeTy *allocateNode(Args &&...args) {
@@ -884,15 +623,15 @@ struct Graph {
 
 LogicalResult Graph::commitToHWModule(hw::HWModuleOp mod) { return success(); }
 
-LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
-  // mod.dump();
-  Graph graph;
-  for (auto arg : mod.getBodyBlock()->getArguments()) {
-    graph.addInputNode(arg);
+LogicalResult Graph::buildGraph() {
+  auto &graph = *this;
+  for (auto arg : theModule.getBodyBlock()->getArguments()) {
+    addInputNode(arg);
   }
+
   SmallVector<Operation *> interestingOps;
   // Add input nodes.
-  mod.walk([&](Operation *op) {
+  theModule.walk([&](Operation *op) {
     if (isa<seq::FirRegOp, seq::CompRegOp, hw::InstanceOp, seq::FirMemReadOp>(
             op)) {
       for (auto result : op->getResults())
@@ -926,14 +665,15 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
     }
   }
 
-  // Add delay nodes.
-  // mod.walk([&](Operation *op) {
+  for (auto outputOp : graph.outputOperations) {
+    for (auto &operand : outputOp->getOpOperands()) {
+      graph.addOutputNode(operand);
+    }
+  }
 
-  // });
-  // llvm::dbgs() << "done\n";
   bool modifyModule = true;
   if (modifyModule) {
-    OpBuilder builder(mod.getContext());
+    OpBuilder builder(theModule.getContext());
     DenseMap<InputNode *, Value> inputNodeToValue;
     for (auto op : graph.outputOperations) {
       builder.setInsertionPoint(op);
@@ -984,23 +724,6 @@ LogicalResult LocalPathAnalysisTransform::buildGraph(hw::HWModuleOp mod) {
   return success();
 }
 
-LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
-                                                aig::AndInverterOp op) {
-  auto loc = op.getLoc();
-  builder.setInsertionPoint(op);
-  // Replace with DelayOp.
-  // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
-  uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
-  SmallVector<int64_t> delays(op.getOperands().size(), delay);
-  auto delaysAttr = builder.getDenseI64ArrayAttr(delays);
-  auto delayOp =
-      createDelay(builder, loc, op.getType(), op.getOperands(), delaysAttr);
-
-  op.getResult().replaceAllUsesWith(delayOp);
-  op.erase();
-  return success();
-}
-
 // Extract must be up. Concat must be down.
 
 // ExtractOp(Concat(a, b, c)) -> Concat(Extract(b), Extract(c))
@@ -1011,318 +734,12 @@ LogicalResult LocalPathAnalysisTransform::lower(OpBuilder &builder,
 //   -> Concat(AndDelay(delay_a, delay_d), AndDelay(delay_b, delay_e),
 //             AndDelay(delay_c, delay_f))
 
-LogicalResult LocalPathAnalysisTransform::run(hw::HWModuleOp mod) {
-  return buildGraph(mod);
-
-  // NOTE: The result IR could be huge so instead of relying on
-  // GreedyRewriteDriver and DialectConversion manually iterate over the
-  // operations.
-
-  OpBuilder builder(mod.getContext());
-  // 1. Replace AndInverterOp with DelayOp.
-  // 2. Delay(replicate(x)) -> Delay(x)
-  // 3. Eliminate ConcatOp
-  //   while(there is concat op) {
-  //     // Check users.
-  //     if (user is DelayOp) {
-  //       need to split delay op. it may introduce extract op and concat.
-  //     }
-  //   }
-  // 4. Eliminate existing ExtractOp
-  //   while(there is extract op) {
-  //     auto input = extract.getInput();
-  //     auto delay = input.getDefiningOp<aig::DelayOp>();
-  //     if(delay) {
-  //       replace extract with delay.getOperands().back();
-  //       worklist.push_back(input);
-  //       continue;
-  //     }
-  //     auto concat = input.getDefiningOp<comb::ConcatOp>();
-  //     These could introudce new concat ops. -- record it.
-  //     if(concat) {
-  //       replace extract with concat.getOperands().front();
-  //       worklist.push_back(input);
-  //       continue;
-  //     }
-  //     if(replicate) {
-  //       replace extract with replicate.getInput();
-  //       push_to_worklist if necessary
-  //       worklist.push_back(input);
-  //       continue;
-  //     }
-  //   }
-  // Loop 3 and 4 until no more extract and concat ops.
-  mod.walk([&](Operation *op) {
-    if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
-      if (failed(lower(builder, andInverterOp)))
-        return WalkResult::interrupt();
-    } else if (auto extractOp = dyn_cast<comb::ExtractOp>(op)) {
-      extractOps.insert(extractOp);
-    } else if (auto concatOp = dyn_cast<comb::ConcatOp>(op)) {
-      concatOps.insert(concatOp);
-    } else if (auto replicateOp = dyn_cast<comb::ReplicateOp>(op)) {
-      replicateOps.insert(replicateOp);
-    }
-    return WalkResult::advance();
-  });
-
-  // mlir::PatternRewriter rewriter(mod.getContext());
-  // mlir::DominanceInfo domInfo(mod);
-  // mlir::eliminateCommonSubExpressions(rewriter, domInfo, mod);
-  // ExtractReplicateConversion extractReplicateConversionPattern(
-  //     mod.getContext());
-
-  builder.setInsertionPointToStart(mod.getBodyBlock());
-
-  size_t numConcatOpsVisited = 0;
-  while (!extractOps.empty() || !delayOps.empty() || !concatOps.empty()) {
-    /*
-    while (!replicateOps.empty()) {
-      auto replicateOp = replicateOps.pop_back_val();
-      LLVM_DEBUG(llvm::dbgs() << "replicateOp: " << replicateOp << "\n");
-      replicateOp->replaceUsesWithIf(
-          ArrayRef<Value>(replicateOp.getInput()),
-          [&](OpOperand &use) { return isa<aig::DelayOp>(use.getOwner()); });
-
-      if (replicateOp.use_empty()) {
-        replicateOp.erase();
-        continue;
-      }
-      bool pending = false;
-
-      for (auto user : replicateOp->getUsers()) {
-        TypeSwitch<Operation *>(user)
-            .Case<comb::ExtractOp>(
-                [&](comb::ExtractOp extractOp) { pending = true; })
-            .Case<comb::ConcatOp>(
-                [&](comb::ConcatOp concatOp) { pending = true; })
-            .Default([&](Operation *) {});
-      }
-
-      if (pending)
-        pendingOps.push_back(replicateOp);
-    }
-    */
-    while (!concatOps.empty()) {
-      numConcatOpsVisited++;
-      auto concatOp =
-          concatOps.pop_back_val(); // Check users of ConcatOp and lower them.
-      LLVM_DEBUG(llvm::dbgs()
-                 << "concatOp: " << concatOp << " " << numConcatOpsVisited
-                 << " " << concatOps.size() << "\n");
-      if (concatOp.use_empty()) {
-        concatOp.erase();
-        continue;
-      }
-
-      for (auto user : llvm::make_early_inc_range(concatOp->getUsers())) {
-        TypeSwitch<Operation *>(user)
-            .Case<aig::DelayOp>(
-                [&](aig::DelayOp delayOp) { delayOps.insert(delayOp); })
-            .Case<comb::ExtractOp>([&](comb::ExtractOp extractOp) {
-              // Introduce new extract op.
-              extractOps.insert(extractOp);
-            })
-            .Default([&](Operation *) {
-              // Introduce new concat op.
-            });
-      }
-    }
-
-    while (!extractOps.empty()) {
-      auto extractOp = extractOps.pop_back_val();
-      builder.setInsertionPoint(extractOp);
-      auto input = extractOp.getInput();
-
-      LLVM_DEBUG(llvm::dbgs() << "extractOp: " << extractOp << "\n");
-      if (isRootValue(input)) {
-        continue;
-      }
-
-      if (extractOp.use_empty()) {
-        extractOp.erase();
-        continue;
-      }
-
-      if (auto delayOp = input.getDefiningOp<aig::DelayOp>()) {
-        SmallVector<Value> newOperands;
-        for (auto operand : delayOp.getOperands()) {
-          if (operand.getType() != delayOp.getType()) {
-            if (operand.getType().isInteger(1)) {
-              newOperands.push_back(operand);
-              continue;
-            } else {
-              operand = builder.create<comb::ReplicateOp>(
-                  extractOp.getLoc(), delayOp.getType(), operand);
-            }
-          }
-
-          newOperands.push_back(createOrReuseExtract2(
-              builder, extractOp.getLoc(), operand, extractOp.getLowBit(),
-              extractOp.getType().getIntOrFloatBitWidth()));
-        }
-        auto newDelayOp =
-            createDelay(builder, extractOp.getLoc(), extractOp.getType(),
-                        newOperands, delayOp.getDelays());
-        extractOp.replaceAllUsesWith(newDelayOp);
-        // Split delay op.
-      } else if (auto concatOp = input.getDefiningOp<comb::ConcatOp>()) {
-        Value newOp = createOrReuseExtract2(
-            builder, extractOp.getLoc(), concatOp, extractOp.getLowBit(),
-            extractOp.getType().getIntOrFloatBitWidth());
-        extractOp.replaceAllUsesWith(newOp);
-        // Introduce new concat op.
-      } else if (auto replicateOp = input.getDefiningOp<comb::ReplicateOp>()) {
-        // Introduce new replicate op.
-      } else if (auto constantOp = input.getDefiningOp<hw::ConstantOp>()) {
-        // Delay of constant is 0.
-      }
-    }
-    while (!delayOps.empty()) {
-      auto delayOp = delayOps.pop_back_val();
-      LLVM_DEBUG(llvm::dbgs() << "delayOp: " << delayOp << "\n");
-      builder.setInsertionPoint(delayOp);
-      // Split delay op.
-      SetVector<size_t> splitPos;
-      SmallVector<Value> newOperands;
-      DenseMap<Value, size_t> opToIdx;
-      SmallVector<int64_t> delays;
-      bool changed = false;
-      auto addToNewOperands = [&](Value op, int64_t delay) {
-        if (!opToIdx.contains(op)) {
-          newOperands.push_back(op);
-          delays.push_back(delay);
-          opToIdx[op] = newOperands.size() - 1;
-        } else {
-          auto idx = opToIdx[op];
-          delays[idx] = std::max(delays[idx], delay);
-        }
-      };
-      for (auto [operand, delay] :
-           llvm::zip(delayOp.getInputs(), delayOp.getDelays())) {
-        if (auto concatOp = operand.getDefiningOp<comb::ConcatOp>()) {
-          size_t bitPos = 0;
-          for (auto concatOperand : llvm::reverse(concatOp.getOperands())) {
-            bitPos += concatOperand.getType().getIntOrFloatBitWidth();
-            splitPos.insert(bitPos);
-          }
-
-          changed = concatOp.getOperands().size() > 1;
-          addToNewOperands(concatOp, delay);
-
-        } else if (auto constantOp = operand.getDefiningOp<hw::ConstantOp>()) {
-          // Delay of constant is 0.
-          changed = true;
-          continue;
-        } else if (auto replicateOp =
-                       operand.getDefiningOp<comb::ReplicateOp>()) {
-          changed = true;
-          addToNewOperands(replicateOp.getInput(), delay);
-        } else if (auto newDelayOp = operand.getDefiningOp<aig::DelayOp>()) {
-          for (auto [newOperand, newDelay] :
-               llvm::zip(newDelayOp.getInputs(), newDelayOp.getDelays())) {
-            addToNewOperands(newOperand, delay + newDelay);
-          }
-
-          changed = true;
-        } else {
-          addToNewOperands(operand, delay);
-        }
-      }
-      if (!changed)
-        continue;
-      auto vector = splitPos.takeVector();
-      std::sort(vector.begin(), vector.end());
-      splitDelayOp(builder, delayOp, vector, delays, newOperands);
-    }
-  }
-  mlir::PatternRewriter rewriter(mod.getContext());
-  // mlir::DominanceInfo domInfo(mod);
-  // mlir::eliminateCommonSubExpressions(rewriter, domInfo, mod);
-  // RewritePatternSet patterns(mod.getContext());
-  // patterns.add<ShrinkDelayPattern>(mod.getContext());
-
-  ShrinkDelayPattern shrinkDelayPattern(mod.getContext());
-
-  // mlir::FrozenRewritePatternSet frozen(std::move(patterns));
-  // mlir::GreedyRewriteConfig config;
-  // config.useTopDownTraversal = true;
-  SetVector<Operation *> finalize;
-  mod.walk([&](Operation *op) {
-    if (op->getNumResults() == 1 && isRootValue(op->getResult(0))) {
-      finalize.insert(op);
-    }
-    if (isa<hw::OutputOp, hw::InstanceOp>(op)) {
-      finalize.insert(op);
-    }
-    return WalkResult::advance();
-  });
-
-  // while (!finalize.empty()) {
-  //   auto op = finalize.pop_back_val();
-  //   if (auto delayOp = dyn_cast<aig::DelayOp>(op)) {
-  //     // llvm::errs() << "delayOp: " << delayOp << "\n";
-  //     rewriter.setInsertionPoint(delayOp);
-  //     shrinkDelayPattern.matchAndRewrite(delayOp, rewriter);
-  //     continue;
-  //   }
-  //   for (auto operand : op->getOperands())
-  //     if (auto operandOp = operand.getDefiningOp())
-  //       finalize.insert(operandOp);
-  // }
-  // mlir::applyPatternsAndFoldGreedily(mod, frozen, config);
-
-  // AndInverterToDelayConversion aigToDelay(getContext());
-  // mlir::GreedyRewriteConfig config;
-  // config.useTopDownTraversal = true;
-  // if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config))) {
-  //   llvm::errs() << "Failed to apply patterns and fold greedily\n";
-  //   return failure();
-  // }
-
-  // mod.walk([&](Operation *op) {
-  //   // 2. Hoist Concat and Sink ExtractOp.
-  //   if (auto extractOp = dyn_cast<comb::ExtractOp>(op)) {
-  //     if (isRootValue(extractOp.getInput())) {
-  //       legalizedValues.insert(extractOp.getInput());
-  //       return WalkResult::advance();
-  //     }
-
-  //     // ExtractOp(AndDelay(a, b, c)) -> AndDelay(Extract(b))
-  //     if (auto delayOp =
-  //     extractOp.getInput().getDefiningOp<aig::DelayOp>())
-  //     {
-  //       auto newOperands = delayOp.getOperands();
-  //       newOperands[extractOp.getLowBit() / delayOp.getDelays()[0]] =
-  //           extractOp.getInput();
-  //       auto newOp = builder.create<aig::DelayOp>(
-  //           extractOp.getLoc(), extractOp.getType(), newOperands,
-  //           delayOp.getDelays());
-  //     } else if (auto concatOp =
-  //                    extractOp.getInput().getDefiningOp<comb::ConcatOp>())
-  //                    {
-  //       auto newOperands = concatOp.getOperands();
-  //       newOperands[extractOp.getLowBit() / concatOp.getOperands()[0]
-  //                                               .getType()
-  //                                               .getIntOrFloatBitWidth()] =
-  //           extractOp.getInput();
-  //     }
-  //   }
-  // });
-  return success();
-}
-
 struct LongestPathAnalysisImpl {
   LongestPathAnalysisImpl(mlir::ModuleOp mod,
                           igraph::InstanceGraph *instanceGraph,
                           StringAttr topModuleName)
       : mod(mod), instanceGraph(instanceGraph), topModuleName(topModuleName) {}
-  LogicalResult rewrite(mlir::ModuleOp mod);
-  LogicalResult rewriteLocal(hw::HWModuleOp mod,
-                             mlir::FrozenRewritePatternSet &frozen);
-  LogicalResult inlineOnLevel(hw::HWModuleOp mod,
-                              mlir::FrozenRewritePatternSet &frozen);
-
+  LogicalResult flatten(hw::HWModuleOp mod);
   LogicalResult run();
 
   mlir::MLIRContext *getContext() { return mod.getContext(); }
@@ -1331,216 +748,19 @@ private:
   mlir::ModuleOp mod;
   StringAttr topModuleName;
   igraph::InstanceGraph *instanceGraph;
+  DenseMap<StringAttr, std::unique_ptr<Graph>> moduleToGraph;
 };
-
-struct AndInverterToDelayConversion : OpRewritePattern<aig::AndInverterOp> {
-  using OpRewritePattern<aig::AndInverterOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(AndInverterOp op,
-                                PatternRewriter &rewriter) const override {
-    // Replace with DelayOp.
-    // 1 -> 1, 2 -> 1, 3 -> 2, 4, -> 2
-    uint64_t delay = std::max(1u, llvm::Log2_64_Ceil(op.getOperands().size()));
-    SmallVector<int64_t> delays(op.getOperands().size(), delay);
-    auto delaysAttr = rewriter.getDenseI64ArrayAttr(delays);
-    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(),
-                                              op.getOperands(), delaysAttr);
-    return success();
-  }
-};
-
-struct DelayConcatConversion : OpRewritePattern<aig::DelayOp> {
-  using OpRewritePattern<aig::DelayOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(DelayOp op,
-                                PatternRewriter &rewriter) const override {
-    size_t concatIdx = 0;
-    comb::ConcatOp concatOp;
-    for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
-      if ((concatOp = operand.getDefiningOp<comb::ConcatOp>())) {
-        concatIdx = i;
-        break;
-      }
-    }
-
-    if (!concatOp)
-      return failure();
-
-    SmallVector<Value> newOperands(op.getOperands().take_front(concatIdx));
-    newOperands.reserve(op.getNumOperands());
-    SmallVector<Value> results;
-    results.reserve(concatOp.getNumOperands());
-    size_t bitPos = 0;
-    for (auto operand : llvm::reverse(concatOp.getOperands())) {
-      auto bitWidth = operand.getType().getIntOrFloatBitWidth();
-      newOperands.push_back(operand);
-      // FIXME: This has to a bug!
-      for (auto rest : op.getOperands().drop_front(concatIdx + 1)) {
-        // FIXME: Reuse extracted op if possible.
-        newOperands.push_back(createOrReuseExtract(rewriter, op.getLoc(), rest,
-                                                   bitPos, bitWidth));
-      }
-      newOperands.push_back(operand);
-      bitPos += bitWidth;
-      auto result = rewriter.createOrFold<aig::DelayOp>(
-          op.getLoc(), operand.getType(), newOperands, op.getDelays());
-      results.push_back(result);
-      newOperands.resize(concatIdx);
-    }
-
-    std::reverse(results.begin(), results.end());
-    rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, op.getType(), results);
-    return success();
-  }
-};
-
-struct ExtractDelayConversion : OpRewritePattern<comb::ExtractOp> {
-  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(comb::ExtractOp op,
-                                PatternRewriter &rewriter) const override {
-    // TODO: It's not pretty to replicate extract op.
-    auto delayOp = op.getInput().getDefiningOp<DelayOp>();
-    if (!delayOp)
-      return failure();
-    SmallVector<Value> newOperands;
-
-    for (auto operand : delayOp.getOperands()) {
-      if (operand.getType() != delayOp.getType()) {
-        if (operand.getType().isInteger(1)) {
-          newOperands.push_back(operand);
-          continue;
-        } else {
-          operand = rewriter.create<comb::ReplicateOp>(
-              op.getLoc(), delayOp.getType(), operand);
-        }
-      }
-
-      newOperands.push_back(
-          createOrReuseExtract(rewriter, op.getLoc(), operand, op.getLowBit(),
-                               op.getType().getIntOrFloatBitWidth()));
-    }
-    rewriter.replaceOpWithNewOp<aig::DelayOp>(op, op.getType(), newOperands,
-                                              delayOp.getDelays());
-    return success();
-  }
-};
-
-struct ExtractConcatConversion : OpRewritePattern<comb::ExtractOp> {
-  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(comb::ExtractOp op,
-                                PatternRewriter &rewriter) const override {
-    if (op.getType() == op.getInput().getType()) {
-      rewriter.replaceOp(op, op.getInput());
-      return success();
-    }
-
-    // TODO: It's not pretty to replicate extract op.
-    auto concatOp = op.getInput().getDefiningOp<comb::ConcatOp>();
-    if (!concatOp)
-      return failure();
-    size_t lowBit = op.getLowBit();
-    size_t width = op.getType().getIntOrFloatBitWidth();
-    auto newOp =
-        createOrReuseExtract(rewriter, op.getLoc(), concatOp, lowBit, width);
-    rewriter.replaceOp(op, newOp);
-    return success();
-  }
-};
-
-struct ExtractReplicateConversion : OpRewritePattern<comb::ExtractOp> {
-  using OpRewritePattern<comb::ExtractOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(comb::ExtractOp op,
-                                PatternRewriter &rewriter) const override {
-    // TODO: It's not pretty to replicate extract op.
-    auto replicateOp = op.getInput().getDefiningOp<comb::ReplicateOp>();
-    if (!replicateOp)
-      return failure();
-    SmallVector<Value> newOperands;
-    size_t lowBit = op.getLowBit();
-    size_t width = op.getType().getIntOrFloatBitWidth();
-    for (size_t i = 0, e = replicateOp.getMultiple(); i != e; ++i) {
-      auto operand = replicateOp.getInput();
-      auto opWidth = operand.getType().getIntOrFloatBitWidth();
-      if (width == 0)
-        break;
-
-      if (lowBit >= opWidth) {
-        lowBit -= opWidth;
-        continue;
-      }
-
-      // lowBit < width
-      size_t extractWidth = std::min(opWidth - lowBit, width);
-      newOperands.push_back(createOrReuseExtract(rewriter, op.getLoc(), operand,
-                                                 lowBit, extractWidth));
-      width -= extractWidth;
-    }
-    std::reverse(newOperands.begin(), newOperands.end());
-
-    auto newOp =
-        rewriter.createOrFold<comb::ConcatOp>(op.getLoc(), newOperands);
-    rewriter.replaceOp(op, newOp);
-    return success();
-  }
-};
-
-LogicalResult
-LongestPathAnalysisImpl::rewriteLocal(hw::HWModuleOp mod,
-                                      mlir::FrozenRewritePatternSet &frozen) {
-  OpBuilder rewriter(getContext());
-  rewriter.setInsertionPointToStart(mod.getBodyBlock());
-  // for (auto &blockArgument : mod.getBodyBlock()->getArguments()) {
-  //   if (failed(replaceWithConcat(blockArgument)))
-  //     return failure();
-  // }
-
-  // mod.walk([&](Operation *op) {
-  //   if (isa<seq::CompRegOp, seq::FirRegOp>(op))
-  //     if (failed(replaceWithConcat(op->getResult(0))))
-  //       return WalkResult::interrupt();
-  //   return WalkResult::advance();
-  // });
-
-  RewritePatternSet patterns2(getContext());
-  patterns2.add<AndInverterToDelayConversion>(getContext());
-
-  mlir::FrozenRewritePatternSet frozen2(std::move(patterns2));
-
-  // AndInverterToDelayConversion aigToDelay(getContext());
-  // mlir::GreedyRewriteConfig config;
-  // config.useTopDownTraversal = true;
-  // if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen2, config))) {
-  //   llvm::errs() << "Failed to apply patterns and fold greedily\n";
-  //   return success();
-  // }
-
-  // mlir::PatternRewriter rewriter2(mod.getContext());
-  // mlir::DominanceInfo domInfo(mod);
-  // mlir::eliminateCommonSubExpressions(rewriter2, domInfo, mod);
-
-  // if (failed(mlir::applyPatternsAndFoldGreedily(mod, frozen, config))) {
-  //   llvm::errs() << "Failed to apply patterns and fold greedily\n";
-
-  //   return success();
-  // }
-
-  LocalPathAnalysisTransform transform;
-  if (failed(transform.run(mod)))
-    return failure();
-  return success();
-}
 
 LogicalResult LongestPathAnalysisImpl::run() {
-  RewritePatternSet patterns(getContext());
-
-  patterns
-      .add<ShrinkDelayPattern, ExtractDelayConversion, ExtractConcatConversion,
-           ExtractReplicateConversion, DelayConcatConversion>(getContext());
-  mlir::FrozenRewritePatternSet frozen(std::move(patterns));
   std::mutex mutex;
   SmallVector<hw::HWModuleOp> underHierarchy;
   for (auto *node : llvm::post_order(instanceGraph->lookup(topModuleName)))
     if (node && node->getModule())
-      if (auto hwMod = dyn_cast<hw::HWModuleOp>(*node->getModule()))
+      if (auto hwMod = dyn_cast<hw::HWModuleOp>(*node->getModule())) {
         underHierarchy.push_back(hwMod);
+        moduleToGraph[hwMod.getModuleNameAttr()] =
+            std::make_unique<Graph>(hwMod);
+      }
   llvm::errs() << "Under hierarchy: " << underHierarchy.size() << "\n";
 
   auto result = mlir::failableParallelForEach(
@@ -1550,8 +770,9 @@ LogicalResult LongestPathAnalysisImpl::run() {
           std::lock_guard<std::mutex> lock(mutex);
           llvm::errs() << mod.getName() << " start\n";
         }
+        auto &graph = moduleToGraph.at(mod.getModuleNameAttr());
 
-        auto result = rewriteLocal(mod, frozen);
+        auto result = graph->buildGraph();
 
         auto endTime = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1564,6 +785,65 @@ LogicalResult LongestPathAnalysisImpl::run() {
 
         return result;
       });
+
+  SmallVector<OutputNode *> results;
+  for (auto moduleOp : underHierarchy) {
+    auto *node = instanceGraph->lookup(moduleOp.getModuleNameAttr());
+    auto &graph = moduleToGraph.at(moduleOp.getModuleNameAttr());
+    SmallVector<std::pair<hw::InstanceOp, Graph *>, 4> childInstances;
+    for (auto *child : *node) {
+
+      if (!child || !child->getTarget())
+        continue;
+
+      auto target = dyn_cast<hw::HWModuleOp>(child->getTarget()->getModule());
+
+      if (!target)
+        continue;
+
+      auto instanceOp = dyn_cast<hw::InstanceOp>(child->getInstance());
+      if (!instanceOp)
+        return child->getInstance().emitError() << "unsupported instance";
+      auto &childGraph = moduleToGraph.at(target.getModuleNameAttr());
+      childInstances.push_back({instanceOp, childGraph.get()});
+    }
+    // Inline the child graph into the parent graph.
+    for (auto [instanceOp, childGraph] : childInstances)
+      graph->inlineGraph({{instanceOp, childGraph}});
+
+    // Accumulate local paths.
+    graph->accumulateLocalPaths();
+
+    for (auto outputNode : graph->locallyClosedOutputs) {
+      results.emplace_back(outputNode);
+    }
+  }
+
+  SmallVector<llvm::json::Object> resultsJSON;
+  size_t topK = 100;
+  SmallVector<std::tuple<int64_t, OutputNode *, InputNode *>> longestPaths;
+  for (auto &outputNode : results) {
+    resultsJSON.push_back(outputNode->getJSONObject());
+    for (auto [length, inputNode] : outputNode->getComputedResult()) {
+      longestPaths.emplace_back(length, outputNode, inputNode);
+    }
+  }
+
+  std::sort(longestPaths.begin(), longestPaths.end(),
+            std::greater<std::tuple<int64_t, OutputNode *, InputNode *>>());
+
+  llvm::errs() << "// ------ LongestPathAnalysis Summary -----\n";
+  llvm::errs() << "Top module: " << topModuleName << "\n";
+  llvm::errs() << "Top " << topK << " longest paths:\n";
+  for (size_t i = 0; i < std::min(topK, longestPaths.size()); ++i) {
+    auto [length, outputNode, inputNode] = longestPaths[i];
+    llvm::errs() << i + 1 << ": length = " << length << " ";
+    outputNode->print(llvm::errs());
+    llvm::errs() << " -> ";
+    inputNode->print(llvm::errs());
+    llvm::errs() << "\n";
+  }
+
   return result;
 }
 
@@ -1580,17 +860,8 @@ struct PrintLongestPathAnalysisPass
   using PrintLongestPathAnalysisBase::topModuleName;
   void runOnOperation() override;
 };
+
 } // namespace
-
-LogicalResult
-PrintLongestPathAnalysisPass::rewrite(mlir::ModuleOp mod,
-                                      igraph::InstanceGraph &instanceGraph) {
-  return success();
-}
-
-LogicalResult PrintLongestPathAnalysisPass::rewrite(hw::HWModuleOp mod) {
-  return success();
-}
 
 void PrintLongestPathAnalysisPass::runOnOperation() {
   if (topModuleName.empty()) {
