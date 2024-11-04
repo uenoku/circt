@@ -58,6 +58,7 @@ using namespace circt;
 using namespace aig;
 
 struct InputNode;
+struct Graph;
 
 struct Node {
   enum Kind {
@@ -72,11 +73,14 @@ struct Node {
   };
   Kind kind;
   size_t width;
+  Graph *graph;
   circt::igraph::InstancePath path;
-  Node(Kind kind, size_t width) : kind(kind), width(width), path() {}
+  Node(Graph *graph, Kind kind, size_t width)
+      : graph(graph), kind(kind), width(width), path() {}
 
   size_t getWidth() const { return width; }
   Kind getKind() const { return kind; }
+  Graph *getGraph() const { return graph; }
 
   virtual void
   populateResults(SmallVector<std::pair<int64_t, InputNode *>> &results){};
@@ -85,11 +89,13 @@ struct Node {
   virtual ~Node() {}
   virtual void dump() const = 0;
   virtual void print(llvm::raw_ostream &os) const { assert(false); };
+  virtual Node *clone(DenseMap<Node *, Node *> &mapping);
 };
 
 struct DebugNode : Node {
   DebugNode(StringAttr name, size_t bitPos, Node *input)
-      : Node(Kind::Debug, 1), name(name), bitPos(bitPos), input(input) {}
+      : Node(Kind::Debug, 1, input->getGraph()), name(name), bitPos(bitPos),
+        input(input) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Debug; }
   void dump() const override {
     llvm::dbgs() << "(debug node " << name << " " << bitPos << ")";
@@ -111,7 +117,7 @@ private:
 
 struct ConstantNode : Node {
   ConstantNode(size_t width, ConstantNode *boolNode)
-      : Node(Kind::Constant, width), boolNode(boolNode) {}
+      : Node(Kind::Constant, width, boolNode->getGraph()), boolNode(boolNode) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Constant; }
   void dump() const override {
     llvm::dbgs() << "(constant node " << width << ")";
@@ -125,8 +131,8 @@ private:
 struct InputNode : Node {
   Value value; // port, instance output, or register.
   size_t bitPos;
-  InputNode(Value value, size_t bitPos)
-      : Node(Kind::Input, 1), value(value), bitPos(bitPos) {}
+  InputNode(Value value, size_t bitPos, Graph *graph)
+      : Node(Kind::Input, 1, graph), value(value), bitPos(bitPos) {}
 
   static bool classof(const Node *e) { return e->getKind() == Kind::Input; }
   void setBitPos(size_t bitPos) { this->bitPos = bitPos; }
@@ -178,8 +184,8 @@ struct DelayNode : Node {
 
   DelayNode &operator=(const DelayNode &other) = default;
   DelayNode(const DelayNode &other) = default;
-  DelayNode(Value value, size_t bitPos)
-      : Node(Kind::Delay, 1), value(value), bitPos(bitPos), edges(),
+  DelayNode(Value value, size_t bitPos, Graph *graph)
+      : Node(Kind::Delay, 1, graph), value(value), bitPos(bitPos), edges(),
         computedResult() {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Delay; }
 
@@ -267,9 +273,19 @@ struct OutputNode : Node {
 
   std::optional<SmallVector<std::pair<int64_t, InputNode *>>> computedResult;
 
+  Node *clone(DenseMap<Node *, Node *> &mapping) {
+    auto it = mapping.find(this);
+    if (it != mapping.end())
+      return it->second;
+
+    auto newNode = node->clone(mapping);
+
+    return nullptr;
+  }
+
   OutputNode(Operation *op, size_t operandIdx, size_t bitPos, Node *node)
-      : Node(Kind::Output, node->getWidth()), op(op), operandIdx(operandIdx),
-        bitPos(bitPos), node(node) {}
+      : Node(Kind::Output, node->getWidth(), node->getGraph()), op(op),
+        operandIdx(operandIdx), bitPos(bitPos), node(node) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Output; }
   Node *query(size_t bitOffset) override {
     assert(bitOffset == 0 && "delay node has no bit offset");
@@ -345,8 +361,9 @@ struct OutputNode : Node {
 struct ConcatNode : Node {
   Value value;
   SmallVector<Node *> nodes;
-  ConcatNode(Value value, ArrayRef<Node *> nodes)
-      : Node(Kind::Concat, getBitWidth(value)), value(value), nodes(nodes) {}
+  ConcatNode(Value value, ArrayRef<Node *> nodes, Graph *graph)
+      : Node(Kind::Concat, getBitWidth(value), graph), value(value),
+        nodes(nodes) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Concat; }
   ~ConcatNode() override { nodes.clear(); }
   ConcatNode(const ConcatNode &other) = default;
@@ -373,8 +390,9 @@ struct ConcatNode : Node {
 struct ReplicateNode : Node {
   Value value;
   Node *node;
-  ReplicateNode(Value value, Node *node)
-      : Node(Kind::Replicate, getBitWidth(value)), value(value), node(node) {
+  ReplicateNode(Value value, Node *node, Graph *graph)
+      : Node(Kind::Replicate, getBitWidth(value), graph), value(value),
+        node(node) {
     assert(node->getWidth() == value.getDefiningOp<comb::ReplicateOp>()
                                    .getInput()
                                    .getType()
@@ -402,8 +420,8 @@ struct ExtractNode : Node {
   ExtractNode(const ExtractNode &other) = default;
   ExtractNode &operator=(const ExtractNode &other) = default;
   ExtractNode(Value value, size_t lowBit, Node *input)
-      : Node(Kind::Extract, getBitWidth(value)), value(value), lowBit(lowBit),
-        input(input) {}
+      : Node(Kind::Extract, getBitWidth(value), input->getGraph()),
+        value(value), lowBit(lowBit), input(input) {}
   static bool classof(const Node *e) { return e->getKind() == Kind::Extract; }
   ~ExtractNode() = default;
 
@@ -475,23 +493,43 @@ struct Graph {
 
   LogicalResult inlineGraph(hw::InstanceOp instanceOp, Graph *childGraph) {
     auto childArgs = childGraph->theModule.getBodyBlock()->getArguments();
+    auto childOutputs = childGraph->theModule.getBodyBlock()->getTerminator();
 
     // We need to clone the subgraph of the child graph which are reachable from
     // input and output nodes.
-    DenseMap<InputNode *, Node *> inputNodeToNewNode;
+    DenseMap<Node *, Node *> nodeToNewNode;
 
     for (auto [operand, childArg] :
-         llvm::zip(instanceOp.getOperands(), childArgs)) {
-      auto *node = childGraph->valueToNodes[childArg];
-      assert(node && "node not found");
+         llvm::zip(instanceOp->getOpOperands(), childArgs)) {
+      size_t width = getBitWidth(childArg);
+      for (size_t i = 0; i < width; ++i) {
+        auto *inputNodes = childGraph->valueToNodes[childArg];
+        assert(inputNodes && "node not found");
+        auto *inputNode = cast<InputNode>(inputNodes->query(i));
+        assert(inputNode && "result not found");
+        auto *outputNode =
+            outputNodes.at({instanceOp, operand.getOperandNumber(), i});
 
-      auto *result = node->query(0);
-      assert(result && "result not found");
+        // auto *debugNode = allocateNode<DebugNode>(outputNode->getName(), i,
+        //                                           outputNode->query(0));
 
-      setResultValue(childArg, result);
+        nodeToNewNode[inputNode] = outputNode->query(0);
+      }
     }
 
-    auto childOutputs = childGraph->outputNodes;
+    for (auto [instanceResult, childOutput] :
+         llvm::zip(instanceOp.getResults(), childOutputs->getOpOperands())) {
+      size_t width = getBitWidth(childOutput.get());
+      for (size_t i = 0; i < width; ++i) {
+        auto *outputNode = childGraph->outputNodes.at(
+            {childOutput.getOwner(), childOutput.getOperandNumber(), i});
+        auto inputNode =
+            cast<InputNode>(valueToNodes.at(instanceResult)->query(i));
+
+        nodeToNewNode[inputNode] = outputNode->query(0);
+      }
+    }
+
     return success();
   }
 
@@ -580,7 +618,7 @@ struct Graph {
 
   template <typename NodeTy, typename... Args>
   NodeTy *allocateNode(Args &&...args) {
-    auto nodePtr = std::make_unique<NodeTy>(std::forward<Args>(args)...);
+    auto nodePtr = std::make_unique<NodeTy>(this, std::forward<Args>(args)...);
     nodePool.push_back(std::move(nodePtr));
     return cast<NodeTy>(nodePool.back().get());
   }
