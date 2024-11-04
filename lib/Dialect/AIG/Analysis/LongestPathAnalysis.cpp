@@ -529,20 +529,27 @@ struct Graph {
   static bool isLocalOutput(Operation *op) {
     return !isa<hw::InstanceOp>(op) && !isa<hw::OutputOp>(op);
   }
+
+  void accumulateLocalPaths(OutputNode *outputNode) {
+    bool isClosed =
+        llvm::all_of(outputNode->getComputedResult(), [&](auto &pair) {
+          return isLocalInput(pair.second->value);
+        });
+
+    if (isClosed) {
+      locallyClosedOutputs.insert(outputNode);
+      openOutputs.remove(outputNode);
+    } else {
+      openOutputs.insert(outputNode);
+    }
+  }
   void accumulateLocalPaths(Operation *outOp) {
     for (auto [idx, op] : llvm::enumerate(outOp->getOperands())) {
       size_t width = getBitWidth(op);
       auto *inNode = valueToNodes[op];
       for (size_t i = 0; i < width; ++i) {
         auto outputNode = outputNodes.at({outOp, idx, i});
-        bool isClosed =
-            llvm::all_of(outputNode->getComputedResult(), [&](auto &pair) {
-              return isLocalInput(pair.second->value);
-            });
-
-        if (isClosed) {
-          locallyClosedOutputs.insert(outputNode);
-        }
+        accumulateLocalPaths(outputNode);
       }
     }
   }
@@ -555,15 +562,22 @@ struct Graph {
 
       accumulateLocalPaths(outOp);
     }
+
+    SmallVector<OutputNode *> tmp(openOutputs.begin(), openOutputs.end());
+    for (auto outputNode : tmp) {
+      accumulateLocalPaths(outputNode);
+    }
   }
 
   LogicalResult
-  inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children) {
+  inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children,
+              circt::igraph::InstancePathCache *instancePathCache) {
     // We need to clone the subgraph of the child graph which are reachable from
     // input and output nodes.
     DenseMap<InputNode *, Node *> nodeToNewNode;
     // This stores the cloned child graph.
     DenseMap<Node *, Node *> clonedResult;
+    hw::InstanceOp instance;
     auto callBack = [&](Node *node) {
       auto &result = clonedResult[node];
       if (result)
@@ -604,6 +618,8 @@ struct Graph {
                 return allocateNode<ReplicateNode>(node->value,
                                                    clonedResult[node->node]);
               });
+      auto newPath = instancePathCache->prependInstance(instance, node->path);
+      result->setPath(newPath);
     };
 
     for (auto [instanceOp, childGraph] : children) {
@@ -614,6 +630,7 @@ struct Graph {
       auto childOutputs = childGraph->theModule.getBodyBlock()->getTerminator();
 
       clonedResult.clear();
+      instance = instanceOp;
       for (auto [operand, childArg] :
            llvm::zip(instanceOp->getOpOperands(), childArgs)) {
         size_t width = getBitWidth(childArg);
@@ -644,6 +661,11 @@ struct Graph {
           nodeToNewNode[inputNode] = clonedResult[outputNode]->query(0);
         }
       }
+
+      for (auto outputNode : childGraph->openOutputs) {
+        outputNode->walk(callBack);
+        openOutputs.insert(cast<OutputNode>(clonedResult.at(outputNode)));
+      }
     }
 
     for (auto op : outputOperations) {
@@ -658,6 +680,7 @@ struct Graph {
               llvm::dbgs() << "\n";
             });
             node->map(nodeToNewNode);
+
             LLVM_DEBUG({
               llvm::dbgs() << "Updated node: ";
               node->dump();
@@ -684,6 +707,9 @@ struct Graph {
         }
       }
     }
+
+    for (auto outPutNode : openOutputs)
+      outPutNode->walkPreOrder([&](Node *node) { node->map(nodeToNewNode); });
 
     outputOperations.erase(
         llvm::remove_if(outputOperations,
@@ -1030,6 +1056,7 @@ LogicalResult LongestPathAnalysisImpl::run() {
       });
 
   SmallVector<OutputNode *> results;
+  circt::igraph::InstancePathCache instancePathCache(*instanceGraph);
   for (auto moduleOp : underHierarchy) {
     auto *node = instanceGraph->lookup(moduleOp.getModuleNameAttr());
     auto &graph = moduleToGraph.at(moduleOp.getModuleNameAttr());
@@ -1051,14 +1078,15 @@ LogicalResult LongestPathAnalysisImpl::run() {
       childInstances.push_back({instanceOp, childGraph.get()});
     }
 
-    graph->inlineGraph(childInstances);
+    graph->inlineGraph(childInstances, &instancePathCache);
 
     // Accumulate local paths.
     graph->accumulateLocalPaths();
 
     llvm::dbgs() << "\nLocally closed node: ";
-    llvm::dbgs() << mod.getName() << "\n";
+    llvm::dbgs() << graph->theModule.getModuleName() << "\n";
     llvm::dbgs() << graph->locallyClosedOutputs.size() << "\n";
+    llvm::dbgs() << graph->openOutputs.size() << "\n";
     for (auto outputNode : graph->locallyClosedOutputs) {
 
       // outputNode->print(llvm::dbgs());
@@ -1078,6 +1106,10 @@ LogicalResult LongestPathAnalysisImpl::run() {
         results.emplace_back(output);
       }
     }
+  }
+
+  for (auto &outputNode : topGraph->openOutputs) {
+    results.emplace_back(outputNode);
   }
 
   SmallVector<llvm::json::Object> resultsJSON;
