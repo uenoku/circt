@@ -68,6 +68,7 @@ struct Node {
     Replicate,
     Extract,
     Constant,
+    Debug,
   };
   Kind kind;
   size_t width;
@@ -84,6 +85,28 @@ struct Node {
   virtual ~Node() {}
   virtual void dump() const = 0;
   virtual void print(llvm::raw_ostream &os) const { assert(false); };
+};
+
+struct DebugNode : Node {
+  DebugNode(StringAttr name, size_t bitPos, Node *input)
+      : Node(Kind::Debug, 1), name(name), bitPos(bitPos), input(input) {}
+  static bool classof(const Node *e) { return e->getKind() == Kind::Debug; }
+  void dump() const override {
+    llvm::dbgs() << "(debug node " << name << " " << bitPos << ")";
+  }
+  void print(llvm::raw_ostream &os) const override {
+    std::string pathString;
+    llvm::raw_string_ostream osPath(pathString);
+    path.print(osPath);
+    os << "DebugNode(" << pathString << "." << name << "[" << bitPos << "])";
+  }
+
+  Node *query(size_t bitOffset) override { return input->query(bitOffset); }
+
+private:
+  StringAttr name;
+  size_t bitPos;
+  Node *input;
 };
 
 struct ConstantNode : Node {
@@ -428,9 +451,10 @@ struct Graph {
   void accumulateLocalPaths() {
     for (auto outOp : outputOperations) {
       // These are not local paths.
-      if (isLocalOutput(outOp)) {
+      if (!isLocalOutput(outOp)) {
         continue;
       }
+
       for (auto [idx, op] : llvm::enumerate(outOp->getOperands())) {
         size_t width = getBitWidth(op);
         auto *inNode = valueToNodes[op];
@@ -449,8 +473,31 @@ struct Graph {
     }
   }
 
+  LogicalResult inlineGraph(hw::InstanceOp instanceOp, Graph *childGraph) {
+    auto childArgs = childGraph->theModule.getBodyBlock()->getArguments();
+
+    // We need to clone the subgraph of the child graph which are reachable from
+    // input and output nodes.
+    DenseMap<InputNode *, Node *> inputNodeToNewNode;
+
+    for (auto [operand, childArg] :
+         llvm::zip(instanceOp.getOperands(), childArgs)) {
+      auto *node = childGraph->valueToNodes[childArg];
+      assert(node && "node not found");
+
+      auto *result = node->query(0);
+      assert(result && "result not found");
+
+      setResultValue(childArg, result);
+    }
+
+    auto childOutputs = childGraph->outputNodes;
+    return success();
+  }
+
   LogicalResult
   inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children) {
+
     return success();
   }
 
