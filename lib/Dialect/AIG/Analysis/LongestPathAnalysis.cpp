@@ -626,6 +626,8 @@ struct Graph {
               })
               .Case<OutputNode>([&](OutputNode *node) {
                 dist[1]++;
+                assert(node->node);
+                node->node->dump();
 
                 return allocateNode<OutputNode>(node->op, node->operandIdx,
                                                 node->bitPos,
@@ -649,7 +651,7 @@ struct Graph {
                 dist[4]++;
 
                 for (auto child : node->nodes)
-                  nodes.push_back(clonedResult[child]);
+                  nodes.push_back(recurse(child));
                 return allocateNode<ConcatNode>(node->value, nodes);
               })
               .Case<ExtractNode>([&](ExtractNode *node) {
@@ -685,7 +687,7 @@ struct Graph {
         for (size_t i = 0; i < width; ++i) {
           auto *outputNode = outputNodes.at(
               {operand.getOwner(), operand.getOperandNumber(), i});
-          nodeToNewNode[cast<InputNode>(inputNodes->query(i))] =
+          clonedResult[cast<InputNode>(inputNodes->query(i))] =
               outputNode->query(0); // (この中にinstanceがいる)
         }
       }
