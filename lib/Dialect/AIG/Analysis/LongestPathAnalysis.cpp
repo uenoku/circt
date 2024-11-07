@@ -102,7 +102,7 @@ struct Node {
         return false;
       return func(node);
     };
-    walk(callback);
+    walkPreOrder(callback);
   }
 
   virtual void map(DenseMap<InputNode *, Node *> &nodeToNewNode) {
@@ -851,7 +851,7 @@ struct Graph {
     if (it != valueToNodes.end())
       return it->second;
 
-    value.getDefiningOp()->emitWarning() << "is ignored\n";
+    value.getDefiningOp()->emitWarning() << value << "is ignored\n";
 
     return valueToNodes[value] =
                allocateNode<ConstantNode>(getBitWidth(value), &dummy);
