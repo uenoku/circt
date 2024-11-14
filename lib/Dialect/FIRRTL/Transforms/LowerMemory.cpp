@@ -252,7 +252,8 @@ void LowerMemoryPass::lowerMemory(MemOp mem, const FirMemory &summary,
   OpBuilder b(mem->getParentOfType<FModuleOp>());
   auto wrapper = b.create<FModuleOp>(
       mem->getLoc(), wrapperName,
-      ConventionAttr::get(context, Convention::Internal), ports);
+      ConventionAttr::get(context, Convention::Internal),
+      ports);
   SymbolTable::setSymbolVisibility(wrapper, SymbolTable::Visibility::Private);
 
   // Create an instance of the external memory module. The instance has the

@@ -209,8 +209,8 @@ FModuleOp LowerLayersPass::buildNewModule(OpBuilder &builder,
   llvm::sys::SmartScopedLock<true> instrumentationLock(*circuitMutex);
   FModuleOp newModule = builder.create<FModuleOp>(
       location, builder.getStringAttr(namehint),
-      ConventionAttr::get(builder.getContext(), Convention::Internal), ports,
-      ArrayAttr{});
+      ConventionAttr::get(builder.getContext(), Convention::Internal),
+      ports, ArrayAttr{});
   if (auto dir = getOutputFile(layerBlock.getLayerNameAttr())) {
     assert(dir.isDirectory());
     newModule->setAttr("output_file", dir);
