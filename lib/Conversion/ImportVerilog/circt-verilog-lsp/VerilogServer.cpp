@@ -9,11 +9,18 @@
 
 #include "VerilogServer.h"
 
+#include "../ImportVerilogInternals.h"
 #include "Protocol.h"
+#include "circt/Conversion/Passes.h"
+#include "circt/Dialect/Debug/DebugDialect.h"
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/Moore/MooreDialect.h"
+#include "circt/Dialect/Moore/MoorePasses.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Tools/circt-verilog-lsp/CirctVerilogLspServerMain.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/IndentedOstream.h"
 #include "mlir/Support/ToolUtilities.h"
@@ -21,6 +28,7 @@
 #include "mlir/Tools/lsp-server-support/Logging.h"
 #include "mlir/Tools/lsp-server-support/Protocol.h"
 #include "mlir/Tools/lsp-server-support/SourceMgrUtils.h"
+#include "mlir/Transforms/Passes.h"
 #include "slang/ast/ASTSerializer.h"
 #include "slang/ast/ASTVisitor.h"
 #include "slang/ast/Compilation.h"
@@ -31,6 +39,7 @@
 #include "slang/ast/SystemSubroutine.h"
 #include "slang/ast/expressions/AssertionExpr.h"
 #include "slang/ast/expressions/AssignmentExpressions.h"
+
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
@@ -235,7 +244,7 @@ public:
   VerilogServerContext() {}
 
   llvm::SourceMgr &getSourceMgr() { return sourceMgr; }
-  const llvm::SmallDenseMap<uint32_t, uint32_t> &getBufferIDMap() const {
+  llvm::SmallDenseMap<uint32_t, uint32_t> &getBufferIDMap() {
     return bufferIDMap;
   }
 
@@ -247,7 +256,7 @@ public:
       return StringRef();
     }
 
-    mlir::lsp::Logger::info("VerilogDocument::findHover fileInfo found");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover fileInfo found");
     auto [bufferId, filePath] = *fileInfo;
     // auto line = loc->line;
     // auto column = loc->column;
@@ -610,7 +619,7 @@ void VerilogIndex::parseEmittedLoc() {
     if (end == StringRef::npos)
       break;
     auto toParse = text.take_front(end);
-    mlir::lsp::Logger::info("toParse: {}", toParse);
+    // mlir::lsp::Logger::info("toParse: {}", toParse);
     StringRef filePath;
     StringRef line;
     StringRef column;
@@ -759,7 +768,7 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
             addAssignment(left->getSymbolReference(true), firstLoc, con);
           }
         } else {
-          mlir::lsp::Logger::info("no expression");
+          // mlir::lsp::Logger::info("no expression");
         }
 
         if (!firstLoc.valid())
@@ -774,15 +783,15 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
         if (loc.offset() == 0)
           continue;
 
-        mlir::lsp::Logger::info("RUnning: {} {}", loc.offset(),
-                                firstLoc.offset());
+        // mlir::lsp::Logger::info("RUnning: {} {}", loc.offset(),
+        //                         firstLoc.offset());
         // find the name of the port.
         auto it = text.substr(loc.offset(), firstLoc.offset() - loc.offset())
                       .find(port->name);
         if (it == std::string::npos) {
           continue;
         }
-        mlir::lsp::Logger::info("Found: {}", it);
+        // mlir::lsp::Logger::info("Found: {}", it);
         // mlir::lsp::Logger::info("visit: {}",
         //                          port->internalSymbol->getSyntax()->toString());
 
@@ -858,7 +867,7 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   // Handle named values, such as references to declared variables.
   // Handle named values, such as references to declared variables.
   void visit(const slang::ast::NamedValueExpression &expr) {
-    mlir::lsp::Logger::info("visit: {}", slang::ast::toString(expr.kind));
+    // mlir::lsp::Logger::info("visit: {}", slang::ast::toString(expr.kind));
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
@@ -1931,8 +1940,8 @@ struct RvalueExprVisitor
           return;
         if (loc.start().buffer().getId() != 1)
           return;
-        mlir::lsp::Logger::info("portSymbol: {} {}", portSymbol->name,
-                                portSymbol->getType().toString());
+        // mlir::lsp::Logger::info("portSymbol: {} {}", portSymbol->name,
+        //                         portSymbol->getType().toString());
         inlayHints.emplace_back(
             mlir::lsp::InlayHintKind::Type,
             context.getLspLocation(loc.start()).range.start);
@@ -2121,6 +2130,58 @@ void VerilogDocument::getInlayHintsFor(
 // Verilog ViewOutput
 //===----------------------------------------------------------------------===//
 
+/// Optimize and simplify the Moore dialect IR.
+static void populateMooreTransforms(PassManager &pm) {
+  {
+    // Perform an initial cleanup and preprocessing across all
+    // modules/functions.
+    auto &anyPM = pm.nestAny();
+    anyPM.addPass(mlir::createCSEPass());
+    anyPM.addPass(mlir::createCanonicalizerPass());
+  }
+
+  {
+    // Perform module-specific transformations.
+    auto &modulePM = pm.nest<moore::SVModuleOp>();
+    modulePM.addPass(moore::createLowerConcatRefPass());
+    // TODO: Enable the following once it not longer interferes with @(...)
+    // event control checks. The introduced dummy variables make the event
+    // control observe a static local variable that never changes, instead of
+    // observing a module-wide signal.
+    // modulePM.addPass(moore::createSimplifyProceduresPass());
+  }
+
+  {
+    // Perform a final cleanup across all modules/functions.
+    auto &anyPM = pm.nestAny();
+    anyPM.addPass(mlir::createSROA());
+    anyPM.addPass(mlir::createMem2Reg());
+    anyPM.addPass(mlir::createCSEPass());
+    anyPM.addPass(mlir::createCanonicalizerPass());
+  }
+}
+
+/// Convert Moore dialect IR into core dialect IR
+static void populateMooreToCoreLowering(PassManager &pm) {
+  // Perform the conversion.
+  pm.addPass(circt::createConvertMooreToCorePass());
+
+  {
+    // Conversion to the core dialects likely uncovers new canonicalization
+    // opportunities.
+    auto &anyPM = pm.nestAny();
+    anyPM.addPass(mlir::createCSEPass());
+    anyPM.addPass(mlir::createCanonicalizerPass());
+  }
+}
+
+/// Populate the given pass manager with transformations as configured by the
+/// command line options.
+static void populatePasses(PassManager &pm) {
+  populateMooreTransforms(pm);
+  populateMooreToCoreLowering(pm);
+}
+
 void VerilogDocument::getVerilogViewOutput(
     raw_ostream &os, circt::lsp::VerilogViewOutputKind kind) {
   if (failed(compilation))
@@ -2138,17 +2199,66 @@ void VerilogDocument::getVerilogViewOutput(
   // Generate the MLIR for the ast module. We also capture diagnostics here to
   // show to the user, which may be useful if Verilog isn't capturing
   // constraints expected by PDL.
-  // MLIRContext mlirContext;
+  MLIRContext mlirContext;
+  mlirContext
+      .loadDialect<moore::MooreDialect, hw::HWDialect, cf::ControlFlowDialect,
+                   func::FuncDialect, debug::DebugDialect>();
+
   // SourceMgrDiagnosticHandler diagHandler(sourceMgr, &mlirContext, os);
-  // OwningOpRef<ModuleOp> pdlModule =
-  //     codegenVerilogToMLIR(&mlirContext, astContext, sourceMgr,
-  //     **astModule);
-  // if (!pdlModule)
-  //   return;
-  // if (kind == mlir::lsp::VerilogViewOutputKind::MLIR) {
-  //   pdlModule->print(os, OpPrintingFlags().enableDebugInfo());
-  //   return;
-  // }
+  OwningOpRef<ModuleOp> module(ModuleOp::create(UnknownLoc::get(&mlirContext)));
+
+  SmallDenseMap<slang::BufferID, StringRef> bufferFilePaths;
+  auto &slangSourceMgr = getContext().getSlangSourceManager();
+  slangSourceMgr.getAllBuffers();
+  for (auto id : slangSourceMgr.getAllBuffers()) {
+    auto llvmID = getContext().getBufferIDMap().find(id.getId());
+    if (llvmID == getContext().getBufferIDMap().end()) {
+      continue;
+      // Open.
+      auto path = slangSourceMgr.getRawFileName(id);
+      mlir::lsp::Logger::info("Opening buffer for {}", path);
+      auto memoryBuffer = llvm::MemoryBuffer::getFile(path);
+      if (!memoryBuffer) {
+        mlir::lsp::Logger::error("Failed to open buffer for {}", id.getId());
+        continue;
+      }
+      auto newID = getContext().getSourceMgr().AddNewSourceBuffer(
+          std::move(*memoryBuffer), SMLoc());
+      llvmID = getContext()
+                   .getBufferIDMap()
+                   .insert(std::make_pair(id.getId(), newID))
+                   .first;
+    }
+
+    bufferFilePaths[id] = getContext()
+                              .getSourceMgr()
+                              .getMemoryBuffer(llvmID->second)
+                              ->getBufferIdentifier();
+  }
+
+  ImportVerilog::Context context({}, **compilation, module.get(),
+                                 getContext().getSlangSourceManager(),
+                                 bufferFilePaths);
+  if (failed(context.convertCompilation())) {
+    os << "failed to convert compilation";
+    return;
+  }
+
+  SourceMgrDiagnosticHandler diagHandler(getContext().getSourceMgr(),
+                                         &mlirContext, os);
+
+  if (kind == circt::lsp::VerilogViewOutputKind::MLIR) {
+    os << *module->getOperation();
+    return;
+  }
+
+  mlir::PassManager pm(&mlirContext);
+  pm.enableVerifier(true);
+  populatePasses(pm);
+  if (failed(pm.run(module.get())))
+    return;
+
+  os << *module->getOperation();
 
   // // Otherwise, generate the output for C++.
   // assert(kind == mlir::lsp::VerilogViewOutputKind::CPP &&

@@ -109,7 +109,8 @@ public:
     return ::convertLocation(context, *sourceManager, bufferFilePaths, loc);
   }
 
-  static mlir::DiagnosticSeverity getSeverity(slang::DiagnosticSeverity severity) {
+  static mlir::DiagnosticSeverity
+  getSeverity(slang::DiagnosticSeverity severity) {
     switch (severity) {
     case slang::DiagnosticSeverity::Fatal:
     case slang::DiagnosticSeverity::Error:
@@ -131,20 +132,21 @@ private:
 } // namespace
 
 // Allow for `slang::BufferID` to be used as hash map keys.
-namespace llvm {
-template <>
-struct DenseMapInfo<slang::BufferID> {
-  static slang::BufferID getEmptyKey() { return slang::BufferID(); }
-  static slang::BufferID getTombstoneKey() {
-    return slang::BufferID(UINT32_MAX - 1, ""sv);
-    // UINT32_MAX is already used by `BufferID::getPlaceholder`.
-  }
-  static unsigned getHashValue(slang::BufferID id) {
-    return llvm::hash_value(id.getId());
-  }
-  static bool isEqual(slang::BufferID a, slang::BufferID b) { return a == b; }
-};
-} // namespace llvm
+// namespace llvm {
+// template <>
+// struct DenseMapInfo<slang::BufferID> {
+//   static slang::BufferID getEmptyKey() { return slang::BufferID(); }
+//   static slang::BufferID getTombstoneKey() {
+//     return slang::BufferID(UINT32_MAX - 1, ""sv);
+//     // UINT32_MAX is already used by `BufferID::getPlaceholder`.
+//   }
+//   static unsigned getHashValue(slang::BufferID id) {
+//     return llvm::hash_value(id.getId());
+//   }
+//   static bool isEqual(slang::BufferID a, slang::BufferID b) { return a == b;
+//   }
+// };
+// } // namespace llvm
 
 //===----------------------------------------------------------------------===//
 // Driver
