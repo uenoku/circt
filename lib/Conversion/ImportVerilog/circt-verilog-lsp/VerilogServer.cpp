@@ -16,6 +16,7 @@
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Moore/MooreDialect.h"
 #include "circt/Dialect/Moore/MoorePasses.h"
+#include "circt/Support/FVInt.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Tools/circt-verilog-lsp/CirctVerilogLspServerMain.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -2613,9 +2614,77 @@ VerilogTextFile::getChunkItFor(mlir::lsp::Position &pos) {
 // VerilogServer::Impl
 //===----------------------------------------------------------------------===//
 
+struct WaveResult {
+  std::string objectPath;
+  std::string objectName;
+  SmallVector<std::pair<int64_t, circt::FVInt>> values;
+};
+
+struct WaveformFile {
+  virtual ~WaveformFile() = default;
+  virtual LogicalResult getWaves(std::vector<std::string> &objectNames,
+                                 int64_t startTime, int64_t endTime,
+                                 std::vector<WaveResult> &result) = 0;
+  virtual LogicalResult initialize(StringRef waveformPath) = 0;
+  virtual StringRef getWaveformPath() = 0;
+};
+
+struct VCDWaveformFile : WaveformFile {
+  virtual ~VCDWaveformFile() = default;
+  VCDWaveformFile() { Logger::info("waveform initilized"); }
+  LogicalResult getWaves(std::vector<std::string> &objectNames,
+                         int64_t startTime, int64_t endTime,
+                         std::vector<WaveResult> &result) override {}
+  LogicalResult initialize(StringRef waveformPath) override {
+    this->waveformPath = waveformPath.str();
+    return success();
+  }
+  std::string waveformPath;
+
+};
+
+struct VCDWaveformServer  {
+  const std::unique_ptr<WaveformFile>& waveformFile;
+  // These variables represent singals we have to show in the current frame.
+  int64_t currentTime = 0;
+  int64_t currentStart = 0;
+  int64_t currentEnd = 0;
+  // Object in the current frame.
+  std::vector<std::string> currentObjectNames;
+  std::vector<WaveResult> currentWaves;
+
+  std::vector<std::string> currentInstance;
+  std::string currentModule;
+
+  // {uri, objectName} -> FVInt
+  DenseMap<std::pair<StringAttr, StringAttr>, FVInt> currentWavesMap;
+
+  VCDWaveformServer(const std::unique_ptr<WaveformFile>& waveformFile)
+    : waveformFile(waveformFile), currentTime(0), currentStart(0), currentEnd(0) {}
+
+  void updateTime(int64_t time, int64_t start, int64_t end) {
+    currentTime = time;
+    currentStart = start;
+    currentEnd = end;
+  }
+
+  LogicalResult updateWaves() {
+    currentWaves.clear();
+    if (failed(waveformFile->getWaves(currentObjectNames, currentStart, currentEnd, currentWaves))) 
+      return failure();
+
+    Logger::info("waveform updated");
+    for (auto &wave : currentWaves) {
+      Logger::info("wave: %s, %s", wave.objectName.c_str(), wave.objectPath.c_str());
+    }
+    return success();
+  }
+};
+
 struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
-      : options(options), compilationDatabase(options.compilationDatabases) {}
+      : options(options), compilationDatabase(options.compilationDatabases) {
+  }
 
   /// Verilog LSP options.
   const VerilogServerOptions &options;
@@ -2626,6 +2695,10 @@ struct circt::lsp::VerilogServer::Impl {
 
   /// The files held by the server, mapped by their URI file name.
   llvm::StringMap<std::unique_ptr<VerilogTextFile>> files;
+
+  /// The waveform files held by the server, mapped by their URI file name.
+  // llvm::StringMap<std::unique_ptr<WaveformFile>> waveformFiles;
+  std::unique_ptr<WaveformFile> waveformFile;
 };
 
 //===----------------------------------------------------------------------===//
