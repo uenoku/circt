@@ -55,6 +55,7 @@ struct VCDFile {
     virtual void dump(mlir::raw_indented_ostream &os) const = 0;
     // Print it in VCD format.
     virtual void printVCD(mlir::raw_indented_ostream &os) const = 0;
+    virtual StringRef getNameRef() const = 0;
 
   private:
     Kind kind;
@@ -76,6 +77,9 @@ struct VCDFile {
     Metadata(Location loc, MetadataType command, ArrayAttr values);
     void printVCD(mlir::raw_indented_ostream &os) const override;
     void dump(mlir::raw_indented_ostream &os) const override;
+    StringRef getNameRef() const override {
+      return "";
+    }
 
   private:
     MetadataType command;
@@ -100,6 +104,7 @@ struct VCDFile {
     void printVCD(mlir::raw_indented_ostream &os) const override;
     void setName(StringAttr name) { this->name = name; }
     StringAttr getName() const { return name; }
+    StringRef getNameRef() const override { return name.getValue(); }
     auto &getChildren() { return children; }
 
   private:
@@ -120,6 +125,8 @@ struct VCDFile {
       real,
       time,
     };
+
+    StringRef getNameRef() const override { return name.getValue(); }
 
     // Implement LLVM RTTI.
     static bool classof(const Node *e);
@@ -202,7 +209,6 @@ private:
   ArrayRef<StringRef> path;
   void registerVerilogName(StringAttr moduleName, StringAttr verilogName,
                            Operation *op);
-  
 
   // Map from VCD variable to MLIR operation with the instance path.
   llvm::DenseMap<VCDFile::Variable *, Signal> signalMap;
