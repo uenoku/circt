@@ -88,6 +88,8 @@ struct LSPServer {
   //===--------------------------------------------------------------------===//
   // Call Hierarchy
 
+  void onPrepareCallHierarchy(const CallHierarchyPrepareParams &params,
+                              Callback<std::vector<CallHierarchyItem>> reply);
   void onCallHierarchyIncomingCalls(
       const CallHierarchyIncomingCallsParams &params,
       Callback<std::vector<CallHierarchyIncomingCall>> reply);
@@ -148,6 +150,7 @@ void LSPServer::onInitialize(const InitializeParams &params,
       {"hoverProvider", true},
       {"documentSymbolProvider", true},
       {"inlayHintProvider", true},
+      {"callHierarchyProvider", true},
   };
 
   llvm::json::Object result{
@@ -266,24 +269,47 @@ void LSPServer::onVerilogViewOutput(
 //===----------------------------------------------------------------------===//
 // Call Hierarchy
 
+void LSPServer::onPrepareCallHierarchy(
+    const CallHierarchyPrepareParams &params,
+    Callback<std::vector<CallHierarchyItem>> reply) {
+  mlir::lsp::Logger::info("onPrepareCallHierarchy: uri={}, position=({},{})",
+                          params.textDocument.uri.file(), params.position.line,
+                          params.position.character);
+
+  // FIXME:
+  auto tmp = params.position;
+  std::vector<CallHierarchyItem> items;
+  server.prepareCallHierarchy(params.textDocument.uri, tmp, items);
+
+  mlir::lsp::Logger::info("Found {} call hierarchy items", items.size());
+  reply(std::move(items));
+}
+
 void LSPServer::onCallHierarchyIncomingCalls(
     const CallHierarchyIncomingCallsParams &params,
     Callback<std::vector<CallHierarchyIncomingCall>> reply) {
-  mlir::lsp::Logger::info("onCallHierarchyIncomingCalls");
+  mlir::lsp::Logger::info("onCallHierarchyIncomingCalls: uri={}",
+                          params.item.uri.file());
 
   std::vector<CallHierarchyIncomingCall> calls;
+  auto range = params.item.range;
+  server.getIncomingCalls(params.item.uri, params.item.name, range, calls);
 
-
-  server.getIncomingCalls(params.item.uri, calls);
+  mlir::lsp::Logger::info("Found {} incoming calls", calls.size());
   reply(std::move(calls));
 }
 
 void LSPServer::onCallHierarchyOutgoingCalls(
     const CallHierarchyOutgoingCallsParams &params,
     Callback<std::vector<CallHierarchyOutgoingCall>> reply) {
-  mlir::lsp::Logger::info("onCallHierarchyOutgoingCalls");
+  mlir::lsp::Logger::info("onCallHierarchyOutgoingCalls: uri={} name={}",
+                          params.item.uri.file(), params.item.name);
+
   std::vector<CallHierarchyOutgoingCall> calls;
-  server.getOutgoingCalls(params.item.uri, calls);
+  auto range = params.item.range;
+  server.getOutgoingCalls(params.item.uri, params.item.name, range, calls);
+
+  mlir::lsp::Logger::info("Found {} outgoing calls", calls.size());
   reply(std::move(calls));
 }
 
@@ -346,6 +372,9 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
                         &LSPServer::onVerilogViewOutput);
 
   // Call Hierarchy
+  messageHandler.method("textDocument/prepareCallHierarchy", &lspServer,
+                        &LSPServer::onPrepareCallHierarchy);
+
   messageHandler.method("callHierarchy/incomingCalls", &lspServer,
                         &LSPServer::onCallHierarchyIncomingCalls);
 

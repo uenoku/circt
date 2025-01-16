@@ -117,14 +117,19 @@ public:
   std::optional<VerilogViewOutputResult>
   getVerilogViewOutput(const URIForFile &uri, VerilogViewOutputKind kind);
 
+  void prepareCallHierarchy(const URIForFile &uri, mlir::lsp::Position &pos,
+                            std::vector<mlir::lsp::CallHierarchyItem> &items);
+
   /// Get the call hierarchy for the given file.
   void
-  getIncomingCalls(const URIForFile &uri,
+  getIncomingCalls(const URIForFile &uri, const std::string &name,
+                   mlir::lsp::Range &range,
                    std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
 
   /// Get the outgoing calls for the given file.
   void
-  getOutgoingCalls(const URIForFile &uri,
+  getOutgoingCalls(const URIForFile &uri, const std::string &name,
+                   mlir::lsp::Range &range,
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
 private:
