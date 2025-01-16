@@ -293,7 +293,7 @@ void LSPServer::onCallHierarchyIncomingCalls(
 
   std::vector<CallHierarchyIncomingCall> calls;
   auto range = params.item.range;
-  server.getIncomingCalls(params.item.uri, params.item.name, range, calls);
+  server.getIncomingCalls(params.item.uri, params.item.name, range, params.item.kind, calls);
 
   mlir::lsp::Logger::info("Found {} incoming calls", calls.size());
   reply(std::move(calls));
@@ -307,7 +307,7 @@ void LSPServer::onCallHierarchyOutgoingCalls(
 
   std::vector<CallHierarchyOutgoingCall> calls;
   auto range = params.item.range;
-  server.getOutgoingCalls(params.item.uri, params.item.name, range, calls);
+  server.getOutgoingCalls(params.item.uri, params.item.name, range, params.item.kind, calls);
 
   mlir::lsp::Logger::info("Found {} outgoing calls", calls.size());
   reply(std::move(calls));

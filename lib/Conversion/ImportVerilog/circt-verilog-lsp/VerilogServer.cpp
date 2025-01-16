@@ -1399,11 +1399,11 @@ struct VerilogDocument {
                             std::vector<mlir::lsp::CallHierarchyItem> &items);
   void getCallHierarchyIncomingCalls(
       const mlir::lsp::URIForFile &uri, const std::string &name,
-      mlir::lsp::Range &range,
+      mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
       std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
   void getCallHierarchyOutgoingCalls(
       const mlir::lsp::URIForFile &uri, const std::string &name,
-      mlir::lsp::Range &range,
+      mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
       std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
   //===--------------------------------------------------------------------===//
@@ -2008,7 +2008,7 @@ struct RvalueExprVisitor
                     bool useEnd = true) {
     if (!symbol || !range.start().valid() || !range.end().valid())
       return;
-    mlir::lsp::Logger::info("handleSymbol: {}", symbol->name);
+    // mlir::lsp::Logger::info("handleSymbol: {}", symbol->name);
     if (symbol->name.empty()) {
       return;
     }
@@ -2544,7 +2544,7 @@ void VerilogDocument::prepareCallHierarchy(
 
 void VerilogDocument::getCallHierarchyIncomingCalls(
     const mlir::lsp::URIForFile &uri, const std::string &name,
-    mlir::lsp::Range &range,
+    mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
     std::vector<mlir::lsp::CallHierarchyIncomingCall> &items) {
   // TODO: Implement this
 }
@@ -2612,7 +2612,9 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     //         .range.start,
     //     document.getContext().getLspLocation(instance.body.location).range.end);
     back.range = mlir::lsp::Range(
-        document.getContext().getLspLocation(instance.body.location).range.start,
+        document.getContext()
+            .getLspLocation(instance.body.location)
+            .range.start,
         document.getContext().getLspLocation(instance.body.location).range.end);
 
     back.detail = instance.name;
@@ -2638,14 +2640,136 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     visitDefault(instance);
   }
 };
+
+struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
+  template <typename T>
+  void visit(const T &t) {
+    visitDefault(t);
+  }
+  // Handle hierarchical values, such as `x = Top.sub.var`.
+  // Value visit(const slang::ast::HierarchicalValueExpression &expr) {
+  //   auto hierLoc = context.convertLocation(expr.symbol.location);
+  //   if (auto value = context.valueSymbols.lookup(&expr.symbol)) {
+  //     if (isa<moore::RefType>(value.getType())) {
+  //       auto readOp = builder.create<moore::ReadOp>(hierLoc, value);
+  //       if (context.rvalueReadCallback)
+  //         context.rvalueReadCallback(readOp);
+  //       value = readOp.getResult();
+  //     }
+  //     return value;
+  //   }
+
+  //   // Emit an error for those hierarchical values not recorded in the
+  //   // `valueSymbols`.
+  //   auto d = mlir::emitError(loc, "unknown hierarchical name `")
+  //            << expr.symbol.name << "`";
+  //   d.attachNote(hierLoc) << "no rvalue generated for "
+  //                         << slang::ast::toString(expr.symbol.kind);
+  //   return {};
+  // }
+
+  // Helper function to convert an argument to a simple bit vector type, pass
+  // it to a reduction op, and optionally invert the result.
+
+  /// Handle assignment patterns.
+  void visitInvalid(const slang::ast::Expression &expr) {
+    mlir::lsp::Logger::debug("visitInvalid: {}",
+                             slang::ast::toString(expr.kind));
+  }
+
+  void visitInvalid(const slang::ast::Statement &) {}
+  void visitInvalid(const slang::ast::TimingControl &) {}
+  void visitInvalid(const slang::ast::Constraint &) {}
+  void visitInvalid(const slang::ast::AssertionExpr &) {}
+  void visitInvalid(const slang::ast::BinsSelectExpr &) {}
+  void visitInvalid(const slang::ast::Pattern &) {}
+  NetVisitor(std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
+             VerilogDocument &document, std::string moduleName)
+      : items(items), document(document), moduleName(moduleName) {}
+  std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items;
+  VerilogDocument &document;
+  std::string moduleName;
+
+  void visit(const slang::ast::NetSymbol &net) {
+    items.emplace_back();
+    auto &back = items.back().to;
+    auto &fromRange = items.back().fromRanges;
+    back.name = net.name;
+    back.kind = mlir::lsp::SymbolKind::Variable;
+    // fromRange.push_back(mlir::lsp::Range(
+    //     document.getContext().getLspLocation(net.location).range.start,
+    //     document.getContext().getLspLocation(net.location).range.end));
+    // back.range = mlir::lsp::Range(
+    //     document.getContext()
+    //         .getLspLocation(instance.body.location)
+    //         .range.start,
+    //     document.getContext().getLspLocation(instance.body.location).range.end);
+    auto loc = document.getContext().getLspLocation(net.location);
+    mlir::lsp::Logger::info("loc= {} {} {} {} {}", loc.range.start.line,
+                            loc.range.start.character, loc.range.end.line,
+                            loc.range.end.character, loc.uri.file());
+    back.range = loc.range;
+    back.uri = loc.uri;
+    back.detail = net.getType().toString();
+    // back.selectionRange = loc.range;
+    // fromRange.push_back(loc.range);
+    // std::string name(net.name);
+    // auto dir = document.getContext().getSlangSourceManager().getFullPath(
+    //     net.location.buffer());
+    // mlir::lsp::Logger::info("dir={}", dir.string());
+
+    // // auto opt = document.getContext().getOrOpenFile(name + ".sv");
+    // // mlir::lsp::Logger::info("name={}", name);
+    // // if (!opt) {
+    // //   mlir::lsp::Logger::error(
+    // //       "VerilogDocument::getLocationsOf interval map loc error");
+    // //   return;
+    // // }
+    // auto uri = mlir::lsp::URIForFile::fromFile(dir.string());
+    // if (auto e = uri.takeError()) {
+    //   mlir::lsp::Logger::error(
+    //       "VerilogDocument::getLocationsOf interval map loc error");
+    //   return;
+    // }
+    // back.uri = *uri;
+    // visitDefault(instance);
+  }
+
+  void visit(const slang::ast::InstanceSymbol &instance) {
+    // visitDefault(instance);
+  }
+};
+
 void VerilogDocument::getCallHierarchyOutgoingCalls(
     const mlir::lsp::URIForFile &uri, const std::string &name,
-    mlir::lsp::Range &range,
+    mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
     std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items) {
 
-  FooVisitor visitor(items, *this);
-  for (auto *instance : compilation->get()->getRoot().topInstances) {
-    instance->body.visit(visitor);
+  StringRef nameRef(name);
+  auto split = nameRef.split(':');
+  auto moduleName = split.first;
+  if (symbolKind == mlir::lsp::SymbolKind::Module) {
+    {
+      CallHierarchyOutgoingCall item;
+      item.to.name = name + ":net";
+      item.to.kind = mlir::lsp::SymbolKind::Namespace;
+      item.to.range = range;
+      item.to.uri = uri;
+      item.to.detail = moduleName;
+      items.emplace_back(item);
+    }
+    FooVisitor visitor(items, *this);
+    for (auto *instance : compilation->get()->getRoot().topInstances) {
+      instance->body.visit(visitor);
+    }
+    return;
+  }
+
+  if (symbolKind == mlir::lsp::SymbolKind::Namespace) {
+    NetVisitor visitor(items, *this, std::string(moduleName));
+    for (auto *net : compilation->get()->getRoot().topInstances) {
+      net->body.visit(visitor);
+    }
   }
 }
 
@@ -2735,11 +2859,11 @@ public:
                             std::vector<mlir::lsp::CallHierarchyItem> &items);
   void
   getIncomingCalls(const mlir::lsp::URIForFile &uri, const std::string &name,
-                   mlir::lsp::Range &range,
+                   mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
   void
   getOutgoingCalls(const mlir::lsp::URIForFile &uri, const std::string &name,
-                   mlir::lsp::Range &range,
+                   mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
 private:
@@ -3025,22 +3149,22 @@ void VerilogTextFile::prepareCallHierarchy(
 
 void VerilogTextFile::getIncomingCalls(
     const mlir::lsp::URIForFile &uri, const std::string &name,
-    mlir::lsp::Range &range,
+    mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
     std::vector<mlir::lsp::CallHierarchyIncomingCall> &items) {
   // TODO: Implement this
   mlir::lsp::Logger::info("getIncomingCalls");
   auto &chunk = getChunkFor(range.start);
-  chunk.document.getCallHierarchyIncomingCalls(uri, name, range, items);
+  chunk.document.getCallHierarchyIncomingCalls(uri, name, range, kind, items);
 }
 
 void VerilogTextFile::getOutgoingCalls(
     const mlir::lsp::URIForFile &uri, const std::string &name,
-    mlir::lsp::Range &range,
+    mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
     std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items) {
   // TODO: Implement this
   mlir::lsp::Logger::info("getOutgoingCalls");
   auto &chunk = getChunkFor(range.start);
-  chunk.document.getCallHierarchyOutgoingCalls(uri, name, range, items);
+  chunk.document.getCallHierarchyOutgoingCalls(uri, name, range, kind, items);
 
   // StringRef path = "/home/uenoku/dev/circt-dev/FPU2/module_hier.json";
   // auto open = mlir::openInputFile(path);
@@ -3223,19 +3347,21 @@ void circt::lsp::VerilogServer::prepareCallHierarchy(
 
 void circt::lsp::VerilogServer::getIncomingCalls(
     const URIForFile &uri, const std::string &name, mlir::lsp::Range &range,
+    mlir::lsp::SymbolKind symbolKind,
     std::vector<mlir::lsp::CallHierarchyIncomingCall> &items) {
   auto fileIt = impl->files.find(uri.file());
   mlir::lsp::Logger::debug("getIncomingCalls");
 
   if (fileIt != impl->files.end())
-    fileIt->second->getIncomingCalls(uri, name, range, items);
+    fileIt->second->getIncomingCalls(uri, name, range, symbolKind, items);
 }
 
 void circt::lsp::VerilogServer::getOutgoingCalls(
     const URIForFile &uri, const std::string &name, mlir::lsp::Range &range,
+    mlir::lsp::SymbolKind symbolKind,
     std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items) {
   mlir::lsp::Logger::debug("getOutgoingCalls");
   auto fileIt = impl->files.find(uri.file());
   if (fileIt != impl->files.end())
-    fileIt->second->getOutgoingCalls(uri, name, range, items);
+    fileIt->second->getOutgoingCalls(uri, name, range, symbolKind, items);
 }

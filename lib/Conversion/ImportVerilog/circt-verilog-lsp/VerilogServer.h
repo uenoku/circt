@@ -32,6 +32,7 @@ struct Position;
 struct Range;
 struct SignatureHelp;
 struct TextDocumentContentChangeEvent;
+enum class SymbolKind;
 class URIForFile;
 struct Diagnostic;
 struct CallHierarchyIncomingCall;
@@ -123,13 +124,13 @@ public:
   /// Get the call hierarchy for the given file.
   void
   getIncomingCalls(const URIForFile &uri, const std::string &name,
-                   mlir::lsp::Range &range,
+                   mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
 
   /// Get the outgoing calls for the given file.
   void
   getOutgoingCalls(const URIForFile &uri, const std::string &name,
-                   mlir::lsp::Range &range,
+                   mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
 private:
