@@ -56,6 +56,7 @@ struct VCDFile {
     // Print it in VCD format.
     virtual void printVCD(mlir::raw_indented_ostream &os) const = 0;
     virtual StringRef getNameRef() const = 0;
+    virtual Node *lookupChild(StringAttr name) const { return nullptr; }
 
   private:
     Kind kind;
@@ -77,9 +78,7 @@ struct VCDFile {
     Metadata(Location loc, MetadataType command, ArrayAttr values);
     void printVCD(mlir::raw_indented_ostream &os) const override;
     void dump(mlir::raw_indented_ostream &os) const override;
-    StringRef getNameRef() const override {
-      return "";
-    }
+    StringRef getNameRef() const override { return ""; }
 
   private:
     MetadataType command;
@@ -106,6 +105,11 @@ struct VCDFile {
     StringAttr getName() const { return name; }
     StringRef getNameRef() const override { return name.getValue(); }
     auto &getChildren() { return children; }
+    Node *lookupChild(StringAttr name) const override {
+      if (children.contains(name))
+        return children.find(name)->second.get();
+      return nullptr; 
+    }
 
   private:
     StringAttr name;

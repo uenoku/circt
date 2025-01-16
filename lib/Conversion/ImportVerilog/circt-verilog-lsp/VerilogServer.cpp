@@ -220,6 +220,11 @@ struct WaveformFile {
   virtual LogicalResult getWaves(std::vector<std::string> &objectNames,
                                  int64_t startTime, int64_t endTime,
                                  std::vector<WaveResult> &result) = 0;
+  virtual LogicalResult getWaves(const std::string &objectPath,
+                                 const std::string &objectName,
+                                 int64_t startTime, int64_t endTime,
+                                 std::vector<WaveResult> &result) = 0;
+
   virtual LogicalResult initialize(StringRef waveformPath) = 0;
   virtual StringRef getUnit() = 0;
 };
@@ -234,8 +239,8 @@ struct VCDWaveformFile : WaveformFile {
                          int64_t startTime, int64_t endTime,
                          std::vector<WaveResult> &result) override {
     Logger::info("waveform getWaves");
-    vcd::VCDFile::Node *currentNode = vcdFile->getRootScope().get();
     for (auto objectName : objectNames) {
+      vcd::VCDFile::Node *currentNode = vcdFile->getRootScope().get();
       auto it = llvm::split(objectName, ".");
       if (currentNode->getNameRef() != *it.begin())
         continue;
@@ -253,8 +258,13 @@ struct VCDWaveformFile : WaveformFile {
       if (currentNode) {
         auto variable = llvm::dyn_cast<vcd::VCDFile::Variable>(currentNode);
         if (variable) {
-          result.push_back(
-              {objectName, variable->getName(), variable->getBitWidth()});
+          WaveResult waveResult;
+          waveResult.objectPath = StringAttr::get(context, "tb");
+          waveResult.objectName = variable->getName();
+          waveResult.moduleName = StringAttr::get(context, "counter");
+          waveResult.values.push_back(
+              {0, FVInt::getAllX(variable->getBitWidth())});
+          result.push_back(std::move(waveResult));
         }
       }
     }
@@ -273,7 +283,14 @@ struct VCDWaveformFile : WaveformFile {
     if (!vcdFile)
       return failure();
 
-    indexWaves();
+    // indexWaves();
+    std::vector<WaveResult> result;
+
+    std::vector<std::string> query;
+    // query.emplace_back("tb.u0.out");
+    // query.emplace_back("tb.u0.rstn");
+    // query.emplace_back("tb.u0.clk");
+    // getWaves(query, 0, 0, result);
 
     return success();
   }
@@ -292,9 +309,9 @@ struct VCDWaveformFile : WaveformFile {
         for (auto &child : scope->getChildren()) {
           if (auto variable =
                   llvm::dyn_cast<vcd::VCDFile::Variable>(child.second.get())) {
-            waves[ArrayAttr::get(context, path)]
+            // waves[ArrayAttr::get(context, path)];
           } else {
-            worklist.push_back(std::make_pair(depth, child.second.get()));
+            // worklist.push_back(std::make_pair(depth, child.second.get()));
           }
         }
       }
@@ -328,6 +345,10 @@ struct WaveformServer {
   WaveformServer(std::unique_ptr<WaveformFile> waveformFile)
       : waveformFile(std::move(waveformFile)), currentTime(0), currentStart(0),
         currentEnd(0) {
+    currentObjectNames.emplace_back("tb.u0.out");
+    currentObjectNames.emplace_back("tb.u0.rstn");
+    currentObjectNames.emplace_back("tb.u0.clk");
+    updateWaves();
     currentWavesMap["test"]["a"] = FVInt::getAllX(1);
     currentWavesMap["test"]["b"] = FVInt::getAllX(2);
   }
@@ -374,8 +395,8 @@ struct WaveformServer {
 
       currentWavesMap[moduleName][objectName] = value;
 
-      Logger::info("wave: %s, %s, %s, %s", wave.objectName, wave.objectPath,
-                   wave.moduleName, value.toString(2));
+      Logger::info("wave: {}, {}, {}", wave.objectName, wave.moduleName,
+                   value.toString(2));
     }
     return success();
   }
@@ -2834,7 +2855,7 @@ struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
       : options(options), compilationDatabase(options.compilationDatabases) {
     auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
-    if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
+    if (failed(temp->initialize("/scratch/hidetou/circt/vcd-samples/"
                                 "examples/random/random.vcd")))
       assert(false && "failed to initialize waveform file");
 
