@@ -238,7 +238,7 @@ struct VCDWaveformFile : WaveformFile {
   LogicalResult getWaves(std::vector<std::string> &objectNames,
                          int64_t startTime, int64_t endTime,
                          std::vector<WaveResult> &result) override {
-    //Logger::info("waveform getWaves");
+    // Logger::info("waveform getWaves");
     for (auto objectName : objectNames) {
       vcd::VCDFile::Node *currentNode = vcdFile->getRootScope().get();
       auto it = llvm::split(objectName, ".");
@@ -455,7 +455,8 @@ public:
 
   mlir::lsp::Range getEntireFile(slang::SourceLocation loc) const {
     auto start = loc - loc.offset();
-    auto end = start + getSlangSourceManager().getSourceText(loc.buffer()).size() - 1;
+    auto end =
+        start + getSlangSourceManager().getSourceText(loc.buffer()).size() - 1;
     auto startLoc = getLspLocation(start);
     auto endLoc = getLspLocation(end);
     return mlir::lsp::Range{startLoc.range.start, endLoc.range.start};
@@ -1412,7 +1413,8 @@ struct VerilogDocument {
   void getCallHierarchyOutgoingCalls(
       const mlir::lsp::URIForFile &uri, const std::string &name,
       mlir::lsp::Range &range, mlir::lsp::SymbolKind kind,
-      std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items, const slang::ast::InstanceSymbol* instance = nullptr);
+      std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
+      const slang::ast::InstanceSymbol *instance = nullptr);
 
   //===--------------------------------------------------------------------===//
   // Fields
@@ -2602,7 +2604,8 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
   void visitInvalid(const slang::ast::AssertionExpr &) {}
   void visitInvalid(const slang::ast::BinsSelectExpr &) {}
   void visitInvalid(const slang::ast::Pattern &) {}
-  FooVisitor(const mlir::lsp::URIForFile& uri, std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
+  FooVisitor(const mlir::lsp::URIForFile &uri,
+             std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
              VerilogDocument &document)
       : currentUri(uri), items(items), document(document) {}
   mlir::lsp::URIForFile currentUri;
@@ -2613,8 +2616,8 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     items.emplace_back();
     auto &back = items.back().to;
     auto &fromRange = items.back().fromRanges;
-    back.name += instance.name;
-    back.kind = mlir::lsp::SymbolKind::Object;
+    back.name += instance.body.name;
+    back.kind = mlir::lsp::SymbolKind::Module;
     fromRange.push_back(mlir::lsp::Range(
         document.getContext().getLspLocation(instance.location).range.start,
         document.getContext().getLspLocation(instance.location + 3).range.end));
@@ -2651,9 +2654,10 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     //         .range.start,
     //     document.getContext().getLspLocation(instance.body.location).range.end);
 
-    back.detail = instance.body.name;
+    back.detail = instance.name;
     std::string name(instance.body.name);
-    auto loc = document.getContext().getLspLocation(instance.body.location);;
+    auto loc = document.getContext().getLspLocation(instance.body.location);
+    ;
     // auto dir = document.getContext().getSlangSourceManager().getFullPath(
     //     instance.body.location.buffer());
     // mlir::lsp::Logger::info("dir={}", dir.string());
@@ -2671,8 +2675,8 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     //       "VerilogDocument::getLocationsOf interval map loc error");
     //   return;
     // }
-    back.uri = currentUri;
-    visitDefault(instance);
+    back.uri = loc.uri;
+    // visitDefault(instance);
   }
 };
 
@@ -2693,13 +2697,14 @@ struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
   void visitInvalid(const slang::ast::BinsSelectExpr &) {}
   void visitInvalid(const slang::ast::Pattern &) {}
   NetVisitor(std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
-             VerilogDocument &document, std::string moduleName)
-      : items(items), document(document), moduleName(moduleName) {}
+             VerilogDocument &document, std::string moduleName, bool isNet)
+      : items(items), document(document), moduleName(moduleName), isNet(isNet) {
+  }
   std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items;
   VerilogDocument &document;
   std::string moduleName;
-
-  void visit(const slang::ast::NetSymbol &net) {
+  bool isNet;
+  void registerSymbol(const slang::ast::Symbol &net) {
     items.emplace_back();
     auto &back = items.back().to;
     auto &fromRange = items.back().fromRanges;
@@ -2721,7 +2726,9 @@ struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
     back.range = loc.range;
     back.selectionRange = loc.range;
     back.uri = loc.uri;
-    back.detail = net.getType().toString();
+    if (auto *type = net.getDeclaredType()) {
+      back.detail = type->getType().toString();
+    }
     fromRange.push_back(loc.range);
     // back.selectionRange = loc.range;
     // fromRange.push_back(loc.range);
@@ -2746,6 +2753,62 @@ struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
     // back.uri = *uri;
     // visitDefault(instance);
   }
+  void visit(const slang::ast::VariableSymbol &var) {
+    if (!isNet) {
+      registerSymbol(var);
+    }
+  }
+  void visit(const slang::ast::NetSymbol &net) {
+    if (isNet) {
+      registerSymbol(net);
+    }
+    // items.emplace_back();
+    // auto &back = items.back().to;
+    // auto &fromRange = items.back().fromRanges;
+    // back.name = net.name;
+    // back.kind = mlir::lsp::SymbolKind::Variable;
+    // // fromRange.push_back(mlir::lsp::Range(
+    // //     document.getContext().getLspLocation(net.location).range.start,
+    // //     document.getContext().getLspLocation(net.location).range.end));
+    // // back.range = mlir::lsp::Range(
+    // //     document.getContext()
+    // //         .getLspLocation(instance.body.location)
+    // //         .range.start,
+    // //
+    // document.getContext().getLspLocation(instance.body.location).range.end);
+    // auto loc = document.getContext().getLspLocation(net.location);
+    // assert(net.location.valid());
+    // mlir::lsp::Logger::info("loc= {} {} {} {} {}", loc.range.start.line,
+    //                         loc.range.start.character, loc.range.end.line,
+    //                         loc.range.end.character + 1, loc.uri.file());
+    // back.range = loc.range;
+    // back.selectionRange = loc.range;
+    // back.uri = loc.uri;
+    // back.detail = net.getType().toString();
+    // fromRange.push_back(loc.range);
+    // // back.selectionRange = loc.range;
+    // // fromRange.push_back(loc.range);
+    // // std::string name(net.name);
+    // // auto dir = document.getContext().getSlangSourceManager().getFullPath(
+    // //     net.location.buffer());
+    // // mlir::lsp::Logger::info("dir={}", dir.string());
+
+    // // // auto opt = document.getContext().getOrOpenFile(name + ".sv");
+    // // // mlir::lsp::Logger::info("name={}", name);
+    // // // if (!opt) {
+    // // //   mlir::lsp::Logger::error(
+    // // //       "VerilogDocument::getLocationsOf interval map loc error");
+    // // //   return;
+    // // // }
+    // // auto uri = mlir::lsp::URIForFile::fromFile(dir.string());
+    // // if (auto e = uri.takeError()) {
+    // //   mlir::lsp::Logger::error(
+    // //       "VerilogDocument::getLocationsOf interval map loc error");
+    // //   return;
+    // // }
+    // // back.uri = *uri;
+    // // visitDefault(instance);
+  }
 
   void visit(const slang::ast::InstanceSymbol &instance) {
     // visitDefault(instance);
@@ -2769,7 +2832,7 @@ struct FindChild : slang::ast::ASTVisitor<FindChild, true, true> {
   void visitInvalid(const slang::ast::BinsSelectExpr &) {}
   void visitInvalid(const slang::ast::Pattern &) {}
   FindChild(std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
-             VerilogDocument &document, const std::string& childName)
+            VerilogDocument &document, const std::string &childName)
       : items(items), document(document), childName(childName) {}
   std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items;
   VerilogDocument &document;
@@ -2782,11 +2845,14 @@ struct FindChild : slang::ast::ASTVisitor<FindChild, true, true> {
       std::string name(instance.body.name);
 
       auto range = document.getContext().getEntireFile(instance.body.location);
-      document.getCallHierarchyOutgoingCalls(loc.uri, name, range, mlir::lsp::SymbolKind::Module, items, &instance);
+      document.getCallHierarchyOutgoingCalls(loc.uri, name, range,
+                                             mlir::lsp::SymbolKind::Module,
+                                             items, &instance);
       // auto &back = items.back().to;
       // back.name = instance.name;
       // back.kind = mlir::lsp::SymbolKind::Object;
-      // back.range = document.getContext().getLspLocation(instance.location).range;
+      // back.range =
+      // document.getContext().getLspLocation(instance.location).range;
       // back.selectionRange = back.range;
       // back.uri = document.getContext().getLspLocation(instance.location).uri;
       // back.detail = instance.name;
@@ -2798,7 +2864,8 @@ struct FindChild : slang::ast::ASTVisitor<FindChild, true, true> {
 void VerilogDocument::getCallHierarchyOutgoingCalls(
     const mlir::lsp::URIForFile &uri, const std::string &name,
     mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
-    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items, const slang::ast::InstanceSymbol* instance) {
+    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items,
+    const slang::ast::InstanceSymbol *instance) {
 
   StringRef nameRef(name);
   auto split = nameRef.split(':');
@@ -2818,6 +2885,20 @@ void VerilogDocument::getCallHierarchyOutgoingCalls(
       item.fromRanges.push_back(range);
       items.emplace_back(item);
     }
+    {
+      CallHierarchyOutgoingCall item;
+      item.to.name = name + ":var";
+      item.to.kind = mlir::lsp::SymbolKind::Namespace;
+      item.to.range = range;
+      mlir::lsp::Logger::info("VAR range= {} {} {} {}", range.start.line,
+                              range.start.character, range.end.line,
+                              range.end.character + 1);
+      item.to.selectionRange = range;
+      item.to.uri = uri;
+      item.to.detail = moduleName;
+      item.fromRanges.push_back(range);
+      items.emplace_back(item);
+    }
     FooVisitor visitor(uri, items, *this);
     if (instance) {
       instance->body.visit(visitor);
@@ -2829,24 +2910,36 @@ void VerilogDocument::getCallHierarchyOutgoingCalls(
     return;
   }
 
-  if (symbolKind == mlir::lsp::SymbolKind::Object) {
-    FindChild visitor(items, *this, name);
-    if (instance) {
-      instance->body.visit(visitor);
-    } else {
-      for (auto *instance : compilation->get()->getRoot().topInstances) {
-        instance->body.visit(visitor);
-      }
-    }
-  }
+  // if (symbolKind == mlir::lsp::SymbolKind::Object) {
+  //   FindChild visitor(items, *this, name);
+  //   if (instance) {
+  //     instance->body.visit(visitor);
+  //   } else {
+  //     for (auto *instance : compilation->get()->getRoot().topInstances) {
+  //       instance->body.visit(visitor);
+  //     }
+  //   }
+  // }
 
   if (symbolKind == mlir::lsp::SymbolKind::Namespace) {
-    NetVisitor visitor(items, *this, std::string(moduleName));
-    if (instance) {
-      instance->body.visit(visitor);
-    } else {
-      for (auto *instance : compilation->get()->getRoot().topInstances) {
+    if (nameRef.ends_with(":net")) {
+      NetVisitor visitor(items, *this, std::string(moduleName), true);
+      if (instance) {
         instance->body.visit(visitor);
+      } else {
+        for (auto *instance : compilation->get()->getRoot().topInstances) {
+          instance->body.visit(visitor);
+        }
+      }
+    }
+    if (nameRef.ends_with(":var")) {
+      NetVisitor visitor(items, *this, std::string(moduleName), false);
+      if (instance) {
+        instance->body.visit(visitor);
+      } else {
+        for (auto *instance : compilation->get()->getRoot().topInstances) {
+          instance->body.visit(visitor);
+        }
       }
     }
   }
