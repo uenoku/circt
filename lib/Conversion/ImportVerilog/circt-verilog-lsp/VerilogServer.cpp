@@ -2525,9 +2525,17 @@ void VerilogDocument::prepareCallHierarchy(
     mlir::lsp::CallHierarchyItem item;
     item.name = instance->name;
     item.kind = mlir::lsp::SymbolKind::Module;
-    item.range = mlir::lsp::Range(
-        getContext().getLspLocation(instance->location).range.start,
-        getContext().getLspLocation(instance->location).range.end);
+    item.selectionRange =
+        getContext().getLspLocation(instance->body.location).range;
+    auto startLoc =
+        getContext().getLspLocation(instance->body.location).range.start;
+    // Get the end location by finding the end of the instance body's syntax
+    // node
+    auto endLoc = getContext()
+                      .getLspLocation(
+                          instance->body.getSyntax()->getLastToken().location())
+                      .range.end;
+    item.range = mlir::lsp::Range{startLoc, endLoc};
     item.uri = uri;
     // item.detail = instance->body.name;
     items.push_back(item);
@@ -2611,11 +2619,33 @@ struct FooVisitor : slang::ast::ASTVisitor<FooVisitor, true, true> {
     //         .getLspLocation(instance.body.location)
     //         .range.start,
     //     document.getContext().getLspLocation(instance.body.location).range.end);
-    back.range = mlir::lsp::Range(
-        document.getContext()
-            .getLspLocation(instance.body.location)
-            .range.start,
-        document.getContext().getLspLocation(instance.body.location).range.end);
+    auto startLoc = document.getContext()
+                        .getLspLocation(instance.body.location)
+                        .range.start;
+    // Get the end location by finding the end of the instance body's syntax
+    // node
+    auto getLast = [&](slang::SourceLocation loc) {
+      loc.buffer();
+      auto it = document.getContext().getSlangSourceManager().getSourceText(
+          loc.buffer());
+      auto length = it.size();
+      loc -= loc.offset();
+      auto start = loc;
+      auto end = start + length - 1;
+      return std::make_pair(
+          document.getContext().getLspLocation(start).range.start,
+          document.getContext().getLspLocation(end).range.end);
+    };
+    auto endLoc = getLast(instance.body.location);
+    back.range = mlir::lsp::Range{endLoc.first, endLoc.second};
+    back.selectionRange =
+        document.getContext().getLspLocation(instance.body.location).range;
+
+    // back.range = mlir::lsp::Range(
+    //     document.getContext()
+    //         .getLspLocation(instance.body.location)
+    //         .range.start,
+    //     document.getContext().getLspLocation(instance.body.location).range.end);
 
     back.detail = instance.name;
     std::string name(instance.body.name);
@@ -2705,10 +2735,12 @@ struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
     //         .range.start,
     //     document.getContext().getLspLocation(instance.body.location).range.end);
     auto loc = document.getContext().getLspLocation(net.location);
+    assert(net.location.valid());
     mlir::lsp::Logger::info("loc= {} {} {} {} {}", loc.range.start.line,
                             loc.range.start.character, loc.range.end.line,
                             loc.range.end.character + 1, loc.uri.file());
     back.range = loc.range;
+    back.selectionRange = loc.range;
     back.uri = loc.uri;
     back.detail = net.getType().toString();
     fromRange.push_back(loc.range);
@@ -2755,8 +2787,10 @@ void VerilogDocument::getCallHierarchyOutgoingCalls(
       item.to.name = name + ":net";
       item.to.kind = mlir::lsp::SymbolKind::Namespace;
       item.to.range = range;
+      item.to.selectionRange = range;
       item.to.uri = uri;
       item.to.detail = moduleName;
+      item.fromRanges.push_back(range);
       items.emplace_back(item);
     }
     FooVisitor visitor(items, *this);
