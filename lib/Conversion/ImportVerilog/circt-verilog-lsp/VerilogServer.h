@@ -34,6 +34,9 @@ struct SignatureHelp;
 struct TextDocumentContentChangeEvent;
 class URIForFile;
 struct Diagnostic;
+struct CallHierarchyIncomingCall;
+struct CallHierarchyOutgoingCall;
+struct CallHierarchyItem;
 } // namespace lsp
 } // namespace mlir
 
@@ -113,6 +116,16 @@ public:
   /// valid output.
   std::optional<VerilogViewOutputResult>
   getVerilogViewOutput(const URIForFile &uri, VerilogViewOutputKind kind);
+
+  /// Get the call hierarchy for the given file.
+  void
+  getIncomingCalls(const URIForFile &uri,
+                   std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
+
+  /// Get the outgoing calls for the given file.
+  void
+  getOutgoingCalls(const URIForFile &uri,
+                   std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
 private:
   struct Impl;

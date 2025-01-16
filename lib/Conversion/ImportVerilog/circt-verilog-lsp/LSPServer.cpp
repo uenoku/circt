@@ -81,9 +81,19 @@ struct LSPServer {
   //===--------------------------------------------------------------------===//
   // Verilog View Output
 
-  void
-  onVerilogViewOutput(const circt::lsp::VerilogViewOutputParams &params,
-                      Callback<std::optional<circt::lsp::VerilogViewOutputResult>> reply);
+  void onVerilogViewOutput(
+      const circt::lsp::VerilogViewOutputParams &params,
+      Callback<std::optional<circt::lsp::VerilogViewOutputResult>> reply);
+
+  //===--------------------------------------------------------------------===//
+  // Call Hierarchy
+
+  void onCallHierarchyIncomingCalls(
+      const CallHierarchyIncomingCallsParams &params,
+      Callback<std::vector<CallHierarchyIncomingCall>> reply);
+  void onCallHierarchyOutgoingCalls(
+      const CallHierarchyOutgoingCallsParams &params,
+      Callback<std::vector<CallHierarchyOutgoingCall>> reply);
 
   //===--------------------------------------------------------------------===//
   // Fields
@@ -254,6 +264,30 @@ void LSPServer::onVerilogViewOutput(
 }
 
 //===----------------------------------------------------------------------===//
+// Call Hierarchy
+
+void LSPServer::onCallHierarchyIncomingCalls(
+    const CallHierarchyIncomingCallsParams &params,
+    Callback<std::vector<CallHierarchyIncomingCall>> reply) {
+  mlir::lsp::Logger::info("onCallHierarchyIncomingCalls");
+
+  std::vector<CallHierarchyIncomingCall> calls;
+
+
+  server.getIncomingCalls(params.item.uri, calls);
+  reply(std::move(calls));
+}
+
+void LSPServer::onCallHierarchyOutgoingCalls(
+    const CallHierarchyOutgoingCallsParams &params,
+    Callback<std::vector<CallHierarchyOutgoingCall>> reply) {
+  mlir::lsp::Logger::info("onCallHierarchyOutgoingCalls");
+  std::vector<CallHierarchyOutgoingCall> calls;
+  server.getOutgoingCalls(params.item.uri, calls);
+  reply(std::move(calls));
+}
+
+//===----------------------------------------------------------------------===//
 // Entry Point
 //===----------------------------------------------------------------------===//
 
@@ -310,6 +344,13 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
   // Verilog ViewOutput
   messageHandler.method("verilog/viewOutput", &lspServer,
                         &LSPServer::onVerilogViewOutput);
+
+  // Call Hierarchy
+  messageHandler.method("callHierarchy/incomingCalls", &lspServer,
+                        &LSPServer::onCallHierarchyIncomingCalls);
+
+  messageHandler.method("callHierarchy/outgoingCalls", &lspServer,
+                        &LSPServer::onCallHierarchyOutgoingCalls);
 
   // Diagnostics
   lspServer.publishDiagnostics =

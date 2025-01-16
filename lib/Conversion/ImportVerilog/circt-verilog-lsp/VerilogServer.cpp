@@ -220,10 +220,10 @@ struct WaveformFile {
   virtual LogicalResult getWaves(std::vector<std::string> &objectNames,
                                  int64_t startTime, int64_t endTime,
                                  std::vector<WaveResult> &result) = 0;
-  virtual LogicalResult getWaves(const std::string &objectPath,
-                                 const std::string &objectName,
-                                 int64_t startTime, int64_t endTime,
-                                 std::vector<WaveResult> &result) = 0;
+  // virtual LogicalResult getWaves(const std::string &objectPath,
+  //                                const std::string &objectName,
+  //                                int64_t startTime, int64_t endTime,
+  //                                std::vector<WaveResult> &result) = 0;
 
   virtual LogicalResult initialize(StringRef waveformPath) = 0;
   virtual StringRef getUnit() = 0;
@@ -2578,6 +2578,12 @@ public:
                      std::vector<mlir::lsp::InlayHint> &inlayHints);
   circt::lsp::VerilogViewOutputResult
   getVerilogViewOutput(circt::lsp::VerilogViewOutputKind kind);
+  void
+  getIncomingCalls(const mlir::lsp::URIForFile &uri,
+                   std::vector<mlir::lsp::CallHierarchyIncomingCall> &items);
+  void
+  getOutgoingCalls(const mlir::lsp::URIForFile &uri,
+                   std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
 
 private:
   using ChunkIterator = llvm::pointee_iterator<
@@ -2847,6 +2853,18 @@ VerilogTextFile::getChunkItFor(mlir::lsp::Position &pos) {
   return chunkIt;
 }
 
+void VerilogTextFile::getIncomingCalls(
+    const mlir::lsp::URIForFile &uri,
+    std::vector<mlir::lsp::CallHierarchyIncomingCall> &items) {
+  // TODO: Implement this
+}
+
+void VerilogTextFile::getOutgoingCalls(
+    const mlir::lsp::URIForFile &uri,
+    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items) {
+  // TODO: Implement this
+}
+
 //===----------------------------------------------------------------------===//
 // VerilogServer::Impl
 //===----------------------------------------------------------------------===//
@@ -2855,7 +2873,7 @@ struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
       : options(options), compilationDatabase(options.compilationDatabases) {
     auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
-    if (failed(temp->initialize("/scratch/hidetou/circt/vcd-samples/"
+    if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
                                 "examples/random/random.vcd")))
       assert(false && "failed to initialize waveform file");
 
@@ -2992,4 +3010,23 @@ circt::lsp::VerilogServer::getVerilogViewOutput(const URIForFile &uri,
   if (fileIt != impl->files.end())
     return fileIt->second->getVerilogViewOutput(kind);
   return std::nullopt;
+}
+
+void circt::lsp::VerilogServer::getIncomingCalls(
+    const URIForFile &uri,
+    std::vector<mlir::lsp::CallHierarchyIncomingCall> &items) {
+  auto fileIt = impl->files.find(uri.file());
+  mlir::lsp::Logger::debug("getOutgoingCalls");
+
+  if (fileIt != impl->files.end())
+    fileIt->second->getIncomingCalls(uri, items);
+}
+
+void circt::lsp::VerilogServer::getOutgoingCalls(
+    const URIForFile &uri,
+    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items) {
+  mlir::lsp::Logger::debug("getOutgoingCalls");
+  auto fileIt = impl->files.find(uri.file());
+  if (fileIt != impl->files.end())
+    fileIt->second->getOutgoingCalls(uri, items);
 }
