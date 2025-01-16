@@ -2707,10 +2707,11 @@ struct NetVisitor : slang::ast::ASTVisitor<NetVisitor, true, true> {
     auto loc = document.getContext().getLspLocation(net.location);
     mlir::lsp::Logger::info("loc= {} {} {} {} {}", loc.range.start.line,
                             loc.range.start.character, loc.range.end.line,
-                            loc.range.end.character, loc.uri.file());
+                            loc.range.end.character + 1, loc.uri.file());
     back.range = loc.range;
     back.uri = loc.uri;
     back.detail = net.getType().toString();
+    fromRange.push_back(loc.range);
     // back.selectionRange = loc.range;
     // fromRange.push_back(loc.range);
     // std::string name(net.name);
