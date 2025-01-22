@@ -12,6 +12,7 @@
 #include "Protocol.h"
 #include "VerilogServer.h"
 #include "mlir/Tools/lsp-server-support/Logging.h"
+#include "mlir/Tools/lsp-server-support/Protocol.h"
 #include "mlir/Tools/lsp-server-support/Transport.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -96,6 +97,10 @@ struct LSPServer {
   void onCallHierarchyOutgoingCalls(
       const CallHierarchyOutgoingCallsParams &params,
       Callback<std::vector<CallHierarchyOutgoingCall>> reply);
+
+  void onObjectPathInlayHints(
+      const circt::lsp::VerilogObjectPathInlayHintsParams &params,
+      Callback<std::nullptr_t> reply);
 
   //===--------------------------------------------------------------------===//
   // Fields
@@ -293,7 +298,8 @@ void LSPServer::onCallHierarchyIncomingCalls(
 
   std::vector<CallHierarchyIncomingCall> calls;
   auto range = params.item.range;
-  server.getIncomingCalls(params.item.uri, params.item.name, range, params.item.kind, calls);
+  server.getIncomingCalls(params.item.uri, params.item.name, range,
+                          params.item.kind, calls);
 
   mlir::lsp::Logger::info("Found {} incoming calls", calls.size());
   reply(std::move(calls));
@@ -307,10 +313,19 @@ void LSPServer::onCallHierarchyOutgoingCalls(
 
   std::vector<CallHierarchyOutgoingCall> calls;
   auto range = params.item.range;
-  server.getOutgoingCalls(params.item.uri, params.item.name, range, params.item.kind, calls);
+  server.getOutgoingCalls(params.item.uri, params.item.name, range,
+                          params.item.kind, calls);
 
   mlir::lsp::Logger::info("Found {} outgoing calls", calls.size());
   reply(std::move(calls));
+}
+
+void LSPServer::onObjectPathInlayHints(
+    const circt::lsp::VerilogObjectPathInlayHintsParams &params,
+    Callback<std::nullptr_t> reply) {
+  server.inferAndAddInlayHints(params.values);
+  mlir::lsp::Logger::info("Found {} inlay hints", params.values.size());
+  reply(nullptr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -380,6 +395,9 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
 
   messageHandler.method("callHierarchy/outgoingCalls", &lspServer,
                         &LSPServer::onCallHierarchyOutgoingCalls);
+
+  messageHandler.method("verilog/objectPathInlayHints", &lspServer,
+                        &LSPServer::onObjectPathInlayHints);
 
   // Diagnostics
   lspServer.publishDiagnostics =

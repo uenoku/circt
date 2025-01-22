@@ -63,6 +63,39 @@ struct VerilogViewOutputResult {
 /// Add support for JSON serialization.
 llvm::json::Value toJSON(const VerilogViewOutputResult &value);
 
+//===----------------------------------------------------------------------===//
+// VerilogObjectPathInlayHintsParams
+//===----------------------------------------------------------------------===//
+
+/// Represents the parameters used when viewing the output of a PDLL file.
+struct VerilogObjectPathAndValue {
+  /// The path to the value.
+  std::string path;
+  /// The value.
+  std::string value;
+};
+
+/// Add support for JSON serialization.
+bool fromJSON(const llvm::json::Value &value, VerilogObjectPathAndValue &result,
+              llvm::json::Path path);
+
+struct VerilogObjectPathInlayHintsParams {
+  /// The URI of the document to view the output of.
+  std::vector<VerilogObjectPathAndValue> values;
+};
+
+/// Add support for JSON serialization.
+bool fromJSON(const llvm::json::Value &value,
+              VerilogObjectPathInlayHintsParams &result, llvm::json::Path path);
+
+// Consider using this directly from MLIR file.
+struct VerilogInstanceHierarchy {
+  std::string module_name;
+  std::string instance_name;
+  std::vector<std::unique_ptr<VerilogInstanceHierarchy>> instances;
+  VerilogInstanceHierarchy *parent = nullptr;
+};
+
 } // namespace lsp
 } // namespace circt
 

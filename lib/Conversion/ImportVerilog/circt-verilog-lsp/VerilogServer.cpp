@@ -22,6 +22,7 @@
 #include "circt/Tools/circt-verilog-lsp/CirctVerilogLspServerMain.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/IndentedOstream.h"
@@ -401,9 +402,64 @@ struct WaveformServer {
     return success();
   }
 };
+
+struct ObjectPathInferer {
+  ObjectPathInferer(const circt::lsp::VerilogInstanceHierarchy &hierarchy)
+      : hierarchy(hierarchy) {}
+
+  std::optional<std::pair<StringRef, StringRef>>
+  getModuleNameAndInstanceName(ArrayRef<StringRef> objectPath) const {
+    if (objectPath.empty())
+      return std::nullopt;
+    auto it = nameToInstance.find(objectPath.back());
+    if (it == nameToInstance.end())
+      return std::nullopt;
+
+    for (auto instance : it->second) {
+      // Match.
+      assert(instance);
+      bool failed = false;
+      auto currentObjectPath = objectPath;
+      while (!currentObjectPath.empty() && instance->parent) {
+        if (instance->instance_name != currentObjectPath.back()) {
+          failed = true;
+          break;
+        }
+        instance = instance->parent;
+        currentObjectPath = currentObjectPath.drop_back();
+      }
+
+      if (failed || !instance)
+        continue;
+
+      // Match! Does this match multiple times?
+      return std::make_pair(instance->module_name, instance->instance_name);
+    }
+    return std::nullopt;
+  }
+  std::optional<std::pair<StringRef, StringRef>>
+  matchInstance(StringRef objectName) const {
+    auto it = llvm::split(objectName, ".");
+    SmallVector<StringRef> objectPath(it.begin(), it.end());
+    if (objectPath.empty())
+      return std::nullopt;
+    if (auto result = getModuleNameAndInstanceName(objectPath))
+      return result;
+    if (auto result = getModuleNameAndInstanceName(
+            ArrayRef<StringRef>(objectPath).drop_back()))
+      return result;
+    return std::nullopt;
+  }
+
+  const circt::lsp::VerilogInstanceHierarchy &hierarchy;
+
+  DenseMap<StringRef, SmallVector<VerilogInstanceHierarchy *>> nameToInstance;
+};
+
 struct GlobalVerilogServerContext {
   std::unique_ptr<WaveformServer> waveformServer;
   MLIRContext context;
+  std::unique_ptr<ObjectPathInferer> objectPathInferer;
 };
 
 } // namespace
@@ -1442,8 +1498,20 @@ struct VerilogDocument {
     /// Incorrect!
     return convertLocation(verilogContext.driver.sourceManager, loc);
   }
+  void inferAndAddInlayHints(
+      const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
 };
 } // namespace
+
+void VerilogDocument::inferAndAddInlayHints(
+    const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
+  // Get instance graph.
+  mlir::lsp::Logger::info("inferAndAddInlayHints");
+  auto &root = compilation->get()->getRoot();
+  for (auto *inst : root.topInstances) {
+    mlir::lsp::Logger::info("inferAndAddInlayHints {}", inst->name);
+  }
+}
 
 VerilogDocument::VerilogDocument(
     GlobalVerilogServerContext &globalContext, const mlir::lsp::URIForFile &uri,
@@ -3037,6 +3105,8 @@ public:
   getOutgoingCalls(const mlir::lsp::URIForFile &uri, const std::string &name,
                    mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
+  void inferAndAddInlayHints(
+      const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
 
 private:
   using ChunkIterator = llvm::pointee_iterator<
@@ -3362,6 +3432,13 @@ void VerilogTextFile::getOutgoingCalls(
   // }
 }
 
+void VerilogTextFile::inferAndAddInlayHints(
+    const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
+  mlir::lsp::Logger::debug("inferAndAddInlayHints");
+  for (auto &chunk : chunks)
+    chunk->document.inferAndAddInlayHints(values);
+}
+
 //===----------------------------------------------------------------------===//
 // VerilogServer::Impl
 //===----------------------------------------------------------------------===//
@@ -3536,4 +3613,11 @@ void circt::lsp::VerilogServer::getOutgoingCalls(
   auto fileIt = impl->files.find(uri.file());
   if (fileIt != impl->files.end())
     fileIt->second->getOutgoingCalls(uri, name, range, symbolKind, items);
+}
+
+void circt::lsp::VerilogServer::inferAndAddInlayHints(
+    const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
+  for (auto &file : impl->files) {
+    file.second->inferAndAddInlayHints(values);
+  }
 }

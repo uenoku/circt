@@ -9,6 +9,7 @@
 #ifndef LIB_MLIR_TOOLS_MLIRPDLLSPSERVER_SERVER_H_
 #define LIB_MLIR_TOOLS_MLIRPDLLSPSERVER_SERVER_H_
 
+#include "Protocol.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -132,6 +133,9 @@ public:
   getOutgoingCalls(const URIForFile &uri, const std::string &name,
                    mlir::lsp::Range &range, mlir::lsp::SymbolKind symbolKind,
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
+
+  void inferAndAddInlayHints(
+      const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
 
 private:
   struct Impl;

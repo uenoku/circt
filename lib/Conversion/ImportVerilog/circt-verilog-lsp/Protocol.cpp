@@ -74,3 +74,22 @@ bool circt::lsp::fromJSON(const llvm::json::Value &value,
 llvm::json::Value circt::lsp::toJSON(const VerilogViewOutputResult &value) {
   return llvm::json::Object{{"output", value.output}};
 }
+
+bool circt::lsp::fromJSON(const llvm::json::Value &value,
+                         VerilogObjectPathAndValue &result,
+                         llvm::json::Path path) {
+  llvm::json::ObjectMapper o(value, path);
+  return o && o.map("path", result.path) && o.map("value", result.value);
+}
+
+//===----------------------------------------------------------------------===//
+// VerilogObjectPathInlayHintsParams
+//===----------------------------------------------------------------------===//
+
+
+
+bool circt::lsp::fromJSON(const llvm::json::Value &value,
+                         VerilogObjectPathInlayHintsParams &result,
+                         llvm::json::Path path) {
+  return llvm::json::ObjectMapper(value, path).map("values", result.values);
+}
