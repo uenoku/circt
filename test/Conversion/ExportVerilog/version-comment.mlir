@@ -1,6 +1,6 @@
-// RUN: circt-opt %s -export-verilog --split-input-file | FileCheck %s
+// RUN: circt-opt %s -pass-pipeline=builtin.module(hw.design(export-verilog)) --split-input-file | FileCheck %s
 
-module {
+hw.design {
 // CHECK-LABEL: Generated
 // CHECK-NEXT: module Foo(
 hw.module @Foo(in %a: i1 loc("")) {
@@ -10,7 +10,7 @@ hw.module @Foo(in %a: i1 loc("")) {
 
 // -----
 
-module attributes {circt.loweringOptions = "omitVersionComment"}{
+hw.design attributes {circt.loweringOptions = "omitVersionComment"} {
 // CHECK-NOT: Generated
 // CHECK-LABEL: module Bar(
 hw.module @Bar() {

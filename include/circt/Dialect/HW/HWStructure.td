@@ -704,12 +704,11 @@ def TriggeredOp : HWOp<"triggered", [
 
 def HWDesignOp : HWOp<"design", [
     IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
-    OpAsmOpInterface, SingleBlock
-  ]> {
+    SingleBlock
+  ] # GraphRegionNoTerminator.traits > {
   let summary = "HW container operation";
   let description = [{
-    A top-level container operation for hardware designs. This replaces the use of 
-    hw::HWDesignOp as the top-level container for hardware designs.
+    A top-level container operation for hardware designs.
   }];
 
   let arguments = (ins OptionalAttr<SymbolNameAttr>:$sym_name,
@@ -733,14 +732,6 @@ def HWDesignOp : HWOp<"design", [
 
     /// A ModuleOp may optionally define a symbol.
     bool isOptionalSymbol() { return true; }
-
-    //===------------------------------------------------------------------===//
-    // OpAsmOpInterface Methods
-    //===------------------------------------------------------------------===//
-
-    static ::llvm::StringRef getDefaultDialect() {
-      return "hw";
-    }
   }];
 
   // We need to ensure the block inside the region is properly terminated;

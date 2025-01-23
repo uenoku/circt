@@ -1,5 +1,6 @@
-// RUN: circt-opt --lower-sim-to-sv %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline=builtin.module(hw.design(lower-sim-to-sv)) %s | FileCheck %s
 
+hw.design {
 // CHECK-LABEL: hw.module @finish
 hw.module @finish(in %clock : !seq.clock, in %cond : i1) {
   // CHECK:      [[CLK_SV:%.+]] = seq.from_clock %clock
@@ -26,4 +27,6 @@ hw.module @fatal(in %clock : !seq.clock, in %cond : i1) {
   // CHECK-NEXT:   }
   // CHECK-NEXT: }
   sim.fatal %clock, %cond
+}
+
 }

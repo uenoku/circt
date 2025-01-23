@@ -220,7 +220,8 @@ SmallVector<::circt::hw::PortInfo> MachineOp::getPortList() {
 
 /// Lookup the machine for the symbol.  This returns null on invalid IR.
 MachineOp InstanceOp::getMachineOp() {
-  auto module = (*this)->getParentOfType<ModuleOp>();
+  // FIXME: This must use a symbol table.
+  auto module = (*this)->getParentOfType<hw::HWDesignOp>();
   return module.lookupSymbol<MachineOp>(getMachine());
 }
 
@@ -287,7 +288,8 @@ LogicalResult TriggerOp::verify() { return verifyCallerTypes(*this); }
 
 /// Lookup the machine for the symbol.  This returns null on invalid IR.
 MachineOp HWInstanceOp::getMachineOp() {
-  auto module = (*this)->getParentOfType<ModuleOp>();
+  // FIXME: This must use a symbol table.
+  auto module = (*this)->getParentOfType<hw::HWDesignOp>();
   return module.lookupSymbol<MachineOp>(getMachine());
 }
 

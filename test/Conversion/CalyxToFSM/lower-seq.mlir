@@ -29,8 +29,8 @@
 // CHECK-NEXT:     fsm.transition @seq_1_B
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
-      
 
+hw.design {
 calyx.component @main(%go: i1 {go}, %reset: i1 {reset}, %clk: i1 {clk}) -> (%done: i1 {done}) {
   %c2_i8 = hw.constant 2 : i8
   %c1_i8 = hw.constant 1 : i8
@@ -67,4 +67,5 @@ calyx.component @main(%go: i1 {go}, %reset: i1 {reset}, %clk: i1 {clk}) -> (%don
       calyx.enable @C
     }
   }
+}
 }

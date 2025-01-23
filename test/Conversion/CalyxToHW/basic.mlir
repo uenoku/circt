@@ -1,5 +1,6 @@
 // RUN: circt-opt %s -lower-calyx-to-hw | FileCheck %s
 
+hw.design {
 // Sample program:
 //
 // component main(a: 32, b: 32) -> (out: 32) {
@@ -136,3 +137,5 @@
     }
   }
 // }
+
+}

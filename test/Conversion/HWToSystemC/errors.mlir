@@ -1,4 +1,4 @@
-// RUN: circt-opt --convert-hw-to-systemc --verify-diagnostics --split-input-file %s
+// RUN: circt-opt --pass-pipeline=builtin.module(hw.design(convert-hw-to-systemc)) --verify-diagnostics --split-input-file %s
 
 // expected-error @+2 {{module parameters not supported yet}}
 // expected-error @+1 {{failed to legalize operation 'hw.module'}}

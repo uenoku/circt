@@ -14,6 +14,7 @@
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/OM/OMPasses.h"
@@ -97,7 +98,7 @@ static LogicalResult executeOMLinker(MLIRContext &context) {
   // Set up the input files.
   struct ParsedInput {
     StringRef name;
-    OwningOpRef<ModuleOp> mod;
+    OwningOpRef<hw::HWDesignOp> mod;
     SourceMgr mgr;
   };
 
@@ -119,7 +120,7 @@ static LogicalResult executeOMLinker(MLIRContext &context) {
     auto &s = srcs[i];
     s.name = inputFilenames[i];
     auto fileParseTimer = parserTimer.nest(s.name);
-    s.mod = parseSourceFile<ModuleOp>(s.name, s.mgr, &context);
+    s.mod = parseSourceFile<hw::HWDesignOp>(s.name, s.mgr, &context);
     if (!s.mod)
       return failure();
     // Use a file name (w/o extension) as a linker namespace.

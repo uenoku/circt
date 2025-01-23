@@ -1,6 +1,6 @@
-// RUN: circt-opt %s -export-verilog | FileCheck %s
+// RUN: circt-opt %s -pass-pipeline=builtin.module(hw.design(export-verilog)) | FileCheck %s
 
-module attributes {circt.loweringOptions = "locationInfoStyle=wrapInAtSquareBracket"} {
+hw.design attributes {circt.loweringOptions = "locationInfoStyle=wrapInAtSquareBracket"} {
 
 // CHECK-LABEL: module Callstack(
 // CHECK-SAME:    // @[{'foo'(fooSource.x:10:8) <- {'bar'(barSource.x:20:8) <- 'baz'(bazSource.x:30:8)}}]

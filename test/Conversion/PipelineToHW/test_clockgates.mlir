@@ -31,6 +31,7 @@
 // CGATE:           hw.output %[[VAL_15]], %[[VAL_14]] : i32, i1
 // CGATE:         }
 
+hw.design {
 hw.module @testSingle(in %arg0: i32, in %arg1: i32, in %go: i1, in %clk: !seq.clock, in %rst: i1, out out0: i32, out out1: i1) {
   %0:2 = pipeline.scheduled(%a0 : i32 = %arg0, %a1 : i32 = %arg1) clock(%clk) reset(%rst) go(%go) entryEn(%s0_enable) -> (out: i32){
     %1 = comb.sub %a0, %a1 : i32
@@ -42,4 +43,5 @@ hw.module @testSingle(in %arg0: i32, in %arg1: i32, in %go: i1, in %clk: !seq.cl
     pipeline.return %8 : i32
   }
   hw.output %0#0, %0#1 : i32, i1
+}
 }

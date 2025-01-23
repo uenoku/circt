@@ -1,4 +1,4 @@
-// RUN: circt-opt -lower-handshake-to-hw --split-input-file %s | FileCheck %s
+// RUN: circt-opt -pass-pipeline=builtin.module(hw.design(lower-handshake-to-hw)) --split-input-file %s | FileCheck %s
 
 // CHECK-LABEL:   hw.module @handshake_buffer_3slots_seq_1ins_1outs_ctrl(in 
 // CHECK-SAME:            %[[VAL_0:.*]] : !esi.channel<i0>, in %[[VAL_1:.*]] : !seq.clock, in %[[VAL_2:.*]] : i1, out out0 : !esi.channel<i0>) {
@@ -66,9 +66,11 @@
 // CHECK:           hw.output %[[VAL_6]] : !esi.channel<i0>
 // CHECK:         }
 
+hw.design {
 handshake.func @test_buffer_none(%arg0: none, %arg1: none, ...) -> (none, none) {
   %0 = buffer [3] seq %arg0 : none
   return %0, %arg1 : none, none
+}
 }
 
 // -----
@@ -119,9 +121,11 @@ handshake.func @test_buffer_none(%arg0: none, %arg1: none, ...) -> (none, none) 
 // CHECK:           hw.output %[[VAL_6]] : !esi.channel<i64>
 // CHECK:         }
 
+hw.design {
 handshake.func @test_buffer_data(%arg0: index, %arg1: none, ...) -> (index, none) {
   %0 = buffer [2] seq %arg0 : index
   return %0, %arg1 : index, none
+}
 }
 
 // -----
@@ -135,7 +139,10 @@ handshake.func @test_buffer_data(%arg0: index, %arg1: none, ...) -> (index, none
 // CHECK:         %[[CZERO:.*]] = hw.struct_create (%c0_i32, %c0_i32) : !hw.struct<field0: i32, field1: i32>
 // CHECK:         %data0_reg = seq.compreg sym @data0_reg %4, %clock reset %reset, %[[CZERO]]  : !hw.struct<field0: i32, field1: i32>
 
+hw.design {
 handshake.func @test_buffer_tuple_seq(%t: tuple<i32, i32>, %arg0: none, ...) -> (tuple<i32, i32>, none) {
   %0 = buffer [2] seq %t : tuple<i32, i32>
   return %0, %arg0 : tuple<i32, i32>, none
 }
+}
+

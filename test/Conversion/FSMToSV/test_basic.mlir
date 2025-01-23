@@ -1,5 +1,5 @@
 // RUN: circt-opt -split-input-file -convert-fsm-to-sv %s | FileCheck %s
-
+hw.design {
 fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i8) attributes {initialState = "A"} {
   %c_0 = hw.constant 0 : i8
   fsm.state @A output  {
@@ -22,6 +22,7 @@ fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i8) attributes {initialState = "A"} {
 hw.module @top(in %arg0: i1, in %arg1: i1, in %clk : !seq.clock, in %rst : i1, out out: i8) {
     %out = fsm.hw_instance "fsm_inst" @FSM(%arg0, %arg1), clock %clk, reset %rst : (i1, i1) -> (i8)
     hw.output %out : i8
+}
 }
 
 // -----
@@ -69,7 +70,7 @@ hw.module @top(in %arg0: i1, in %arg1: i1, in %clk : !seq.clock, in %rst : i1, o
 // CHECK-NEXT:    hw.output %5, %6 : i8, i8
 // CHECK-NEXT:  }
 
-
+hw.design {
 fsm.machine @top(%a0: i1, %arg1: i1) -> (i8, i8) attributes {initialState = "A", argNames = ["a0", "a1"], resNames = ["r0", "r1"]} {
   %c_42 = hw.constant 42 : i8
   fsm.state @A output  {
@@ -88,6 +89,7 @@ fsm.machine @top(%a0: i1, %arg1: i1) -> (i8, i8) attributes {initialState = "A",
       fsm.return %g
     }
   }
+}
 }
 
 // -----
@@ -117,6 +119,7 @@ fsm.machine @top(%a0: i1, %arg1: i1) -> (i8, i8) attributes {initialState = "A",
 // CHECK-NEXT:    }
 // CHECK-NEXT:  }
 
+hw.design {
 fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i16) attributes {initialState = "A"} {
   %cnt = fsm.variable "cnt" {initValue = 0 : i16} : i16
   %c_0 = hw.constant 0 : i16
@@ -138,6 +141,7 @@ fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i16) attributes {initialState = "A"} 
     }
   }
 }
+}
 
 // -----
 
@@ -152,7 +156,7 @@ fsm.machine @FSM(%arg0: i1, %arg1: i1) -> (i16) attributes {initialState = "A"} 
 // CHECK-NEXT:    sv.verbatim "`include \22fsm_enum_typedefs.sv\22"
 // CHECK-NEXT:  }
 
-module {
+hw.design {
   // CHECK-LABEL: hw.module @M1(out out0 : i16, in %clk : !seq.clock, in %rst : i1) attributes {emit.fragments = [@FSM_ENUM_TYPEDEFS]}
   fsm.machine @M1() attributes {initialState = "A"} {
     fsm.state @A
@@ -171,7 +175,7 @@ module {
 // test - the verifier will complain if the constant is not defined within
 // the resulting hw.module.
 
-module {
+hw.design {
   %c0 = hw.constant 0 : i16
   fsm.machine @M1() -> (i16) attributes {initialState = "A"} {
     fsm.state @A output {

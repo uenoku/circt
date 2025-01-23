@@ -48,6 +48,7 @@
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
 
+hw.design {
 calyx.component @main(%go: i1 {go}, %reset: i1 {reset}, %clk: i1 {clk}) -> (%done: i1 {done}) {
   %false = hw.constant false
   %true = hw.constant true
@@ -116,4 +117,5 @@ calyx.component @main(%go: i1 {go}, %reset: i1 {reset}, %clk: i1 {clk}) -> (%don
       }
     }
   }
+}
 }

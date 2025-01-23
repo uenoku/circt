@@ -1,4 +1,4 @@
-module {
+hw.design {
   om.class @A(%arg: i1) {
     om.class.fields
   }

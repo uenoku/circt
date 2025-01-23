@@ -1,5 +1,6 @@
-// RUN: circt-opt -split-input-file -convert-fsm-to-sv -verify-diagnostics %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(convert-fsm-to-sv))' -split-input-file -verify-diagnostics %s
 
+hw.design {
 fsm.machine @foo(%arg0: i1) -> (i1) attributes {initialState = "A"} {
   // expected-error@+1 {{'arith.constant' op is unsupported (op from the arith dialect).}}
   %true = arith.constant true
@@ -14,4 +15,5 @@ fsm.machine @foo(%arg0: i1) -> (i1) attributes {initialState = "A"} {
   } transitions {
     fsm.transition @A
   }
+}
 }
