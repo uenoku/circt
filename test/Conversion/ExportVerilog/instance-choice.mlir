@@ -1,6 +1,8 @@
 // RUN: circt-opt %s -export-split-verilog='dir-name=%t.dir'
 // RUN: cat %t.dir%{fs-sep}top.sv | FileCheck %s
 
+hw.design {
+
 hw.module private @TargetA(in %a: i32, out b: i32) {
   hw.output %a : i32
 }
@@ -37,4 +39,6 @@ hw.module public @top(in %a: i32, out b: i32, out d: i32) {
   %d = comb.add %c, %a : i32
 
   hw.output %b, %d : i32, i32
+}
+
 }

@@ -702,4 +702,40 @@ def TriggeredOp : HWOp<"triggered", [
   ];
 }
 
+def HWDesignOp : HWOp<"design", [
+    IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
+    OpAsmOpInterface
+  ] # GraphRegionNoTerminator.traits> {
+  let summary = "HW container operation";
+  let description = [{
+    TODO
+  }];
+  let arguments = (ins OptionalAttr<SymbolNameAttr>:$sym_name,
+                       OptionalAttr<StrAttr>:$sym_visibility);
+  let regions = (region SizedRegion<1>:$bodyRegion);
+  let assemblyFormat = "($sym_name^)? attr-dict-with-keyword $bodyRegion";
+  let builders = [OpBuilder<(ins CArg<"std::optional<StringRef>", "{}">:$name)>];
+  let extraClassDeclaration = [{
+    /// Construct a module from the given location with an optional name.
+    static ModuleOp create(Location loc, std::optional<StringRef> name = std::nullopt);
+    /// Return the name of this module if present.
+    std::optional<StringRef> getName() { return getSymName(); }
+    //===------------------------------------------------------------------===//
+    // SymbolOpInterface Methods
+    //===------------------------------------------------------------------===//
+    /// A ModuleOp may optionally define a symbol.
+    bool isOptionalSymbol() { return true; }
+    //===------------------------------------------------------------------===//
+    // OpAsmOpInterface Methods
+    //===------------------------------------------------------------------===//
+    static ::llvm::StringRef getDefaultDialect() {
+      return "hw";
+    }
+  }];
+
+  // We need to ensure the block inside the region is properly terminated;
+  // the auto-generated builders do not guarantee that.
+  let skipDefaultBuilders = 1;
+}
+
 #endif // CIRCT_DIALECT_HW_HWSTRUCTURE_TD

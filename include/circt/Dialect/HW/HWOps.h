@@ -33,6 +33,8 @@
 namespace circt {
 namespace hw {
 
+using ModuleOp = mlir::ModuleOp;
+
 class EnumFieldAttr;
 
 /// Flip a port direction.

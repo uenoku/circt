@@ -37,7 +37,8 @@ struct VerifyObjectFieldsPass
   void runOnOperation() override;
   bool canScheduleOn(RegisteredOperationName opName) const override {
     return opName.getStringRef() == "firrtl.circuit" ||
-           opName.getStringRef() == "builtin.module";
+           opName.getStringRef() == "builtin.module" ||
+           opName.getStringRef() == "hw.design";
   }
 };
 } // namespace

@@ -7192,7 +7192,7 @@ struct ExportSplitVerilogPass
   }
   void runOnOperation() override {
     // Prepare the ops in the module for emission.
-    mlir::OpPassManager preparePM("builtin.module");
+    mlir::OpPassManager preparePM("hw.design");
     preparePM.addPass(createHWLowerInstanceChoicesPass());
 
     auto &modulePM = preparePM.nest<hw::HWModuleOp>();
