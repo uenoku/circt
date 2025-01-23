@@ -1710,7 +1710,7 @@ void LoopScheduleToCalyxPass::runOnOperation() {
 // Pass initialization
 //===----------------------------------------------------------------------===//
 
-std::unique_ptr<OperationPass<ModuleOp>> createLoopScheduleToCalyxPass() {
+std::unique_ptr<OperationPass<mlir::ModuleOp>> createLoopScheduleToCalyxPass() {
   return std::make_unique<pipelinetocalyx::LoopScheduleToCalyxPass>();
 }
 

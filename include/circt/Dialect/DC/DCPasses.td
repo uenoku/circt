@@ -31,7 +31,7 @@ def DCDematerializeForksSinks : Pass<"dc-dematerialize-forks-sinks"> {
   let dependentDialects = ["dc::DCDialect"];
 }
 
-def DCDotPrint : Pass<"dc-print-dot", "mlir::ModuleOp"> {
+def DCDotPrint : Pass<"dc-print-dot", "hw::HWDesignOp"> {
   let summary = "Print .dot graph of a DC function.";
   let description = [{
     This pass analyses a dc modulen and prints a .dot graph of the

@@ -70,7 +70,7 @@ def FragmentOp : EmitOp<"fragment", [
     NoTerminator,
     NoRegionArguments,
     IsolatedFromAbove,
-    HasParent<"mlir::ModuleOp">
+    HasParent<"hw::HWDesignOp">
 ]> {
   let summary = "Emittable fragment which can be replicated before modules";
   let description = [{

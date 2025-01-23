@@ -1365,7 +1365,7 @@ struct PrepareForEmissionPass
 
   void runOnOperation() override {
     auto module = cast<hw::HWEmittableModuleLike>(getOperation());
-    LoweringOptions options(cast<mlir::ModuleOp>(module->getParentOp()));
+    LoweringOptions options(cast<hw::HWDesignOp>(module->getParentOp()));
     if (failed(prepareHWModule(module, options)))
       signalPassFailure();
   }

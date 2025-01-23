@@ -417,7 +417,7 @@ llvm::json::Value ESIBuildManifestPass::json(Operation *errorOp, Attribute attr,
   return dict;
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESIBuildManifestPass() {
   return std::make_unique<ESIBuildManifestPass>();
 }

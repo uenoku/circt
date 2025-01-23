@@ -2917,7 +2917,7 @@ void SCFToCalyxPass::runOnOperation() {
 // Pass initialization
 //===----------------------------------------------------------------------===//
 
-std::unique_ptr<OperationPass<ModuleOp>> createSCFToCalyxPass() {
+std::unique_ptr<OperationPass<mlir::ModuleOp>> createSCFToCalyxPass() {
   return std::make_unique<SCFToCalyxPass>();
 }
 

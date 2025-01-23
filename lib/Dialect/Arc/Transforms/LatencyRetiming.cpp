@@ -9,6 +9,7 @@
 #include "circt/Dialect/Arc/ArcOps.h"
 #include "circt/Dialect/Arc/ArcPasses.h"
 #include "circt/Support/LLVM.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/SymCache.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"

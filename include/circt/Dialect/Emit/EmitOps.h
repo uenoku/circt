@@ -22,10 +22,10 @@
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/BuilderUtils.h"
 
-#define GET_OP_CLASSES
-#include "circt/Dialect/Emit/Emit.h.inc"
-
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace emit {
 
 /// Return the name of the fragments array attribute.
@@ -33,5 +33,8 @@ inline StringRef getFragmentsAttrName() { return "emit.fragments"; }
 
 } // namespace emit
 } // namespace circt
+
+#define GET_OP_CLASSES
+#include "circt/Dialect/Emit/Emit.h.inc"
 
 #endif // CIRCT_DIALECT_EMIT_EMITOPS_H

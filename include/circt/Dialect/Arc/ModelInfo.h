@@ -19,6 +19,9 @@
 #include <string>
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace arc {
 
 /// Gathers information about a given Arc state.
@@ -57,6 +60,9 @@ mlir::LogicalResult collectStates(mlir::Value storage, unsigned offset,
 /// and adds it to `models`.
 mlir::LogicalResult collectModels(mlir::ModuleOp module,
                                   llvm::SmallVector<ModelInfo> &models);
+mlir::LogicalResult collectModels(hw::HWDesignOp module,
+                                  llvm::SmallVector<ModelInfo> &models);
+
 
 /// Serializes `models` to `outputStream` in JSON format.
 void serializeModelInfoToJson(llvm::raw_ostream &outputStream,

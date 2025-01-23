@@ -124,7 +124,7 @@ static LogicalResult isProcValidToLower(llhd::ProcessOp op) {
 }
 
 void ProcessLoweringPass::runOnOperation() {
-  ModuleOp module = getOperation();
+  auto module = getOperation();
 
   module.walk([](llhd::ProcessOp op) {
     LLVM_DEBUG({ llvm::dbgs() << "\n=== Process\n"; });
@@ -160,7 +160,7 @@ void ProcessLoweringPass::runOnOperation() {
 }
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::llhd::createProcessLoweringPass() {
   return std::make_unique<ProcessLoweringPass>();
 }

@@ -10,7 +10,7 @@ include "circt/Dialect/HW/HWAttributesNaming.td"
 include "circt/Dialect/HW/HWTypes.td"
 
 def DeclPhysicalRegionOp : MSFTOp<"physical_region",
-    [Symbol, HasParent<"mlir::ModuleOp">]> {
+    [Symbol, HasParent<"hw::HWDesignOp">]> {
   let arguments = (ins
     SymbolNameAttr:$sym_name,
     PhysicalBoundsArray:$bounds
@@ -107,7 +107,7 @@ def PDPhysRegionOp : MSFTOp<"pd.physregion",
 }
 
 def InstanceHierarchyOp : MSFTOp<"instance.hierarchy",
-                                 [HasParent<"mlir::ModuleOp">, NoTerminator]> {
+                                 [HasParent<"hw::HWDesignOp">, NoTerminator]> {
   let summary = "The root of an instance hierarchy";
   let description = [{
     Models the "root" / "top" of an instance hierarchy. `DynamicInstanceOp`s

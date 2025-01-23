@@ -41,7 +41,7 @@ void ESICleanMetadataPass::runOnOperation() {
   });
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESICleanMetadataPass() {
   return std::make_unique<ESICleanMetadataPass>();
 }

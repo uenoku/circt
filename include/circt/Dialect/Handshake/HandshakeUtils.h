@@ -23,7 +23,7 @@ namespace handshake {
 /// well as infer a top function for the design by performing a topological sort
 /// of the instance graph. The result of this sort is placed in sortedFuncs.
 using InstanceGraph = std::map<std::string, std::set<std::string>>;
-LogicalResult resolveInstanceGraph(ModuleOp moduleOp,
+LogicalResult resolveInstanceGraph(mlir::ModuleOp moduleOp,
                                    InstanceGraph &instanceGraph,
                                    std::string &topLevel,
                                    SmallVectorImpl<std::string> &sortedFuncs);

@@ -51,7 +51,7 @@ createExportSplitVerilogPass(llvm::StringRef directory = "./");
 /// dialect is loaded in to the context.
 [[deprecated]]
 mlir::LogicalResult exportVerilog(mlir::ModuleOp module, llvm::raw_ostream &os);
-mlir::LogicalResult exportVerilog(circt::hw::HWDesignOp module,
+mlir::LogicalResult exportVerilog(hw::HWDesignOp module,
                                   llvm::raw_ostream &os);
 
 /// Export a module containing HW, and SV dialect code, as one file per SV
@@ -62,8 +62,8 @@ mlir::LogicalResult exportVerilog(circt::hw::HWDesignOp module,
 mlir::LogicalResult exportSplitVerilog(mlir::ModuleOp module,
                                        llvm::StringRef dirname);
 
-mlir::LogicalResult exportSplitVerilog(circt::hw::HWDesignOp module,
-                                       llvm::raw_ostream &os);
+mlir::LogicalResult exportSplitVerilog(hw::HWDesignOp module,
+                                       llvm::StringRef dirname);
 
 } // namespace circt
 

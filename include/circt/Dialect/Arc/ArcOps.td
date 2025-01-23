@@ -33,7 +33,7 @@ def DefineOp : ArcOp<"define", [
   Symbol,
   RegionKindInterface,
   SingleBlockImplicitTerminator<"arc::OutputOp">,
-  HasParent<"mlir::ModuleOp">
+  // HasParent<"hw::HWDesignOp">
 ]> {
   let summary = "State transfer arc definition";
   let arguments = (ins

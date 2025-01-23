@@ -444,7 +444,7 @@ void ConvertVerifToSMTPass::runOnOperation() {
   // Check BMC ops contain only one assertion (done outside pattern to avoid
   // issues with whether assertions are/aren't lowered yet)
   SymbolTable symbolTable(getOperation());
-  WalkResult assertionCheck = getOperation().walk(
+  WalkResult assertionCheck = getOperation()->walk(
       [&](Operation *op) { // Check there is exactly one assertion and clock
         if (auto bmcOp = dyn_cast<verif::BoundedModelCheckingOp>(op)) {
           // We also currently don't support initial values on registers that

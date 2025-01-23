@@ -15,12 +15,12 @@
 
 include "mlir/Pass/PassBase.td"
 
-def PrintInstanceGraph : Pass<"hw-print-instance-graph", "mlir::ModuleOp"> {
+def PrintInstanceGraph : Pass<"hw-print-instance-graph", "hw::HWDesignOp"> {
   let summary = "Print a DOT graph of the module hierarchy.";
   let constructor =  "circt::hw::createPrintInstanceGraphPass()";
 }
 
-def PrintHWModuleGraph : Pass<"hw-print-module-graph", "mlir::ModuleOp"> {
+def PrintHWModuleGraph : Pass<"hw-print-module-graph", "hw::HWDesignOp"> {
   let summary = "Print a DOT graph of the HWModule's within a top-level module.";
   let constructor =  "circt::hw::createPrintHWModuleGraphPass()";
   
@@ -30,7 +30,7 @@ def PrintHWModuleGraph : Pass<"hw-print-module-graph", "mlir::ModuleOp"> {
   ];
 }
 
-def FlattenIO : Pass<"hw-flatten-io", "mlir::ModuleOp"> {
+def FlattenIO : Pass<"hw-flatten-io", "hw::HWDesignOp"> {
   let summary = "Flattens hw::Structure typed in- and output ports.";
   let constructor =  "circt::hw::createFlattenIOPass()";
   
@@ -44,7 +44,7 @@ def FlattenIO : Pass<"hw-flatten-io", "mlir::ModuleOp"> {
   ];
 }
 
-def FlattenModules : Pass<"hw-flatten-modules", "mlir::ModuleOp"> {
+def FlattenModules : Pass<"hw-flatten-modules", "hw::HWDesignOp"> {
   let summary = "Eagerly inline private modules";
   let description = [{
     This pass eagerly inlines private HW modules into their instantiation sites.
@@ -57,7 +57,7 @@ def FlattenModules : Pass<"hw-flatten-modules", "mlir::ModuleOp"> {
   let constructor = "circt::hw::createFlattenModulesPass()";
 }
 
-def HWSpecialize : Pass<"hw-specialize", "mlir::ModuleOp"> {
+def HWSpecialize : Pass<"hw-specialize", "hw::HWDesignOp"> {
   let summary = "Specializes instances of parametric hw.modules";
   let constructor = "circt::hw::createHWSpecializePass()";
   let description = [{

@@ -25,6 +25,9 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace esi {
 /// Describes a service port. In the unidirection case, either (but not both)
 /// type fields will be null.

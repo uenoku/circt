@@ -22,6 +22,9 @@ class ModuleOp;
 }
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 
 /// Options which control the emission from CIRCT to Verilog.
 struct LoweringOptions {
@@ -39,11 +42,11 @@ struct LoweringOptions {
   /// loads a string attribute with the key `circt.loweringOptions`. If there is
   /// an error parsing the attribute this will print an error using the
   /// ModuleOp.
-  LoweringOptions(mlir::ModuleOp module);
+  LoweringOptions(hw::HWDesignOp module);
 
   /// Return the value of the `circt.loweringOptions` in the specified module
   /// if present, or a null attribute if not.
-  static mlir::StringAttr getAttributeFrom(mlir::ModuleOp module);
+  static mlir::StringAttr getAttributeFrom(hw::HWDesignOp module);
 
   /// Read in options from a string, overriding only the set options in the
   /// string.
@@ -53,10 +56,12 @@ struct LoweringOptions {
   std::string toString() const;
 
   /// Write the verilog emitter options to a module's attributes.
+  void setAsAttribute(hw::HWDesignOp module);
   void setAsAttribute(mlir::ModuleOp module);
 
   /// Load any emitter options from the module. If there is an error validating
-  /// the attribute, this will print an error using the ModuleOp.
+  /// the attribute, this will print an error using the HWDesignOp.
+  void parseFromAttribute(hw::HWDesignOp module);
   void parseFromAttribute(mlir::ModuleOp module);
 
   /// If true, emits `sv.alwayscomb` as Verilog `always @(*)` statements.

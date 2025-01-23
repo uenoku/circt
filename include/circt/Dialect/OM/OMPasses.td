@@ -8,7 +8,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def FreezePaths: Pass<"om-freeze-paths", "mlir::ModuleOp"> {
+def FreezePaths: Pass<"om-freeze-paths", "hw::HWDesignOp"> {
   let summary = "Hard code all path information";
   let description = [{
     Replaces paths to hardware with hard-coded string paths.  This pass should

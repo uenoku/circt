@@ -16,7 +16,7 @@
 include "mlir/Pass/PassBase.td"
 include "mlir/Rewrite/PassUtil.td"
 
-def FlattenMemRef : Pass<"flatten-memref", "::mlir::ModuleOp"> {
+def FlattenMemRef : Pass<"flatten-memref", "mlir::ModuleOp"> {
   let summary = "Flatten memrefs";
   let description = [{
     Flattens multidimensional memories and accesses to them into
@@ -25,7 +25,7 @@ def FlattenMemRef : Pass<"flatten-memref", "::mlir::ModuleOp"> {
   let dependentDialects = ["mlir::memref::MemRefDialect"];
 }
 
-def FlattenMemRefCalls : Pass<"flatten-memref-calls", "::mlir::ModuleOp"> {
+def FlattenMemRefCalls : Pass<"flatten-memref-calls", "mlir::ModuleOp"> {
   let summary = "Flatten memref calls";
   let description = [{
     Flattens calls to functions which have multidimensional memrefs as arguments.
@@ -38,7 +38,7 @@ def FlattenMemRefCalls : Pass<"flatten-memref-calls", "::mlir::ModuleOp"> {
   let dependentDialects = ["mlir::memref::MemRefDialect"];
 }
 
-def StripDebugInfoWithPred : Pass<"strip-debuginfo-with-pred", "::mlir::ModuleOp"> {
+def StripDebugInfoWithPred : Pass<"strip-debuginfo-with-pred", "mlir::ModuleOp"> {
   let summary = "Selectively strip debug info from all operations";
 
   let description = [{
@@ -70,7 +70,7 @@ def MapArithToCombPass : Pass<"map-arith-to-comb"> {
   let dependentDialects = ["circt::hw::HWDialect, mlir::arith::ArithDialect, circt::comb::CombDialect"];
 }
 
-def InsertMergeBlocks : Pass<"insert-merge-blocks", "::mlir::ModuleOp"> {
+def InsertMergeBlocks : Pass<"insert-merge-blocks", "mlir::ModuleOp"> {
   let summary = "Insert explicit merge blocks";
   let description = [{
     This pass inserts additional merge blocks for each block with more than
@@ -88,7 +88,7 @@ def InsertMergeBlocks : Pass<"insert-merge-blocks", "::mlir::ModuleOp"> {
   let dependentDialects = ["mlir::cf::ControlFlowDialect", "mlir::func::FuncDialect"];
 }
 
-def MaximizeSSA : Pass<"maximize-ssa", "::mlir::ModuleOp"> {
+def MaximizeSSA : Pass<"maximize-ssa", "mlir::ModuleOp"> {
   let summary = "Convert every function in the module into maximal SSA form";
   let description = [{
     Convert the region within every function into maximal SSA form. This
@@ -100,7 +100,7 @@ def MaximizeSSA : Pass<"maximize-ssa", "::mlir::ModuleOp"> {
   let constructor = "circt::createMaximizeSSAPass()";
 }
 
-def PrintOpCount : Pass<"print-op-count", "::mlir::ModuleOp"> {
+def PrintOpCount : Pass<"print-op-count", "mlir::ModuleOp"> {
   let summary = "Print operation count analysis results";
   let description = [{
     This pass prints data on operation counts in a builtin.module.
@@ -135,7 +135,7 @@ def MemoryBanking : Pass<"memory-banking", "::mlir::func::FuncOp"> {
   let dependentDialects = ["mlir::memref::MemRefDialect, mlir::scf::SCFDialect, mlir::affine::AffineDialect"];
 }
 
-def IndexSwitchToIf : Pass<"switch-to-if", "::mlir::ModuleOp"> {
+def IndexSwitchToIf : Pass<"switch-to-if", "mlir::ModuleOp"> {
   let summary = "Index switch to if";
   let description = [{
       Transform `scf.index_switch` to a series of `scf.if` operations.

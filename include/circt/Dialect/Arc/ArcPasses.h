@@ -20,6 +20,9 @@ class Pass;
 #include "circt/Dialect/Arc/ArcPassesEnums.h.inc"
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace arc {
 
 #define GEN_PASS_DECL

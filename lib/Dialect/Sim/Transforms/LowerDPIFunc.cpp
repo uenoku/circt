@@ -26,6 +26,7 @@
 // }
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Sim/SimOps.h"
 #include "circt/Dialect/Sim/SimPasses.h"
 #include "circt/Support/Namespace.h"

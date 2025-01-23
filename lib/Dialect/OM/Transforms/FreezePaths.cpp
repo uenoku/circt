@@ -43,7 +43,7 @@ struct PathVisitor {
   LogicalResult process(EmptyPathOp pathOp);
   LogicalResult processListCreator(Operation *listCreateOp);
   LogicalResult process(ObjectFieldOp objectFieldOp);
-  LogicalResult run(ModuleOp module);
+  LogicalResult run(hw::HWDesignOp module);
   hw::InstanceGraph &instanceGraph;
   hw::InnerRefNamespace &irn;
   std::function<StringAttr(Operation *)> getOpNameFallback;
@@ -298,7 +298,7 @@ LogicalResult PathVisitor::process(ObjectFieldOp objectFieldOp) {
   return success();
 }
 
-LogicalResult PathVisitor::run(ModuleOp module) {
+LogicalResult PathVisitor::run(hw::HWDesignOp module) {
   auto updatePathType = [&](Value value) {
     if (hasPathType(value.getType()))
       value.setType(processType(value.getType()));

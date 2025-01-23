@@ -13,6 +13,7 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SetVector.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "arc-split-loops"

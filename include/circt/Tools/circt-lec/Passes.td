@@ -16,7 +16,7 @@
 include "mlir/Pass/PassBase.td"
 include "mlir/Rewrite/PassUtil.td"
 
-def ConstructLEC : Pass<"construct-lec", "::mlir::ModuleOp"> {
+def ConstructLEC : Pass<"construct-lec", "mlir::ModuleOp"> {
   let summary = "Lower CIRCTs core dialects to a LEC problem statement";
   let description = [{
     Takes two `hw.module` operations and lowers them to a `verif.lec` operation

@@ -549,7 +549,7 @@ void PrettifyVerilogPass::processPostOrder(Block &body) {
 
 void PrettifyVerilogPass::runOnOperation() {
   hw::HWModuleOp thisModule = getOperation();
-  options = LoweringOptions(thisModule->getParentOfType<mlir::ModuleOp>());
+  options = LoweringOptions(thisModule->getParentOfType<hw::HWDesignOp>());
 
   // Keeps track if anything changed during this pass, used to determine if
   // the analyses were preserved.

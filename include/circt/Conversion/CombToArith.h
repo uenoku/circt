@@ -13,6 +13,9 @@
 #include <memory>
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 
 #define GEN_PASS_DECL_CONVERTCOMBTOARITH
 #include "circt/Conversion/Passes.h.inc"
@@ -20,7 +23,7 @@ namespace circt {
 void populateCombToArithConversionPatterns(TypeConverter &converter,
                                            RewritePatternSet &patterns);
 
-std::unique_ptr<OperationPass<ModuleOp>> createConvertCombToArithPass();
+std::unique_ptr<Pass> createConvertCombToArithPass();
 } // namespace circt
 
 #endif // CIRCT_CONVERSION_COMBTOARITH_H

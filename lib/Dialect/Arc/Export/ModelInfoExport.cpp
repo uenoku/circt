@@ -13,6 +13,7 @@
 #include "circt/Dialect/Arc/ModelInfoExport.h"
 #include "circt/Dialect/Arc/ArcDialect.h"
 #include "circt/Dialect/Arc/ModelInfo.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 
@@ -21,7 +22,7 @@ using namespace mlir;
 using namespace circt;
 using namespace arc;
 
-LogicalResult circt::arc::collectAndExportModelInfo(ModuleOp module,
+LogicalResult circt::arc::collectAndExportModelInfo(mlir::ModuleOp module,
                                                     llvm::raw_ostream &os) {
   SmallVector<ModelInfo> models;
   if (failed(collectModels(module, models)))
@@ -33,7 +34,7 @@ LogicalResult circt::arc::collectAndExportModelInfo(ModuleOp module,
 void circt::arc::registerArcModelInfoTranslation() {
   static mlir::TranslateFromMLIRRegistration modelInfoToJson(
       "export-arc-model-info", "export Arc model info in JSON format",
-      [](ModuleOp module, llvm::raw_ostream &os) {
+      [](mlir::ModuleOp module, llvm::raw_ostream &os) {
         return arc::collectAndExportModelInfo(module, os);
       },
       [](mlir::DialectRegistry &registry) {

@@ -47,13 +47,14 @@ struct HandshakeDotPrintPass
     : public circt::handshake::impl::HandshakeDotPrintBase<
           HandshakeDotPrintPass> {
   void runOnOperation() override {
-    ModuleOp m = getOperation();
+    auto m = getOperation();
 
     // Resolve the instance graph to get a top-level module.
     std::string topLevel;
     handshake::InstanceGraph uses;
     SmallVector<std::string> sortedFuncs;
-    if (resolveInstanceGraph(m, uses, topLevel, sortedFuncs).failed()) {
+    if (resolveInstanceGraph(m->getParentOfType<mlir::ModuleOp>(), uses, topLevel, sortedFuncs)
+            .failed()) {
       signalPassFailure();
       return;
     }
@@ -114,7 +115,7 @@ struct HandshakeOpCountPass
     : public circt::handshake::impl::HandshakeOpCountBase<
           HandshakeOpCountPass> {
   void runOnOperation() override {
-    ModuleOp m = getOperation();
+    auto m = getOperation();
 
     for (auto func : m.getOps<handshake::FuncOp>()) {
       std::map<std::string, int> cnts;
@@ -618,12 +619,12 @@ private:
 };
 } // namespace
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 circt::handshake::createHandshakeDotPrintPass() {
   return std::make_unique<HandshakeDotPrintPass>();
 }
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 circt::handshake::createHandshakeOpCountPass() {
   return std::make_unique<HandshakeOpCountPass>();
 }

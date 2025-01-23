@@ -45,9 +45,9 @@ public:
     return *this;
   }
 
-  void add(mlir::ModuleOp module) {
+  void add(Operation *module) {
     assert(module->getNumRegions() == 1);
-    for (auto &op : module.getBody(0)->getOperations())
+    for (auto &op : module->getRegion(0).getOps())
       if (auto symbol = op.getAttrOfType<mlir::StringAttr>(
               SymbolTable::getSymbolAttrName()))
         nextIndex.insert({symbol.getValue(), 0});

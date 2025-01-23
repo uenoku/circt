@@ -4,6 +4,7 @@
 
 // RANDOM-LABEL: emit.fragment @RANDOM_INIT_FRAGMENT
 // RANDOM-LABEL: emit.fragment @RANDOM_INIT_REG_FRAGMENT
+hw.design {
 
 emit.fragment @SomeFragment {}
 
@@ -927,4 +928,6 @@ hw.module @RegMuxInlining3(in %clock: !seq.clock, in %c: i1, out out: i8) {
     //CHECK:     sv.passign %r2, %[[V1]] : i2
     //CHECK:   } else {
     //CHECK:     sv.passign %r1, %[[V2]] : i2
+}
+
 }

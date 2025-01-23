@@ -9,6 +9,7 @@
 #include "circt/Dialect/ESI/ESIOps.h"
 #include "circt/Dialect/ESI/ESIPasses.h"
 #include "circt/Dialect/ESI/ESITypes.h"
+#include "circt/Dialect/HW/HWOps.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"

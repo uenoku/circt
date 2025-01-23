@@ -11,6 +11,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 

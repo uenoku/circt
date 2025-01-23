@@ -16,7 +16,7 @@
 #include "circt/Dialect/ESI/ESITypes.h"
 #include "circt/Dialect/HW/ConversionPatterns.h"
 #include "circt/Dialect/HW/HWOpInterfaces.h"
-
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Pass/Pass.h"
@@ -105,7 +105,7 @@ void ESILowerTypesPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESITypeLoweringPass() {
   return std::make_unique<ESILowerTypesPass>();
 }

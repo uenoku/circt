@@ -96,7 +96,7 @@ LogicalResult FunctionEliminationPass::runOnModule(hw::HWModuleOp module) {
 }
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::llhd::createFunctionEliminationPass() {
   return std::make_unique<FunctionEliminationPass>();
 }

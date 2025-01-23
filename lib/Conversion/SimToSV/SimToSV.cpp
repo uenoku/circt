@@ -238,7 +238,7 @@ public:
 struct LowerDPIFunc {
   llvm::DenseMap<StringAttr, StringAttr> symbolToFragment;
   circt::Namespace nameSpace;
-  LowerDPIFunc(mlir::ModuleOp module) { nameSpace.add(module); }
+  LowerDPIFunc(hw::HWDesignOp module) { nameSpace.add(module); }
   void lower(sim::DPIFuncOp func);
   void addFragments(hw::HWModuleOp module,
                     ArrayRef<StringAttr> dpiCallees) const;

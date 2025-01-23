@@ -8,7 +8,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ExportTcl: Pass<"msft-export-tcl", "mlir::ModuleOp"> {
+def ExportTcl: Pass<"msft-export-tcl", "hw::HWDesignOp"> {
   let summary = "Create tcl ops";
   let constructor = "circt::msft::createExportTclPass()";
   let dependentDialects = [
@@ -25,13 +25,13 @@ def ExportTcl: Pass<"msft-export-tcl", "mlir::ModuleOp"> {
   ];
 }
 
-def LowerInstances: Pass<"msft-lower-instances", "mlir::ModuleOp"> {
+def LowerInstances: Pass<"msft-lower-instances", "hw::HWDesignOp"> {
   let summary = "Lower dynamic instances";
   let constructor = "circt::msft::createLowerInstancesPass()";
   let dependentDialects = ["circt::hw::HWDialect"];
 }
 
-def LowerConstructs: Pass<"msft-lower-constructs", "mlir::ModuleOp"> {
+def LowerConstructs: Pass<"msft-lower-constructs", "hw::HWDesignOp"> {
   let summary = "Lower high-level constructs";
   let constructor = "circt::msft::createLowerConstructsPass()";
   let dependentDialects = ["circt::hw::HWDialect"];

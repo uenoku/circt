@@ -54,6 +54,7 @@
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
+#include <iterator>
 
 namespace circt {
 #define GEN_PASS_DEF_EXPORTSPLITVERILOG
@@ -992,7 +993,7 @@ namespace {
 /// various emitters.
 class VerilogEmitterState {
 public:
-  explicit VerilogEmitterState(ModuleOp designOp,
+  explicit VerilogEmitterState(hw::HWDesignOp designOp,
                                const SharedEmitterState &shared,
                                const LoweringOptions &options,
                                const HWSymbolCache &symbolCache,
@@ -1007,7 +1008,7 @@ public:
     pp.setListener(&saver);
   }
   /// This is the root mlir::ModuleOp that holds the whole design being emitted.
-  ModuleOp designOp;
+  hw::HWDesignOp designOp;
 
   const SharedEmitterState &shared;
 
@@ -1795,8 +1796,8 @@ static bool printPackedTypeImpl(Type type, raw_ostream &os, Location loc,
             os << " struct packed {";
             if (element.offset) {
               os << (emitAsTwoStateType ? "bit" : "logic") << " ["
-                 << element.offset - 1 << ":0] "
-                 << "__pre_padding_" << element.name.getValue() << "; ";
+                 << element.offset - 1 << ":0] " << "__pre_padding_"
+                 << element.name.getValue() << "; ";
             }
           }
 
@@ -2290,8 +2291,7 @@ private:
 
   /// Emit braced list of values surrounded by `{` and `}`.
   void emitBracedList(ValueRange ops) {
-    return emitBracedList(
-        ops, [&]() { ps << "{"; }, [&]() { ps << "}"; });
+    return emitBracedList(ops, [&]() { ps << "{"; }, [&]() { ps << "}"; });
   }
 
   /// Print an APInt constant.
@@ -6946,7 +6946,8 @@ void SharedEmitterState::emitOps(EmissionList &thingsToEmit,
 // Unified Emitter
 //===----------------------------------------------------------------------===//
 
-static LogicalResult exportVerilogImpl(ModuleOp module, llvm::raw_ostream &os) {
+static LogicalResult exportVerilogImpl(hw::HWDesignOp module,
+                                       llvm::raw_ostream &os) {
   LoweringOptions options(module);
   GlobalNameTable globalNames = legalizeGlobalNames(module, options);
 
@@ -6990,17 +6991,17 @@ static LogicalResult exportVerilogImpl(ModuleOp module, llvm::raw_ostream &os) {
 }
 
 LogicalResult circt::exportVerilog(ModuleOp module, llvm::raw_ostream &os) {
-  LoweringOptions options(module);
-  if (failed(lowerHWInstanceChoices(module)))
+  // Check if the module has only one HWDesignOp
+  if (std::distance(module.getOps().begin(), module.getOps().end()) != 1) {
+    module.emitError("module must have only one HWDesignOp");
     return failure();
-  SmallVector<HWEmittableModuleLike> modulesToPrepare;
-  module.walk(
-      [&](HWEmittableModuleLike op) { modulesToPrepare.push_back(op); });
-  if (failed(failableParallelForEach(
-          module->getContext(), modulesToPrepare,
-          [&](auto op) { return prepareHWModule(op, options); })))
-    return failure();
-  return exportVerilogImpl(module, os);
+  }
+  auto hwDesignOp = *module.getOps<hw::HWDesignOp>().begin();
+  return exportVerilog(hwDesignOp, os);
+}
+
+LogicalResult circt::exportVerilog(hw::HWDesignOp design, llvm::raw_ostream &os) {
+  return exportVerilogImpl(design, os);
 }
 
 namespace {
@@ -7104,7 +7105,7 @@ static void createSplitOutputFile(StringAttr fileName, FileInfo &file,
   output->keep();
 }
 
-static LogicalResult exportSplitVerilogImpl(ModuleOp module,
+static LogicalResult exportSplitVerilogImpl(hw::HWDesignOp module,
                                             StringRef dirname) {
   // Prepare the ops in the module for emission and legalize the names that will
   // end up in the output.
@@ -7168,7 +7169,8 @@ static LogicalResult exportSplitVerilogImpl(ModuleOp module,
   return failure(emitter.encounteredError);
 }
 
-LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
+LogicalResult circt::exportSplitVerilog(hw::HWDesignOp module,
+                                        StringRef dirname) {
   LoweringOptions options(module);
   if (failed(lowerHWInstanceChoices(module)))
     return failure();
@@ -7181,6 +7183,22 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
     return failure();
 
   return exportSplitVerilogImpl(module, dirname);
+}
+
+LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
+  return failure();
+  // LoweringOptions options(module);
+  // if (failed(lowerHWInstanceChoices(module)))
+  //   return failure();
+  // SmallVector<HWEmittableModuleLike> modulesToPrepare;
+  // module.walk(
+  //     [&](HWEmittableModuleLike op) { modulesToPrepare.push_back(op); });
+  // if (failed(failableParallelForEach(
+  //         module->getContext(), modulesToPrepare,
+  //         [&](auto op) { return prepareHWModule(op, options); })))
+  //   return failure();
+
+  // return exportSplitVerilogImpl(module, dirname);
 }
 
 namespace {

@@ -316,7 +316,7 @@ private:
 
 /// Iterate through the `hw.module[.extern]`s and lower their ports.
 void ESIPortsPass::runOnOperation() {
-  ModuleOp top = getOperation();
+  auto top = getOperation();
   ESIHWBuilder b(top);
   build = &b;
 
@@ -584,7 +584,7 @@ void ESIPortsPass::updateInstance(HWModuleExternOp mod, InstanceOp inst) {
   inst.erase();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESIPortLoweringPass() {
   return std::make_unique<ESIPortsPass>();
 }

@@ -12,10 +12,10 @@
 #include "circt/Dialect/DC/DCOps.h"
 #include "circt/Dialect/DC/DCPasses.h"
 #include "mlir/Pass/Pass.h"
-
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/DC/DCOps.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Support/IndentedOstream.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/StringRef.h"
@@ -266,7 +266,7 @@ struct DCDotPrintPass : public circt::dc::impl::DCDotPrintBase<DCDotPrintPass> {
   explicit DCDotPrintPass(raw_ostream &os) : os(os) {}
   void runOnOperation() override {
 
-    ModuleOp op = getOperation();
+    auto op = getOperation();
 
     std::error_code ec;
 
@@ -329,7 +329,7 @@ struct DCDotPrintPass : public circt::dc::impl::DCDotPrintBase<DCDotPrintPass> {
 };
 } // namespace
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 circt::dc::createDCDotPrintPass() {
   return std::make_unique<DCDotPrintPass>(llvm::errs());
 }

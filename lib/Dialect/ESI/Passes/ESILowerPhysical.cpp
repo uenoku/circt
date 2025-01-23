@@ -293,7 +293,7 @@ void ESIToPhysicalPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESIPhysicalLoweringPass() {
   return std::make_unique<ESIToPhysicalPass>();
 }

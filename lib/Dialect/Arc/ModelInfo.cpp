@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/Arc/ModelInfo.h"
 #include "circt/Dialect/Arc/ArcOps.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "llvm/Support/JSON.h"
 
 using namespace mlir;
@@ -103,10 +104,10 @@ LogicalResult circt::arc::collectStates(Value storage, unsigned offset,
   return success();
 }
 
-LogicalResult circt::arc::collectModels(mlir::ModuleOp module,
+LogicalResult circt::arc::collectModels(hw::HWDesignOp design,
                                         SmallVector<ModelInfo> &models) {
 
-  for (auto modelOp : module.getOps<ModelOp>()) {
+  for (auto modelOp : design.getOps<ModelOp>()) {
     auto storageArg = modelOp.getBody().getArgument(0);
     auto storageType = cast<StorageType>(storageArg.getType());
 
@@ -118,6 +119,17 @@ LogicalResult circt::arc::collectModels(mlir::ModuleOp module,
     models.emplace_back(std::string(modelOp.getName()), storageType.getSize(),
                         std::move(states), modelOp.getInitialFnAttr(),
                         modelOp.getFinalFnAttr());
+  }
+
+  return success();
+}
+
+LogicalResult circt::arc::collectModels(mlir::ModuleOp module,
+                                        SmallVector<ModelInfo> &models) {
+
+  for (auto design : module.getOps<hw::HWDesignOp>()) {
+    if (failed(collectModels(design, models)))
+      return failure();
   }
 
   return success();

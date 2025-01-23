@@ -21,7 +21,7 @@ def SCModuleOp : SystemCOp<"module", [
     RegionKindInterface,
     DeclareOpInterfaceMethods<CallableOpInterface>,
     DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmBlockArgumentNames"]>,
-    HasParent<"mlir::ModuleOp">
+    HasParent<"hw::HWDesignOp">
   ]> {
   let summary = "Define a SystemC SC_MODULE.";
   let description = [{

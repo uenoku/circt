@@ -13,6 +13,7 @@
 
 #include "circt/Support/LoweringOptions.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "circt/Dialect/HW/HWOps.h"
 
 using namespace circt;
 using namespace mlir;
@@ -26,7 +27,7 @@ LoweringOptions::LoweringOptions(StringRef options, ErrorHandlerT errorHandler)
   parse(options, errorHandler);
 }
 
-LoweringOptions::LoweringOptions(mlir::ModuleOp module) : LoweringOptions() {
+LoweringOptions::LoweringOptions(hw::HWDesignOp module) : LoweringOptions() {
   parseFromAttribute(module);
 }
 
@@ -193,16 +194,20 @@ std::string LoweringOptions::toString() const {
   return options;
 }
 
-StringAttr LoweringOptions::getAttributeFrom(ModuleOp module) {
+StringAttr LoweringOptions::getAttributeFrom(hw::HWDesignOp module) {
   return module->getAttrOfType<StringAttr>("circt.loweringOptions");
 }
 
-void LoweringOptions::setAsAttribute(ModuleOp module) {
+void LoweringOptions::setAsAttribute(hw::HWDesignOp module) {
+  module->setAttr("circt.loweringOptions",
+                  StringAttr::get(module.getContext(), toString()));
+}
+void LoweringOptions::setAsAttribute(mlir::ModuleOp module) {
   module->setAttr("circt.loweringOptions",
                   StringAttr::get(module.getContext(), toString()));
 }
 
-void LoweringOptions::parseFromAttribute(ModuleOp module) {
+void LoweringOptions::parseFromAttribute(hw::HWDesignOp module) {
   if (auto styleAttr = getAttributeFrom(module))
     parse(styleAttr.getValue(), [&](Twine error) { module.emitError(error); });
 }

@@ -353,7 +353,7 @@ static LogicalResult specializeModule(
 }
 
 void HWSpecializePass::runOnOperation() {
-  ModuleOp module = getOperation();
+  hw::HWDesignOp module = getOperation();
 
   // Record unique module parameters and references to these.
   llvm::DenseMap<hw::HWModuleOp,

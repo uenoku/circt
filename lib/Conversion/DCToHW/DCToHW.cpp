@@ -99,7 +99,7 @@ namespace {
 /// Shared state used by various functions; captured in a struct to reduce the
 /// number of arguments that we have to pass around.
 struct DCLoweringState {
-  ModuleOp parentModule;
+  hw::HWDesignOp parentModule;
   NameUniquer nameUniquer;
 };
 

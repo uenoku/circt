@@ -76,7 +76,7 @@ def ExportSplitChiselInterface : Pass<"export-split-chisel-interface", "firrtl::
 //===----------------------------------------------------------------------===//
 
 def TestApplyLoweringOption : Pass<"test-apply-lowering-options",
-                                   "mlir::ModuleOp"> {
+                                   "hw::HWDesignOp"> {
   let summary = "Apply lowering options";
   let description = [{
     This pass allows overriding lowering options.  It is intended for test
@@ -92,7 +92,7 @@ def TestApplyLoweringOption : Pass<"test-apply-lowering-options",
   ];
 }
 
-def LegalizeAnonEnums : Pass<"legalize-anon-enums", "mlir::ModuleOp"> {
+def LegalizeAnonEnums : Pass<"legalize-anon-enums", "hw::HWDesignOp"> {
   let summary = "Prepare anonymous enumeration types for ExportVerilog";
   let description = [{
     This pass transforms all anonymous enumeration types into typedecls to work
@@ -105,7 +105,7 @@ def LegalizeAnonEnums : Pass<"legalize-anon-enums", "mlir::ModuleOp"> {
 }
 
 def HWLowerInstanceChoices : Pass<"hw-lower-instance-choices",
-                                  "mlir::ModuleOp"> {
+                                  "hw::HWDesignOp"> {
   let summary = "Prepare the collateral for instance choice emission";
   let description = [{
     This pass runs as part of verilog emission.
@@ -132,7 +132,7 @@ def PrepareForEmission : Pass<"prepare-for-emission"> {
   ];
 }
 
-def ExportVerilog : Pass<"export-verilog", "mlir::ModuleOp"> {
+def ExportVerilog : Pass<"export-verilog", "hw::HWDesignOp"> {
   let summary = "Emit the IR to a (System)Verilog file";
   let description = [{
       This pass creates empty module bodies for external modules.  This is
@@ -145,7 +145,7 @@ def ExportVerilog : Pass<"export-verilog", "mlir::ModuleOp"> {
   ];
 }
 
-def ExportSplitVerilog : Pass<"export-split-verilog", "mlir::ModuleOp"> {
+def ExportSplitVerilog : Pass<"export-split-verilog", "hw::HWDesignOp"> {
   let summary = "Emit the IR to a (System)Verilog directory of files";
   let description = [{
     This pass generates (System)Verilog for the current design, mutating it
@@ -218,11 +218,11 @@ def LoopScheduleToCalyx : Pass<"lower-loopschedule-to-calyx", "mlir::ModuleOp"> 
 // TODO: @mortbopet: There is a possible non-neglible speedup that can be achieved
 // here by allowing this pass to run on a per-hwmodule/whatever container the
 // pipeline is nested within-granularity. However, this conversion adds (and removes)
-// new modules to the top-level mlir::ModuleOp scope, which technically violates
+// new modules to the top-level hw::HWDesignOp scope, which technically violates
 // hw::HWModuleLike's IsolatedFromAbove (and thus has previously caused
-// concurrency issues via. concurrent additions and removals to the mlir::ModuleOp
+// concurrency issues via. concurrent additions and removals to the hw::HWDesignOp
 // symboltable).
-def PipelineToHW : Pass<"lower-pipeline-to-hw", "mlir::ModuleOp"> {
+def PipelineToHW : Pass<"lower-pipeline-to-hw", "hw::HWDesignOp"> {
   let summary = "Lower Pipeline to HW";
   let description = [{
     This pass lowers `pipeline.rtp` operations to HW.
@@ -402,7 +402,7 @@ def CalyxRemoveGroupsFromFSM : Pass<"calyx-remove-groups-fsm", "calyx::Component
 // FSMToSV
 //===----------------------------------------------------------------------===//
 
-def ConvertFSMToSV : Pass<"convert-fsm-to-sv", "mlir::ModuleOp"> {
+def ConvertFSMToSV : Pass<"convert-fsm-to-sv", "hw::HWDesignOp"> {
   let summary = "Convert FSM to SV and HW";
   let constructor = "circt::createConvertFSMToSVPass()";
   let dependentDialects = [
@@ -418,7 +418,7 @@ def ConvertFSMToSV : Pass<"convert-fsm-to-sv", "mlir::ModuleOp"> {
 // FIRRTLToHW
 //===----------------------------------------------------------------------===//
 
-def LowerFIRRTLToHW : Pass<"lower-firrtl-to-hw", "mlir::ModuleOp"> {
+def LowerFIRRTLToHW : Pass<"lower-firrtl-to-hw", "hw::HWDesignOp"> {
   let summary = "Lower FIRRTL to HW";
   let description = [{
     Lower a module of FIRRTL dialect to the HW dialect family.
@@ -460,7 +460,7 @@ def LowerFIRRTLToHW : Pass<"lower-firrtl-to-hw", "mlir::ModuleOp"> {
 // HandshakeToDC
 //===----------------------------------------------------------------------===//
 
-def HandshakeToDC : Pass<"lower-handshake-to-dc", "mlir::ModuleOp"> {
+def HandshakeToDC : Pass<"lower-handshake-to-dc", "hw::HWDesignOp"> {
   let summary = "Lower Handshake to DC";
   let description = [{
     Lower Handshake to DC operations.
@@ -521,7 +521,7 @@ def HandshakeToHW : Pass<"lower-handshake-to-hw", "mlir::ModuleOp"> {
 // Moore to Comb/HW/LLHD
 //===----------------------------------------------------------------------===//
 
-def ConvertMooreToCore : Pass<"convert-moore-to-core", "mlir::ModuleOp"> {
+def ConvertMooreToCore : Pass<"convert-moore-to-core", "hw::HWDesignOp"> {
   let summary = "Convert Moore to Core";
   let description = [{
     This pass translates Moore to the core dialects.
@@ -542,7 +542,7 @@ def ConvertMooreToCore : Pass<"convert-moore-to-core", "mlir::ModuleOp"> {
 // HWToLLVM
 //===----------------------------------------------------------------------===//
 
-def ConvertHWToLLVM : Pass<"convert-hw-to-llvm", "mlir::ModuleOp"> {
+def ConvertHWToLLVM : Pass<"convert-hw-to-llvm", "hw::HWDesignOp"> {
   let summary = "Convert HW to LLVM";
   let description = [{
     This pass translates HW to LLVM.
@@ -555,7 +555,7 @@ def ConvertHWToLLVM : Pass<"convert-hw-to-llvm", "mlir::ModuleOp"> {
 // HWArithToHW
 //===----------------------------------------------------------------------===//
 
-def HWArithToHW : Pass<"lower-hwarith-to-hw", "mlir::ModuleOp"> {
+def HWArithToHW : Pass<"lower-hwarith-to-hw", "hw::HWDesignOp"> {
   let summary = "Lower HWArith to HW/Comb";
   let description = [{
     This pass lowers HWArith to HW/Comb.
@@ -568,7 +568,7 @@ def HWArithToHW : Pass<"lower-hwarith-to-hw", "mlir::ModuleOp"> {
 // HWToSystemC
 //===----------------------------------------------------------------------===//
 
-def ConvertHWToSystemC : Pass<"convert-hw-to-systemc", "mlir::ModuleOp"> {
+def ConvertHWToSystemC : Pass<"convert-hw-to-systemc", "hw::HWDesignOp"> {
   let summary = "Convert HW to SystemC";
   let description = [{
     This pass translates a HW design into an equivalent SystemC design.
@@ -594,7 +594,7 @@ def LowerHWToSV : Pass<"lower-hw-to-sv", "hw::HWModuleOp"> {
 // HWToBTOR2
 //===----------------------------------------------------------------------===//
 
-def ConvertHWToBTOR2 : Pass<"convert-hw-to-btor2", "mlir::ModuleOp"> {
+def ConvertHWToBTOR2 : Pass<"convert-hw-to-btor2", "hw::HWDesignOp"> {
   let summary = "Convert HW to BTOR2";
   let description = [{
     This pass converts a HW module into a state transition system that is then
@@ -663,7 +663,7 @@ def HandshakeRemoveBlock : Pass<"handshake-remove-block-structure", "handshake::
 // ConvertToArcs
 //===----------------------------------------------------------------------===//
 
-def ConvertToArcs : Pass<"convert-to-arcs", "mlir::ModuleOp"> {
+def ConvertToArcs : Pass<"convert-to-arcs", "hw::HWDesignOp"> {
   let summary = "Outline logic between registers into state transfer arcs";
   let description = [{
     This pass outlines combinational logic between registers into state transfer
@@ -683,7 +683,7 @@ def ConvertToArcs : Pass<"convert-to-arcs", "mlir::ModuleOp"> {
 // ConvertCombToArith
 //===----------------------------------------------------------------------===//
 
-def ConvertCombToArith : Pass<"convert-comb-to-arith", "mlir::ModuleOp"> {
+def ConvertCombToArith : Pass<"convert-comb-to-arith"> {
   let summary = "Convert combinational ops and constants into arith ops";
   let constructor = "circt::createConvertCombToArithPass()";
   let dependentDialects = ["mlir::arith::ArithDialect"];
@@ -693,7 +693,7 @@ def ConvertCombToArith : Pass<"convert-comb-to-arith", "mlir::ModuleOp"> {
 // ConvertCombToSMT
 //===----------------------------------------------------------------------===//
 
-def ConvertCombToSMT : Pass<"convert-comb-to-smt", "mlir::ModuleOp"> {
+def ConvertCombToSMT : Pass<"convert-comb-to-smt"> {
   let summary = "Convert combinational ops and constants to SMT ops";
   // Need to depend on HWDialect because some 'comb' canonicalization patterns
   // build 'hw.constant' operations.
@@ -706,7 +706,7 @@ def ConvertCombToSMT : Pass<"convert-comb-to-smt", "mlir::ModuleOp"> {
 // ConvertHWToSMT
 //===----------------------------------------------------------------------===//
 
-def ConvertHWToSMT : Pass<"convert-hw-to-smt", "mlir::ModuleOp"> {
+def ConvertHWToSMT : Pass<"convert-hw-to-smt", "hw::HWDesignOp"> {
   let summary = "Convert HW ops and constants to SMT ops";
   let dependentDialects = ["smt::SMTDialect", "mlir::func::FuncDialect"];
 }
@@ -715,7 +715,7 @@ def ConvertHWToSMT : Pass<"convert-hw-to-smt", "mlir::ModuleOp"> {
 // ConvertVerifToSMT
 //===----------------------------------------------------------------------===//
 
-def ConvertVerifToSMT : Pass<"convert-verif-to-smt", "mlir::ModuleOp"> {
+def ConvertVerifToSMT : Pass<"convert-verif-to-smt"> {
   let summary = "Convert Verif ops to SMT ops";
   let dependentDialects = [
     "smt::SMTDialect",
@@ -729,7 +729,7 @@ def ConvertVerifToSMT : Pass<"convert-verif-to-smt", "mlir::ModuleOp"> {
 // ConvertArcToLLVM
 //===----------------------------------------------------------------------===//
 
-def LowerArcToLLVM : Pass<"lower-arc-to-llvm", "mlir::ModuleOp"> {
+def LowerArcToLLVM : Pass<"lower-arc-to-llvm", "hw::HWDesignOp"> {
   let summary = "Lower state transfer arc representation to LLVM";
   let constructor = "circt::createLowerArcToLLVMPass()";
   let dependentDialects = [
@@ -762,7 +762,7 @@ def LowerSMTToZ3LLVM : Pass<"lower-smt-to-z3-llvm", "mlir::ModuleOp"> {
 // ConvertSeqToSV
 //===----------------------------------------------------------------------===//
 
-def LowerSeqToSV: Pass<"lower-seq-to-sv",  "mlir::ModuleOp"> {
+def LowerSeqToSV: Pass<"lower-seq-to-sv",  "hw::HWDesignOp"> {
   let summary = "Lower sequential firrtl ops to SV.";
   let constructor = "circt::createLowerSeqToSVPass()";
   let dependentDialects = [
@@ -786,7 +786,7 @@ def LowerSeqToSV: Pass<"lower-seq-to-sv",  "mlir::ModuleOp"> {
   ];
 }
 
-def LowerFirMem : Pass<"lower-seq-firmem", "mlir::ModuleOp"> {
+def LowerFirMem : Pass<"lower-seq-firmem", "hw::HWDesignOp"> {
   let summary = "Lower seq.firmem ops to instances of hw.module.generated ops";
   let constructor = "circt::createLowerFirMemPass()";
   let dependentDialects = ["circt::hw::HWDialect"];
@@ -796,7 +796,7 @@ def LowerFirMem : Pass<"lower-seq-firmem", "mlir::ModuleOp"> {
 // ConvertSimToSV
 //===----------------------------------------------------------------------===//
 
-def LowerSimToSV: Pass<"lower-sim-to-sv",  "mlir::ModuleOp"> {
+def LowerSimToSV: Pass<"lower-sim-to-sv",  "hw::HWDesignOp"> {
   let summary = "Lower simulator-specific `sim` ops to SV.";
   let constructor = "circt::createLowerSimToSVPass()";
   let dependentDialects = [

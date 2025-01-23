@@ -84,6 +84,6 @@ void ESIAppIDHierPass::runOnOperation() {
     return signalPassFailure();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> circt::esi::createESIAppIDHierPass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::esi::createESIAppIDHierPass() {
   return std::make_unique<ESIAppIDHierPass>();
 }

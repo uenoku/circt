@@ -760,7 +760,7 @@ def DropConst : Pass<"firrtl-drop-const", "firrtl::CircuitOp"> {
   let constructor = "circt::firrtl::createDropConstPass()";
 }
 
-def FinalizeIR : Pass<"firrtl-finalize-ir", "mlir::ModuleOp"> {
+def FinalizeIR : Pass<"firrtl-finalize-ir", "hw::HWDesignOp"> {
   let summary = "Perform final IR mutations after ExportVerilog";
   let description = [{
     This pass finalizes the IR after it has been exported with ExportVerilog,

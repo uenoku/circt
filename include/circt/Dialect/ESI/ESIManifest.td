@@ -146,7 +146,7 @@ def ServiceImplClientRecordOp : ESI_Op<"manifest.impl_conn", [
 }
 
 def AppIDHierRootOp : ESI_Op<"manifest.hier_root",
-                             [HasParent<"mlir::ModuleOp">,
+                             [HasParent<"hw::HWDesignOp">,
                              NoTerminator, SingleBlock]> {
   let summary = "The root of an appid instance hierarchy";
 

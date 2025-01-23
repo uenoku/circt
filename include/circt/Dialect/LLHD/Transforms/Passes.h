@@ -20,14 +20,15 @@
 namespace circt {
 namespace hw {
 class HWModuleOp;
+class HWDesignOp;
 } // namespace hw
 
 namespace llhd {
 class ProcessOp;
 
-std::unique_ptr<OperationPass<ModuleOp>> createProcessLoweringPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createProcessLoweringPass();
 
-std::unique_ptr<OperationPass<ModuleOp>> createFunctionEliminationPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createFunctionEliminationPass();
 
 std::unique_ptr<OperationPass<hw::HWModuleOp>>
 createMemoryToBlockArgumentPass();

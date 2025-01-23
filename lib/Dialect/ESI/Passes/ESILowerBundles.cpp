@@ -204,7 +204,7 @@ struct ESIBundlesPass
 /// Iterate through the `hw.module[.extern]`s and lower their ports.
 void ESIBundlesPass::runOnOperation() {
   MLIRContext &ctxt = getContext();
-  ModuleOp top = getOperation();
+  auto top = getOperation();
 
   // Find all modules and run port conversion on them.
   circt::hw::InstanceGraph &instanceGraph =
@@ -229,7 +229,7 @@ void ESIBundlesPass::runOnOperation() {
   });
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESIBundleLoweringPass() {
   return std::make_unique<ESIBundlesPass>();
 }

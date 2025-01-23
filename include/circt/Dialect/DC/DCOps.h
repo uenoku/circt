@@ -23,6 +23,7 @@
 #include "circt/Dialect/ESI/ESITypes.h"
 
 namespace circt {
+
 namespace dc {
 
 // Returns true if 't'is a `dc.value<i1>` type.

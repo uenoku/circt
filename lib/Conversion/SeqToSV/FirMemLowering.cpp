@@ -18,7 +18,7 @@ using llvm::MapVector;
 
 #define DEBUG_TYPE "lower-seq-firmem"
 
-FirMemLowering::FirMemLowering(ModuleOp circuit)
+FirMemLowering::FirMemLowering(hw::HWDesignOp circuit)
     : context(circuit.getContext()), circuit(circuit) {
   symbolCache.addDefinitions(circuit);
   globalNamespace.add(symbolCache);

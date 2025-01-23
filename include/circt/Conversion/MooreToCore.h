@@ -18,12 +18,15 @@
 #include <memory>
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 
 #define GEN_PASS_DECL_CONVERTMOORETOCORE
 #include "circt/Conversion/Passes.h.inc"
 
 /// Create an Moore to Comb/HW/LLHD conversion pass.
-std::unique_ptr<OperationPass<ModuleOp>> createConvertMooreToCorePass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createConvertMooreToCorePass();
 
 } // namespace circt
 

@@ -16,7 +16,7 @@
 include "mlir/Pass/PassBase.td"
 include "mlir/Rewrite/PassUtil.td"
 
-def LowerToBMC : Pass<"lower-to-bmc", "::mlir::ModuleOp"> {
+def LowerToBMC : Pass<"lower-to-bmc", "::circt::hw::HWDesignOp"> {
   let summary = "Lower CIRCTs core dialects to a BMC problem statement";
   let options = [
     Option<"topModule", "top-module", "std::string",
@@ -36,7 +36,7 @@ def LowerToBMC : Pass<"lower-to-bmc", "::mlir::ModuleOp"> {
   ];
 }
 
-def ExternalizeRegisters : Pass<"externalize-registers", "::mlir::ModuleOp"> {
+def ExternalizeRegisters : Pass<"externalize-registers", "::circt::hw::HWDesignOp"> {
   let summary = "Removes registers and adds corresponding input and output ports";
 
   let dependentDialects = [

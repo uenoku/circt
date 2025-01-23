@@ -10,7 +10,7 @@ include "circt/Dialect/ESI/ESIServices.td"
 include "circt/Dialect/HW/HWTypes.td"
 
 def RandomAccessMemoryDeclOp: ESI_Op<"mem.ram",
-          [SingleBlock, NoTerminator, HasParent<"::mlir::ModuleOp">,
+          [SingleBlock, NoTerminator, HasParent<"::circt::hw::HWDesignOp">,
           Symbol, DeclareOpInterfaceMethods<ServiceDeclOpInterface>]> {
   let summary = "Random access memory service";
   let description = [{
@@ -42,7 +42,7 @@ def RandomAccessMemoryDeclOp: ESI_Op<"mem.ram",
 }
 
 def FuncServiceDeclOp : ESI_Op<"service.std.func",
-          [SingleBlock, NoTerminator, HasParent<"::mlir::ModuleOp">,
+          [SingleBlock, NoTerminator, HasParent<"::circt::hw::HWDesignOp">,
            Symbol, DeclareOpInterfaceMethods<ServiceDeclOpInterface>]> {
   let summary = "Function service";
   let description = [{
@@ -68,7 +68,7 @@ def FuncServiceDeclOp : ESI_Op<"service.std.func",
 }
 
 def CallServiceDeclOp : ESI_Op<"service.std.call",
-          [SingleBlock, NoTerminator, HasParent<"::mlir::ModuleOp">,
+          [SingleBlock, NoTerminator, HasParent<"::circt::hw::HWDesignOp">,
            Symbol, DeclareOpInterfaceMethods<ServiceDeclOpInterface>]> {
   let summary = "Service against which hardware can call into software";
 
@@ -84,7 +84,7 @@ def CallServiceDeclOp : ESI_Op<"service.std.call",
 }
 
 def MMIOServiceDeclOp: ESI_Op<"service.std.mmio",
-          [HasParent<"::mlir::ModuleOp">, Symbol,
+          [HasParent<"::circt::hw::HWDesignOp">, Symbol,
            DeclareOpInterfaceMethods<ServiceDeclOpInterface>]> {
   let summary = "MMIO service";
   let description = [{
@@ -104,7 +104,7 @@ def MMIOServiceDeclOp: ESI_Op<"service.std.mmio",
 }
 
 def HostMemServiceDeclOp: ESI_Op<"service.std.hostmem",
-          [HasParent<"::mlir::ModuleOp">, Symbol,
+          [HasParent<"::circt::hw::HWDesignOp">, Symbol,
            DeclareOpInterfaceMethods<ServiceDeclOpInterface>]> {
   let summary = "Host memory service";
   let description = [{

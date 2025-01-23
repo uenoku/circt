@@ -34,7 +34,7 @@ class HWModuleOpBase<string mnemonic, list<Trait> traits = []> :
       DeclareOpInterfaceMethods<HWModuleLike>,
       DeclareOpInterfaceMethods<HWMutableModuleLike>,
       Symbol, InnerSymbolTable,
-      OpAsmOpInterface, HasParent<"mlir::ModuleOp">]> {
+      OpAsmOpInterface, HasParent<"hw::HWDesignOp">]> {
   /// Additional class declarations inside the module op.
   code extraModuleClassDeclaration = ?;
 
@@ -304,7 +304,7 @@ def HWModuleExternOp : HWModuleOpBase<"module.extern"> {
 }
 
 def HWGeneratorSchemaOp : HWOp<"generator.schema",
-      [Symbol, HasParent<"mlir::ModuleOp">]> {
+      [Symbol, HasParent<"hw::HWDesignOp">]> {
   let summary = "HW Generator Schema declaration";
   let description = [{
     The "hw.generator.schema" operation declares a kind of generated module by
@@ -704,30 +704,40 @@ def TriggeredOp : HWOp<"triggered", [
 
 def HWDesignOp : HWOp<"design", [
     IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
-    OpAsmOpInterface
-  ] # GraphRegionNoTerminator.traits> {
+    OpAsmOpInterface, SingleBlock
+  ]> {
   let summary = "HW container operation";
   let description = [{
-    TODO
+    A top-level container operation for hardware designs. This replaces the use of 
+    hw::HWDesignOp as the top-level container for hardware designs.
   }];
+
   let arguments = (ins OptionalAttr<SymbolNameAttr>:$sym_name,
-                       OptionalAttr<StrAttr>:$sym_visibility);
+                      OptionalAttr<StrAttr>:$sym_visibility);
   let regions = (region SizedRegion<1>:$bodyRegion);
+
   let assemblyFormat = "($sym_name^)? attr-dict-with-keyword $bodyRegion";
+
   let builders = [OpBuilder<(ins CArg<"std::optional<StringRef>", "{}">:$name)>];
+
   let extraClassDeclaration = [{
     /// Construct a module from the given location with an optional name.
     static ModuleOp create(Location loc, std::optional<StringRef> name = std::nullopt);
+
     /// Return the name of this module if present.
     std::optional<StringRef> getName() { return getSymName(); }
+
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
     //===------------------------------------------------------------------===//
+
     /// A ModuleOp may optionally define a symbol.
     bool isOptionalSymbol() { return true; }
+
     //===------------------------------------------------------------------===//
     // OpAsmOpInterface Methods
     //===------------------------------------------------------------------===//
+
     static ::llvm::StringRef getDefaultDialect() {
       return "hw";
     }

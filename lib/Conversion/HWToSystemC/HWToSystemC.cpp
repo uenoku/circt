@@ -341,14 +341,14 @@ struct HWToSystemCPass
 } // namespace
 
 /// Create a HW to SystemC dialects conversion pass.
-std::unique_ptr<OperationPass<ModuleOp>> circt::createConvertHWToSystemCPass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::createConvertHWToSystemCPass() {
   return std::make_unique<HWToSystemCPass>();
 }
 
 /// This is the main entrypoint for the HW to SystemC conversion pass.
 void HWToSystemCPass::runOnOperation() {
   MLIRContext &context = getContext();
-  ModuleOp module = getOperation();
+  auto module = getOperation();
 
   // Create the include operation here to have exactly one 'systemc' include at
   // the top instead of one per module.

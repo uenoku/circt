@@ -339,7 +339,7 @@ protected:
   DenseMap<Operation *, SmallVector<igraph::InstanceOpInterface, 1>>
       moduleInstantiations;
 
-  void getAndSortModules(ModuleOp topMod,
+  void getAndSortModules(hw::HWDesignOp topMod,
                          SmallVectorImpl<hw::HWModuleLike> &mods);
   void getAndSortModulesVisitor(hw::HWModuleLike mod,
                                 SmallVectorImpl<hw::HWModuleLike> &mods,
@@ -347,7 +347,7 @@ protected:
 };
 } // namespace
 
-void ModuleSorter::getAndSortModules(ModuleOp topMod,
+void ModuleSorter::getAndSortModules(hw::HWDesignOp topMod,
                                      SmallVectorImpl<hw::HWModuleLike> &mods) {
   // Add here _before_ we go deeper to prevent infinite recursion.
   DenseSet<Operation *> modsSeen;
@@ -425,7 +425,7 @@ private:
 } // anonymous namespace
 
 void ESIConnectServicesPass::runOnOperation() {
-  ModuleOp outerMod = getOperation();
+  auto outerMod = getOperation();
   topLevelSyms.addDefinitions(outerMod);
 
   outerMod.walk([&](RequestConnectionOp req) { convertReq(req); });
@@ -678,7 +678,7 @@ ESIConnectServicesPass::surfaceReqs(hw::HWMutableModuleLike mod,
   return success();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::esi::createESIConnectServicesPass() {
   return std::make_unique<ESIConnectServicesPass>();
 }

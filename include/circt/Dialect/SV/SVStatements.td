@@ -937,7 +937,7 @@ def FuncOp : SVOp<"func",
      [IsolatedFromAbove, Symbol, OpAsmOpInterface, ProceduralRegion,
       DeclareOpInterfaceMethods<HWModuleLike>,
       DeclareOpInterfaceMethods<PortList>,
-      FunctionOpInterface, HasParent<"mlir::ModuleOp">,
+      FunctionOpInterface, HasParent<"hw::HWDesignOp">,
       HWEmittableModuleLike]> {
   let summary = "A SystemVerilog function";
   let description = [{
@@ -1098,7 +1098,7 @@ def ReturnOp : SVOp<"return",
 //===----------------------------------------------------------------------===//
 
 def ReserveNamesOp : SVOp<"reserve_names", [
-  HasParent<"mlir::ModuleOp">
+  HasParent<"hw::HWDesignOp">
 ]> {
   let summary = "Disallow a set of names to be used during emission";
 

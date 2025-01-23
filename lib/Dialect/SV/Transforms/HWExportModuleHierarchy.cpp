@@ -115,7 +115,7 @@ void HWExportModuleHierarchyPass::extractHierarchyFromTop(
 /// Find the modules corresponding to the firrtl mainModule and DesignUnderTest,
 /// and if they exist, emit a verbatim op with the module hierarchy for each.
 void HWExportModuleHierarchyPass::runOnOperation() {
-  mlir::ModuleOp mlirModule = getOperation();
+  hw::HWDesignOp mlirModule = getOperation();
   std::optional<SymbolTable *> symbolTable;
 
   for (auto op : mlirModule.getOps<hw::HWModuleOp>()) {

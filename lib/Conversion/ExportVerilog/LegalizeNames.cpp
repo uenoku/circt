@@ -108,7 +108,7 @@ class GlobalNameResolver {
 public:
   /// Construct a GlobalNameResolver and perform name legalization of the
   /// module/interfaces, port/parameter and declaration names.
-  GlobalNameResolver(mlir::ModuleOp topLevel, const LoweringOptions &options);
+  GlobalNameResolver(hw::HWDesignOp topLevel, const LoweringOptions &options);
 
   GlobalNameTable takeGlobalNameTable() { return std::move(globalNameTable); }
 
@@ -121,7 +121,7 @@ private:
   void legalizeFunctionNames(FuncOp func);
 
   // Gathers prefixes of enum types by inspecting typescopes in the module.
-  void gatherEnumPrefixes(mlir::ModuleOp topLevel);
+  void gatherEnumPrefixes(hw::HWDesignOp topLevel);
 
   /// Set of globally visible names, to ensure uniqueness.
   NameCollisionResolver globalNameResolver;
@@ -243,7 +243,7 @@ static void legalizeModuleLocalNames(HWEmittableModuleLike module,
 
 /// Construct a GlobalNameResolver and do the initial scan to populate and
 /// unique the module/interfaces and port/parameter names.
-GlobalNameResolver::GlobalNameResolver(mlir::ModuleOp topLevel,
+GlobalNameResolver::GlobalNameResolver(hw::HWDesignOp topLevel,
                                        const LoweringOptions &options)
     : globalNameResolver(options), options(options) {
   // Register the names of external modules which we cannot rename. This has to
@@ -295,7 +295,7 @@ GlobalNameResolver::GlobalNameResolver(mlir::ModuleOp topLevel,
 }
 
 // Gathers prefixes of enum types by investigating typescopes in the module.
-void GlobalNameResolver::gatherEnumPrefixes(mlir::ModuleOp topLevel) {
+void GlobalNameResolver::gatherEnumPrefixes(hw::HWDesignOp topLevel) {
   auto *ctx = topLevel.getContext();
   for (auto typeScope : topLevel.getOps<hw::TypeScopeOp>()) {
     for (auto typeDecl : typeScope.getOps<hw::TypedeclOp>()) {
@@ -371,7 +371,7 @@ void GlobalNameResolver::legalizeFunctionNames(FuncOp func) {
 /// Rewrite module names and interfaces to not conflict with each other or with
 /// Verilog keywords.
 GlobalNameTable
-ExportVerilog::legalizeGlobalNames(ModuleOp topLevel,
+ExportVerilog::legalizeGlobalNames(hw::HWDesignOp topLevel,
                                    const LoweringOptions &options) {
   GlobalNameResolver resolver(topLevel, options);
   return resolver.takeGlobalNameTable();

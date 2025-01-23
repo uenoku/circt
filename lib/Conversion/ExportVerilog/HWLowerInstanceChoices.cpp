@@ -49,7 +49,7 @@ struct HWLowerInstanceChoicesPass
 
 } // end anonymous namespace
 
-LogicalResult ExportVerilog::lowerHWInstanceChoices(mlir::ModuleOp module) {
+LogicalResult ExportVerilog::lowerHWInstanceChoices(hw::HWDesignOp module) {
   // Collect all instance choices & symbols.
   SmallVector<InstanceChoiceOp> instances;
   SymbolCache symCache;
@@ -107,7 +107,7 @@ LogicalResult ExportVerilog::lowerHWInstanceChoices(mlir::ModuleOp module) {
 }
 
 void HWLowerInstanceChoicesPass::runOnOperation() {
-  ModuleOp module = getOperation();
+  auto module = getOperation();
   if (failed(lowerHWInstanceChoices(module)))
     signalPassFailure();
 }

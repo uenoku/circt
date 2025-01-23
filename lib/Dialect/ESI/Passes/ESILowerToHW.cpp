@@ -494,7 +494,7 @@ protected:
 LogicalResult ManifestRomLowering::createRomModule(
     CompressedManifestOp op, ConversionPatternRewriter &rewriter) const {
   Location loc = op.getLoc();
-  auto mlirModBody = op->getParentOfType<mlir::ModuleOp>();
+  auto mlirModBody = op->getParentOfType<hw::HWDesignOp>();
   rewriter.setInsertionPointToStart(mlirModBody.getBody());
 
   // Find possible existing module (which may have been created as a dummy
@@ -617,7 +617,7 @@ LogicalResult CosimManifestLowering::matchAndRewrite(
        0},
   };
   rewriter.setInsertionPointToEnd(
-      op->getParentOfType<mlir::ModuleOp>().getBody());
+      op->getParentOfType<hw::HWDesignOp>().getBody());
   auto cosimManifestExternModule = rewriter.create<HWModuleExternOp>(
       loc, rewriter.getStringAttr("Cosim_Manifest"), ports, "Cosim_Manifest",
       ArrayAttr::get(ctxt, params));
@@ -719,6 +719,6 @@ void ESItoHWPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> circt::esi::createESItoHWPass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::esi::createESItoHWPass() {
   return std::make_unique<ESItoHWPass>();
 }

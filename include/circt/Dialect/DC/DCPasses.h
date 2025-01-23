@@ -18,11 +18,14 @@ class Pass;
 } // namespace mlir
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace dc {
 
 #define GEN_PASS_DECL
 #include "circt/Dialect/DC/DCPasses.h.inc"
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createDCDotPrintPass();
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>> createDCDotPrintPass();
 
 std::unique_ptr<mlir::Pass> createDCMaterializeForksSinksPass();
 std::unique_ptr<mlir::Pass> createDCDematerializeForksSinksPass();

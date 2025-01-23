@@ -53,7 +53,7 @@ def KanagawaTunneling : Pass<"kanagawa-tunneling", "DesignOp"> {
   ];
 }
 
-def KanagawaPortrefLowering : Pass<"kanagawa-lower-portrefs", "::mlir::ModuleOp"> {
+def KanagawaPortrefLowering : Pass<"kanagawa-lower-portrefs", "mlir::ModuleOp"> {
   let summary = "Kanagawa portref lowering pass";
   let description = [{
     Lower `kanagawa.portref<portref <T>>` to T (i.e. portref resolution).
@@ -94,7 +94,7 @@ def KanagawaCleanSelfdrivers : Pass<"kanagawa-clean-selfdrivers", "DesignOp"> {
   let dependentDialects = ["::circt::hw::HWDialect"];
 }
 
-def KanagawaContainersToHW : Pass<"kanagawa-convert-containers-to-hw", "::mlir::ModuleOp"> {
+def KanagawaContainersToHW : Pass<"kanagawa-convert-containers-to-hw", "mlir::ModuleOp"> {
   let summary = "Kanagawa containers to hw conversion pass";
   let description = [{
     Converts `kanagawa.container` ops to `hw.module` ops.

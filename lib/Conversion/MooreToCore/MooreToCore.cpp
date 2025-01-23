@@ -1752,14 +1752,14 @@ struct MooreToCorePass
 } // namespace
 
 /// Create a Moore to core dialects conversion pass.
-std::unique_ptr<OperationPass<ModuleOp>> circt::createConvertMooreToCorePass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::createConvertMooreToCorePass() {
   return std::make_unique<MooreToCorePass>();
 }
 
 /// This is the main entrypoint for the Moore to Core conversion pass.
 void MooreToCorePass::runOnOperation() {
   MLIRContext &context = getContext();
-  ModuleOp module = getOperation();
+  auto module = getOperation();
 
   IRRewriter rewriter(module);
   (void)mlir::eraseUnreachableBlocks(rewriter, module->getRegions());

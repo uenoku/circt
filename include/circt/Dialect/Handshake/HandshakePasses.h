@@ -24,15 +24,18 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace handshake {
 class FuncOp;
 
 #define GEN_PASS_DECL
 #include "circt/Dialect/Handshake/HandshakePasses.h.inc"
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 createHandshakeDotPrintPass();
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 createHandshakeOpCountPass();
 std::unique_ptr<mlir::Pass> createHandshakeMaterializeForksSinksPass();
 std::unique_ptr<mlir::Pass> createHandshakeDematerializeForksSinksPass();

@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/OM/OMOps.h"
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Support/Namespace.h"
@@ -37,10 +38,10 @@ using namespace llvm;
 namespace {
 // A map from a pair of enclosing module op and old symbol to a new symbol.
 using SymMappingTy =
-    llvm::DenseMap<std::pair<ModuleOp, StringAttr>, StringAttr>;
+    llvm::DenseMap<std::pair<hw::HWDesignOp, StringAttr>, StringAttr>;
 
 struct ModuleInfo {
-  ModuleInfo(mlir::ModuleOp module) : module(module) {
+  ModuleInfo(hw::HWDesignOp module) : module(module) {
     block = std::make_unique<Block>();
   }
 
@@ -54,7 +55,7 @@ struct ModuleInfo {
   llvm::DenseMap<StringAttr, ClassLike> symbolToClasses;
 
   // A target module.
-  ModuleOp module;
+  hw::HWDesignOp module;
 
   // A block to store original operations.
   std::unique_ptr<Block> block;
@@ -235,7 +236,7 @@ void LinkModulesPass::runOnOperation() {
   // 1. Initialize ModuleInfo.
   SmallVector<ModuleInfo> modules;
   size_t counter = 0;
-  for (auto module : toplevelModule.getOps<ModuleOp>()) {
+  for (auto module : toplevelModule.getOps<hw::HWDesignOp>()) {
     auto name = module->getAttrOfType<StringAttr>("om.namespace");
     // Use `counter` if the namespace is not specified beforehand.
     if (!name) {
@@ -284,7 +285,7 @@ void LinkModulesPass::runOnOperation() {
     // suffix.
     if (*result)
       for (auto op : classes) {
-        auto enclosingModule = cast<mlir::ModuleOp>(op->getParentOp());
+        auto enclosingModule = cast<hw::HWDesignOp>(op->getParentOp());
         auto nameSpaceId =
             enclosingModule->getAttrOfType<StringAttr>("om.namespace");
         symMapping[{enclosingModule, name}] = StringAttr::get(

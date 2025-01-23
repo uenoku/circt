@@ -26,6 +26,9 @@ class GlobalOp;
 } // namespace mlir
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 
 #define GEN_PASS_DECL_CONVERTHWTOLLVM
 #include "circt/Conversion/Passes.h.inc"
@@ -53,7 +56,7 @@ void populateHWToLLVMConversionPatterns(
         &constAggregateGlobalsMap);
 
 /// Create an HW to LLVM conversion pass.
-std::unique_ptr<OperationPass<ModuleOp>> createConvertHWToLLVMPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createConvertHWToLLVMPass();
 
 } // namespace circt
 

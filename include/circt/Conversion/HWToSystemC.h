@@ -19,15 +19,17 @@
 namespace mlir {
 template <typename T>
 class OperationPass;
-class ModuleOp;
 } // namespace mlir
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 
 #define GEN_PASS_DECL_CONVERTHWTOSYSTEMC
 #include "circt/Conversion/Passes.h.inc"
 
-std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+std::unique_ptr<mlir::OperationPass<hw::HWDesignOp>>
 createConvertHWToSystemCPass();
 } // namespace circt
 

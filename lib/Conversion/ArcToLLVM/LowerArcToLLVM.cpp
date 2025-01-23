@@ -702,6 +702,6 @@ void LowerArcToLLVMPass::runOnOperation() {
     signalPassFailure();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> circt::createLowerArcToLLVMPass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::createLowerArcToLLVMPass() {
   return std::make_unique<LowerArcToLLVMPass>();
 }

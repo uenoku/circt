@@ -10,6 +10,7 @@
 #include "circt/Dialect/Arc/ArcPasses.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "arc-simplify-variadic-ops"

@@ -432,7 +432,7 @@ namespace {
 class HWArithToHWPass : public circt::impl::HWArithToHWBase<HWArithToHWPass> {
 public:
   void runOnOperation() override {
-    ModuleOp module = getOperation();
+    auto module = getOperation();
 
     ConversionTarget target(getContext());
     target.markUnknownOpDynamicallyLegal(isLegalOp);

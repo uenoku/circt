@@ -344,7 +344,7 @@ using FragmentMapping = DenseMap<StringAttr, emit::FragmentOp>;
 /// then shared across all per-file emissions that happen in parallel.
 struct SharedEmitterState {
   /// The MLIR module to emit.
-  ModuleOp designOp;
+  hw::HWDesignOp designOp;
 
   /// The main file that collects all operations that are neither replicated
   /// per-file ops nor specifically assigned to a file.
@@ -384,7 +384,7 @@ struct SharedEmitterState {
   /// Tracks referenceable files through their symbol.
   FragmentMapping fragmentMapping;
 
-  explicit SharedEmitterState(ModuleOp designOp, const LoweringOptions &options,
+  explicit SharedEmitterState(hw::HWDesignOp designOp, const LoweringOptions &options,
                               GlobalNameTable globalNames)
       : designOp(designOp), options(options),
         globalNames(std::move(globalNames)) {}
@@ -448,7 +448,7 @@ bool isZeroBitType(Type type);
 bool isExpressionEmittedInline(Operation *op, const LoweringOptions &options);
 
 /// Generates the macros used by instance choices.
-LogicalResult lowerHWInstanceChoices(mlir::ModuleOp module);
+LogicalResult lowerHWInstanceChoices(hw::HWDesignOp module);
 
 /// For each module we emit, do a prepass over the structure, pre-lowering and
 /// otherwise rewriting operations we don't want to emit.
@@ -460,7 +460,7 @@ void pruneZeroValuedLogic(hw::HWEmittableModuleLike module);
 
 /// Rewrite module names and interfaces to not conflict with each other or with
 /// Verilog keywords.
-GlobalNameTable legalizeGlobalNames(ModuleOp topLevel,
+GlobalNameTable legalizeGlobalNames(hw::HWDesignOp topLevel,
                                     const LoweringOptions &options);
 
 } // namespace ExportVerilog

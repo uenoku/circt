@@ -764,7 +764,7 @@ class HandshakeToDCPass
 public:
   using Base::Base;
   void runOnOperation() override {
-    mlir::ModuleOp mod = getOperation();
+    auto mod = getOperation();
     auto patternBuilder = [&](TypeConverter &typeConverter,
                               handshaketodc::ConvertedOps &convertedOps,
                               RewritePatternSet &patterns) {

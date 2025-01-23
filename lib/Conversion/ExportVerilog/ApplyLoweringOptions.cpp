@@ -15,6 +15,7 @@
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Support/LoweringOptions.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Pass/Pass.h"
 
 namespace circt {

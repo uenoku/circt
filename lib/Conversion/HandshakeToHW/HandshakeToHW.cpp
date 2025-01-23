@@ -1959,7 +1959,7 @@ class HandshakeToHWPass
     : public circt::impl::HandshakeToHWBase<HandshakeToHWPass> {
 public:
   void runOnOperation() override {
-    mlir::ModuleOp mod = getOperation();
+    auto mod = getOperation();
 
     // Lowering to HW requires that every value is used exactly once. Check
     // whether this precondition is met, and if not, exit.

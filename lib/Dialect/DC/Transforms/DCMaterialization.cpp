@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/DC/DCOps.h"
 #include "circt/Dialect/DC/DCPasses.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Pass/Pass.h"
 
 namespace circt {

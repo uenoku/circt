@@ -13,6 +13,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "circt/Dialect/HW/HWOps.h"
 
 #define DEBUG_TYPE "arc-lower-clocks-to-funcs"
 

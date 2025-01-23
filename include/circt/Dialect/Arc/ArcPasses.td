@@ -12,7 +12,7 @@
 include "mlir/IR/EnumAttr.td"
 include "mlir/Pass/PassBase.td"
 
-def AddTaps : Pass<"arc-add-taps", "mlir::ModuleOp"> {
+def AddTaps : Pass<"arc-add-taps", "hw::HWDesignOp"> {
   let summary = "Add taps to ports and wires such that they remain observable";
   let constructor = "circt::arc::createAddTapsPass()";
   let dependentDialects = ["arc::ArcDialect", "seq::SeqDialect"];
@@ -30,7 +30,7 @@ def AllocateState : Pass<"arc-allocate-state", "arc::ModelOp"> {
   let dependentDialects = ["arc::ArcDialect"];
 }
 
-def ArcCanonicalizer : Pass<"arc-canonicalizer", "mlir::ModuleOp"> {
+def ArcCanonicalizer : Pass<"arc-canonicalizer", "hw::HWDesignOp"> {
   let summary = "Simulation centric canonicalizations";
   let constructor = "createArcCanonicalizerPass()";
   let dependentDialects = ["hw::HWDialect",
@@ -42,7 +42,7 @@ def ArcCanonicalizer : Pass<"arc-canonicalizer", "mlir::ModuleOp"> {
   ];
 }
 
-def Dedup : Pass<"arc-dedup", "mlir::ModuleOp"> {
+def Dedup : Pass<"arc-dedup", "hw::HWDesignOp"> {
   let summary = "Deduplicate identical arc definitions";
   let description = [{
     This pass deduplicates identical arc definitions. If two arcs differ only by
@@ -58,7 +58,7 @@ def Dedup : Pass<"arc-dedup", "mlir::ModuleOp"> {
   ];
 }
 
-def PrintCostModel : Pass<"arc-print-cost-model", "mlir::ModuleOp"> {
+def PrintCostModel : Pass<"arc-print-cost-model", "hw::HWDesignOp"> {
   let summary = "A dummy pass to test analysis passes";
   let constructor = "circt::arc::createPrintCostModelPass()";
   let dependentDialects = ["arc::ArcDialect"];
@@ -76,7 +76,7 @@ def PrintCostModel : Pass<"arc-print-cost-model", "mlir::ModuleOp"> {
   ];
 }
 
-def FindInitialVectors : Pass<"arc-find-initial-vectors", "mlir::ModuleOp"> {
+def FindInitialVectors : Pass<"arc-find-initial-vectors", "hw::HWDesignOp"> {
   let summary = "Find initial groups of vectorizable ops";
   let constructor = "circt::arc::createFindInitialVectorsPass()";
   let dependentDialects = ["arc::ArcDialect"];
@@ -92,7 +92,7 @@ def FindInitialVectors : Pass<"arc-find-initial-vectors", "mlir::ModuleOp"> {
   ];
 }
 
-def InferMemories : Pass<"arc-infer-memories", "mlir::ModuleOp"> {
+def InferMemories : Pass<"arc-infer-memories", "hw::HWDesignOp"> {
   let summary = "Convert `FIRRTL_Memory` instances to dedicated memory ops";
   let constructor = "circt::arc::createInferMemoriesPass()";
   let dependentDialects = [
@@ -106,7 +106,7 @@ def InferMemories : Pass<"arc-infer-memories", "mlir::ModuleOp"> {
   ];
 }
 
-def InlineArcs : Pass<"arc-inline" , "mlir::ModuleOp"> {
+def InlineArcs : Pass<"arc-inline" , "hw::HWDesignOp"> {
   let summary = "Inline very small arcs";
   let constructor = "circt::arc::createInlineArcsPass()";
   let statistics = [
@@ -125,7 +125,7 @@ def InlineArcs : Pass<"arc-inline" , "mlir::ModuleOp"> {
 }
 
 def InferStateProperties : Pass<"arc-infer-state-properties",
-                                "mlir::ModuleOp"> {
+                                "hw::HWDesignOp"> {
   let summary = "Add resets and enables explicitly to the state operations";
   let dependentDialects = ["circt::hw::HWDialect", "circt::comb::CombDialect"];
   let options = [
@@ -144,13 +144,13 @@ def InferStateProperties : Pass<"arc-infer-state-properties",
   ];
 }
 
-def IsolateClocks : Pass<"arc-isolate-clocks", "mlir::ModuleOp"> {
+def IsolateClocks : Pass<"arc-isolate-clocks", "hw::HWDesignOp"> {
   let summary = "Group clocked operations into clock domains";
   let constructor = "circt::arc::createIsolateClocksPass()";
   let dependentDialects = ["arc::ArcDialect"];
 }
 
-def LatencyRetiming : Pass<"arc-latency-retiming", "mlir::ModuleOp"> {
+def LatencyRetiming : Pass<"arc-latency-retiming", "hw::HWDesignOp"> {
   let summary = "Push latencies through the design";
   let constructor = "circt::arc::createLatencyRetimingPass()";
   let dependentDialects = ["arc::ArcDialect"];
@@ -163,13 +163,13 @@ def LatencyRetiming : Pass<"arc-latency-retiming", "mlir::ModuleOp"> {
   ];
 }
 
-def LowerArcsToFuncs : Pass<"arc-lower-arcs-to-funcs", "mlir::ModuleOp"> {
+def LowerArcsToFuncs : Pass<"arc-lower-arcs-to-funcs", "hw::HWDesignOp"> {
   let summary = "Lower arc definitions into functions";
   let constructor = "circt::arc::createLowerArcsToFuncsPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"];
 }
 
-def LowerClocksToFuncs : Pass<"arc-lower-clocks-to-funcs", "mlir::ModuleOp"> {
+def LowerClocksToFuncs : Pass<"arc-lower-clocks-to-funcs", "hw::HWDesignOp"> {
   let summary = "Lower clock trees into functions";
   let constructor = "circt::arc::createLowerClocksToFuncsPass()";
   let dependentDialects = ["mlir::func::FuncDialect", "mlir::scf::SCFDialect"];
@@ -181,7 +181,7 @@ def LowerLUT : Pass<"arc-lower-lut", "arc::DefineOp"> {
   let dependentDialects = ["hw::HWDialect", "comb::CombDialect"];
 }
 
-def LowerStatePass : Pass<"arc-lower-state", "mlir::ModuleOp"> {
+def LowerStatePass : Pass<"arc-lower-state", "hw::HWDesignOp"> {
   let summary = "Split state into read and write ops grouped by clock tree";
   let dependentDialects = [
     "arc::ArcDialect",
@@ -203,7 +203,7 @@ def LowerVectorizationsMode : I32EnumAttr<
   let cppNamespace = "circt::arc";
 }
 
-def LowerVectorizations : Pass<"arc-lower-vectorizations", "mlir::ModuleOp"> {
+def LowerVectorizations : Pass<"arc-lower-vectorizations", "hw::HWDesignOp"> {
   let summary = "lower `arc.vectorize` operations";
   let description = [{
     This pass lowers `arc.vectorize` operations. By default, the operation will
@@ -266,7 +266,7 @@ def LowerVectorizations : Pass<"arc-lower-vectorizations", "mlir::ModuleOp"> {
   ];
 }
 
-def MakeTables : Pass<"arc-make-tables", "mlir::ModuleOp"> {
+def MakeTables : Pass<"arc-make-tables", "hw::HWDesignOp"> {
   let summary = "Transform appropriate arc logic into lookup tables";
   let constructor = "circt::arc::createMakeTablesPass()";
   let dependentDialects = ["arc::ArcDialect"];
@@ -297,13 +297,13 @@ def MergeIfsPass : Pass<"arc-merge-ifs"> {
   ];
 }
 
-def MuxToControlFlow : Pass<"arc-mux-to-control-flow", "mlir::ModuleOp"> {
+def MuxToControlFlow : Pass<"arc-mux-to-control-flow", "hw::HWDesignOp"> {
   let summary = "Convert muxes with large independent fan-ins to if-statements";
   let constructor = "circt::arc::createMuxToControlFlowPass()";
   let dependentDialects = ["mlir::scf::SCFDialect"];
 }
 
-def SimplifyVariadicOps : Pass<"arc-simplify-variadic-ops", "mlir::ModuleOp"> {
+def SimplifyVariadicOps : Pass<"arc-simplify-variadic-ops", "hw::HWDesignOp"> {
   let summary = "Convert variadic ops into distributed binary ops";
   let constructor = "circt::arc::createSimplifyVariadicOpsPass()";
   let statistics = [
@@ -318,7 +318,7 @@ def SimplifyVariadicOps : Pass<"arc-simplify-variadic-ops", "mlir::ModuleOp"> {
   ];
 }
 
-def SplitFuncs : Pass<"arc-split-funcs", "mlir::ModuleOp"> {
+def SplitFuncs : Pass<"arc-split-funcs", "hw::HWDesignOp"> {
   let summary = "Split large funcs into multiple smaller funcs";
   let dependentDialects = ["mlir::func::FuncDialect"];
   let options = [
@@ -331,7 +331,7 @@ def SplitFuncs : Pass<"arc-split-funcs", "mlir::ModuleOp"> {
   ];
 }
 
-def SplitLoops : Pass<"arc-split-loops", "mlir::ModuleOp"> {
+def SplitLoops : Pass<"arc-split-loops", "hw::HWDesignOp"> {
   let summary = "Split arcs to break zero latency loops";
   let constructor = "circt::arc::createSplitLoopsPass()";
   let dependentDialects = ["arc::ArcDialect"];
@@ -341,7 +341,7 @@ def SplitLoops : Pass<"arc-split-loops", "mlir::ModuleOp"> {
   ];
 }
 
-def StripSV : Pass<"arc-strip-sv", "mlir::ModuleOp"> {
+def StripSV : Pass<"arc-strip-sv", "hw::HWDesignOp"> {
   let summary = "Remove SV wire, reg, and assigns";
   let constructor = "circt::arc::createStripSVPass()";
   let dependentDialects = ["arc::ArcDialect", "comb::CombDialect",

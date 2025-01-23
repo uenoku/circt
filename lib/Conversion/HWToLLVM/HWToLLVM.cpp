@@ -688,6 +688,6 @@ void HWToLLVMLoweringPass::runOnOperation() {
 }
 
 /// Create an HW to LLVM conversion pass.
-std::unique_ptr<OperationPass<ModuleOp>> circt::createConvertHWToLLVMPass() {
+std::unique_ptr<OperationPass<hw::HWDesignOp>> circt::createConvertHWToLLVMPass() {
   return std::make_unique<HWToLLVMLoweringPass>();
 }

@@ -13,6 +13,7 @@
 #ifndef CIRCT_DIALECT_ESI_ESIPASSES_H
 #define CIRCT_DIALECT_ESI_ESIPASSES_H
 
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -20,6 +21,9 @@
 #include <optional>
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace esi {
 
 /// This should eventually become a set of functions to define the various
@@ -33,15 +37,15 @@ struct Platform {
 #include "circt/Dialect/ESI/ESIPasses.h.inc"
 
 std::unique_ptr<OperationPass<>> createESIVerifyConnectionsPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIPhysicalLoweringPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIBundleLoweringPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIPortLoweringPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESITypeLoweringPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESItoHWPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIConnectServicesPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESICleanMetadataPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIBuildManifestPass();
-std::unique_ptr<OperationPass<ModuleOp>> createESIAppIDHierPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIPhysicalLoweringPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIBundleLoweringPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIPortLoweringPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESITypeLoweringPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESItoHWPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIConnectServicesPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESICleanMetadataPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIBuildManifestPass();
+std::unique_ptr<OperationPass<hw::HWDesignOp>> createESIAppIDHierPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

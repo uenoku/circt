@@ -52,7 +52,7 @@ static LogicalResult convertInitialValue(seq::CompRegOp reg,
 
 namespace {
 struct Converter {
-  LogicalResult run(ModuleOp module);
+  LogicalResult run(hw::HWDesignOp module);
   LogicalResult runOnModule(HWModuleOp module);
   LogicalResult analyzeFanIn();
   void extractArcs(HWModuleOp module);
@@ -84,7 +84,7 @@ struct Converter {
 };
 } // namespace
 
-LogicalResult Converter::run(ModuleOp module) {
+LogicalResult Converter::run(hw::HWDesignOp module) {
   for (auto &op : module.getOps())
     if (auto sym =
             op.getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -517,7 +517,7 @@ struct ConvertToArcsPass : public impl::ConvertToArcsBase<ConvertToArcsPass> {
 };
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<OperationPass<hw::HWDesignOp>>
 circt::createConvertToArcsPass(const ConvertToArcsOptions &options) {
   return std::make_unique<ConvertToArcsPass>(options);
 }

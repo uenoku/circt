@@ -17,6 +17,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace circt {
+namespace hw {
+class HWDesignOp;
+} // namespace hw
 namespace arc {
 
 /// Collects and exports Arc model info to JSON.
