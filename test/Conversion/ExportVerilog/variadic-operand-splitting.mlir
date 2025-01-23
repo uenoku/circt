@@ -1,5 +1,5 @@
-// RUN: circt-opt -test-apply-lowering-options='options=maximumNumberOfTermsPerExpression=4' -export-verilog %s | FileCheck %s -check-prefixes=CHECK,MAX_8
-// RUN: circt-opt -test-apply-lowering-options='options=maximumNumberOfTermsPerExpression=2' -export-verilog %s | FileCheck %s -check-prefixes=CHECK,MAX_4
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="maximumNumberOfTermsPerExpression=4"}, export-verilog))'  %s | FileCheck %s -check-prefixes=CHECK,MAX_8
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="maximumNumberOfTermsPerExpression=2"}, export-verilog))'  %s | FileCheck %s -check-prefixes=CHECK,MAX_4
 
 hw.module @Baz(
   in %a0: i1, in %a1: i1, in %a2: i1, in %a3: i1,

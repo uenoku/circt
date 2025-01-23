@@ -1,6 +1,7 @@
-// RUN: circt-opt --export-verilog %s | FileCheck %s
-// RUN: circt-opt --test-apply-lowering-options='options=mitigateVivadoArrayIndexConstPropBug' --export-verilog %s | FileCheck %s --check-prefix=FIXED
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="mitigateVivadoArrayIndexConstPropBug"}, export-verilog))'  %s | FileCheck %s --check-prefix=FIXED
 
+hw.design {
 // CHECK-LABEL: module Simple(
 // FIXED-LABEL: module Simple(
 hw.module @Simple(in %a : !hw.array<16xi1>, in %b : i4, out c: i1) {
@@ -61,3 +62,5 @@ hw.module @ProceduralRegion(in %a: !hw.array<16xi1>, in %b : i4) {
 }
 // CHECK: endmodule
 // FIXED: endmodule
+
+}

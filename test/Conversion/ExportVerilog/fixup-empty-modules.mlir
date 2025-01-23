@@ -1,4 +1,4 @@
-// RUN: circt-opt --test-apply-lowering-options='options=fixUpEmptyModules' --export-verilog %s | FileCheck %s --check-prefixes=CHECK
+    // RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="fixUpEmptyModules"}, export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK
 
 // CHECK-LABEL: module empty1
 hw.module @empty1() {

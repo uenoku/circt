@@ -715,7 +715,7 @@ def ConvertHWToSMT : Pass<"convert-hw-to-smt", "hw::HWDesignOp"> {
 // ConvertVerifToSMT
 //===----------------------------------------------------------------------===//
 
-def ConvertVerifToSMT : Pass<"convert-verif-to-smt"> {
+def ConvertVerifToSMT : Pass<"convert-verif-to-smt", "hw::HWDesignOp"> {
   let summary = "Convert Verif ops to SMT ops";
   let dependentDialects = [
     "smt::SMTDialect",

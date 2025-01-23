@@ -1,5 +1,6 @@
-// RUN: circt-opt %s --lower-seq-to-sv=lower-to-always-ff | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(lower-seq-to-sv{lower-to-always-ff=true}))' | FileCheck %s
 
+hw.design {
 // CHECK-LABEL: hw.module @basic(in %clk : i1, in %d : i8, out q : i8) {
 // CHECK:         %[[REG:.*]] = sv.reg : !hw.inout<i8>
 // CHECK:         %[[RD:.*]] = sv.read_inout %[[REG]] : !hw.inout<i8>
@@ -32,4 +33,6 @@ hw.module @basicWithInit(in %clk: !seq.clock, in %d: i8, out q: i8) {
 
   %q = seq.compreg %d, %clk initial %init : i8
   hw.output %q : i8
+}
+
 }

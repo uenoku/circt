@@ -1,4 +1,4 @@
-// RUN: circt-opt --export-verilog %s | FileCheck %s
+// RUN: circt-opt ---pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s
 
 // CHECK-LABEL: module symbols
 // CHECK-NEXT: input baz /* #hw<innerSym@bazSym> */

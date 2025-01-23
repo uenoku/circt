@@ -4,7 +4,7 @@
 // RUN: circt-opt %s --export-split-verilog='dir-name=%t.dir' && cat %t.dir/Foo.sv | FileCheck %s --check-prefix=FOO
 
 
-module attributes {circt.loweringOptions = "emitReplicatedOpsToHeader"}{
+hw.design attributes {circt.loweringOptions = "emitReplicatedOpsToHeader"}{
 
 // HEADER: `define HEADER
 // HEADER-EMPTY:

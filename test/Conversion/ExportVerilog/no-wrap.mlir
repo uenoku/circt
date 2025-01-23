@@ -1,5 +1,5 @@
-// RUN: circt-opt -export-verilog --split-input-file %s | FileCheck %s
-// RUN: circt-opt -test-apply-lowering-options='options=emittedLineLength=10' -export-verilog --split-input-file %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(export-verilog))'  --split-input-file %s | FileCheck %s
+// RUN: circt-opt -test-apply-lowering-options='options=emittedLineLength=10' --pass-pipeline='builtin.module(hw.design(export-verilog))'  --split-input-file %s | FileCheck %s
 
 // https://github.com/llvm/circt/issues/4181
 

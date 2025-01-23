@@ -1,6 +1,7 @@
-// RUN: circt-opt --lower-sim-to-sv %s | FileCheck %s
-// RUN: circt-opt --lower-sim-to-sv --lower-seq-to-sv -export-verilog %s | FileCheck %s --check-prefix=VERILOG
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(lower-sim-to-sv))' %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(lower-sim-to-sv,lower-seq-to-sv,export-verilog))' %s | FileCheck %s --check-prefix=VERILOG
 
+hw.design {
 sim.func.dpi @dpi(out arg0: i1, in %arg1: i1, out arg2: i1)
 // CHECK:       sv.func private @dpi(out arg0 : i1, in %arg1 : i1, out arg2 : i1)
 // CHECK-NEXT:  sv.macro.decl @__CIRCT_DPI_IMPORT_DPI
@@ -109,4 +110,6 @@ hw.module @Issue7191(out result : i32) {
   %0 = sim.func.dpi.call @create_counter() : () -> i64
   %1 = sim.func.dpi.call @increment_counter(%0) : (i64) -> i32
   hw.output %1 : i32
+}
+
 }

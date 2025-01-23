@@ -1,5 +1,6 @@
 // RUN: circt-opt --lower-sim-to-sv %s | FileCheck %s
 
+hw.design {
 // CHECK-LABEL: hw.module @plusargs_test
 hw.module @plusargs_test(out test: i1) {
   // CHECK-NEXT: [[FOO_STR:%.*]] = sv.constantStr "foo"
@@ -39,4 +40,6 @@ hw.module @plusargs_value(out test: i1, out value: i5) {
   // CHECK-NEXT: hw.output [[BAR_FOUND]], [[BAR_VALUE]] : i1, i5
   %0, %1 = sim.plusargs.value "bar" : i5
   hw.output %0, %1 : i1, i5
+}
+
 }

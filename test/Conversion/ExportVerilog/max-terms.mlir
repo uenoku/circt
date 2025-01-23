@@ -1,4 +1,4 @@
-// RUN: circt-opt -test-apply-lowering-options='options=maximumNumberOfTermsPerExpression=4,disallowLocalVariables' --export-verilog %s | FileCheck %s
+// RUN: circt-opt  --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="maximumNumberOfTermsPerExpression=4,disallowLocalVariables"}, export-verilog))'  %s | FileCheck %s
 
 sv.macro.decl @FOO
 sv.macro.decl @BAR

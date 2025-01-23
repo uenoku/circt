@@ -1,4 +1,6 @@
-// RUN: circt-opt %s --test-apply-lowering-options="options=emittedLineLength=9001,verifLabels" --export-verilog --verify-diagnostics | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="emittedLineLength=9001,verifLabels"}, export-verilog))'  --verify-diagnostics | FileCheck %s
+
+hw.design {
 
 // CHECK-LABEL: module Labels
 hw.module @Labels(in %a: i1) {
@@ -324,4 +326,6 @@ hw.module @ClockedAsserts(in %clk: i1, in %a: i1, in %b: i1) {
 
   // CHECK: cover property (@(posedge clk) disable iff (b) not a);
   sv.cover_property %n0 on posedge %clk disable_iff %b: !ltl.property
+}
+
 }

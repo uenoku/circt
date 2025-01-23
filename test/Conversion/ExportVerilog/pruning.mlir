@@ -1,5 +1,6 @@
-// RUN: circt-opt --export-verilog --verify-diagnostics %s -o %t | FileCheck %s --strict-whitespace
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(export-verilog))'  --verify-diagnostics %s -o %t | FileCheck %s --strict-whitespace
 
+hw.design {
 // CHECK-LABEL: module zeroWidthPAssign(
 // CHECK:       always_ff @(posedge clk) begin        
 // CHECK-NEXT:  end
@@ -40,4 +41,6 @@ hw.module @parity(in %arg0 : i0, out out: i1) {
   // CHECK: assign out = 1'h0;
   %0 = comb.parity %arg0 : i0
   hw.output %0 : i1
+}
+
 }

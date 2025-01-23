@@ -1,4 +1,4 @@
-// RUN: circt-opt --lower-verif-to-sv %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(hw.module(lower-verif-to-sv)))' %s | FileCheck %s
 
 // CHECK:   hw.module @foo(in %[[VAL_0:.*]] : i1) {
 // CHECK:           sv.always posedge %[[VAL_0]] {
@@ -9,10 +9,12 @@
 // CHECK:           }
 // CHECK:           hw.output
 // CHECK:         }
+hw.design {
 hw.module @foo(in %trigger : i1) {
   sv.always posedge %trigger {
     %true = hw.constant true
     %fstr = verif.format_verilog_string "Hi %x\0A" (%true) : i1
     verif.print %fstr
   }
+}
 }

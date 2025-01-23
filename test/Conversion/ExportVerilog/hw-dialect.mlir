@@ -1,4 +1,4 @@
-// RUN: circt-opt %s --test-apply-lowering-options='options=emittedLineLength=100,emitBindComments' -export-verilog -verify-diagnostics -o %t.mlir | FileCheck %s
+// RUN: circt-opt %s --test-apply-lowering-options='options=emittedLineLength=100,emitBindComments' --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics -o %t.mlir | FileCheck %s
 
 // CHECK-NOT: module E
 hw.module.extern @E(in %a: i1, in %b: i1, in %c: i1)

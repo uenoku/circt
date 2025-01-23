@@ -1,5 +1,5 @@
-// RUN: circt-opt --export-verilog %s | FileCheck %s --check-prefix=CHECK-OFF
-// RUN: circt-opt --test-apply-lowering-options='options=verifLabels' --export-verilog %s | FileCheck %s --check-prefix=CHECK-ON
+// RUN: circt-opt ---pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s --check-prefix=CHECK-OFF
+// RUN: circt-opt --test-apply-lowering-options='options=verifLabels' ---pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s --check-prefix=CHECK-ON
 
 hw.module @foo(in %clock: i1, in %cond: i1) {
   sv.initial {

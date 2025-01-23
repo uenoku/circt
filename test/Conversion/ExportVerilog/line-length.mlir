@@ -1,8 +1,8 @@
-// RUN: circt-opt --test-apply-lowering-options='options=emittedLineLength=40' --export-verilog %s | FileCheck %s --check-prefixes=CHECK,SHORT
-// RUN: circt-opt --export-verilog %s | FileCheck %s --check-prefixes=CHECK,DEFAULT
-// RUN: circt-opt --test-apply-lowering-options='options=emittedLineLength=180' --export-verilog %s | FileCheck %s --check-prefixes=CHECK,LONG
-// RUN: circt-opt --test-apply-lowering-options='options=emittedLineLength=40,maximumNumberOfTermsPerExpression=16' --export-verilog %s | FileCheck %s --check-prefixes=CHECK,LIMIT_SHORT
-// RUN: circt-opt --test-apply-lowering-options='options=maximumNumberOfTermsPerExpression=32' --export-verilog %s | FileCheck %s --check-prefixes=CHECK,LIMIT_LONG
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="emittedLineLength=40"}, export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK,SHORT
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK,DEFAULT
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="emittedLineLength=180"}, export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK,LONG
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="emittedLineLength=40,maximumNumberOfTermsPerExpression=16"}, export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK,LIMIT_SHORT
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="maximumNumberOfTermsPerExpression=32"}, export-verilog))'  %s | FileCheck %s --check-prefixes=CHECK,LIMIT_LONG
 
 hw.module @longvariadic(in %a: i8, out b: i8) {
   %1 = comb.add %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a, %a,

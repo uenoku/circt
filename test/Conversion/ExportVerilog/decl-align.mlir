@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -export-verilog | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  | FileCheck %s --strict-whitespace
 
 sv.macro.decl @foo
 

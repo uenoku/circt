@@ -1,5 +1,6 @@
-// RUN: circt-opt %s --convert-verif-to-smt --reconcile-unrealized-casts -allow-unregistered-dialect | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(convert-verif-to-smt,reconcile-unrealized-casts))' -allow-unregistered-dialect | FileCheck %s
 
+hw.design {
 // CHECK: func.func @lower_assert([[ARG0:%.+]]: i1)
 // CHECK:   [[CAST:%.+]] = builtin.unrealized_conversion_cast [[ARG0]] : i1 to !smt.bv<1>
 // CHECK:   [[Cn1_BV:%.+]] = smt.bv.constant #smt.bv<-1>
@@ -183,4 +184,6 @@ func.func @test_bmc() -> (i1) {
     verif.yield %2, %0, %state1, %state2 : i32, i32, i32, !hw.array<2xi32>
   }
   func.return %bmc : i1
+}
+
 }

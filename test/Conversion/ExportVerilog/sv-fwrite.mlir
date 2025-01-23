@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -export-verilog -verify-diagnostics | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics | FileCheck %s --strict-whitespace
 
 hw.module @top(in %clock : i1, in %reset: i1) {
   sv.alwaysff(posedge %clock) {

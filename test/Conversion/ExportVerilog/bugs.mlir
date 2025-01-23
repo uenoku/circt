@@ -1,4 +1,4 @@
-// RUN: circt-opt %s  -export-verilog -verify-diagnostics | FileCheck %s
+// RUN: circt-opt %s  --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics | FileCheck %s
 
 // Test bug in function type conversion
 // CHECK-LABEL: InOutWire

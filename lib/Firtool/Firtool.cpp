@@ -282,26 +282,30 @@ LogicalResult firtool::populateLowFIRRTLToHW(mlir::PassManager &pm,
   pm.addPass(createLowerFIRRTLToHWPass(opt.shouldEnableAnnotationWarning(),
                                        opt.getVerificationFlavor()));
 
+  auto &designPM = pm.nest<hw::HWDesignOp>();
+
   if (!opt.shouldDisableOptimization()) {
-    auto &modulePM = pm.nest<hw::HWModuleOp>();
+    auto &modulePM = designPM.nest<hw::HWModuleOp>();
     modulePM.addPass(mlir::createCSEPass());
     modulePM.addPass(createSimpleCanonicalizerPass());
   }
 
   // Check inner symbols and inner refs.
-  pm.addPass(hw::createVerifyInnerRefNamespacePass());
+  designPM.addPass(hw::createVerifyInnerRefNamespacePass());
 
   // Check OM object fields.
-  pm.addPass(om::createVerifyObjectFieldsPass());
+  designPM.addPass(om::createVerifyObjectFieldsPass());
 
   // Run the verif op verification pass
-  pm.addNestedPass<hw::HWModuleOp>(verif::createVerifyClockedAssertLikePass());
+  designPM.addNestedPass<hw::HWModuleOp>(verif::createVerifyClockedAssertLikePass());
 
   return success();
 }
 
-LogicalResult firtool::populateHWToSV(mlir::PassManager &pm,
+LogicalResult firtool::populateHWToSV(mlir::PassManager &topLevelPM,
                                       const FirtoolOptions &opt) {
+  auto &pm = topLevelPM.nest<hw::HWDesignOp>();
+
   pm.addPass(verif::createLowerFormalToHWPass());
 
   if (opt.shouldExtractTestCode())

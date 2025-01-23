@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -export-verilog -verify-diagnostics --mlir-print-debuginfo --split-input-file | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics --mlir-print-debuginfo --split-input-file | FileCheck %s --strict-whitespace
 
 module attributes {circt.loweringOptions = "emitVerilogLocations"} {
 hw.module @MultiUseExpr(in %a: i4, out b0: i1) {

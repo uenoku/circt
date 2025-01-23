@@ -6138,7 +6138,7 @@ void ModuleEmitter::emitBindInterface(BindInterfaceOp op) {
 
   auto instance = op.getReferencedInstance(&state.symbolCache);
   auto instantiator = instance->getParentOfType<HWModuleOp>().getName();
-  auto *interface = op->getParentOfType<ModuleOp>().lookupSymbol(
+  auto *interface = op->getParentOfType<hw::HWDesignOp>().lookupSymbol(
       instance.getInterfaceType().getInterface());
   startStatement();
   ps.addCallback({op, true});
@@ -7011,7 +7011,7 @@ struct ExportVerilogPass
   ExportVerilogPass(raw_ostream &os) : os(os) {}
   void runOnOperation() override {
     // Prepare the ops in the module for emission.
-    mlir::OpPassManager preparePM("builtin.module");
+    mlir::OpPassManager preparePM("hw.design");
     preparePM.addPass(createLegalizeAnonEnumsPass());
     preparePM.addPass(createHWLowerInstanceChoicesPass());
     auto &modulePM = preparePM.nestAny();

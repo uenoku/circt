@@ -2575,7 +2575,7 @@ private:
   std::shared_ptr<calyx::CalyxLoweringState> loweringState = nullptr;
 
   /// Creates a new new top-level function based on `baseName`.
-  FuncOp createNewTopLevelFn(ModuleOp moduleOp, std::string &baseName) {
+  FuncOp createNewTopLevelFn(hw::HWDesignOp moduleOp, std::string &baseName) {
     std::string newName = "main";
 
     if (auto *existingMainOp = SymbolTable::lookupSymbolIn(moduleOp, newName)) {
@@ -2730,10 +2730,18 @@ private:
           [](BlockArgument arg) { return isa<MemRefType>(arg.getType()); });
     };
 
+    OpBuilder builder(moduleOp.getContext());
+    auto design = builder.create<hw::HWDesignOp>(moduleOp.getLoc());
+    design->dump();
+    design.getBody()->getOperations().splice(
+        design.getBody()->begin(), moduleOp.getBody()->getOperations());
+
+    design->moveBefore(moduleOp->getBlock(), moduleOp->getBlock()->end());
+
     /// We only create a new top-level function and call the original top-level
     /// function from the new one if the original top-level has `memref` in its
     /// argument
-    auto funcOps = moduleOp.getOps<FuncOp>();
+    auto funcOps = design.getOps<FuncOp>();
     bool hasMemrefArgsInTopLevel =
         std::any_of(funcOps.begin(), funcOps.end(), [&](auto funcOp) {
           return funcOp.getName() == topLevelFunction &&
@@ -2741,13 +2749,13 @@ private:
         });
 
     if (hasMemrefArgsInTopLevel) {
-      auto newTopLevelFunc = createNewTopLevelFn(moduleOp, topLevelFunction);
+      auto newTopLevelFunc = createNewTopLevelFn(design, topLevelFunction);
       if (!newTopLevelFunc)
         return failure();
 
       OpBuilder builder(moduleOp.getContext());
       Operation *oldTopLevelFuncOp =
-          SymbolTable::lookupSymbolIn(moduleOp, topLevelFunction);
+          SymbolTable::lookupSymbolIn(design, topLevelFunction);
       if (auto oldTopLevelFunc = dyn_cast<FuncOp>(oldTopLevelFuncOp))
         insertCallFromNewTopLevel(builder, newTopLevelFunc, oldTopLevelFunc);
       else {

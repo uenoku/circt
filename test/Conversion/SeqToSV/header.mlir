@@ -1,5 +1,5 @@
-// RUN: circt-opt %s -verify-diagnostics --lower-seq-to-sv | FileCheck %s
-
+// RUN: circt-opt %s -verify-diagnostics --pass-pipeline='builtin.module(hw.design(lower-seq-to-sv))' | FileCheck %s
+hw.design {
 // CHECK-LABEL: emit.fragment @RANDOM_INIT_FRAGMENT {
 // CHECK-NEXT:    sv.verbatim "// Standard header to adapt well known macros for register randomization."
 // CHECK-NEXT:    sv.verbatim "\0A// RANDOM may be set to an expression that produces a 32-bit random unsigned value."
@@ -75,4 +75,6 @@ hw.module @fragment_ref(in %clk : !seq.clock) attributes {emit.fragments = [@Som
   %rA = seq.firreg %cst0_i32 clock %clk sym @regA : i32
 
   %0 = seq.firmem 0, 1, undefined, undefined : <3 x 19>
+}
+
 }

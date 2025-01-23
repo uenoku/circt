@@ -13,7 +13,9 @@
 // CHECK-DAG: arc-state-elimination
 // CHECK-DAG: operation-pruner
 // CHECK-DAG: arc-canonicalizer
+hw.design {
 arc.define @DummyArc(%arg0: i32) -> i32 {
   arc.output %arg0 : i32
+}
 }
 

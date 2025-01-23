@@ -222,7 +222,7 @@ struct VerifBoundedModelCheckingOpConversion
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToEnd(
-          op->getParentOfType<ModuleOp>().getBody());
+          op->getParentOfType<hw::HWDesignOp>().getBody());
       initFuncOp = rewriter.create<func::FuncOp>(loc, names.newName("bmc_init"),
                                                  initFuncTy);
       rewriter.inlineRegionBefore(op.getInit(), initFuncOp.getFunctionBody(),

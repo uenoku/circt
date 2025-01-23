@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -export-verilog -verify-diagnostics | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics | FileCheck %s --strict-whitespace
 
 // CHECK: `ifndef _TYPESCOPE___hw_typedecls
 // CHECK: `define _TYPESCOPE___hw_typedecls

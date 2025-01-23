@@ -1,5 +1,6 @@
-// RUN: circt-opt -export-verilog --split-input-file %s | FileCheck %s --strict-whitespace --match-full-lines
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(export-verilog))'  --split-input-file %s | FileCheck %s --strict-whitespace --match-full-lines
 
+hw.design {
 sv.interface @IValidReady_Struct  {
   sv.interface.signal @data : !hw.struct<foo: !hw.array<72xi1>, bar: !hw.array<128xi1>, baz: !hw.array<224xi1>>
 }
@@ -36,8 +37,10 @@ hw.module @structs(in %clk: i1, in %rstn: i1) {
   %s = hw.struct_create (%90, %91, %92) : !hw.struct<foo: !hw.array<72xi1>, bar: !hw.array<128xi1>, baz: !hw.array<224xi1>>
 }
 
+}
 // -----
 
+hw.design {
 // CHECK-LABEL:module CoverAssert({{.*}}
 hw.module @CoverAssert(
   in %clock: i1, in %reset: i1,
@@ -158,8 +161,10 @@ hw.module @MuxChain(in %a_0: i1, in %a_1: i1, in %a_2: i1, in %c_0: i1, in %c_1:
 // CHECK-NEXT:                                                                                                               : c_2)
 // CHECK-NEXT:                                                                                                          : c_1;{{.*}}
 }
+}
 
 // -----
+hw.design {
 
 // CHECK-LABEL:module svattrs{{.*}}
 hw.module @svattrs() {
@@ -234,8 +239,10 @@ hw.module @svattrs() {
       #sv.attribute<"end">
    ]} : !hw.inout<i10>
 }
+}
 
 // -----
+hw.design {
 
 sv.macro.decl @RANDOM
 
@@ -263,7 +270,11 @@ hw.module @ForStatement(in %aaaaaaaaaaa: i5, in %xxxxxxxxxxxxxxx : i2, in %yyyyy
   }
 }
 
+}
+
 // -----
+
+hw.design {
 
 sv.macro.decl @TEST_COND
 sv.macro.decl @TEST_COND_
@@ -283,7 +294,11 @@ hw.module @TestCond() {
   hw.output
 }
 
+}
+
 // -----
+
+hw.design {
 
 // Declaration keyword, type, and name alignment should not produce excessively
 // long lines when large aggregate types are involved. Lack of a declaration
@@ -301,4 +316,5 @@ hw.module @Top() {
   %foo = sv.reg : !hw.inout<i1>
   %bar = sv.reg : !hw.inout<i64>
   %agg = sv.reg : !hw.inout<struct<dw: i1, fn: i4, in: i64>>
+}
 }

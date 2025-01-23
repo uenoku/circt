@@ -1,10 +1,12 @@
-// RUN: circt-opt --split-input-file --export-verilog %s | FileCheck %s --check-prefix=DEFAULT
-// RUN: circt-opt --test-apply-lowering-options='options=' --split-input-file --export-verilog %s | FileCheck %s --check-prefix=CLEAR
-// RUN: circt-opt --test-apply-lowering-options='options=noAlwaysComb' --split-input-file --export-verilog %s | FileCheck %s --check-prefix=NOALWAYSCOMB
+// RUN: circt-opt --split-input-file --pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s --check-prefix=DEFAULT
+// RUN: circt-opt --split-input-file --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options=""}, export-verilog))'  %s | FileCheck %s --check-prefix=CLEAR
+// RUN: circt-opt --split-input-file --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="noAlwaysComb"}, export-verilog))'  %s | FileCheck %s --check-prefix=NOALWAYSCOMB
 
+hw.design {
 hw.module @test() {
   sv.alwayscomb {
   }
+}
 }
 
 // DEFAULT: always_comb begin
@@ -18,7 +20,7 @@ hw.module @test() {
 
 // -----
 
-module attributes {circt.loweringOptions = "noAlwaysComb"} {
+hw.design attributes {circt.loweringOptions = "noAlwaysComb"} {
 hw.module @test() {
   sv.alwayscomb {
   }

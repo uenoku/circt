@@ -732,6 +732,7 @@ def HWDesignOp : HWOp<"design", [
 
     /// A ModuleOp may optionally define a symbol.
     bool isOptionalSymbol() { return true; }
+    // Block* getBodyBlock() { return &getBody().front(); }
   }];
 
   // We need to ensure the block inside the region is properly terminated;

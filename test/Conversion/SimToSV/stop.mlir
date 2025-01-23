@@ -1,4 +1,4 @@
-// RUN: circt-opt --pass-pipeline=builtin.module(hw.design(lower-sim-to-sv)) %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(lower-sim-to-sv))' %s | FileCheck %s
 
 hw.design {
 // CHECK-LABEL: hw.module @finish

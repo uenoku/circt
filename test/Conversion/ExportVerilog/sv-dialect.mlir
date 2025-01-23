@@ -1,5 +1,6 @@
-// RUN: circt-opt %s -test-apply-lowering-options='options=explicitBitcast,maximumNumberOfTermsPerExpression=10,emitBindComments' -export-verilog -verify-diagnostics | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(test-apply-lowering-options{options="explicitBitcast,maximumNumberOfTermsPerExpression=10,emitBindComments"}, export-verilog))'  -verify-diagnostics | FileCheck %s
 
+hw.design {
 sv.macro.decl @SYNTHESIS
 sv.macro.decl @VERILATOR
 
@@ -1974,3 +1975,5 @@ sv.bind #hw.innerNameRef<@InlineBind::@foo2>
 // CHECK-LABEL:  hw.module @remoteInstDut
 // CHECK:    %signed = sv.wire  {hw.verilogName = "signed_0"} : !hw.inout<i1>
 // CHECK:    %output = sv.reg  {hw.verilogName = "output_0"} : !hw.inout<i1>
+
+}

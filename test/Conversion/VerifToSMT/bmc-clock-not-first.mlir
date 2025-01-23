@@ -1,5 +1,5 @@
-// RUN: circt-opt %s --convert-verif-to-smt --reconcile-unrealized-casts -allow-unregistered-dialect | FileCheck %s
-
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(convert-verif-to-smt,reconcile-unrealized-casts))' --allow-unregistered-dialect | FileCheck %s
+hw.design {
 // Check subset of output to make sure posedge calculation works with different clock positions
 // CHECK-LABEL:  func.func @test_bmc_clock_not_first() -> i1 {
 // CHECK:        [[LOOP:%.+]] = func.call @bmc_loop([[ARG2:%.+]]) : (!smt.bv<1>) -> !smt.bv<1>
@@ -29,4 +29,6 @@ func.func @test_bmc_clock_not_first() -> (i1) {
     verif.yield %2, %0 : i32, i32
   }
   func.return %bmc : i1
+}
+
 }

@@ -1,6 +1,7 @@
-// RUN: circt-opt %s --pass-pipeline='builtin.module(any(prepare-for-emission))' --split-input-file -verify-diagnostics | FileCheck %s
-// RUN: circt-opt %s --lower-verif-to-sv -export-verilog -split-input-file
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(any(prepare-for-emission)))' --split-input-file -verify-diagnostics | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(hw.module(lower-verif-to-sv), export-verilog))'  -split-input-file
 
+hw.design {
 // CHECK: @namehint_variadic
 hw.module @namehint_variadic(in %a: i3, out b: i3) {
   // CHECK-NEXT: %0 = comb.add %a, %a : i3
@@ -44,10 +45,11 @@ hw.module @carryOverWireAttrs(in %a: i1, out b: i1){
   %foo = hw.wire %a {magic, sv.attributes = []} : i1
   hw.output %foo : i1
 }
+}
 
 // -----
 
-module {
+hw.design {
   // CHECK-LABEL:  hw.module @SpillTemporaryInProceduralRegion
   hw.module @SpillTemporaryInProceduralRegion(in %a: i4, in %b: i4, in %fd: i32) {
     // CHECK-NEXT: %r = sv.reg
@@ -71,7 +73,7 @@ module {
 
 // -----
 
-module attributes {circt.loweringOptions = "disallowLocalVariables"} {
+hw.design attributes {circt.loweringOptions = "disallowLocalVariables"} {
   // CHECK: @test_hoist
   hw.module @test_hoist(in %a: i3) {
     // CHECK-NEXT: %reg = sv.reg
@@ -132,7 +134,7 @@ module attributes {circt.loweringOptions = "disallowLocalVariables"} {
 
 // -----
 
-module attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} {
+hw.design attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} {
  hw.module.extern @MyExtModule(in %in: i8)
  // CHECK-LABEL: @MoveInstances
  hw.module @MoveInstances(in %a_in: i8){
@@ -148,7 +150,7 @@ module attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} 
 
 // -----
 
-module attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} {
+hw.design attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} {
   // CHECK-LABEL: @ClockExpr(
   hw.module @ClockExpr(in %clk: i1, in %a: i1, in %b: i1) {
     %clk_xor_b = comb.xor %clk, %b : i1
@@ -166,7 +168,7 @@ module attributes {circt.loweringOptions = "disallowExpressionInliningInPorts"} 
 }
 
 // -----
-module attributes {circt.loweringOptions =
+hw.design attributes {circt.loweringOptions =
                   "wireSpillingHeuristic=spillLargeTermsWithNamehints,wireSpillingNamehintTermLimit=3"} {
   // CHECK-LABEL: namehints
   hw.module @namehints(in %a: i8, out b: i8) {
@@ -185,7 +187,7 @@ module attributes {circt.loweringOptions =
 }
 
 // -----
-module attributes {circt.loweringOptions =
+hw.design attributes {circt.loweringOptions =
                   "disallowMuxInlining"} {
   // CHECK-LABEL: mux
   hw.module @mux(in %c: i1, in %b: i8, in %a: i8, out d: i8, out e: i8) {
@@ -206,7 +208,7 @@ module attributes {circt.loweringOptions =
 
 // -----
 // CHECK: "wireSpillingHeuristic=spillLargeTermsWithNamehints,disallowMuxInlining"
-module attributes {circt.loweringOptions =
+hw.design attributes {circt.loweringOptions =
                   "wireSpillingHeuristic=spillLargeTermsWithNamehints,disallowMuxInlining"} {
   hw.module @combine(in %c: i1, in %b: i8, in %a: i8, out d: i8) {
     // Meaningful names should be spilled
@@ -221,7 +223,7 @@ module attributes {circt.loweringOptions =
 }
 
 // -----
-module attributes {circt.loweringOptions = "maximumNumberOfTermsPerExpression=2"} {
+hw.design attributes {circt.loweringOptions = "maximumNumberOfTermsPerExpression=2"} {
   // CHECK-NOT: sv.wire
   hw.module @Foo(in %in_0: i4, in %in_1: i4, in %in_2: i4, in %in_3: i4, out out: !hw.array<4xi4>) {
     %0 = comb.concat %in_0, %in_1, %in_2, %in_3 : i4, i4, i4, i4
@@ -245,7 +247,7 @@ module attributes {circt.loweringOptions = "maximumNumberOfTermsPerExpression=2"
 // CHECK-NEXT:      hw.output %[[VAL_4]], %[[VAL_3]], %[[VAL_7]]
 // CHECK:         }
 !T = !hw.struct<a: i32>
-module attributes { circt.loweringOptions = "disallowPackedStructAssignments"} {
+hw.design attributes { circt.loweringOptions = "disallowPackedStructAssignments"} {
   hw.module @packed_struct_assignment(in %in : i32, out out: !T, out out2: !T, out out3: !T)  {
       %0 = hw.struct_create (%in) : !T
       %1 = hw.aggregate_constant [1: i32] : !T
@@ -258,6 +260,7 @@ module attributes { circt.loweringOptions = "disallowPackedStructAssignments"} {
 // wires, where they crash the PrepareForEmission pass. They are always emitted
 // inline, so no need to restructure the IR.
 // CHECK-LABEL: hw.module @Issue5613
+hw.design {
 hw.module @Issue5613(in %a: i1, in %b: i1) {
   verif.assert %2 : !ltl.sequence
   %0 = ltl.implication %2, %1 : !ltl.sequence, !ltl.property
@@ -266,6 +269,7 @@ hw.module @Issue5613(in %a: i1, in %b: i1) {
   %3 = ltl.not %b : i1
   %4 = ltl.delay %a, 42 : i1
   hw.output
+}
 }
 
 // -----
@@ -276,6 +280,7 @@ hw.module @Issue5613(in %a: i1, in %b: i1) {
 //
 // See: https://github.com/llvm/circt/issues/5605
 // CHECK-LABEL: hw.module @Issue5605
+hw.design {
 hw.module @Issue5605(in %a: i1, in %b: i1, in %clock: i1, in %reset: i1) {
   %0 = comb.concat %a, %b : i1, i1
   // CHECK:      %1 = sv.wire
@@ -292,6 +297,7 @@ hw.module @Issue5605(in %a: i1, in %b: i1, in %clock: i1, in %reset: i1) {
   hw.output
 }
 
+}
 // -----
 
 // The following use of `sv.xmr.ref` inside a procedural block would trigger an
@@ -299,7 +305,7 @@ hw.module @Issue5605(in %a: i1, in %b: i1, in %clock: i1, in %reset: i1) {
 // free.
 //
 // CHECK-LABEL: hw.module @Foo
-module attributes {circt.loweringOptions = "disallowLocalVariables"} {
+hw.design attributes {circt.loweringOptions = "disallowLocalVariables"} {
   hw.module @Foo(in %a: i1) {
     hw.wire %a sym @a : i1
     // CHECK: sv.alwayscomb
@@ -315,6 +321,7 @@ module attributes {circt.loweringOptions = "disallowLocalVariables"} {
 
 // -----
 
+hw.design {
 // CHECK-LABEL: @constantInitRegWithBackEdge
 hw.module @constantInitRegWithBackEdge() {
   // CHECK: %reg = sv.reg init %false : !hw.inout<i1>
@@ -326,9 +333,11 @@ hw.module @constantInitRegWithBackEdge() {
   %reg = sv.reg init %false : !hw.inout<i1>
   %1 = sv.read_inout %reg : !hw.inout<i1>
 }
+}
 
 // -----
 
+hw.design {
 // CHECK-LABEL: @temporaryWireForReg
 hw.module @temporaryWireForReg() {
   // CHECK: %[[WIRE:.*]] = sv.wire : !hw.inout<i1>
@@ -342,4 +351,5 @@ hw.module @temporaryWireForReg() {
   %1 = sv.read_inout %b : !hw.inout<i1>
   %b = sv.reg init %0 : !hw.inout<i1>
   %a = sv.reg init %1 : !hw.inout<i1>
+}
 }

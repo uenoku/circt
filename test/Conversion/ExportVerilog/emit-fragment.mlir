@@ -1,5 +1,5 @@
-// RUN: circt-opt -o=- --export-verilog %s | FileCheck %s
-// RUN: circt-opt -o=- --export-split-verilog='dir-name=%t' %s
+// RUN: circt-opt -o=- --pass-pipeline='builtin.module(hw.design(export-verilog))'  %s | FileCheck %s
+// RUN: circt-opt -o=- --pass-pipeline='builtin.module(hw.design(export-split-verilog{dir-name=%t}))' %s
 // RUN: cat %t%{fs-sep}FirstModule.sv | FileCheck %s --check-prefix=FIRST
 // RUN: cat %t%{fs-sep}SecondModule.sv | FileCheck %s --check-prefix=SECOND
 
@@ -32,6 +32,8 @@
 // SECOND-NEXT: `endif
 // SECOND-NEXT: module SecondModule
 
+hw.design {
+
 sv.macro.decl @MacroA
 sv.macro.decl @MacroB
 sv.macro.decl @MacroC
@@ -63,4 +65,6 @@ hw.module @FirstModule(in %in : i32, out out : i32) attributes { "emit.fragments
 
 hw.module @SecondModule(in %in : i32, out out : i32) attributes { "emit.fragments" = [@FragmentB, @FragmentC] } {
   hw.output %in : i32
+}
+
 }

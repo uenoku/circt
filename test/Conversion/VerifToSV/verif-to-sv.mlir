@@ -1,5 +1,6 @@
-// RUN: circt-opt --lower-verif-to-sv %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.design(hw.module(lower-verif-to-sv)))' %s | FileCheck %s
 
+hw.design {
 // CHECK-LABEL: hw.module @HasBeenResetAsync
 hw.module @HasBeenResetAsync(in %clock: i1, in %reset: i1, out out: i1) {
   %0 = verif.has_been_reset %clock, async %reset
@@ -52,4 +53,5 @@ hw.module @HasBeenResetSync(in %clock: i1, in %reset: i1, out out: i1) {
   // CHECK-NEXT: %hasBeenReset = hw.wire [[DONE]]
 
   // CHECK-NEXT: hw.output %hasBeenReset
+}
 }

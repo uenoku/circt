@@ -1,23 +1,28 @@
-// RUN: circt-opt %s --convert-verif-to-smt --split-input-file --verify-diagnostics
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(convert-verif-to-smt))' --split-input-file --verify-diagnostics
 
+hw.design {
 func.func @assert_with_unsupported_property_type(%arg0: !smt.bv<1>) {
   %0 = builtin.unrealized_conversion_cast %arg0 : !smt.bv<1> to !ltl.sequence
   // expected-error @below {{failed to legalize operation 'verif.assert' that was explicitly marked illegal}}
   verif.assert %0 : !ltl.sequence
   return
 }
+}
 
 // -----
 
+hw.design {
 func.func @assert_with_unsupported_property_type(%arg0: !smt.bv<1>) {
   %0 = builtin.unrealized_conversion_cast %arg0 : !smt.bv<1> to !ltl.property
   // expected-error @below {{failed to legalize operation 'verif.assert' that was explicitly marked illegal}}
   verif.assert %0 : !ltl.property
   return
 }
+}
 
 // -----
 
+hw.design {
 func.func @multiple_assertions_bmc() -> (i1) {
   // expected-error @below {{bounded model checking problems with multiple assertions are not yet correctly handled - instead, you can assert the conjunction of your assertions}}
   %bmc = verif.bmc bound 10 num_regs 0 initial_values []
@@ -36,8 +41,10 @@ func.func @multiple_assertions_bmc() -> (i1) {
   func.return %bmc : i1
 }
 
+}
 // -----
 
+hw.design {
 func.func @multiple_asserting_modules_bmc() -> (i1) {
   // expected-error @below {{bounded model checking problems with multiple assertions are not yet correctly handled - instead, you can assert the conjunction of your assertions}}
   %bmc = verif.bmc bound 10 num_regs 0 initial_values []
@@ -56,9 +63,10 @@ func.func @multiple_asserting_modules_bmc() -> (i1) {
 hw.module @OneAssertion(in %x: i1) {
   verif.assert %x : i1
 }
+}
 
 // -----
-
+hw.design {
 func.func @two_separated_assertions() -> (i1) {
   // expected-error @below {{bounded model checking problems with multiple assertions are not yet correctly handled - instead, you can assert the conjunction of your assertions}}
   %bmc = verif.bmc bound 10 num_regs 0 initial_values []
@@ -77,9 +85,10 @@ func.func @two_separated_assertions() -> (i1) {
 hw.module @OneAssertion(in %x: i1) {
   verif.assert %x : i1
 }
-
+}
 // -----
 
+hw.design {
 func.func @multiple_nested_assertions() -> (i1) {
   // expected-error @below {{bounded model checking problems with multiple assertions are not yet correctly handled - instead, you can assert the conjunction of your assertions}}
   %bmc = verif.bmc bound 10 num_regs 0 initial_values []
@@ -98,9 +107,11 @@ hw.module @TwoAssertions(in %x: i1, in %y: i1) {
   verif.assert %x : i1
   verif.assert %y : i1
 }
+}
 
 // -----
 
+hw.design {
 func.func @multiple_clocks() -> (i1) {
   // expected-error @below {{only modules with one or zero clocks are currently supported}}
   %bmc = verif.bmc bound 10 num_regs 1 initial_values [unit]
@@ -122,9 +133,11 @@ func.func @multiple_clocks() -> (i1) {
   }
   func.return %bmc : i1
 }
+}
 
 // -----
 
+hw.design {
 func.func @multiple_clocks() -> (i1) {
   // expected-error @below {{initial values are currently only supported for registers with integer types}}
   %bmc = verif.bmc bound 10 num_regs 1 initial_values [0]
@@ -144,4 +157,5 @@ func.func @multiple_clocks() -> (i1) {
     verif.yield %arg0 : !hw.array<2xi32>
   }
   func.return %bmc : i1
+}
 }

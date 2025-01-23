@@ -1,6 +1,6 @@
-// RUN: circt-opt %s -export-verilog --split-input-file | FileCheck %s --match-full-lines
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  --split-input-file | FileCheck %s --match-full-lines
 
-module attributes {circt.loweringOptions = "disallowPortDeclSharing"}{
+hw.design attributes {circt.loweringOptions = "disallowPortDeclSharing"} {
 // CHECK:      module Foo(     // dummy:1:1
 // CHECK-NEXT:   input        a,       // dummy:1:2
 // CHECK-NEXT:   input        b,       // dummy:1:3
@@ -16,7 +16,7 @@ hw.module @Foo(in %a: i1 loc("dummy":1:2), in %b: i1 loc("dummy":1:3), out a: i2
 
 // -----
 
-module {
+hw.design {
 // CHECK:      module Foo(     // dummy:1:1
 // CHECK-NEXT:   input        a,       // dummy:1:2
 // CHECK-NEXT:                b,       // dummy:1:3
@@ -37,7 +37,7 @@ hw.module @Foo(in %a: i1 loc("dummy":1:2), in %b: i1 loc("dummy":1:3), out a: i2
 // CHECK-NEXT:   // output /*Zero Width*/ a_0, // dummy:1:4
 // CHECK-NEXT:   // output /*Zero Width*/ b_0  // dummy:1:5
 // CHECK-NEXT: );
-module attributes {circt.loweringOptions = "disallowPortDeclSharing"}{
+hw.design attributes {circt.loweringOptions = "disallowPortDeclSharing"} {
 hw.module @Foo(in %a: i0 loc("dummy":1:2), in %b: i0 loc("dummy":1:3), out a: i0 loc("dummy":1:4), out b: i0 loc("dummy":1:5)) {
   hw.output %a, %b : i0, i0
 } loc("dummy":1:1)
@@ -45,7 +45,7 @@ hw.module @Foo(in %a: i0 loc("dummy":1:2), in %b: i0 loc("dummy":1:3), out a: i0
 
 // -----
 
-module {
+hw.design {
 // CHECK:      module Foo(     // dummy:1:1
 // CHECK-NEXT:   // input  /*Zero Width*/ a,   // dummy:1:2
 // CHECK-NEXT:   //                       b,   // dummy:1:3
@@ -59,7 +59,7 @@ hw.module @Foo(in %a: i0 loc("dummy":1:2), in %b: i0 loc("dummy":1:3), out a: i0
 
 // -----
 
-module attributes {circt.loweringOptions = "disallowPortDeclSharing"}{
+hw.design attributes {circt.loweringOptions = "disallowPortDeclSharing"}{
 // CHECK:      module Foo(     // dummy:1:1
 // CHECK-NEXT:   // input  /*Zero Width*/ a,   // dummy:1:2
 // CHECK-NEXT:   // input  /*Zero Width*/ b,   // dummy:1:3
@@ -74,7 +74,7 @@ hw.module @Foo(in %a: i0 loc("dummy":1:2), in %b: i0 loc("dummy":1:3), in %c : i
 
 // -----
 
-module {
+hw.design {
 // CHECK:      module Foo(     // dummy:1:1
 // CHECK-NEXT:   // input  /*Zero Width*/ a,   // dummy:1:2
 // CHECK-NEXT:   //                       b,   // dummy:1:3

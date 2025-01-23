@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -export-verilog -verify-diagnostics -o %t.mlir | FileCheck %s --strict-whitespace
+// RUN: circt-opt %s --pass-pipeline='builtin.module(hw.design(export-verilog))'  -verify-diagnostics -o %t.mlir | FileCheck %s --strict-whitespace
 
 // CHECK: module namechange(
 // CHECK: input  [3:0] casex_0,

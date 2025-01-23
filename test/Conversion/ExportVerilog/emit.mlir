@@ -2,6 +2,7 @@
 // RUN: cat %t%{fs-sep}some-filelist.f  | FileCheck %s --check-prefix=FILELIST
 // RUN: cat %t%{fs-sep}some-file.sv  | FileCheck %s --check-prefix=FILE
 
+hw.design {
 sv.macro.decl @Macro
 
 hw.module private @SomeModule() {
@@ -43,3 +44,5 @@ emit.file "some-file.sv" sym @SomeFile.sv {
 
 // FILELIST: some-file.sv
 emit.file_list "some-filelist.f", [@SomeFile.sv] sym @SomeFileList
+
+}

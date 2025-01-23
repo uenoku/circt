@@ -1,5 +1,6 @@
-// RUN: circt-opt %s -verify-diagnostics --lower-seq-to-sv
+// RUN: circt-opt %s -verify-diagnostics --pass-pipeline='builtin.module(hw.design(lower-seq-to-sv))'
 
+hw.design {
 // TODO: Improve the error message
 // expected-error @+1 {{initial ops cannot be topologically sorted}}
 hw.module @toposort_failure(in %clk: !seq.clock, in %rst: i1, in %i: i32) {
@@ -16,4 +17,4 @@ hw.module @toposort_failure(in %clk: !seq.clock, in %rst: i1, in %i: i32) {
   %reg = seq.compreg %i, %clk initial %init : i32
   %reg2 = seq.compreg %i, %clk initial %add : i32
 }
-
+}
