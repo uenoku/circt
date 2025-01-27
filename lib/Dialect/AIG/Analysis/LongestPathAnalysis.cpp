@@ -1069,7 +1069,8 @@ struct Graph {
   }
   LogicalResult
   inlineGraph(ArrayRef<std::pair<hw::InstanceOp, Graph *>> children,
-              circt::igraph::InstancePathCache *instancePathCache, std::mutex& mutex) {
+              circt::igraph::InstancePathCache *instancePathCache,
+              std::mutex &mutex) {
     // We need to clone the subgraph of the child graph which are reachable from
     // input and output nodes.
     DenseMap<InputNode *, Node *> nodeToNewNode;
@@ -1313,7 +1314,6 @@ struct Graph {
         childGraph->dropNodes();
       }
     }
-
 
     return success();
   }
@@ -1754,14 +1754,18 @@ LogicalResult LongestPathAnalysisImpl::run() {
   // Parallelize this part.
 
   // Otherwise, process the elements in parallel.
-  // std::min((unsigned)underHierarchy.size(), threadPool.getMaxConcurrency());
+  auto &threadPool = getContext()->getThreadPool();
+  auto numThreads =
+      std::min((unsigned)underHierarchy.size(), threadPool.getMaxConcurrency());
   // Build a wrapper processing function that properly initializes a parallel
   // diagnostic handler.
   DenseMap<hw::HWModuleOp, SmallVector<PathResult>> pathResults;
+  DenseMap<hw::HWModuleOp, llvm::ThreadPoolTaskGroup> moduleToTaskGroup;
 
   auto createTaskGroup = [&](hw::HWModuleOp mod) {
     assert(mod);
     pathResults.try_emplace(mod, SmallVector<PathResult>());
+    moduleToTaskGroup.try_emplace(mod, llvm::ThreadPoolTaskGroup(threadPool));
   };
 
   auto processModule = [&](hw::HWModuleOp mod) -> LogicalResult {
@@ -1836,10 +1840,9 @@ LogicalResult LongestPathAnalysisImpl::run() {
       auto childTask = moduleToGraph.find(childMod.getModuleNameAttr());
       if (childTask == moduleToGraph.end())
         continue;
-      while (!childTask->second->elaborated) {
-        // llvm::dbgs() << "Waiting for " << childMod.getModuleName() << " to be ";
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
+
+      auto &childTaskGroup = moduleToTaskGroup.find(childMod)->second;
+      childTaskGroup.wait();
     };
 
     return processModule(mod);
@@ -1849,11 +1852,31 @@ LogicalResult LongestPathAnalysisImpl::run() {
     createTaskGroup(moduleOp);
   }
 
-
-  if (failed(mlir::failableParallelForEach(getContext(), underHierarchy,
-                                           asyncMod))) {
-    return failure();
+  std::atomic<unsigned> curIndex(0);
+  std::atomic<bool> processingFailed(false);
+  auto processFn = [&] {
+    while (!processingFailed) {
+      unsigned index = curIndex++;
+      if (index >= underHierarchy.size())
+        break;
+      auto mod = underHierarchy[index];
+      auto &taskGroup = moduleToTaskGroup.find(mod)->second;
+      taskGroup.async([&]() {
+        if (failed(asyncMod(mod)))
+          processingFailed = true;
+      });
+      taskGroup.wait();
+    }
+  };
+  for (unsigned i = 0; i < numThreads; ++i) {
+    threadPool.async(processFn);
   }
+  threadPool.wait();
+
+  // if (failed(mlir::failableParallelForEach(getContext(), underHierarchy,
+  //                                          asyncMod))) {
+  //   return failure();
+  // }
 
   for (auto &result : underHierarchy) {
     results.insert(results.end(), pathResults[result].begin(),
