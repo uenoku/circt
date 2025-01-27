@@ -1088,13 +1088,13 @@ struct Graph {
         return clonedResult[node];
       }
       clonedNum++;
-      if (clonedNum % 1000 == 0) {
-        llvm::errs() << clonedNum << "\n";
-        for (size_t d : dist) {
-          llvm::errs() << d << " ";
-        }
-        llvm::errs() << "\n";
-      }
+      // if (clonedNum % 1000 == 0) {
+      //   llvm::errs() << clonedNum << "\n";
+      //   for (size_t d : dist) {
+      //     llvm::errs() << d << " ";
+      //   }
+      //   llvm::errs() << "\n";
+      // }
 
       Node *result =
           TypeSwitch<Node *, Node *>(node)
@@ -1303,7 +1303,10 @@ struct Graph {
         llvm::remove_if(outputOperations,
                         [&](Operation *op) { return isa<hw::InstanceOp>(op); }),
         outputOperations.end());
-    llvm::errs() << "Done " << theModule.getModuleNameAttr() << '\n';
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      llvm::errs() << "Done " << theModule.getModuleNameAttr() << '\n';
+    }
 
     for (auto [instanceOp, childGraph] : children) {
       // Check if the childGraph can be freed.
@@ -1803,10 +1806,12 @@ LogicalResult LongestPathAnalysisImpl::run() {
     // Accumulate local paths.
     graph->accumulateLocalPaths();
 
-    llvm::dbgs() << "\nLocally closed node: ";
-    llvm::dbgs() << graph->theModule.getModuleName() << "\n";
-    llvm::dbgs() << graph->locallyClosedOutputs.size() << "\n";
-    llvm::dbgs() << graph->openOutputs.size() << "\n";
+    {
+      llvm::dbgs() << "\nLocally closed node: ";
+      llvm::dbgs() << graph->theModule.getModuleName() << "\n";
+      llvm::dbgs() << graph->locallyClosedOutputs.size() << "\n";
+      llvm::dbgs() << graph->openOutputs.size() << "\n";
+    }
     auto &results = pathResults[mod];
     for (auto outputNode : graph->locallyClosedOutputs) {
       PathResult result;
