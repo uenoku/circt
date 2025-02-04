@@ -450,6 +450,13 @@ struct ObjectPathInferer {
 
     auto variableName = objectPath.back();
     objectPath = objectPath.drop_back();
+    for (auto &[key, value] : pathLastNameToInstanceRecord) {
+      for (auto *record : value) {
+        mlir::lsp::Logger::info("graph: {} {}", key,
+                                getVerilogName(record->getInstance()));
+      }
+    }
+
     auto it =
         pathLastNameToInstanceRecord.find(getStringAttr(objectPath.back()));
     if (it == pathLastNameToInstanceRecord.end())
@@ -3626,8 +3633,11 @@ struct circt::lsp::VerilogServer::Impl {
               *globalContext.instanceGraph);
 
       for (auto *node : *globalContext.instanceGraph) {
+        mlir::lsp::Logger::info("Checking");
         if (!node)
           continue;
+        mlir::lsp::Logger::info("Checking  2");
+
         for (auto *inst : node->uses()) {
           auto instanceOp = inst->getInstance();
           if (!isa<hw::InstanceOp>(instanceOp.getOperation()))
