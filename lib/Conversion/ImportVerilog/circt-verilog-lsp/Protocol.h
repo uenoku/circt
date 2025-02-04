@@ -90,8 +90,13 @@ bool fromJSON(const llvm::json::Value &value,
 
 // Consider using this directly from MLIR file.
 struct VerilogInstanceHierarchy {
-  std::string module_name;
-  std::string instance_name;
+  VerilogInstanceHierarchy(llvm::StringRef moduleName,
+                           llvm::StringRef instanceName,
+                           VerilogInstanceHierarchy *parent = nullptr)
+      : moduleName(moduleName), instanceName(instanceName), parent(parent) {}
+
+  llvm::StringRef moduleName;
+  llvm::StringRef instanceName;
   std::vector<std::unique_ptr<VerilogInstanceHierarchy>> instances;
   VerilogInstanceHierarchy *parent = nullptr;
 };

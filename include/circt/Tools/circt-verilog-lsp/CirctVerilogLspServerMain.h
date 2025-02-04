@@ -32,8 +32,10 @@ namespace circt {
 namespace lsp {
 struct VerilogServerOptions {
   VerilogServerOptions(const std::vector<std::string> &compilationDatabases,
-                       const std::vector<std::string> &extraDirs)
-      : compilationDatabases(compilationDatabases), extraDirs(extraDirs) {}
+                       const std::vector<std::string> &extraDirs,
+                       const std::string &mlirPath)
+      : compilationDatabases(compilationDatabases), extraDirs(extraDirs),
+        mlirPath(mlirPath) {}
 
   /// The filenames for databases containing compilation commands for PDLL
   /// files passed to the server.
@@ -41,6 +43,9 @@ struct VerilogServerOptions {
 
   /// Additional list of include directories to search.
   const std::vector<std::string> &extraDirs;
+
+  /// The path to the MLIR file to use.
+  const std::string &mlirPath;
 };
 // namespace lsp
 

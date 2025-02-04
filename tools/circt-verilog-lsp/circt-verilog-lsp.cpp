@@ -74,6 +74,14 @@ int main(int argc, char **argv) {
       llvm::cl::desc("Compilation YAML databases containing additional "
                      "compilation information for .verilog files"));
 
+  llvm::cl::opt<std::string> mlirPath{
+      "mlir-path",
+      llvm::cl::desc("Path to the MLIR file to use. This is required for "
+                     "advanced features like waveform viewing"),
+      llvm::cl::value_desc("path"),
+      llvm::cl::init("/home/uenoku/dev/circt-dev/test.mlir"),
+  };
+
   llvm::cl::ParseCommandLineOptions(argc, argv, "Verilog LSP Language Server");
 
   if (litTest) {
@@ -92,6 +100,6 @@ int main(int argc, char **argv) {
 
   // Configure the servers and start the main language server.
   circt::lsp::VerilogServerOptions options(compilationDatabases,
-                                           extraIncludeDirs);
+                                           extraIncludeDirs, mlirPath);
   return failed(circt::lsp::CirctVerilogLspServerMain(options, transport));
 }

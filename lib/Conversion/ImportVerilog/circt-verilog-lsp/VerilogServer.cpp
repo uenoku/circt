@@ -12,16 +12,27 @@
 #include "../ImportVerilogInternals.h"
 #include "Protocol.h"
 #include "circt/Conversion/Passes.h"
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWInstanceGraph.h"
+#include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/Moore/MooreDialect.h"
 #include "circt/Dialect/Moore/MoorePasses.h"
+#include "circt/Dialect/Verif/VerifDialect.h"
+#include "circt/Dialect/LLHD/IR/LLHDDialect.h"
 #include "circt/Support/FVInt.h"
+#include "circt/Support/InstanceGraph.h"
+#include "circt/Support/InstanceGraphInterface.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/VCD.h"
 #include "circt/Tools/circt-verilog-lsp/CirctVerilogLspServerMain.h"
+#include "mlir/Bytecode/BytecodeReader.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
@@ -54,6 +65,7 @@
 #include "slang/syntax/AllSyntax.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/PointerUnion.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -365,6 +377,7 @@ struct WaveformServer {
   }
 
   LogicalResult updateWaves() {
+    return success();
     currentWaves.clear();
     if (failed(waveformFile->getWaves(currentObjectNames, currentStart,
                                       currentEnd, currentWaves)))
@@ -402,64 +415,124 @@ struct WaveformServer {
     return success();
   }
 };
+static StringAttr getVerilogName(igraph::InstanceOpInterface op) {
+  if (auto verilogName = op->getAttrOfType<StringAttr>("hw.verilogName")) {
+    return verilogName;
+  }
+  return op.getInstanceNameAttr();
+}
 
 struct ObjectPathInferer {
-  ObjectPathInferer(const circt::lsp::VerilogInstanceHierarchy &hierarchy)
-      : hierarchy(hierarchy) {}
+  ObjectPathInferer(
+      mlir::MLIRContext *context,
+      circt::igraph::InstancePathCache &instancePathCache,
+      const DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
+          &pathLastNameToInstanceRecord)
+      : instancePathCache(instancePathCache),
+        pathLastNameToInstanceRecord(pathLastNameToInstanceRecord) {}
+  circt::igraph::InstancePathCache &instancePathCache;
+  DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
+      pathLastNameToInstanceRecord;
+  mlir::MLIRContext *context;
 
-  std::optional<std::pair<StringRef, StringRef>>
-  getModuleNameAndInstanceName(ArrayRef<StringRef> objectPath) const {
-    if (objectPath.empty())
+  StringAttr getStringAttr(StringRef str) {
+    return StringAttr::get(context, str);
+  }
+
+  std::optional<std::tuple<StringRef, StringRef, StringRef>>
+  getModuleNameAndInstanceName(ArrayRef<StringRef> objectPath) {
+    if (objectPath.size() < 2)
       return std::nullopt;
-    auto it = nameToInstance.find(objectPath.back());
-    if (it == nameToInstance.end())
+    auto variableName = objectPath.back();
+    objectPath = objectPath.drop_back();
+    auto it =
+        pathLastNameToInstanceRecord.find(getStringAttr(objectPath.back()));
+    if (it == pathLastNameToInstanceRecord.end())
       return std::nullopt;
 
-    for (auto instance : it->second) {
-      // Match.
-      assert(instance);
-      bool failed = false;
+    for (auto *record : it->second) {
+      auto mod = record->getTarget()->getModule();
+      auto paths = instancePathCache.getAbsolutePaths(mod);
       auto currentObjectPath = objectPath;
-      while (!currentObjectPath.empty() && instance->parent) {
-        if (instance->instance_name != currentObjectPath.back()) {
-          failed = true;
-          break;
+      for (auto path : paths) {
+        bool matched = true;
+        for (auto p : llvm::reverse(path)) {
+          if (!p)
+            continue;
+          if (currentObjectPath.empty())
+            break;
+          if (getVerilogName(p) == currentObjectPath.back()) {
+            currentObjectPath = currentObjectPath.drop_back();
+          } else {
+            matched = false;
+            break;
+          }
         }
-        instance = instance->parent;
-        currentObjectPath = currentObjectPath.drop_back();
+        if (matched) {
+          // Match.
+          return std::make_tuple(mod.getModuleNameAttr(),
+                                 getVerilogName(record->getInstance()),
+                                 variableName);
+        }
       }
+      // auto instanceOp = record->getInstance();
+      // auto moduleName = instanceOp->getParent()->getModuleName();
+      // auto instanceName = instanceOp->getInstanceName();
 
-      if (failed || !instance)
-        continue;
+      // for (auto *instance : it->second) {
+      //   // Match.
+      //   assert(instance);
+      //   bool failed = false;
+      //   auto currentObjectPath = objectPath;
+      //   while (!currentObjectPath.empty() && instance->parent) {
+      //     if (instance->instanceName != currentObjectPath.back()) {
+      //       failed = true;
+      //       break;
+      //     }
+      //     instance = instance->parent;
+      //     currentObjectPath = currentObjectPath.drop_back();
+      //   }
 
-      // Match! Does this match multiple times?
-      return std::make_pair(instance->module_name, instance->instance_name);
+      //   if (failed || !instance)
+      //     continue;
+
+      //   // Match! Does this match multiple times?
+      //   return std::make_tuple(instance->moduleName, instance->instanceName,
+      //                          variableName);
+      // }
     }
+
     return std::nullopt;
   }
-  std::optional<std::pair<StringRef, StringRef>>
-  matchInstance(StringRef objectName) const {
+  std::optional<std::tuple<StringRef, StringRef, StringRef>>
+  matchInstance(StringRef objectName) {
+    mlir::lsp::Logger::info("matchInstance: {}", objectName);
     auto it = llvm::split(objectName, ".");
     SmallVector<StringRef> objectPath(it.begin(), it.end());
     if (objectPath.empty())
       return std::nullopt;
-    if (auto result = getModuleNameAndInstanceName(objectPath))
+    if (auto result =
+            getModuleNameAndInstanceName(ArrayRef<StringRef>(objectPath)))
       return result;
-    if (auto result = getModuleNameAndInstanceName(
-            ArrayRef<StringRef>(objectPath).drop_back()))
-      return result;
+    // if (auto result = getModuleNameAndInstanceName(objectPath))
+    //   return result;
+
     return std::nullopt;
   }
 
-  const circt::lsp::VerilogInstanceHierarchy &hierarchy;
-
-  DenseMap<StringRef, SmallVector<VerilogInstanceHierarchy *>> nameToInstance;
+  // llvm::StringMap<SmallVector<const VerilogInstanceHierarchy *>>
+  // nameToInstance;
 };
 
 struct GlobalVerilogServerContext {
   std::unique_ptr<WaveformServer> waveformServer;
   MLIRContext context;
   std::unique_ptr<ObjectPathInferer> objectPathInferer;
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  std::unique_ptr<igraph::InstancePathCache> instancePathCache;
+  std::unique_ptr<hw::InstanceGraph> instanceGraph;
+  DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
+      pathLastNameToInstanceRecord;
 };
 
 } // namespace
@@ -478,7 +551,8 @@ using VerilogIndexSymbol = slang::ast::Symbol;
 //   SMRange getDefLoc() const {
 //     definition->getLoc();
 //     if (const slang::ast::VariableDeclStatement *decl =
-//             llvm::dyn_cast_if_present<const slang::ast::VariableDeclStatement
+//             llvm::dyn_cast_if_present<const
+//             slang::ast::VariableDeclStatement
 //             *>(definition)) {
 //       const ast::Name *declName = decl->getName();
 //       return declName ? declName->getLoc() : decl->getLoc();
@@ -492,14 +566,17 @@ using VerilogIndexSymbol = slang::ast::Symbol;
 //   std::vector<SMRange> references;
 // };
 
-/// This class provides an index for definitions/uses within a Verilog document.
-/// It provides efficient lookup of a definition given an input source range.
+/// This class provides an index for definitions/uses within a Verilog
+/// document. It provides efficient lookup of a definition given an input
+/// source range.
 
 class VerilogServerContext {
 public:
   struct UserHint {
     std::unique_ptr<llvm::json::Value> json = nullptr;
   };
+
+  llvm::StringMap<llvm::StringMap<std::string>> addedHints;
 
   VerilogServerContext(GlobalVerilogServerContext &globalContext)
       : globalContext(globalContext) {}
@@ -622,9 +699,9 @@ public:
     //   bool found = false;
     //   for (auto &lib : originalFileRoots) {
     //     auto size = lib.size();
-    //     auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
-    //     llvm::sys::path::append(lib, loc->filePath);
-    //     if (llvm::sys::fs::exists(lib)) {
+    //     auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size);
+    //     }); llvm::sys::path::append(lib, loc->filePath); if
+    //     (llvm::sys::fs::exists(lib)) {
     //       auto memoryBuffer = llvm::MemoryBuffer::getFile(lib);
     //       if (!memoryBuffer) {
     //         continue;
@@ -752,8 +829,9 @@ getSeverity(slang::DiagnosticSeverity severity) {
   llvm_unreachable("all slang diagnostic severities should be handled");
   return mlir::lsp::DiagnosticSeverity::Error;
 }
-/// A converter that can be plugged into a slang `DiagnosticEngine` as a client
-/// that will map slang diagnostics to their MLIR counterpart and emit them.
+/// A converter that can be plugged into a slang `DiagnosticEngine` as a
+/// client that will map slang diagnostics to their MLIR counterpart and emit
+/// them.
 class MlirDiagnosticClient : public slang::DiagnosticClient {
   const VerilogServerContext &context;
   std::vector<mlir::lsp::Diagnostic> &diags;
@@ -804,9 +882,9 @@ public:
   /// Initialize the index with the given ast::Module.
   void initialize(slang::ast::Compilation *compilation);
 
-  /// Lookup a symbol for the given location. Returns nullptr if no symbol could
-  /// be found. If provided, `overlappedRange` is set to the range that the
-  /// provided `loc` overlapped with.
+  /// Lookup a symbol for the given location. Returns nullptr if no symbol
+  /// could be found. If provided, `overlappedRange` is set to the range that
+  /// the provided `loc` overlapped with.
   const VerilogIndexSymbol *lookup(SMLoc loc,
                                    SMRange *overlappedRange = nullptr) const;
 
@@ -1511,6 +1589,28 @@ void VerilogDocument::inferAndAddInlayHints(
   for (auto *inst : root.topInstances) {
     mlir::lsp::Logger::info("inferAndAddInlayHints {}", inst->name);
   }
+
+  getContext().addedHints.clear();
+  if (!verilogContext.globalContext.objectPathInferer) {
+    return;
+  }
+
+  mlir::lsp::Logger::info("Run inference");
+
+  for (auto &value : values) {
+    mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
+    if (auto result =
+            verilogContext.globalContext.objectPathInferer->matchInstance(
+                value.path)) {
+      auto [moduleName, instanceName, variableName] = *result;
+      mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
+                              instanceName, variableName);
+      auto &addedHints = getContext().addedHints;
+      addedHints[moduleName][variableName] = value.value;
+      mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
+                              variableName);
+    }
+  }
 }
 
 VerilogDocument::VerilogDocument(
@@ -2103,11 +2203,13 @@ struct RvalueExprVisitor
     if (!contains(SMRange(start, end)))
       return;
     mlir::lsp::Logger::debug("handleSymbol nam");
+    auto moduleName = names.back();
+    auto symbolName = symbol->name;
     if (context.getUserHint().json) {
-      auto it = context.getUserHint().json->getAsObject()->find(names.back());
+      auto it = context.getUserHint().json->getAsObject()->find(moduleName);
       StringRef newName;
       if (it != context.getUserHint().json->getAsObject()->end()) {
-        auto it2 = it->second.getAsObject()->find(symbol->name);
+        auto it2 = it->second.getAsObject()->find(symbolName);
         if (it2 == it->second.getAsObject()->end()) {
           return;
         }
@@ -2125,27 +2227,45 @@ struct RvalueExprVisitor
       // TEST
     }
     {
-      auto &server = context.globalContext.waveformServer;
-      const auto &wavesMap = server->getCurrentWavesMap();
-      mlir::lsp::Logger::debug("wavesMap: {}", wavesMap.size());
-      auto it = wavesMap.find(names.back());
-      if (it != wavesMap.end()) {
-        auto it2 = it->second.find(symbol->name);
+      auto &addedHints = context.addedHints;
+      auto it = addedHints.find(moduleName);
+      if (it != addedHints.end()) {
+        auto it2 = it->second.find(symbolName);
         if (it2 != it->second.end()) {
           mlir::lsp::Logger::info("it2: {}", it2->second);
+          auto newName = it2->second;
           inlayHints.emplace_back(
               mlir::lsp::InlayHintKind::Parameter,
               context.getLspLocation(useEnd ? range.end() : range.start())
                   .range.start);
           auto &hint = inlayHints.back();
-          hint.label += " [val=";
-          hint.label += it2->second.toString(2);
-          hint.label += "@" + std::to_string(server->currentTime);
-          hint.label += server->getWaveformFile()->getUnit();
-          hint.label += "]";
+          hint.label = " ";
+          hint.label += newName;
         }
       }
     }
+    // {
+    //   auto &server = context.globalContext.waveformServer;
+    //   const auto &wavesMap = server->getCurrentWavesMap();
+    //   mlir::lsp::Logger::debug("wavesMap: {}", wavesMap.size());
+    //   auto it = wavesMap.find(names.back());
+    //   if (it != wavesMap.end()) {
+    //     auto it2 = it->second.find(symbol->name);
+    //     if (it2 != it->second.end()) {
+    //       mlir::lsp::Logger::info("it2: {}", it2->second);
+    //       inlayHints.emplace_back(
+    //           mlir::lsp::InlayHintKind::Parameter,
+    //           context.getLspLocation(useEnd ? range.end() : range.start())
+    //               .range.start);
+    //       auto &hint = inlayHints.back();
+    //       hint.label += " [val=";
+    //       hint.label += it2->second.toString(2);
+    //       hint.label += "@" + std::to_string(server->currentTime);
+    //       hint.label += server->getWaveformFile()->getUnit();
+    //       hint.label += "]";
+    //     }
+    //   }
+    // }
   }
 
   // Handle references to the left-hand side of a parent assignment.
@@ -2524,7 +2644,8 @@ void VerilogDocument::getVerilogViewOutput(
   // Generate the MLIR for the ast module. We also capture diagnostics here to
   // show to the user, which may be useful if Verilog isn't capturing
   // constraints expected by PDL.
-  MLIRContext mlirContext;
+  // MLIRContext mlirContext;
+  mlir::MLIRContext mlirContext;
   mlirContext
       .loadDialect<moore::MooreDialect, hw::HWDialect, cf::ControlFlowDialect,
                    func::FuncDialect, debug::DebugDialect>();
@@ -3446,14 +3567,68 @@ void VerilogTextFile::inferAndAddInlayHints(
 struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
       : options(options), compilationDatabase(options.compilationDatabases) {
-    auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
-    if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
-                                "examples/random/random.vcd")))
-      assert(false && "failed to initialize waveform file");
+    // auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
+    // if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
+    //                             "examples/random/random.vcd")))
+    //   assert(false && "failed to initialize waveform file");
 
-    globalContext.waveformServer =
-        std::make_unique<WaveformServer>(std::move(temp));
-    mlir::lsp::Logger::info("waveformServer !!!");
+    // globalContext.waveformServer =
+    //     std::make_unique<WaveformServer>(std::move(temp));
+    // mlir::lsp::Logger::info("waveformServer !!!");
+
+    if (!options.mlirPath.empty()) {
+      globalContext.context.loadDialect<
+          moore::MooreDialect, hw::HWDialect, comb::CombDialect,
+          ltl::LTLDialect, verif::VerifDialect, cf::ControlFlowDialect,
+          func::FuncDialect, debug::DebugDialect, llhd::LLHDDialect>();
+      // Read MLIR file.
+      auto open = mlir::openInputFile(options.mlirPath);
+      if (!open) {
+        mlir::lsp::Logger::error("Failed to open MLIR file {}",
+                                 options.mlirPath);
+        return;
+      }
+      mlir::ParserConfig config(&globalContext.context, false);
+      mlir::BytecodeReader reader(open->getMemBufferRef(), config, false);
+      globalContext.module =
+          mlir::ModuleOp::create(mlir::UnknownLoc::get(&globalContext.context));
+      if (failed(reader.readTopLevel(
+              globalContext.module->getBody(), [&](mlir::Operation *op) {
+                return isa<hw::HWDialect>(op->getDialect());
+              }))) {
+        mlir::lsp::Logger::error("Failed to open MLIR file {}",
+                                 options.mlirPath);
+        return;
+      }
+
+      mlir::lsp::Logger::info("module loaded");
+
+      globalContext.instanceGraph =
+          std::make_unique<hw::InstanceGraph>(globalContext.module.get());
+      globalContext.instancePathCache =
+          std::make_unique<igraph::InstancePathCache>(
+              *globalContext.instanceGraph);
+
+      for (auto *node : *globalContext.instanceGraph) {
+        if (!node)
+          continue;
+        for (auto *inst : node->uses()) {
+          auto instanceOp = inst->getInstance();
+          if (!isa<hw::InstanceOp>(instanceOp))
+            continue;
+          auto instanceName = instanceOp.getInstanceNameAttr();
+          if (auto verilogName =
+                  instanceOp->getAttrOfType<StringAttr>("hw.verilogName")) {
+            instanceName = verilogName;
+          }
+          globalContext.pathLastNameToInstanceRecord[instanceName].push_back(
+              inst);
+        }
+      }
+      globalContext.objectPathInferer = std::make_unique<ObjectPathInferer>(
+          &globalContext.context, *globalContext.instancePathCache.get(),
+          globalContext.pathLastNameToInstanceRecord);
+    }
   }
 
   /// Verilog LSP options.

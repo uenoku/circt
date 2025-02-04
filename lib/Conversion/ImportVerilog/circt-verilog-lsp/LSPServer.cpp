@@ -113,9 +113,14 @@ struct LSPServer {
   /// are ready to be processed.
   OutgoingNotification<PublishDiagnosticsParams> publishDiagnostics;
 
+  /// Refresh inlay hint
+  OutgoingRequest<RefreshInlayHintsParams> refreshInlayHints;
+
   /// Used to indicate that the 'shutdown' request was received from the
   /// Language Server client.
   bool shutdownRequestReceived = false;
+
+  size_t inlayHintRefreshId = 0;
 };
 } // namespace
 
@@ -154,7 +159,11 @@ void LSPServer::onInitialize(const InitializeParams &params,
        }},
       {"hoverProvider", true},
       {"documentSymbolProvider", true},
-      {"inlayHintProvider", true},
+      {"inlayHintProvider",
+       llvm::json::Object{
+           {"resolveSupport", true},
+           {"refreshSupport", true},
+       }},
       {"callHierarchyProvider", true},
   };
 
@@ -326,6 +335,7 @@ void LSPServer::onObjectPathInlayHints(
   server.inferAndAddInlayHints(params.values);
   mlir::lsp::Logger::info("Found {} inlay hints", params.values.size());
   reply(nullptr);
+  refreshInlayHints(RefreshInlayHintsParams{}, inlayHintRefreshId++);
 }
 
 //===----------------------------------------------------------------------===//
@@ -403,6 +413,19 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
   lspServer.publishDiagnostics =
       messageHandler.outgoingNotification<PublishDiagnosticsParams>(
           "textDocument/publishDiagnostics");
+
+  lspServer.refreshInlayHints =
+      messageHandler
+          .outgoingRequest<RefreshInlayHintsParams, RefreshInlayHintsResult>(
+              "workspace/inlayHint/refresh",
+              [&](llvm::json::Value id,
+                  llvm::Expected<RefreshInlayHintsResult> value) {
+                if (auto err = value.takeError()) {
+                  Logger::error("Error refreshing inlay hints: {}", err);
+                  return;
+                }
+                return;
+              });
 
   // Run the main loop of the transport.
   if (llvm::Error error = transport.run(messageHandler)) {
