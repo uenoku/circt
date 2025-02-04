@@ -1601,10 +1601,6 @@ void VerilogDocument::inferAndAddInlayHints(
     const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
   // Get instance graph.
   mlir::lsp::Logger::info("inferAndAddInlayHints");
-  auto &root = compilation->get()->getRoot();
-  for (auto *inst : root.topInstances) {
-    mlir::lsp::Logger::info("inferAndAddInlayHints {}", inst->name);
-  }
 
   getContext().addedHints.clear();
   if (!verilogContext.globalContext.objectPathInferer) {
@@ -3605,7 +3601,7 @@ struct circt::lsp::VerilogServer::Impl {
         return;
       }
       mlir::ParserConfig config(&globalContext.context, false);
-      bool lazyLoad = true;
+      bool lazyLoad = false;
       if (lazyLoad) {
         mlir::BytecodeReader reader(open->getMemBufferRef(), config, false);
         globalContext.module = mlir::ModuleOp::create(
@@ -3619,12 +3615,19 @@ struct circt::lsp::VerilogServer::Impl {
                                    options.mlirPath);
           return;
         }
+        // if (llvm::hasSingleElement(*globalContext.module->getBody())) {
+        //   if (mlir::ModuleOp op = dyn_cast<mlir::ModuleOp>(
+        //           &globalContext.module->getBody()->front())) {
+        //     // Move the operations.
+        //     globalContext.module = op;
+        //   }
+        // }
       } else {
         globalContext.module =
             mlir::parseSourceString<mlir::ModuleOp>(open->getBuffer(), config);
       }
 
-      mlir::lsp::Logger::info("module loaded");
+      mlir::lsp::Logger::info("module loaded {}", *globalContext.module);
 
       globalContext.instanceGraph =
           std::make_unique<hw::InstanceGraph>(globalContext.module.get());
@@ -3639,9 +3642,13 @@ struct circt::lsp::VerilogServer::Impl {
         mlir::lsp::Logger::info("Checking  2");
 
         for (auto *inst : node->uses()) {
-          auto instanceOp = inst->getInstance();
-          if (!isa<hw::InstanceOp>(instanceOp.getOperation()))
+          if (!inst)
             continue;
+          mlir::lsp::Logger::info("Checking  3");
+          auto instanceOp = inst->getInstance();
+          if (!instanceOp)
+            continue;
+          mlir::lsp::Logger::info("Checking  3");
           auto instanceName = instanceOp.getInstanceNameAttr();
           if (auto verilogName =
                   instanceOp->getAttrOfType<StringAttr>("hw.verilogName")) {
@@ -3649,7 +3656,7 @@ struct circt::lsp::VerilogServer::Impl {
           }
 
           mlir::lsp::Logger::info("register instanceName: {} {}", instanceName,
-                                   inst);
+                                  inst);
           globalContext.pathLastNameToInstanceRecord[instanceName].push_back(
               inst);
         }
