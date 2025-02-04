@@ -17,11 +17,11 @@
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/LLHD/IR/LLHDDialect.h"
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/Moore/MooreDialect.h"
 #include "circt/Dialect/Moore/MoorePasses.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
-#include "circt/Dialect/LLHD/IR/LLHDDialect.h"
 #include "circt/Support/FVInt.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/InstanceGraphInterface.h"
@@ -34,6 +34,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/IndentedOstream.h"
@@ -429,7 +430,8 @@ struct ObjectPathInferer {
       const DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
           &pathLastNameToInstanceRecord)
       : instancePathCache(instancePathCache),
-        pathLastNameToInstanceRecord(pathLastNameToInstanceRecord) {}
+        pathLastNameToInstanceRecord(pathLastNameToInstanceRecord),
+        context(context) {}
   circt::igraph::InstancePathCache &instancePathCache;
   DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
       pathLastNameToInstanceRecord;
@@ -443,17 +445,23 @@ struct ObjectPathInferer {
   getModuleNameAndInstanceName(ArrayRef<StringRef> objectPath) {
     if (objectPath.size() < 2)
       return std::nullopt;
+    mlir::lsp::Logger::info("getModuleNameAndInstanceName: {}",
+                            objectPath.back());
+
     auto variableName = objectPath.back();
     objectPath = objectPath.drop_back();
     auto it =
         pathLastNameToInstanceRecord.find(getStringAttr(objectPath.back()));
     if (it == pathLastNameToInstanceRecord.end())
       return std::nullopt;
+    mlir::lsp::Logger::info("getModuleNameAndInstanceName A");
 
     for (auto *record : it->second) {
       auto mod = record->getTarget()->getModule();
       auto paths = instancePathCache.getAbsolutePaths(mod);
       auto currentObjectPath = objectPath;
+      mlir::lsp::Logger::info("getModuleNameAndInstanceName B");
+
       for (auto path : paths) {
         bool matched = true;
         for (auto p : llvm::reverse(path)) {
@@ -501,6 +509,7 @@ struct ObjectPathInferer {
       //                          variableName);
       // }
     }
+    mlir::lsp::Logger::info("getModuleNameAndInstanceName C");
 
     return std::nullopt;
   }
@@ -3589,16 +3598,23 @@ struct circt::lsp::VerilogServer::Impl {
         return;
       }
       mlir::ParserConfig config(&globalContext.context, false);
-      mlir::BytecodeReader reader(open->getMemBufferRef(), config, false);
-      globalContext.module =
-          mlir::ModuleOp::create(mlir::UnknownLoc::get(&globalContext.context));
-      if (failed(reader.readTopLevel(
-              globalContext.module->getBody(), [&](mlir::Operation *op) {
-                return isa<hw::HWDialect>(op->getDialect());
-              }))) {
-        mlir::lsp::Logger::error("Failed to open MLIR file {}",
-                                 options.mlirPath);
-        return;
+      bool lazyLoad = true;
+      if (lazyLoad) {
+        mlir::BytecodeReader reader(open->getMemBufferRef(), config, false);
+        globalContext.module = mlir::ModuleOp::create(
+            mlir::UnknownLoc::get(&globalContext.context));
+
+        if (failed(reader.readTopLevel(
+                globalContext.module->getBody(), [&](mlir::Operation *op) {
+                  return isa<hw::HWDialect>(op->getDialect());
+                }))) {
+          mlir::lsp::Logger::error("Failed to open MLIR file {}",
+                                   options.mlirPath);
+          return;
+        }
+      } else {
+        globalContext.module =
+            mlir::parseSourceString<mlir::ModuleOp>(open->getBuffer(), config);
       }
 
       mlir::lsp::Logger::info("module loaded");
@@ -3614,13 +3630,16 @@ struct circt::lsp::VerilogServer::Impl {
           continue;
         for (auto *inst : node->uses()) {
           auto instanceOp = inst->getInstance();
-          if (!isa<hw::InstanceOp>(instanceOp))
+          if (!isa<hw::InstanceOp>(instanceOp.getOperation()))
             continue;
           auto instanceName = instanceOp.getInstanceNameAttr();
           if (auto verilogName =
                   instanceOp->getAttrOfType<StringAttr>("hw.verilogName")) {
             instanceName = verilogName;
           }
+
+          mlir::lsp::Logger::info("register instanceName: {} {}", instanceName,
+                                   inst);
           globalContext.pathLastNameToInstanceRecord[instanceName].push_back(
               inst);
         }
