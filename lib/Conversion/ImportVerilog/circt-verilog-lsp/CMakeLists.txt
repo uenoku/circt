@@ -31,6 +31,9 @@ add_circt_library(CIRCTVerilogLspServerLib
   CIRCTMooreToCore
   CIRCTMooreTransforms
   CIRCTLLHD
+  CIRCTOM
+  CIRCTSV
+  CIRCTEmit
   PRIVATE
   slang_slang
 )

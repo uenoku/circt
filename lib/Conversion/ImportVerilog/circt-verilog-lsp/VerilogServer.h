@@ -137,6 +137,9 @@ public:
   void inferAndAddInlayHints(
       const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
 
+  void findObjectPathDefinition(const std::string &name,
+                                std::vector<mlir::lsp::Location> &locations);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl;

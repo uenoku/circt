@@ -14,6 +14,7 @@
 #include "circt/Conversion/Passes.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
+#include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -21,6 +22,8 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/Moore/MooreDialect.h"
 #include "circt/Dialect/Moore/MoorePasses.h"
+#include "circt/Dialect/OM/OMDialect.h"
+#include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/FVInt.h"
 #include "circt/Support/InstanceGraph.h"
@@ -441,33 +444,32 @@ struct ObjectPathInferer {
     return StringAttr::get(context, str);
   }
 
-  std::optional<std::tuple<StringRef, StringRef, StringRef>>
-  getModuleNameAndInstanceName(ArrayRef<StringRef> objectPath) {
-    if (objectPath.size() < 2)
-      return std::nullopt;
-    mlir::lsp::Logger::info("getModuleNameAndInstanceName: {}",
-                            objectPath.back());
+  void getModuleNameAndInstanceName(
+      ArrayRef<StringRef> objectPath,
+      SmallVectorImpl<std::pair<StringRef, StringRef>> &results) {
+    if (objectPath.size() < 1)
+      return;
+    /// mlir::lsp::Logger::info("getModuleNameAndInstanceName: {}",
+    ///                         objectPath.back());
 
-    auto variableName = objectPath.back();
-    objectPath = objectPath.drop_back();
-    for (auto &[key, value] : pathLastNameToInstanceRecord) {
-      for (auto *record : value) {
-        mlir::lsp::Logger::info("graph: {} {}", key,
-                                getVerilogName(record->getInstance()));
-      }
-    }
+    /// auto variableName = objectPath.back();
+    /// objectPath = objectPath.drop_back();
+    // for (auto &[key, value] : pathLastNameToInstanceRecord) {
+    //   for (auto *record : value) {
+    //     mlir::lsp::Logger::info("graph: {} {}", key,
+    //                             getVerilogName(record->getInstance()));
+    //   }
+    // }
 
     auto it =
         pathLastNameToInstanceRecord.find(getStringAttr(objectPath.back()));
     if (it == pathLastNameToInstanceRecord.end())
-      return std::nullopt;
-    mlir::lsp::Logger::info("getModuleNameAndInstanceName A");
+      return;
 
     for (auto *record : it->second) {
       auto mod = record->getTarget()->getModule();
       auto paths = instancePathCache.getAbsolutePaths(mod);
       auto currentObjectPath = objectPath;
-      mlir::lsp::Logger::info("getModuleNameAndInstanceName B");
 
       for (auto path : paths) {
         bool matched = true;
@@ -485,9 +487,8 @@ struct ObjectPathInferer {
         }
         if (matched) {
           // Match.
-          return std::make_tuple(mod.getModuleNameAttr(),
-                                 getVerilogName(record->getInstance()),
-                                 variableName);
+          results.emplace_back(mod.getModuleNameAttr(),
+                               getVerilogName(record->getInstance()));
         }
       }
       // auto instanceOp = record->getInstance();
@@ -516,24 +517,38 @@ struct ObjectPathInferer {
       //                          variableName);
       // }
     }
-    mlir::lsp::Logger::info("getModuleNameAndInstanceName C");
-
-    return std::nullopt;
   }
-  std::optional<std::tuple<StringRef, StringRef, StringRef>>
+
+  llvm::StringMap<SmallVector<std::pair<StringRef, StringRef>>> memo;
+
+  std::optional<std::pair<ArrayRef<std::pair<StringRef, StringRef>>, StringRef>>
   matchInstance(StringRef objectName) {
-    mlir::lsp::Logger::info("matchInstance: {}", objectName);
+    // mlir::lsp::Logger::info("matchInstance: {}", objectName);
     auto it = llvm::split(objectName, ".");
     SmallVector<StringRef> objectPath(it.begin(), it.end());
     if (objectPath.empty())
-      return std::nullopt;
-    if (auto result =
-            getModuleNameAndInstanceName(ArrayRef<StringRef>(objectPath)))
-      return result;
-    // if (auto result = getModuleNameAndInstanceName(objectPath))
-    //   return result;
+      return {};
+    auto variableName = objectPath.back();
+    auto key = objectName.drop_back(objectPath.back().size());
+    auto resultIt = memo.find(key);
+    if (resultIt == memo.end()) {
+      getModuleNameAndInstanceName(ArrayRef<StringRef>(objectPath).drop_back(),
+                                   memo[key]);
+      resultIt = memo.find(key);
+    }
 
-    return std::nullopt;
+    return std::make_pair(resultIt->second, variableName);
+  }
+
+  std::optional<std::tuple<StringRef, StringRef, StringRef>>
+  matchSingleInstance(StringRef objectName) {
+    // mlir::lsp::Logger::info("matchInstance: {}", objectName);
+    auto result = matchInstance(objectName);
+    if (!result || result->first.size() != 1)
+      return {};
+
+    return std::tuple(result->first[0].first, result->first[0].second,
+                      result->second);
   }
 
   // llvm::StringMap<SmallVector<const VerilogInstanceHierarchy *>>
@@ -549,6 +564,7 @@ struct GlobalVerilogServerContext {
   std::unique_ptr<hw::InstanceGraph> instanceGraph;
   DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
       pathLastNameToInstanceRecord;
+  llvm::StringMap<llvm::StringMap<std::string>> addedHints;
 };
 
 } // namespace
@@ -592,7 +608,7 @@ public:
     std::unique_ptr<llvm::json::Value> json = nullptr;
   };
 
-  llvm::StringMap<llvm::StringMap<std::string>> addedHints;
+  // llvm::StringMap<llvm::StringMap<std::string>> addedHints;
 
   VerilogServerContext(GlobalVerilogServerContext &globalContext)
       : globalContext(globalContext) {}
@@ -1597,33 +1613,34 @@ struct VerilogDocument {
 };
 } // namespace
 
-void VerilogDocument::inferAndAddInlayHints(
-    const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
-  // Get instance graph.
-  mlir::lsp::Logger::info("inferAndAddInlayHints");
-
-  getContext().addedHints.clear();
-  if (!verilogContext.globalContext.objectPathInferer) {
-    return;
-  }
-
-  mlir::lsp::Logger::info("Run inference");
-
-  for (auto &value : values) {
-    mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
-    if (auto result =
-            verilogContext.globalContext.objectPathInferer->matchInstance(
-                value.path)) {
-      auto [moduleName, instanceName, variableName] = *result;
-      mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
-                              instanceName, variableName);
-      auto &addedHints = getContext().addedHints;
-      addedHints[moduleName][variableName] = value.value;
-      mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
-                              variableName);
-    }
-  }
-}
+// void VerilogDocument::inferAndAddInlayHints(
+//     const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
+//   // Get instance graph.
+//   mlir::lsp::Logger::info("inferAndAddInlayHints");
+//
+//   addedHints.clear();
+//   if (!verilogContext.globalContext.objectPathInferer) {
+//     return;
+//   }
+//
+//   mlir::lsp::Logger::info("Run inference");
+//
+//   for (auto &value : values) {
+//     mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
+//     if (auto result =
+//             verilogContext.globalContext.objectPathInferer->matchInstance(
+//                 value.path)) {
+//       auto [moduleName, instanceName, variableName] = *result;
+//       mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
+//                               instanceName, variableName);
+//       auto &addedHints = getContext().addedHints;
+//       addedHints[moduleName][variableName] = value.value;
+//       mlir::lsp::Logger::info("Added hint {} {} {}", moduleName,
+//       instanceName,
+//                               variableName);
+//     }
+//   }
+// }
 
 VerilogDocument::VerilogDocument(
     GlobalVerilogServerContext &globalContext, const mlir::lsp::URIForFile &uri,
@@ -2239,7 +2256,7 @@ struct RvalueExprVisitor
       // TEST
     }
     {
-      auto &addedHints = context.addedHints;
+      auto &addedHints = context.globalContext.addedHints;
       auto it = addedHints.find(moduleName);
       if (it != addedHints.end()) {
         auto it2 = it->second.find(symbolName);
@@ -3211,6 +3228,10 @@ public:
   void getLocationsOf(const mlir::lsp::URIForFile &uri,
                       mlir::lsp::Position defPos,
                       std::vector<mlir::lsp::Location> &locations);
+
+  void getLocationsOf(StringRef moduleName, StringRef variableName,
+                      std::vector<mlir::lsp::Location> &locations);
+
   void findReferencesOf(const mlir::lsp::URIForFile &uri,
                         mlir::lsp::Position pos,
                         std::vector<mlir::lsp::Location> &references);
@@ -3592,7 +3613,8 @@ struct circt::lsp::VerilogServer::Impl {
       globalContext.context.loadDialect<
           moore::MooreDialect, hw::HWDialect, comb::CombDialect,
           ltl::LTLDialect, verif::VerifDialect, cf::ControlFlowDialect,
-          func::FuncDialect, debug::DebugDialect, llhd::LLHDDialect>();
+          func::FuncDialect, debug::DebugDialect, llhd::LLHDDialect,
+          sv::SVDialect, om::OMDialect, emit::EmitDialect>();
       // Read MLIR file.
       auto open = mlir::openInputFile(options.mlirPath);
       if (!open) {
@@ -3627,8 +3649,6 @@ struct circt::lsp::VerilogServer::Impl {
             mlir::parseSourceString<mlir::ModuleOp>(open->getBuffer(), config);
       }
 
-      mlir::lsp::Logger::info("module loaded {}", *globalContext.module);
-
       globalContext.instanceGraph =
           std::make_unique<hw::InstanceGraph>(globalContext.module.get());
       globalContext.instancePathCache =
@@ -3636,19 +3656,15 @@ struct circt::lsp::VerilogServer::Impl {
               *globalContext.instanceGraph);
 
       for (auto *node : *globalContext.instanceGraph) {
-        mlir::lsp::Logger::info("Checking");
         if (!node)
           continue;
-        mlir::lsp::Logger::info("Checking  2");
 
         for (auto *inst : node->uses()) {
           if (!inst)
             continue;
-          mlir::lsp::Logger::info("Checking  3");
           auto instanceOp = inst->getInstance();
           if (!instanceOp)
             continue;
-          mlir::lsp::Logger::info("Checking  3");
           auto instanceName = instanceOp.getInstanceNameAttr();
           if (auto verilogName =
                   instanceOp->getAttrOfType<StringAttr>("hw.verilogName")) {
@@ -3661,9 +3677,46 @@ struct circt::lsp::VerilogServer::Impl {
               inst);
         }
       }
+
       globalContext.objectPathInferer = std::make_unique<ObjectPathInferer>(
-          &globalContext.context, *globalContext.instancePathCache.get(),
+          &globalContext.context, *globalContext.instancePathCache,
           globalContext.pathLastNameToInstanceRecord);
+    }
+  }
+
+  void inferAndAddInlayHints(
+      const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
+    mlir::lsp::Logger::info("inferAndAddInlayHints");
+
+    globalContext.addedHints.clear();
+    if (!globalContext.objectPathInferer) {
+      return;
+    }
+
+    mlir::lsp::Logger::info("Run inference");
+
+    for (auto &value : values) {
+      mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
+      if (auto result = globalContext.objectPathInferer->matchSingleInstance(
+              value.path)) {
+        auto [moduleName, instanceName, variableName] = *result;
+        mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
+                                instanceName, variableName);
+        auto &addedHints = globalContext.addedHints;
+        addedHints[moduleName][variableName] = value.value;
+        mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
+                                variableName);
+      }
+    }
+  }
+
+  void findObjectPathDefinition(const std::string &name,
+                                std::vector<mlir::lsp::Location> &locations) {
+    auto result = globalContext.objectPathInferer->matchSingleInstance(name);
+    if (!result)
+      return;
+    auto [moduleName, _, variableName] = *result;
+    for (auto &file : files) {
     }
   }
 
@@ -3828,7 +3881,6 @@ void circt::lsp::VerilogServer::getOutgoingCalls(
 
 void circt::lsp::VerilogServer::inferAndAddInlayHints(
     const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
-  for (auto &file : impl->files) {
-    file.second->inferAndAddInlayHints(values);
-  }
+  mlir::lsp::Logger::info("inferAndAddInlayHints");
+  impl->inferAndAddInlayHints(values);
 }
