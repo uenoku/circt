@@ -469,16 +469,19 @@ struct ObjectPathInferer {
     for (auto *record : it->second) {
       auto mod = record->getTarget()->getModule();
       auto paths = instancePathCache.getAbsolutePaths(mod);
-      auto currentObjectPath = objectPath;
 
       for (auto path : paths) {
+        auto currentObjectPath = objectPath;
         bool matched = true;
         for (auto p : llvm::reverse(path)) {
           if (!p)
             continue;
           if (currentObjectPath.empty())
             break;
-          if (getVerilogName(p) == currentObjectPath.back()) {
+
+          mlir::lsp::Logger::info("compare {} vs {}", getVerilogName(p).getValue(),
+                          currentObjectPath.back());
+          if (getVerilogName(p).getValue() == currentObjectPath.back()) {
             currentObjectPath = currentObjectPath.drop_back();
           } else {
             matched = false;
@@ -544,8 +547,15 @@ struct ObjectPathInferer {
   matchSingleInstance(StringRef objectName) {
     // mlir::lsp::Logger::info("matchInstance: {}", objectName);
     auto result = matchInstance(objectName);
-    if (!result || result->first.size() != 1)
+    if (!result || result->first.size() != 1) {
+      if (!result)
+        mlir::lsp::Logger::info("match not found for {}", objectName);
+      else if (result->first.size() != 1)
+        mlir::lsp::Logger::info("{} match found for {}", result->first.size(),
+                                objectName);
+
       return {};
+    }
 
     return std::tuple(result->first[0].first, result->first[0].second,
                       result->second);
@@ -556,6 +566,8 @@ struct ObjectPathInferer {
 };
 
 struct GlobalVerilogServerContext {
+  GlobalVerilogServerContext(const VerilogServerOptions &options)
+      : options(options) {}
   std::unique_ptr<WaveformServer> waveformServer;
   MLIRContext context;
   std::unique_ptr<ObjectPathInferer> objectPathInferer;
@@ -565,6 +577,7 @@ struct GlobalVerilogServerContext {
   DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
       pathLastNameToInstanceRecord;
   llvm::StringMap<llvm::StringMap<std::string>> addedHints;
+  const VerilogServerOptions &options;
 };
 
 } // namespace
@@ -700,7 +713,8 @@ public:
     if (fileInfo != filePathMap.end())
       return fileInfo->second;
 
-    for (auto &lib : originalFileRoots) {
+    for (auto &libRoot : globalContext.options.extraSourceLocationDirs) {
+      SmallString<128> lib(libRoot);
       auto size = lib.size();
       auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
       llvm::sys::path::append(lib, filePath);
@@ -839,7 +853,6 @@ public:
 
   llvm::SmallDenseMap<uint32_t, uint32_t> bufferIDMap;
   llvm::StringMap<std::pair<uint32_t, SmallString<128>>> filePathMap;
-  llvm::SmallVector<SmallString<128>> originalFileRoots;
   UserHint userHint;
   slang::driver::Driver driver;
   llvm::SourceMgr sourceMgr;
@@ -934,6 +947,8 @@ public:
 
   enum SymbolUse { AssignLValue, RValue, Unknown };
 
+  llvm::StringMap<llvm::StringMap<slang::ast::Symbol *>> moduleVariableToSymbol;
+
   using ReferenceNode = llvm::PointerUnion<const slang::ast::Symbol *,
                                            const slang::ast::PortConnection *,
                                            const slang::ast::Expression *>;
@@ -974,8 +989,10 @@ private:
   // TODO: Use allocator.
   SmallVector<std::unique_ptr<EmittedLoc>> emittedLocs;
 
+  slang::ast::Symbol *lookupSymbolFromModuleAndName() {}
+
   /// A mapping between definitions and their corresponding symbol.
-  DenseMap<const void *, std::unique_ptr<VerilogIndexSymbol>> defToSymbol;
+  // DenseMap<const void *, std::unique_ptr<VerilogIndexSymbol>> defToSymbol;
 };
 } // namespace
 
@@ -1392,10 +1409,6 @@ void VerilogIndex::initialize(slang::ast::Compilation *compilation) {
     }
   }
 
-  SmallString<128> path;
-  path += "/home/uenoku/dev/circt-dev";
-  getContext().originalFileRoots.push_back(path);
-
   parseEmittedLoc();
 
   // mlir::lsp::Logger::debug("VerilogIndex::initialize {}", c.name);
@@ -1693,7 +1706,8 @@ VerilogDocument::VerilogDocument(
 
   // ======
   // Read a mapping file
-  StringRef path = "/scratch/hidetou/mapping.json";
+  StringRef path = "/scratch/hidetou/federation/build/product-coreip-sifive/"
+                   "e21/verilog/design/mapping.json";
   auto open = mlir::openInputFile(path);
   if (!open) {
     mlir::lsp::Logger::error("Failed to open mapping file {}", path);
@@ -1780,7 +1794,9 @@ void VerilogDocument::getLocationsOf(
       auto fileInfo = verilogContext.filePathMap.find(it->filePath);
       if (fileInfo == verilogContext.filePathMap.end()) {
         bool found = false;
-        for (auto &lib : verilogContext.originalFileRoots) {
+        for (auto &libRoot :
+             verilogContext.globalContext.options.extraSourceLocationDirs) {
+          SmallString<128> lib(libRoot);
           auto size = lib.size();
           auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
           llvm::sys::path::append(lib, it->filePath);
@@ -3056,6 +3072,8 @@ struct FindChild : slang::ast::ASTVisitor<FindChild, true, true> {
   VerilogDocument &document;
   std::string childName;
 
+  // https://github.com/llvm/circt/actions/workflows/buildAndTest.yml/badge.svg
+
   void visit(const slang::ast::InstanceSymbol &instance) {
     if (instance.name == childName) {
       // items.emplace_back();
@@ -3599,7 +3617,8 @@ void VerilogTextFile::inferAndAddInlayHints(
 
 struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
-      : options(options), compilationDatabase(options.compilationDatabases) {
+      : compilationDatabase(options.compilationDatabases),
+        globalContext(options) {
     // auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
     // if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
     //                             "examples/random/random.vcd")))
@@ -3671,8 +3690,9 @@ struct circt::lsp::VerilogServer::Impl {
             instanceName = verilogName;
           }
 
-          mlir::lsp::Logger::info("register instanceName: {} {}", instanceName,
-                                  inst);
+          // mlir::lsp::Logger::info("register instanceName: {} {}",
+          // instanceName,
+          //                         inst);
           globalContext.pathLastNameToInstanceRecord[instanceName].push_back(
               inst);
         }
@@ -3720,8 +3740,8 @@ struct circt::lsp::VerilogServer::Impl {
     }
   }
 
-  /// Verilog LSP options.
-  const VerilogServerOptions &options;
+  ///// Verilog LSP options.
+  // const VerilogServerOptions &options;
 
   /// The compilation database containing additional information for files
   /// passed to the server.
@@ -3750,7 +3770,8 @@ void circt::lsp::VerilogServer::addDocument(
     std::vector<mlir::lsp::Diagnostic> &diagnostics) {
   Logger::debug("VerilogServer::addDocument");
   // Build the set of additional include directories.
-  std::vector<std::string> additionalIncludeDirs = impl->options.extraDirs;
+  std::vector<std::string> additionalIncludeDirs =
+      impl->globalContext.options.extraVerilogDirs;
   const auto &fileInfo = impl->compilationDatabase.getFileInfo(uri.file());
   llvm::append_range(additionalIncludeDirs, fileInfo.includeDirs);
 

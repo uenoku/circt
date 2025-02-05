@@ -26,11 +26,52 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Program.h"
 
-// using namespace mlir;
-// using namespace mlir::lsp;
+using namespace mlir;
+using namespace mlir::lsp;
 // using namespace circt::lsp;
 
 int main(int argc, char **argv) {
+  // LSP options.
+  llvm::cl::list<std::string> compilationDatabases(
+      "compilation-databases", llvm::cl::desc("Extra directory of databases"),
+      llvm::cl::value_desc("directory"), llvm::cl::Prefix);
+
+  llvm::cl::list<std::string> extraIncludeDirs(
+      "verilog-include-dir", llvm::cl::desc("Extra directory of Verilog files"),
+      llvm::cl::value_desc("directory"), llvm::cl::Prefix);
+  llvm::cl::list<std::string> sourceLocationIncludeDirs(
+      "source-location-include-dir",
+      llvm::cl::desc("Root directory of file source locations"),
+      llvm::cl::value_desc("directory"), llvm::cl::Prefix);
+  llvm::cl::opt<Logger::Level> logLevel{
+      "log",
+      llvm::cl::desc("Verbosity of log messages written to stderr"),
+      llvm::cl::values(
+          clEnumValN(Logger::Level::Error, "error", "Error messages only"),
+          clEnumValN(Logger::Level::Info, "info",
+                     "High level execution tracing"),
+          clEnumValN(Logger::Level::Debug, "verbose", "Low level details")),
+      llvm::cl::init(Logger::Level::Info),
+  };
+
+  llvm::cl::list<std::string> inlayHintFiles(
+      "inlayHintFiles", llvm::cl::desc("Static files to display inlay hints"),
+      llvm::cl::value_desc("directory"), llvm::cl::Prefix);
+
+  // Testing.
+  llvm::cl::opt<bool> prettyPrint{
+      "pretty",
+      llvm::cl::desc("Pretty-print JSON output"),
+      llvm::cl::init(false),
+  };
+  llvm::cl::opt<bool> litTest{
+      "lit-test",
+      llvm::cl::desc(
+          "Abbreviation for -input-style=delimited -pretty -log=verbose. "
+          "Intended to simplify lit tests"),
+      llvm::cl::init(false),
+  };
+
   llvm::cl::opt<mlir::lsp::JSONStreamStyle> inputStyle{
       "input-style",
       llvm::cl::desc("Input JSON stream encoding"),
@@ -43,36 +84,6 @@ int main(int argc, char **argv) {
       llvm::cl::init(mlir::lsp::JSONStreamStyle::Standard),
       llvm::cl::Hidden,
   };
-  llvm::cl::opt<bool> litTest{
-      "lit-test",
-      llvm::cl::desc(
-          "Abbreviation for -input-style=delimited -pretty -log=verbose. "
-          "Intended to simplify lit tests"),
-      llvm::cl::init(false),
-  };
-  llvm::cl::opt<mlir::lsp::Logger::Level> logLevel{
-      "log",
-      llvm::cl::desc("Verbosity of log messages written to stderr"),
-      llvm::cl::values(clEnumValN(mlir::lsp::Logger::Level::Error, "error",
-                                  "Error messages only"),
-                       clEnumValN(mlir::lsp::Logger::Level::Info, "info",
-                                  "High level execution tracing"),
-                       clEnumValN(mlir::lsp::Logger::Level::Debug, "verbose",
-                                  "Low level details")),
-      llvm::cl::init(mlir::lsp::Logger::Level::Info),
-  };
-  llvm::cl::opt<bool> prettyPrint{
-      "pretty",
-      llvm::cl::desc("Pretty-print JSON output"),
-      llvm::cl::init(false),
-  };
-  llvm::cl::list<std::string> extraIncludeDirs(
-      "verilog-extra-dir", llvm::cl::desc("Extra directory of include files"),
-      llvm::cl::value_desc("directory"), llvm::cl::Prefix);
-  llvm::cl::list<std::string> compilationDatabases(
-      "verilog-compilation-database",
-      llvm::cl::desc("Compilation YAML databases containing additional "
-                     "compilation information for .verilog files"));
 
   llvm::cl::opt<std::string> mlirPath{
       "mlir-path",
@@ -100,6 +111,7 @@ int main(int argc, char **argv) {
 
   // Configure the servers and start the main language server.
   circt::lsp::VerilogServerOptions options(compilationDatabases,
-                                           extraIncludeDirs, mlirPath);
+                                           extraIncludeDirs,
+                                           sourceLocationIncludeDirs, mlirPath);
   return failed(circt::lsp::CirctVerilogLspServerMain(options, transport));
 }
