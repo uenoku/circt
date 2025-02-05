@@ -33,7 +33,8 @@ using namespace mlir::lsp;
 int main(int argc, char **argv) {
   // LSP options.
   llvm::cl::list<std::string> compilationDatabases(
-      "verilog-compilation-database", llvm::cl::desc("Extra directory of databases"),
+      "verilog-compilation-database",
+      llvm::cl::desc("Extra directory of databases"),
       llvm::cl::value_desc("directory"), llvm::cl::Prefix);
 
   llvm::cl::list<std::string> extraIncludeDirs(
@@ -43,13 +44,13 @@ int main(int argc, char **argv) {
       "source-location-include-dir",
       llvm::cl::desc("Root directory of file source locations"),
       llvm::cl::value_desc("directory"), llvm::cl::Prefix);
-  for (auto dir: sourceLocationIncludeDirs) {
+  for (auto dir : sourceLocationIncludeDirs) {
     mlir::lsp::Logger::error("dir: {}", dir);
   }
-    llvm::cl::opt<Logger::Level> logLevel{
-        "log",
-        llvm::cl::desc("Verbosity of log messages written to stderr"),
-        llvm::cl::values(
+  llvm::cl::opt<Logger::Level> logLevel{
+      "log",
+      llvm::cl::desc("Verbosity of log messages written to stderr"),
+      llvm::cl::values(
           clEnumValN(Logger::Level::Error, "error", "Error messages only"),
           clEnumValN(Logger::Level::Info, "info",
                      "High level execution tracing"),
@@ -57,8 +58,9 @@ int main(int argc, char **argv) {
       llvm::cl::init(Logger::Level::Info),
   };
 
-  llvm::cl::list<std::string> inlayHintFiles(
-      "inlayHintFiles", llvm::cl::desc("Static files to display inlay hints"),
+  llvm::cl::list<std::string> staticInlayHintFiles(
+      "static-inlay-hint-files",
+      llvm::cl::desc("Static files to display inlay hints"),
       llvm::cl::value_desc("directory"), llvm::cl::Prefix);
 
   // Testing.
@@ -113,8 +115,8 @@ int main(int argc, char **argv) {
                                      prettyPrint);
 
   // Configure the servers and start the main language server.
-  circt::lsp::VerilogServerOptions options(compilationDatabases,
-                                           extraIncludeDirs,
-                                           sourceLocationIncludeDirs, mlirPath);
+  circt::lsp::VerilogServerOptions options(
+      compilationDatabases, extraIncludeDirs, sourceLocationIncludeDirs,
+      staticInlayHintFiles, mlirPath);
   return failed(circt::lsp::CirctVerilogLspServerMain(options, transport));
 }

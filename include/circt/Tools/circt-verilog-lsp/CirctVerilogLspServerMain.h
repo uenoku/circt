@@ -34,10 +34,12 @@ struct VerilogServerOptions {
   VerilogServerOptions(const std::vector<std::string> &compilationDatabases,
                        const std::vector<std::string> &extraVerilogDirs,
                        const std::vector<std::string> &extraSourceLocationDirs,
+                       const std::vector<std::string> &staticInlayHintFiles,
                        const std::string &mlirPath)
       : compilationDatabases(compilationDatabases),
         extraVerilogDirs(extraVerilogDirs),
-        extraSourceLocationDirs(extraSourceLocationDirs), mlirPath(mlirPath) {}
+        extraSourceLocationDirs(extraSourceLocationDirs),
+        staticInlayHintFiles(staticInlayHintFiles), mlirPath(mlirPath) {}
 
   const std::vector<std::string> &compilationDatabases;
 
@@ -47,6 +49,9 @@ struct VerilogServerOptions {
 
   /// Additional list of external source directories to search.
   const std::vector<std::string> &extraSourceLocationDirs;
+
+ /// The path to the static inlay hint files to use.
+  const std::vector<std::string> &staticInlayHintFiles;
 
   /// The path to the MLIR file to use.
   const std::string &mlirPath;

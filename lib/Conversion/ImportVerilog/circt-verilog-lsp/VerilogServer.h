@@ -140,6 +140,8 @@ public:
   void findObjectPathDefinition(const std::string &name,
                                 std::vector<mlir::lsp::Location> &locations);
 
+  void addStaticInlayHints(const std::vector<std::string> &files);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl;

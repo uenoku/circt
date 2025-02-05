@@ -945,10 +945,14 @@ public:
     // auto &diagEngine = context->getDiagEngine();
     mlir::lsp::Logger::debug("MlirDiagnosticClient::report {}",
                              slangDiag.formattedMessage);
+    auto loc = context.getLspLocation(slangDiag.location);
+    // Show only the diagnostics in the current file.
+    if (loc.uri != context.uri)
+      return;
     diags.emplace_back();
     auto &mlirDiag = diags.back();
     mlirDiag.severity = getSeverity(slangDiag.severity);
-    mlirDiag.range = context.getLspLocation(slangDiag.location).range;
+    mlirDiag.range = loc.range;
     mlirDiag.source = "slang";
     mlirDiag.message = slangDiag.formattedMessage;
 
@@ -2304,27 +2308,27 @@ struct RvalueExprVisitor
       return;
     auto moduleName = names.back();
     auto symbolName = symbol->name;
-    if (context.getUserHint().json) {
-      auto it = context.getUserHint().json->getAsObject()->find(moduleName);
-      StringRef newName;
-      if (it != context.getUserHint().json->getAsObject()->end()) {
-        auto it2 = it->second.getAsObject()->find(symbolName);
-        if (it2 == it->second.getAsObject()->end()) {
-          return;
-        }
-        newName = it2->second.getAsString().value();
-        mlir::lsp::Logger::debug("name: {}", it2->second.getAsString());
-        inlayHints.emplace_back(
-            mlir::lsp::InlayHintKind::Parameter,
-            context.getLspLocation(useEnd ? range.end() : range.start())
-                .range.start);
-        auto &hint = inlayHints.back();
-        hint.label = " ";
-        hint.label += newName;
-      }
+    // if (context.getUserHint().json) {
+    //   auto it = context.getUserHint().json->getAsObject()->find(moduleName);
+    //   StringRef newName;
+    //   if (it != context.getUserHint().json->getAsObject()->end()) {
+    //     auto it2 = it->second.getAsObject()->find(symbolName);
+    //     if (it2 == it->second.getAsObject()->end()) {
+    //       return;
+    //     }
+    //     newName = it2->second.getAsString().value();
+    //     mlir::lsp::Logger::debug("name: {}", it2->second.getAsString());
+    //     inlayHints.emplace_back(
+    //         mlir::lsp::InlayHintKind::Parameter,
+    //         context.getLspLocation(useEnd ? range.end() : range.start())
+    //             .range.start);
+    //     auto &hint = inlayHints.back();
+    //     hint.label = " ";
+    //     hint.label += newName;
+    //   }
 
-      // TEST
-    }
+    //   // TEST
+    // }
     {
       auto hintTwine = context.globalContext.getHint(moduleName, symbolName);
       if (!hintTwine.isTriviallyEmpty()) {
@@ -3806,6 +3810,47 @@ struct circt::lsp::VerilogServer::Impl {
     }
   }
 
+  void addStaticInlayHints(const std::vector<std::string> &files) {
+    for (auto &file : files) {
+      auto open = mlir::openInputFile(file);
+      if (!open) {
+        mlir::lsp::Logger::error("Failed to open static inlay hint file {}",
+                                 file);
+      }
+      auto json = llvm::json::parse(open->getBuffer());
+      if (auto e = json.takeError()) {
+        mlir::lsp::Logger::error("Failed to parse static inlay hint file {}",
+                                 e);
+        continue;
+      }
+      if (!json || json->kind() != llvm::json::Value::Object) {
+        mlir::lsp::Logger::error("Failed to parse static inlay hint file {}",
+                                 file);
+        continue;
+      }
+      auto root = json->getAsObject();
+      for (auto &[key, value] : *root) {
+        auto &moduleName = key;
+        auto *mapping = value.getAsObject();
+        if (!mapping) {
+          mlir::lsp::Logger::error("Failed to parse static inlay hint file {}",
+                                   file);
+          continue;
+        }
+        for (auto &[key, value] : *mapping) {
+          auto &variableName = key;
+          auto hint = value.getAsString();
+          if (!hint) {
+            mlir::lsp::Logger::error(
+                "Failed to parse static inlay hint file {}", file);
+            continue;
+          }
+
+          globalContext.addStaticHint(moduleName, variableName, *hint);
+        }
+      }
+    }
+  }
   ///// Verilog LSP options.
   // const VerilogServerOptions &options;
 
@@ -3976,4 +4021,9 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
     const std::string &name, std::vector<mlir::lsp::Location> &locations) {
 
   impl->findObjectPathDefinition(name, locations);
+}
+
+void circt::lsp::VerilogServer::addStaticInlayHints(
+    const std::vector<std::string> &files) {
+  impl->addStaticInlayHints(files);
 }
