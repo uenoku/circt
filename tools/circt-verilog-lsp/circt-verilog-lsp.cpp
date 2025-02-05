@@ -33,7 +33,7 @@ using namespace mlir::lsp;
 int main(int argc, char **argv) {
   // LSP options.
   llvm::cl::list<std::string> compilationDatabases(
-      "compilation-databases", llvm::cl::desc("Extra directory of databases"),
+      "verilog-compilation-database", llvm::cl::desc("Extra directory of databases"),
       llvm::cl::value_desc("directory"), llvm::cl::Prefix);
 
   llvm::cl::list<std::string> extraIncludeDirs(
@@ -43,10 +43,13 @@ int main(int argc, char **argv) {
       "source-location-include-dir",
       llvm::cl::desc("Root directory of file source locations"),
       llvm::cl::value_desc("directory"), llvm::cl::Prefix);
-  llvm::cl::opt<Logger::Level> logLevel{
-      "log",
-      llvm::cl::desc("Verbosity of log messages written to stderr"),
-      llvm::cl::values(
+  for (auto dir: sourceLocationIncludeDirs) {
+    mlir::lsp::Logger::error("dir: {}", dir);
+  }
+    llvm::cl::opt<Logger::Level> logLevel{
+        "log",
+        llvm::cl::desc("Verbosity of log messages written to stderr"),
+        llvm::cl::values(
           clEnumValN(Logger::Level::Error, "error", "Error messages only"),
           clEnumValN(Logger::Level::Info, "info",
                      "High level execution tracing"),

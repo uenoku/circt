@@ -225,200 +225,203 @@ static std::optional<std::string> getDocumentationFor(
 }
 
 namespace {
+/*
 struct WaveResult {
-  StringAttr objectPath;
-  StringAttr objectName;
-  StringAttr moduleName;
-  SmallVector<std::pair<int64_t, circt::FVInt>> values;
+StringAttr objectPath;
+StringAttr objectName;
+StringAttr moduleName;
+SmallVector<std::pair<int64_t, circt::FVInt>> values;
 };
 
 struct WaveformFile {
-  virtual ~WaveformFile() = default;
-  virtual LogicalResult getWaves(std::vector<std::string> &objectNames,
-                                 int64_t startTime, int64_t endTime,
-                                 std::vector<WaveResult> &result) = 0;
-  // virtual LogicalResult getWaves(const std::string &objectPath,
-  //                                const std::string &objectName,
-  //                                int64_t startTime, int64_t endTime,
-  //                                std::vector<WaveResult> &result) = 0;
+virtual ~WaveformFile() = default;
+virtual LogicalResult getWaves(std::vector<std::string> &objectNames,
+                               int64_t startTime, int64_t endTime,
+                               std::vector<WaveResult> &result) = 0;
+// virtual LogicalResult getWaves(const std::string &objectPath,
+//                                const std::string &objectName,
+//                                int64_t startTime, int64_t endTime,
+//                                std::vector<WaveResult> &result) = 0;
 
-  virtual LogicalResult initialize(StringRef waveformPath) = 0;
-  virtual StringRef getUnit() = 0;
+virtual LogicalResult initialize(StringRef waveformPath) = 0;
+virtual StringRef getUnit() = 0;
 };
 
 struct VCDWaveformFile : WaveformFile {
-  virtual ~VCDWaveformFile() = default;
-  VCDWaveformFile(MLIRContext *context) : context(context) {
-    Logger::info("waveform initilized");
-  }
-  MLIRContext *context;
-  LogicalResult getWaves(std::vector<std::string> &objectNames,
-                         int64_t startTime, int64_t endTime,
-                         std::vector<WaveResult> &result) override {
-    // Logger::info("waveform getWaves");
-    for (auto objectName : objectNames) {
-      vcd::VCDFile::Node *currentNode = vcdFile->getRootScope().get();
-      auto it = llvm::split(objectName, ".");
-      if (currentNode->getNameRef() != *it.begin())
-        continue;
-      for (auto name : llvm::make_range(std::next(it.begin()), it.end())) {
-        if (auto scope = llvm::dyn_cast<vcd::VCDFile::Scope>(currentNode)) {
-          auto it = scope->getChildren().find(StringAttr::get(context, name));
-          if (it == scope->getChildren().end())
-            break;
-          currentNode = it->second.get();
-        } else {
-          currentNode = nullptr;
+virtual ~VCDWaveformFile() = default;
+VCDWaveformFile(MLIRContext *context) : context(context) {
+  Logger::info("waveform initilized");
+}
+MLIRContext *context;
+LogicalResult getWaves(std::vector<std::string> &objectNames,
+                       int64_t startTime, int64_t endTime,
+                       std::vector<WaveResult> &result) override {
+  // Logger::info("waveform getWaves");
+  for (auto objectName : objectNames) {
+    vcd::VCDFile::Node *currentNode = vcdFile->getRootScope().get();
+    auto it = llvm::split(objectName, ".");
+    if (currentNode->getNameRef() != *it.begin())
+      continue;
+    for (auto name : llvm::make_range(std::next(it.begin()), it.end())) {
+      if (auto scope = llvm::dyn_cast<vcd::VCDFile::Scope>(currentNode)) {
+        auto it = scope->getChildren().find(StringAttr::get(context, name));
+        if (it == scope->getChildren().end())
           break;
-        }
-      }
-      if (currentNode) {
-        auto variable = llvm::dyn_cast<vcd::VCDFile::Variable>(currentNode);
-        if (variable) {
-          WaveResult waveResult;
-          waveResult.objectPath = StringAttr::get(context, "tb");
-          waveResult.objectName = variable->getName();
-          waveResult.moduleName = StringAttr::get(context, "counter");
-          waveResult.values.push_back(
-              {0, FVInt::getAllX(variable->getBitWidth())});
-          result.push_back(std::move(waveResult));
-        }
-      }
-    }
-
-    return success();
-  }
-  StringRef getUnit() override { return "ns"; }
-  LogicalResult initialize(StringRef waveformPath) override {
-    this->waveformPath = waveformPath.str();
-    auto buffer = llvm::MemoryBuffer::getFile(waveformPath);
-    if (!buffer) {
-      return failure();
-    }
-    sourceMgr.AddNewSourceBuffer(std::move(buffer.get()), llvm::SMLoc());
-    vcdFile = circt::vcd::importVCDFile(sourceMgr, context);
-    if (!vcdFile)
-      return failure();
-
-    // indexWaves();
-    std::vector<WaveResult> result;
-
-    std::vector<std::string> query;
-    // query.emplace_back("tb.u0.out");
-    // query.emplace_back("tb.u0.rstn");
-    // query.emplace_back("tb.u0.clk");
-    // getWaves(query, 0, 0, result);
-
-    return success();
-  }
-
-  void indexWaves() {
-    auto &currentNode = vcdFile->getRootScope();
-    SmallVector<Attribute> path;
-    SmallVector<std::pair<size_t, vcd::VCDFile::Scope *>> worklist;
-    worklist.push_back(std::make_pair(0, currentNode.get()));
-    DenseMap<ArrayAttr, std::vector<WaveResult>> waves;
-    while (!worklist.empty()) {
-      auto [depth, node] = worklist.pop_back_val();
-      path.resize(depth);
-      path.push_back(node->getName());
-      if (auto scope = llvm::dyn_cast<vcd::VCDFile::Scope>(node)) {
-        for (auto &child : scope->getChildren()) {
-          if (auto variable =
-                  llvm::dyn_cast<vcd::VCDFile::Variable>(child.second.get())) {
-            // waves[ArrayAttr::get(context, path)];
-          } else {
-            // worklist.push_back(std::make_pair(depth, child.second.get()));
-          }
-        }
-      }
-    }
-  }
-  std::string waveformPath;
-  llvm::SourceMgr sourceMgr;
-  std::unique_ptr<circt::vcd::VCDFile> vcdFile;
-  DenseMap<ArrayAttr, WaveResult> waves;
-};
-
-struct WaveformServer {
-  std::unique_ptr<WaveformFile> waveformFile;
-  const std::unique_ptr<WaveformFile> &getWaveformFile() const {
-    return waveformFile;
-  }
-  // These variables represent singals we have to show in the current frame.
-  int64_t currentTime = 0;
-  int64_t currentStart = 0;
-  int64_t currentEnd = 0;
-  // Object in the current frame.
-  std::vector<std::string> currentObjectNames;
-  std::vector<WaveResult> currentWaves;
-
-  std::vector<std::string> currentInstance{"tb", "u0"};
-  std::string currentModule = "counter";
-
-  // {uri, objectName} -> FVInt
-  llvm::StringMap<llvm::StringMap<FVInt>> currentWavesMap;
-
-  WaveformServer(std::unique_ptr<WaveformFile> waveformFile)
-      : waveformFile(std::move(waveformFile)), currentTime(0), currentStart(0),
-        currentEnd(0) {
-    currentObjectNames.emplace_back("tb.u0.out");
-    currentObjectNames.emplace_back("tb.u0.rstn");
-    currentObjectNames.emplace_back("tb.u0.clk");
-    updateWaves();
-    currentWavesMap["test"]["a"] = FVInt::getAllX(1);
-    currentWavesMap["test"]["b"] = FVInt::getAllX(2);
-  }
-
-  void updateTime(int64_t time, int64_t start, int64_t end) {
-    currentTime = time;
-    currentStart = start;
-    currentEnd = end;
-  }
-
-  const llvm::StringMap<llvm::StringMap<FVInt>> &getCurrentWavesMap() const {
-    return currentWavesMap;
-  }
-
-  LogicalResult updateWaves() {
-    return success();
-    currentWaves.clear();
-    if (failed(waveformFile->getWaves(currentObjectNames, currentStart,
-                                      currentEnd, currentWaves)))
-      return failure();
-
-    currentWavesMap.clear();
-
-    Logger::info("waveform updated");
-    for (auto &wave : currentWaves) {
-      StringAttr objectName = wave.objectName;
-      StringAttr objectPath = wave.objectPath;
-      StringAttr moduleName = wave.moduleName;
-      // Find the current value from the time result.
-
-      auto it =
-          std::lower_bound(wave.values.begin(), wave.values.end(), currentTime,
-                           [](const std::pair<int64_t, circt::FVInt> &a,
-                              int64_t b) { return a.first < b; });
-      FVInt value;
-      if (it == wave.values.end()) {
-        // Last value.
-        if (wave.values.empty())
-          value = FVInt::getAllX(1);
-        else
-          value = wave.values.back().second;
+        currentNode = it->second.get();
       } else {
-        value = it->second;
+        currentNode = nullptr;
+        break;
       }
-
-      currentWavesMap[moduleName][objectName] = value;
-
-      // Logger::info("wave: {}, {}, {}", wave.objectName, wave.moduleName,
-      //              value.toString(2));
     }
-    return success();
+    if (currentNode) {
+      auto variable = llvm::dyn_cast<vcd::VCDFile::Variable>(currentNode);
+      if (variable) {
+        WaveResult waveResult;
+        waveResult.objectPath = StringAttr::get(context, "tb");
+        waveResult.objectName = variable->getName();
+        waveResult.moduleName = StringAttr::get(context, "counter");
+        waveResult.values.push_back(
+            {0, FVInt::getAllX(variable->getBitWidth())});
+        result.push_back(std::move(waveResult));
+      }
+    }
   }
+
+  return success();
+}
+StringRef getUnit() override { return "ns"; }
+LogicalResult initialize(StringRef waveformPath) override {
+  this->waveformPath = waveformPath.str();
+  auto buffer = llvm::MemoryBuffer::getFile(waveformPath);
+  if (!buffer) {
+    return failure();
+  }
+  sourceMgr.AddNewSourceBuffer(std::move(buffer.get()), llvm::SMLoc());
+  vcdFile = circt::vcd::importVCDFile(sourceMgr, context);
+  if (!vcdFile)
+    return failure();
+
+  // indexWaves();
+  std::vector<WaveResult> result;
+
+  std::vector<std::string> query;
+  // query.emplace_back("tb.u0.out");
+  // query.emplace_back("tb.u0.rstn");
+  // query.emplace_back("tb.u0.clk");
+  // getWaves(query, 0, 0, result);
+
+  return success();
+}
+
+void indexWaves() {
+  auto &currentNode = vcdFile->getRootScope();
+  SmallVector<Attribute> path;
+  SmallVector<std::pair<size_t, vcd::VCDFile::Scope *>> worklist;
+  worklist.push_back(std::make_pair(0, currentNode.get()));
+  DenseMap<ArrayAttr, std::vector<WaveResult>> waves;
+  while (!worklist.empty()) {
+    auto [depth, node] = worklist.pop_back_val();
+    path.resize(depth);
+    path.push_back(node->getName());
+    if (auto scope = llvm::dyn_cast<vcd::VCDFile::Scope>(node)) {
+      for (auto &child : scope->getChildren()) {
+        if (auto variable =
+                llvm::dyn_cast<vcd::VCDFile::Variable>(child.second.get())) {
+          // waves[ArrayAttr::get(context, path)];
+        } else {
+          // worklist.push_back(std::make_pair(depth, child.second.get()));
+        }
+      }
+    }
+  }
+}
+std::string waveformPath;
+llvm::SourceMgr sourceMgr;
+std::unique_ptr<circt::vcd::VCDFile> vcdFile;
+DenseMap<ArrayAttr, WaveResult> waves;
 };
+
+// struct WaveformServer {
+// std::unique_ptr<WaveformFile> waveformFile;
+// const std::unique_ptr<WaveformFile> &getWaveformFile() const {
+// return waveformFile;
+//}
+//// These variables represent singals we have to show in the current frame.
+// int64_t currentTime = 0;
+// int64_t currentStart = 0;
+// int64_t currentEnd = 0;
+//// Object in the current frame.
+// std::vector<std::string> currentObjectNames;
+// std::vector<WaveResult> currentWaves;
+
+// std::vector<std::string> currentInstance{"tb", "u0"};
+// std::string currentModule = "counter";
+
+//// {uri, objectName} -> FVInt
+// llvm::StringMap<llvm::StringMap<FVInt>> currentWavesMap;
+
+// WaveformServer(std::unique_ptr<WaveformFile> waveformFile)
+//: waveformFile(std::move(waveformFile)), currentTime(0), currentStart(0),
+// currentEnd(0) {
+// currentObjectNames.emplace_back("tb.u0.out");
+// currentObjectNames.emplace_back("tb.u0.rstn");
+// currentObjectNames.emplace_back("tb.u0.clk");
+// updateWaves();
+// currentWavesMap["test"]["a"] = FVInt::getAllX(1);
+// currentWavesMap["test"]["b"] = FVInt::getAllX(2);
+//}
+
+// void updateTime(int64_t time, int64_t start, int64_t end) {
+// currentTime = time;
+// currentStart = start;
+// currentEnd = end;
+//}
+
+// const llvm::StringMap<llvm::StringMap<FVInt>> &getCurrentWavesMap() const {
+// return currentWavesMap;
+//}
+
+// LogicalResult updateWaves() {
+// return success();
+// currentWaves.clear();
+// if (failed(waveformFile->getWaves(currentObjectNames, currentStart,
+// currentEnd, currentWaves)))
+// return failure();
+
+// currentWavesMap.clear();
+
+// Logger::info("waveform updated");
+// for (auto &wave : currentWaves) {
+// StringAttr objectName = wave.objectName;
+// StringAttr objectPath = wave.objectPath;
+// StringAttr moduleName = wave.moduleName;
+//// Find the current value from the time result.
+
+// auto it =
+// std::lower_bound(wave.values.begin(), wave.values.end(), currentTime,
+//[](const std::pair<int64_t, circt::FVInt> &a,
+// int64_t b) { return a.first < b; });
+// FVInt value;
+// if (it == wave.values.end()) {
+//// Last value.
+// if (wave.values.empty())
+// value = FVInt::getAllX(1);
+// else
+// value = wave.values.back().second;
+//} else {
+// value = it->second;
+//}
+
+// currentWavesMap[moduleName][objectName] = value;
+
+//// Logger::info("wave: {}, {}, {}", wave.objectName, wave.moduleName,
+////              value.toString(2));
+//}
+// return success();
+//}
+//};
+*/
+
 static StringAttr getVerilogName(igraph::InstanceOpInterface op) {
   if (auto verilogName = op->getAttrOfType<StringAttr>("hw.verilogName")) {
     return verilogName;
@@ -479,8 +482,9 @@ struct ObjectPathInferer {
           if (currentObjectPath.empty())
             break;
 
-          mlir::lsp::Logger::info("compare {} vs {}", getVerilogName(p).getValue(),
-                          currentObjectPath.back());
+          mlir::lsp::Logger::info("compare {} vs {}",
+                                  getVerilogName(p).getValue(),
+                                  currentObjectPath.back());
           if (getVerilogName(p).getValue() == currentObjectPath.back()) {
             currentObjectPath = currentObjectPath.drop_back();
           } else {
@@ -568,16 +572,64 @@ struct ObjectPathInferer {
 struct GlobalVerilogServerContext {
   GlobalVerilogServerContext(const VerilogServerOptions &options)
       : options(options) {}
-  std::unique_ptr<WaveformServer> waveformServer;
+  // std::unique_ptr<WaveformServer> waveformServer;
   MLIRContext context;
+  const VerilogServerOptions &options;
   std::unique_ptr<ObjectPathInferer> objectPathInferer;
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::unique_ptr<igraph::InstancePathCache> instancePathCache;
   std::unique_ptr<hw::InstanceGraph> instanceGraph;
   DenseMap<StringAttr, SmallVector<igraph::InstanceRecord *>>
       pathLastNameToInstanceRecord;
-  llvm::StringMap<llvm::StringMap<std::string>> addedHints;
-  const VerilogServerOptions &options;
+
+  llvm::StringMap<llvm::StringMap<std::string>> dynamicHints;
+  llvm::StringMap<llvm::StringMap<std::string>> staticHints;
+
+  Twine getHint(StringRef moduleName, StringRef variableName) {
+    if ((staticHints.empty() && dynamicHints.empty()) ||
+        (!staticHints.contains(moduleName) ||
+         !dynamicHints.contains(moduleName)))
+      return Twine();
+
+    auto &result = staticHints[moduleName][variableName];
+    auto &dynamic = dynamicHints[moduleName][variableName];
+    if (result.empty() && dynamic.empty())
+      return Twine();
+    if (result.empty())
+      return dynamic;
+    if (dynamic.empty())
+      return result;
+    return result + "/" + dynamic;
+  }
+
+  void addStaticHint(StringRef moduleName, StringRef variableName,
+                     StringRef hint) {
+    auto &result = staticHints[moduleName][variableName];
+    if (result.empty())
+      result = hint;
+    else {
+      result += "/";
+      result += hint;
+    }
+  }
+
+  void addDynamicHint(StringRef moduleName, StringRef variableName,
+                      StringRef hint) {
+    auto &result = dynamicHints[moduleName][variableName];
+    if (result.empty())
+      result = hint;
+    else {
+      result += "/";
+      result += hint;
+    }
+  }
+
+  std::optional<std::tuple<StringRef, StringRef, StringRef>>
+  matchSingleInstance(StringRef objectName) {
+    if (objectPathInferer)
+      return objectPathInferer->matchSingleInstance(objectName);
+    return {};
+  }
 };
 
 } // namespace
@@ -621,10 +673,12 @@ public:
     std::unique_ptr<llvm::json::Value> json = nullptr;
   };
 
-  // llvm::StringMap<llvm::StringMap<std::string>> addedHints;
+  VerilogServerContext(GlobalVerilogServerContext &globalContext,
+                       mlir::lsp::URIForFile uri)
+      : globalContext(globalContext), uri(uri) {}
 
-  VerilogServerContext(GlobalVerilogServerContext &globalContext)
-      : globalContext(globalContext) {}
+  const mlir::lsp::URIForFile &uri;
+  const mlir::lsp::URIForFile &getURI() const { return uri; }
 
   llvm::SourceMgr &getSourceMgr() { return sourceMgr; }
   llvm::SmallDenseMap<uint32_t, uint32_t> &getBufferIDMap() {
@@ -1623,6 +1677,8 @@ struct VerilogDocument {
   }
   void inferAndAddInlayHints(
       const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
+  void findObjectPathDefinition(StringRef moduleName, StringRef variableName,
+                                std::vector<mlir::lsp::Location> &locations);
 };
 } // namespace
 
@@ -1659,7 +1715,7 @@ VerilogDocument::VerilogDocument(
     GlobalVerilogServerContext &globalContext, const mlir::lsp::URIForFile &uri,
     StringRef contents, const std::vector<std::string> &extraDirs,
     std::vector<mlir::lsp::Diagnostic> &diagnostics)
-    : verilogContext(globalContext), index(getContext()) {
+    : verilogContext(globalContext, uri), index(getContext()) {
   auto memBuffer = llvm::MemoryBuffer::getMemBufferCopy(contents, uri.file());
   Logger::debug("VerilogDocument::VerilogDocument");
 
@@ -1867,20 +1923,20 @@ void VerilogDocument::getLocationsOf(
   // if (loc.uri.file().empty())
   // return mlir::lsp::Logger::debug(
   //     "VerilogDocument::getLocationsOf loc is empty");
-  mlir::lsp::Logger::debug("VerilogDocument::getLocationsOf loc {}",
-                           loc.range.start.line);
+  // mlir::lsp::Logger::debug("VerilogDocument::getLocationsOf loc {}",
+  //                          loc.range.start.line);
   locations.push_back(loc);
 }
 
 void VerilogDocument::findReferencesOf(
     const mlir::lsp::URIForFile &uri, const mlir::lsp::Position &pos,
     std::vector<mlir::lsp::Location> &references) {
-  mlir::lsp::Logger::info("VerilogDocument::findReferencesOf loc");
+  // mlir::lsp::Logger::info("VerilogDocument::findReferencesOf loc");
   SMLoc posLoc = pos.getAsSMLoc(verilogContext.sourceMgr);
   const VerilogIndexSymbol *symbol = index.lookup(posLoc);
   if (!symbol) {
-    mlir::lsp::Logger::info(
-        "VerilogDocument::findReferencesOf symbol not found");
+    // mlir::lsp::Logger::info(
+    //     "VerilogDocument::findReferencesOf symbol not found");
     return;
   }
 
@@ -1919,7 +1975,7 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     auto uri = getContext().getExternalURI(emittedLocation);
     if (!uri)
       return std::nullopt;
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation");
     auto externalSource = getContext().getExternalSourceLine(emittedLocation);
     if (externalSource.empty())
       return std::nullopt;
@@ -1928,7 +1984,9 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     llvm::raw_string_ostream stream(hover.contents.value);
     mlir::raw_indented_ostream hoverOS(stream);
     auto sourceURI = getContext().getExternalURI(emittedLocation);
-    assert(sourceURI && "External URI not found");
+    if (!sourceURI) {
+      return std::nullopt;
+    }
     auto ext = emittedLocation->filePath.find_last_of('.');
 
     hoverOS << "### External Source\n```";
@@ -2235,19 +2293,15 @@ struct RvalueExprVisitor
     if (symbol->name.empty()) {
       return;
     }
-    mlir::lsp::Logger::debug("baz");
 
     auto start = context.getSMLoc(range.start());
     auto end = context.getSMLoc(range.end());
     if (names.empty()) {
-      mlir::lsp::Logger::debug("names empty");
       return;
     }
-    mlir::lsp::Logger::debug("handleSymbol foo");
 
     if (!contains(SMRange(start, end)))
       return;
-    mlir::lsp::Logger::debug("handleSymbol nam");
     auto moduleName = names.back();
     auto symbolName = symbol->name;
     if (context.getUserHint().json) {
@@ -2272,20 +2326,17 @@ struct RvalueExprVisitor
       // TEST
     }
     {
-      auto &addedHints = context.globalContext.addedHints;
-      auto it = addedHints.find(moduleName);
-      if (it != addedHints.end()) {
-        auto it2 = it->second.find(symbolName);
-        if (it2 != it->second.end()) {
-          mlir::lsp::Logger::info("it2: {}", it2->second);
-          auto newName = it2->second;
-          inlayHints.emplace_back(
-              mlir::lsp::InlayHintKind::Parameter,
-              context.getLspLocation(useEnd ? range.end() : range.start())
-                  .range.start);
-          auto &hint = inlayHints.back();
-          hint.label = " ";
-          hint.label += newName;
+      auto hintTwine = context.globalContext.getHint(moduleName, symbolName);
+      if (!hintTwine.isTriviallyEmpty()) {
+        inlayHints.emplace_back(
+            mlir::lsp::InlayHintKind::Parameter,
+            context.getLspLocation(useEnd ? range.end() : range.start())
+                .range.start);
+        auto &hint = inlayHints.back();
+        llvm::raw_string_ostream hintOS(hint.label);
+        hintTwine.print(hintOS);
+        if (hint.label.empty()) {
+          inlayHints.pop_back();
         }
       }
     }
@@ -3112,9 +3163,9 @@ void VerilogDocument::getCallHierarchyOutgoingCalls(
       item.to.name = name + ":net";
       item.to.kind = mlir::lsp::SymbolKind::Namespace;
       item.to.range = range;
-      mlir::lsp::Logger::info("NET range= {} {} {} {}", range.start.line,
-                              range.start.character, range.end.line,
-                              range.end.character + 1);
+      // mlir::lsp::Logger::info("NET range= {} {} {} {}", range.start.line,
+      //                         range.start.character, range.end.line,
+      //                         range.end.character + 1);
       item.to.selectionRange = range;
       item.to.uri = uri;
       item.to.detail = moduleName;
@@ -3126,9 +3177,9 @@ void VerilogDocument::getCallHierarchyOutgoingCalls(
       item.to.name = name + ":var";
       item.to.kind = mlir::lsp::SymbolKind::Namespace;
       item.to.range = range;
-      mlir::lsp::Logger::info("VAR range= {} {} {} {}", range.start.line,
-                              range.start.character, range.end.line,
-                              range.end.character + 1);
+      // mlir::lsp::Logger::info("VAR range= {} {} {} {}", range.start.line,
+      //                         range.start.character, range.end.line,
+      //                         range.end.character + 1);
       item.to.selectionRange = range;
       item.to.uri = uri;
       item.to.detail = moduleName;
@@ -3279,6 +3330,8 @@ public:
                    std::vector<mlir::lsp::CallHierarchyOutgoingCall> &items);
   void inferAndAddInlayHints(
       const std::vector<circt::lsp::VerilogObjectPathAndValue> &values);
+  void findObjectPathDefinition(StringRef moduleName, StringRef variableName,
+                                std::vector<mlir::lsp::Location> &locations);
 
 private:
   using ChunkIterator = llvm::pointee_iterator<
@@ -3324,6 +3377,15 @@ VerilogTextFile::VerilogTextFile(
     : globalContext(globalContext), contents(fileContents.str()),
       extraIncludeDirs(extraDirs) {
   initialize(uri, version, diagnostics);
+}
+
+void VerilogTextFile::findObjectPathDefinition(
+    StringRef moduleName, StringRef variableName,
+    std::vector<mlir::lsp::Location> &locations) {
+  for (auto &chunk : chunks) {
+    chunk->document.findObjectPathDefinition(moduleName, variableName,
+                                             locations);
+  }
 }
 
 LogicalResult VerilogTextFile::update(
@@ -3619,6 +3681,10 @@ struct circt::lsp::VerilogServer::Impl {
   explicit Impl(const VerilogServerOptions &options)
       : compilationDatabase(options.compilationDatabases),
         globalContext(options) {
+    mlir::lsp::Logger::info("VerilogServer::Impl");
+    for (auto &file : options.extraSourceLocationDirs) {
+      mlir::lsp::Logger::info("extraSourceLocationDirs: {}", file);
+    }
     // auto temp = std::make_unique<VCDWaveformFile>(&globalContext.context);
     // if (failed(temp->initialize("/home/uenoku/dev/circt-dev/vcd-samples/"
     //                             "examples/random/random.vcd")))
@@ -3706,24 +3772,22 @@ struct circt::lsp::VerilogServer::Impl {
 
   void inferAndAddInlayHints(
       const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
-    mlir::lsp::Logger::info("inferAndAddInlayHints");
+    // mlir::lsp::Logger::info("inferAndAddInlayHints");
 
-    globalContext.addedHints.clear();
+    globalContext.dynamicHints.clear();
     if (!globalContext.objectPathInferer) {
       return;
     }
 
-    mlir::lsp::Logger::info("Run inference");
+    // mlir::lsp::Logger::info("Run inference");
 
     for (auto &value : values) {
       mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
-      if (auto result = globalContext.objectPathInferer->matchSingleInstance(
-              value.path)) {
+      if (auto result = globalContext.matchSingleInstance(value.path)) {
         auto [moduleName, instanceName, variableName] = *result;
         mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
                                 instanceName, variableName);
-        auto &addedHints = globalContext.addedHints;
-        addedHints[moduleName][variableName] = value.value;
+        globalContext.addDynamicHint(moduleName, variableName, value.value);
         mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
                                 variableName);
       }
@@ -3732,11 +3796,13 @@ struct circt::lsp::VerilogServer::Impl {
 
   void findObjectPathDefinition(const std::string &name,
                                 std::vector<mlir::lsp::Location> &locations) {
-    auto result = globalContext.objectPathInferer->matchSingleInstance(name);
+    auto result = globalContext.matchSingleInstance(name);
     if (!result)
       return;
     auto [moduleName, _, variableName] = *result;
-    for (auto &file : files) {
+    for (auto &[_, file] : files) {
+      file->findObjectPathDefinition(moduleName.str(), variableName.str(),
+                                     locations);
     }
   }
 
@@ -3904,4 +3970,10 @@ void circt::lsp::VerilogServer::inferAndAddInlayHints(
     const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
   mlir::lsp::Logger::info("inferAndAddInlayHints");
   impl->inferAndAddInlayHints(values);
+}
+
+void circt::lsp::VerilogServer::findObjectPathDefinition(
+    const std::string &name, std::vector<mlir::lsp::Location> &locations) {
+
+  impl->findObjectPathDefinition(name, locations);
 }

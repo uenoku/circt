@@ -286,46 +286,37 @@ void LSPServer::onVerilogViewOutput(
 void LSPServer::onPrepareCallHierarchy(
     const CallHierarchyPrepareParams &params,
     Callback<std::vector<CallHierarchyItem>> reply) {
-  mlir::lsp::Logger::info("onPrepareCallHierarchy: uri={}, position=({},{})",
-                          params.textDocument.uri.file(), params.position.line,
-                          params.position.character);
+  // mlir::lsp::Logger::info("onPrepareCallHierarchy: uri={}, position=({},{})",
+  //                         params.textDocument.uri.file(), params.position.line,
+  //                         params.position.character);
 
   // FIXME:
   auto tmp = params.position;
   std::vector<CallHierarchyItem> items;
   server.prepareCallHierarchy(params.textDocument.uri, tmp, items);
 
-  mlir::lsp::Logger::info("Found {} call hierarchy items", items.size());
+  // // mlir::lsp::Logger::info("Found {} call hierarchy items", items.size());
   reply(std::move(items));
 }
 
 void LSPServer::onCallHierarchyIncomingCalls(
     const CallHierarchyIncomingCallsParams &params,
     Callback<std::vector<CallHierarchyIncomingCall>> reply) {
-  mlir::lsp::Logger::info("onCallHierarchyIncomingCalls: uri={}",
-                          params.item.uri.file());
-
   std::vector<CallHierarchyIncomingCall> calls;
   auto range = params.item.range;
   server.getIncomingCalls(params.item.uri, params.item.name, range,
                           params.item.kind, calls);
-
-  mlir::lsp::Logger::info("Found {} incoming calls", calls.size());
   reply(std::move(calls));
 }
 
 void LSPServer::onCallHierarchyOutgoingCalls(
     const CallHierarchyOutgoingCallsParams &params,
     Callback<std::vector<CallHierarchyOutgoingCall>> reply) {
-  mlir::lsp::Logger::info("onCallHierarchyOutgoingCalls: uri={} name={}",
-                          params.item.uri.file(), params.item.name);
 
   std::vector<CallHierarchyOutgoingCall> calls;
   auto range = params.item.range;
   server.getOutgoingCalls(params.item.uri, params.item.name, range,
                           params.item.kind, calls);
-
-  mlir::lsp::Logger::info("Found {} outgoing calls", calls.size());
   reply(std::move(calls));
 }
 
@@ -333,7 +324,7 @@ void LSPServer::onObjectPathInlayHints(
     const circt::lsp::VerilogObjectPathInlayHintsParams &params,
     Callback<std::nullptr_t> reply) {
   server.inferAndAddInlayHints(params.values);
-  mlir::lsp::Logger::info("Found {} inlay hints", params.values.size());
+  // mlir::lsp::Logger::info("Found {} inlay hints", params.values.size());
   reply(nullptr);
   refreshInlayHints(RefreshInlayHintsParams{}, inlayHintRefreshId++);
 }
@@ -347,7 +338,7 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
   LSPServer lspServer(server, transport);
   MessageHandler messageHandler(transport);
 
-  mlir::lsp::Logger::info("Starting Verilog LSP Server");
+  // mlir::lsp::Logger::info("Starting Verilog LSP Server");
 
   // Initialization
   messageHandler.method("initialize", &lspServer, &LSPServer::onInitialize);
