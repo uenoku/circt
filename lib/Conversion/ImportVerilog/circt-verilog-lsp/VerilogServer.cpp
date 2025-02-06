@@ -452,6 +452,13 @@ struct ObjectPathInferer {
       SmallVectorImpl<std::pair<StringRef, StringRef>> &results) {
     if (objectPath.size() < 1)
       return;
+
+    // Root.
+    if (objectPath.size() == 1) {
+      auto name = getStringAttr(objectPath.back());
+      results.push_back({name, name});
+      return;
+    }
     /// mlir::lsp::Logger::info("getModuleNameAndInstanceName: {}",
     ///                         objectPath.back());
 
@@ -707,10 +714,10 @@ public:
     auto buffer = sgr.getMemoryBuffer(bufferId);
     assert(!buffer->getBuffer().empty());
 
-    auto startLoc =
-        sgr.FindLocForLineAndColumn(bufferId, std::max(1, int32_t(loc->line) - 2), 0);
-    auto endLoc =
-        sgr.FindLocForLineAndColumn(bufferId, std::max(1, int32_t(loc->line) + 2), 0);
+    auto startLoc = sgr.FindLocForLineAndColumn(
+        bufferId, std::max(1, int32_t(loc->line) - 2), 0);
+    auto endLoc = sgr.FindLocForLineAndColumn(
+        bufferId, std::max(1, int32_t(loc->line) + 2), 0);
 
     return StringRef(startLoc.getPointer(),
                      endLoc.getPointer() - startLoc.getPointer());
@@ -1709,7 +1716,7 @@ struct FindVariableVisitor
       const slang::ast::Symbol *symbol, slang::SourceRange range,
       bool isDef = false, bool isAssign = false,
       std::optional<VerilogIndex::ReferenceNode> reference = std::nullopt) {
-    if (symbol->name.empty())
+    if (!symbol || symbol->name.empty())
       return;
     assert(range.start().valid() && range.end().valid());
     insertDeclRef(symbol, range, isDef, isAssign, reference);
@@ -1724,7 +1731,6 @@ struct FindVariableVisitor
     visitDefault(expr);
   }
   void visit(const slang::ast::VariableSymbol &expr) {
-    mlir::lsp::Logger::info("visit: {}", expr.name);
     handleSymbol(
         &expr,
         slang::SourceRange(expr.location, expr.location + expr.name.length()),
@@ -1776,16 +1782,10 @@ void VerilogDocument::findObjectPathDefinition(
     std::vector<mlir::lsp::Location> &locations) {
   FindVariableVisitor visitor(verilogContext, moduleName, variableName,
                               locations);
-  mlir::lsp::Logger::info("findObjectPathDefinition {} {}", moduleName,
-                          variableName);
-  slang::JsonWriter writer;
-  writer.setPrettyPrint(true);
 
   for (auto *tree : compilation.value()->getRoot().topInstances) {
     visitor.visit(tree->body);
   }
-  mlir::lsp::Logger::info("findObjectPathDefinition {} {} done", moduleName,
-                          variableName);
 }
 
 // void VerilogDocument::inferAndAddInlayHints(
@@ -1868,32 +1868,31 @@ VerilogDocument::VerilogDocument(
 
   // ======
   // Read static inlay hints
-  for (auto &path: globalContext.options.staticInlayHintFiles) {
-  auto open = mlir::openInputFile(path);
-  if (!open) {
-    mlir::lsp::Logger::error("Failed to open mapping file {}", path);
-  } else {
-    mlir::lsp::Logger::error("JSON {}", open->getBuffer());
-    auto json = llvm::json::parse(open->getBuffer());
-
-    if (auto err = json.takeError()) {
-      mlir::lsp::Logger::error("Failed to parse mapping file {}", err);
-      /*
-      mapping file is like this:
-      {
-        "module_Foo": {
-          "verilogName": "hintName",
-          "_GEN_123": "chisel_var"
-        }
-      }
-      */
+  for (auto &path : globalContext.options.staticInlayHintFiles) {
+    auto open = mlir::openInputFile(path);
+    if (!open) {
+      mlir::lsp::Logger::error("Failed to open mapping file {}", path);
     } else {
-      verilogContext.userHint.json =
-          std::make_unique<llvm::json::Value>(std::move(json.get()));
+      mlir::lsp::Logger::error("JSON {}", open->getBuffer());
+      auto json = llvm::json::parse(open->getBuffer());
+
+      if (auto err = json.takeError()) {
+        mlir::lsp::Logger::error("Failed to parse mapping file {}", err);
+        /*
+        mapping file is like this:
+        {
+          "module_Foo": {
+            "verilogName": "hintName",
+            "_GEN_123": "chisel_var"
+          }
+        }
+        */
+      } else {
+        verilogContext.userHint.json =
+            std::make_unique<llvm::json::Value>(std::move(json.get()));
+      }
     }
   }
-  }
-
 
   // ======
 
@@ -2100,19 +2099,21 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
       return std::nullopt;
     }
 
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}", emittedLocation->filePath);
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}",
+                            emittedLocation->filePath);
     auto ext = emittedLocation->filePath.find_last_of('.');
     mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 5");
 
-
     hoverOS << "### External Source\n```";
     if (ext != std::string::npos) {
-      auto extStr = emittedLocation->filePath.take_back(emittedLocation->filePath.size() - ext - 1);
+      auto extStr = emittedLocation->filePath.take_back(
+          emittedLocation->filePath.size() - ext - 1);
       hoverOS << extStr;
       // hoverOS << emittedLocation->filePath.substr(
       //     ext + 1, emittedLocation->filePath.size() - ext - 1);
     }
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}", externalSource);
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}",
+                            externalSource);
 
     hoverOS << "\n";
 
@@ -2127,7 +2128,6 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
 
     return hover;
   }
-
 
   // Find the symbol at the given location.
   SMRange hoverRange;
@@ -3933,6 +3933,8 @@ struct circt::lsp::VerilogServer::Impl {
           }
 
           // Add the file to the list of files to be processed.
+          if (locations.size())
+            return;
         }
       }
     }
@@ -4208,8 +4210,8 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
           // TODO: FIX
           // impl->files[uri->file()] = std::move(file);
           // Now try to find definition in the newly opened file
-          file->findObjectPathDefinition(moduleName.str(),
-                                              variableName.str(), locations);
+          file->findObjectPathDefinition(moduleName.str(), variableName.str(),
+                                         locations);
         }
       }
     }
