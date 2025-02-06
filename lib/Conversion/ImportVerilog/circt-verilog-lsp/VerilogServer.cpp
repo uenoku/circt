@@ -1770,7 +1770,7 @@ struct FindVariableVisitor
     assert(startLoc && endLoc && names.size() > 0);
     if (isDef && StringRef(sym->name) == variableName &&
         StringRef(names.back()) == moduleName) {
-      mlir::lsp::Logger::info("insertDeclRef {} {} {}", StringRef(sym->name),
+      mlir::lsp::Logger::info("Found object definition {} {} {}", StringRef(sym->name),
                               StringRef(names.back()), variableName);
       locations.push_back(context.getLspLocation(refLoc.start()));
     }
@@ -2194,7 +2194,6 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
         "VerilogDocument::findHover assignment expr is valid");
   }*/
   if (assignment.valid() && assignExpr) {
-    // mlir::lsp::Logger::info("VerilogDocument::findHover assignment");
     // assert(assignExpr->syntax);
     auto loc = verilogContext.getLspLocation(assignment);
     // mlir::lsp::Hover hover(loc.range);
