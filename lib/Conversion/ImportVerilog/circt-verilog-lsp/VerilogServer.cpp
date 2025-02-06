@@ -559,13 +559,15 @@ struct ObjectPathInferer {
     // mlir::lsp::Logger::info("matchInstance: {}", objectName);
     auto result = matchInstance(objectName);
     if (!result || result->first.size() != 1) {
-      if (!result)
+      if (!result) {
         mlir::lsp::Logger::info("match not found for {}", objectName);
-      else if (result->first.size() != 1)
-        mlir::lsp::Logger::info("{} match found for {}", result->first.size(),
-                                objectName);
-
-      return {};
+        return {};
+      } else if (result->first.size() != 0) {
+        // mlir::lsp::Logger::info("{} match found for {}, return first one",
+        //                         result->first.size(), objectName);
+      } else {
+        return {};
+      }
     }
 
     return std::tuple(result->first[0].first, result->first[0].second,
@@ -1770,8 +1772,9 @@ struct FindVariableVisitor
     assert(startLoc && endLoc && names.size() > 0);
     if (isDef && StringRef(sym->name) == variableName &&
         StringRef(names.back()) == moduleName) {
-      mlir::lsp::Logger::info("Found object definition {} {} {}", StringRef(sym->name),
-                              StringRef(names.back()), variableName);
+      mlir::lsp::Logger::info("Found object definition {} {} {}",
+                              StringRef(sym->name), StringRef(names.back()),
+                              variableName);
       locations.push_back(context.getLspLocation(refLoc.start()));
     }
   };
@@ -2099,8 +2102,6 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
       return std::nullopt;
     }
 
-    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}",
-                            emittedLocation->filePath);
     auto ext = emittedLocation->filePath.find_last_of('.');
     // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 5");
 
@@ -2112,7 +2113,8 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
       // hoverOS << emittedLocation->filePath.substr(
       //     ext + 1, emittedLocation->filePath.size() - ext - 1);
     }
-    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}",
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6
+    // {}",
     //                         externalSource);
 
     hoverOS << "\n";
@@ -4199,8 +4201,9 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
                                    locations);
   }
 
-  mlir::lsp::Logger::info("Found {} locations for {}.{}", locations.size(),
-                          moduleName.str(), variableName.str());
+  mlir::lsp::Logger::info("Found {} locations for {}.{} in exsiting files",
+                          locations.size(), moduleName.str(),
+                          variableName.str());
 
   if (!locations.empty()) {
 
@@ -4211,6 +4214,9 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
   // Check if there is moduleName.sv file.
   std::string path = moduleName.str() + ".sv";
   for (auto &dir : impl->globalContext.options.extraVerilogDirs) {
+    // mlir::lsp::Logger::info("Check the folder {} for {}.{}", dir,
+    //                         moduleName.str(), variableName.str());
+
     auto fullPath = dir + "/" + path;
     if (llvm::sys::fs::exists(fullPath)) {
       auto uri = mlir::lsp::URIForFile::fromFile(fullPath);
