@@ -88,6 +88,22 @@ struct VerilogObjectPathInlayHintsParams {
 bool fromJSON(const llvm::json::Value &value,
               VerilogObjectPathInlayHintsParams &result, llvm::json::Path path);
 
+struct VerilogGoToObjectDefinitionParams {
+  /// The path to the value.
+  std::string path;
+};
+
+/// Add support for JSON serialization.
+bool fromJSON(const llvm::json::Value &value, VerilogGoToObjectDefinitionParams &result,
+              llvm::json::Path path);
+
+struct VerilogGoToObjectDefinitionResult {
+  /// The path to the value.
+  std::vector<mlir::lsp::Location> locations;
+};
+
+/// Add support for JSON serialization.
+llvm::json::Value toJSON(const VerilogGoToObjectDefinitionResult &value);
 // Consider using this directly from MLIR file.
 struct VerilogInstanceHierarchy {
   VerilogInstanceHierarchy(llvm::StringRef moduleName,

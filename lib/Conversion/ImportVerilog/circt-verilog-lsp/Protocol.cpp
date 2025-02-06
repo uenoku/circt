@@ -93,3 +93,21 @@ bool circt::lsp::fromJSON(const llvm::json::Value &value,
                          llvm::json::Path path) {
   return llvm::json::ObjectMapper(value, path).map("values", result.values);
 }
+
+//===----------------------------------------------------------------------===//
+// VerilogGoToObjectDefinitionParams
+//===----------------------------------------------------------------------===//
+
+bool circt::lsp::fromJSON(const llvm::json::Value &value,
+                         VerilogGoToObjectDefinitionParams &result,
+                         llvm::json::Path path) {
+  return llvm::json::ObjectMapper(value, path).map("path", result.path);
+}
+
+//===----------------------------------------------------------------------===//
+// VerilogGoToObjectDefinitionResult
+//===----------------------------------------------------------------------===//
+
+llvm::json::Value circt::lsp::toJSON(const VerilogGoToObjectDefinitionResult &value) {
+  return llvm::json::Object{{"locations", value.locations}};
+}

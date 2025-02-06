@@ -101,6 +101,9 @@ struct LSPServer {
   void onObjectPathInlayHints(
       const circt::lsp::VerilogObjectPathInlayHintsParams &params,
       Callback<std::nullptr_t> reply);
+  void onGoToObjectDefinition(
+      const circt::lsp::VerilogGoToObjectDefinitionParams &params,
+      Callback<std::vector<Location>> reply);
 
   //===--------------------------------------------------------------------===//
   // Fields
@@ -329,6 +332,14 @@ void LSPServer::onObjectPathInlayHints(
   refreshInlayHints(RefreshInlayHintsParams{}, inlayHintRefreshId++);
 }
 
+void LSPServer::onGoToObjectDefinition(
+    const circt::lsp::VerilogGoToObjectDefinitionParams &params,
+    Callback<std::vector<Location>> reply) {
+  std::vector<Location> locations;
+  server.findObjectPathDefinition(params.path, locations);
+  reply(std::move(locations));
+}
+
 //===----------------------------------------------------------------------===//
 // Entry Point
 //===----------------------------------------------------------------------===//
@@ -399,6 +410,9 @@ LogicalResult circt::lsp::runVerilogLSPServer(VerilogServer &server,
 
   messageHandler.method("verilog/objectPathInlayHints", &lspServer,
                         &LSPServer::onObjectPathInlayHints);
+
+  messageHandler.method("verilog/goToObjectDefinition", &lspServer,
+                        &LSPServer::onGoToObjectDefinition);
 
   // Diagnostics
   lspServer.publishDiagnostics =

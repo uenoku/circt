@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
       llvm::cl::desc("Path to the MLIR file to use. This is required for "
                      "advanced features like waveform viewing"),
       llvm::cl::value_desc("path"),
-      llvm::cl::init("/scratch/hidetou/test.mlirbc"),
+      llvm::cl::init(""),
   };
 
   llvm::cl::ParseCommandLineOptions(argc, argv, "Verilog LSP Language Server");

@@ -586,9 +586,8 @@ struct GlobalVerilogServerContext {
   llvm::StringMap<llvm::StringMap<std::string>> staticHints;
 
   Twine getHint(StringRef moduleName, StringRef variableName) {
-    if ((staticHints.empty() && dynamicHints.empty()) ||
-        (!staticHints.contains(moduleName) ||
-         !dynamicHints.contains(moduleName)))
+    mlir::lsp::Logger::info("getHint: {} {}", moduleName, variableName);
+    if (!staticHints.contains(moduleName) && !dynamicHints.contains(moduleName))
       return Twine();
 
     auto &result = staticHints[moduleName][variableName];
@@ -674,7 +673,7 @@ public:
   };
 
   VerilogServerContext(GlobalVerilogServerContext &globalContext,
-                       mlir::lsp::URIForFile uri)
+                       const mlir::lsp::URIForFile &uri)
       : globalContext(globalContext), uri(uri) {}
 
   const mlir::lsp::URIForFile &uri;
@@ -1132,7 +1131,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   VerilogIndex &index;
 
   void visit(const slang::ast::InstanceBodySymbol &body) {
-    mlir::lsp::Logger::debug("visit: {}", body.name);
     inInstancePortConnection = false;
     visitDefault(body);
   }
@@ -1171,7 +1169,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   }
 
   void visit(const slang::ast::InstanceSymbol &symbol) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(symbol.kind));
     auto firstLoc = symbol.getSyntax()->getFirstToken().location();
     auto text =
         getContext().getSlangSourceManager().getSourceText(firstLoc.buffer());
@@ -1194,8 +1191,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
       inInstancePortConnection = true;
       visitDefault(con);
       inInstancePortConnection = false;
-      // mlir::lsp::Logger::info("visit: {}",
-      //                         con->getExpression()->syntax->toString());
 
       // if (auto *port = con->port.as_if<slang::ast::PortSymbol>()) {
       //   if (auto *connect = con->getExpression()
@@ -1264,7 +1259,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   // Handle references to the left-hand side of a parent assignment.
   // Handle references to the left-hand side of a parent assignment.
   void visit(const slang::ast::LValueReferenceExpression &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
@@ -1272,7 +1266,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
     visitDefault(expr);
   }
   void visit(const slang::ast::NetSymbol &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(
         &expr,
         slang::SourceRange(expr.location, expr.location + expr.name.length()),
@@ -1280,7 +1273,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
     visitDefault(expr);
   }
   void visit(const slang::ast::VariableSymbol &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(
         &expr,
         slang::SourceRange(expr.location, expr.location + expr.name.length()),
@@ -1289,7 +1281,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   }
 
   void visit(const slang::ast::VariableDeclStatement &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(&expr.symbol, expr.sourceRange, true);
     visitDefault(expr);
   }
@@ -1323,7 +1314,6 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
   // Handle named values, such as references to declared variables.
   // Handle named values, such as references to declared variables.
   void visit(const slang::ast::NamedValueExpression &expr) {
-    // mlir::lsp::Logger::info("visit: {}", slang::ast::toString(expr.kind));
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
@@ -1403,9 +1393,11 @@ struct IndexVisitor : slang::ast::ASTVisitor<IndexVisitor, true, true> {
     if (!startLoc || !endLoc)
       return;
     assert(startLoc && endLoc);
+
     if (startLoc != endLoc &&
         !index.getIntervalMap().overlaps(startLoc, endLoc)) {
       index.getIntervalMap().insert(startLoc, endLoc, sym);
+
       if (!isDef) {
         index.getReferences()[sym].push_back(
             {refLoc.start(),
@@ -1685,6 +1677,109 @@ struct VerilogDocument {
                                 std::vector<mlir::lsp::Location> &locations);
 };
 } // namespace
+
+struct FindVariableVisitor
+    : slang::ast::ASTVisitor<FindVariableVisitor, true, true> {
+  FindVariableVisitor(VerilogServerContext &context, StringRef moduleName,
+                      StringRef variableName,
+                      std::vector<mlir::lsp::Location> &locations)
+      : context(context), moduleName(moduleName), variableName(variableName),
+        locations(locations) {}
+  VerilogServerContext &context;
+  StringRef moduleName;
+  StringRef variableName;
+  std::vector<mlir::lsp::Location> &locations;
+  SmallVector<StringRef> names;
+
+  void visit(const slang::ast::InstanceBodySymbol &body) {
+    names.push_back(body.name);
+    visitDefault(body);
+    names.pop_back();
+  }
+
+  void handleSymbol(
+      const slang::ast::Symbol *symbol, slang::SourceRange range,
+      bool isDef = false, bool isAssign = false,
+      std::optional<VerilogIndex::ReferenceNode> reference = std::nullopt) {
+    if (symbol->name.empty())
+      return;
+    assert(range.start().valid() && range.end().valid());
+    insertDeclRef(symbol, range, isDef, isAssign, reference);
+  }
+
+  // Handle references to the left-hand side of a parent assignment.
+  void visit(const slang::ast::NetSymbol &expr) {
+    handleSymbol(
+        &expr,
+        slang::SourceRange(expr.location, expr.location + expr.name.length()),
+        true, false);
+    visitDefault(expr);
+  }
+  void visit(const slang::ast::VariableSymbol &expr) {
+    mlir::lsp::Logger::info("visit: {}", expr.name);
+    handleSymbol(
+        &expr,
+        slang::SourceRange(expr.location, expr.location + expr.name.length()),
+        true, false);
+    visitDefault(expr);
+  }
+
+  void visit(const slang::ast::VariableDeclStatement &expr) {
+    handleSymbol(&expr.symbol, expr.sourceRange, true);
+    visitDefault(expr);
+  }
+
+  template <typename T>
+  void visit(const T &t) {
+    visitDefault(t);
+  }
+
+  /// Handle assignment patterns.
+  void visitInvalid(const slang::ast::Expression &expr) {
+  }
+
+  void visitInvalid(const slang::ast::Statement &) {}
+  void visitInvalid(const slang::ast::TimingControl &) {}
+  void visitInvalid(const slang::ast::Constraint &) {}
+  void visitInvalid(const slang::ast::AssertionExpr &) {}
+  void visitInvalid(const slang::ast::BinsSelectExpr &) {}
+  void visitInvalid(const slang::ast::Pattern &) {}
+  VerilogServerContext &getContext() { return context; }
+
+  void insertDeclRef(
+      const VerilogIndexSymbol *sym, slang::SourceRange refLoc,
+      bool isDef = false, bool isAssign = false,
+      std::optional<VerilogIndex::ReferenceNode> reference = std::nullopt) {
+    const char *startLoc = getContext().getSMLoc(refLoc.start()).getPointer();
+    const char *endLoc = getContext().getSMLoc(refLoc.end()).getPointer() + 1;
+    if (!startLoc || !endLoc)
+      return;
+    assert(startLoc && endLoc && names.size() > 0);
+    if (isDef && StringRef(sym->name) == variableName &&
+        StringRef(names.back()) == moduleName) {
+      mlir::lsp::Logger::info("insertDeclRef {} {} {}", StringRef(sym->name),
+                              StringRef(names.back()), variableName);
+      locations.push_back(context.getLspLocation(refLoc.start()));
+    }
+  };
+};
+
+void VerilogDocument::findObjectPathDefinition(
+    StringRef moduleName, StringRef variableName,
+    std::vector<mlir::lsp::Location> &locations) {
+  FindVariableVisitor visitor(verilogContext, moduleName, variableName,
+                              locations);
+  mlir::lsp::Logger::info("findObjectPathDefinition {} {}", moduleName,
+                          variableName);
+  slang::JsonWriter writer;
+  writer.setPrettyPrint(true);
+
+  for (auto *tree : compilation.value()->getRoot().topInstances) {
+    visitor.visit(tree->body);
+  }
+  mlir::lsp::Logger::info("findObjectPathDefinition {} {} done", moduleName,
+                          variableName);
+}
 
 // void VerilogDocument::inferAndAddInlayHints(
 //     const std::vector<circt::lsp::VerilogObjectPathAndValue> &values) {
@@ -2284,7 +2379,6 @@ struct RvalueExprVisitor
   SmallVector<StringRef> names;
   void visit(const slang::ast::InstanceBodySymbol &body) {
     names.push_back(body.name);
-    mlir::lsp::Logger::debug("visit: {}", body.name);
     visitDefault(body);
     names.pop_back();
   }
@@ -2331,6 +2425,7 @@ struct RvalueExprVisitor
     // }
     {
       auto hintTwine = context.globalContext.getHint(moduleName, symbolName);
+      mlir::lsp::Logger::info("hintTwine: {}", hintTwine.str());
       if (!hintTwine.isTriviallyEmpty()) {
         inlayHints.emplace_back(
             mlir::lsp::InlayHintKind::Parameter,
@@ -2338,6 +2433,7 @@ struct RvalueExprVisitor
                 .range.start);
         auto &hint = inlayHints.back();
         llvm::raw_string_ostream hintOS(hint.label);
+        hintOS << ' ';
         hintTwine.print(hintOS);
         if (hint.label.empty()) {
           inlayHints.pop_back();
@@ -2370,7 +2466,6 @@ struct RvalueExprVisitor
 
   // Handle references to the left-hand side of a parent assignment.
   void visit(const slang::ast::LValueReferenceExpression &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
@@ -2378,20 +2473,17 @@ struct RvalueExprVisitor
     visitDefault(expr);
   }
   void visit(const slang::ast::NetSymbol &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(&expr, slang::SourceRange(expr.location,
                                            expr.location + expr.name.length()));
     visitDefault(expr);
   }
   void visit(const slang::ast::VariableSymbol &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(&expr, slang::SourceRange(expr.location,
                                            expr.location + expr.name.length()));
     visitDefault(expr);
   }
 
   void visit(const slang::ast::VariableDeclStatement &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     handleSymbol(&expr.symbol, expr.sourceRange, false);
     visitDefault(expr);
   }
@@ -2405,7 +2497,6 @@ struct RvalueExprVisitor
   // Handle named values, such as references to declared variables.
   // Handle named values, such as references to declared variables.
   void visit(const slang::ast::NamedValueExpression &expr) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(expr.kind));
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
@@ -2434,7 +2525,6 @@ struct RvalueExprVisitor
 
   template <typename T>
   void visit(const T &t) {
-    mlir::lsp::Logger::debug("visit: {}", slang::ast::toString(t.kind));
 
     visitDefault(t);
   }
@@ -2474,8 +2564,8 @@ struct RvalueExprVisitor
   }
 
   void visit(const slang::ast::InstanceSymbol &expr) {
-    mlir::lsp::Logger::info("visit: {}", slang::ast::toString(expr.kind));
-    mlir::lsp::Logger::info("size: {}", expr.getPortConnections().size());
+    // mlir::lsp::Logger::info("visit: {}", slang::ast::toString(expr.kind));
+    // mlir::lsp::Logger::info("size: {}", expr.getPortConnections().size());
 
     for (const auto &con : expr.getPortConnections()) {
       auto *portSymbol = con->port.as_if<slang::ast::PortSymbol>();
@@ -3699,6 +3789,7 @@ struct circt::lsp::VerilogServer::Impl {
     // mlir::lsp::Logger::info("waveformServer !!!");
 
     if (!options.mlirPath.empty()) {
+      mlir::lsp::Logger::info("Load MLIR {}", options.mlirPath);
       globalContext.context.loadDialect<
           moore::MooreDialect, hw::HWDialect, comb::CombDialect,
           ltl::LTLDialect, verif::VerifDialect, cf::ControlFlowDialect,
@@ -3789,8 +3880,6 @@ struct circt::lsp::VerilogServer::Impl {
       mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
       if (auto result = globalContext.matchSingleInstance(value.path)) {
         auto [moduleName, instanceName, variableName] = *result;
-        mlir::lsp::Logger::info("inferAndAddInlayHints {} {} {}", moduleName,
-                                instanceName, variableName);
         globalContext.addDynamicHint(moduleName, variableName, value.value);
         mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
                                 variableName);
@@ -3800,13 +3889,37 @@ struct circt::lsp::VerilogServer::Impl {
 
   void findObjectPathDefinition(const std::string &name,
                                 std::vector<mlir::lsp::Location> &locations) {
+
     auto result = globalContext.matchSingleInstance(name);
     if (!result)
       return;
     auto [moduleName, _, variableName] = *result;
+    // Open new file to see.
+    // Check if there is moduleName.sv file.
+    std::string path = moduleName.str() + ".sv";
+    for (auto &dir : globalContext.options.extraVerilogDirs) {
+      auto fullPath = dir + "/" + path;
+      if (llvm::sys::fs::exists(fullPath)) {
+        auto uri = mlir::lsp::URIForFile::fromFile(fullPath);
+        if (uri) {
+          auto &file = files[uri->file()];
+          if (file) {
+            file->findObjectPathDefinition(moduleName.str(), variableName.str(),
+                                           locations);
+          }
+
+          // Add the file to the list of files to be processed.
+        }
+      }
+    }
+
     for (auto &[_, file] : files) {
       file->findObjectPathDefinition(moduleName.str(), variableName.str(),
                                      locations);
+    }
+
+    if (!locations.empty()) {
+      return;
     }
   }
 
@@ -4020,7 +4133,68 @@ void circt::lsp::VerilogServer::inferAndAddInlayHints(
 void circt::lsp::VerilogServer::findObjectPathDefinition(
     const std::string &name, std::vector<mlir::lsp::Location> &locations) {
 
-  impl->findObjectPathDefinition(name, locations);
+  auto result = impl->globalContext.matchSingleInstance(name);
+  if (!result) {
+    mlir::lsp::Logger::info("Failed to find object path definition for {}",
+                            name);
+    return;
+  }
+  auto [moduleName, _, variableName] = *result;
+
+  for (auto &[_, file] : impl->files) {
+    file->findObjectPathDefinition(moduleName.str(), variableName.str(),
+                                   locations);
+  }
+
+  mlir::lsp::Logger::info("Found {} locations for {}.{}", locations.size(),
+                          moduleName.str(), variableName.str());
+
+  if (!locations.empty()) {
+
+    return;
+  }
+
+  // Open new file to see.
+  // Check if there is moduleName.sv file.
+  std::string path = moduleName.str() + ".sv";
+  for (auto &dir : impl->globalContext.options.extraVerilogDirs) {
+    auto fullPath = dir + "/" + path;
+    if (llvm::sys::fs::exists(fullPath)) {
+      auto uri = mlir::lsp::URIForFile::fromFile(fullPath);
+      if (uri) {
+        auto &file = impl->files[uri->file()];
+        if (file) {
+          file->findObjectPathDefinition(moduleName.str(), variableName.str(),
+                                         locations);
+        } else {
+          // Open and read the file contents
+          auto fileBuffer = llvm::MemoryBuffer::getFile(fullPath);
+          if (!fileBuffer) {
+            mlir::lsp::Logger::error("Failed to read file: {}", fullPath);
+            continue;
+          }
+
+          // Add document with actual file contents
+          std::vector<mlir::lsp::Diagnostic> diagnostics; // TODO: FIX
+          auto file = std::make_unique<VerilogTextFile>(
+              impl->globalContext, *uri, fileBuffer.get()->getBuffer(), 0,
+              impl->globalContext.options.extraVerilogDirs, diagnostics);
+
+          impl->files[uri->file()] = std::move(file);
+          // Now try to find definition in the newly opened file
+          auto &newFile = impl->files[uri->file()];
+          if (newFile) {
+            newFile->findObjectPathDefinition(moduleName.str(),
+                                              variableName.str(), locations);
+          }
+        }
+      }
+    }
+  }
+
+  if (!locations.empty()) {
+    return;
+  }
 }
 
 void circt::lsp::VerilogServer::addStaticInlayHints(
