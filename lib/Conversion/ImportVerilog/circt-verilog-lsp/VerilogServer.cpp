@@ -489,9 +489,9 @@ struct ObjectPathInferer {
           if (currentObjectPath.empty())
             break;
 
-          mlir::lsp::Logger::info("compare {} vs {}",
-                                  getVerilogName(p).getValue(),
-                                  currentObjectPath.back());
+          // mlir::lsp::Logger::info("compare {} vs {}",
+          //                         getVerilogName(p).getValue(),
+          //                         currentObjectPath.back());
           if (getVerilogName(p).getValue() == currentObjectPath.back()) {
             currentObjectPath = currentObjectPath.drop_back();
           } else {
@@ -774,12 +774,12 @@ public:
 
     for (auto &libRoot : globalContext.options.extraSourceLocationDirs) {
 
-      mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, libRoot);
+      // mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, libRoot);
       SmallString<128> lib(libRoot);
       // auto size = lib.size();
       // auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
       llvm::sys::path::append(lib, filePath);
-      mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, lib);
+      // mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, lib);
 
       if (llvm::sys::fs::exists(lib)) {
         auto memoryBuffer = llvm::MemoryBuffer::getFile(lib);
@@ -793,13 +793,13 @@ public:
             filePathMap
                 .insert(std::make_pair(filePath, std::make_pair(id, lib)))
                 .first;
-        mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
+        // mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
 
         return fileInfo->second;
       }
     }
 
-    mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
+    // mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
 
     return std::nullopt;
   }
@@ -2072,7 +2072,7 @@ void VerilogDocument::getDocumentLinks(
 std::optional<mlir::lsp::Hover>
 VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
                            const mlir::lsp::Position &hoverPos) {
-  mlir::lsp::Logger::info("VerilogDocument::findHover start");
+  // mlir::lsp::Logger::info("VerilogDocument::findHover start");
 
   SMLoc posLoc = hoverPos.getAsSMLoc(verilogContext.sourceMgr);
 
@@ -2085,7 +2085,7 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     auto uri = getContext().getExternalURI(emittedLocation);
     if (!uri)
       return std::nullopt;
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 1");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 1");
     // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation");
     auto externalSource = getContext().getExternalSourceLine(emittedLocation);
     if (externalSource.empty())
@@ -2099,10 +2099,10 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
       return std::nullopt;
     }
 
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}",
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}",
                             emittedLocation->filePath);
     auto ext = emittedLocation->filePath.find_last_of('.');
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 5");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 5");
 
     hoverOS << "### External Source\n```";
     if (ext != std::string::npos) {
@@ -2112,19 +2112,19 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
       // hoverOS << emittedLocation->filePath.substr(
       //     ext + 1, emittedLocation->filePath.size() - ext - 1);
     }
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}",
-                            externalSource);
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}",
+    //                         externalSource);
 
     hoverOS << "\n";
 
     hoverOS.printReindented(externalSource);
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 4");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 4");
 
     hoverOS << "\n```\n";
 
     hoverOS << "\n[Go To External Source](" << sourceURI->uri() << "#L"
             << emittedLocation->line + 1 << ")";
-    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 3");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 3");
 
     return hover;
   }
@@ -2183,7 +2183,8 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     }
   }
 
-  mlir::lsp::Logger::info("VerilogDocument::findHover assignment before");
+  // mlir::lsp::Logger::info("VerilogDocument::findHover assignment before");
+  /*
   if (assignment.valid()) {
     mlir::lsp::Logger::info(
         "VerilogDocument::findHover assignment locaction is valid");
@@ -2191,9 +2192,9 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
   if (assignExpr) {
     mlir::lsp::Logger::info(
         "VerilogDocument::findHover assignment expr is valid");
-  }
+  }*/
   if (assignment.valid() && assignExpr) {
-    mlir::lsp::Logger::info("VerilogDocument::findHover assignment");
+    // mlir::lsp::Logger::info("VerilogDocument::findHover assignment");
     // assert(assignExpr->syntax);
     auto loc = verilogContext.getLspLocation(assignment);
     // mlir::lsp::Hover hover(loc.range);
@@ -3814,6 +3815,11 @@ struct circt::lsp::VerilogServer::Impl {
 
     if (!options.mlirPath.empty()) {
       mlir::lsp::Logger::info("Load MLIR {}", options.mlirPath);
+      auto old = globalContext.context.isMultithreadingEnabled();
+      globalContext.context.disableMultithreading();
+      auto fixupContext = llvm::make_scope_exit(
+          [&]() { globalContext.context.enableMultithreading(old); });
+
       globalContext.context.loadDialect<
           moore::MooreDialect, hw::HWDialect, comb::CombDialect,
           ltl::LTLDialect, verif::VerifDialect, cf::ControlFlowDialect,
@@ -3827,20 +3833,40 @@ struct circt::lsp::VerilogServer::Impl {
         return;
       }
       mlir::ParserConfig config(&globalContext.context, false);
-      bool lazyLoad = false;
+      bool lazyLoad = mlir::isBytecode(*open);
       if (lazyLoad) {
-        mlir::BytecodeReader reader(open->getMemBufferRef(), config, false);
+        mlir::BytecodeReader reader(open->getMemBufferRef(), config, true);
         globalContext.module = mlir::ModuleOp::create(
             mlir::UnknownLoc::get(&globalContext.context));
+        Block block;
 
-        if (failed(reader.readTopLevel(
-                globalContext.module->getBody(), [&](mlir::Operation *op) {
-                  return isa<hw::HWDialect>(op->getDialect());
-                }))) {
+        if (failed(reader.readTopLevel(&block))) {
           mlir::lsp::Logger::error("Failed to open MLIR file {}",
                                    options.mlirPath);
           return;
         }
+        if (failed(reader.finalize([&](mlir::Operation *op) {
+              return !isa<om::OMDialect>(op->getDialect());
+            }))) {
+          mlir::lsp::Logger::error("Failed to materialize MLIR file {}",
+                                   options.mlirPath);
+
+          return;
+        }
+
+        if (block.getOperations().size() != 1 ||
+            !isa<mlir::ModuleOp>(&block.getOperations().front())) {
+          mlir::lsp::Logger::error("Failed to load MLIR file {}",
+                                   options.mlirPath);
+
+          return;
+        }
+
+        globalContext.module =
+            cast<mlir::ModuleOp>(&block.getOperations().front());
+
+        Operation *op = &block.getOperations().front();
+        block.getOperations().remove(op);
         // if (llvm::hasSingleElement(*globalContext.module->getBody())) {
         //   if (mlir::ModuleOp op = dyn_cast<mlir::ModuleOp>(
         //           &globalContext.module->getBody()->front())) {
@@ -3901,12 +3927,13 @@ struct circt::lsp::VerilogServer::Impl {
     // mlir::lsp::Logger::info("Run inference");
 
     for (auto &value : values) {
-      mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
+      // mlir::lsp::Logger::info("Infering {} {}", value.path, value.value);
       if (auto result = globalContext.matchSingleInstance(value.path)) {
         auto [moduleName, instanceName, variableName] = *result;
         globalContext.addDynamicHint(moduleName, variableName, value.value);
-        mlir::lsp::Logger::info("Added hint {} {} {}", moduleName, instanceName,
-                                variableName);
+        // mlir::lsp::Logger::info("Added hint {} {} {}", moduleName,
+        // instanceName,
+        //                        variableName);
       }
     }
   }
