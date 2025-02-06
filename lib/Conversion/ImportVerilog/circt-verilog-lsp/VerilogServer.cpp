@@ -586,7 +586,6 @@ struct GlobalVerilogServerContext {
   llvm::StringMap<llvm::StringMap<std::string>> staticHints;
 
   Twine getHint(StringRef moduleName, StringRef variableName) {
-    mlir::lsp::Logger::info("getHint: {} {}", moduleName, variableName);
     if (!staticHints.contains(moduleName) && !dynamicHints.contains(moduleName))
       return Twine();
 
@@ -709,9 +708,9 @@ public:
     assert(!buffer->getBuffer().empty());
 
     auto startLoc =
-        sgr.FindLocForLineAndColumn(bufferId, std::max(1u, loc->line - 2), 0);
+        sgr.FindLocForLineAndColumn(bufferId, std::max(1, int32_t(loc->line) - 2), 0);
     auto endLoc =
-        sgr.FindLocForLineAndColumn(bufferId, std::max(1u, loc->line + 2), 0);
+        sgr.FindLocForLineAndColumn(bufferId, std::max(1, int32_t(loc->line) + 2), 0);
 
     return StringRef(startLoc.getPointer(),
                      endLoc.getPointer() - startLoc.getPointer());
@@ -767,10 +766,14 @@ public:
       return fileInfo->second;
 
     for (auto &libRoot : globalContext.options.extraSourceLocationDirs) {
+
+      mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, libRoot);
       SmallString<128> lib(libRoot);
-      auto size = lib.size();
-      auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
+      // auto size = lib.size();
+      // auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
       llvm::sys::path::append(lib, filePath);
+      mlir::lsp::Logger::info("getOrOpenFile: {} {}", filePath, lib);
+
       if (llvm::sys::fs::exists(lib)) {
         auto memoryBuffer = llvm::MemoryBuffer::getFile(lib);
         if (!memoryBuffer) {
@@ -783,9 +786,14 @@ public:
             filePathMap
                 .insert(std::make_pair(filePath, std::make_pair(id, lib)))
                 .first;
+        mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
+
         return fileInfo->second;
       }
     }
+
+    mlir::lsp::Logger::info("getOrOpenFile: {} done", filePath);
+
     return std::nullopt;
   }
 
@@ -1735,8 +1743,7 @@ struct FindVariableVisitor
   }
 
   /// Handle assignment patterns.
-  void visitInvalid(const slang::ast::Expression &expr) {
-  }
+  void visitInvalid(const slang::ast::Expression &expr) {}
 
   void visitInvalid(const slang::ast::Statement &) {}
   void visitInvalid(const slang::ast::TimingControl &) {}
@@ -1860,9 +1867,8 @@ VerilogDocument::VerilogDocument(
   //     slang::syntax::SyntaxTree::fromBuffer(slangBuffer, slangSourceMgr, {});
 
   // ======
-  // Read a mapping file
-  StringRef path = "/scratch/hidetou/federation/build/product-coreip-sifive/"
-                   "e21/verilog/design/mapping.json";
+  // Read static inlay hints
+  for (auto &path: globalContext.options.staticInlayHintFiles) {
   auto open = mlir::openInputFile(path);
   if (!open) {
     mlir::lsp::Logger::error("Failed to open mapping file {}", path);
@@ -1886,6 +1892,8 @@ VerilogDocument::VerilogDocument(
           std::make_unique<llvm::json::Value>(std::move(json.get()));
     }
   }
+  }
+
 
   // ======
 
@@ -1952,8 +1960,9 @@ void VerilogDocument::getLocationsOf(
         for (auto &libRoot :
              verilogContext.globalContext.options.extraSourceLocationDirs) {
           SmallString<128> lib(libRoot);
-          auto size = lib.size();
-          auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size); });
+          // auto size = lib.size();
+          // auto fixupSize = llvm::make_scope_exit([&]() { lib.resize(size);
+          // });
           llvm::sys::path::append(lib, it->filePath);
           if (llvm::sys::fs::exists(lib)) {
             auto memoryBuffer = llvm::MemoryBuffer::getFile(lib);
@@ -1968,6 +1977,7 @@ void VerilogDocument::getLocationsOf(
                            .insert(std::make_pair(it->filePath,
                                                   std::make_pair(id, lib)))
                            .first;
+            break;
           }
         }
         if (!found)
@@ -2063,6 +2073,8 @@ void VerilogDocument::getDocumentLinks(
 std::optional<mlir::lsp::Hover>
 VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
                            const mlir::lsp::Position &hoverPos) {
+  mlir::lsp::Logger::info("VerilogDocument::findHover start");
+
   SMLoc posLoc = hoverPos.getAsSMLoc(verilogContext.sourceMgr);
 
   // Check for a reference to an include.
@@ -2074,6 +2086,7 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     auto uri = getContext().getExternalURI(emittedLocation);
     if (!uri)
       return std::nullopt;
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 1");
     // mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation");
     auto externalSource = getContext().getExternalSourceLine(emittedLocation);
     if (externalSource.empty())
@@ -2086,23 +2099,35 @@ VerilogDocument::findHover(const mlir::lsp::URIForFile &uri,
     if (!sourceURI) {
       return std::nullopt;
     }
+
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 2 {}", emittedLocation->filePath);
     auto ext = emittedLocation->filePath.find_last_of('.');
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 5");
+
 
     hoverOS << "### External Source\n```";
     if (ext != std::string::npos) {
-      hoverOS << emittedLocation->filePath.substr(
-          ext + 1, emittedLocation->filePath.size() - ext - 1);
+      auto extStr = emittedLocation->filePath.take_back(emittedLocation->filePath.size() - ext - 1);
+      hoverOS << extStr;
+      // hoverOS << emittedLocation->filePath.substr(
+      //     ext + 1, emittedLocation->filePath.size() - ext - 1);
     }
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 6 {}", externalSource);
 
     hoverOS << "\n";
 
     hoverOS.printReindented(externalSource);
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 4");
+
     hoverOS << "\n```\n";
 
     hoverOS << "\n[Go To External Source](" << sourceURI->uri() << "#L"
             << emittedLocation->line + 1 << ")";
+    mlir::lsp::Logger::info("VerilogDocument::findHover emittedLocation 3");
+
     return hover;
   }
+
 
   // Find the symbol at the given location.
   SMRange hoverRange;
@@ -2425,7 +2450,6 @@ struct RvalueExprVisitor
     // }
     {
       auto hintTwine = context.globalContext.getHint(moduleName, symbolName);
-      mlir::lsp::Logger::info("hintTwine: {}", hintTwine.str());
       if (!hintTwine.isTriviallyEmpty()) {
         inlayHints.emplace_back(
             mlir::lsp::InlayHintKind::Parameter,
