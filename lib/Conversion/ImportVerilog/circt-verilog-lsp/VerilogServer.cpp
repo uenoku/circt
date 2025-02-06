@@ -4163,6 +4163,7 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
                             name);
     return;
   }
+
   auto [moduleName, _, variableName] = *result;
 
   for (auto &[_, file] : impl->files) {
@@ -4204,13 +4205,11 @@ void circt::lsp::VerilogServer::findObjectPathDefinition(
               impl->globalContext, *uri, fileBuffer.get()->getBuffer(), 0,
               impl->globalContext.options.extraVerilogDirs, diagnostics);
 
-          impl->files[uri->file()] = std::move(file);
+          // TODO: FIX
+          // impl->files[uri->file()] = std::move(file);
           // Now try to find definition in the newly opened file
-          auto &newFile = impl->files[uri->file()];
-          if (newFile) {
-            newFile->findObjectPathDefinition(moduleName.str(),
+          file->findObjectPathDefinition(moduleName.str(),
                                               variableName.str(), locations);
-          }
         }
       }
     }
