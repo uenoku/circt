@@ -34,8 +34,6 @@ set(CIRCT_TEST_DEPENDS
   circt-test
   circt-translate
   circt-reduce
-  circt-vcd
-  circt-vcd-converter
   handshake-runner
   firtool
   hlstool

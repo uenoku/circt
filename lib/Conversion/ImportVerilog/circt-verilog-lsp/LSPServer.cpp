@@ -338,6 +338,7 @@ void LSPServer::onGoToObjectDefinition(
   std::vector<Location> locations;
   server.findObjectPathDefinition(params.path, locations);
   reply(std::move(locations));
+  refreshInlayHints(RefreshInlayHintsParams{}, inlayHintRefreshId++);
 }
 
 //===----------------------------------------------------------------------===//
