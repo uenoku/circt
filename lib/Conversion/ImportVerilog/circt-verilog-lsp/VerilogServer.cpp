@@ -916,14 +916,14 @@ public:
     return mlir::lsp::Location();
   }
 
-  const UserHint &getUserHint() const { return userHint; }
+  // const UserHint &getUserHint() const { return userHint; }
   const slang::SourceManager &getSlangSourceManager() const {
     return driver.sourceManager;
   }
 
   llvm::SmallDenseMap<uint32_t, uint32_t> bufferIDMap;
   llvm::StringMap<std::pair<uint32_t, SmallString<128>>> filePathMap;
-  UserHint userHint;
+  // UserHint userHint;
   slang::driver::Driver driver;
   llvm::SourceMgr sourceMgr;
   GlobalVerilogServerContext &globalContext;
@@ -1870,32 +1870,6 @@ VerilogDocument::VerilogDocument(
   //     slang::syntax::SyntaxTree::fromBuffer(slangBuffer, slangSourceMgr, {});
 
   // ======
-  // Read static inlay hints
-  for (auto &path : globalContext.options.staticInlayHintFiles) {
-    auto open = mlir::openInputFile(path);
-    if (!open) {
-      mlir::lsp::Logger::error("Failed to open mapping file {}", path);
-    } else {
-      mlir::lsp::Logger::error("JSON {}", open->getBuffer());
-      auto json = llvm::json::parse(open->getBuffer());
-
-      if (auto err = json.takeError()) {
-        mlir::lsp::Logger::error("Failed to parse mapping file {}", err);
-        /*
-        mapping file is like this:
-        {
-          "module_Foo": {
-            "verilogName": "hintName",
-            "_GEN_123": "chisel_var"
-          }
-        }
-        */
-      } else {
-        verilogContext.userHint.json =
-            std::make_unique<llvm::json::Value>(std::move(json.get()));
-      }
-    }
-  }
 
   // ======
 
@@ -3914,6 +3888,9 @@ struct circt::lsp::VerilogServer::Impl {
           &globalContext.context, *globalContext.instancePathCache,
           globalContext.pathLastNameToInstanceRecord);
     }
+
+    if (!options.staticInlayHintFiles.empty())
+      addStaticInlayHints(options.staticInlayHintFiles);
   }
 
   void inferAndAddInlayHints(
@@ -3990,30 +3967,26 @@ struct circt::lsp::VerilogServer::Impl {
                                  e);
         continue;
       }
-      if (!json || json->kind() != llvm::json::Value::Object) {
+      if (!json) {
         mlir::lsp::Logger::error("Failed to parse static inlay hint file {}",
                                  file);
         continue;
       }
-      auto root = json->getAsObject();
-      for (auto &[key, value] : *root) {
-        auto &moduleName = key;
-        auto *mapping = value.getAsObject();
-        if (!mapping) {
-          mlir::lsp::Logger::error("Failed to parse static inlay hint file {}",
-                                   file);
-          continue;
-        }
-        for (auto &[key, value] : *mapping) {
-          auto &variableName = key;
-          auto hint = value.getAsString();
-          if (!hint) {
-            mlir::lsp::Logger::error(
-                "Failed to parse static inlay hint file {}", file);
-            continue;
-          }
+      std::vector<circt::lsp::VerilogObjectPathAndValue> hints;
 
-          globalContext.addStaticHint(moduleName, variableName, *hint);
+      llvm::json::Path::Root root;
+      if (!fromJSON(*json, hints, root)) {
+        mlir::lsp::Logger::error("Invalid json file for inlay hint file {}",
+                                 file);
+        continue;
+      }
+
+      for (const auto &hint : hints) {
+        SmallVector<StringRef, 2> splitted(
+            llvm::split(StringRef(hint.path), '.'));
+        if (splitted.size() == 2) {
+          globalContext.addStaticHint(splitted[0], splitted[1], hint.value);
+          // For now skip it.
         }
       }
     }
