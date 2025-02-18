@@ -20,4 +20,9 @@ def LowerWordToBits : Pass<"aig-lower-word-to-bits", "hw::HWModuleOp"> {
   let dependentDialects = ["comb::CombDialect"];
 }
 
+def IMConstProp : Pass<"aig-imconstprop", "mlir::ModuleOp"> {
+  let summary = "Bit-sensitive inter-module constant propagation";
+  let dependentDialects = ["comb::CombDialect"];
+}
+
 #endif // CIRCT_DIALECT_AIG_AIGPASSES_TD
