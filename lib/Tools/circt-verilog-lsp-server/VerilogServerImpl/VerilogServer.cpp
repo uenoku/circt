@@ -699,7 +699,6 @@ void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
     if (filePath.empty())
       continue;
 
-    // Calculate range
     const char *start = prevEnd ? prevEnd : entry.begin();
     const char *end = entry.end();
 
