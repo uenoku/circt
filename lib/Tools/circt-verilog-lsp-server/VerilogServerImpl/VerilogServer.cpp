@@ -92,10 +92,9 @@ public:
   void initialize(slang::ast::Compilation &compilation);
 
   /// Register a reference to a symbol `symbol` from `from`.
-  void insertSymbolUse(const slang::ast::Symbol *symbol,
-                       slang::SourceRange from, bool isDefinition = false);
-  void insertSymbolUse(const slang::ast::Symbol *symbol,
-                       bool isDefinition = false);
+  void insertSymbol(const slang::ast::Symbol *symbol, slang::SourceRange from,
+                    bool isDefinition = false);
+  void insertSymbolDefinition(const slang::ast::Symbol *symbol);
 
   VerilogDocument &getDocument() { return document; }
 
@@ -138,90 +137,6 @@ private:
   // The parent document.
   VerilogDocument &document;
 };
-
-} // namespace
-
-namespace {
-
-/*
-class VerilogIndex {
-public:
-  VerilogIndex(VerilogServerContext &context)
-      : context(context), intervalMap(allocator), intervalMapLoc(allocator) {}
-
-  /// Initialize the index with the given ast::Module.
-  void initialize(slang::ast::Compilation *compilation);
-
-  using IndexElement = llvm::PointerUnion<slang::ast::Symbol *, LocationAttr>;
-
-  /// Lookup a symbol for the given location. Returns nullptr if no symbol
-  /// could be found. If provided, `overlappedRange` is set to the range that
-  /// the provided `loc` overlapped with.
-  const VerilogIndexSymbol *lookup(SMLoc loc,
-                                   SMRange *overlappedRange = nullptr) const;
-
-  const EmittedLoc *lookupLoc(SMLoc loc) const;
-
-  size_t size() const {
-    return std::distance(intervalMap.begin(), intervalMap.end());
-  }
-
-  VerilogServerContext &getContext() { return context; }
-  auto &getIntervalMap() { return intervalMap; }
-  auto &getReferences() { return references; }
-
-  void parseEmittedLoc();
-
-  enum SymbolUse { AssignLValue, RValue, Unknown };
-
-  llvm::StringMap<llvm::StringMap<slang::ast::Symbol *>>
-moduleVariableToSymbol;
-
-  using ReferenceNode = llvm::PointerUnion<const slang::ast::Symbol *,
-                                           const slang::ast::PortConnection *,
-                                           const slang::ast::Expression *>;
-
-private:
-  /// The type of interval map used to store source references. SMRange is
-  /// half-open, so we also need to use a half-open interval map.
-  using MapT =
-      llvm::IntervalMap<const char *, const VerilogIndexSymbol *,
-                        llvm::IntervalMapImpl::NodeSizer<
-                            const char *, const VerilogIndexSymbol
-*>::LeafSize, llvm::IntervalMapHalfOpenInfo<const char *>>;
-
-  /// An allocator for the interval map.
-  MapT::Allocator allocator;
-
-  VerilogServerContext &context;
-
-  /// An interval map containing a corresponding definition mapped to a source
-  /// interval.
-  MapT intervalMap;
-
-  using MapTLoc =
-      llvm::IntervalMap<const char *, const EmittedLoc *,
-                        llvm::IntervalMapImpl::NodeSizer<
-                            const char *, const EmittedLoc *>::LeafSize,
-                        llvm::IntervalMapHalfOpenInfo<const char *>>;
-
-  // TODO: Merge them.
-  MapTLoc intervalMapLoc;
-
-  llvm::SmallDenseMap<const VerilogIndexSymbol *,
-                      SmallVector<std::tuple<slang::SourceLocation, SymbolUse,
-                                             std::optional<ReferenceNode>>,
-                                  8>>
-      references;
-
-  // TODO: Use allocator.
-  SmallVector<std::unique_ptr<EmittedLoc>> emittedLocs;
-
-  slang::ast::Symbol *lookupSymbolFromModuleAndName() {}
-
-  /// A mapping between definitions and their corresponding symbol.
-  // DenseMap<const void *, std::unique_ptr<VerilogIndexSymbol>> defToSymbol;
-}; */
 
 //===----------------------------------------------------------------------===//
 // VerilogDocument
@@ -381,13 +296,13 @@ VerilogDocument::VerilogDocument(
   }
 
   compilation = driver.createCompilation();
-  if (failed(compilation)) {
+  if (failed(compilation))
     return;
-  }
 
   for (auto &diag : (*compilation)->getAllDiagnostics())
     driver.diagEngine.issue(diag);
 
+  // Populate the index.
   index.initialize(**compilation);
 }
 
@@ -482,7 +397,7 @@ VerilogDocument::getOrOpenFile(StringRef filePath) {
   if (llvm::sys::path::is_absolute(filePath))
     return getIfExist(filePath);
 
-  //
+  // Search locations.
   for (auto &libRoot : globalContext.options.extraSourceLocationDirs) {
     SmallString<128> lib(libRoot);
     llvm::sys::path::append(lib, filePath);
@@ -492,8 +407,6 @@ VerilogDocument::getOrOpenFile(StringRef filePath) {
 
   return std::nullopt;
 }
-
-namespace {} // namespace
 
 //===----------------------------------------------------------------------===//
 // VerilogTextFile
@@ -591,28 +504,28 @@ void VerilogTextFile::findReferencesOf(
 }
 
 namespace {
+
 // Index the AST to find symbol uses and definitions.
 struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
   VerilogIndexer(VerilogIndex &index) : index(index) {}
   VerilogIndex &index;
 
-  void insertSymbolUse(const slang::ast::Symbol *symbol,
-                       slang::SourceRange range, bool isDefinition = true) {
+  void insertSymbol(const slang::ast::Symbol *symbol, slang::SourceRange range,
+                    bool isDefinition = true) {
     if (symbol->name.empty())
       return;
     assert(range.start().valid() && range.end().valid() &&
            "range must be valid");
-    index.insertSymbolUse(symbol, range, isDefinition);
+    index.insertSymbol(symbol, range, isDefinition);
   }
 
-  void insertSymbolUse(const slang::ast::Symbol *symbol,
-                       slang::SourceLocation from, bool isDefinition = false) {
+  void insertSymbol(const slang::ast::Symbol *symbol,
+                    slang::SourceLocation from, bool isDefinition = false) {
     if (symbol->name.empty())
       return;
     assert(from.valid() && "location must be valid");
-    insertSymbolUse(symbol,
-                    slang::SourceRange(from, from + symbol->name.size()),
-                    isDefinition);
+    insertSymbol(symbol, slang::SourceRange(from, from + symbol->name.size()),
+                 isDefinition);
   }
 
   // Handle references to the left-hand side of a parent assignment.
@@ -620,21 +533,21 @@ struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
-    insertSymbolUse(symbol, expr.sourceRange, /*isDefinition=*/false);
+    insertSymbol(symbol, expr.sourceRange, /*isDefinition=*/false);
     visitDefault(expr);
   }
   void visit(const slang::ast::NetSymbol &expr) {
-    insertSymbolUse(&expr, expr.location, /*isDefinition=*/true);
+    insertSymbol(&expr, expr.location, /*isDefinition=*/true);
     visitDefault(expr);
   }
 
   void visit(const slang::ast::VariableSymbol &expr) {
-    insertSymbolUse(&expr, expr.location, /*isDefinition=*/true);
+    insertSymbol(&expr, expr.location, /*isDefinition=*/true);
     visitDefault(expr);
   }
 
   void visit(const slang::ast::VariableDeclStatement &expr) {
-    insertSymbolUse(&expr.symbol, expr.sourceRange, /*isDefinition=*/true);
+    insertSymbol(&expr.symbol, expr.sourceRange, /*isDefinition=*/true);
     visitDefault(expr);
   }
 
@@ -643,7 +556,7 @@ struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
     auto *symbol = expr.getSymbolReference(true);
     if (!symbol)
       return;
-    insertSymbolUse(symbol, expr.sourceRange, /*isDefinition=*/false);
+    insertSymbol(symbol, expr.sourceRange, /*isDefinition=*/false);
     visitDefault(expr);
   }
 
@@ -666,7 +579,7 @@ void VerilogIndex::initialize(slang::ast::Compilation &compilation) {
 
     // Insert the symbols in the port list.
     for (const auto *symbol : inst->body.getPortList())
-      insertSymbolUse(symbol);
+      insertSymbolDefinition(symbol);
   }
 
   // Parse the source location from the main file.
@@ -828,8 +741,8 @@ void circt::lsp::VerilogServer::findReferencesOf(
     fileIt->second->findReferencesOf(uri, pos, references);
 }
 
-void VerilogIndex::insertSymbolUse(const slang::ast::Symbol *symbol,
-                                   slang::SourceRange from, bool isDefinition) {
+void VerilogIndex::insertSymbol(const slang::ast::Symbol *symbol,
+                                slang::SourceRange from, bool isDefinition) {
   assert(from.start().valid() && from.end().valid());
   const char *startLoc = getDocument().getSMLoc(from.start()).getPointer();
   const char *endLoc = getDocument().getSMLoc(from.end()).getPointer() + 1;
@@ -843,13 +756,14 @@ void VerilogIndex::insertSymbolUse(const slang::ast::Symbol *symbol,
       references[symbol].push_back(from);
   }
 }
-void VerilogIndex::insertSymbolUse(const slang::ast::Symbol *symbol,
-                                   bool isDefinition) {
+
+void VerilogIndex::insertSymbolDefinition(const slang::ast::Symbol *symbol) {
   if (!symbol->location)
     return;
   auto size = symbol->name.size() ? symbol->name.size() : 1;
-  insertSymbolUse(
-      symbol, slang::SourceRange(symbol->location, symbol->location + size));
+  insertSymbol(symbol,
+               slang::SourceRange(symbol->location, symbol->location + size),
+               true);
 }
 
 //===----------------------------------------------------------------------===//
