@@ -117,6 +117,10 @@ private:
   /// Parse source location in the file.
   void parseSourceLocation();
   void parseSourceLocationOnLine(StringRef line);
+  mlir::ParseResult parseFirstEntry(StringRef entry, StringRef &filePath,
+                                    uint32_t &lineNum, uint32_t &colNum);
+  mlir::ParseResult parseEntry(StringRef entry, StringRef &filePath,
+                               uint32_t &lineNum, uint32_t &colNum);
 
   // MLIR context used for generating location attr.
   mlir::MLIRContext mlirContext;
@@ -169,7 +173,8 @@ public:
 
   enum SymbolUse { AssignLValue, RValue, Unknown };
 
-  llvm::StringMap<llvm::StringMap<slang::ast::Symbol *>> moduleVariableToSymbol;
+  llvm::StringMap<llvm::StringMap<slang::ast::Symbol *>>
+moduleVariableToSymbol;
 
   using ReferenceNode = llvm::PointerUnion<const slang::ast::Symbol *,
                                            const slang::ast::PortConnection *,
@@ -181,8 +186,8 @@ private:
   using MapT =
       llvm::IntervalMap<const char *, const VerilogIndexSymbol *,
                         llvm::IntervalMapImpl::NodeSizer<
-                            const char *, const VerilogIndexSymbol *>::LeafSize,
-                        llvm::IntervalMapHalfOpenInfo<const char *>>;
+                            const char *, const VerilogIndexSymbol
+*>::LeafSize, llvm::IntervalMapHalfOpenInfo<const char *>>;
 
   /// An allocator for the interval map.
   MapT::Allocator allocator;
@@ -365,8 +370,6 @@ VerilogDocument::VerilogDocument(
       driver.sourceManager.assignText(uri.file(), memBuffer->getBuffer());
   driver.buffers.push_back(slangBuffer);
   bufferIDMap[slangBuffer.id.getId()] = bufferId;
-  circt::lsp::Logger::error("bufferID: " +
-                            std::to_string(slangBuffer.id.getId()));
   auto diagClient = std::make_shared<LSPDiagnosticClient>(*this, diagnostics);
   driver.diagEngine.addClient(diagClient);
 
@@ -426,7 +429,6 @@ VerilogDocument::getLspLocation(slang::SourceRange range) const {
 
 llvm::SMLoc VerilogDocument::getSMLoc(slang::SourceLocation loc) {
   auto bufferID = loc.buffer().getId();
-  circt::lsp::Logger::error("bufferID: " + std::to_string(bufferID));
 
   // Check if the source is already opened by LLVM source manager.
   auto bufferIDMapIt = bufferIDMap.find(bufferID);
@@ -668,55 +670,82 @@ void VerilogIndex::initialize(slang::ast::Compilation &compilation) {
 }
 
 void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
-  StringRef filePath, line, column;
-  bool first = true;
-  // columns := num(,num)*
-  // line := num
-  // lineCols := line `:` columns | line `:` `{` columns `}`+
-  // location := filePath `:` lineCols+
-  for (auto cur : llvm::split(toParse, ", ")) {
-    auto sep = llvm::split(cur, ":");
+  // Split into individual location entries
+  SmallVector<StringRef, 4> entries;
+  toParse.split(entries, ',');
 
-    if (std::distance(sep.begin(), sep.end()) != 3)
+  if (entries.empty())
+    return;
+
+  // Parse first entry to get initial file path
+  StringRef currentFilePath;
+  uint32_t lineNum, colNum;
+  // if (parseFirstEntry(entries[0], currentFilePath, lineNum, colNum))
+  //   return;
+
+  // Track the previous text position for range calculations
+  const char *prevEnd = nullptr;
+
+  for (const auto &entry : entries) {
+    circt::lsp::Logger::error(entry);
+
+    StringRef filePath = currentFilePath;
+    if (parseEntry(entry, filePath, lineNum, colNum))
       continue;
 
-    bool addFile = first;
-    first = false;
+    // Calculate range
+    const char *start = prevEnd ? prevEnd : entry.begin();
+    const char *end = entry.end();
 
-    auto it = sep.begin();
-    if (llvm::any_of(*it, [](char c) { return c != ' '; })) {
-      filePath = *it;
-      addFile = true;
-    }
+    auto loc = mlir::FileLineColRange::get(&mlirContext, filePath, lineNum - 1,
+                                           colNum - 1, lineNum - 1, colNum);
 
-    line = *(++it);
-    column = *(++it);
-    uint32_t lineInt;
-    if (line.getAsInteger(10, lineInt))
-      continue;
-
-    SmallVector<std::tuple<StringRef, StringRef, StringRef>> columns;
-    if (column.starts_with('{')) {
-      StringRef start = addFile ? filePath : line;
-      for (auto str : llvm::split(column.drop_back().drop_front(), ',')) {
-        columns.push_back(
-            std::make_tuple(str, start, str.drop_front(str.size())));
-        start = str.drop_front(str.size());
-      }
-    } else {
-      columns.push_back(
-          std::make_tuple(column, addFile ? filePath : line, column.end()));
-    }
-    for (auto [column, start, end] : columns) {
-      uint32_t columnInt;
-      if (column.getAsInteger(10, columnInt))
-        continue;
-      auto loc =
-          mlir::FileLineColRange::get(&mlirContext, filePath, lineInt - 1,
-                                      columnInt - 1, lineInt - 1, columnInt);
-      intervalMap.insert(start.data(), end.data(), loc);
-    }
+    intervalMap.insert(start, end, loc);
+    prevEnd = end;
   }
+}
+
+// Helper to parse first entry which must contain file path
+mlir::ParseResult VerilogIndex::parseFirstEntry(StringRef entry,
+                                                StringRef &filePath,
+                                                uint32_t &lineNum,
+                                                uint32_t &colNum) {
+  circt::lsp::Logger::error(entry);
+  SmallVector<StringRef, 3> parts;
+  entry.split(parts, ':');
+
+  if (parts.size() != 3)
+    return failure();
+
+  filePath = parts[0].trim();
+  if (parts[1].getAsInteger(10, lineNum) || parts[2].getAsInteger(10, colNum))
+    return failure();
+  return success();
+}
+
+// Helper to parse subsequent entries
+mlir::ParseResult VerilogIndex::parseEntry(StringRef entry, StringRef &filePath,
+                                           uint32_t &lineNum,
+                                           uint32_t &colNum) {
+
+  circt::lsp::Logger::error(entry);
+  SmallVector<StringRef, 3> parts;
+  entry.split(parts, ':');
+
+  if (parts.size() == 3) {
+    // Entry with new file path
+    filePath = parts[0].trim();
+    if (parts[1].getAsInteger(10, lineNum) || parts[2].getAsInteger(10, colNum))
+      return failure();
+  } else if (parts.size() == 2) {
+    // Entry reusing previous file path
+    if (parts[0].getAsInteger(10, lineNum) || parts[1].getAsInteger(10, colNum))
+      return failure();
+  } else {
+    return failure();
+  }
+
+  return success();
 }
 
 void VerilogIndex::parseSourceLocation() {
@@ -851,9 +880,10 @@ void VerilogDocument::getLocationsOf(
   SMLoc posLoc = defPos.getAsSMLoc(sourceMgr);
   const auto &intervalMap = index.getIntervalMap();
   auto it = intervalMap.find(posLoc.getPointer());
-  if (it == intervalMap.end()) {
+
+  // Found no element in the given index.
+  if (it == intervalMap.end())
     return;
-  }
 
   auto element = it.value();
   if (auto attr = dyn_cast<Attribute>(element)) {
