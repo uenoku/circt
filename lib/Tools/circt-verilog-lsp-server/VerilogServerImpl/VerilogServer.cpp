@@ -85,8 +85,8 @@ using VerilogIndexSymbol =
 class VerilogIndex {
 public:
   VerilogIndex(VerilogDocument &document)
-      : document(document), mlirContext(mlir::MLIRContext::Threading::DISABLED),
-        intervalMap(allocator) {}
+      : mlirContext(mlir::MLIRContext::Threading::DISABLED),
+        intervalMap(allocator), document(document) {}
 
   /// Initialize the index with the given compilation unit.
   void initialize(slang::ast::Compilation &compilation);
@@ -109,6 +109,7 @@ public:
 
   MapT &getIntervalMap() { return intervalMap; }
 
+  /// A mapping from a symbol to their references.
   using ReferenceMap = SmallDenseMap<const slang::ast::Symbol *,
                                      SmallVector<slang::SourceRange>>;
   const ReferenceMap &getReferences() const { return references; }
@@ -116,7 +117,7 @@ public:
 private:
   /// Parse source location in the file.
   void parseSourceLocation();
-  void parseSourceLocationOnLine(StringRef line);
+  void parseSourceLocationOnLine(StringRef toParse);
   mlir::ParseResult parseFirstEntry(StringRef entry, StringRef &filePath,
                                     uint32_t &lineNum, uint32_t &colNum);
   mlir::ParseResult parseEntry(StringRef entry, StringRef &filePath,
@@ -481,6 +482,7 @@ VerilogDocument::getOrOpenFile(StringRef filePath) {
   if (llvm::sys::path::is_absolute(filePath))
     return getIfExist(filePath);
 
+  //
   for (auto &libRoot : globalContext.options.extraSourceLocationDirs) {
     SmallString<128> lib(libRoot);
     llvm::sys::path::append(lib, filePath);
@@ -598,7 +600,8 @@ struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
                        slang::SourceRange range, bool isDefinition = true) {
     if (symbol->name.empty())
       return;
-    assert(range.start().valid() && range.end().valid());
+    assert(range.start().valid() && range.end().valid() &&
+           "range must be valid");
     index.insertSymbolUse(symbol, range, isDefinition);
   }
 
@@ -606,7 +609,7 @@ struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
                        slang::SourceLocation from, bool isDefinition = false) {
     if (symbol->name.empty())
       return;
-    assert(from.valid());
+    assert(from.valid() && "location must be valid");
     insertSymbolUse(symbol,
                     slang::SourceRange(from, from + symbol->name.size()),
                     isDefinition);
@@ -624,6 +627,7 @@ struct VerilogIndexer : slang::ast::ASTVisitor<VerilogIndexer, true, true> {
     insertSymbolUse(&expr, expr.location, /*isDefinition=*/true);
     visitDefault(expr);
   }
+
   void visit(const slang::ast::VariableSymbol &expr) {
     insertSymbolUse(&expr, expr.location, /*isDefinition=*/true);
     visitDefault(expr);
@@ -670,6 +674,10 @@ void VerilogIndex::initialize(slang::ast::Compilation &compilation) {
 }
 
 void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
+  // No multiline entries.
+  if (toParse.contains('\n'))
+    return;
+
   // Split into individual location entries
   SmallVector<StringRef, 4> entries;
   toParse.split(entries, ',');
@@ -678,19 +686,17 @@ void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
     return;
 
   // Parse first entry to get initial file path
-  StringRef currentFilePath;
+  StringRef prevFilePath;
   uint32_t lineNum, colNum;
-  // if (parseFirstEntry(entries[0], currentFilePath, lineNum, colNum))
-  //   return;
 
-  // Track the previous text position for range calculations
   const char *prevEnd = nullptr;
 
-  for (const auto &entry : entries) {
-    circt::lsp::Logger::error(entry);
-
-    StringRef filePath = currentFilePath;
+  for (auto entry : entries) {
+    StringRef filePath = prevFilePath;
     if (parseEntry(entry, filePath, lineNum, colNum))
+      continue;
+
+    if (filePath.empty())
       continue;
 
     // Calculate range
@@ -702,25 +708,8 @@ void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
 
     intervalMap.insert(start, end, loc);
     prevEnd = end;
+    prevFilePath = filePath;
   }
-}
-
-// Helper to parse first entry which must contain file path
-mlir::ParseResult VerilogIndex::parseFirstEntry(StringRef entry,
-                                                StringRef &filePath,
-                                                uint32_t &lineNum,
-                                                uint32_t &colNum) {
-  circt::lsp::Logger::error(entry);
-  SmallVector<StringRef, 3> parts;
-  entry.split(parts, ':');
-
-  if (parts.size() != 3)
-    return failure();
-
-  filePath = parts[0].trim();
-  if (parts[1].getAsInteger(10, lineNum) || parts[2].getAsInteger(10, colNum))
-    return failure();
-  return success();
 }
 
 // Helper to parse subsequent entries
@@ -728,7 +717,6 @@ mlir::ParseResult VerilogIndex::parseEntry(StringRef entry, StringRef &filePath,
                                            uint32_t &lineNum,
                                            uint32_t &colNum) {
 
-  circt::lsp::Logger::error(entry);
   SmallVector<StringRef, 3> parts;
   entry.split(parts, ':');
 
@@ -754,6 +742,7 @@ void VerilogIndex::parseSourceLocation() {
   StringRef text(getMainBuffer->getBufferStart(),
                  getMainBuffer->getBufferSize());
 
+  // Loop over comments starting with "@[", and parse the source location.
   while (true) {
     // Find the source location from the text.
     StringRef start = "// @[";
@@ -900,8 +889,7 @@ void VerilogDocument::getLocationsOf(
         return;
       }
 
-      mlir::lsp::Location loc(uri.get(), getRange(fileLoc));
-      locations.push_back(loc);
+      locations.emplace_back(uri.get(), getRange(fileLoc));
     }
 
     return;
