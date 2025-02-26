@@ -617,8 +617,8 @@ void VerilogIndex::parseSourceLocationOnLine(StringRef toParse) {
 
     auto loc = mlir::FileLineColRange::get(&mlirContext, filePath, lineNum - 1,
                                            colNum - 1, lineNum - 1, colNum);
-
-    intervalMap.insert(start, end, loc);
+    if (!intervalMap.overlaps(start, end))
+      intervalMap.insert(start, end, loc);
     prevEnd = end;
     prevFilePath = filePath;
   }
@@ -787,6 +787,9 @@ void VerilogDocument::getLocationsOf(
   if (it == intervalMap.end())
     return;
 
+  circt::lsp::Logger::info(std::to_string(defPos.line) + ":" +
+                           std::to_string(defPos.character));
+
   auto element = it.value();
   if (auto attr = dyn_cast<Attribute>(element)) {
     // Check if the attribute is a FileLineColRange.
@@ -810,7 +813,14 @@ void VerilogDocument::getLocationsOf(
 
   // If the element is verilog symbol, return the definition of the symbol.
   const auto *symbol = cast<const slang::ast::Symbol *>(element);
-  locations.push_back(getLspLocation(symbol->location));
+
+  circt::lsp::Logger::info(std::to_string(defPos.line) + ":" +
+                           std::to_string(defPos.character));
+  slang::SourceRnage (symbol->location);
+  auto start = getLspLocation(symbol->location);
+  auto end = getLspLocation(symbol->location +
+                            (symbol->name.size() ? symbol->name.size() : 1));
+  locations.push_back(mlir::lsp::Location(start.uri, start, end));
 }
 
 void VerilogDocument::findReferencesOf(
