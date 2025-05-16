@@ -102,29 +102,14 @@ struct DataflowPath {
 };
 
 struct PathResult {
-  Object fanout;
-  DataflowPath fanin;
+  Object fanOut;
+  DataflowPath fanIn;
   hw::HWModuleOp root;
-  PathResult(Object fanout, DataflowPath fanin, hw::HWModuleOp root)
-      : fanout(fanout), fanin(fanin), root(root) {}
-  PathResult(){};
+  PathResult(Object fanOut, DataflowPath fanIn, hw::HWModuleOp root)
+      : fanOut(fanOut), fanIn(fanIn), root(root) {}
+  PathResult() = default;
 
-  void print(llvm::raw_ostream &os) {
-    os << "PathResult(";
-    os << "root=" << root.getModuleNameAttr() << ", ";
-    os << "fanout=";
-    fanout.print(os);
-    os << ", ";
-    os << "fanin=";
-    fanin.print(os);
-    if (!fanin.history.isEmpty()) {
-      os << ", history=[";
-      llvm::interleaveComma(fanin.history, os,
-                            [&](DebugPoint p) { p.print(os); });
-      os << "]";
-    }
-    os << ")";
-  }
+  void print(llvm::raw_ostream &os);
 };
 
 // This analysis finds the longest paths in the dataflow graph across modules.
@@ -178,53 +163,6 @@ public:
 private:
   struct Impl;
   Impl *impl;
-};
-
-class ResourceUsageAnalysis {
-public:
-  ResourceUsageAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
-
-  struct ResourceUsage {
-    ResourceUsage(uint64_t numAndInverterGates, uint64_t numDFFBits)
-        : numAndInverterGates(numAndInverterGates), numDFFBits(numDFFBits) {}
-    ResourceUsage() = default;
-    ResourceUsage &operator+=(const ResourceUsage &other) {
-      numAndInverterGates += other.numAndInverterGates;
-      numDFFBits += other.numDFFBits;
-      return *this;
-    }
-
-    uint64_t getNumAndInverterGates() const { return numAndInverterGates; }
-    uint64_t getNumDFFBits() const { return numDFFBits; }
-
-  private:
-    uint64_t numAndInverterGates = 0;
-    uint64_t numDFFBits = 0;
-  };
-
-  struct ModuleResourceUsage {
-    ModuleResourceUsage(StringAttr moduleName, ResourceUsage local,
-                        ResourceUsage total)
-        : moduleName(moduleName), local(local), total(total) {}
-    StringAttr moduleName;
-    ResourceUsage local, total;
-    struct InstanceResource {
-      StringAttr moduleName, instanceName;
-      ModuleResourceUsage *usage;
-      InstanceResource(StringAttr moduleName, StringAttr instanceName,
-                       ModuleResourceUsage *usage)
-          : moduleName(moduleName), instanceName(instanceName), usage(usage) {}
-    };
-    SmallVector<InstanceResource> instances;
-    ResourceUsage getTotal() const { return total; }
-    void emitJSON(raw_ostream &os) const;
-  };
-
-  ModuleResourceUsage *getResourceUsage(hw::HWModuleOp top);
-
-  // A map from the top-level module to the resource usage of the design.
-  DenseMap<StringAttr, std::unique_ptr<ModuleResourceUsage>> designUsageCache;
-  igraph::InstanceGraph *instanceGraph;
 };
 
 } // namespace aig

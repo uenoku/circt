@@ -211,14 +211,6 @@ static void populateSynthesisPipeline(PassManager &pm) {
   };
   pm.addPass(circt::createHierarchicalRunner(topName, pipeline2));
 
-  if (printResourceUsage) {
-    circt::aig::PrintResourceUsageAnalysisOptions options;
-    options.topModuleName = topName;
-    options.outputJSONFile = resourceUsageOutputFile;
-    options.printSummary = true;
-    pm.addPass(circt::aig::createPrintResourceUsageAnalysis(options));
-  }
-
   if (printLongestPath) {
     circt::aig::PrintLongestPathAnalysisOptions options;
     options.outputFile = longestPathOutputFile;
