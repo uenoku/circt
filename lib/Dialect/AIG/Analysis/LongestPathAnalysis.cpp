@@ -20,51 +20,35 @@
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
-#include "mlir/Analysis/TopologicalSortUtils.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Threading.h"
+#include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "mlir/Support/FileUtilities.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/CSE.h"
-#include "llvm//Support/ToolOutputFile.h"
 #include "llvm/ADT//MapVector.h"
-#include "llvm/ADT/EquivalenceClasses.h"
-#include "llvm/ADT/GraphTraits.h"
-#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/PriorityQueue.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/TinyPtrVector.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Mutex.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstdint>
-#include <functional>
 #include <memory>
-#include <mlir/IR/BuiltinOps.h>
-#include <mlir/IR/SymbolTable.h>
-#include <mlir/IR/Value.h>
-#include <mlir/Support/LLVM.h>
 #include <mutex>
 
-#include "llvm/Support/ThreadPool.h"
-#include "llvm/Support/raw_ostream.h"
-
 #include <atomic>
-#include <queue>
-#include <set>
 
 #define DEBUG_TYPE "aig-longest-path-analysis"
 using namespace circt;
@@ -74,13 +58,6 @@ static size_t getBitWidth(Value value) {
   if (auto vecType = dyn_cast<seq::ClockType>(value.getType()))
     return 1;
   return hw::getBitWidth(value.getType());
-}
-
-static bool isRootValue(Value value) {
-  if (auto arg = dyn_cast<BlockArgument>(value))
-    return true;
-  return isa<seq::CompRegOp, seq::FirRegOp, hw::InstanceOp, seq::FirMemReadOp>(
-      value.getDefiningOp());
 }
 
 static void printImpl(llvm::raw_ostream &os, StringAttr name,
@@ -286,6 +263,10 @@ public:
   LocalVisitor(hw::HWModuleOp module, Context *ctx);
 
   LogicalResult initializeAndRun();
+  LogicalResult initializeAndRun(hw::InstanceOp instance);
+  LogicalResult initializeAndRun(seq::FirRegOp reg);
+  LogicalResult initializeAndRun(seq::CompRegOp reg);
+
   std::pair<Value, size_t> findLeader(Value value, size_t bitpos) const {
     return ec.getLeaderValue({value, bitpos});
   }
@@ -294,7 +275,7 @@ public:
 
   bool isDone() const { return done.load(); }
 
-  const auto &getFanoutResults() const { return fanoutResults; }
+  const auto &getFanoutResults() const { return fanOutResults; }
 
   // Wait until the thread is done.
   void waitUntilDone() const {
@@ -304,23 +285,7 @@ public:
 
   FailureOr<ArrayRef<DataflowPath>> getOrComputeResults(Value value,
                                                         size_t bitPos);
-  ArrayRef<DataflowPath> getResults(Value value, size_t bitPos) const {
-    if (ec.contains({value, bitPos})) {
-      auto leader = ec.findLeader({value, bitPos});
-      // If this is not the leader, then use the leader.
-      if (*leader != std::pair(value, bitPos)) {
-        auto root = ecMap.at(*leader);
-        return getResults(root.first, root.second);
-      }
-    }
-    auto it = cachedResults.find({value, bitPos});
-    if (it == cachedResults.end()) {
-      // std::lock_guard<llvm::sys::SmartMutex<true>> lock(ctx->mutex);
-      // llvm::errs() << "Not found: " << value << "[" << bitPos << "]\n";
-      return {};
-    }
-    return it->second;
-  }
+  ArrayRef<DataflowPath> getResults(Value value, size_t bitPos) const;
 
   using ObjectToMaxDistance =
       llvm::MapVector<Object,
@@ -344,11 +309,11 @@ private:
     slot = {delay, history};
   }
 
-  // A map from the input port to the farthest fanout.
+  // A map from the input port to the farthest fanOut.
   llvm::MapVector<std::pair<BlockArgument, size_t>, ObjectToMaxDistance>
       fromInputPortToFanOut;
 
-  // A map from the output port to the farthest fanin.
+  // A map from the output port to the farthest fanIn.
   llvm::MapVector<std::tuple<size_t, size_t>, ObjectToMaxDistance>
       fromOutputPortToFanIn;
 
@@ -418,7 +383,7 @@ private:
                         SmallVectorImpl<DataflowPath> &results);
   LogicalResult markFanIn(Value value, size_t bitPos,
                           SmallVectorImpl<DataflowPath> &results);
-  LogicalResult markFanOut(Value fanout, Value start);
+  LogicalResult markFanOut(Value fanOut, Value start);
 
   hw::HWModuleOp module;
   Context *ctx;
@@ -430,11 +395,29 @@ private:
   // A map from the value point to the longest paths.
   DenseMap<std::pair<Value, size_t>, SmallVector<DataflowPath>> cachedResults;
 
-  DenseMap<Object, SmallVector<DataflowPath>> fanoutResults;
+  DenseMap<Object, SmallVector<DataflowPath>> fanOutResults;
 
   std::atomic_bool done;
   bool topLevel = false;
 };
+
+ArrayRef<DataflowPath> LocalVisitor::getResults(Value value,
+                                                size_t bitPos) const {
+
+  auto leader = ec.findLeader({value, bitPos});
+  if (leader != ec.member_end() && leader->first == value &&
+      leader->second == bitPos) {
+    // If this is not the leader, then use the leader.
+    auto root = ecMap.at(*leader);
+    return getResults(root.first, root.second);
+  }
+
+  auto it = cachedResults.find({value, bitPos});
+  // If not found, then consider it to be a constant.
+  if (it == cachedResults.end())
+    return {};
+  return it->second;
+}
 
 LocalVisitor::LocalVisitor(hw::HWModuleOp module, Context *ctx)
     : module(module), ctx(ctx) {
@@ -463,19 +446,19 @@ const LocalVisitor *Context::getAndWaitLocalVisitor(StringAttr name) const {
   return visitor;
 }
 
-LogicalResult LocalVisitor::markFanOut(Value fanout, Value start) {
-  for (size_t i = 0, e = getBitWidth(fanout); i < e; ++i) {
+LogicalResult LocalVisitor::markFanOut(Value fanOut, Value start) {
+  for (size_t i = 0, e = getBitWidth(fanOut); i < e; ++i) {
     auto result = getOrComputeResults(start, i);
     if (failed(result))
       return failure();
     for (auto &path : *result) {
       if (auto blockArg = dyn_cast<BlockArgument>(path.value)) {
         // Not closed.
-        putUnclosedResult({}, fanout, i, path.delay, path.history,
+        putUnclosedResult({}, fanOut, i, path.delay, path.history,
                           fromInputPortToFanOut[{blockArg, path.bitPos}]);
       } else {
         // Closed.
-        fanoutResults[{{}, fanout, i}].push_back(path);
+        fanOutResults[{{}, fanOut, i}].push_back(path);
       }
     }
   }
@@ -624,7 +607,7 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   auto value = op->getResult(resultNum);
 
   // If an instance graph is not available, we treat instance results as a
-  // fanin.
+  // fanIn.
   if (!ctx->instanceGraph) {
     return markFanIn(value, bitPos, results);
   }
@@ -638,7 +621,7 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   }
 
   // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
-  // fanin.
+  // fanIn.
   if (!isa<hw::HWModuleOp>(node->getModule())) {
     return markFanIn(value, bitPos, results);
   }
@@ -652,14 +635,13 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   if (fanInIt == localVisitor->fromOutputPortToFanIn.end())
     return success();
 
-  const auto &fanins = fanInIt->second;
-  // Concat History.
-  for (auto &[faninPoint, delayAndHistory] : fanins) {
-    auto [path, start, startBitPos] = faninPoint;
+  const auto &fanIns = fanInIt->second;
+  for (auto &[fanInPoint, delayAndHistory] : fanIns) {
     auto [delay, history] = delayAndHistory;
-    auto newPath = instancePathCache->prependInstance(op, path);
+    auto newPath =
+        instancePathCache->prependInstance(op, fanInPoint.instancePath);
 
-    // Update the history.
+    // Update the history to have correct instance path.
     auto newHistory =
         mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
           p.path = newPath;
@@ -667,19 +649,24 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
         });
     newHistory = debugPointFactory->add(debugPoint, newHistory);
 
-    if (auto arg = dyn_cast<BlockArgument>(start)) {
-      auto result =
-          getOrComputeResults(op->getOperand(arg.getArgNumber()), startBitPos);
-      if (failed(result))
-        return failure();
-      for (auto path : *result) {
-        path.delay += delay;
-        path.history =
-            concatList(debugPointFactory.get(), newHistory, path.history);
-        results.push_back(path);
-      }
-    } else {
-      results.emplace_back(newPath, start, startBitPos, delay, newHistory);
+    // If the fanIn is not a block argument, record it directly.
+    auto arg = dyn_cast<BlockArgument>(fanInPoint.value);
+    if (!arg) {
+      results.emplace_back(newPath, fanInPoint.value, fanInPoint.bitPos, delay,
+                           newHistory);
+      continue;
+    }
+
+    // Otherwise, we need to look up the instance operand.
+    auto result = getOrComputeResults(op->getOperand(arg.getArgNumber()),
+                                      fanInPoint.bitPos);
+    if (failed(result))
+      return failure();
+    for (auto path : *result) {
+      path.delay += delay;
+      path.history =
+          concatList(debugPointFactory.get(), newHistory, path.history);
+      results.push_back(path);
     }
   }
 
@@ -833,9 +820,9 @@ LogicalResult LocalVisitor::initializeAndRun() {
                    it->second->fromInputPortToFanOut) {
                 auto [arg, argBitPos] = object;
                 for (auto [point, state] : dataflowPath) {
-                  auto [instancePath, fanout, fanoutBitPos] = point;
-                  assert(isa<BlockArgument>(fanout) ||
-                         isa<seq::FirRegOp>(fanout.getDefiningOp()));
+                  auto [instancePath, fanOut, fanOutBitPos] = point;
+                  assert(isa<BlockArgument>(fanOut) ||
+                         isa<seq::FirRegOp>(fanOut.getDefiningOp()));
                   auto [delay, history] = state;
                   auto newPath = instancePathCache->prependInstance(
                       instance, instancePath);
@@ -854,11 +841,11 @@ LogicalResult LocalVisitor::initializeAndRun() {
                                               });
                     if (auto newPort = dyn_cast<BlockArgument>(result.value)) {
                       putUnclosedResult(
-                          newPath, fanout, fanoutBitPos, result.delay + delay,
+                          newPath, fanOut, fanOutBitPos, result.delay + delay,
                           newHistory,
                           fromInputPortToFanOut[{newPort, result.bitPos}]);
                     } else {
-                      fanoutResults[{newPath, fanout, fanoutBitPos}]
+                      fanOutResults[{newPath, fanOut, fanOutBitPos}]
                           .emplace_back(newPath, result.value, result.bitPos,
                                         result.delay + delay,
                                         concatList(debugPointFactory.get(),
@@ -927,10 +914,10 @@ LogicalResult LongestPathAnalysis::Impl::getResults(
 void aig::PathResult::print(llvm::raw_ostream &os) {
   os << "PathResult(";
   os << "root=" << root.getModuleNameAttr() << ", ";
-  os << "fanout=";
+  os << "fanOut=";
   fanOut.print(os);
   os << ", ";
-  os << "fanin=";
+  os << "fanIn=";
   fanIn.print(os);
   if (!fanIn.history.isEmpty()) {
     os << ", history=[";
@@ -1125,7 +1112,6 @@ void LongestPathAnalysis::getResultsForFF(
 }
 
 void PrintLongestPathAnalysisPass::runOnOperation() {
-  auto &sym = getAnalysis<mlir::SymbolTable>();
   auto &analysis = getAnalysis<circt::aig::LongestPathAnalysis>();
   SmallVector<PathResult> results;
   analysis.getResultsForFF(results);
