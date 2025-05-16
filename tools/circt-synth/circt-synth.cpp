@@ -27,6 +27,7 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
@@ -82,6 +83,9 @@ static cl::opt<bool>
     allowUnregisteredDialects("allow-unregistered-dialect",
                               cl::desc("Allow unknown dialects in the input"),
                               cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> enableTimingOpt("enable-timing-opt",
+                                     cl::desc("Enable timing optimization"),
+                                     cl::init(true), cl::cat(mainCategory));
 
 // Options to control early-out from pipeline.
 enum Until { UntilAIGLowering, UntilEnd };
@@ -192,12 +196,20 @@ static void populateSynthesisPipeline(PassManager &pm) {
     mpm.addPass(createCSEPass());
     mpm.addPass(createSimpleCanonicalizerPass());
   };
+  pm.addPass(sv::createSVExtractTestCodePass(false, false, false));
 
   if (topName.empty()) {
     pipeline(pm.nest<hw::HWModuleOp>());
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
+    if (enableTimingOpt)
+      pm.addPass(circt::aig::createLowerVariadicGlobal());
   }
+  auto pipeline2 = [](OpPassManager &mpm) {
+    mpm.addPass(createSimpleCanonicalizerPass());
+    mpm.addPass(createCSEPass());
+  };
+  pm.addPass(circt::createHierarchicalRunner(topName, pipeline2));
 
   if (printResourceUsage) {
     circt::aig::PrintResourceUsageAnalysisOptions options;

@@ -150,6 +150,7 @@ class LongestPathAnalysis {
 public:
   // Entry points for analysis.
   LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
+  ~LongestPathAnalysis();
 
   // Return all paths for the given values.
   LogicalResult getResults(Value value, size_t bitPos,
@@ -166,7 +167,7 @@ public:
   bool isAnalysisAvaiable(hw::HWModuleOp module) const;
 
   struct Impl;
-  std::unique_ptr<Impl> impl;
+  Impl *impl;
 };
 
 class ResourceUsageAnalysis {

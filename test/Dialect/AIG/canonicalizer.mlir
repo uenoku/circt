@@ -41,3 +41,12 @@ hw.module @And(in %a: i4, in %b: i4, out o1: i4, out o2: i4,
 
   hw.output %0, %1, %2, %3, %4, %5, %6, %7 : i4, i4, i4, i4, i4, i4, i4, i4
 }
+
+
+hw.module @onehot(in %a: i32, out b: i32, out c: i32) {
+  %c2 = hw.constant 2 : i32
+  %c8 = hw.constant 8 : i32
+  %0 = aig.and_inv %a, %c2 : i32
+  %1 = aig.and_inv not %a, %c8 : i32
+  hw.output %0, %1 : i32, i32
+}

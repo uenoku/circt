@@ -30,6 +30,112 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
 
 LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
                                           PatternRewriter &rewriter) {
+  if (op.getInputs().size() == 2 && !op.isInverted(1)) {
+    if (auto c = op.getInputs()[1].getDefiningOp<hw::ConstantOp>()) {
+      // Propagate one hot encoding.
+      const APInt &value = c.getValue();
+      if (value.popcount() == 1) {
+        auto lsb = value.countTrailingZeros();
+        auto msb = value.countLeadingZeros();
+        Value extract = rewriter.create<comb::ExtractOp>(
+            op->getLoc(), op.getOperand(0), lsb, 1);
+        if (op.isInverted(0)) {
+          extract = rewriter.create<aig::AndInverterOp>(op->getLoc(), extract,
+                                                        /*invert=*/true);
+        }
+        SmallVector<Value> concatInputs;
+        if (msb) {
+          auto paddingZero = rewriter.create<hw::ConstantOp>(
+              op->getLoc(), rewriter.getIntegerType(msb), 0);
+          concatInputs.push_back(paddingZero);
+        }
+        concatInputs.push_back(extract);
+
+        if (lsb) {
+          auto paddingZero = rewriter.create<hw::ConstantOp>(
+              op->getLoc(), rewriter.getIntegerType(lsb), 0);
+          concatInputs.push_back(paddingZero);
+        }
+
+        rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+        return success();
+      }
+    }
+  }
+  if (op.getInputs().size() == 1 && op.isInverted(0)) {
+    auto concat = op.getInputs()[0].getDefiningOp<comb::ConcatOp>();
+    if (concat && concat->hasOneUse()) {
+      SmallVector<Value> concatInputs;
+      for (auto operand : concat->getOperands()) {
+        concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+            op->getLoc(), operand, /*invert=*/true));
+      }
+      rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+      return success();
+    }
+  }
+
+  if (op.getInputs().size() == 2) {
+    auto concatLhs = op.getInputs()[0].getDefiningOp<comb::ConcatOp>();
+    auto concatRhs = op.getInputs()[1].getDefiningOp<comb::ConcatOp>();
+    if (concatLhs && concatRhs && concatLhs->hasOneUse() &&
+        concatRhs->hasOneUse() && concatLhs->getOperands().size() == 3 &&
+        concatRhs->getOperands().size() == 3) {
+      SmallVector<Value> concatInputs;
+      // lhs: {c1, x1, c2}
+      // rhs: {d1, x2, d2}
+      // result: {c1 & d1, x1 & x2, c2 & d2}
+      size_t pos = 0;
+      for (auto operand : llvm::reverse(concatLhs->getOperands())) {
+        auto extract = rewriter.create<comb::ExtractOp>(
+            op->getLoc(), concatRhs, pos,
+            operand.getType().getIntOrFloatBitWidth());
+        concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+            op->getLoc(), operand, extract, op.isInverted(0),
+            op.isInverted(1)));
+        pos += operand.getType().getIntOrFloatBitWidth();
+      }
+      std::reverse(concatInputs.begin(), concatInputs.end());
+
+      rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+      return success();
+    }
+
+    auto lhsReplicate = op.getInputs()[0].getDefiningOp<comb::ReplicateOp>();
+    if (lhsReplicate && concatRhs && lhsReplicate->hasOneUse() &&
+        concatRhs->hasOneUse() && !op.isInverted(1) &&
+        lhsReplicate.getInput().getType().getIntOrFloatBitWidth() == 1) {
+
+      bool ok = true;
+      for (auto operand : concatRhs->getOperands()) {
+        auto c = operand.getDefiningOp<hw::ConstantOp>();
+        if (operand.getType().getIntOrFloatBitWidth() == 1 ||
+            (c && c.getValue().isZero())) {
+        } else {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        SmallVector<Value> concatInputs;
+        for (auto operand : concatRhs->getOperands()) {
+          if (operand.getType().getIntOrFloatBitWidth() == 1) {
+            concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+                op->getLoc(), lhsReplicate.getInput(), operand,
+                op.isInverted(0), op.isInverted(1)));
+
+            continue;
+          }
+          auto c = operand.getDefiningOp<hw::ConstantOp>();
+          assert(c);
+          assert(c.getValue().isZero());
+          concatInputs.push_back(operand);
+        }
+        rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+        return success();
+      }
+    }
+  }
   SmallDenseMap<Value, bool> seen;
   SmallVector<Value> uniqueValues;
   SmallVector<bool> uniqueInverts;

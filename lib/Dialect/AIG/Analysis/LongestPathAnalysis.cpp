@@ -313,10 +313,18 @@ public:
   FailureOr<ArrayRef<DataflowPath>> getOrComputeResults(Value value,
                                                         size_t bitPos);
   ArrayRef<DataflowPath> getResults(Value value, size_t bitPos) const {
+    if (ec.contains({value, bitPos})) {
+      auto leader = ec.findLeader({value, bitPos});
+      // If this is not the leader, then use the leader.
+      if (*leader != std::pair(value, bitPos)) {
+        auto root = ecMap.at(*leader);
+        return getResults(root.first, root.second);
+      }
+    }
     auto it = cachedResults.find({value, bitPos});
     if (it == cachedResults.end()) {
-      std::lock_guard<llvm::sys::SmartMutex<true>> lock(ctx->mutex);
-      llvm::errs() << "Not found: " << value << "[" << bitPos << "]\n";
+      // std::lock_guard<llvm::sys::SmartMutex<true>> lock(ctx->mutex);
+      // llvm::errs() << "Not found: " << value << "[" << bitPos << "]\n";
       return {};
     }
     return it->second;
@@ -523,7 +531,7 @@ private:
 
 LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
                                          mlir::AnalysisManager &am)
-    : impl(std::make_unique<Impl>(moduleOp, am)) {
+    : impl(new Impl(moduleOp, am)) {
   if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
     if (failed(impl->initializeAndRun(module)))
       llvm::report_fatal_error("Failed to run longest path analysis");
@@ -859,6 +867,14 @@ LogicalResult LocalVisitor::initializeAndRun() {
                 }
               }
 
+              for (auto instance : instance->getResults()) {
+                for (size_t i = 0, e = getBitWidth(instance); i < e; ++i) {
+                  auto computedResults = getOrComputeResults(instance, i);
+                  if (failed(computedResults))
+                    return failure();
+                }
+              }
+
               return success();
             })
             .Case<hw::OutputOp>([&](auto output) {
@@ -905,6 +921,14 @@ const LocalVisitor *Context::getLocalVisitor(StringAttr name) const {
     return nullptr;
   assert(it->second->isDone());
   return it->second.get();
+}
+
+LogicalResult LongestPathAnalysis::Impl::getResults(
+    Value value, size_t bitPos, SmallVectorImpl<PathResult> &results,
+    circt::igraph::InstancePathCache *instancePathCache,
+    llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const {
+  return getResultsImpl(Object({}, value, bitPos), value, bitPos, results,
+                        instancePathCache, debugPointFactory);
 }
 
 LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
@@ -1125,15 +1149,11 @@ bool LongestPathAnalysis::Impl::isAnalysisAvailable(
 }
 
 int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
-  auto parentHWModule =
-      value.getParentRegion()->getParentOfType<hw::HWModuleOp>();
-  if (!parentHWModule)
-    return 0;
   SmallVector<PathResult> results;
   size_t bitWidth = getBitWidth(value);
   if (bitWidth == 0)
     return 0;
-  int64_t totalDelay = 0; 
+  int64_t totalDelay = 0;
   for (size_t i = 0; i < bitWidth; ++i) {
     results.clear();
     auto result = getResults(value, i, results);
@@ -1147,3 +1167,5 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   }
   return llvm::divideCeil(totalDelay, bitWidth);
 }
+
+LongestPathAnalysis::~LongestPathAnalysis() { delete impl; }

@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/KnownBits.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 using namespace circt;
@@ -2097,6 +2098,9 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   auto collectConstantValues = [&](MuxOp mux) -> bool {
     return getMuxChainCondConstant(
         mux.getCond(), indexValue, isFalseSide, [&](hw::ConstantOp cst) {
+          assert(cst.getValue().getBitWidth() ==
+                     indexValue.getType().getIntOrFloatBitWidth() &&
+                 "expected constant to be 1 bit wide");
           valuesFound.push_back({cst, getCaseValue(mux)});
           locationsFound.push_back(mux.getCond().getLoc());
           locationsFound.push_back(mux->getLoc());
@@ -2137,14 +2141,36 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   // If the array is greater that 9 bits, it will take over 512 elements and
   // it will be too large for a single expression.
   auto indexWidth = cast<IntegerType>(indexValue.getType()).getWidth();
-  if (indexWidth >= 9)
-    return false;
+  bool ok = false;
+  if (indexWidth >= 9) {
+    if (valuesFound.size() < 128)
+      return false;
+    rootMux.emitRemark()
+        << "optimized mux tree "
+           "with "
+        << valuesFound.size() << " entries " << indexWidth
+        << " bits within module "
+        << rootMux->getParentOfType<hw::HWModuleOp>().getModuleNameAttr();
+
+    SmallVector<Value> bits;
+    comb::extractBits(rewriter, indexValue, bits);
+    SmallVector<Value> leafs(1 << indexWidth, nextTreeValue);
+    for (auto [cst, val] : valuesFound) {
+      auto idx = cst.getValue().getZExtValue();
+      leafs[idx] = val;
+    }
+
+    auto result = constructMuxTree(rewriter, rootMux->getLoc(), bits, leafs,
+                                   nextTreeValue);
+    replaceOpAndCopyName(rewriter, rootMux, result);
+    return true;
+  }
 
   // Next we need to see if the values are dense-ish.  We don't want to have
   // a tremendous number of replicated entries in the array.  Some sparsity is
   // ok though, so we require the table to be at least 5/8 utilized.
   uint64_t tableSize = 1ULL << indexWidth;
-  if (valuesFound.size() < (tableSize * 5) / 8)
+  if ((valuesFound.size() < (tableSize * 5) / 8) && !ok)
     return false; // Not dense enough.
 
   // Ok, we're going to do the transformation, start by building the table

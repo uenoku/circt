@@ -9,3 +9,9 @@ hw.module @Basic(in %a: i2, in %b: i2, in %c: i2, in %d: i2, in %e: i2, out f: i
   %0 = aig.and_inv not %a, %b, %c, not %d, %e : i2
   hw.output %0 : i2
 }
+
+hw.module @Top(in %a: i2, in %b: i2, in %c: i2, in %d: i2, in %e: i2, out f: i2) {
+  %0 = aig.and_inv not %a, %b : i2
+  %f = hw.instance "inst" @Basic(a: %0: i2, b: %0 : i2, c: %c: i2, d: %d: i2, e: %e: i2) -> (f: i2)
+  hw.output %f : i2
+}

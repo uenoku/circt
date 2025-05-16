@@ -26,6 +26,7 @@ target_link_libraries(circt-synth
   CIRCTDebug
   CIRCTSim
   CIRCTSV
+  CIRCTSVTransforms
   CIRCTTransforms
   CIRCTVerif
   MLIRIR
