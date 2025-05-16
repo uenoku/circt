@@ -584,6 +584,7 @@ LogicalResult LocalVisitor::visit(comb::XorOp op, size_t bitPos,
 
 LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
                                   SmallVectorImpl<DataflowPath> &results) {
+  // Add a cost of 1 for the mux.
   if (failed(addEdge(op.getCond(), 0, 1, results)) ||
       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
@@ -665,6 +666,7 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
           return p;
         });
     newHistory = debugPointFactory->add(debugPoint, newHistory);
+
     if (auto arg = dyn_cast<BlockArgument>(start)) {
       auto result =
           getOrComputeResults(op->getOperand(arg.getArgNumber()), startBitPos);
@@ -677,7 +679,6 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
         results.push_back(path);
       }
     } else {
-      assert((isa<seq::FirRegOp, hw::InstanceOp>(start.getDefiningOp())));
       results.emplace_back(newPath, start, startBitPos, delay, newHistory);
     }
   }
