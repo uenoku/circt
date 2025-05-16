@@ -32,6 +32,7 @@ class InstanceGraph;
 }
 namespace aig {
 
+// A debug point represents a point in the dataflow graph.
 struct DebugPoint {
   DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
              int64_t delay = 0, StringRef comment = "")
@@ -56,17 +57,6 @@ struct DebugPoint {
   int64_t delay;
   StringRef comment;
 };
-
-// int compareInstancePath(const circt::igraph::InstancePath &a,
-//                         const circt::igraph::InstancePath &b) {
-//   if (a.size() != b.size())
-//     return a.size() < b.size() ? -1 : 1;
-//   for (size_t i = 0, e = a.size(); i < e; ++i) {
-//     if (a[i].getInstanceName() != b[i].getInstanceName())
-//       return a[i].getInstanceName().compare(b[i].getInstanceName());
-//   }
-//   return 0;
-// }
 
 // A class represents a path in the dataflow graph.
 // The destination is: `instancePath.value[bitPos]` at time `delay`
@@ -108,16 +98,6 @@ struct Object {
     return instancePath == other.instancePath && value == other.value &&
            bitPos == other.bitPos;
   }
-  // bool operator<(const Object &other) const {
-  //   auto order = compareInstancePath(instancePath, other.instancePath);
-  //   if (order != 0)
-  //     return order < 0;
-  //   if (value.getAsOpaquePointer() < other.value.getAsOpaquePointer())
-  //     return true;
-  //   if (value.getAsOpaquePointer() > other.value.getAsOpaquePointer())
-  //     return false;
-  //   return bitPos < other.bitPos;
-  // }
 };
 
 struct PathResult {
@@ -146,26 +126,52 @@ struct PathResult {
   }
 };
 
+// This analysis finds the longest paths in the dataflow graph across modules.
+// Also be aware of the lifetime of the analysis, the results would be
+// invalid if the IR is modified. Currently there is no way to efficiently
+// update the analysis results, so it's recommended to only use this analysis
+// once on a design, and store the results in a separate data structure which
+// users can manage the lifetime.
 class LongestPathAnalysis {
 public:
   // Entry points for analysis.
   LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
   ~LongestPathAnalysis();
 
-  // Return all paths for the given values.
+  // Return all longest paths to each Fanin for the given value and bit
+  // position. Populates the 'results' vector with PathResult objects, each
+  // containing:
+  // - fanout: The destination object (value/bit position in instance path)
+  // - fanin: The source dataflow path with delay information
+  // - root: The HWModuleOp where the path was found
+  // Returns failure if the value is not in a HWModuleOp or analysis fails.
   LogicalResult getResults(Value value, size_t bitPos,
                            SmallVectorImpl<PathResult> &results);
 
+  // Return the average of the maximum delays across all bits of the given
+  // value. For each bit position, finds all paths and takes the maximum delay.
+  // Then averages these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value);
 
   // Paths to FFs are precomputed efficiently, return results.
   void getResultsForFF(SmallVectorImpl<PathResult> &results);
 
+  // Erase the cache for the given value and bit position.
+  // If bitPos is -1, erases all bit positions.
+  void erase(Value value, int64_t bitPos = -1);
+
+  // This is the name of the attribute that can be attached to the module
+  // to specify the top module for the analysis. This is optional, if not
+  // specified, the analysis will infer the top module from the instance graph.
+  // However it's recommended to specify it, as the entire module tends to
+  // contain testbench or verification modules, which may have expensive paths
+  // that are not of interest.
   static StringRef getTopModuleNameAttrName() {
     return "aig.longest-path-analysis-top";
   }
-  bool isAnalysisAvaiable(hw::HWModuleOp module) const;
 
+  // Return true if the analysis is available for the given module.
+  bool isAnalysisAvaiable(hw::HWModuleOp module) const;
   struct Impl;
   Impl *impl;
 };
