@@ -2142,8 +2142,8 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   // it will be too large for a single expression.
   auto indexWidth = cast<IntegerType>(indexValue.getType()).getWidth();
   bool ok = false;
-  if (indexWidth >= 9) {
-    if (valuesFound.size() < 128)
+  if (indexWidth >= 6) {
+    if (valuesFound.size() < 32)
       return false;
     rootMux.emitRemark()
         << "optimized mux tree "
