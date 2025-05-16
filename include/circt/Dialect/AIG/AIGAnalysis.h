@@ -19,6 +19,7 @@
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Operation.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ImmutableList.h"
 #include <memory>
@@ -32,32 +33,6 @@ namespace igraph {
 class InstanceGraph;
 }
 namespace aig {
-
-// A debug point represents a point in the dataflow graph.
-struct DebugPoint {
-  DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
-             int64_t delay = 0, StringRef comment = "")
-      : path(path), value(value), bitPos(bitPos), delay(delay),
-        comment(comment) {}
-
-  // Trait for list of debug points.
-  void Profile(llvm::FoldingSetNodeID &ID) const {
-    for (auto &inst : path) {
-      ID.AddPointer(inst.getAsOpaquePointer());
-    }
-    ID.AddPointer(value.getAsOpaquePointer());
-    ID.AddInteger(bitPos);
-    ID.AddInteger(delay);
-  }
-
-  void print(llvm::raw_ostream &os) const;
-
-  circt::igraph::InstancePath path;
-  Value value;
-  size_t bitPos;
-  int64_t delay;
-  StringRef comment;
-};
 
 struct Object {
   circt::igraph::InstancePath instancePath;
@@ -74,30 +49,43 @@ struct Object {
   }
 };
 
+// A debug point represents a point in the dataflow graph.
+struct DebugPoint {
+  DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
+             int64_t delay = 0, StringRef comment = "")
+      : object(path, value, bitPos), delay(delay), comment(comment) {}
+
+  // Trait for list of debug points.
+  void Profile(llvm::FoldingSetNodeID &ID) const {
+    for (auto &inst : object.instancePath) {
+      ID.AddPointer(inst.getAsOpaquePointer());
+    }
+    ID.AddPointer(object.value.getAsOpaquePointer());
+    ID.AddInteger(object.bitPos);
+    ID.AddInteger(delay);
+  }
+
+  void print(llvm::raw_ostream &os) const;
+
+  Object object;
+  int64_t delay;
+  StringRef comment;
+};
+
 // A class represents a path in the dataflow graph.
 // The destination is: `instancePath.value[bitPos]` at time `delay`
 // going through `history`.
 struct DataflowPath {
-  Value value;
-  size_t bitPos;
-  circt::igraph::InstancePath instancePath;
+  Object fanIn;
   int64_t delay = -1;
   llvm::ImmutableList<DebugPoint> history;
   DataflowPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
                int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
-      : value(value), bitPos(bitPos), instancePath(path), delay(delay),
-        history(history) {
+      : fanIn(path, value, bitPos), delay(delay), history(history) {
     assert(value);
   }
 
   DataflowPath() = default;
-  bool operator>(const DataflowPath &other) const {
-    return delay > other.delay;
-  }
-  bool operator<(const DataflowPath &other) const {
-    return delay < other.delay;
-  }
-
   void print(llvm::raw_ostream &os) const;
 };
 
@@ -149,6 +137,9 @@ public:
 
   // Return true if the analysis is available for the given module.
   bool isAnalysisAvaiable(hw::HWModuleOp module) const;
+
+  // Return the top nodes that were used for the analysis.
+  llvm::ArrayRef<hw::HWModuleOp> getTopModules() const;
 
   // This is the name of the attribute that can be attached to the module
   // to specify the top module for the analysis. This is optional, if not
