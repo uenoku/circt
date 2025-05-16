@@ -1110,7 +1110,7 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
 }
 
 void LongestPathAnalysis::getResultsForFF(
-    SmallVectorImpl<PathResult> &results) {
+    SmallVectorImpl<PathResult> &results) const {
   impl->getResultsForFF(results);
 }
 
@@ -1138,7 +1138,7 @@ bool LongestPathAnalysis::isAnalysisAvaiable(hw::HWModuleOp module) const {
   return impl->isAnalysisAvailable(module);
 }
 
-int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) {
+int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
   return impl->getAverageMaxDelay(value);
 }
 

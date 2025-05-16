@@ -22,6 +22,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ImmutableList.h"
 #include <memory>
+#include <mlir/IR/BuiltinOps.h>
 
 namespace mlir {
 class AnalysisManager;
@@ -58,6 +59,21 @@ struct DebugPoint {
   StringRef comment;
 };
 
+struct Object {
+  circt::igraph::InstancePath instancePath;
+  Value value;
+  size_t bitPos;
+  Object(circt::igraph::InstancePath path, Value value, size_t bitPos)
+      : instancePath(path), value(value), bitPos(bitPos) {}
+  Object() = default;
+  void print(llvm::raw_ostream &os) const;
+
+  bool operator==(const Object &other) const {
+    return instancePath == other.instancePath && value == other.value &&
+           bitPos == other.bitPos;
+  }
+};
+
 // A class represents a path in the dataflow graph.
 // The destination is: `instancePath.value[bitPos]` at time `delay`
 // going through `history`.
@@ -83,21 +99,6 @@ struct DataflowPath {
   }
 
   void print(llvm::raw_ostream &os) const;
-};
-
-struct Object {
-  circt::igraph::InstancePath instancePath;
-  Value value;
-  size_t bitPos;
-  Object(circt::igraph::InstancePath path, Value value, size_t bitPos)
-      : instancePath(path), value(value), bitPos(bitPos) {}
-  Object() = default;
-  void print(llvm::raw_ostream &os) const;
-
-  bool operator==(const Object &other) const {
-    return instancePath == other.instancePath && value == other.value &&
-           bitPos == other.bitPos;
-  }
 };
 
 struct PathResult {
@@ -146,19 +147,23 @@ public:
   // - root: The HWModuleOp where the path was found
   // Returns failure if the value is not in a HWModuleOp or analysis fails.
   LogicalResult getResults(Value value, size_t bitPos,
-                           SmallVectorImpl<PathResult> &results);
+                           SmallVectorImpl<PathResult> &results) const;
 
   // Return the average of the maximum delays across all bits of the given
-  // value. For each bit position, finds all paths and takes the maximum delay.
-  // Then averages these maximum delays across all bits of the value.
-  int64_t getAverageMaxDelay(Value value);
+  // value, which is useful approximation for the delay of the value. For each
+  // bit position, finds all paths and takes the maximum delay. Then averages
+  // these maximum delays across all bits of the value.
+  int64_t getAverageMaxDelay(Value value) const;
 
   // Paths to FFs are precomputed efficiently, return results.
-  void getResultsForFF(SmallVectorImpl<PathResult> &results);
+  void getResultsForFF(SmallVectorImpl<PathResult> &results) const;
 
   // Erase the cache for the given value and bit position.
   // If bitPos is -1, erases all bit positions.
   void erase(Value value, int64_t bitPos = -1);
+
+  // Return true if the analysis is available for the given module.
+  bool isAnalysisAvaiable(hw::HWModuleOp module) const;
 
   // This is the name of the attribute that can be attached to the module
   // to specify the top module for the analysis. This is optional, if not
@@ -170,8 +175,7 @@ public:
     return "aig.longest-path-analysis-top";
   }
 
-  // Return true if the analysis is available for the given module.
-  bool isAnalysisAvaiable(hw::HWModuleOp module) const;
+private:
   struct Impl;
   Impl *impl;
 };
