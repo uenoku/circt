@@ -941,8 +941,8 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
   if (!parentHWModule)
     return mlir::emitError(value.getLoc())
            << "query value is not in a HWModuleOp";
-  auto *localvisitor = ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
-  if (!localvisitor)
+  auto *localVisitor = ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
+  if (!localVisitor)
     return success();
 
   size_t oldIndex = results.size();
@@ -952,9 +952,9 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
                  << value << " " << bitPos << "\n";
   });
 
-  for (auto &path : localvisitor->getResults(value, bitPos)) {
+  for (auto &path : localVisitor->getResults(value, bitPos)) {
     auto arg = dyn_cast<BlockArgument>(path.value);
-    if (!arg || localvisitor->isTopLevel()) {
+    if (!arg || localVisitor->isTopLevel()) {
       // If the value is not a block argument, then we are done.
       results.push_back({originalObject, path, parentHWModule});
       continue;
