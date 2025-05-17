@@ -1097,14 +1097,14 @@ static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
   }
 
   // Show 50%, 90%, 95% and 99% percentile.
-  SmallVector<int> percentiles = {50, 90, 95, 99};
+  SmallVector<double> percentiles = {50, 90, 95, 99, 99.9, 100};
   int64_t size = totalSize;
   for (size_t i = 0; i < delayAndFreq.size() && !percentiles.empty(); ++i) {
     auto &[delay, freq] = delayAndFreq[i];
     size -= freq;
     while (!percentiles.empty() &&
-           size <= (totalSize * percentiles.back()) / 100) {
-      llvm::errs() << "Percentile " << percentiles.back()
+           size <= (totalSize * percentiles.back()) / 100.0) {
+      llvm::errs() << "Percentile " << llvm::format("%.1f", percentiles.back())
                    << "%: delay=" << delay;
       llvm::errs() << " Path# " << i << " ";
       results[i].print(llvm::errs());
