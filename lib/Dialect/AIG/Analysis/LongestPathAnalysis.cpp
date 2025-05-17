@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the critical path analysis.
+// This file defines the longest path analysis.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,7 +16,6 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/SV/SVOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
@@ -27,29 +26,26 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/AnalysisManager.h"
-#include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/CSE.h"
 #include "llvm/ADT//MapVector.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
-
-#include <atomic>
 
 #define DEBUG_TYPE "aig-longest-path-analysis"
 using namespace circt;
@@ -118,28 +114,6 @@ concatList(llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
       lhs.getHead(), concatList(debugPointFactory, lhs.getTail(), rhs));
 }
 
-namespace circt {
-namespace aig {
-#define GEN_PASS_DEF_PRINTLONGESTPATHANALYSIS
-#define GEN_PASS_DEF_PRINTGLOBALDATAPATHANALYSIS
-#include "circt/Dialect/AIG/AIGPasses.h.inc"
-} // namespace aig
-} // namespace circt
-
-using namespace circt;
-using namespace aig;
-
-namespace {
-struct PrintLongestPathAnalysisPass
-    : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
-  using PrintLongestPathAnalysisBase::outputFile;
-  using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
-  using PrintLongestPathAnalysisBase::showTopKPercent;
-  void runOnOperation() override;
-};
-
-} // namespace
-
 static StringAttr getNameImpl(Value value, size_t bitPos) {
   if (auto arg = dyn_cast<BlockArgument>(value)) {
     auto op = cast<hw::HWModuleOp>(arg.getParentBlock()->getParentOp());
@@ -189,6 +163,32 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
   os << ")";
 }
 
+namespace circt {
+namespace aig {
+#define GEN_PASS_DEF_PRINTLONGESTPATHANALYSIS
+#define GEN_PASS_DEF_PRINTGLOBALDATAPATHANALYSIS
+#include "circt/Dialect/AIG/AIGPasses.h.inc"
+} // namespace aig
+} // namespace circt
+
+using namespace circt;
+using namespace aig;
+
+namespace {
+struct PrintLongestPathAnalysisPass
+    : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
+  using PrintLongestPathAnalysisBase::outputFile;
+  using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
+  using PrintLongestPathAnalysisBase::showTopKPercent;
+  void runOnOperation() override;
+};
+
+} // namespace
+
+// -----------------------------------------------------------------------------
+// Printing
+// -----------------------------------------------------------------------------
+
 void DataflowPath::print(llvm::raw_ostream &os) const {
   printObjectImpl(os, fanIn, delay, history);
 }
@@ -235,6 +235,8 @@ class LocalVisitor;
 // -----------------------------------------------------------------------------
 // Context
 // -----------------------------------------------------------------------------
+
+// This class provides a thread-safe interface to access the analysis results.
 struct Context {
   llvm::sys::SmartMutex<true> mutex;
   llvm::SetVector<StringAttr> running;
@@ -304,12 +306,7 @@ public:
 private:
   void putUnclosedResult(const Object &object, int64_t delay,
                          llvm::ImmutableList<DebugPoint> history,
-                         ObjectToMaxDistance &objectToMaxDistance) {
-    auto &slot = objectToMaxDistance[object];
-    if (slot.first >= delay)
-      return;
-    slot = {delay, history};
-  }
+                         ObjectToMaxDistance &objectToMaxDistance);
 
   // A map from the input port to the farthest fanOut.
   llvm::MapVector<std::pair<BlockArgument, size_t>, ObjectToMaxDistance>
@@ -412,6 +409,17 @@ private:
   bool topLevel = false;
 };
 
+LocalVisitor::LocalVisitor(hw::HWModuleOp module, Context *ctx)
+    : module(module), ctx(ctx) {
+  debugPointFactory =
+      std::make_unique<llvm::ImmutableListFactory<DebugPoint>>();
+  instancePathCache = ctx->instanceGraph
+                          ? std::make_unique<circt::igraph::InstancePathCache>(
+                                *ctx->instanceGraph)
+                          : nullptr;
+  done = false;
+}
+
 ArrayRef<DataflowPath> LocalVisitor::getResults(Value value,
                                                 size_t bitPos) const {
 
@@ -431,21 +439,19 @@ ArrayRef<DataflowPath> LocalVisitor::getResults(Value value,
     return {};
   return it->second;
 }
-
-void LocalVisitor::waitUntilDone() const {
-  while (!done.load())
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+void LocalVisitor::putUnclosedResult(const Object &object, int64_t delay,
+                                     llvm::ImmutableList<DebugPoint> history,
+                                     ObjectToMaxDistance &objectToMaxDistance) {
+  auto &slot = objectToMaxDistance[object];
+  if (slot.first >= delay)
+    return;
+  slot = {delay, history};
 }
 
-LocalVisitor::LocalVisitor(hw::HWModuleOp module, Context *ctx)
-    : module(module), ctx(ctx) {
-  debugPointFactory =
-      std::make_unique<llvm::ImmutableListFactory<DebugPoint>>();
-  instancePathCache = ctx->instanceGraph
-                          ? std::make_unique<circt::igraph::InstancePathCache>(
-                                *ctx->instanceGraph)
-                          : nullptr;
-  done = false;
+void LocalVisitor::waitUntilDone() const {
+  // Wait for the thread to finish.
+  while (!done.load())
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 LogicalResult LocalVisitor::markFanOut(Value fanOut, Value start) {
@@ -989,6 +995,8 @@ void LongestPathAnalysis::Impl::getResultsForFF(
       }
     }
   }
+
+  // Sort by delay.
   std::sort(results.begin(), results.end(), [](PathResult &a, PathResult &b) {
     return a.fanIn.delay > b.fanIn.delay;
   });

@@ -34,6 +34,7 @@ class InstanceGraph;
 }
 namespace aig {
 
+// A class represents an object in the dataflow graph.
 struct Object {
   circt::igraph::InstancePath instancePath;
   Value value;
@@ -49,7 +50,8 @@ struct Object {
   }
 };
 
-// A debug point represents a point in the dataflow graph.
+// A debug point represents a point in the dataflow graph which carries delay
+// and optional comment.
 struct DebugPoint {
   DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
              int64_t delay = 0, StringRef comment = "")
@@ -81,9 +83,7 @@ struct DataflowPath {
   llvm::ImmutableList<DebugPoint> history;
   DataflowPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
                int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
-      : fanIn(path, value, bitPos), delay(delay), history(history) {
-    assert(value);
-  }
+      : fanIn(path, value, bitPos), delay(delay), history(history) {}
 
   DataflowPath() = default;
   void print(llvm::raw_ostream &os) const;
@@ -128,7 +128,8 @@ public:
   // these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value) const;
 
-  // Paths to FFs are precomputed efficiently, return results.
+  // Paths to FFs are precomputed efficiently, return results. Results are
+  // sorted by delay from longest to shortest.
   void getResultsForFF(SmallVectorImpl<PathResult> &results) const;
 
   // Erase the cache for the given value and bit position.
