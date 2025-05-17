@@ -31,6 +31,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/CSE.h"
 #include "llvm/ADT//MapVector.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/MapVector.h"
@@ -197,6 +198,17 @@ void DebugPoint::print(llvm::raw_ostream &os) const {
 }
 
 void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
+
+void PathResult::print(llvm::raw_ostream &os) {
+  os << "PathResult(";
+  os << "root=" << root.getModuleNameAttr() << ", ";
+  os << "fanOut=";
+  fanOut.print(os);
+  os << ", ";
+  os << "fanIn=";
+  fanIn.print(os);
+  os << ")";
+}
 
 template <>
 struct llvm::DenseMapInfo<Object> {
@@ -403,15 +415,17 @@ private:
 ArrayRef<DataflowPath> LocalVisitor::getResults(Value value,
                                                 size_t bitPos) const {
 
-  auto leader = ec.findLeader({value, bitPos});
-  if (leader != ec.member_end() && leader->first == value &&
-      leader->second == bitPos) {
-    // If this is not the leader, then use the leader.
-    auto root = ecMap.at(*leader);
-    return getResults(root.first, root.second);
+  std::pair<Value, size_t> valueAndBitPos(value, bitPos);
+  auto leader = ec.findLeader(valueAndBitPos);
+  if (leader != ec.member_end()) {
+    if (*leader != valueAndBitPos) {
+      // If this is not the leader, then use the leader.
+      auto root = ecMap.at(*leader);
+      return getResults(root.first, root.second);
+    }
   }
 
-  auto it = cachedResults.find({value, bitPos});
+  auto it = cachedResults.find(valueAndBitPos);
   // If not found, then consider it to be a constant.
   if (it == cachedResults.end())
     return {};
@@ -462,7 +476,7 @@ LocalVisitor::markEquivalent(Value from, size_t fromBitPos, Value to,
   auto &slot = ecMap[leader];
   if (!slot.first)
     slot = {to, toBitPos};
-
+  // Merge classes, and visit the leader.
   auto newLeader = ec.unionSets({to, toBitPos}, {from, fromBitPos});
   assert(leader == *newLeader);
   return visitValue(to, toBitPos, results);
@@ -473,10 +487,10 @@ LogicalResult LocalVisitor::addEdge(Value to, size_t bitPos, int64_t delay,
   auto result = getOrComputeResults(to, bitPos);
   if (failed(result))
     return failure();
-  for (auto &point : *result) {
-    auto newPoint = point;
-    newPoint.delay += delay;
-    results.push_back(newPoint);
+  for (auto &path : *result) {
+    auto newPath = path;
+    newPath.delay += delay;
+    results.push_back(newPath);
   }
   return success();
 }
@@ -544,9 +558,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
 
   // If an instance graph is not available, we treat instance results as a
   // fanIn.
-  if (!ctx->instanceGraph) {
+  if (!ctx->instanceGraph)
     return markFanIn(value, bitPos, results);
-  }
 
   // If an instance graph is available, then we can look up the module. It's an
   // error when the module is not found.
@@ -558,9 +571,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
 
   // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
   // fanIn.
-  if (!isa<hw::HWModuleOp>(node->getModule())) {
+  if (!isa<hw::HWModuleOp>(node->getModule()))
     return markFanIn(value, bitPos, results);
-  }
 
   DebugPoint debugPoint({}, value, bitPos, 0, "output port");
 
@@ -795,7 +807,7 @@ LogicalResult LocalVisitor::initializeAndRun(hw::OutputOp output) {
 
 LogicalResult LocalVisitor::initializeAndRun() {
   auto start = std::chrono::high_resolution_clock::now();
-  ctx->notifyStart(module.getModuleNameAttr());
+  LLVM_DEBUG({ ctx->notifyStart(module.getModuleNameAttr()); });
   for (auto blockArgument : module.getBodyBlock()->getArguments())
     for (size_t i = 0, e = getBitWidth(blockArgument); i < e; ++i)
       (void)getOrComputeResults(blockArgument, i);
@@ -826,12 +838,14 @@ LogicalResult LocalVisitor::initializeAndRun() {
   if (walkResult.wasInterrupted())
     return failure();
 
-  ctx->notifyEnd(module.getModuleNameAttr());
-  llvm::errs() << "[Timing] Done " << module.getModuleNameAttr() << " in "
-               << std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::high_resolution_clock::now() - start)
-                      .count()
-               << "ms\n";
+  LLVM_DEBUG({
+    ctx->notifyEnd(module.getModuleNameAttr());
+    llvm::errs() << "[Timing] Done " << module.getModuleNameAttr() << " in "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::high_resolution_clock::now() - start)
+                        .count()
+                 << "ms\n";
+  });
   done.store(true);
   return success();
 }
@@ -844,7 +858,6 @@ const LocalVisitor *Context::getLocalVisitor(StringAttr name) const {
   auto *it = localVisitors.find(name);
   if (it == localVisitors.end())
     return nullptr;
-  assert(it->second->isDone());
   return it->second.get();
 }
 
@@ -881,7 +894,7 @@ struct LongestPathAnalysis::Impl {
 
   LogicalResult getResultsForFF(SmallVectorImpl<PathResult> &results) const;
 
-  llvm::ArrayRef<hw::HWModuleOp> getTopNodes() const { return topModules; }
+  llvm::ArrayRef<hw::HWModuleOp> getTopModules() const { return topModules; }
 
 private:
   LogicalResult getResultsImpl(
@@ -895,43 +908,12 @@ private:
   SmallVector<hw::HWModuleOp> topModules;
 };
 
-LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
-                                         mlir::AnalysisManager &am)
-    : impl(new Impl(moduleOp, am)) {
-  if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
-    if (failed(impl->initializeAndRun(module)))
-      llvm::report_fatal_error("Failed to run longest path analysis");
-  } else if (auto hwMod = dyn_cast<hw::HWModuleOp>(moduleOp)) {
-    if (failed(impl->initializeAndRun(hwMod)))
-      llvm::report_fatal_error("Failed to run longest path analysis");
-  } else {
-    llvm::report_fatal_error("Analysis scheduled on invalid operation");
-  }
-}
-
 LogicalResult LongestPathAnalysis::Impl::getResults(
     Value value, size_t bitPos, SmallVectorImpl<PathResult> &results,
     circt::igraph::InstancePathCache *instancePathCache,
     llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const {
   return getResultsImpl(Object({}, value, bitPos), value, bitPos, results,
                         instancePathCache, debugPointFactory);
-}
-
-void aig::PathResult::print(llvm::raw_ostream &os) {
-  os << "PathResult(";
-  os << "root=" << root.getModuleNameAttr() << ", ";
-  os << "fanOut=";
-  fanOut.print(os);
-  os << ", ";
-  os << "fanIn=";
-  fanIn.print(os);
-  if (!fanIn.history.isEmpty()) {
-    os << ", history=[";
-    llvm::interleaveComma(fanIn.history, os,
-                          [&](DebugPoint p) { p.print(os); });
-    os << "]";
-  }
-  os << ")";
 }
 
 LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
@@ -1009,21 +991,6 @@ void LongestPathAnalysis::Impl::getResultsForFF(
   }
   std::sort(results.begin(), results.end(), [](PathResult &a, PathResult &b) {
     return a.fanIn.delay > b.fanIn.delay;
-    // Implement sorting. Make sure they are sorted by names as well
-    // when tie off.
-    if (a.fanIn.delay != b.fanIn.delay)
-      return a.fanIn.delay > b.fanIn.delay;
-    if (a.root != b.root)
-      return a.root.getModuleNameAttr().compare(b.root.getModuleNameAttr()) < 0;
-
-    std::string aStr, bStr;
-    llvm::raw_string_ostream osA(aStr);
-    llvm::raw_string_ostream osB(bStr);
-    a.fanIn.print(osA);
-    b.fanIn.print(osB);
-    osA.flush();
-    osB.flush();
-    return aStr.compare(bStr) < 0;
   });
 }
 
@@ -1115,9 +1082,36 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
   return success();
 }
 
-void LongestPathAnalysis::getResultsForFF(
-    SmallVectorImpl<PathResult> &results) const {
-  impl->getResultsForFF(results);
+static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
+                              SmallVectorImpl<PathResult> &results,
+                              hw::HWModuleOp top) {
+
+  llvm::errs() << "# Top " << top.getModuleNameAttr() << "\n";
+  SmallVector<std::pair<int64_t, size_t>> delayAndFreq;
+  int64_t totalSize = 0;
+  for (auto &result : results) {
+    auto *node = pathCache.instanceGraph.lookup(result.root);
+    auto paths = pathCache.getAbsolutePaths(top, node);
+    delayAndFreq.push_back({result.fanIn.delay, paths.size()});
+    totalSize += paths.size();
+  }
+
+  // Show 50%, 90%, 95% and 99% percentile.
+  SmallVector<int> percentiles = {50, 90, 95, 99};
+  int64_t size = totalSize;
+  for (size_t i = 0; i < delayAndFreq.size() && !percentiles.empty(); ++i) {
+    auto &[delay, freq] = delayAndFreq[i];
+    size -= freq;
+    while (!percentiles.empty() &&
+           size <= (totalSize * percentiles.back()) / 100) {
+      llvm::errs() << "Percentile " << percentiles.back()
+                   << "%: delay=" << delay;
+      llvm::errs() << " Path# " << i << " ";
+      results[i].print(llvm::errs());
+      llvm::errs() << "\n";
+      percentiles.pop_back();
+    }
+  }
 }
 
 void PrintLongestPathAnalysisPass::runOnOperation() {
@@ -1126,27 +1120,24 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
   analysis.getResultsForFF(results);
 
   llvm::errs() << "Found " << results.size() << " paths\n";
+
+  igraph::InstancePathCache pathCache(
+      getAnalysis<circt::igraph::InstanceGraph>());
+  for (auto top : analysis.getTopModules())
+    showSummaryForTop(pathCache, results, top);
+
   if (showTopKPercent == 0)
     return;
 
   size_t topK = llvm::divideCeil(results.size(), 100) *
                 std::max(0, showTopKPercent.getValue());
+
   llvm::errs() << "Showing top " << topK << " paths\n";
   for (size_t i = 0; i < std::min<size_t>(topK, results.size()); ++i) {
     llvm::errs() << "Path #" << i << ": ";
     results[i].print(llvm::errs());
     llvm::errs() << "\n";
   }
-
-  // Show 50%, 90%, 95%, 99% percentile for each top.
-}
-
-bool LongestPathAnalysis::isAnalysisAvaiable(hw::HWModuleOp module) const {
-  return impl->isAnalysisAvailable(module);
-}
-
-int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
-  return impl->getAverageMaxDelay(value);
 }
 
 bool LongestPathAnalysis::Impl::isAnalysisAvailable(
@@ -1155,6 +1146,10 @@ bool LongestPathAnalysis::Impl::isAnalysisAvailable(
          ctx.localVisitors.end();
 }
 
+// Return the average of the maximum delays across all bits of the given
+// value, which is useful approximation for the delay of the value. For each
+// bit position, finds all paths and takes the maximum delay. Then averages
+// these maximum delays across all bits of the value.
 int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   SmallVector<PathResult> results;
   size_t bitWidth = getBitWidth(value);
@@ -1162,6 +1157,7 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
     return 0;
   int64_t totalDelay = 0;
   for (size_t i = 0; i < bitWidth; ++i) {
+    // Clear results from previous iteration.
     results.clear();
     auto result = getResults(value, i, results);
     if (failed(result))
@@ -1175,4 +1171,39 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   return llvm::divideCeil(totalDelay, bitWidth);
 }
 
+// -----------------------------------------------------------------------------
+// LongestPathAnalysis
+// -----------------------------------------------------------------------------
+
 LongestPathAnalysis::~LongestPathAnalysis() { delete impl; }
+
+LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
+                                         mlir::AnalysisManager &am)
+    : impl(new Impl(moduleOp, am)) {
+  if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
+    if (failed(impl->initializeAndRun(module)))
+      llvm::report_fatal_error("Failed to run longest path analysis");
+  } else if (auto hwMod = dyn_cast<hw::HWModuleOp>(moduleOp)) {
+    if (failed(impl->initializeAndRun(hwMod)))
+      llvm::report_fatal_error("Failed to run longest path analysis");
+  } else {
+    llvm::report_fatal_error("Analysis scheduled on invalid operation");
+  }
+}
+
+bool LongestPathAnalysis::isAnalysisAvaiable(hw::HWModuleOp module) const {
+  return impl->isAnalysisAvailable(module);
+}
+
+int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
+  return impl->getAverageMaxDelay(value);
+}
+
+void LongestPathAnalysis::getResultsForFF(
+    SmallVectorImpl<PathResult> &results) const {
+  impl->getResultsForFF(results);
+}
+
+ArrayRef<hw::HWModuleOp> LongestPathAnalysis::getTopModules() const {
+  return impl->getTopModules();
+}
