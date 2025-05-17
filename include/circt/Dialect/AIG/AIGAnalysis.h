@@ -91,10 +91,10 @@ struct DataflowPath {
 
 struct PathResult {
   Object fanOut;
-  DataflowPath fanIn;
+  DataflowPath path;
   hw::HWModuleOp root;
   PathResult(Object fanOut, DataflowPath fanIn, hw::HWModuleOp root)
-      : fanOut(fanOut), fanIn(fanIn), root(root) {}
+      : fanOut(fanOut), path(fanIn), root(root) {}
   PathResult() = default;
 
   void print(llvm::raw_ostream &os);

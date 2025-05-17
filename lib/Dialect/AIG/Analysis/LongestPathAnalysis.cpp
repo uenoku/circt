@@ -81,12 +81,12 @@ static void deduplicatePaths(SmallVectorImpl<PathResult> &results,
   DenseMap<std::pair<Object, Object>, size_t> saved;
   for (auto [i, path] :
        llvm::enumerate(ArrayRef(results).drop_front(startIndex))) {
-    auto &slot = saved[{path.fanOut, path.fanIn.fanIn}];
+    auto &slot = saved[{path.fanOut, path.path.fanIn}];
     if (slot == 0) {
       slot = startIndex + i + 1;
       continue;
     }
-    if (results[slot - 1].fanIn.delay < path.fanIn.delay)
+    if (results[slot - 1].path.delay < path.path.delay)
       results[slot - 1] = path;
   }
 
@@ -206,7 +206,7 @@ void PathResult::print(llvm::raw_ostream &os) {
   fanOut.print(os);
   os << ", ";
   os << "fanIn=";
-  fanIn.print(os);
+  path.print(os);
   os << ")";
 }
 
@@ -964,7 +964,7 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
       if (failed(result))
         return result;
       for (auto i = startIndex, e = results.size(); i < e; ++i)
-        results[i].fanIn.delay += path.delay;
+        results[i].path.delay += path.delay;
     }
   }
 
@@ -998,7 +998,7 @@ void LongestPathAnalysis::Impl::getResultsForFF(
 
   // Sort by delay.
   std::sort(results.begin(), results.end(), [](PathResult &a, PathResult &b) {
-    return a.fanIn.delay > b.fanIn.delay;
+    return a.path.delay > b.path.delay;
   });
 }
 
@@ -1100,7 +1100,7 @@ static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
   for (auto &result : results) {
     auto *node = pathCache.instanceGraph.lookup(result.root);
     auto paths = pathCache.getAbsolutePaths(top, node);
-    delayAndFreq.push_back({result.fanIn.delay, paths.size()});
+    delayAndFreq.push_back({result.path.delay, paths.size()});
     totalSize += paths.size();
   }
 
@@ -1124,13 +1124,25 @@ static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
 
 void PrintLongestPathAnalysisPass::runOnOperation() {
   auto &analysis = getAnalysis<circt::aig::LongestPathAnalysis>();
+  igraph::InstancePathCache pathCache(
+      getAnalysis<circt::igraph::InstanceGraph>());
+
   SmallVector<PathResult> results;
   analysis.getResultsForFF(results);
 
-  llvm::errs() << "Found " << results.size() << " paths\n";
+  if (test) {
+    for (auto &result : results) {
+      auto fanOutLoc = result.fanOut.value.getLoc();
+      auto fanInLoc = result.path.fanIn.value.getLoc();
+      auto diag = mlir::emitRemark(fanOutLoc);
+      SmallString<128> buf;
+      llvm::raw_svector_ostream os(buf);
+      result.print(os);
+      mlir::emitRemark(fanOutLoc) << buf;
+    }
+  }
 
-  igraph::InstancePathCache pathCache(
-      getAnalysis<circt::igraph::InstanceGraph>());
+  llvm::errs() << "Found " << results.size() << " paths\n";
   for (auto top : analysis.getTopModules())
     showSummaryForTop(pathCache, results, top);
 
@@ -1173,7 +1185,7 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
 
     int64_t maxDelay = 0;
     for (auto &path : results)
-      maxDelay = std::max(maxDelay, path.fanIn.delay);
+      maxDelay = std::max(maxDelay, path.path.delay);
     totalDelay += maxDelay;
   }
   return llvm::divideCeil(totalDelay, bitWidth);
