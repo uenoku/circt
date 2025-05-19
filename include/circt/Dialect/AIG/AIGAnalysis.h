@@ -1,14 +1,8 @@
-//===- OpCountAnalysis.h - operation count analyses -----------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-//
-// This header file defines prototypes for methods that perform analysis
-// involving the frequency of different kinds of operations found in a
-// builtin.module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,11 +12,8 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
-#include "mlir/IR/Operation.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ImmutableList.h"
-#include <memory>
 #include <mlir/IR/BuiltinOps.h>
 
 namespace mlir {
@@ -75,25 +66,27 @@ struct DebugPoint {
 };
 
 // A class represents a path in the dataflow graph.
-struct DataflowPath {
+struct OpenPath {
   Object fanIn;
-  int64_t delay = -1;
+  int64_t delay;
+  // History of debug points represented by linked lists.
+  // The head of the list is the farthest point from the fanIn.
   llvm::ImmutableList<DebugPoint> history;
-  DataflowPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
-               int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
+  OpenPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
+           int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
       : fanIn(path, value, bitPos), delay(delay), history(history) {}
 
-  DataflowPath() = default;
+  OpenPath() = default;
   void print(llvm::raw_ostream &os) const;
 };
 
-struct PathResult {
+struct ClosePath {
   Object fanOut;
-  DataflowPath path;
+  OpenPath path;
   hw::HWModuleOp root;
-  PathResult(Object fanOut, DataflowPath fanIn, hw::HWModuleOp root)
+  ClosePath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
       : fanOut(fanOut), path(fanIn), root(root) {}
-  PathResult() = default;
+  ClosePath() = default;
 
   void print(llvm::raw_ostream &os);
 };
@@ -118,7 +111,7 @@ public:
   // - root: The HWModuleOp where the path was found
   // Returns failure if the value is not in a HWModuleOp or analysis fails.
   LogicalResult getResults(Value value, size_t bitPos,
-                           SmallVectorImpl<PathResult> &results) const;
+                           SmallVectorImpl<ClosePath> &results) const;
 
   // Return the average of the maximum delays across all bits of the given
   // value, which is useful approximation for the delay of the value. For each
@@ -128,7 +121,7 @@ public:
 
   // Paths to FFs are precomputed efficiently, return results. Results are
   // sorted by delay from longest to shortest.
-  void getResultsForFF(SmallVectorImpl<PathResult> &results) const;
+  void getResultsForFF(SmallVectorImpl<ClosePath> &results) const;
 
   // Erase the cache for the given value and bit position.
   // If bitPos is -1, erases all bit positions.
