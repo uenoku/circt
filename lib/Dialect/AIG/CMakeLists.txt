@@ -8,9 +8,11 @@ add_circt_dialect_library(CIRCTAIG
   LINK_LIBS PUBLIC
   MLIRIR
   CIRCTHW
+  CIRCTComb
 
   DEPENDS
   MLIRAIGIncGen
 )
 
+add_subdirectory(Analysis)
 add_subdirectory(Transforms)
