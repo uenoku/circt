@@ -11,10 +11,12 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/KnownBits.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 using namespace circt;
@@ -498,6 +500,14 @@ OpFoldResult ExtractOp::fold(FoldAdaptor adaptor) {
     return getIntAttr(input.getValue().lshr(getLowBit()).trunc(dstWidth),
                       getContext());
   }
+
+  if (auto replicate = getInput().getDefiningOp<ReplicateOp>()) {
+    auto replicateWidth =
+        replicate.getInput().getType().getIntOrFloatBitWidth();
+    auto extractWidth = cast<IntegerType>(getType()).getWidth();
+    if (extractWidth == replicateWidth && getLowBit() % replicateWidth == 0)
+      return replicate.getOperand();
+  }
   return {};
 }
 
@@ -615,6 +625,60 @@ static bool extractFromReplicate(ExtractOp op, ReplicateOp replicate,
   return false;
 }
 
+// This pushes the extract into the shl operation if possible.
+// extract(shl(x, concat(0, y)), low, width) -> y >= low + width ? 0 : shl(x,
+// concat(0, y))
+static bool extractFromShl(ExtractOp op, ShlOp shlOp,
+                           PatternRewriter &rewriter) {
+  // Check if shift amount is concat(0, y)
+  auto concatOp = shlOp.getRhs().getDefiningOp<ConcatOp>();
+  if (!concatOp || concatOp.getOperands().size() != 2)
+    return false;
+
+  // Verify first operand is zero constant
+  auto constOp = concatOp.getOperands().front().getDefiningOp<hw::ConstantOp>();
+  if (!constOp || !constOp.getValue().isZero())
+    return false;
+
+  // Get the actual shift amount (y)
+  Value shiftAmount = concatOp.getOperands().back();
+
+  // Create comparison: y >= low + width
+  auto width = op.getType().getIntOrFloatBitWidth();
+  auto lowBit = op.getLowBit();
+
+  // Create zero constant for the result width
+  auto extractLhs = rewriter.createOrFold<ExtractOp>(
+      op.getLoc(), shlOp.getLhs(), lowBit, width);
+  auto extractRhs = rewriter.createOrFold<ExtractOp>(
+      op.getLoc(), shlOp.getRhs(), lowBit, width);
+
+  // Create the shifted value with same shift amount
+  auto newShift =
+      rewriter.createOrFold<ShlOp>(op.getLoc(), extractLhs, extractRhs);
+
+  if (!llvm::isUIntN(shiftAmount.getType().getIntOrFloatBitWidth(),
+                     width + lowBit)) {
+    // Create mux: y >= n ? 0 : shl(x, concat(0, y))
+    replaceOpAndCopyName(rewriter, op, newShift);
+    return true;
+  }
+
+  auto zero =
+      rewriter.create<hw::ConstantOp>(op.getLoc(), APInt::getZero(width));
+
+  auto compareConst = rewriter.create<hw::ConstantOp>(
+      op.getLoc(),
+      APInt(shiftAmount.getType().getIntOrFloatBitWidth(), lowBit + width));
+  auto cmp = rewriter.create<ICmpOp>(op.getLoc(), ICmpPredicate::uge,
+                                     shiftAmount, compareConst);
+
+  replaceOpWithNewOpAndCopyName<MuxOp>(rewriter, op, cmp, zero, newShift,
+                                       /*twoState=*/false);
+
+  return true;
+}
+
 LogicalResult ExtractOp::canonicalize(ExtractOp op, PatternRewriter &rewriter) {
   if (hasOperandsOutsideOfBlock(&*op))
     return failure();
@@ -651,6 +715,11 @@ LogicalResult ExtractOp::canonicalize(ExtractOp op, PatternRewriter &rewriter) {
   if (auto replicate = dyn_cast_or_null<ReplicateOp>(inputOp))
     if (extractFromReplicate(op, replicate, rewriter))
       return success();
+
+  if (auto shlOp = dyn_cast_or_null<ShlOp>(inputOp)) {
+    if (extractFromShl(op, shlOp, rewriter))
+      return success();
+  }
 
   // `extract(and(a, cst))` -> `extract(a)` when the relevant bits of the
   // and/or/xor are not modifying the extracted bits.
@@ -2029,6 +2098,9 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   auto collectConstantValues = [&](MuxOp mux) -> bool {
     return getMuxChainCondConstant(
         mux.getCond(), indexValue, isFalseSide, [&](hw::ConstantOp cst) {
+          assert(cst.getValue().getBitWidth() ==
+                     indexValue.getType().getIntOrFloatBitWidth() &&
+                 "expected constant to be 1 bit wide");
           valuesFound.push_back({cst, getCaseValue(mux)});
           locationsFound.push_back(mux.getCond().getLoc());
           locationsFound.push_back(mux->getLoc());
@@ -2069,14 +2141,36 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   // If the array is greater that 9 bits, it will take over 512 elements and
   // it will be too large for a single expression.
   auto indexWidth = cast<IntegerType>(indexValue.getType()).getWidth();
-  if (indexWidth >= 9)
-    return false;
+  bool ok = false;
+  if (indexWidth >= 6) {
+    if (valuesFound.size() < 32)
+      return false;
+    rootMux.emitRemark()
+        << "optimized mux tree "
+           "with "
+        << valuesFound.size() << " entries " << indexWidth
+        << " bits within module "
+        << rootMux->getParentOfType<hw::HWModuleOp>().getModuleNameAttr();
+
+    SmallVector<Value> bits;
+    comb::extractBits(rewriter, indexValue, bits);
+    SmallVector<Value> leafs(1 << indexWidth, nextTreeValue);
+    for (auto [cst, val] : valuesFound) {
+      auto idx = cst.getValue().getZExtValue();
+      leafs[idx] = val;
+    }
+
+    auto result = constructMuxTree(rewriter, rootMux->getLoc(), bits, leafs,
+                                   nextTreeValue);
+    replaceOpAndCopyName(rewriter, rootMux, result);
+    return true;
+  }
 
   // Next we need to see if the values are dense-ish.  We don't want to have
   // a tremendous number of replicated entries in the array.  Some sparsity is
   // ok though, so we require the table to be at least 5/8 utilized.
   uint64_t tableSize = 1ULL << indexWidth;
-  if (valuesFound.size() < (tableSize * 5) / 8)
+  if ((valuesFound.size() < (tableSize * 5) / 8) && !ok)
     return false; // Not dense enough.
 
   // Ok, we're going to do the transformation, start by building the table

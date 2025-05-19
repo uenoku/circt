@@ -4,7 +4,9 @@ target_link_libraries(circt-synth
   CIRCTAIG
   CIRCTAIGToComb
   CIRCTAIGTransforms
+  CIRCTAIGAnalysis
   CIRCTComb
+  CIRCTCombTransforms
   CIRCTCombToAIG
   CIRCTDebug
   CIRCTEmit
@@ -16,6 +18,7 @@ target_link_libraries(circt-synth
   CIRCTSim
   CIRCTSupport
   CIRCTSV
+  CIRCTSVTransforms
   CIRCTTransforms
   CIRCTVerif
   MLIRIR

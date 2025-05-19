@@ -13,6 +13,7 @@
 
 #include "circt/Conversion/AIGToComb.h"
 #include "circt/Conversion/CombToAIG.h"
+#include "circt/Dialect/AIG/AIGAnalysis.h"
 #include "circt/Dialect/AIG/AIGDialect.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/Comb/CombDialect.h"
@@ -28,6 +29,7 @@
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Support/Passes.h"
 #include "circt/Support/Version.h"
 #include "circt/Transforms/Passes.h"
@@ -100,6 +102,11 @@ static cl::opt<bool>
                   cl::desc("Convert AIG to Comb at the end of the pipeline"),
                   cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<std::string>
+    outputLongestPaths("output-longest-paths",
+                       cl::desc("Print longest path of AIG operations"),
+                       cl::init(""), cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -122,6 +129,7 @@ static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
 }
 
 static void populateSynthesisPipeline(PassManager &pm) {
+  pm.addPass(circt::sv::createSVExtractTestCodePass(false, false, false));
   auto pipeline = [](OpPassManager &mpm) {
     // Add the AIG to Comb at the scope exit if requested.
     auto addAIGToComb = llvm::make_scope_exit([&]() {
@@ -150,11 +158,11 @@ static void populateSynthesisPipeline(PassManager &pm) {
       return;
     mpm.addPass(createSimpleCanonicalizerPass());
     mpm.addPass(createCSEPass());
-    mpm.addPass(aig::createLowerVariadic());
+    // mpm.addPass(aig::createLowerVariadic());
     // TODO: LowerWordToBits is not scalable for large designs. Change to
     // conditionally enable the pass once the rest of the pipeline was able
     // to handle multibit operands properly.
-    mpm.addPass(aig::createLowerWordToBits());
+    // mpm.addPass(aig::createLowerWordToBits());
     mpm.addPass(createCSEPass());
     mpm.addPass(createSimpleCanonicalizerPass());
     // TODO: Add balancing, rewriting, FRAIG conversion, etc.
@@ -167,6 +175,16 @@ static void populateSynthesisPipeline(PassManager &pm) {
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
   }
+
+  if (!outputLongestPaths.empty()) {
+    circt::aig::PrintLongestPathAnalysisOptions options;
+    options.outputFile = outputLongestPaths;
+    options.showTopKPercent = 5;
+    pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
+  }
+  // TODO: Add balancing, rewriting, FRAIG conversion, etc.
+  if (untilReached(UntilEnd))
+    return;
   // TODO: Add LUT mapping, etc.
 }
 
@@ -207,6 +225,10 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
         std::make_unique<VerbosePassInstrumentation<mlir::ModuleOp>>(
             "circt-synth"));
   populateSynthesisPipeline(pm);
+  // Set a top module name for the longest path analysis.
+  module.get()->setAttr(
+      circt::aig::LongestPathAnalysis::getTopModuleNameAttrName(),
+      FlatSymbolRefAttr::get(&context, topName));
   if (failed(pm.run(module.get())))
     return failure();
 
