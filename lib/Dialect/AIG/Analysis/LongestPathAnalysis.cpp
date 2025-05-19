@@ -185,9 +185,9 @@ struct PrintLongestPathAnalysisPass
 
 } // namespace
 
-// -----------------------------------------------------------------------------
+//===----------------------------------------------------------------------===//
 // Printing
-// -----------------------------------------------------------------------------
+//===----------------------------------------------------------------------===//
 
 void DataflowPath::print(llvm::raw_ostream &os) const {
   printObjectImpl(os, fanIn, delay, history);
@@ -212,36 +212,35 @@ void PathResult::print(llvm::raw_ostream &os) {
 
 template <>
 struct llvm::DenseMapInfo<Object> {
+  using Info = llvm::DenseMapInfo<
+      std::tuple<circt::igraph::InstancePath, Value, size_t>>;
   static Object getEmptyKey() {
-    auto [path, value, bitPos] = llvm::DenseMapInfo<
-        std::tuple<circt::igraph::InstancePath, Value, size_t>>::getEmptyKey();
+    auto [path, value, bitPos] = Info::getEmptyKey();
     return Object(path, value, bitPos);
   }
+
   static Object getTombstoneKey() {
-    auto [path, value, bitPos] =
-        llvm::DenseMapInfo<std::tuple<circt::igraph::InstancePath, Value,
-                                      size_t>>::getTombstoneKey();
+    auto [path, value, bitPos] = Info::getTombstoneKey();
     return Object(path, value, bitPos);
   }
   static llvm::hash_code getHashValue(Object object) {
-    return llvm::hash_combine(object.instancePath.getHash(),
-                              object.value.getAsOpaquePointer(), object.bitPos);
+    return Info::getHashValue(
+        {object.instancePath, object.value, object.bitPos});
   }
-  static bool isEqual(const Object &a, const Object &b) { return a == b; }
+  static bool isEqual(const Object &a, const Object &b) {
+    return Info::isEqual({a.instancePath, a.value, a.bitPos},
+                         {b.instancePath, b.value, b.bitPos});
+  }
 };
 
 class LocalVisitor;
 
-// -----------------------------------------------------------------------------
+//===----------------------------------------------------------------------===//
 // Context
-// -----------------------------------------------------------------------------
-
+//===----------------------------------------------------------------------===//
 // This class provides a thread-safe interface to access the analysis results.
-struct Context {
-  llvm::sys::SmartMutex<true> mutex;
-  llvm::SetVector<StringAttr> running;
-  // This is non-null only if `module` is a ModuleOp.
-  circt::igraph::InstanceGraph *instanceGraph = nullptr;
+class Context {
+public:
   Context(igraph::InstanceGraph *instanceGraph)
       : instanceGraph(instanceGraph) {}
 
@@ -272,6 +271,12 @@ struct Context {
 
   // A map from the module name to the local visitor.
   llvm::MapVector<StringAttr, std::unique_ptr<LocalVisitor>> localVisitors;
+  // This is non-null only if `module` is a ModuleOp.
+  circt::igraph::InstanceGraph *instanceGraph = nullptr;
+
+private:
+  llvm::sys::SmartMutex<true> mutex;
+  llvm::SetVector<StringAttr> running;
 };
 
 // -----------------------------------------------------------------------------
@@ -1099,7 +1104,7 @@ static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
   int64_t totalSize = 0;
   for (auto &result : results) {
     auto *node = pathCache.instanceGraph.lookup(result.root);
-    auto paths = pathCache.getAbsolutePaths(top, node);
+    auto paths = pathCache.getRelativePaths(top, node);
     delayAndFreq.push_back({result.path.delay, paths.size()});
     totalSize += paths.size();
   }
@@ -1191,9 +1196,9 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   return llvm::divideCeil(totalDelay, bitWidth);
 }
 
-// -----------------------------------------------------------------------------
+//===----------------------------------------------------------------------===//
 // LongestPathAnalysis
-// -----------------------------------------------------------------------------
+//===----------------------------------------------------------------------===//
 
 LongestPathAnalysis::~LongestPathAnalysis() { delete impl; }
 

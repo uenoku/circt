@@ -51,7 +51,7 @@ struct Object {
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
-// and optional comment.
+// and optional comment. Usually debug points are generated for module ports.
 struct DebugPoint {
   DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
              int64_t delay = 0, StringRef comment = "")
@@ -75,8 +75,6 @@ struct DebugPoint {
 };
 
 // A class represents a path in the dataflow graph.
-// The destination is: `instancePath.value[bitPos]` at time `delay`
-// going through `history`.
 struct DataflowPath {
   Object fanIn;
   int64_t delay = -1;

@@ -102,9 +102,14 @@ static cl::opt<bool>
                   cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<bool>
-    printLongestPath("print-longest-path",
-                     cl::desc("Print longest path of AIG operations"),
-                     cl::init(false), cl::cat(mainCategory));
+    printLongestPaths("print-longest-paths",
+                      cl::desc("Print longest path of AIG operations"),
+                      cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string>
+    outputLongestPaths("output-longest-paths",
+                       cl::desc("Print longest path of AIG operations"),
+                       cl::init("-"), cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -145,7 +150,6 @@ static void populateSynthesisPipeline(PassManager &pm) {
           options.additionalLegalOps);
       mpm.addPass(circt::createConvertCombToAIG(options));
     }
-    mpm.addPass(comb::createCombIntRangeNarrowing());
     mpm.addPass(createCSEPass());
     mpm.addPass(createSimpleCanonicalizerPass());
 
@@ -165,29 +169,22 @@ static void populateSynthesisPipeline(PassManager &pm) {
     // TODO: LowerWordToBits is not scalable for large designs. Change to
     // conditionally enable the pass once the rest of the pipeline was able to
     // handle multibit operands properly.
-    if (enableWordToBits)
-      mpm.addPass(aig::createLowerWordToBits());
-    mpm.addPass(createCSEPass());
-    mpm.addPass(createSimpleCanonicalizerPass());
+    // if (enableWordToBits)
+    //   mpm.addPass(aig::createLowerWordToBits());
+    // mpm.addPass(createCSEPass());
+    // mpm.addPass(createSimpleCanonicalizerPass());
   };
-  pm.addPass(sv::createSVExtractTestCodePass(false, false, false));
+  // pm.addPass(sv::createSVExtractTestCodePass(false, false, false));
 
   if (topName.empty()) {
     pipeline(pm.nest<hw::HWModuleOp>());
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
-    if (enableTimingOpt)
-      pm.addPass(circt::aig::createLowerVariadicGlobal());
   }
-  auto pipeline2 = [](OpPassManager &mpm) {
-    mpm.addPass(createSimpleCanonicalizerPass());
-    mpm.addPass(createCSEPass());
-  };
-  pm.addPass(circt::createHierarchicalRunner(topName, pipeline2));
 
-  if (printLongestPath) {
+  if (printLongestPaths) {
     circt::aig::PrintLongestPathAnalysisOptions options;
-    options.outputFile = longestPathOutputFile;
+    options.outputFile = outputLongestPaths;
     options.showTopKPercent = 5;
     pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
   }
