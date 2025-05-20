@@ -85,14 +85,14 @@ static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
       [](const auto &path) { return path.delay; });
 }
 
-static void deduplicatePaths(SmallVectorImpl<ClosedPath> &results,
+static void deduplicatePaths(SmallVectorImpl<DataflowPath> &results,
                              size_t startIndex = 0) {
-  deduplicatePathsImpl<ClosedPath, std::pair<Object, Object>>(
+  deduplicatePathsImpl<DataflowPath, std::pair<Object, Object>>(
       results, startIndex,
-      [](const ClosedPath &path) {
+      [](const DataflowPath &path) {
         return std::pair(path.getFanOut(), path.getFanIn());
       },
-      [](const ClosedPath &path) { return path.getDelay(); });
+      [](const DataflowPath &path) { return path.getDelay(); });
 }
 
 static llvm::ImmutableList<DebugPoint>
@@ -182,6 +182,9 @@ struct PrintLongestPathAnalysisPass
   using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
   using PrintLongestPathAnalysisBase::showTopKPercent;
   void runOnOperation() override;
+  LogicalResult printAnalysisResult(const LongestPathAnalysis &analysis,
+                                    igraph::InstancePathCache &pathCache,
+                                    hw::HWModuleOp top);
 };
 
 } // namespace
@@ -200,8 +203,8 @@ void DebugPoint::print(llvm::raw_ostream &os) const {
 
 void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
 
-void ClosedPath::print(llvm::raw_ostream &os) {
-  os << "PathResult(";
+void DataflowPath::print(llvm::raw_ostream &os) {
+  os << "DataflowPath(";
   os << "root=" << root.getModuleNameAttr() << ", ";
   os << "fanOut=";
   fanOut.print(os);
@@ -303,7 +306,7 @@ public:
       llvm::MapVector<Object,
                       std::pair<int64_t, llvm::ImmutableList<DebugPoint>>>;
 
-  void getClosedPaths(SmallVectorImpl<ClosedPath> &results) const;
+  void getClosedPaths(SmallVectorImpl<DataflowPath> &results) const;
   void setTopLevel() { this->topLevel = true; }
   bool isTopLevel() const { return topLevel; }
   hw::HWModuleOp getHWModule() const { return module; }
@@ -823,7 +826,7 @@ LogicalResult LocalVisitor::initializeAndRun(hw::OutputOp output) {
 LogicalResult LocalVisitor::initializeAndRun() {
   auto start = std::chrono::high_resolution_clock::now();
   (void)start;
-  LLVM_DEBUG({ ctx->notifyStart(module.getModuleNameAttr()); });
+   ctx->notifyStart(module.getModuleNameAttr()); 
   // Initialize the results for the block arguments.
   for (auto blockArgument : module.getBodyBlock()->getArguments())
     for (size_t i = 0, e = getBitWidth(blockArgument); i < e; ++i)
@@ -855,14 +858,14 @@ LogicalResult LocalVisitor::initializeAndRun() {
   if (walkResult.wasInterrupted())
     return failure();
 
-  LLVM_DEBUG({
+  // LLVM_DEBUG({
     ctx->notifyEnd(module.getModuleNameAttr());
     llvm::errs() << "[Timing] Done " << module.getModuleNameAttr() << " in "
                  << std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::high_resolution_clock::now() - start)
                         .count()
                  << "ms\n";
-  });
+  // });
   done.store(true);
   return success();
 }
@@ -891,27 +894,24 @@ const LocalVisitor *Context::getAndWaitLocalVisitor(StringAttr name) const {
 //===----------------------------------------------------------------------===//
 
 struct LongestPathAnalysis::Impl {
-  Impl(Operation *module, mlir::AnalysisManager &am)
-      : module(module), ctx(isa<mlir::ModuleOp>(module)
-                                ? &am.getAnalysis<igraph::InstanceGraph>()
-                                : nullptr) {}
-
+  Impl(Operation *module, mlir::AnalysisManager &am);
   LogicalResult initializeAndRun(mlir::ModuleOp module);
   LogicalResult initializeAndRun(hw::HWModuleOp module);
 
   // See LongestPathAnalysis.
-  bool isAnalysisAvailable(hw::HWModuleOp module) const;
-  // void getClosedPaths(SmallVectorImpl<ClosePath> &results) const;
+  bool isAnalysisAvailable(StringAttr moduleName) const;
   int64_t getAverageMaxDelay(Value value) const;
   LogicalResult
-  getResults(Value value, size_t bitPos, SmallVectorImpl<ClosedPath> &results,
+  getResults(Value value, size_t bitPos, SmallVectorImpl<DataflowPath> &results,
              circt::igraph::InstancePathCache *instancePathCache = nullptr,
              llvm::ImmutableListFactory<DebugPoint> *debugPointFactory =
                  nullptr) const;
 
-  LogicalResult getClosedPaths(SmallVectorImpl<ClosedPath> &results) const;
+  LogicalResult getClosedPaths(StringAttr moduleName,
+                               SmallVectorImpl<DataflowPath> &results) const;
   LogicalResult
-  getOpenPaths(SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsFromFF,
+  getOpenPaths(StringAttr moduleName,
+               SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsFromFF,
                SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
                    &openPathsFromOutputPorts) const;
 
@@ -920,17 +920,16 @@ struct LongestPathAnalysis::Impl {
 private:
   LogicalResult getResultsImpl(
       const Object &originalObject, Value value, size_t bitPos,
-      SmallVectorImpl<ClosedPath> &results,
+      SmallVectorImpl<DataflowPath> &results,
       circt::igraph::InstancePathCache *instancePathCache,
       llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const;
 
-  Operation *module;
   Context ctx;
   SmallVector<hw::HWModuleOp> topModules;
 };
 
 LogicalResult LongestPathAnalysis::Impl::getResults(
-    Value value, size_t bitPos, SmallVectorImpl<ClosedPath> &results,
+    Value value, size_t bitPos, SmallVectorImpl<DataflowPath> &results,
     circt::igraph::InstancePathCache *instancePathCache,
     llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const {
   return getResultsImpl(Object({}, value, bitPos), value, bitPos, results,
@@ -939,7 +938,7 @@ LogicalResult LongestPathAnalysis::Impl::getResults(
 
 LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
     const Object &originalObject, Value value, size_t bitPos,
-    SmallVectorImpl<ClosedPath> &results,
+    SmallVectorImpl<DataflowPath> &results,
     circt::igraph::InstancePathCache *instancePathCache,
     llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const {
   auto parentHWModule =
@@ -988,36 +987,84 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
 }
 
 LogicalResult LongestPathAnalysis::Impl::getClosedPaths(
-    SmallVectorImpl<ClosedPath> &results) const {
-
-  // Accumulate all closed results from the local visitors.
-  for (auto &[key, localVisitor] : ctx.localVisitors)
-    for (auto &[point, state] : localVisitor->getFanOutResults())
+    StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const {
+  auto collectClosedPaths = [&](StringAttr name) {
+    if (!isAnalysisAvailable(name))
+      return;
+    auto *visitor = ctx.getLocalVisitor(name);
+    for (auto &[point, state] : visitor->getFanOutResults())
       for (const auto &dataFlow : state)
-        results.emplace_back(point, dataFlow, localVisitor->getHWModule());
+        results.emplace_back(point, dataFlow, visitor->getHWModule());
+  };
 
-  // Accumulate all open results from the top modules.
-  for (auto topModule : topModules) {
-    auto *visitor = ctx.getLocalVisitor(topModule.getModuleNameAttr());
-    for (auto &[key, value] : visitor->getFromInputPortToFanOut()) {
-      auto [arg, argBitPos] = key;
-      for (auto [point, state] : value) {
-        auto [path, start, startBitPos] = point;
-        auto [delay, history] = state;
-        results.emplace_back(Object(path, start, startBitPos),
-                             OpenPath({}, arg, argBitPos, delay, history),
-                             topModule);
-      }
-    }
+  if (ctx.instanceGraph) {
+    // Accumulate all closed results under the given module.
+    auto *node = ctx.instanceGraph->lookup(moduleName);
+    for (auto *child : llvm::post_order(node))
+      collectClosedPaths(child->getModule().getModuleNameAttr());
+  } else {
+    collectClosedPaths(moduleName);
   }
 
   // Sort by delay.
-  std::sort(results.begin(), results.end(), [](ClosedPath &a, ClosedPath &b) {
-    return a.getDelay() > b.getDelay();
-  });
+  std::sort(results.begin(), results.end(),
+            [](DataflowPath &a, DataflowPath &b) {
+              return a.getDelay() > b.getDelay();
+            });
   return success();
 }
 
+LogicalResult LongestPathAnalysis::Impl::getOpenPaths(
+    StringAttr moduleName,
+    SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsFromFF,
+    SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
+        &openPathsFromOutputPorts) const {
+  auto *visitor = ctx.getLocalVisitor(moduleName);
+  for (auto &[key, value] : visitor->getFromInputPortToFanOut()) {
+    auto [arg, argBitPos] = key;
+    for (auto [point, state] : value) {
+      auto [path, start, startBitPos] = point;
+      auto [delay, history] = state;
+      openPathsFromFF.emplace_back(
+          Object(path, start, startBitPos),
+          OpenPath({}, arg, argBitPos, delay, history));
+    }
+  }
+
+  for (auto &[key, value] : visitor->getFromOutputPortToFanIn()) {
+    auto [resultNum, bitPos] = key;
+    for (auto [point, state] : value) {
+      auto [path, start, startBitPos] = point;
+      auto [delay, history] = state;
+      openPathsFromOutputPorts.emplace_back(
+          resultNum, bitPos,
+          OpenPath(path, start, startBitPos, delay, history));
+    }
+  }
+
+  std::sort(openPathsFromFF.begin(), openPathsFromFF.end(),
+            [](auto &a, auto &b) { return a.second.delay > b.second.delay; });
+  std::sort(openPathsFromOutputPorts.begin(), openPathsFromOutputPorts.end(),
+            [](auto &a, auto &b) {
+              return std::get<2>(a).delay > std::get<2>(b).delay;
+            });
+  return success();
+}
+
+LongestPathAnalysis::Impl::Impl(Operation *moduleOp, mlir::AnalysisManager &am)
+    : ctx(isa<mlir::ModuleOp>(moduleOp)
+              ? &am.getAnalysis<igraph::InstanceGraph>()
+              : nullptr) {
+  if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
+    if (failed(initializeAndRun(module)))
+      llvm::report_fatal_error("Failed to run longest path analysis");
+  } else if (auto hwMod = dyn_cast<hw::HWModuleOp>(moduleOp)) {
+    if (failed(initializeAndRun(hwMod)))
+      llvm::report_fatal_error("Failed to run longest path analysis");
+  } else {
+    llvm::report_fatal_error("Analysis scheduled on invalid operation");
+  }
+}
 LogicalResult
 LongestPathAnalysis::Impl::initializeAndRun(hw::HWModuleOp module) {
   auto it =
@@ -1048,9 +1095,12 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
     auto inferredResults = instanceGraph->getInferredTopLevelNodes();
     if (failed(inferredResults))
       return inferredResults;
+
     for (auto *node : *inferredResults) {
-      if (auto top = dyn_cast<hw::HWModuleOp>(*node->getModule()))
+      if (auto top = dyn_cast<hw::HWModuleOp>(*node->getModule())) {
+        llvm::errs() << "Found top module " << top.getModuleNameAttr() << "\n";
         topModules.push_back(top);
+      }
     }
   }
 
@@ -1075,8 +1125,8 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
     }
   }
 
-  // Initialize the local visitors if the module was visited, in the post-order
-  // of the instance graph.
+  // Initialize the local visitors if the module was visited, in the
+  // post-order of the instance graph.
   for (auto module : topModules) {
     auto *topNode = instanceGraph->lookup(module.getModuleNameAttr());
     for (auto *node : llvm::post_order(topNode))
@@ -1096,11 +1146,11 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
       [&](auto &it) { return it.second->initializeAndRun(); });
 }
 
-static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
-                              SmallVectorImpl<ClosedPath> &results,
-                              hw::HWModuleOp top) {
-
-  llvm::errs() << "# Top " << top.getModuleNameAttr() << "\n";
+static void emitClosedPathsSummary(circt::igraph::InstancePathCache &pathCache,
+                                   SmallVectorImpl<DataflowPath> &results,
+                                   hw::HWModuleOp top) {
+  llvm::errs() << "# Closed paths summary for " << top.getModuleNameAttr()
+               << "\n";
   SmallVector<std::pair<int64_t, size_t>> delayAndFreq;
   int64_t totalSize = 0;
   for (auto &result : results) {
@@ -1128,49 +1178,85 @@ static void showSummaryForTop(circt::igraph::InstancePathCache &pathCache,
   }
 }
 
+LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
+    const LongestPathAnalysis &analysis, igraph::InstancePathCache &pathCache,
+    hw::HWModuleOp top) {
+  SmallVector<DataflowPath> closedPaths;
+  SmallVector<std::pair<Object, OpenPath>> openPathsToFF;
+  SmallVector<std::tuple<size_t, size_t, OpenPath>> openPathsFromOutputPorts;
+  auto moduleName = top.getModuleNameAttr();
+  if (failed(analysis.getClosedPaths(moduleName, closedPaths)) ||
+      failed(analysis.getOpenPaths(moduleName, openPathsToFF,
+                                   openPathsFromOutputPorts)))
+    return failure();
+
+  if (test) {
+    for (auto &result : closedPaths) {
+      auto fanOutLoc = result.getFanOut().value.getLoc();
+      auto diag = mlir::emitRemark(fanOutLoc);
+      SmallString<128> buf;
+      llvm::raw_svector_ostream os(buf);
+      result.print(os);
+      diag << "Closed Path: " << buf;
+    }
+    for (auto &[object, path] : openPathsToFF) {
+      auto loc = object.value.getLoc();
+      auto diag = mlir::emitRemark(loc);
+      DataflowPath closedPath(object, path, top);
+      SmallString<128> buf;
+      llvm::raw_svector_ostream os(buf);
+      closedPath.print(os);
+      diag << "Open Path: " << buf;
+    }
+    for (auto &[resultNum, bitPos, path] : openPathsFromOutputPorts) {
+      auto outputPortLoc = top.getOutputLoc(resultNum);
+      auto outputPortName = top.getOutputName(resultNum);
+      auto diag = mlir::emitRemark(outputPortLoc);
+      SmallString<128> buf;
+      llvm::raw_svector_ostream os(buf);
+      path.print(os);
+      diag << "OpenPath(fanOut=" << outputPortName << "[" << bitPos
+           << "], fanIn=" << buf << ")";
+    }
+  }
+
+  llvm::errs() << "# Analysis result for " << top.getModuleNameAttr() << "\n"
+               << "Found " << closedPaths.size() << " closed paths";
+
+  if (showTopKPercent == 0)
+    return success();
+
+  if (closedPaths.size() != 0) {
+    size_t topK = llvm::divideCeil(closedPaths.size(), 100) *
+                  std::max(0, showTopKPercent.getValue());
+
+    llvm::errs() << "## Top " << topK << " closed paths\n";
+    for (size_t i = 0; i < std::min<size_t>(topK, closedPaths.size()); ++i) {
+      llvm::errs() << "Closed Path #" << i << ": ";
+      closedPaths[i].print(llvm::errs());
+      llvm::errs() << "\n";
+    }
+    emitClosedPathsSummary(pathCache, closedPaths, top);
+  }
+
+  // TODO: Print open paths.
+
+  return success();
+}
+
 void PrintLongestPathAnalysisPass::runOnOperation() {
   auto &analysis = getAnalysis<circt::aig::LongestPathAnalysis>();
   igraph::InstancePathCache pathCache(
       getAnalysis<circt::igraph::InstanceGraph>());
 
-  SmallVector<ClosedPath> results;
-  (void)analysis.getClosedPaths(results);
-
-  if (test) {
-    for (auto &result : results) {
-      auto fanOutLoc = result.getFanOut().value.getLoc();
-      auto fanInLoc = result.getFanIn().value.getLoc();
-      auto diag = mlir::emitRemark(fanOutLoc);
-      SmallString<128> buf;
-      llvm::raw_svector_ostream os(buf);
-      result.print(os);
-      diag << "Path: " << buf;
-      diag.attachNote(fanInLoc) << "FanIn is here";
-    }
-  }
-
-  llvm::errs() << "Found " << results.size() << " paths\n";
   for (auto top : analysis.getTopModules())
-    showSummaryForTop(pathCache, results, top);
-
-  if (showTopKPercent == 0)
-    return;
-
-  size_t topK = llvm::divideCeil(results.size(), 100) *
-                std::max(0, showTopKPercent.getValue());
-
-  llvm::errs() << "Showing top " << topK << " paths\n";
-  for (size_t i = 0; i < std::min<size_t>(topK, results.size()); ++i) {
-    llvm::errs() << "Path #" << i << ": ";
-    results[i].print(llvm::errs());
-    llvm::errs() << "\n";
-  }
+    if (failed(printAnalysisResult(analysis, pathCache, top)))
+      return signalPassFailure();
 }
 
 bool LongestPathAnalysis::Impl::isAnalysisAvailable(
-    hw::HWModuleOp module) const {
-  return ctx.localVisitors.find(module.getModuleNameAttr()) !=
-         ctx.localVisitors.end();
+    StringAttr moduleName) const {
+  return ctx.localVisitors.find(moduleName) != ctx.localVisitors.end();
 }
 
 // Return the average of the maximum delays across all bits of the given
@@ -1178,7 +1264,7 @@ bool LongestPathAnalysis::Impl::isAnalysisAvailable(
 // bit position, finds all paths and takes the maximum delay. Then averages
 // these maximum delays across all bits of the value.
 int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
-  SmallVector<ClosedPath> results;
+  SmallVector<DataflowPath> results;
   size_t bitWidth = getBitWidth(value);
   if (bitWidth == 0)
     return 0;
@@ -1206,29 +1292,40 @@ LongestPathAnalysis::~LongestPathAnalysis() { delete impl; }
 
 LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
                                          mlir::AnalysisManager &am)
-    : impl(new Impl(moduleOp, am)) {
-  if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
-    if (failed(impl->initializeAndRun(module)))
-      llvm::report_fatal_error("Failed to run longest path analysis");
-  } else if (auto hwMod = dyn_cast<hw::HWModuleOp>(moduleOp)) {
-    if (failed(impl->initializeAndRun(hwMod)))
-      llvm::report_fatal_error("Failed to run longest path analysis");
-  } else {
-    llvm::report_fatal_error("Analysis scheduled on invalid operation");
-  }
-}
+    : impl(new Impl(moduleOp, am)) {}
 
-bool LongestPathAnalysis::isAnalysisAvailable(hw::HWModuleOp module) const {
-  return impl->isAnalysisAvailable(module);
+bool LongestPathAnalysis::isAnalysisAvailable(StringAttr moduleName) const {
+  return impl->isAnalysisAvailable(moduleName);
 }
 
 int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
   return impl->getAverageMaxDelay(value);
 }
 
+// LogicalResult LongestPathAnalysis::getClosedPaths(
+//     SmallVectorImpl<DataflowPath> &results) const {
+//   return impl->getClosedPaths(results);
+// }
+//
+// LogicalResult LongestPathAnalysis::getOpenPaths(
+//     SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,
+//     SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
+//         &openPathsFromOutputPorts) const {
+//   return impl->getOpenPaths(openPathsToFF, openPathsFromOutputPorts);
+// }
+
 LogicalResult LongestPathAnalysis::getClosedPaths(
-    SmallVectorImpl<ClosedPath> &results) const {
-  return impl->getClosedPaths(results);
+    StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const {
+  return impl->getClosedPaths(moduleName, results);
+}
+
+LogicalResult LongestPathAnalysis::getOpenPaths(
+    StringAttr moduleName,
+    SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,
+    SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
+        &openPathsFromOutputPorts) const {
+  return impl->getOpenPaths(moduleName, openPathsToFF,
+                            openPathsFromOutputPorts);
 }
 
 ArrayRef<hw::HWModuleOp> LongestPathAnalysis::getTopModules() const {

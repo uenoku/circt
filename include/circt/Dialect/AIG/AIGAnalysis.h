@@ -83,11 +83,11 @@ struct OpenPath {
 
 // A class represents a closed path in the dataflow graph. The path is specified
 // by a dataflow path from a fanout to a fanin, and the root module.
-class ClosedPath {
+class DataflowPath {
 public:
-  ClosedPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
+  DataflowPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
       : fanOut(fanOut), path(fanIn), root(root) {}
-  ClosedPath() = default;
+  DataflowPath() = default;
 
   int64_t getDelay() const { return path.delay; }
   const Object &getFanIn() const { return path.fanIn; }
@@ -123,7 +123,7 @@ public:
   // - root: The HWModuleOp where the path was found
   // Returns failure if the value is not in a HWModuleOp or analysis fails.
   LogicalResult getResults(Value value, size_t bitPos,
-                           SmallVectorImpl<ClosedPath> &results) const;
+                           SmallVectorImpl<DataflowPath> &results) const;
 
   // Return the average of the maximum delays across all bits of the given
   // value, which is useful approximation for the delay of the value. For each
@@ -131,19 +131,20 @@ public:
   // these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value) const;
 
-  // Paths to FFs are precomputed efficiently, return results. Results are
+  // Paths to paths that are closed under the give module. Results are
   // sorted by delay from longest to shortest.
-  LogicalResult getClosedPaths(SmallVectorImpl<ClosedPath> &results) const;
+  LogicalResult getClosedPaths(StringAttr moduleName,
+                               SmallVectorImpl<DataflowPath> &results) const;
 
-  // Return open paths on top-level modules. Open paths are classified to two
-  // kinds: `open
+  // Return open paths for the given module.
   LogicalResult
-  getOpenPaths(SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsFromFF,
+  getOpenPaths(StringAttr moduleName,
+               SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,
                SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
                    &openPathsFromOutputPorts) const;
 
   // Return true if the analysis is available for the given module.
-  bool isAnalysisAvailable(hw::HWModuleOp module) const;
+  bool isAnalysisAvailable(StringAttr moduleName) const;
 
   // Return the top nodes that were used for the analysis.
   llvm::ArrayRef<hw::HWModuleOp> getTopModules() const;
