@@ -136,7 +136,8 @@ public:
   LogicalResult getClosedPaths(StringAttr moduleName,
                                SmallVectorImpl<DataflowPath> &results) const;
 
-  // Return open paths for the given module.
+  // Return open paths for the given module. Results are sorted by delay from
+  // longest to shortest.
   LogicalResult
   getOpenPaths(StringAttr moduleName,
                SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,
