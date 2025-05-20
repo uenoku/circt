@@ -48,7 +48,6 @@ hw.module private @replicate(in %a : i3, in %b : i1, out x : i1) {
 }
 
 
-
 // hw.module private @basic(in %clock : !seq.clock, in %a : i2, in %b : i2, out x : i2, out y : i2) {
 //   %p = seq.firreg %a clock %clock : i2
 //   %q = seq.firreg %b clock %clock : i2
