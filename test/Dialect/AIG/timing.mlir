@@ -47,25 +47,24 @@ hw.module private @replicate(in %a : i3, in %b : i1, out x : i1) {
   hw.output %1 : i1
 }
 
+hw.module private @child(in %a : i1, in %b : i1, out x : i1) {
+  %r = aig.and_inv %a, %b : i1 // r[0] := max(a[0], b[0]) + 1 = 1
+  hw.output %r : i1
+}
 
-// hw.module private @basic(in %clock : !seq.clock, in %a : i2, in %b : i2, out x : i2, out y : i2) {
-//   %p = seq.firreg %a clock %clock : i2
-//   %q = seq.firreg %b clock %clock : i2
-//   %r = aig.and_inv not %p, %q : i2
-//   %u = comb.and %r, %q : i2
-//   %v = comb.or %u, %r : i2
-//   %out = seq.firreg %v clock %clock : i2
-//   hw.output %r : i2
-// }
+// Check history. 
+// expected-remark @+2 {{fanOut=Object($root.x[0]), fanIn=Object($root.a[0], delay=2, history=[Object($root.c2.x[0], delay=2, comment="output port"), Object($root/c2:child.a[0], delay=1, comment="input port"), Object($root.c1.x[0], delay=1, comment="output port"), Object($root/c1:child.a[0], delay=0, comment="input port"), Object($root.a[0], delay=0, comment="input port")])}}
+// expected-remark @+1 {{fanOut=Object($root.x[0]), fanIn=Object($root.b[0], delay=2, history=[Object($root.c2.x[0], delay=2, comment="output port"), Object($root/c2:child.a[0], delay=1, comment="input port"), Object($root.c1.x[0], delay=1, comment="output port"), Object($root/c1:child.b[0], delay=0, comment="input port"), Object($root.b[0], delay=0, comment="input port")])}}
+hw.module private @parent(in %a : i1, in %b : i1, out x : i1) {
+  %0 = hw.instance "c1" @child(a: %a: i1, b: %b: i1) -> (x: i1)
+  %1 = hw.instance "c2" @child(a: %0: i1, b: %b: i1) -> (x: i1)
+  hw.output %1 : i1
+}
 
-// hw.module private @xor(in %clock : !seq.clock, in %arg0 : i2, in %arg1 : i32, in %arg2 : i32, out out0 : i32) {
-//   %2 = aig.and_inv not %0, not %1 : i2
-//   hw.output %foo : i2
-// }
-// 
-// hw.module @top(in %clock : !seq.clock, in %arg0 : i2, in %arg1 + startIndex : i32, in %arg2 : i32, out out0 : i32) {
-//   %0 = aig.and_inv %arg0, %arg1 : i2
-//   %1 = aig.and_inv %arg1, %arg2 : i2
-//   %2 = hw.instance "a1" @xor(clock: %clock: !seq.clock, arg0: %0: i2, arg1: %1: i32, arg2: %0: i32) -> (out0: i32)
-//   hw.output %2 : i2
-// }
+// root=registerTest, fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1)
+hw.module private @registerTest(in %a : i1, in %clk : !seq.clock, out x : i1) {
+  %r = seq.firreg %flip clock %clk : i1
+  // expected-remark-re @+1 {{fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1, history=[{{.+}}])}}
+  %flip = aig.and_inv not %r, %a : i1
+  hw.output %flip : i1
+}

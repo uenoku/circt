@@ -192,7 +192,7 @@ void DebugPoint::print(llvm::raw_ostream &os) const {
 void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
 
 void DataflowPath::print(llvm::raw_ostream &os) {
-  os << "root=" << root.getModuleNameAttr() << ", ";
+  os << "root=" << root.getModuleName() << ", ";
   os << "fanOut=";
   fanOut.print(os);
   os << ", ";
@@ -395,6 +395,7 @@ private:
 
   // Thread-local data structures.
   std::unique_ptr<circt::igraph::InstancePathCache> instancePathCache;
+  // TODO: Make debug points optional.
   std::unique_ptr<llvm::ImmutableListFactory<DebugPoint>> debugPointFactory;
 
   // A map from the value point to the longest paths.
@@ -536,8 +537,6 @@ LogicalResult LocalVisitor::visit(comb::ExtractOp op, size_t bitPos,
   assert(getBitWidth(op.getInput()) > bitPos + op.getLowBit());
   auto result = markEquivalent(op, bitPos, op.getInput(),
                                bitPos + op.getLowBit(), results);
-  for (auto &path : results)
-  path.print(llvm::errs());
   return result;
 }
 
@@ -592,22 +591,24 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
     return success();
 
   const auto &fanIns = fanInIt->second;
+
   for (auto &[fanInPoint, delayAndHistory] : fanIns) {
     auto [delay, history] = delayAndHistory;
     auto newPath =
         instancePathCache->prependInstance(op, fanInPoint.instancePath);
 
-    // Update the history to have correct instance path.
-    auto newHistory =
-        mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
-          p.object.instancePath = newPath;
-          return p;
-        });
-    newHistory = debugPointFactory->add(debugPoint, newHistory);
-
     // If the fanIn is not a block argument, record it directly.
     auto arg = dyn_cast<BlockArgument>(fanInPoint.value);
     if (!arg) {
+      // Update the history to have correct instance path.
+      auto newHistory =
+          mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
+            p.object.instancePath = newPath;
+            return p;
+          });
+      debugPoint.delay = delay;
+      newHistory = debugPointFactory->add(debugPoint, newHistory);
+
       results.emplace_back(newPath, fanInPoint.value, fanInPoint.bitPos, delay,
                            newHistory);
       continue;
@@ -619,7 +620,16 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
     if (failed(result))
       return failure();
     for (auto path : *result) {
+      // Update the history to have correct instance path.
+      auto newHistory =
+          mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
+            p.object.instancePath = newPath;
+            p.delay += path.delay;
+            return p;
+          });
+      debugPoint.delay = delay + path.delay;
       path.delay += delay;
+      newHistory = debugPointFactory->add(debugPoint, newHistory);
       path.history =
           concatList(debugPointFactory.get(), newHistory, path.history);
       results.push_back(path);
