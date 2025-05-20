@@ -76,6 +76,8 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
     if (delayFn(results[slot - 1]) < delayFn(path))
       results[slot - 1] = path;
   }
+
+  results.resize(saved.size() + startIndex);
 }
 
 static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,

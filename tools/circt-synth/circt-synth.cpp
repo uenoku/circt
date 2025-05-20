@@ -30,6 +30,7 @@
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/Passes.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Support/Version.h"
 #include "circt/Transforms/Passes.h"
 #include "mlir/IR/Diagnostics.h"
@@ -231,6 +232,10 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
         std::make_unique<VerbosePassInstrumentation<mlir::ModuleOp>>(
             "circt-synth"));
   populateSynthesisPipeline(pm);
+  // Set a top module name for the longest path analysis.
+  module.get()->setAttr(
+      circt::aig::LongestPathAnalysis::getTopModuleNameAttrName(),
+      FlatSymbolRefAttr::get(&context, topName));
   if (failed(pm.run(module.get())))
     return failure();
 
