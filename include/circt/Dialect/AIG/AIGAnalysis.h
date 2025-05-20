@@ -14,6 +14,7 @@
 #include "circt/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
+#include "llvm/Support/LogicalResult.h"
 #include <mlir/IR/BuiltinOps.h>
 
 namespace mlir {
@@ -48,7 +49,7 @@ struct DebugPoint {
              int64_t delay = 0, StringRef comment = "")
       : object(path, value, bitPos), delay(delay), comment(comment) {}
 
-  // Trait for list of debug points.
+  // Trait for ImmutableList.
   void Profile(llvm::FoldingSetNodeID &ID) const {
     for (auto &inst : object.instancePath) {
       ID.AddPointer(inst.getAsOpaquePointer());
@@ -80,15 +81,26 @@ struct OpenPath {
   void print(llvm::raw_ostream &os) const;
 };
 
-struct ClosePath {
+// A class represents a closed path in the dataflow graph. The path is specified
+// by a dataflow path from a fanout to a fanin, and the root module.
+class ClosedPath {
+public:
+  ClosedPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
+      : fanOut(fanOut), path(fanIn), root(root) {}
+  ClosedPath() = default;
+
+  int64_t getDelay() const { return path.delay; }
+  const Object &getFanIn() const { return path.fanIn; }
+  const Object &getFanOut() const { return fanOut; }
+  const hw::HWModuleOp &getRoot() const { return root; }
+
+  void print(llvm::raw_ostream &os);
+  void setDelay(int64_t delay) { path.delay = delay; }
+
+private:
   Object fanOut;
   OpenPath path;
   hw::HWModuleOp root;
-  ClosePath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
-      : fanOut(fanOut), path(fanIn), root(root) {}
-  ClosePath() = default;
-
-  void print(llvm::raw_ostream &os);
 };
 
 // This analysis finds the longest paths in the dataflow graph across modules.
@@ -104,14 +116,14 @@ public:
   ~LongestPathAnalysis();
 
   // Return all longest paths to each Fanin for the given value and bit
-  // position. Populates the 'results' vector with PathResult objects, each
+  // position. Populates the 'results' vector with ClosePath objects, each
   // containing:
   // - fanout: The destination object (value/bit position in instance path)
   // - fanin: The source dataflow path with delay information
   // - root: The HWModuleOp where the path was found
   // Returns failure if the value is not in a HWModuleOp or analysis fails.
   LogicalResult getResults(Value value, size_t bitPos,
-                           SmallVectorImpl<ClosePath> &results) const;
+                           SmallVectorImpl<ClosedPath> &results) const;
 
   // Return the average of the maximum delays across all bits of the given
   // value, which is useful approximation for the delay of the value. For each
@@ -121,14 +133,17 @@ public:
 
   // Paths to FFs are precomputed efficiently, return results. Results are
   // sorted by delay from longest to shortest.
-  void getResultsForFF(SmallVectorImpl<ClosePath> &results) const;
+  LogicalResult getClosedPaths(SmallVectorImpl<ClosedPath> &results) const;
 
-  // Erase the cache for the given value and bit position.
-  // If bitPos is -1, erases all bit positions.
-  void erase(Value value, int64_t bitPos = -1);
+  // Return open paths on top-level modules. Open paths are classified to two
+  // kinds: `open
+  LogicalResult
+  getOpenPaths(SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsFromFF,
+               SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
+                   &openPathsFromOutputPorts) const;
 
   // Return true if the analysis is available for the given module.
-  bool isAnalysisAvaiable(hw::HWModuleOp module) const;
+  bool isAnalysisAvailable(hw::HWModuleOp module) const;
 
   // Return the top nodes that were used for the analysis.
   llvm::ArrayRef<hw::HWModuleOp> getTopModules() const;
