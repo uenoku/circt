@@ -5,6 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the longest path analysis for the AIG dialect.
+// The analysis computes the maximum delay through combinational paths in a
+// circuit where each AIG and-inverter operation is considered to have a unit
+// delay. It handles module hierarchies and provides detailed path information
+// including sources, sinks, delays, and debug points.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef CIRCT_ANALYSIS_AIG_ANALYSIS_H
 #define CIRCT_ANALYSIS_AIG_ANALYSIS_H
@@ -23,10 +31,11 @@ class AnalysisManager;
 namespace circt {
 namespace igraph {
 class InstanceGraph;
-}
+} // namespace igraph
 namespace aig {
 
 // A class represents an object in the dataflow graph.
+// An Object identifies a specific bit of a value at a specific instance path.
 struct Object {
   circt::igraph::InstancePath instancePath;
   Value value;
@@ -43,7 +52,8 @@ struct Object {
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
-// and optional comment. Usually debug points are generated for module ports.
+// and optional comment. Debug points are used to track the history of a path
+// and provide context for debugging.
 struct DebugPoint {
   DebugPoint(circt::igraph::InstancePath path, Value value, size_t bitPos,
              int64_t delay = 0, StringRef comment = "")
@@ -66,7 +76,8 @@ struct DebugPoint {
   StringRef comment;
 };
 
-// A class represents a path in the dataflow graph.
+// An OpenPath represents a path from a fan-in with an associated
+// delay and history of debug points.
 struct OpenPath {
   Object fanIn;
   int64_t delay;
@@ -81,8 +92,8 @@ struct OpenPath {
   void print(llvm::raw_ostream &os) const;
 };
 
-// A class represents a closed path in the dataflow graph. The path is specified
-// by a dataflow path from a fanout to a fanin, and the root module.
+// A DataflowPath is a complete path from a fanout to a fanin with associated
+// delay information.
 class DataflowPath {
 public:
   DataflowPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
@@ -132,12 +143,14 @@ public:
   int64_t getAverageMaxDelay(Value value) const;
 
   // Paths to paths that are closed under the give module. Results are
-  // sorted by delay from longest to shortest.
+  // sorted by delay from longest to shortest. Closed paths are typically
+  // register-to-register paths.
   LogicalResult getClosedPaths(StringAttr moduleName,
                                SmallVectorImpl<DataflowPath> &results) const;
 
   // Return open paths for the given module. Results are sorted by delay from
-  // longest to shortest.
+  // longest to shortest. Open paths are typically input-to-register or
+  // register-to-output paths.
   LogicalResult
   getOpenPaths(StringAttr moduleName,
                SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,

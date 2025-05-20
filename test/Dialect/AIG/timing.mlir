@@ -52,7 +52,7 @@ hw.module private @child(in %a : i1, in %b : i1, out x : i1) {
   hw.output %r : i1
 }
 
-// Check history. 
+// Check history.
 // expected-remark @+2 {{fanOut=Object($root.x[0]), fanIn=Object($root.a[0], delay=2, history=[Object($root.c2.x[0], delay=2, comment="output port"), Object($root/c2:child.a[0], delay=1, comment="input port"), Object($root.c1.x[0], delay=1, comment="output port"), Object($root/c1:child.a[0], delay=0, comment="input port"), Object($root.a[0], delay=0, comment="input port")])}}
 // expected-remark @+1 {{fanOut=Object($root.x[0]), fanIn=Object($root.b[0], delay=2, history=[Object($root.c2.x[0], delay=2, comment="output port"), Object($root/c2:child.a[0], delay=1, comment="input port"), Object($root.c1.x[0], delay=1, comment="output port"), Object($root/c1:child.b[0], delay=0, comment="input port"), Object($root.b[0], delay=0, comment="input port")])}}
 hw.module private @parent(in %a : i1, in %b : i1, out x : i1) {
@@ -61,10 +61,30 @@ hw.module private @parent(in %a : i1, in %b : i1, out x : i1) {
   hw.output %1 : i1
 }
 
-// root=registerTest, fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1)
-hw.module private @registerTest(in %a : i1, in %clk : !seq.clock, out x : i1) {
+// expected-remark @+2 {{fanOut=Object($root.x[0]), fanIn=Object($root.r[0], delay=1)}}
+// expected-remark-re @+1 {{fanOut=Object($root.x[0]), fanIn=Object($root.a[0], delay=1, history=[{{.+}}])}}
+hw.module private @firreg(in %a : i1, in %clk : !seq.clock, out x : i1) {
+  // expected-remark @+2 {{root=firreg, fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1)}}
+  // expected-remark-re @+1 {{root=firreg, fanOut=Object($root.r[0]), fanIn=Object($root.a[0], delay=1, history=[{{.+}}])}}
   %r = seq.firreg %flip clock %clk : i1
-  // expected-remark-re @+1 {{fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1, history=[{{.+}}])}}
   %flip = aig.and_inv not %r, %a : i1
   hw.output %flip : i1
+}
+
+// expected-remark @+2 {{fanOut=Object($root.x[0]), fanIn=Object($root.r[0], delay=1)}}
+// expected-remark-re @+1 {{fanOut=Object($root.x[0]), fanIn=Object($root.a[0], delay=1, history=[{{.+}}])}}
+hw.module private @compreg(in %a : i1, in %clk : !seq.clock, out x : i1) {
+  // expected-remark @+2 {{root=compreg, fanOut=Object($root.r[0]), fanIn=Object($root.r[0], delay=1)}}
+  // expected-remark-re @+1 {{root=compreg, fanOut=Object($root.r[0]), fanIn=Object($root.a[0], delay=1, history=[{{.+}}])}}
+  %r = seq.compreg %flip, %clk : i1
+  %flip = aig.and_inv not %r, %a : i1
+  hw.output %flip : i1
+}
+
+// expected-remark-re @+3 {{fanOut=Object($root.x[0]), fanIn=Object($root.cond[0], delay=1, history=[{{.+}}])}}
+// expected-remark-re @+2 {{fanOut=Object($root.x[0]), fanIn=Object($root.a[0], delay=1, history=[{{.+}}])}}
+// expected-remark-re @+1 {{fanOut=Object($root.x[0]), fanIn=Object($root.b[0], delay=1, history=[{{.+}}])}}
+hw.module private @comb(in %cond : i1, in %a : i1, in %b : i1, out x : i1) {
+  %r = comb.mux %cond, %a, %b : i1
+  hw.output %r : i1
 }

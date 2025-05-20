@@ -6,9 +6,32 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the longest path analysis where AIG and-inverter is a
-// unit delay.
+// This analysis computes the longest combinational paths through a circuit
+// represented in the AIG (And-Inverter Graph) dialect. The key aspects are:
 //
+// - Each AIG and-inverter operation is considered to have a unit delay of 1
+// - The analysis traverses the circuit graph from inputs/registers to outputs
+// - It handles hierarchical designs by analyzing modules bottom-up
+// - Results include full path information with delays and debug points
+// - Caching is used extensively to improve performance on large designs
+//
+// The core algorithm works as follows:
+// 1. Build an instance graph of the full design hierarchy
+// 2. Analyze modules in post-order (children before parents)
+// 3. For each module:
+//    - Trace paths from inputs and registers
+//    - Propagate delays through logic and across module boundaries
+//    - Record maximum delay and path info for each node
+// 4. Combine results across hierarchy to get full chip critical paths
+//
+// Key data structures:
+// - LocalVisitor: Analyzes a single module
+// - Context: Manages analysis state across modules
+// - OpenPath: Represents partial path from input to intermediate point
+// - DataflowPath: Represents complete path from source to sink
+//
+// The analysis handles both closed paths (register-to-register) and open
+// paths (input-to-register, register-to-output) across the full hierarchy.
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/AIG/AIGAnalysis.h"
@@ -297,7 +320,6 @@ public:
   bool isTopLevel() const { return topLevel; }
   hw::HWModuleOp getHWModule() const { return module; }
 
-  bool isDone() const { return done.load(); }
   const auto &getFromInputPortToFanOut() const { return fromInputPortToFanOut; }
   const auto &getFromOutputPortToFanIn() const { return fromOutputPortToFanIn; }
   const auto &getFanOutResults() const { return fanOutResults; }
@@ -835,8 +857,9 @@ LogicalResult LocalVisitor::initializeAndRun() {
     auto result = mlir::TypeSwitch<Operation *, LogicalResult>(op)
                       .Case<seq::FirRegOp>(
                           [&](auto op) { return markFanOut(op, op.getNext()); })
-                      .Case<seq::CompRegOp>(
-                          [&](auto op) { return markFanOut(op, op.getData()); })
+                      .Case<seq::CompRegOp>([&](auto op) {
+                        return markFanOut(op, op.getInput());
+                      })
                       .Case<aig::AndInverterOp>([&](auto op) {
                         // NOTE: Visiting and-inverter is not necessary but
                         // useful to reduce recursion depth.
@@ -845,9 +868,8 @@ LogicalResult LocalVisitor::initializeAndRun() {
                             return failure();
                         return success();
                       })
-                      .Case<hw::InstanceOp, hw::OutputOp>([&](auto instance) {
-                        return initializeAndRun(instance);
-                      })
+                      .Case<hw::InstanceOp, hw::OutputOp>(
+                          [&](auto op) { return initializeAndRun(op); })
                       .Default([](auto op) { return success(); });
     if (failed(result))
       return WalkResult::interrupt();
