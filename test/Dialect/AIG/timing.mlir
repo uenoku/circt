@@ -1,23 +1,34 @@
-// RUN: circt-opt %s --pass-pipeline='builtin.module(aig-print-longest-paths-analysis{test=true})' --verify-diagnostics
+// RUN: circt-opt %s --split-input-file --pass-pipeline='builtin.module(aig-print-longest-paths-analysis{test=true})' --verify-diagnostics
 
-// expected-remark @+4 {{OpenPath(fanOut=x[0], fanIn=Object($root.a[0], delay=1, history=[Object($root.a[0], delay=0, comment="input port")]))}}
-// expected-remark @+3 {{OpenPath(fanOut=x[0], fanIn=Object($root.b[0], delay=1, history=[Object($root.b[0], delay=0, comment="input port")]))}}
-// expected-remark @+2 {{OpenPath(fanOut=x[1], fanIn=Object($root.a[1], delay=1, history=[Object($root.a[1], delay=0, comment="input port")]))}}
-// expected-remark @+1 {{OpenPath(fanOut=x[1], fanIn=Object($root.b[1], delay=1, history=[Object($root.b[1], delay=0, comment="input port")]))}}
+// expected-remark @below {{OpenPath(fanOut=x[0], fanIn=Object($root.a[0], delay=1, history=[{{.+}}]))}}
+// expected-remark @below {{OpenPath(fanOut=x[0], fanIn=Object($root.b[0], delay=1, history=[{{.+}}]))}}
+// expected-remark @below {{OpenPath(fanOut=x[1], fanIn=Object($root.a[1], delay=1, history=[{{.+}}]))}}
+// expected-remark @below {{OpenPath(fanOut=x[1], fanIn=Object($root.b[1], delay=1, history=[{{.+}}]))}}
 hw.module private @basicWord(in %a : i2, in %b : i2, out x : i2) {
   %r = aig.and_inv not %a, %b : i2
   hw.output %r : i2
 }
 
-// expected-remark @+4 {{OpenPath(fanOut=x[0], fanIn=Object($root.a[0], delay=1, history=[Object($root.a[0], delay=0, comment="input port")]))}}
-// expected-remark @+3 {{OpenPath(fanOut=x[0], fanIn=Object($root.b[0], delay=1, history=[Object($root.b[0], delay=0, comment="input port")]))}}
-// expected-remark @+2 {{OpenPath(fanOut=x[1], fanIn=Object($root.a[1], delay=1, history=[Object($root.a[1], delay=0, comment="input port")]))}}
-// expected-remark @+1 {{OpenPath(fanOut=x[1], fanIn=Object($root.b[1], delay=1, history=[Object($root.b[1], delay=0, comment="input port")]))}}
-hw.module private @basicMax(in %a : i1, out x : i1) {
-  %r = aig.and_inv not %a : i1
-  %q = aig.and_inv %r, %a : i1
+// -----
+
+// expected-remark @+1 {{OpenPath(fanOut=x[0], fanIn=Object($root.a[0], delay=2, history=[{{.+}})]))}}
+hw.module private @max(in %a : i1, out x : i1) {
+  %r = aig.and_inv not %a : i1 // r[0] := delay 1
+  %q = aig.and_inv %r, %a : i1 // q[0] := max(r[0], a[0]) + 1 = 2
   hw.output %q : i1
 }
+
+
+// // expected-remark @+1 {{OpenPath(fanOut=x[0], fanIn=Object($root.a[0], delay=2, history=[{{.+}})]))}}
+// hw.module private @extract(in %a : i3, out x : i1) {
+//   %0 = comb.extract %a from 0 : (i3) -> i1
+//   %1 = comb.extract %a from 1 : (i3) -> i1
+//   %2 = comb.extract %a from 2 : (i3) -> i1
+//   %q = aig.and_inv %0, %1 : i1 // q[0] := max(r[0], a[0]) + 1 = 2
+//   %r = aig.and_inv %q, %2 : i1 // r[0] := max(q[0], a[2]) + 1 = 3
+//   hw.output %r : i1
+// }
+
 
 // hw.module private @basic(in %clock : !seq.clock, in %a : i2, in %b : i2, out x : i2, out y : i2) {
 //   %p = seq.firreg %a clock %clock : i2
