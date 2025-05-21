@@ -1039,9 +1039,9 @@ LogicalResult LongestPathAnalysis::Impl::getOpenPaths(
   auto *visitor = ctx.getLocalVisitor(moduleName);
   for (auto &[key, value] : visitor->getFromInputPortToFanOut()) {
     auto [arg, argBitPos] = key;
-    for (auto [point, state] : value) {
+    for (auto [point, delayAndHistory] : value) {
       auto [path, start, startBitPos] = point;
-      auto [delay, history] = state;
+      auto [delay, history] = delayAndHistory;
       openPathsFromFF.emplace_back(
           Object(path, start, startBitPos),
           OpenPath({}, arg, argBitPos, delay, history));
@@ -1050,9 +1050,9 @@ LogicalResult LongestPathAnalysis::Impl::getOpenPaths(
 
   for (auto &[key, value] : visitor->getFromOutputPortToFanIn()) {
     auto [resultNum, bitPos] = key;
-    for (auto [point, state] : value) {
+    for (auto [point, delayAndHistory] : value) {
       auto [path, start, startBitPos] = point;
-      auto [delay, history] = state;
+      auto [delay, history] = delayAndHistory;
       openPathsFromOutputPorts.emplace_back(
           resultNum, bitPos,
           OpenPath(path, start, startBitPos, delay, history));
