@@ -1206,8 +1206,8 @@ emitClosedPathsSummary(circt::igraph::InstancePathCache &pathCache,
                  std::max((int64_t)0, showTopKPercent);
   if (topK != 0) {
     // Write top K paths section
-    os << "## Top " << topK << "(" << showTopKPercent << "% of "
-       << results.size() << " paths)" << " Closed Paths\n\n";
+    os << "## Top " << topK << " (" << showTopKPercent << "% of "
+       << results.size() << " paths) Closed Paths\n\n";
     os << "| Rank | Delay | Path |\n";
     os << "|------|-------|------|\n";
 
