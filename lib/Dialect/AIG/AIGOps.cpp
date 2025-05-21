@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/AIG/AIGOps.h"
-#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/PatternMatch.h"
 

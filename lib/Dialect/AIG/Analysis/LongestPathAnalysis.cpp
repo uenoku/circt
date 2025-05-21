@@ -24,12 +24,6 @@
 //    - Record maximum delay and path info for each node
 // 4. Combine results across hierarchy to get full chip critical paths
 //
-// Key data structures:
-// - LocalVisitor: Analyzes a single module
-// - Context: Manages analysis state across modules
-// - OpenPath: Represents partial path from input to intermediate point
-// - DataflowPath: Represents complete path from source to sink
-//
 // The analysis handles both closed paths (register-to-register) and open
 // paths (input-to-register, register-to-output) across the full hierarchy.
 //===----------------------------------------------------------------------===//
@@ -66,10 +60,12 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Mutex.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mlir/Support/FileUtilities.h>
 #include <mutex>
 
 #define DEBUG_TYPE "aig-longest-path-analysis"
@@ -1118,10 +1114,8 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
       return inferredResults;
 
     for (auto *node : *inferredResults) {
-      if (auto top = dyn_cast<hw::HWModuleOp>(*node->getModule())) {
-        llvm::errs() << "Found top module " << top.getModuleNameAttr() << "\n";
+      if (auto top = dyn_cast<hw::HWModuleOp>(*node->getModule()))
         topModules.push_back(top);
-      }
     }
   }
 
@@ -1167,11 +1161,14 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
       [&](auto &it) { return it.second->initializeAndRun(); });
 }
 
-static void emitClosedPathsSummary(circt::igraph::InstancePathCache &pathCache,
-                                   SmallVectorImpl<DataflowPath> &results,
-                                   hw::HWModuleOp top) {
-  llvm::errs() << "# Closed paths summary for " << top.getModuleNameAttr()
-               << "\n";
+static LogicalResult
+emitClosedPathsSummary(circt::igraph::InstancePathCache &pathCache,
+                       SmallVectorImpl<DataflowPath> &results,
+                       hw::HWModuleOp top, int64_t showTopKPercent,
+                       StringRef outputFile, llvm::raw_ostream &os) {
+  if (results.empty())
+    return success();
+
   SmallVector<std::pair<int64_t, size_t>> delayAndFreq;
   int64_t totalSize = 0;
   for (auto &result : results) {
@@ -1181,22 +1178,49 @@ static void emitClosedPathsSummary(circt::igraph::InstancePathCache &pathCache,
     totalSize += paths.size();
   }
 
+  // Write percentile summary section
+  os << "\n## Percentile Summary\n\n";
+  os << "| Percentile | Delay | Path |\n";
+  os << "|------------|-------|------|\n";
+
   // Show 50%, 90%, 95% and 99% percentile.
   SmallVector<double> percentiles = {50, 90, 95, 99, 99.9, 100};
   int64_t size = totalSize;
+
   for (size_t i = 0; i < delayAndFreq.size() && !percentiles.empty(); ++i) {
     auto &[delay, freq] = delayAndFreq[i];
     size -= freq;
     while (!percentiles.empty() &&
            size <= (totalSize * percentiles.back()) / 100.0) {
-      llvm::errs() << "Percentile " << llvm::format("%.1f", percentiles.back())
-                   << "%: delay=" << delay;
-      llvm::errs() << " Path# " << i << " ";
-      results[i].print(llvm::errs());
-      llvm::errs() << "\n";
+      SmallString<128> pathStr;
+      llvm::raw_svector_ostream pathOS(pathStr);
+      results[i].print(pathOS);
+
+      os << "| " << llvm::format("%.1f", percentiles.back()) << "% | " << delay
+         << " | `" << pathStr << "` |\n";
       percentiles.pop_back();
     }
   }
+
+  int64_t topK = llvm::divideCeil(results.size(), 100) *
+                 std::max((int64_t)0, showTopKPercent);
+  if (topK != 0) {
+    // Write top K paths section
+    os << "## Top " << topK << "(" << showTopKPercent << "% of "
+       << results.size() << " paths)" << " Closed Paths\n\n";
+    os << "| Rank | Delay | Path |\n";
+    os << "|------|-------|------|\n";
+
+    for (size_t i = 0; i < std::min<size_t>(topK, results.size()); ++i) {
+      SmallString<128> pathStr;
+      llvm::raw_svector_ostream pathOS(pathStr);
+      results[i].print(pathOS);
+
+      os << "| " << (i + 1) << " | " << results[i].getDelay() << " | `"
+         << pathStr << "` |\n";
+    }
+  }
+  return success();
 }
 
 bool LongestPathAnalysis::Impl::isAnalysisAvailable(
@@ -1274,14 +1298,14 @@ struct PrintLongestPathAnalysisPass
   void runOnOperation() override;
   LogicalResult printAnalysisResult(const LongestPathAnalysis &analysis,
                                     igraph::InstancePathCache &pathCache,
-                                    hw::HWModuleOp top);
+                                    hw::HWModuleOp top, llvm::raw_ostream &os);
 };
 
 } // namespace
 
 LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
     const LongestPathAnalysis &analysis, igraph::InstancePathCache &pathCache,
-    hw::HWModuleOp top) {
+    hw::HWModuleOp top, llvm::raw_ostream &os) {
   SmallVector<DataflowPath> closedPaths;
   SmallVector<std::pair<Object, OpenPath>> openPathsToFF;
   SmallVector<std::tuple<size_t, size_t, OpenPath>> openPathsFromOutputPorts;
@@ -1322,38 +1346,33 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
     }
   }
 
-  llvm::errs() << "# Analysis result for " << top.getModuleNameAttr() << "\n"
-               << "Found " << closedPaths.size() << " closed paths";
+  os << "# Analysis result for " << top.getModuleNameAttr() << "\n"
+     << "Found " << closedPaths.size() << " closed paths\n";
 
-  if (showTopKPercent == 0)
-    return success();
-
-  if (closedPaths.size() != 0) {
-    size_t topK = llvm::divideCeil(closedPaths.size(), 100) *
-                  std::max(0, showTopKPercent.getValue());
-
-    llvm::errs() << "## Top " << topK << " closed paths\n";
-    for (size_t i = 0; i < std::min<size_t>(topK, closedPaths.size()); ++i) {
-      llvm::errs() << "Closed Path #" << i << ": ";
-      closedPaths[i].print(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    emitClosedPathsSummary(pathCache, closedPaths, top);
-  }
-
+  return emitClosedPathsSummary(pathCache, closedPaths, top,
+                                showTopKPercent.getValue(),
+                                outputFile.getValue(), os);
   // TODO: Print open paths.
-
-  return success();
 }
 
 void PrintLongestPathAnalysisPass::runOnOperation() {
   auto &analysis = getAnalysis<circt::aig::LongestPathAnalysis>();
   igraph::InstancePathCache pathCache(
       getAnalysis<circt::igraph::InstanceGraph>());
+  auto outputFileVal = outputFile.getValue();
+
+  std::string error;
+  auto file = mlir::openOutputFile(outputFile.getValue(), &error);
+  if (!file) {
+    llvm::errs() << error;
+    return signalPassFailure();
+  }
 
   for (auto top : analysis.getTopModules())
-    if (failed(printAnalysisResult(analysis, pathCache, top)))
+    if (failed(printAnalysisResult(analysis, pathCache, top, file->os())))
       return signalPassFailure();
+
+  file->keep();
 
   return markAllAnalysesPreserved();
 }

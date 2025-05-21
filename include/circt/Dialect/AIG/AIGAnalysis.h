@@ -20,10 +20,9 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
-#include "llvm/Support/LogicalResult.h"
-#include <mlir/IR/BuiltinOps.h>
 
 namespace mlir {
 class AnalysisManager;
@@ -127,12 +126,7 @@ public:
   ~LongestPathAnalysis();
 
   // Return all longest paths to each Fanin for the given value and bit
-  // position. Populates the 'results' vector with ClosePath objects, each
-  // containing:
-  // - fanout: The destination object (value/bit position in instance path)
-  // - fanin: The source dataflow path with delay information
-  // - root: The HWModuleOp where the path was found
-  // Returns failure if the value is not in a HWModuleOp or analysis fails.
+  // position.
   LogicalResult getResults(Value value, size_t bitPos,
                            SmallVectorImpl<DataflowPath> &results) const;
 

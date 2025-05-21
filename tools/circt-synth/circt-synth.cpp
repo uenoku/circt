@@ -26,11 +26,11 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/Passes.h"
-#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Support/Version.h"
 #include "circt/Transforms/Passes.h"
 #include "mlir/IR/Diagnostics.h"
@@ -102,14 +102,10 @@ static cl::opt<bool>
                   cl::desc("Convert AIG to Comb at the end of the pipeline"),
                   cl::init(false), cl::cat(mainCategory));
 
-static cl::opt<bool>
-    printLongestPaths("print-longest-paths",
-                      cl::desc("Print longest path of AIG operations"),
-                      cl::init(false), cl::cat(mainCategory));
 static cl::opt<std::string>
     outputLongestPaths("output-longest-paths",
                        cl::desc("Print longest path of AIG operations"),
-                       cl::init("-"), cl::cat(mainCategory));
+                       cl::init(""), cl::cat(mainCategory));
 
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
@@ -183,7 +179,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
   }
 
-  if (printLongestPaths) {
+  if (!outputLongestPaths.empty()) {
     circt::aig::PrintLongestPathAnalysisOptions options;
     options.outputFile = outputLongestPaths;
     options.showTopKPercent = 5;
