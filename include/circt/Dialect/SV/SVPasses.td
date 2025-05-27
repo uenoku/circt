@@ -166,4 +166,8 @@ def HWEliminateInOutPorts : Pass<"hw-eliminate-inout-ports",
   ];
 }
 
+def SVDropNamehints : Pass<"sv-drop-namehints"> {
+  let summary = "Drop name hints";
+}
+
 #endif // CIRCT_DIALECT_SV_SVPASSES

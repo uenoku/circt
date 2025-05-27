@@ -13,6 +13,7 @@
 
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -62,6 +63,27 @@ static Value lowerVariadicAndInverterOp(AndInverterOp op, OperandRange operands,
   return Value();
 }
 
+template <typename OpTy>
+static Value lowerVariadic(OpTy op, OperandRange operands,
+                           PatternRewriter &rewriter) {
+  switch (operands.size()) {
+  case 0:
+    assert(0 && "cannot be called with empty operand range");
+    break;
+  case 1:
+    return operands[0];
+  case 2:
+    return rewriter.create<OpTy>(op.getLoc(), operands[0], operands[1]);
+  default:
+    auto firstHalf = operands.size() / 2;
+    auto lhs = lowerVariadic(op, operands.take_front(firstHalf), rewriter);
+    auto rhs = lowerVariadic(op, operands.drop_front(firstHalf), rewriter);
+    return rewriter.create<OpTy>(op.getLoc(), lhs, rhs);
+  }
+
+  return Value();
+}
+
 struct VariadicOpConversion : OpRewritePattern<aig::AndInverterOp> {
   using OpRewritePattern<aig::AndInverterOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(AndInverterOp op,
@@ -79,10 +101,24 @@ struct VariadicOpConversion : OpRewritePattern<aig::AndInverterOp> {
   }
 };
 
+// For comb.and,xor,or
+template <typename OpTy>
+struct CombVariadicOpConversion : OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getOperands().size() <= 2)
+      return failure();
+    auto result = lowerVariadic(op, op.getOperands(), rewriter);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
 } // namespace
 
 static void populateLowerVariadicPatterns(RewritePatternSet &patterns) {
-  patterns.add<VariadicOpConversion>(patterns.getContext());
+  patterns.add<VariadicOpConversion, CombVariadicOpConversion<comb::AndOp>>(
+      patterns.getContext());
 }
 
 //===----------------------------------------------------------------------===//

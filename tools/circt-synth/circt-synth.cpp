@@ -26,10 +26,10 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
-#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Support/Passes.h"
 #include "circt/Support/Version.h"
 #include "circt/Transforms/Passes.h"
@@ -111,6 +111,11 @@ static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
 
+static cl::opt<bool>
+    preserveLogicalOps("preserve-logical-ops",
+                       cl::desc("Preserve the original module in the output"),
+                       cl::init(false), cl::cat(mainCategory));
+
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
 //===----------------------------------------------------------------------===//
@@ -138,6 +143,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
         mpm.addPass(createCSEPass());
       }
     });
+    mpm.addPass(circt::sv::createSVDropNamehints());
     {
       // Partially legalize Comb to AIG, run CSE and canonicalization.
       circt::ConvertCombToAIGOptions options;
@@ -152,17 +158,24 @@ static void populateSynthesisPipeline(PassManager &pm) {
     mpm.addPass(createSimpleCanonicalizerPass());
 
     mpm.addPass(circt::hw::createHWAggregateToCombPass());
-    mpm.addPass(circt::createConvertCombToAIG());
+    {
+      // Partially legalize Comb to AIG, run CSE and canonicalization.
+      circt::ConvertCombToAIGOptions options;
+      if (preserveLogicalOps)
+        partiallyLegalizeCombToAIG<comb::AndOp, comb::OrOp, comb::XorOp,
+                                   comb::MuxOp>(options.additionalLegalOps);
+      mpm.addPass(circt::createConvertCombToAIG(options));
+    }
     mpm.addPass(createCSEPass());
     if (untilReached(UntilAIGLowering))
       return;
     mpm.addPass(createSimpleCanonicalizerPass());
     mpm.addPass(createCSEPass());
-    // mpm.addPass(aig::createLowerVariadic());
+    mpm.addPass(aig::createLowerVariadic());
     // TODO: LowerWordToBits is not scalable for large designs. Change to
     // conditionally enable the pass once the rest of the pipeline was able
     // to handle multibit operands properly.
-    // mpm.addPass(aig::createLowerWordToBits());
+    mpm.addPass(aig::createLowerWordToBits());
     mpm.addPass(createCSEPass());
     mpm.addPass(createSimpleCanonicalizerPass());
     // TODO: Add balancing, rewriting, FRAIG conversion, etc.
@@ -182,6 +195,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     options.showTopKPercent = 5;
     pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
   }
+
   // TODO: Add balancing, rewriting, FRAIG conversion, etc.
   if (untilReached(UntilEnd))
     return;

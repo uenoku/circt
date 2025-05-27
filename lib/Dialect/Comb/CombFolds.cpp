@@ -2198,6 +2198,139 @@ static bool foldMuxChain(MuxOp rootMux, bool isFalseSide,
   return true;
 }
 
+/// Rebalances a linear chain of muxes forming a priority encoder into a
+/// balanced tree structure. This reduces the depth of the mux tree from O(n)
+/// to O(log n), which can significantly improve timing.
+///
+/// Handles both patterns:
+/// - False-side chain: mux(a_0, r_0, mux(a_1, r_1, ...))
+/// - True-side chain: mux(a_0, mux(a_1, r_1, ...), r_default)
+///
+/// Returns true if the operation was rebalanced.
+static bool rebalancePriorityEncoder(MuxOp op, PatternRewriter &rewriter) {
+  // Check for false-side chain (traditional priority encoder)
+  SmallVector<Value> conditions;
+  SmallVector<Value> results;
+  SmallVector<Location> locs;
+  bool isTrueSideChain = false;
+  // Make sure that we're not looking at the intermediate node in a mux tree.
+  if (op->hasOneUse()) {
+    if (auto userMux = dyn_cast<MuxOp>(*op->user_begin())) {
+      return false;
+    }
+  }
+
+  // Try false-side chain first
+  auto falseMux = op.getFalseValue().getDefiningOp<MuxOp>();
+  const int minConditions = 8;
+
+  if (falseMux) {
+    // Start collecting the chain
+    conditions.push_back(op.getCond());
+    results.push_back(op.getTrueValue());
+    locs.push_back(op.getLoc());
+
+    // Walk down the chain collecting all conditions and results
+    MuxOp currentMux = falseMux;
+    while (currentMux) {
+      conditions.push_back(currentMux.getCond());
+      results.push_back(currentMux.getTrueValue());
+      locs.push_back(currentMux.getLoc());
+
+      auto nextMux = currentMux.getFalseValue().getDefiningOp<MuxOp>();
+      if (!nextMux) {
+        // Add the final default value
+        results.push_back(currentMux.getFalseValue());
+        break;
+      }
+      currentMux = nextMux;
+    }
+  }
+  // If no false-side chain, check for true-side chain
+  else if (auto trueMux = op.getTrueValue().getDefiningOp<MuxOp>()) {
+    isTrueSideChain = true;
+
+    // Start collecting the chain
+    conditions.push_back(op.getCond());
+    results.push_back(
+        op.getFalseValue()); // For true-side, false value comes first
+    locs.push_back(op.getLoc());
+
+    // Walk down the chain collecting all conditions and results
+    MuxOp currentMux = trueMux;
+    while (currentMux) {
+      conditions.push_back(currentMux.getCond());
+      results.push_back(currentMux.getFalseValue());
+      locs.push_back(currentMux.getLoc());
+
+      auto nextMux = currentMux.getTrueValue().getDefiningOp<MuxOp>();
+      if (!nextMux) {
+        // Add the final value
+        results.push_back(currentMux.getTrueValue());
+        break;
+      }
+      currentMux = nextMux;
+    }
+
+    if (conditions.size() < minConditions)
+      return false;
+    // For true-side chains, we need to invert all conditions
+    for (auto &cond : conditions) {
+      cond = rewriter.create<XorOp>(
+          op.getLoc(), cond,
+          rewriter.create<hw::ConstantOp>(op.getLoc(), APInt(1, 1)), false);
+    }
+  }
+
+  // Only rebalance if we have enough conditions
+  if (conditions.size() < minConditions)
+    return false;
+
+  op.emitRemark() << "rebalanced priority encoder "
+                    << "with " << conditions.size() << " entries "
+                    << "within module "
+                    << op->getParentOfType<hw::HWModuleOp>().getModuleNameAttr();
+
+  // Now build a balanced tree using divide-and-conquer
+  std::function<Value(unsigned, unsigned)> buildBalancedTree =
+      [&](unsigned start, unsigned end) -> Value {
+    // Base case: single condition
+    if (start + 1 == end) {
+      return rewriter.create<MuxOp>(locs[start], conditions[start],
+                                    results[start], results[start + 1],
+                                    op.getTwoState());
+    }
+
+    // Recursive case: split range in half
+    unsigned mid = start + (end - start) / 2;
+    auto loc = rewriter.getFusedLoc(
+        ArrayRef<Location>(locs).slice(start, end - start));
+
+    // Build left and right subtrees
+    Value leftTree = buildBalancedTree(start, mid);
+    Value rightTree = buildBalancedTree(mid, end);
+
+    // Combine conditions from left half with OR
+    Value combinedCond;
+    if (mid - start == 1) {
+      combinedCond = conditions[start];
+    } else {
+      SmallVector<Value> leftConditions(conditions.begin() + start,
+                                        conditions.begin() + mid);
+      combinedCond = rewriter.create<OrOp>(loc, leftConditions, false);
+    }
+
+    // Create mux that selects between left and right subtrees
+    return rewriter.create<MuxOp>(loc, combinedCond, leftTree, rightTree,
+                                  op.getTwoState());
+  };
+
+  // Build balanced tree and replace original op
+  Value balancedTree = buildBalancedTree(0, conditions.size());
+  replaceOpAndCopyName(rewriter, op, balancedTree);
+  return true;
+}
+
 /// Given a fully associative variadic operation like (a+b+c+d), break the
 /// expression into two parts, one without the specified operand (e.g.
 /// `tmp = a+b+d`) and one that combines that into the full expression (e.g.
@@ -2640,6 +2773,12 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
     if (foldMuxChain(op, /*isFalseSide*/ false, rewriter))
       return success();
   }
+
+  // Rebalance priority encoder
+  // mux(a_0, r_0, mux(a_1, r_1, mux(a_2, r_2, r_default)))
+  // {a_0, a_1, a_2}, {r_0, r_1, r_2} r_default
+  if (rebalancePriorityEncoder(op, rewriter))
+    return success();
 
   // mux(c1, mux(c2, a, b), mux(c2, a, c)) -> mux(c2, a, mux(c1, b, c))
   if (auto trueMux = dyn_cast_or_null<MuxOp>(op.getTrueValue().getDefiningOp()),

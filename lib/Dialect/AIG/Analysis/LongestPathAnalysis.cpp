@@ -921,7 +921,8 @@ LogicalResult LocalVisitor::initializeAndRun() {
               return markFanOut(op.getMemory(), op.getWriteData(), {}, {},
                                 op.getEnable());
             })
-            .Case<aig::AndInverterOp>([&](auto op) {
+            .Case<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
+                  comb::MuxOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               for (size_t i = 0, e = getBitWidth(op); i < e; ++i)
@@ -983,6 +984,7 @@ struct LongestPathAnalysis::Impl {
   // See LongestPathAnalysis.
   bool isAnalysisAvailable(StringAttr moduleName) const;
   int64_t getAverageMaxDelay(Value value) const;
+  int64_t getMaxDelay(Value value) const;
   LogicalResult
   getResults(Value value, size_t bitPos, SmallVectorImpl<DataflowPath> &results,
              circt::igraph::InstancePathCache *instancePathCache = nullptr,
@@ -1449,6 +1451,25 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   return llvm::divideCeil(totalDelay, bitWidth);
 }
 
+int64_t LongestPathAnalysis::Impl::getMaxDelay(Value value) const {
+  SmallVector<DataflowPath> results;
+  size_t bitWidth = getBitWidth(value);
+  if (bitWidth == 0)
+    return 0;
+  int64_t maxDelay = 0;
+  for (size_t i = 0; i < bitWidth; ++i) {
+    // Clear results from previous iteration.
+    results.clear();
+    auto result = getResults(value, i, results);
+    if (failed(result))
+      return 0;
+
+    for (auto &path : results)
+      maxDelay = std::max(maxDelay, path.getDelay());
+  }
+  return maxDelay;
+}
+
 //===----------------------------------------------------------------------===//
 // LongestPathAnalysis
 //===----------------------------------------------------------------------===//
@@ -1465,6 +1486,10 @@ bool LongestPathAnalysis::isAnalysisAvailable(StringAttr moduleName) const {
 
 int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
   return impl->getAverageMaxDelay(value);
+}
+
+int64_t LongestPathAnalysis::getMaxDelay(Value value) const {
+  return impl->getMaxDelay(value);
 }
 
 LogicalResult LongestPathAnalysis::getClosedPaths(
@@ -1579,6 +1604,21 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
       {"openPathsFromOutputPorts", openPathFromOutputPortDistribution},
       {"inputPortDelay", inputPortDelay},
       {"outputPortDelay", outputPortDelay}});
+
+  top->walk([&](Operation *logic) {
+    if (!isa<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
+             comb::MuxOp>(logic))
+      return;
+    auto delay = analysis.getAverageMaxDelay(logic->getResult(0));
+    auto attr =
+        IntegerAttr::get(IntegerType::get(logic->getContext(), 64), delay);
+    auto delay2 = analysis.getAverageMaxDelay(logic->getResult(0));
+    auto attr2 =
+        IntegerAttr::get(IntegerType::get(logic->getContext(), 64), delay2);
+
+    logic->setAttr("aig.delay.average", attr);
+    logic->setAttr("aig.delay.max", attr2);
+  });
 
   return emitClosedPathsSummary(pathCache, closedPaths, top,
                                 showTopKPercent.getValue(),
