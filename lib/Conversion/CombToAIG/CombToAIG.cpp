@@ -708,7 +708,7 @@ struct CombMulOpConversion : OpConversionPattern<MulOp> {
 
       // Generate partial product bits
       for (unsigned j = 0; j < width; ++j) {
-        if (i + j < width) {
+        if (i + j < 2 * width) {
           Value andGate = rewriter.create<comb::AndOp>(loc, aBits[j], bBits[i]);
           row.push_back(andGate);
         }
@@ -747,6 +747,7 @@ private:
           unsigned maxLen = std::max({row1.size(), row2.size(), row3.size()});
 
           SmallVector<Value> sumRow, carryRow;
+          carryRow.push_back(rewriter.create<hw::ConstantOp>(loc, APInt(1, 0)));
 
           // Process each bit position
           for (unsigned j = 0; j < maxLen; ++j) {
@@ -766,19 +767,11 @@ private:
             // Full adder logic
             auto [sum, nextCarry] = fullAdder(rewriter, loc, bit1, bit2, bit3);
             sumRow.push_back(sum);
-            
-            // Add carry to the next bit position in carryRow
-            if (j + 1 < maxLen) {
-              carryRow.push_back(nextCarry);
-            } else if (nextCarry != rewriter.create<hw::ConstantOp>(loc, APInt(1, 0))) {
-              // If this is the last bit and carry is not zero, add it as a new bit
-              carryRow.push_back(nextCarry);
-            }
+            carryRow.push_back(nextCarry);
           }
 
           newPartialProducts.push_back(sumRow);
-          if (!carryRow.empty())
-            newPartialProducts.push_back(carryRow);
+          newPartialProducts.push_back(carryRow);
         } else {
           // Add remaining rows as is
           for (unsigned j = i; j < partialProducts.size(); ++j)
@@ -812,7 +805,6 @@ private:
         carry = nextCarry;
       }
 
-      // Add the final carry if it's not zero
       if (carry != rewriter.create<hw::ConstantOp>(loc, APInt(1, 0)))
         result.push_back(carry);
 
