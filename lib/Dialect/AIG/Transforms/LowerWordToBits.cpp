@@ -68,6 +68,13 @@ struct WordRewritePattern : public OpRewritePattern<AndInverterOp> {
       }
       results.push_back(rewriter.create<AndInverterOp>(op.getLoc(), operands,
                                                        op.getInvertedAttr()));
+      if (auto name = op->getAttrOfType<StringAttr>("sv.namehint")) {
+        auto newName = StringAttr::get(
+            op.getContext(), name.getValue() + "[" + std::to_string(i) + "]");
+        rewriter.modifyOpInPlace(results.back().getDefiningOp(), [&] {
+          results.back().getDefiningOp()->setAttr("sv.namehint", newName);
+        });
+      }
     }
 
     rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, results);

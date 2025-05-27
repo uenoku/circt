@@ -30,4 +30,9 @@ def PrintLongestPathAnalysis : Pass<"aig-print-longest-paths-analysis", "mlir::M
   ];
 }
 
+def LowerVariadicGlobal : Pass<"aig-lower-variadic-global", "mlir::ModuleOp"> {
+  let summary = "Lower variadic AndInverter operations to binary AndInverter";
+}
+
+
 #endif // CIRCT_DIALECT_AIG_AIGPASSES_TD

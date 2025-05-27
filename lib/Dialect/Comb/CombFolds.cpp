@@ -126,6 +126,7 @@ static inline ComplementMatcher<SubType> m_Complement(const SubType &subExpr) {
 /// Return true if the op will be flattened afterwards. Op will be flattend if
 /// it has a single user which has a same op type.  User must be in same block.
 static bool shouldBeFlattened(Operation *op) {
+  return false;
   assert((isa<AndOp, OrOp, XorOp, AddOp, MulOp>(op) &&
           "must be commutative operations"));
   if (op->hasOneUse()) {
@@ -144,6 +145,7 @@ static bool shouldBeFlattened(Operation *op) {
 /// Example: op(1, 2, op(3, 4), 5) -> op(1, 2, 3, 4, 5)  // returns true
 ///
 static bool tryFlatteningOperands(Operation *op, PatternRewriter &rewriter) {
+  return false;
   // Skip if the operation should be flattened by another operation.
   if (shouldBeFlattened(op))
     return false;

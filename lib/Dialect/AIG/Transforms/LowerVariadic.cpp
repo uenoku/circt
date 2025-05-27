@@ -11,17 +11,25 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/AIG/AIGAnalysis.h"
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/PriorityQueue.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Casting.h"
+#include <mlir/Analysis/TopologicalSortUtils.h>
 
 #define DEBUG_TYPE "aig-lower-variadic"
 
 namespace circt {
 namespace aig {
 #define GEN_PASS_DEF_LOWERVARIADIC
+#define GEN_PASS_DEF_LOWERVARIADICGLOBAL
 #include "circt/Dialect/AIG/AIGPasses.h.inc"
 } // namespace aig
 } // namespace circt
@@ -62,26 +70,31 @@ static Value lowerVariadicAndInverterOp(AndInverterOp op, OperandRange operands,
 
   return Value();
 }
-
-template <typename OpTy>
-static Value lowerVariadic(OpTy op, OperandRange operands,
-                           PatternRewriter &rewriter) {
+static Value lowerVariadicAndInverterOp(AndInverterOp op, OperandRange operands,
+                                        ArrayRef<bool> inverts,
+                                        mlir::ImplicitLocOpBuilder &rewriter) {
   switch (operands.size()) {
   case 0:
     assert(0 && "cannot be called with empty operand range");
     break;
   case 1:
-    return operands[0];
+    if (inverts[0])
+      return rewriter.create<AndInverterOp>(op.getLoc(), operands[0], true);
+    else
+      return operands[0];
   case 2:
-    return rewriter.create<OpTy>(op.getLoc(), operands[0], operands[1]);
+    return rewriter.create<AndInverterOp>(op.getLoc(), operands[0], operands[1],
+                                          inverts[0], inverts[1]);
   default:
     auto firstHalf = operands.size() / 2;
-    auto lhs = lowerVariadic(op, operands.take_front(firstHalf), rewriter);
-    auto rhs = lowerVariadic(op, operands.drop_front(firstHalf), rewriter);
-    return rewriter.create<OpTy>(op.getLoc(), lhs, rhs);
+    auto lhs =
+        lowerVariadicAndInverterOp(op, operands.take_front(firstHalf),
+                                   inverts.take_front(firstHalf), rewriter);
+    auto rhs =
+        lowerVariadicAndInverterOp(op, operands.drop_front(firstHalf),
+                                   inverts.drop_front(firstHalf), rewriter);
+    return rewriter.create<AndInverterOp>(op.getLoc(), lhs, rhs);
   }
-
-  return Value();
 }
 
 struct VariadicOpConversion : OpRewritePattern<aig::AndInverterOp> {
@@ -101,24 +114,10 @@ struct VariadicOpConversion : OpRewritePattern<aig::AndInverterOp> {
   }
 };
 
-// For comb.and,xor,or
-template <typename OpTy>
-struct CombVariadicOpConversion : OpRewritePattern<OpTy> {
-  using OpRewritePattern<OpTy>::OpRewritePattern;
-  LogicalResult matchAndRewrite(OpTy op,
-                                PatternRewriter &rewriter) const override {
-    if (op.getOperands().size() <= 2)
-      return failure();
-    auto result = lowerVariadic(op, op.getOperands(), rewriter);
-    rewriter.replaceOp(op, result);
-    return success();
-  }
-};
 } // namespace
 
 static void populateLowerVariadicPatterns(RewritePatternSet &patterns) {
-  patterns.add<VariadicOpConversion, CombVariadicOpConversion<comb::AndOp>>(
-      patterns.getContext());
+  patterns.add<VariadicOpConversion>(patterns.getContext());
 }
 
 //===----------------------------------------------------------------------===//
@@ -127,6 +126,10 @@ static void populateLowerVariadicPatterns(RewritePatternSet &patterns) {
 
 namespace {
 struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
+  void runOnOperation() override;
+};
+struct LowerVariadicGlobalPass
+    : public impl::LowerVariadicGlobalBase<LowerVariadicGlobalPass> {
   void runOnOperation() override;
 };
 } // namespace
@@ -138,4 +141,138 @@ void LowerVariadicPass::runOnOperation() {
 
   if (failed(mlir::applyPatternsGreedily(getOperation(), frozen)))
     return signalPassFailure();
+}
+
+void LowerVariadicGlobalPass::runOnOperation() {
+  auto &longestPath = getAnalysis<circt::aig::LongestPathAnalysis>();
+
+  auto module = getOperation();
+  auto *ctx = &getContext();
+  struct LocalState {
+    hw::HWModuleOp module;
+    LocalState(hw::HWModuleOp module) : module(module) {}
+    DenseMap<Value, int64_t> cost;
+  };
+  SmallVector<LocalState> hwMods;
+  for (auto hwMod : module.getOps<hw::HWModuleOp>()) {
+    if (!longestPath.isAnalysisAvailable(hwMod.getModuleNameAttr()))
+      continue;
+    hwMods.emplace_back(hwMod);
+  }
+
+  // 1. Compute cost for all values in the module.
+  mlir::failableParallelForEach(ctx, hwMods, [&](auto &hwMod) {
+    auto module = hwMod.module;
+    auto &cost = hwMod.cost;
+    for (auto arg : module.getBodyBlock()->getArguments())
+      cost[arg] = longestPath.getAverageMaxDelay(arg);
+    hwMod.module->walk([&](Operation *op) {
+      if (auto instance = dyn_cast<hw::InstanceOp>(op))
+        for (auto result : instance.getResults())
+          cost[result] = longestPath.getAverageMaxDelay(result);
+      if (auto reg = dyn_cast<seq::FirRegOp>(op))
+        cost[reg] = 0;
+    });
+    return success();
+  });
+
+  mlir::failableParallelForEach(ctx, hwMods, [&](auto &hwMod) -> LogicalResult {
+    auto module = hwMod.module;
+    auto &cost = hwMod.cost;
+    // Flatten.
+    for (auto &op : llvm::make_early_inc_range(*module.getBodyBlock())) {
+      if (auto andInverter = dyn_cast<AndInverterOp>(&op)) {
+        SmallVector<Value> operands;
+        SmallVector<bool> inverts;
+        bool flattend = false;
+        for (auto [operand, inverted] :
+             llvm::zip(andInverter.getOperands(), andInverter.getInverted())) {
+          auto definingOp = operand.template getDefiningOp<AndInverterOp>();
+          if (inverted || !definingOp || !operand.hasOneUse()) {
+            operands.push_back(operand);
+            inverts.push_back(inverted);
+            continue;
+          }
+          operands.append(definingOp.getOperands().begin(),
+                          definingOp.getOperands().end());
+          inverts.append(definingOp.getInverted().begin(),
+                         definingOp.getInverted().end());
+          flattend = true;
+        }
+        if (!flattend)
+          continue;
+        OpBuilder builder(&op);
+        Value newOp = builder.create<AndInverterOp>(andInverter->getLoc(),
+                                                    operands, inverts);
+        andInverter.replaceAllUsesWith(newOp);
+        // andInverter.erase();
+      }
+    }
+
+    mlir::sortTopologically(module.getBodyBlock(), [&](Value v, Operation *op) {
+      return cost.count(v);
+    });
+
+    auto setMaximum = [&](Operation *op, int64_t additionalCost = 0) {
+      int64_t result = 0;
+      for (auto operand : op->getOperands()) {
+        // if (!cost.count(operand) &&
+        //     !llvm::isa_and_nonnull<hw::ConstantOp>(operand.getDefiningOp()))
+        //     {
+        //   llvm::errs() << "Missing cost for " << operand << "\n";
+        // }
+        result = std::max(result, cost[operand]);
+      }
+      for (auto r : op->getResults())
+        cost[r] = result + additionalCost;
+    };
+    for (auto &op : *module.getBodyBlock()) {
+      if (isa<comb::ExtractOp, comb::ReplicateOp, hw::WireOp, comb::ConcatOp>(
+              &op)) {
+        setMaximum(&op);
+        continue;
+      }
+      if (auto andInverter = dyn_cast<AndInverterOp>(&op)) {
+        if (andInverter.getInputs().size() <= 2) {
+          setMaximum(andInverter, 1);
+          continue;
+        }
+
+        // Lower.
+        class Compare {
+        public:
+          bool operator()(const std::tuple<int64_t, Value, bool> &lhs,
+                          const std::tuple<int64_t, Value, bool> &rhs) const {
+            return std::get<0>(lhs) > std::get<0>(rhs);
+          }
+        };
+        llvm::PriorityQueue<std::tuple<int64_t, Value, bool>,
+                            std::vector<std::tuple<int64_t, Value, bool>>,
+                            Compare>
+            queue;
+        for (auto [operand, invert] :
+             llvm::zip(andInverter.getInputs(), andInverter.getInverted()))
+          queue.push({cost[operand], operand, invert});
+
+        OpBuilder builder(&op);
+        // llvm::Errs() << "Lowering " << andInverter << "\n";
+        while (queue.size() > 1) {
+          auto [lhsCost, lhs, lhsInvert] = queue.top();
+          queue.pop();
+          auto [rhsCost, rhs, rhsInvert] = queue.top();
+
+          /// llvm::errs() << "lhsCost: " << lhsCost << " rhsCost: " <<
+          /// rhsCost
+          ///              << " queue.size(): " << queue.size() << "\n";
+          queue.pop();
+          auto newOp = builder.create<AndInverterOp>(andInverter->getLoc(), lhs,
+                                                     rhs, lhsInvert, rhsInvert);
+          cost[newOp] = std::max(lhsCost, rhsCost) + 1;
+          queue.push({cost[newOp], newOp, false});
+        }
+        andInverter.replaceAllUsesWith(std::get<1>(queue.top()));
+      }
+    }
+    return success();
+  });
 }

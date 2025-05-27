@@ -53,6 +53,7 @@
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
@@ -176,6 +177,8 @@ static StringAttr getNameImpl(Value value) {
         return StringAttr::get(value.getContext(), str);
       })
       .Default([&](auto op) {
+        if (auto name = op->template getAttrOfType<StringAttr>("sv.namehint"))
+          return name;
         llvm::errs() << "Unknown op: " << *op << "\n";
         return StringAttr::get(value.getContext(), "");
       });
@@ -299,9 +302,12 @@ public:
   // This is non-null only if `module` is a ModuleOp.
   circt::igraph::InstanceGraph *instanceGraph = nullptr;
 
+  bool isPreserveNames() const { return preserveNames; }
+
 private:
   llvm::sys::SmartMutex<true> mutex;
   llvm::SetVector<StringAttr> running;
+  bool preserveNames = true;
 };
 
 // -----------------------------------------------------------------------------
@@ -809,13 +815,27 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
                 aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::MuxOp,
                 comb::XorOp, seq::FirRegOp, seq::CompRegOp, hw::ConstantOp,
                 seq::FirMemReadOp, seq::FirMemReadWriteOp, hw::WireOp>(
-              [&](auto op) { return visit(op, bitPos, results); })
+              [&](auto op) {
+                auto name =
+                    op->template getAttrOfType<StringAttr>("sv.namehint");
+                size_t idx = results.size();
+                auto result = visit(op, bitPos, results);
+                if (name && ctx->isPreserveNames()) {
+                  for (auto i = idx, e = results.size(); i < e; ++i) {
+                    DebugPoint debugPoint({}, value, bitPos, results[i].delay,
+                                          "namehint");
+                    auto newHistory =
+                        debugPointFactory->add(debugPoint, results[i].history);
+                    results[i].history = newHistory;
+                  }
+                }
+                return result;
+              })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
             return visit(op, bitPos, cast<OpResult>(value).getResultNumber(),
                          results);
           })
           .Default([&](auto op) { return visitDefault(op, bitPos, results); });
-
   return result;
 }
 
@@ -1259,6 +1279,13 @@ static llvm::json::Value generateDistributionJson(
   return llvm::json::Array(std::move(jsonValues));
 }
 
+llvm::json::Value Object::toJSON() const {
+  SmallString<128> name;
+  llvm::raw_svector_ostream os(name);
+  print(os);
+  return llvm::json::Value(name);
+}
+
 llvm::json::Value
 generateInputPortDelayJson(ArrayRef<std::pair<Object, OpenPath>> results,
                            hw::HWModuleOp top) {
@@ -1332,6 +1359,54 @@ llvm::json::Value generateOutputPortDelayJson(
     auto name = cast<StringAttr>(names[portNum]).getValue();
     jsonValues.push_back(llvm::json::Object{
         {"name", name}, {"maxDelay", maxDelay}, {"averageMaxDelay", avgDelay}});
+  }
+
+  return llvm::json::Array(std::move(jsonValues));
+}
+
+static llvm::json::Value
+generateMaxClosedPathPerModule(SmallVectorImpl<DataflowPath> &results) {
+  llvm::MapVector<StringAttr, int64_t> maxDelayPerModule;
+  auto getModuleName = [](Value value) {
+    if (auto mod = value.getParentBlock()
+                       ->getParent()
+                       ->getParentOfType<hw::HWModuleOp>())
+      return mod.getModuleNameAttr();
+    return StringAttr();
+  };
+
+  SmallVector<std::string> modulesToIgnore = {};
+  DenseSet<Attribute> ignores;
+  if (!results.empty()) {
+    auto ctx = results[0].getFanOut().value.getContext();
+    for (auto &mod : modulesToIgnore)
+      ignores.insert(StringAttr::get(ctx, mod));
+  }
+
+  for (auto [i, result] : llvm::enumerate(results)) {
+    auto fanOutMod = getModuleName(result.getFanOut().value);
+    if (!fanOutMod)
+      continue;
+    if (maxDelayPerModule.contains(fanOutMod))
+      continue;
+    if (ignores.contains(fanOutMod))
+      continue;
+    for (auto mod : result.getFanOut().instancePath.getPath()) {
+      if (ignores.contains(mod.getReferencedModuleNamesAttr()[0]))
+        continue;
+    }
+
+    maxDelayPerModule[fanOutMod] = i;
+  }
+  SmallVector<llvm::json::Value> jsonValues;
+  for (auto &[mod, index] : maxDelayPerModule) {
+    auto &path = results[index];
+    llvm::json::Object obj{{"moduleName", mod.getValue()},
+                           {"delay", path.getDelay()},
+                           {"fanout", path.getFanOut().toJSON()},
+                           {"fanin", path.getFanIn().toJSON()},
+                           {"index", index}};
+    jsonValues.push_back(std::move(obj));
   }
 
   return llvm::json::Array(std::move(jsonValues));
@@ -1597,13 +1672,16 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
   auto outputPortDelay =
       generateOutputPortDelayJson(openPathsFromOutputPorts, top);
 
+  auto maxClosedPathPerModule = generateMaxClosedPathPerModule(closedPaths);
+
   jsonResult.push_back(llvm::json::Object{
       {"moduleName", top.getModuleName()},
       {"closedPaths", closedPathDistribution},
       {"openPathsToFF", openPathToFFDistribution},
       {"openPathsFromOutputPorts", openPathFromOutputPortDistribution},
       {"inputPortDelay", inputPortDelay},
-      {"outputPortDelay", outputPortDelay}});
+      {"outputPortDelay", outputPortDelay},
+      {"maxClosedPathPerModule", maxClosedPathPerModule}});
 
   top->walk([&](Operation *logic) {
     if (!isa<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
@@ -1612,7 +1690,21 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
     auto delay = analysis.getAverageMaxDelay(logic->getResult(0));
     auto attr =
         IntegerAttr::get(IntegerType::get(logic->getContext(), 64), delay);
-    auto delay2 = analysis.getAverageMaxDelay(logic->getResult(0));
+    auto delay2 = analysis.getMaxDelay(logic->getResult(0));
+    if (!isa<comb::MuxOp>(logic)) {
+      SmallVector<std::pair<int64_t, Value>> operands;
+      for (auto operand : logic->getOperands()) {
+        auto delay = analysis.getMaxDelay(operand);
+        operands.push_back({delay, operand});
+      }
+
+      std::sort(operands.begin(), operands.end(),
+                [](const auto &a, const auto &b) { return a.first > b.first; });
+      for (auto [idx, operand] : llvm::enumerate(operands)) {
+        logic->setOperand(idx, operand.second);
+      }
+    }
+
     auto attr2 =
         IntegerAttr::get(IntegerType::get(logic->getContext(), 64), delay2);
 

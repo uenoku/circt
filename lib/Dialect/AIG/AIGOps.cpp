@@ -21,6 +21,35 @@ using namespace circt::aig;
 
 #define GET_OP_CLASSES
 #include "circt/Dialect/AIG/AIG.cpp.inc"
+/// A wrapper of `PatternRewriter::replaceOp` to propagate "sv.namehint"
+/// attribute. If a replaced op has a "sv.namehint" attribute, this function
+/// propagates the name to the new value.
+static void replaceOpAndCopyName(PatternRewriter &rewriter, Operation *op,
+                                 Value newValue) {
+  if (auto *newOp = newValue.getDefiningOp()) {
+    auto name = op->getAttrOfType<StringAttr>("sv.namehint");
+    if (name && !newOp->hasAttr("sv.namehint"))
+      rewriter.modifyOpInPlace(newOp,
+                               [&] { newOp->setAttr("sv.namehint", name); });
+  }
+  rewriter.replaceOp(op, newValue);
+}
+
+/// A wrapper of `PatternRewriter::replaceOpWithNewOp` to propagate
+/// "sv.namehint" attribute. If a replaced op has a "sv.namehint" attribute,
+/// this function propagates the name to the new value.
+template <typename OpTy, typename... Args>
+static OpTy replaceOpWithNewOpAndCopyName(PatternRewriter &rewriter,
+                                          Operation *op, Args &&...args) {
+  auto name = op->getAttrOfType<StringAttr>("sv.namehint");
+  auto newOp =
+      rewriter.replaceOpWithNewOp<OpTy>(op, std::forward<Args>(args)...);
+  if (name && !newOp->hasAttr("sv.namehint"))
+    rewriter.modifyOpInPlace(newOp,
+                             [&] { newOp->setAttr("sv.namehint", name); });
+
+  return newOp;
+}
 
 OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
   if (getNumOperands() == 1 && !isInverted(0))
@@ -57,7 +86,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
           concatInputs.push_back(paddingZero);
         }
 
-        rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+        replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                      concatInputs);
         return success();
       }
     }
@@ -70,7 +100,7 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
         concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
             op->getLoc(), operand, /*invert=*/true));
       }
-      rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, concatInputs);
       return success();
     }
   }
@@ -97,7 +127,7 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
       }
       std::reverse(concatInputs.begin(), concatInputs.end());
 
-      rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, concatInputs);
       return success();
     }
 
@@ -131,7 +161,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
           assert(c.getValue().isZero());
           concatInputs.push_back(operand);
         }
-        rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, concatInputs);
+        replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                      concatInputs);
         return success();
       }
     }
@@ -206,8 +237,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
 
     auto inverter = rewriter.create<aig::AndInverterOp>(
         op->getLoc(), newOperands, uniqueInverts);
-    rewriter.replaceOpWithNewOp<comb::ConcatOp>(op,
-                                                ArrayRef<Value>{c, inverter});
+    replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                  ArrayRef<Value>{c, inverter});
     return success();
   }
 
@@ -247,8 +278,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
           currentBit = constValue[i];
       }
       std::reverse(concatResult.begin(), concatResult.end());
-      rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, op.getType(),
-                                                  concatResult);
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, op.getType(),
+                                                    concatResult);
       return success();
     } else {
       auto constOp = rewriter.create<hw::ConstantOp>(op.getLoc(), constValue);
@@ -264,8 +295,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   }
 
   // build new op with reduced input values
-  rewriter.replaceOpWithNewOp<aig::AndInverterOp>(op, uniqueValues,
-                                                  uniqueInverts);
+  replaceOpWithNewOpAndCopyName<aig::AndInverterOp>(rewriter, op, uniqueValues,
+                                                    uniqueInverts);
   return success();
 }
 

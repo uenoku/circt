@@ -186,8 +186,8 @@ def create_histogram(
         ax.set_yscale("log")
 
     # Add labels and title
-    ax.set_xlabel("Delay")
-    ax.set_ylabel("Frequency")
+    ax.set_xlabel("Gate Delay")
+    ax.set_ylabel("Count")
     title = f"{path_type} Delay Distribution"
     if module_name:
         title += f" for {module_name}"
@@ -370,6 +370,60 @@ def generate_summary_report(all_stats, output_dir):
                         )
 
                 f.write("---\n\n")
+        
+        # Add Maximum Closed Path Delay Per Module table
+        if isinstance(full_data, list) and len(full_data) > 0:
+            data = full_data[0]  # Use the first module's data
+            if "maxClosedPathPerModule" in data and data["maxClosedPathPerModule"]:
+                max_paths = data["maxClosedPathPerModule"]
+                
+                # Sort by delay in descending order
+                sorted_paths = sorted(max_paths, key=lambda x: x.get("delay", 0), reverse=True)
+                
+                f.write("\n## Maximum Closed Path Delay Per Module\n\n")
+                f.write("| Module Name | Delay | Fan-in | Fan-out | Index |\n")
+                f.write("|------------|-------|--------|---------|-------|\n")
+                
+                # Write table rows (limit to top 50 for readability)
+                for path in sorted_paths[:50]:
+                    module_name = path.get("moduleName", "Unknown")
+                    delay = path.get("delay", 0)
+                    index = path.get("index", 0)
+                    fanin = path.get("fanin", "N/A")
+                    fanout = path.get("fanout", "N/A")
+                    
+                    # Clean up the fanin/fanout strings for better readability
+                    if isinstance(fanin, str):
+                        fanin = fanin.replace("Object(", "").replace(")", "")
+                    if isinstance(fanout, str):
+                        fanout = fanout.replace("Object(", "").replace(")", "")
+                    
+                    f.write(f"| {module_name} | {delay} | {fanin} | {fanout} | {index} |\n")
+                
+                # If there are more than 50 entries, add a note
+                if len(sorted_paths) > 50:
+                    f.write(f"\n*Note: Showing top 50 of {len(sorted_paths)} modules by delay.*\n")
+                
+                # Add detailed information for the top 10 critical paths
+                f.write("\n### Critical Path Details\n\n")
+                for i, path in enumerate(sorted_paths[:10]):
+                    module_name = path.get("moduleName", "Unknown")
+                    delay = path.get("delay", 0)
+                    fanin = path.get("fanin", "N/A")
+                    fanout = path.get("fanout", "N/A")
+                    
+                    # Clean up the fanin/fanout strings for better readability
+                    if isinstance(fanin, str):
+                        fanin = fanin.replace("Object(", "").replace(")", "")
+                    if isinstance(fanout, str):
+                        fanout = fanout.replace("Object(", "").replace(")", "")
+                    
+                    f.write(f"#### Critical Path {i+1}: {module_name} (Delay: {delay})\n\n")
+                    f.write(f"- **Module:** {module_name}\n")
+                    f.write(f"- **Delay:** {delay}\n")
+                    f.write(f"- **Fan-in:** {fanin}\n")
+                    f.write(f"- **Fan-out:** {fanout}\n")
+                    f.write(f"- **Index:** {index}\n\n")
 
     print(f"Summary report generated: {report_path}")
     return report_path

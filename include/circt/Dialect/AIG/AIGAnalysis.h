@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
+#include "llvm/Support/JSON.h"
 
 namespace mlir {
 class AnalysisManager;
@@ -48,6 +49,7 @@ struct Object {
     return instancePath == other.instancePath && value == other.value &&
            bitPos == other.bitPos;
   }
+  llvm::json::Value toJSON() const;
 };
 
 // A debug point represents a point in the dataflow graph which carries delay

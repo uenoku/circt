@@ -143,7 +143,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
         mpm.addPass(createCSEPass());
       }
     });
-    mpm.addPass(circt::sv::createSVDropNamehints());
+    // mpm.addPass(circt::sv::createSVDropNamehints());
     {
       // Partially legalize Comb to AIG, run CSE and canonicalization.
       circt::ConvertCombToAIGOptions options;
@@ -171,7 +171,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
       return;
     mpm.addPass(createSimpleCanonicalizerPass());
     mpm.addPass(createCSEPass());
-    mpm.addPass(aig::createLowerVariadic());
+    // mpm.addPass(aig::createLowerVariadic());
     // TODO: LowerWordToBits is not scalable for large designs. Change to
     // conditionally enable the pass once the rest of the pipeline was able
     // to handle multibit operands properly.
@@ -187,6 +187,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     pipeline(pm.nest<hw::HWModuleOp>());
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
+    // pm.addPass(aig::createLowerVariadicGlobal());
   }
 
   if (!outputLongestPaths.empty()) {
