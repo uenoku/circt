@@ -124,7 +124,12 @@ private:
 class LongestPathAnalysis {
 public:
   // Entry points for analysis.
-  LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am);
+  using VisitorOverrideFn = llvm::function_ref<FailureOr<bool>(
+      llvm::function_ref<LogicalResult(Value, size_t,
+                                       SmallVectorImpl<OpenPath> &)>,
+      Value, size_t, SmallVectorImpl<OpenPath> &)>;
+  LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am,
+                      VisitorOverrideFn fn = {});
   ~LongestPathAnalysis();
 
   // Return all longest paths to each Fanin for the given value and bit
@@ -137,7 +142,7 @@ public:
   // bit position, finds all paths and takes the maximum delay. Then averages
   // these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value) const;
-  int64_t getMaxDelay(Value value) const;
+  int64_t getMaxDelay(Value value, int64_t bitPos = -1) const;
 
   // Paths to paths that are closed under the give module. Results are
   // sorted by delay from longest to shortest. Closed paths are typically

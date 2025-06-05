@@ -49,8 +49,7 @@ static void replaceOpAndCopyName(PatternRewriter &rewriter, Operation *op,
     auto name = op->getAttrOfType<StringAttr>("sv.namehint");
     if (name && !newOp->hasAttr("sv.namehint"))
       rewriter.modifyOpInPlace(newOp,
-                               &] {
-        newOp->setAttr("sv.namehint", name); });
+                               [&] { newOp->setAttr("sv.namehint", name); });
   }
   rewriter.replaceOp(op, newValue);
 }

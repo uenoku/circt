@@ -34,5 +34,9 @@ def LowerVariadicGlobal : Pass<"aig-lower-variadic-global", "mlir::ModuleOp"> {
   let summary = "Lower variadic AndInverter operations to binary AndInverter";
 }
 
+def Retiming : Pass<"aig-retiming", "mlir::ModuleOp"> {
+  let summary = "Retiming transformation";
+}
+
 
 #endif // CIRCT_DIALECT_AIG_AIGPASSES_TD

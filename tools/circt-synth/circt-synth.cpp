@@ -187,7 +187,8 @@ static void populateSynthesisPipeline(PassManager &pm) {
     pipeline(pm.nest<hw::HWModuleOp>());
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
-    // pm.addPass(aig::createLowerVariadicGlobal());
+    pm.addPass(aig::createLowerVariadicGlobal());
+    pm.addPass(aig::createRetiming());
   }
 
   if (!outputLongestPaths.empty()) {

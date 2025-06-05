@@ -109,6 +109,11 @@ static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
   deduplicatePathsImpl<OpenPath, Object>(
       results, startIndex, [](const auto &path) { return path.fanIn; },
       [](const auto &path) { return path.delay; });
+  std::sort(results.begin() + startIndex, results.end(),
+            [](const auto &a, const auto &b) { return a.delay > b.delay; });
+  // 5, 4
+  if (results.size() > startIndex)
+    results.pop_back_n(results.size() - startIndex - 1);
 }
 
 static void deduplicatePaths(SmallVectorImpl<DataflowPath> &results,
@@ -269,8 +274,9 @@ class LocalVisitor;
 // This class provides a thread-safe interface to access the analysis results.
 class Context {
 public:
-  Context(igraph::InstanceGraph *instanceGraph)
-      : instanceGraph(instanceGraph) {}
+  Context(igraph::InstanceGraph *instanceGraph,
+          LongestPathAnalysis::VisitorOverrideFn visitorOverrideFn)
+      : instanceGraph(instanceGraph), visitorOverrideFn(visitorOverrideFn) {}
 
   void notifyStart(StringAttr name) {
     std::lock_guard<llvm::sys::SmartMutex<true>> lock(mutex);
@@ -301,13 +307,14 @@ public:
   llvm::MapVector<StringAttr, std::unique_ptr<LocalVisitor>> localVisitors;
   // This is non-null only if `module` is a ModuleOp.
   circt::igraph::InstanceGraph *instanceGraph = nullptr;
+  LongestPathAnalysis::VisitorOverrideFn visitorOverrideFn;
 
   bool isPreserveNames() const { return preserveNames; }
 
 private:
   llvm::sys::SmartMutex<true> mutex;
   llvm::SetVector<StringAttr> running;
-  bool preserveNames = true;
+  bool preserveNames = false;
 };
 
 // -----------------------------------------------------------------------------
@@ -805,6 +812,18 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
     llvm::dbgs() << " " << value << "[" << bitPos << "]\n";
   });
 
+  if (ctx->visitorOverrideFn) {
+    auto result = ctx->visitorOverrideFn(
+        [this](Value value, size_t bitPos, auto &results) {
+          return visitValue(value, bitPos, results);
+        },
+        value, bitPos, results);
+    if (failed(result))
+      return failure();
+    if (result.value())
+      return success();
+  }
+
   if (auto blockArg = dyn_cast<mlir::BlockArgument>(value))
     return visit(blockArg, bitPos, results);
 
@@ -997,14 +1016,15 @@ const LocalVisitor *Context::getAndWaitLocalVisitor(StringAttr name) const {
 //===----------------------------------------------------------------------===//
 
 struct LongestPathAnalysis::Impl {
-  Impl(Operation *module, mlir::AnalysisManager &am);
+  Impl(Operation *module, mlir::AnalysisManager &am,
+       LongestPathAnalysis::VisitorOverrideFn visitorOverrideFn);
   LogicalResult initializeAndRun(mlir::ModuleOp module);
   LogicalResult initializeAndRun(hw::HWModuleOp module);
 
   // See LongestPathAnalysis.
   bool isAnalysisAvailable(StringAttr moduleName) const;
   int64_t getAverageMaxDelay(Value value) const;
-  int64_t getMaxDelay(Value value) const;
+  int64_t getMaxDelay(Value value, int64_t bitPos) const;
   LogicalResult
   getResults(Value value, size_t bitPos, SmallVectorImpl<DataflowPath> &results,
              circt::igraph::InstancePathCache *instancePathCache = nullptr,
@@ -1055,7 +1075,10 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
     return success();
 
   size_t oldIndex = results.size();
-  auto *node = ctx.instanceGraph->lookup(parentHWModule.getModuleNameAttr());
+  auto *node =
+      ctx.instanceGraph
+          ? ctx.instanceGraph->lookup(parentHWModule.getModuleNameAttr())
+          : nullptr;
   LLVM_DEBUG({
     llvm::dbgs() << "Running " << parentHWModule.getModuleNameAttr() << " "
                  << value << " " << bitPos << "\n";
@@ -1155,10 +1178,13 @@ LogicalResult LongestPathAnalysis::Impl::getOpenPaths(
   return success();
 }
 
-LongestPathAnalysis::Impl::Impl(Operation *moduleOp, mlir::AnalysisManager &am)
+LongestPathAnalysis::Impl::Impl(
+    Operation *moduleOp, mlir::AnalysisManager &am,
+    LongestPathAnalysis::VisitorOverrideFn visitorOverrideFn)
     : ctx(isa<mlir::ModuleOp>(moduleOp)
               ? &am.getAnalysis<igraph::InstanceGraph>()
-              : nullptr) {
+              : nullptr,
+          visitorOverrideFn) {
   if (auto module = dyn_cast<mlir::ModuleOp>(moduleOp)) {
     if (failed(initializeAndRun(module)))
       llvm::report_fatal_error("Failed to run longest path analysis");
@@ -1175,6 +1201,8 @@ LongestPathAnalysis::Impl::initializeAndRun(hw::HWModuleOp module) {
       ctx.localVisitors.insert({module.getModuleNameAttr(),
                                 std::make_unique<LocalVisitor>(module, &ctx)});
   assert(it.second);
+  it.first->second->setTopLevel();
+
   return it.first->second->initializeAndRun();
 }
 
@@ -1526,22 +1554,33 @@ int64_t LongestPathAnalysis::Impl::getAverageMaxDelay(Value value) const {
   return llvm::divideCeil(totalDelay, bitWidth);
 }
 
-int64_t LongestPathAnalysis::Impl::getMaxDelay(Value value) const {
+int64_t LongestPathAnalysis::Impl::getMaxDelay(Value value,
+                                               int64_t bitPos) const {
   SmallVector<DataflowPath> results;
   size_t bitWidth = getBitWidth(value);
-  if (bitWidth == 0)
+  if (bitWidth == 0 || bitPos >= (int64_t)bitWidth)
     return 0;
   int64_t maxDelay = 0;
-  for (size_t i = 0; i < bitWidth; ++i) {
+  auto checkIndex = [&](int64_t i) {
     // Clear results from previous iteration.
     results.clear();
     auto result = getResults(value, i, results);
     if (failed(result))
-      return 0;
+      return failure();
 
     for (auto &path : results)
       maxDelay = std::max(maxDelay, path.getDelay());
+    return success();
+  };
+  if (bitPos != -1) {
+    if (failed(checkIndex(bitPos)))
+      return 0;
+    return maxDelay;
   }
+
+  for (size_t i = 0; i < bitWidth; ++i)
+    if (failed(checkIndex(i)))
+      return 0;
   return maxDelay;
 }
 
@@ -1552,8 +1591,9 @@ int64_t LongestPathAnalysis::Impl::getMaxDelay(Value value) const {
 LongestPathAnalysis::~LongestPathAnalysis() { delete impl; }
 
 LongestPathAnalysis::LongestPathAnalysis(Operation *moduleOp,
-                                         mlir::AnalysisManager &am)
-    : impl(new Impl(moduleOp, am)) {}
+                                         mlir::AnalysisManager &am,
+                                         VisitorOverrideFn fn)
+    : impl(new Impl(moduleOp, am, fn)) {}
 
 bool LongestPathAnalysis::isAnalysisAvailable(StringAttr moduleName) const {
   return impl->isAnalysisAvailable(moduleName);
@@ -1563,8 +1603,8 @@ int64_t LongestPathAnalysis::getAverageMaxDelay(Value value) const {
   return impl->getAverageMaxDelay(value);
 }
 
-int64_t LongestPathAnalysis::getMaxDelay(Value value) const {
-  return impl->getMaxDelay(value);
+int64_t LongestPathAnalysis::getMaxDelay(Value value, int64_t bitPos) const {
+  return impl->getMaxDelay(value, bitPos);
 }
 
 LogicalResult LongestPathAnalysis::getClosedPaths(
