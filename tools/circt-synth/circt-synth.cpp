@@ -116,6 +116,10 @@ static cl::opt<bool>
                        cl::desc("Preserve the original module in the output"),
                        cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<bool> enableRetiming("enable-retiming",
+                                    cl::desc("Enable retiming transformation"),
+                                    cl::init(false), cl::cat(mainCategory));
+
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
 //===----------------------------------------------------------------------===//
@@ -188,7 +192,8 @@ static void populateSynthesisPipeline(PassManager &pm) {
   } else {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
     pm.addPass(aig::createLowerVariadicGlobal());
-    pm.addPass(aig::createRetiming());
+    if (enableRetiming)
+      pm.addPass(aig::createRetiming());
   }
 
   if (!outputLongestPaths.empty()) {

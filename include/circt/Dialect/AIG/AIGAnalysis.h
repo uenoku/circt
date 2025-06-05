@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
 
 namespace mlir {
@@ -143,6 +144,8 @@ public:
   // these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value) const;
   int64_t getMaxDelay(Value value, int64_t bitPos = -1) const;
+
+  int64_t getNumNodes(StringAttr module) const;
 
   // Paths to paths that are closed under the give module. Results are
   // sorted by delay from longest to shortest. Closed paths are typically

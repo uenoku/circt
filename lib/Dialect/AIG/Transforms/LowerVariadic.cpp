@@ -204,6 +204,9 @@ void LowerVariadicGlobalPass::runOnOperation() {
         OpBuilder builder(&op);
         Value newOp = builder.create<AndInverterOp>(andInverter->getLoc(),
                                                     operands, inverts);
+        auto name = op.template getAttrOfType<StringAttr>("sv.namehint");
+        if (name)
+          newOp.getDefiningOp()->setAttr("sv.namehint", name);
         andInverter.replaceAllUsesWith(newOp);
         // andInverter.erase();
       }

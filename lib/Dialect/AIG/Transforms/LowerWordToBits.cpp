@@ -145,6 +145,12 @@ ArrayRef<Value> LowerWordToBitsPass::lower(Value value) {
           }
           results.push_back(builder.create<aig::AndInverterOp>(
               op->getLoc(), operands, op.getInvertedAttr()));
+          if (auto name = op->getAttrOfType<StringAttr>("sv.namehint")) {
+            auto newName =
+                StringAttr::get(op.getContext(), name.getValue() + "[" +
+                                                     std::to_string(i) + "]");
+            results.back().getDefiningOp()->setAttr("sv.namehint", newName);
+          }
         }
         assert(results.size() == width);
 
@@ -220,7 +226,6 @@ void LowerWordToBitsPass::runOnOperation() {
     }
   });
 
-
   for (auto &[value, results] : llvm::make_early_inc_range(processedOps)) {
     if (getBitWidth(value) <= 1)
       continue;
@@ -242,7 +247,7 @@ void LowerWordToBitsPass::runOnOperation() {
       op->erase();
     }
   }
-  
+
   // Make sure clear the data structure.
   processedOps.clear();
 }
