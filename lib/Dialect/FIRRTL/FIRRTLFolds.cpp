@@ -1216,10 +1216,71 @@ void DShrPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<patterns::DShrOfConstant>(context);
 }
 
+class CatBitsCanonicalizer : public mlir::RewritePattern {
+public:
+  CatBitsCanonicalizer(MLIRContext *context)
+      : RewritePattern(CatPrimOp::getOperationName(), 0, context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op,
+                  mlir::PatternRewriter &rewriter) const override {
+    auto cat = cast<CatPrimOp>(op);
+    // Check if the value is "root".
+    if (!cat.getLhs().getDefiningOp<CatPrimOp>() ||
+        !cat.getRhs().getDefiningOp<CatPrimOp>())
+      return failure();
+    for (auto *user : cat->getUsers()) {
+      if (!isa<BitsPrimOp>(user))
+        return failure();
+    }
+
+    // Index, value
+    SmallVector<std::pair<size_t, Value>> elems;
+    SmallVector<Value> worklist{cat};
+    while (!worklist.empty()) {
+      auto val = worklist.pop_back_val();
+      auto cat = val.getDefiningOp<CatPrimOp>();
+      if (!cat) {
+        if (elems.empty()) {
+          elems.push_back({0, val});
+          continue;
+        }
+        auto idx = elems.back().first +
+                   cast<FIRRTLBaseType>(elems.back().second.getType())
+                       .getBitWidthOrSentinel();
+        elems.push_back({idx, val});
+        continue;
+      }
+      // Make sure order is lhs -> rhs, so that we can inspect from LSB -> MSB.
+      worklist.push_back(cat.getLhs());
+      worklist.push_back(cat.getRhs());
+    }
+
+    bool replacedAll = true;
+    for (auto *user : cat->getUsers()) {
+      auto bits = cast<BitsPrimOp>(user);
+      bool replaced = false;
+      for (auto [idx, val] : elems) {
+        if (bits.getLo() == idx && val.getType() == bits.getType()) {
+          replaceOpAndCopyName(rewriter, bits, val);
+          replaced = true;
+          break;
+        }
+      }
+      replacedAll &= replaced;
+    }
+
+    if (replacedAll)
+      rewriter.eraseOp(op);
+
+    return success(replacedAll);
+  }
+};
+
 void CatPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                             MLIRContext *context) {
   results.insert<patterns::CatBitsBits, patterns::CatDoubleConst,
-                 patterns::CatCast>(context);
+                 patterns::CatCast, CatBitsCanonicalizer>(context);
 }
 
 OpFoldResult BitCastOp::fold(FoldAdaptor adaptor) {
