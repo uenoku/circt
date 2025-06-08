@@ -1226,7 +1226,7 @@ public:
                   mlir::PatternRewriter &rewriter) const override {
     auto cat = cast<CatPrimOp>(op);
     // Check if the value is "root".
-    if (!cat.getLhs().getDefiningOp<CatPrimOp>() ||
+    if (!cat.getLhs().getDefiningOp<CatPrimOp>() &&
         !cat.getRhs().getDefiningOp<CatPrimOp>())
       return failure();
     for (auto *user : cat->getUsers()) {
@@ -1234,13 +1234,12 @@ public:
         return failure();
     }
 
-    // Index, value
     SmallVector<std::pair<size_t, Value>> elems;
     SmallVector<Value> worklist{cat};
     while (!worklist.empty()) {
       auto val = worklist.pop_back_val();
       auto cat = val.getDefiningOp<CatPrimOp>();
-      if (!cat) {
+      if (!cat || !cat->hasOneUse()) {
         if (elems.empty()) {
           elems.push_back({0, val});
           continue;
@@ -1251,6 +1250,7 @@ public:
         elems.push_back({idx, val});
         continue;
       }
+
       // Make sure order is lhs -> rhs, so that we can inspect from LSB -> MSB.
       worklist.push_back(cat.getLhs());
       worklist.push_back(cat.getRhs());
@@ -1260,11 +1260,15 @@ public:
     for (auto *user : cat->getUsers()) {
       auto bits = cast<BitsPrimOp>(user);
       bool replaced = false;
-      for (auto [idx, val] : elems) {
-        if (bits.getLo() == idx && val.getType() == bits.getType()) {
-          replaceOpAndCopyName(rewriter, bits, val);
+      // Use bin search.
+      auto *it = llvm::lower_bound(elems, bits.getLo(), [](auto pair, auto lo) {
+        return pair.first < lo;
+      });
+      if (it != elems.end()) {
+        if (it->first == bits.getLo() &&
+            it->second.getType() == bits.getType()) {
+          replaceOpAndCopyName(rewriter, bits, it->second);
           replaced = true;
-          break;
         }
       }
       replacedAll &= replaced;

@@ -104,7 +104,7 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
   results.resize(saved.size() + startIndex);
 }
 
-template <bool onlyTop = true>
+template <bool onlyTop = false>
 static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
                              size_t startIndex = 0) {
   deduplicatePathsImpl<OpenPath, Object>(

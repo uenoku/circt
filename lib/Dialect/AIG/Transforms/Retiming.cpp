@@ -20,6 +20,7 @@
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Mutex.h"
 
 #include "llvm/ADT/PriorityQueue.h"
@@ -29,6 +30,7 @@
 #include "llvm/Support/MathExtras.h"
 #include <cstdint>
 #include <mlir/Analysis/TopologicalSortUtils.h>
+#include <mlir/IR/Builders.h>
 
 #define DEBUG_TYPE "aig-lower-variadic"
 
@@ -73,6 +75,7 @@ void RetimingPass::runOnOperation() {
   struct LocalState {
     hw::HWModuleOp module;
     mlir::AnalysisManager am;
+    DenseMap<Value, SmallVector<int64_t>> retimingLag;
     LocalState(hw::HWModuleOp module, mlir::AnalysisManager &mam)
         : module(module), am(mam.nest(module)) {}
     DenseMap<std::pair<Value, int64_t>, int64_t> cost;
@@ -117,6 +120,8 @@ void RetimingPass::runOnOperation() {
       for (size_t i = 0, e = getBitWidth(arg); i < e; ++i)
         boundaryCost[{arg, i}] = longestPath.getMaxDelay(arg, i);
     SetVector<Value> boundry;
+    Value clock = nullptr;
+    bool clockFound = false;
 
     module.walk([&](Operation *op) {
       if (auto instance = dyn_cast<hw::InstanceOp>(op)) {
@@ -133,6 +138,18 @@ void RetimingPass::runOnOperation() {
       if (auto output = dyn_cast<hw::OutputOp>(op)) {
         for (auto operand : output->getOperands())
           boundry.insert(operand);
+      }
+      if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+        if (clockFound) {
+          if (clock && firreg.getClk() != clock) {
+            firreg->emitError() << "Different clock " << firreg.getClk() << " "
+                                << clock << "\n";
+            clock = nullptr;
+          }
+        } else {
+          clock = firreg.getClk();
+          clockFound = true;
+        }
       }
     });
 
@@ -155,8 +172,8 @@ void RetimingPass::runOnOperation() {
     auto tryThreshold = [&](int64_t threshold, bool commit = false) {
       if (threshold < maxCost)
         return false;
-      DenseMap<Value, SmallVector<int64_t>>
-          retimingLag; // function `r` in the paper
+      auto &retimingLag = hwMod.retimingLag;
+      retimingLag.clear();
       auto getRetimingLag = [&](Value value, size_t bitPos) -> int64_t {
         if (!retimingLag.count(value))
           return 0;
@@ -221,7 +238,7 @@ void RetimingPass::runOnOperation() {
                         << "[Retiming] " << counter << " " << "Register " << reg
                         << " " << bitPos << " is deleted\n";
                   });
-                  // assert(1 + resultLag - inputLag == 0);
+                  assert(1 + resultLag - inputLag == 0);
 
                   // Ok, let's ignore register. In that case we can visit the
                   // next.
@@ -242,7 +259,8 @@ void RetimingPass::runOnOperation() {
                       dyn_cast<aig::AndInverterOp>(value.getDefiningOp())) {
 
                 auto resultLag = getRetimingLag(value, bitPos);
-                size_t baseCost = llvm::Log2_64_Ceil(aig->getNumOperands());
+                size_t baseCost =
+                    std::max(1u, llvm::Log2_64_Ceil(aig->getNumOperands()));
                 bool existRegisterOnEdge =
                     llvm::any_of(aig->getOperands(), [&](Value operand) {
                       auto inputLag = getRetimingLag(operand, bitPos);
@@ -259,7 +277,13 @@ void RetimingPass::runOnOperation() {
                     // Ok, we have a register here.
                     results.push_back(OpenPath({}, value, bitPos, baseCost));
                   } else {
-                    // assert(resultLag - inputLag == 0);
+                    if (resultLag - inputLag < 0) {
+                      llvm::errs()
+                          << "Negative lag " << resultLag << " " << inputLag
+                          << " " << aig << " " << bitPos << "\n";
+                      llvm::errs() << operand << "\n";
+                    }
+                    assert(resultLag - inputLag == 0);
                     size_t oldIndex = results.size();
                     auto result = visit(operand, bitPos, results);
                     if (failed(result))
@@ -308,11 +332,34 @@ void RetimingPass::runOnOperation() {
                 //              << threshold << ": Delay " << delay << " for "
                 //              << result << " " << i << "\n";
 
-                if (boundry.count(result))
-                  return WalkResult::interrupt();
-                exceeded = true;
                 incrementRetimingLag(result, i);
+
+                if (!clock || boundry.count(result))
+                  return WalkResult::interrupt();
+
+                // Cannot retime async reset now. It's necessary to be extremely
+                // careful when retiming async reset.
+                if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+                  if (firreg.getIsAsync())
+                    return WalkResult::interrupt();
+                }
+                exceeded = true;
                 changed++;
+              }
+              if (isa<aig::AndInverterOp>(op)) {
+                for (auto operand : op->getOperands()) {
+                  auto inputLag = getRetimingLag(operand, i);
+                  if (inputLag - getRetimingLag(result, i) > 0) {
+                    op->emitError() 
+                        << "Negative lag detected: result=" << result << "[" << i << "]"
+                        << " (lag=" << getRetimingLag(result, i) << "), "
+                        << "input=" << operand << "[" << i << "]"
+                        << " (lag=" << inputLag << ")\n"
+                        << "Result distance: " << localLongestPath.getMaxDelay(result, i)
+                        << ", Input distance: " << localLongestPath.getMaxDelay(operand, i);
+                    return WalkResult::interrupt();
+                  }
+                }
               }
             }
           }
@@ -377,7 +424,165 @@ void RetimingPass::runOnOperation() {
     if (hwMod.result > hwMods[maxIndex].result)
       maxIndex = index;
   }
+  auto retimingTarget = hwMods[maxIndex].result;
   llvm::errs() << "Max index " << maxIndex << " "
                << hwMods[maxIndex].module.getModuleNameAttr()
                << hwMods[maxIndex].result << "\n";
+  mlir::failableParallelForEach(ctx, hwMods, [&](auto &hwMod) {
+    auto module = hwMod.module;
+    auto &cost = hwMod.cost;
+    auto &lam = hwMod.am;
+    notifyStart(hwMod);
+    SetVector<Value> boundry;
+    Value clock = nullptr;
+    bool clockFound = false;
+
+    module.walk([&](Operation *op) {
+      if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+        if (clockFound) {
+          if (clock && firreg.getClk() != clock) {
+            firreg->emitError() << "Different clock " << firreg.getClk() << " "
+                                << clock << "\n";
+            clock = nullptr;
+          }
+        } else {
+          clock = firreg.getClk();
+          clockFound = true;
+        }
+      }
+    });
+    if (!clock)
+      return success();
+
+    auto terminator = module.getBodyBlock()->getTerminator();
+    OpBuilder builder(terminator);
+    // llvm::SetVector<Value> wires;
+    // for (auto result : terminator->getOperands()) {
+    //   // Add a wire.
+    //   auto wire = builder.create<hw::WireOp>(result.getLoc(), result);
+    //   wires.insert(wire);
+    // }
+    // Placeholder for output wire.
+    // terminator->setOperands(wires.getArrayRef());
+
+    auto &retimingLag = hwMod.retimingLag;
+    auto getRetimingLag = [&](Value value, size_t bitPos) -> int64_t {
+      if (!retimingLag.count(value))
+        return 0;
+      return retimingLag[value][bitPos];
+    };
+
+    auto incrementRetimingLag = [&](Value value, size_t bitPos) {
+      if (!retimingLag.count(value))
+        retimingLag[value].resize(getBitWidth(value), 0);
+      retimingLag[value][bitPos]++;
+    };
+
+    DenseMap<std::tuple<Value, int, int>, Value> laggedValue;
+    std::function<Value(Value, int, int)> getStage =
+        [&](Value value, int bitPos, int stage) -> Value {
+      assert(bitPos == 0);
+      if (stage == 0)
+        return value;
+
+      auto it = laggedValue.find({value, bitPos, stage});
+      if (it != laggedValue.end())
+        return it->second;
+      auto result = getStage(value, bitPos, stage - 1);
+      OpBuilder b(value.getContext());
+      b.setInsertionPointAfterValue(result);
+      auto reg = b.create<seq::FirRegOp>(value.getLoc(), result, clock,
+                                         b.getStringAttr("retimed"));
+      laggedValue[{value, bitPos, stage}] = reg;
+      retimingLag[reg].resize(getBitWidth(reg), getRetimingLag(result, bitPos));
+      return reg;
+    };
+    llvm::MapVector<Value, Value> mapping;
+    SmallVector<Operation *> toProcess;
+    module.walk([&](Operation *op) {
+      if (isa<seq::FirRegOp, aig::AndInverterOp>(op))
+        toProcess.push_back(op);
+    });
+
+    for (auto op : toProcess) {
+      if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+        SmallVector<Value> newNexts;
+        bool allOne = true, allZero = true;
+        for (size_t i = 0, e = getBitWidth(firreg); i < e; ++i) {
+          auto lag = getRetimingLag(firreg, i);
+          auto next = getRetimingLag(firreg.getNext(), i);
+          if (1 + lag - next != 1) {
+            allOne = false;
+          }
+          if (1 + lag - next != 0) {
+            allZero = false;
+          }
+        }
+        if (allZero) {
+          mapping[firreg] = firreg.getNext();
+        }
+        if (allOne || allZero)
+          continue;
+        for (size_t i = 0, e = getBitWidth(firreg); i < e; ++i) {
+          auto lag = getRetimingLag(firreg, i);
+          auto next = getRetimingLag(firreg.getNext(), i);
+          int stage = 1 + lag - next;
+          assert(stage > 0);
+          auto newNext = getStage(firreg.getNext(), i, stage - 1);
+          newNexts.push_back(newNext);
+        }
+        std::reverse(newNexts.begin(), newNexts.end());
+        OpBuilder b(firreg);
+        auto concat = b.create<comb::ConcatOp>(firreg->getLoc(), newNexts);
+        // TODO: Insert mux if necessary.
+        mapping[firreg] = concat;
+      }
+      if (auto aig = dyn_cast<aig::AndInverterOp>(op)) {
+        SmallVector<Value> newOperands;
+        for (size_t i = 0, end = op->getNumOperands(); i < end; ++i) {
+          auto operand = op->getOperand(i);
+          SmallVector<Value> newOperandBits;
+          bool needsChange = false;
+          for (size_t j = 0, e = getBitWidth(operand); j < e; ++j) {
+            auto lag = getRetimingLag(operand, j);
+            auto resultLag = getRetimingLag(aig, j);
+            int stage = resultLag - lag;
+            if (stage < 0) {
+              llvm::errs() << "Negative stage " << stage << " for " << aig
+                           << " " << j << "\n";
+              llvm::errs() << "resultLag " << resultLag << " lag " << lag << " "
+                           << operand << "\n";
+            }
+            assert(stage >= 0);
+            if (stage == 0) {
+              newOperandBits.push_back(operand);
+              continue;
+            }
+            auto newOperand = getStage(operand, j, stage);
+            newOperandBits.push_back(newOperand);
+            needsChange = true;
+          }
+          if (needsChange) {
+            auto b = OpBuilder::atBlockBegin(aig->getBlock());
+            std::reverse(newOperandBits.begin(), newOperandBits.end());
+            auto concat =
+                b.createOrFold<comb::ConcatOp>(aig->getLoc(), newOperandBits);
+            op->setOperand(i, concat);
+          }
+        }
+      }
+    }
+
+    for (auto [old, new_] : mapping) {
+      old.replaceAllUsesWith(new_);
+      if (auto firreg = dyn_cast<seq::FirRegOp>(old.getDefiningOp()))
+        firreg->erase();
+    }
+    notifyEnd(hwMod);
+
+    return success();
+  });
+  // mlir::failableParallelForEach(ctx, hwMods,
+  //                               [&](auto &hwMod) { hwMod.module->dump();
+  //                               });
 }
