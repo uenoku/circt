@@ -160,6 +160,7 @@ void RetimingPass::runOnOperation() {
 
     // FIXME:
     boundaryCost.clear();
+    maxCost = 0;
 
     auto terminator = module.getBodyBlock()->getTerminator();
     OpBuilder builder(terminator);
