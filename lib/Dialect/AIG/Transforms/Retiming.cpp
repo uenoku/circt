@@ -158,6 +158,9 @@ void RetimingPass::runOnOperation() {
       maxCost = std::max(maxCost, cost);
     }
 
+    // FIXME:
+    boundaryCost.clear();
+
     auto terminator = module.getBodyBlock()->getTerminator();
     OpBuilder builder(terminator);
     // llvm::SetVector<Value> wires;
