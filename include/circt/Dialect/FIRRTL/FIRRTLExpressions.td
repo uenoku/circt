@@ -680,7 +680,6 @@ let inferType = "impl::inferComparisonResult" in {
 }
 
 def CatPrimOp : IntBinaryPrimOp<"cat", UIntType> {
-  let hasCanonicalizer = true;
 }
 
 def VariadicCatPrimOp : FIRRTLExprOp<"vcat"> {

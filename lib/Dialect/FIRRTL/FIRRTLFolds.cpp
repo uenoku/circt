@@ -1216,12 +1216,6 @@ void DShrPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<patterns::DShrOfConstant>(context);
 }
 
-void CatPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                            MLIRContext *context) {
-  results.insert<patterns::CatBitsBits, patterns::CatDoubleConst,
-                 patterns::CatCast>(context);
-}
-
 OpFoldResult BitCastOp::fold(FoldAdaptor adaptor) {
   auto op = (*this);
   // BitCast is redundant if input and result types are same.
@@ -2850,17 +2844,15 @@ struct FoldUnusedBits : public mlir::RewritePattern {
       Value source = writeOp.getSrc();
       rewriter.setInsertionPoint(writeOp);
 
-      Value catOfSlices;
+      SmallVector<Value> slices;
       for (auto &[start, end] : ranges) {
         Value slice = rewriter.createOrFold<BitsPrimOp>(writeOp.getLoc(),
                                                         source, end, start);
-        if (catOfSlices) {
-          catOfSlices = rewriter.createOrFold<CatPrimOp>(writeOp.getLoc(),
-                                                         slice, catOfSlices);
-        } else {
-          catOfSlices = slice;
-        }
+        slices.push_back(slice);
       }
+
+      Value catOfSlices =
+          rewriter.createOrFold<VariadicCatPrimOp>(writeOp.getLoc(), slices);
 
       // If the original memory held a signed integer, then the compressed
       // memory will be signed too. Since the catOfSlices is always unsigned,
@@ -3044,6 +3036,7 @@ struct FoldRegMems : public mlir::RewritePattern {
       // register (no mask) or the input (mask bit set).
       Location loc = mem.getLoc();
       unsigned maskGran = info.dataWidth / info.maskBits;
+      SmallVector<Value> chunks;
       for (unsigned i = 0; i < info.maskBits; ++i) {
         unsigned hi = (i + 1) * maskGran - 1;
         unsigned lo = i * maskGran;
@@ -3052,14 +3045,11 @@ struct FoldRegMems : public mlir::RewritePattern {
         auto nextPart = rewriter.createOrFold<BitsPrimOp>(loc, next, hi, lo);
         auto bit = rewriter.createOrFold<BitsPrimOp>(loc, mask, i, i);
         auto chunk = rewriter.create<MuxPrimOp>(loc, bit, dataPart, nextPart);
-
-        if (masked) {
-          masked = rewriter.create<CatPrimOp>(loc, chunk, masked);
-        } else {
-          masked = chunk;
-        }
+        chunks.push_back(chunk);
       }
 
+      std::reverse(chunks.begin(), chunks.end());
+      masked = rewriter.createOrFold<VariadicCatPrimOp>(loc, chunks);
       next = rewriter.create<MuxPrimOp>(next.getLoc(), en, masked, next);
     }
     Value typedNext = rewriter.createOrFold<BitCastOp>(next.getLoc(), ty, next);
