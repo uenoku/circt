@@ -131,6 +131,16 @@ firrtl.circuit "Simple"   attributes {annotations = [{class =
     // CHECK: comb.concat %in1, %in2
     %7 = firrtl.cat %in1, %in2 : (!firrtl.uint<4>, !firrtl.uint<2>) -> !firrtl.uint<6>
 
+    // Test VariadicCatPrimOp with multiple operands
+    // CHECK: [[VCAT1:%.+]] = comb.concat %in1, %in2, [[PADRES2]] : i4, i2, i4
+    %vcat1 = firrtl.vcat %in1, %in2, %4 : (!firrtl.uint<4>, !firrtl.uint<2>, !firrtl.uint<4>) -> !firrtl.uint<10>
+
+    // Test VariadicCatPrimOp with single operand (should pass through)
+    // CHECK: %vcat2 = hw.wire %in1 : i4
+    %vcat2 = firrtl.wire : !firrtl.uint<4>
+    %vcat2_val = firrtl.vcat %in1 : (!firrtl.uint<4>) -> !firrtl.uint<4>
+    firrtl.connect %vcat2, %vcat2_val : !firrtl.uint<4>, !firrtl.uint<4>
+
     // CHECK: %out6 = hw.wire [[PADRES2]] sym @__Simple__out6 : i4
     %out6 = firrtl.wire sym @__Simple__out6 : !firrtl.uint<4>
     firrtl.connect %out6, %4 : !firrtl.uint<4>, !firrtl.uint<4>

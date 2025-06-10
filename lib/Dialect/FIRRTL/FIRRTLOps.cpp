@@ -5108,6 +5108,46 @@ FIRRTLType CatPrimOp::inferReturnType(FIRRTLType lhs, FIRRTLType rhs,
   return UIntType::get(lhs.getContext(), resultWidth, isConstResult);
 }
 
+FIRRTLType VariadicCatPrimOp::inferReturnType(ValueRange operands,
+                                              DictionaryAttr attrs,
+                                              OpaqueProperties properties,
+                                              mlir::RegionRange regions,
+                                              std::optional<Location> loc) {
+  // If no operands, return a 0-bit UInt
+  if (operands.empty())
+    return UIntType::get(attrs.getContext(), 0);
+
+  // Check that all operands are UInt types
+  for (auto operand : operands) {
+    auto type = type_dyn_cast<UIntType>(operand.getType());
+    if (!type)
+      return emitInferRetTypeError(loc, "all operands must be UInt type");
+  }
+
+  // Calculate the total width and determine if result is const
+  int32_t resultWidth = 0;
+  bool isConstResult = true;
+
+  for (auto operand : operands) {
+    auto type = type_cast<UIntType>(operand.getType());
+    int32_t width = type.getWidthOrSentinel();
+
+    // If any width is unknown, the result width is unknown
+    if (width == -1) {
+      resultWidth = -1;
+    }
+
+    if (resultWidth != -1)
+      resultWidth += width;
+
+    // Result is const only if all operands are const
+    isConstResult &= type.isConst();
+  }
+
+  // Create and return the result type
+  return UIntType::get(attrs.getContext(), resultWidth, isConstResult);
+}
+
 FIRRTLType DShlPrimOp::inferReturnType(FIRRTLType lhs, FIRRTLType rhs,
                                        std::optional<Location> loc) {
   auto lhsi = type_dyn_cast<IntType>(lhs);
@@ -5918,6 +5958,9 @@ void BitsPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
   genericAsmResultNames(*this, setNameFn);
 }
 void CatPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
+  genericAsmResultNames(*this, setNameFn);
+}
+void VariadicCatPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
   genericAsmResultNames(*this, setNameFn);
 }
 void CvtPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
