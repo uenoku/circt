@@ -1368,7 +1368,7 @@ void Emitter::emitExpression(Value value) {
           // Binary
           AddPrimOp, SubPrimOp, MulPrimOp, DivPrimOp, RemPrimOp, AndPrimOp,
           OrPrimOp, XorPrimOp, LEQPrimOp, LTPrimOp, GEQPrimOp, GTPrimOp,
-          EQPrimOp, NEQPrimOp, CatPrimOp, VariadicCatPrimOp, DShlPrimOp,
+          EQPrimOp, NEQPrimOp, CatPrimOp, DShlPrimOp,
           DShlwPrimOp, DShrPrimOp,
           // Unary
           AsSIntPrimOp, AsUIntPrimOp, AsAsyncResetPrimOp, AsClockPrimOp,

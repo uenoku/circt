@@ -5096,23 +5096,11 @@ FIRRTLType impl::inferComparisonResult(FIRRTLType lhs, FIRRTLType rhs,
   return UIntType::get(lhs.getContext(), 1, isConst(lhs) && isConst(rhs));
 }
 
-FIRRTLType CatPrimOp::inferReturnType(FIRRTLType lhs, FIRRTLType rhs,
+FIRRTLType CatPrimOp::inferReturnType(ValueRange operands,
+                                      DictionaryAttr attrs,
+                                      OpaqueProperties properties,
+                                      mlir::RegionRange regions,
                                       std::optional<Location> loc) {
-  int32_t lhsWidth, rhsWidth, resultWidth = -1;
-  bool isConstResult = false;
-  if (!isSameIntTypeKind(lhs, rhs, lhsWidth, rhsWidth, isConstResult, loc))
-    return {};
-
-  if (lhsWidth != -1 && rhsWidth != -1)
-    resultWidth = lhsWidth + rhsWidth;
-  return UIntType::get(lhs.getContext(), resultWidth, isConstResult);
-}
-
-FIRRTLType VariadicCatPrimOp::inferReturnType(ValueRange operands,
-                                              DictionaryAttr attrs,
-                                              OpaqueProperties properties,
-                                              mlir::RegionRange regions,
-                                              std::optional<Location> loc) {
   // If no operands, return a 0-bit UInt
   if (operands.empty())
     return UIntType::get(attrs.getContext(), 0);
@@ -5958,9 +5946,6 @@ void BitsPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
   genericAsmResultNames(*this, setNameFn);
 }
 void CatPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
-  genericAsmResultNames(*this, setNameFn);
-}
-void VariadicCatPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
   genericAsmResultNames(*this, setNameFn);
 }
 void CvtPrimOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {

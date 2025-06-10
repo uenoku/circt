@@ -1740,7 +1740,6 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult lowerDivLikeOp(Operation *op);
 
   LogicalResult visitExpr(CatPrimOp op);
-  LogicalResult visitExpr(VariadicCatPrimOp op);
 
   LogicalResult visitExpr(AndPrimOp op) {
     return lowerBinOpToVariadic<comb::AndOp>(op);
@@ -4049,25 +4048,6 @@ LogicalResult FIRRTLLowering::lowerDivLikeOp(Operation *op) {
 }
 
 LogicalResult FIRRTLLowering::visitExpr(CatPrimOp op) {
-  auto lhs = getLoweredValue(op.getLhs());
-  auto rhs = getLoweredValue(op.getRhs());
-  if (!lhs) {
-    return handleZeroBit(op.getLhs(), [&]() {
-      if (rhs) // cat(0bit, x) --> x
-        return setLowering(op, rhs);
-      // cat(0bit, 0bit) --> 0bit
-      return handleZeroBit(op.getRhs(),
-                           [&]() { return setLowering(op, Value()); });
-    });
-  }
-
-  if (!rhs) // cat(x, 0bit) --> x
-    return handleZeroBit(op.getRhs(), [&]() { return setLowering(op, lhs); });
-
-  return setLoweringTo<comb::ConcatOp>(op, lhs, rhs);
-}
-
-LogicalResult FIRRTLLowering::visitExpr(VariadicCatPrimOp op) {
   // Handle the case of no operands - should result in a 0-bit value
   if (op.getInputs().empty())
     return setLowering(op, Value());
@@ -4088,15 +4068,15 @@ LogicalResult FIRRTLLowering::visitExpr(VariadicCatPrimOp op) {
     }
   }
 
-  // If all operands were zero-bit, result is zero-bit
+  // If no non-zero operands, return 0-bit value
   if (loweredOperands.empty())
     return setLowering(op, Value());
 
-  // If only one non-zero-bit operand, return it directly
+  // If only one operand, return it directly
   if (loweredOperands.size() == 1)
     return setLowering(op, loweredOperands[0]);
 
-  // Create a comb::ConcatOp with all the non-zero-bit operands
+  // Use comb.concat for multiple operands
   return setLoweringTo<comb::ConcatOp>(op, loweredOperands);
 }
 

@@ -679,14 +679,14 @@ let inferType = "impl::inferComparisonResult" in {
   }
 }
 
-def CatPrimOp : IntBinaryPrimOp<"cat", UIntType> {
-}
-
-def VariadicCatPrimOp : FIRRTLExprOp<"vcat"> {
+def CatPrimOp : FIRRTLExprOp<"cat"> {
   let arguments = (ins Variadic<UIntType>:$inputs);
   let results = (outs FIRRTLBaseType:$result);
 
   let assemblyFormat = "$inputs attr-dict `:` functional-type($inputs, $result)";
+
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 

@@ -1185,25 +1185,64 @@ void XorRPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
 //===----------------------------------------------------------------------===//
 
 OpFoldResult CatPrimOp::fold(FoldAdaptor adaptor) {
-  // cat(x, 0-width) -> x
-  // cat(0-width, x) -> x
-  // Limit to unsigned (result type), as cannot insert cast here.
-  IntType lhsType = getLhs().getType();
-  IntType rhsType = getRhs().getType();
-  if (lhsType.getBitWidthOrSentinel() == 0 && rhsType.isUnsigned())
-    return getRhs();
-  if (rhsType.getBitWidthOrSentinel() == 0 && rhsType.isUnsigned())
-    return getLhs();
+  auto inputs = getInputs();
+  auto inputAdaptors = adaptor.getInputs();
+
+  // If no inputs, return 0-bit value
+  if (inputs.empty())
+    return getIntZerosAttr(getType());
+
+  // If single input and same type, return it
+  if (inputs.size() == 1 && inputs[0].getType() == getType())
+    return inputs[0];
+
+  // Filter out zero-width operands
+  SmallVector<Value> nonZeroInputs;
+  SmallVector<Attribute> nonZeroAdaptors;
+  for (auto [input, inputAdaptor] : llvm::zip(inputs, inputAdaptors)) {
+    auto inputType = type_cast<IntType>(input.getType());
+    if (inputType.getBitWidthOrSentinel() != 0) {
+      nonZeroInputs.push_back(input);
+      nonZeroAdaptors.push_back(inputAdaptor);
+    }
+  }
+
+  // If all inputs were zero-width, return 0-bit value
+  if (nonZeroInputs.empty())
+    return getIntZerosAttr(getType());
+
+  // If only one non-zero input and it has the same type as result, return it
+  if (nonZeroInputs.size() == 1 && nonZeroInputs[0].getType() == getType())
+    return nonZeroInputs[0];
 
   if (!hasKnownWidthIntTypes(*this))
     return {};
 
-  // Constant fold cat.
-  if (auto lhs = getConstant(adaptor.getLhs()))
-    if (auto rhs = getConstant(adaptor.getRhs()))
-      return getIntAttr(getType(), lhs->concat(*rhs));
+  // Constant fold cat - concatenate all constant operands
+  SmallVector<APInt> constants;
+  for (auto inputAdaptor : nonZeroAdaptors) {
+    if (auto cst = getConstant(inputAdaptor))
+      constants.push_back(*cst);
+    else
+      return {}; // Not all operands are constant
+  }
+
+  if (!constants.empty()) {
+    // Concatenate all constants from left to right
+    APInt result = constants[0];
+    for (size_t i = 1; i < constants.size(); ++i) {
+      result = result.concat(constants[i]);
+    }
+    return getIntAttr(getType(), result);
+  }
 
   return {};
+}
+
+void CatPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.insert<patterns::CatBitsBits, patterns::CatDoubleConst,
+                 patterns::CatCast>(context);
 }
 
 void DShlPrimOp::getCanonicalizationPatterns(RewritePatternSet &results,
@@ -2852,7 +2891,7 @@ struct FoldUnusedBits : public mlir::RewritePattern {
       }
 
       Value catOfSlices =
-          rewriter.createOrFold<VariadicCatPrimOp>(writeOp.getLoc(), slices);
+          rewriter.createOrFold<CatPrimOp>(writeOp.getLoc(), slices);
 
       // If the original memory held a signed integer, then the compressed
       // memory will be signed too. Since the catOfSlices is always unsigned,
@@ -3049,7 +3088,7 @@ struct FoldRegMems : public mlir::RewritePattern {
       }
 
       std::reverse(chunks.begin(), chunks.end());
-      masked = rewriter.createOrFold<VariadicCatPrimOp>(loc, chunks);
+      masked = rewriter.createOrFold<CatPrimOp>(loc, chunks);
       next = rewriter.create<MuxPrimOp>(next.getLoc(), en, masked, next);
     }
     Value typedNext = rewriter.createOrFold<BitCastOp>(next.getLoc(), ty, next);

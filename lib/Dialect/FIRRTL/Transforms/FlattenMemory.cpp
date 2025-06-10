@@ -177,7 +177,7 @@ struct FlattenMemoryPass
                   if ((m.index() == 0 && repeat == 0) || !catMasks)
                     catMasks = mBit;
                   else
-                    catMasks = builder.createOrFold<CatPrimOp>(mBit, catMasks);
+                    catMasks = builder.createOrFold<CatPrimOp>(ValueRange{mBit, catMasks});
               }
               realOldField = catMasks;
             }

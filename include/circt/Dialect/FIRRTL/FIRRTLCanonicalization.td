@@ -390,14 +390,14 @@ def OrOfSelf : Pat <
 /// or(x, pad(y, n)) -> cat(head(x), or(tail(x), y))
 def OrOfPad : Pat <
   (OrPrimOp:$old $x, (PadPrimOp:$pad $y, $n)),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic (HeadPrimOp $x, (TypeWidthAdjust32 $x, $y)),
+  (MoveNameHint $old, (CatPrimOp (variadic (HeadPrimOp $x, (TypeWidthAdjust32 $x, $y)),
                                                    (OrPrimOp (TailPrimOp $x, (TypeWidthAdjust32 $x, $y)), $y)))),
   [(KnownWidth $x), (UIntType $x), (EqualTypes $x, $pad)]>;
 
 /// or(a, orr(x)) -> orr(cat(a, x))
 def OrOrr : Pat <
   (OrPrimOp:$old $a, (OrRPrimOp $x)),
-  (MoveNameHint $old, (OrRPrimOp (VariadicCatPrimOp (variadic (AsUIntPrimOp $a), (AsUIntPrimOp $x))))),
+  (MoveNameHint $old, (OrRPrimOp (CatPrimOp (variadic (AsUIntPrimOp $a), (AsUIntPrimOp $x))))),
   // No type extension in the Or
   [(IntTypeWidthLTX<2> $a)]>;
 
@@ -416,7 +416,7 @@ def XorOfSelf : Pat <
 /// xor(x, pad(y, n)) -> cat(head(x), xor(tail(x), y))
 def XorOfPad : Pat <
   (XorPrimOp:$old $x, (PadPrimOp:$pad $y, $n)),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic (HeadPrimOp $x, (TypeWidthAdjust32 $x, $y)),
+  (MoveNameHint $old, (CatPrimOp (variadic (HeadPrimOp $x, (TypeWidthAdjust32 $x, $y)),
                                                    (XorPrimOp (TailPrimOp $x, (TypeWidthAdjust32 $x, $y)), $y)))),
   [(KnownWidth $x), (UIntType $x), (EqualTypes $x, $pad)]>;
 
@@ -434,13 +434,13 @@ def OrRasUInt : Pat <
 
 /// orr(cat(0,x)) -> orr(x)
 def OrRCatZeroH : Pat <
-  (OrRPrimOp:$old (VariadicCatPrimOp (variadic $c, $x))),
+  (OrRPrimOp:$old (CatPrimOp (variadic $c, $x))),
   (MoveNameHint $old, (OrRPrimOp $x)),
   [(KnownWidth $x), (ZeroConstantOp $c)]>;
 
 /// orr(cat(x,0)) -> orr(x)
 def OrRCatZeroL : Pat <
-  (OrRPrimOp:$old (VariadicCatPrimOp (variadic $x, $c))),
+  (OrRPrimOp:$old (CatPrimOp (variadic $x, $c))),
   (MoveNameHint $old, (OrRPrimOp $x)),
   [(KnownWidth $x), (ZeroConstantOp $c)]>;
 
@@ -452,14 +452,14 @@ def OrRPadU : Pat <
 
 /// orr(cat(y, orr(z))) -> orr(cat(y,z))
 def OrRCatOrR_left : Pat <
-  (OrRPrimOp:$old (VariadicCatPrimOp (variadic $y, (OrRPrimOp $z)))),
-  (MoveNameHint $old, (OrRPrimOp (VariadicCatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
+  (OrRPrimOp:$old (CatPrimOp (variadic $y, (OrRPrimOp $z)))),
+  (MoveNameHint $old, (OrRPrimOp (CatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
   []>;
 
 /// orr(cat(orr(z),y)) -> orr(cat(z,y))
 def OrRCatOrR_right : Pat <
-  (OrRPrimOp:$old (VariadicCatPrimOp (variadic (OrRPrimOp $z), $y))),
-  (MoveNameHint $old, (OrRPrimOp (VariadicCatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
+  (OrRPrimOp:$old (CatPrimOp (variadic (OrRPrimOp $z), $y))),
+  (MoveNameHint $old, (OrRPrimOp (CatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
   []>;
 
 /// xorr(asSInt(x)) -> xorr(x)
@@ -476,13 +476,13 @@ def XorRasUInt : Pat <
 
 /// xorr(cat(0,x)) -> xorr(x)
 def XorRCatZeroH : Pat <
-  (XorRPrimOp:$old (VariadicCatPrimOp (variadic $c, $x))),
+  (XorRPrimOp:$old (CatPrimOp (variadic $c, $x))),
   (MoveNameHint $old, (XorRPrimOp $x)),
   [(KnownWidth $x), (IntTypes $x), (ZeroConstantOp $c)]>;
 
 /// xorr(cat(x,0)) -> xorr(x)
 def XorRCatZeroL : Pat <
-  (XorRPrimOp:$old (VariadicCatPrimOp (variadic $x, $c))),
+  (XorRPrimOp:$old (CatPrimOp (variadic $x, $c))),
   (MoveNameHint $old, (XorRPrimOp $x)),
   [(KnownWidth $x), (IntTypes $x), (ZeroConstantOp $c)]>;
 
@@ -494,14 +494,14 @@ def XorRPadU : Pat <
 
 /// xorr(cat(y, xorr(z))) -> xorr(cat(y,z))
 def XorRCatXorR_left : Pat <
-  (XorRPrimOp:$old (VariadicCatPrimOp (variadic $y, (XorRPrimOp $z)))),
-  (MoveNameHint $old, (XorRPrimOp (VariadicCatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
+  (XorRPrimOp:$old (CatPrimOp (variadic $y, (XorRPrimOp $z)))),
+  (MoveNameHint $old, (XorRPrimOp (CatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
   []>;
 
 /// xorr(cat(xorr(z),y)) -> xorr(cat(z,y))
 def XorRCatXorR_right : Pat <
-  (XorRPrimOp:$old (VariadicCatPrimOp (variadic (XorRPrimOp $z), $y))),
-  (MoveNameHint $old, (XorRPrimOp (VariadicCatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
+  (XorRPrimOp:$old (CatPrimOp (variadic (XorRPrimOp $z), $y))),
+  (MoveNameHint $old, (XorRPrimOp (CatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
   []>;
 
 
@@ -519,25 +519,25 @@ def AndRasUInt : Pat <
 
 /// andr(cat(*0*, x)) -> 0
 def AndRCatZeroL : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic $z, $x))),
+  (AndRPrimOp:$old (CatPrimOp (variadic $z, $x))),
   (NativeCodeCall<"$_builder.create<ConstantOp>($0.getLoc(), cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(NotAllOneConstantOp $z)]>;
 
 /// andr(cat(x, *0*)) -> 0
 def AndRCatZeroR : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic $x, $z))),
+  (AndRPrimOp:$old (CatPrimOp (variadic $x, $z))),
   (NativeCodeCall<"$_builder.create<ConstantOp>($0.getLoc(), type_cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(NotAllOneConstantOp $z)]>;
 
 /// andr(cat(1, x)) -> andr(x)
 def AndRCatOneL : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic $z, $x))),
+  (AndRPrimOp:$old (CatPrimOp (variadic $z, $x))),
   (MoveNameHint $old, (AndRPrimOp $x)),
   [(AllOneConstantOp $z)]>;
 
 /// andr(cat(x, 1)) -> andr(x)
 def AndRCatOneR : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic $x, $z))),
+  (AndRPrimOp:$old (CatPrimOp (variadic $x, $z))),
   (MoveNameHint $old, (AndRPrimOp $x)),
   [(AllOneConstantOp $z)]>;
 
@@ -555,14 +555,14 @@ def AndRPadS : Pat <
 
 /// andr(cat(y, andr(z))) -> andr(cat(y,z))
 def AndRCatAndR_left : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic $y, (AndRPrimOp $z)))),
-  (MoveNameHint $old, (AndRPrimOp (VariadicCatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
+  (AndRPrimOp:$old (CatPrimOp (variadic $y, (AndRPrimOp $z)))),
+  (MoveNameHint $old, (AndRPrimOp (CatPrimOp (variadic $y, (AsUIntPrimOp $z))))),
   []>;
 
 /// andr(cat(andr(z),y)) -> andr(cat(z,y))
 def AndRCatAndR_right : Pat <
-  (AndRPrimOp:$old (VariadicCatPrimOp (variadic (AndRPrimOp $z), $y))),
-  (MoveNameHint $old, (AndRPrimOp (VariadicCatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
+  (AndRPrimOp:$old (CatPrimOp (variadic (AndRPrimOp $z), $y))),
+  (MoveNameHint $old, (AndRPrimOp (CatPrimOp (variadic (AsUIntPrimOp $z), $y)))),
   []>;
 
 // bits(bits(x, ...), ...) -> bits(x, ...)
@@ -629,14 +629,14 @@ def MuxSameFalse : Pat <
 
 // mux(cond, (Concat a, b), (Concat a, c)) -> Concat(a, mux(cond, b, c))
 def NarrowMuxLHS : Pat <
-  (MuxPrimOp:$old $cond, (VariadicCatPrimOp:$lhs (variadic $a, $b)), (VariadicCatPrimOp:$rhs (variadic $a, $c))),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic $a, (MuxPrimOp $cond, $b, $c)))),
+  (MuxPrimOp:$old $cond, (CatPrimOp:$lhs (variadic $a, $b)), (CatPrimOp:$rhs (variadic $a, $c))),
+  (MoveNameHint $old, (CatPrimOp (variadic $a, (MuxPrimOp $cond, $b, $c)))),
   [(EqualTypes $lhs, $rhs), (KnownWidth $lhs)]>;
 
 // mux(cond, (Concat a, b), (Concat c, b)) -> Concat(mux(cond, a, c), b)
 def NarrowMuxRHS : Pat <
-  (MuxPrimOp:$old $cond, (VariadicCatPrimOp:$lhs (variadic $a, $b)), (VariadicCatPrimOp:$rhs (variadic $c, $b))),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic (MuxPrimOp $cond, $a, $c), $b))),
+  (MuxPrimOp:$old $cond, (CatPrimOp:$lhs (variadic $a, $b)), (CatPrimOp:$rhs (variadic $c, $b))),
+  (MoveNameHint $old, (CatPrimOp (variadic (MuxPrimOp $cond, $a, $c), $b))),
   [(EqualTypes $lhs, $rhs), (KnownWidth $lhs)]>;
 
 // mux(eq(a, b), a, b) -> b
@@ -687,19 +687,19 @@ def Mux4PadSel : Pat<
   [(IntTypeWidthLTX<2> $cond)]>;
 
 def CatDoubleConst : Pat <
-  (VariadicCatPrimOp:$old (variadic $cst1, (VariadicCatPrimOp (variadic $cst2, $v)))),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic (VariadicCatPrimOp (variadic $cst1, (AsUIntPrimOp $cst2))), (AsUIntPrimOp $v)))),
+  (CatPrimOp:$old (variadic $cst1, (CatPrimOp (variadic $cst2, $v)))),
+  (MoveNameHint $old, (CatPrimOp (variadic (CatPrimOp (variadic $cst1, (AsUIntPrimOp $cst2))), (AsUIntPrimOp $v)))),
   [(KnownWidth $v), (AnyConstantOp $cst1), (AnyConstantOp $cst2)]>;
 
 // cat(asUint(x), asUint(y)) -> cat(x,y)
 def CatCast : Pat <
-  (VariadicCatPrimOp:$old (variadic (AsUIntPrimOp $x), (AsUIntPrimOp $y))),
-  (MoveNameHint $old, (VariadicCatPrimOp (variadic $x, $y))),
+  (CatPrimOp:$old (variadic (AsUIntPrimOp $x), (AsUIntPrimOp $y))),
+  (MoveNameHint $old, (CatPrimOp (variadic $x, $y))),
   [(EqualSigns $x, $y)]>;
 
 // cat(bits a:b x, bits b+1:c x) -> bits( a:c x)
 def CatBitsBits : Pat <
-  (VariadicCatPrimOp:$old (variadic (BitsPrimOp $x, I32Attr:$hi, I32Attr:$mid), (BitsPrimOp $x, I32Attr:$mid2, I32Attr:$low))),
+  (CatPrimOp:$old (variadic (BitsPrimOp $x, I32Attr:$hi, I32Attr:$mid), (BitsPrimOp $x, I32Attr:$mid2, I32Attr:$low))),
   (MoveNameHint $old, (BitsPrimOp $x, $hi, $low)),
   [(AdjInt $mid2, $mid)]>;
 
