@@ -680,8 +680,8 @@ let inferType = "impl::inferComparisonResult" in {
 }
 
 def CatPrimOp : FIRRTLExprOp<"cat"> {
-  let arguments = (ins Variadic<UIntType>:$inputs);
-  let results = (outs FIRRTLBaseType:$result);
+  let arguments = (ins Variadic<IntType>:$inputs);
+  let results = (outs UIntType:$result);
 
   let assemblyFormat = "$inputs attr-dict `:` functional-type($inputs, $result)";
 

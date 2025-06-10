@@ -2608,7 +2608,7 @@ ParseResult FIRStmtParser::parseCatExp(Value &result) {
         if (parseExp(operand, "expected expression in cat expression"))
           return failure();
 
-        if (!type_isa<UIntType>(operand.getType()))
+        if (!type_isa<IntType>(operand.getType()))
           return emitError(loc, "unexpected expression of type ")
                  << operand.getType() << " in cat expression, expected UInt";
 
@@ -2617,21 +2617,16 @@ ParseResult FIRStmtParser::parseCatExp(Value &result) {
       }))
     return failure();
 
+  if (operands.size() != 2) {
+    if (requireFeature(nextFIRVersion, "variadic cat"))
+      return failure();
+  }
+
   if (operands.empty())
     return emitError(loc, "cat requires at least one operand");
 
-  // Infer the result type
-  auto resultType = CatPrimOp::inferReturnType(
-      ValueRange(operands), DictionaryAttr(), OpaqueProperties(nullptr), {}, {});
-  if (!resultType) {
-    // Only call translateLocation on an error case, it is expensive.
-    CatPrimOp::inferReturnType(ValueRange(operands), DictionaryAttr(),
-                               OpaqueProperties(nullptr), {}, translateLocation(loc));
-    return failure();
-  }
-
   locationProcessor.setLoc(loc);
-  result = builder.create<CatPrimOp>(resultType, operands);
+  result = builder.create<CatPrimOp>(operands);
   return success();
 }
 

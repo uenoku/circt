@@ -5107,7 +5107,7 @@ FIRRTLType CatPrimOp::inferReturnType(ValueRange operands,
 
   // Check that all operands are UInt types
   for (auto operand : operands) {
-    auto type = type_dyn_cast<UIntType>(operand.getType());
+    auto type = type_dyn_cast<IntType>(operand.getType());
     if (!type)
       return emitInferRetTypeError(loc, "all operands must be UInt type");
   }
@@ -5117,7 +5117,7 @@ FIRRTLType CatPrimOp::inferReturnType(ValueRange operands,
   bool isConstResult = true;
 
   for (auto operand : operands) {
-    auto type = type_cast<UIntType>(operand.getType());
+    auto type = type_cast<IntType>(operand.getType());
     int32_t width = type.getWidthOrSentinel();
 
     // If any width is unknown, the result width is unknown

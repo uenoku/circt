@@ -2884,7 +2884,7 @@ struct FoldUnusedBits : public mlir::RewritePattern {
       rewriter.setInsertionPoint(writeOp);
 
       SmallVector<Value> slices;
-      for (auto &[start, end] : ranges) {
+      for (auto &[start, end] : llvm::reverse(ranges)) {
         Value slice = rewriter.createOrFold<BitsPrimOp>(writeOp.getLoc(),
                                                         source, end, start);
         slices.push_back(slice);
