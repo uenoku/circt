@@ -443,7 +443,6 @@ MlirAttribute omListAttrGet(MlirType elementType, intptr_t numElements,
   (void)unwrapList(static_cast<size_t>(numElements), elements, attrs);
   auto type = unwrap(elementType);
   auto *ctx = type.getContext();
-  assert(numElements == 2);
   return wrap(ListAttr::get(ctx, type, ArrayAttr::get(ctx, attrs)));
 }
 
