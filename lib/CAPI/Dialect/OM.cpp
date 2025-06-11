@@ -35,6 +35,11 @@ bool omTypeIsAAnyType(MlirType type) { return isa<AnyType>(unwrap(type)); }
 /// Get the TypeID for an AnyType.
 MlirTypeID omAnyTypeGetTypeID(void) { return wrap(AnyType::getTypeID()); }
 
+/// Get an AnyType.
+MlirType omAnyTypeGet(MlirContext ctx) {
+  return wrap(AnyType::get(unwrap(ctx)));
+}
+
 /// Is the Type a ClassType.
 bool omTypeIsAClassType(MlirType type) { return isa<ClassType>(unwrap(type)); }
 
@@ -86,6 +91,9 @@ bool omTypeIsAStringType(MlirType type) {
 MlirType omStringTypeGet(MlirContext ctx) {
   return wrap(StringType::get(unwrap(ctx)));
 }
+
+/// Get the TypeID for a StringType.
+MlirTypeID omStringTypeGetTypeID(void) { return wrap(StringType::getTypeID()); }
 
 /// Is the Type a MapType.
 bool omTypeIsAMapType(MlirType type) { return isa<MapType>(unwrap(type)); }
@@ -427,6 +435,16 @@ intptr_t omListAttrGetNumElements(MlirAttribute attr) {
 MlirAttribute omListAttrGetElement(MlirAttribute attr, intptr_t pos) {
   auto listAttr = llvm::cast<ListAttr>(unwrap(attr));
   return wrap(listAttr.getElements()[pos]);
+}
+
+MlirAttribute omListAttrGet(MlirType elementType, intptr_t numElements,
+                            const MlirAttribute *elements) {
+  SmallVector<Attribute, 8> attrs;
+  (void)unwrapList(static_cast<size_t>(numElements), elements, attrs);
+  auto type = unwrap(elementType);
+  auto *ctx = type.getContext();
+  assert(numElements == 2);
+  return wrap(ListAttr::get(ctx, type, ArrayAttr::get(ctx, attrs)));
 }
 
 //===----------------------------------------------------------------------===//

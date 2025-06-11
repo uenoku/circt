@@ -445,11 +445,33 @@ static MlirAttribute omPythonValueToPrimitive(PythonPrimitive value,
   if (auto *attr = std::get_if<nb::str>(&value)) {
     auto str = nb::cast<std::string>(*attr);
     auto strRef = mlirStringRefCreate(str.data(), str.length());
-    return mlirStringAttrGet(ctx, strRef);
+    auto omStringType = omStringTypeGet(ctx);
+    return mlirStringAttrTypedGet(omStringType, strRef);
   }
 
   if (auto *attr = std::get_if<nb::bool_>(&value)) {
     return mlirBoolAttrGet(ctx, nb::cast<bool>(*attr));
+  }
+
+  if (auto *attr = std::get_if<nb::list>(&value)) {
+    if (attr->size() == 0)
+      return omListAttrGet(omAnyTypeGet(ctx), 0, nullptr);
+
+    std::vector<MlirAttribute> attrs;
+    attrs.reserve(attr->size());
+    std::optional<MlirType> type;
+    for (auto v : *attr) {
+      attrs.push_back(
+          omPythonValueToPrimitive(nb::cast<PythonPrimitive>(v), ctx));
+      if (!type)
+        type = mlirAttributeGetType(attrs.back());
+      else if (!mlirTypeEqual(*type, mlirAttributeGetType(attrs.back()))) {
+        type = omAnyTypeGet(ctx);
+      }
+    }
+    assert(attrs.size() == 2 && "type must be set");
+
+    return omListAttrGet(*type, attrs.size(), attrs.data());
   }
 
   throw nb::type_error("Unexpected OM primitive value");
@@ -599,6 +621,13 @@ void circt::python::populateDialectOMSubmodule(nb::module_ &m) {
 
   // Add the OMListAttr definition
   mlir_attribute_subclass(m, "ListAttr", omAttrIsAListAttr)
+      .def_classmethod("get",
+                       [](nb::object cls,
+                          const std::vector<MlirAttribute> &intVal,
+                          MlirType elementType) {
+                         return cls(omListAttrGet(elementType, intVal.size(),
+                                                  intVal.data()));
+                       })
       .def("__getitem__", &omListAttrGetElement)
       .def("__len__", &omListAttrGetNumElements)
       .def("__iter__",
@@ -632,4 +661,14 @@ void circt::python::populateDialectOMSubmodule(nb::module_ &m) {
   // Add the PathType class definition.
   mlir_type_subclass(m, "PathType", omTypeIsAFrozenPathType,
                      omFrozenPathTypeGetTypeID);
+
+  // Add the StringType class definition.
+  mlir_type_subclass(m, "StringType", omTypeIsAStringType,
+                     omStringTypeGetTypeID)
+      .def_classmethod(
+          "get",
+          [](nb::object cls, MlirContext ctx) {
+            return cls(omStringTypeGet(ctx));
+          },
+          nb::arg("cls"), nb::arg("context") = nb::none());
 }
