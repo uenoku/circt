@@ -1,5 +1,6 @@
 add_subdirectory(AffineToLoopSchedule)
 add_subdirectory(AIGToComb)
+add_subdirectory(ImportAIGER)
 add_subdirectory(ArcToLLVM)
 add_subdirectory(CalyxToFSM)
 add_subdirectory(CalyxToHW)
