@@ -1,0 +1,84 @@
+// RUN: circt-translate --import-aiger %s --split-input-file | FileCheck %s
+
+// Test basic AND gate
+// CHECK-LABEL: hw.module @aiger_top(in %input_0 : i1, in %input_1 : i1, out output_0 : i1) {
+// CHECK-NEXT:    %[[AND:.+]] = aig.and_inv %input_1, %input_0 : i1
+// CHECK-NEXT:    hw.output %[[AND]] : i1
+// CHECK-NEXT: }
+aag 3 2 0 1 1
+2
+4
+6
+6 4 2
+
+// -----
+// Test invert
+// CHECK-LABEL: hw.module @aiger_top(in %input_0 : i1, in %input_1 : i1, out output_0 : i1) {
+// CHECK-NEXT:    %[[AND:.+]] = aig.and_inv not %input_1, not %input_0 : i1
+// CHECK-NEXT:    hw.output %[[AND]] : i1
+// CHECK-NEXT: }
+aag 3 2 0 1 1
+2
+4
+6
+6 5 3
+
+// -----
+// Test multiple outputs
+// CHECK-LABEL: hw.module @aiger_top(in %input_0 : i1, in %input_1 : i1, out output_0 : i1, out output_1 : i1) {
+// CHECK-NEXT:    %0 = aig.and_inv %input_1, %input_0 : i1
+// CHECK-NEXT:    %1 = aig.and_inv %0, %input_1 : i1
+// CHECK-NEXT:    hw.output %0, %1 : i1, i1
+// CHECK-NEXT:  }
+aag 4 2 0 2 2
+2
+4
+6
+8
+6 4 2
+8 6 4
+
+// -----
+// Test latch
+// CHECK-LABEL:  hw.module @aiger_top(in %input_0 : i1, out output_0 : i1, in %clock : !seq.clock) {
+// CHECK-NEXT:    %[[REG:.+]] = seq.compreg %1, %clock : i1
+// CHECK-NEXT:    %[[AND:.+]] = aig.and_inv %[[REG]], %input_0 : i1
+// CHECK-NEXT:    hw.output %[[REG]] : i1
+// CHECK-NEXT:  }
+aag 3 1 1 1 1
+2
+4 6
+4
+6 4 2
+
+// -----
+// Test with comments
+// CHECK-LABEL: hw.module @aiger_top(in %input_0 : i1, in %input_1 : i1, out output_0 : i1) {
+// CHECK-NEXT:    %0 = aig.and_inv %input_1, %input_0 : i1
+// CHECK-NEXT:    hw.output %0 : i1
+// CHECK-NEXT:  }
+aag 3 2 0 1 1
+2
+4
+6
+6 4 2
+c
+This is a comment line
+
+// -----
+// Test symbol table
+// CHECK-LABEL: hw.module @aiger_top(in %in1 : i1, in %in2 : i1, out out : i1, in %clock : !seq.clock) {
+// CHECK-NEXT:    %latch = seq.compreg %[[AND:.+]], %clock : i1
+// CHECK-NEXT:    %[[AND]] = aig.and_inv %in2, %in1 : i1
+// CHECK-NEXT:    hw.output %[[AND]] : i1
+// CHECK-NEXT:  }
+aag 3 2 1 1 1
+2
+4
+8 6
+6
+6 4 2
+i0 in1
+i1 in2
+l0 latch
+o0 out
