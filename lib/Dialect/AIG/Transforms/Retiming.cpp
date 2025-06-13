@@ -577,7 +577,7 @@ void RetimingPass::runOnOperation() {
       }
     }
 
-    for (auto [old, new_] : mapping) {
+    for (auto [old, new_] : mapping.takeVector()) {
       old.replaceAllUsesWith(new_);
       if (auto firreg = dyn_cast<seq::FirRegOp>(old.getDefiningOp()))
         firreg->erase();
