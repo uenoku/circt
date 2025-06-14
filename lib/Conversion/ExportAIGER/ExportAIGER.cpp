@@ -15,6 +15,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypes.h"
+#include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/Version.h"
 #include "mlir/IR/Builders.h"
@@ -26,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <mlir/IR/Operation.h>
@@ -68,13 +70,34 @@ private:
   // Data structures for tracking variables and gates
   // <Value, bitPos>
   DenseMap<Object, unsigned> valueLiteralMap;
-  SmallVector<Object> inputs;
-  SmallVector<std::pair<Object, Object>> latches; // current, next
-  SmallVector<Object> outputs;
+  SmallVector<std::pair<Object, StringAttr>> inputs;
+  SmallVector<std::pair<std::pair<Object, StringAttr>, Object>>
+      latches; // current, next
+  SmallVector<std::pair<Object, StringAttr>> outputs;
   SmallVector<std::tuple<Object, Object, Object>> andGates; // lhs, rhs0, rhs1
 
   /// Analyze the module and collect information
   LogicalResult analyzeModule();
+
+  StringAttr getIndexName(StringAttr name, int bitPos) {
+    if (!options.includeSymbolTable)
+      return {};
+    if (!name || bitPos == -1)
+      return name;
+    return StringAttr::get(name.getContext(), name.getValue() + "[" +
+                                                  std::to_string(bitPos) + "]");
+  }
+
+  void addInput(Object obj, StringAttr name = {}, int bitPos = -1) {
+    inputs.push_back({obj, getIndexName(name, bitPos)});
+  }
+  void addLatch(Object current, Object next, StringAttr name = {},
+                int bitPos = -1) {
+    latches.push_back({{current, getIndexName(name, bitPos)}, next});
+  }
+  void addOutput(Object obj, StringAttr name = {}, int bitPos = -1) {
+    outputs.push_back({obj, getIndexName(name, bitPos)});
+  }
 
   /// Analyze module ports (inputs/outputs)
   LogicalResult analyzePorts(hw::HWModuleOp module);
@@ -191,7 +214,7 @@ LogicalResult AIGERExporter::writeInputs() {
   }
 
   // Write input literals
-  for (auto input : inputs) {
+  for (auto [input, name] : inputs) {
     unsigned literal = getLiteral(input);
     os << literal << "\n";
   }
@@ -204,7 +227,8 @@ LogicalResult AIGERExporter::writeLatches() {
 
   // Write latch definitions
   for (auto [current, next] : latches) {
-    unsigned currentLiteral = getLiteral(current);
+    auto [currentObj, currentName] = current;
+    unsigned currentLiteral = getLiteral(currentObj);
 
     // For next state, we need to handle potential inversions
     // Check if next state comes from an inverter or has inversions
@@ -224,7 +248,7 @@ LogicalResult AIGERExporter::writeOutputs() {
   LLVM_DEBUG(llvm::dbgs() << "Writing outputs\n");
 
   // Write output literals
-  for (auto output : outputs) {
+  for (auto [output, name] : outputs) {
     unsigned literal = getLiteral(output);
     os << literal << "\n";
   }
@@ -304,10 +328,29 @@ LogicalResult AIGERExporter::writeSymbolTable() {
   if (!options.includeSymbolTable)
     return success();
 
-  // TODO: Implement symbol table writing
-  // Format: i<index> <symbol_name>
-  //         l<index> <symbol_name>
-  //         o<index> <symbol_name>
+  for (auto [index, elem] : llvm::enumerate(inputs)) {
+    auto [obj, name] = elem;
+    if (!name)
+      continue;
+    unsigned literal = getLiteral(obj);
+    os << "i" << literal << " " << name.getValue() << "\n";
+  }
+
+  for (auto [index, elem] : llvm::enumerate(latches)) {
+    auto [current, next] = elem;
+    unsigned literal = getLiteral(current.first);
+    if (!current.second)
+      continue;
+    os << "l" << literal << " " << current.second.getValue() << "\n";
+  }
+
+  for (auto [index, elem] : llvm::enumerate(outputs)) {
+    auto [obj, name] = elem;
+    unsigned literal = getLiteral(obj);
+    if (!name)
+      continue;
+    os << "o" << literal << " " << name.getValue() << "\n";
+  }
 
   return success();
 }
@@ -407,6 +450,9 @@ unsigned AIGERExporter::getLiteral(Object obj, bool inverted) {
 LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
   LLVM_DEBUG(llvm::dbgs() << "Analyzing module ports\n");
 
+  auto inputNames = hwModule.getInputNames();
+  auto outputNames = hwModule.getOutputNames();
+
   // Analyze input ports
   for (auto [index, arg] :
        llvm::enumerate(hwModule.getBodyBlock()->getArguments())) {
@@ -416,7 +462,8 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
     // All other inputs should be i1 (1-bit assumption)
     for (int64_t i = 0; i < hw::getBitWidth(arg.getType()); ++i) {
-      inputs.push_back({arg, i});
+      addInput({arg, i}, llvm::dyn_cast_or_null<StringAttr>(inputNames[index]),
+               i);
     }
 
     LLVM_DEBUG(llvm::dbgs() << "  Input " << index << ": " << arg << "\n");
@@ -425,19 +472,12 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
   numInputs = inputs.size();
 
   // Analyze output ports by looking at hw.output operation
-  auto walkResult = hwModule.walk([&](hw::OutputOp outputOp) {
-    for (auto operand : outputOp.getOperands()) {
-      // All outputs should be i1 (1-bit assumption)
-      for (int64_t i = 0; i < hw::getBitWidth(operand.getType()); ++i) {
-        outputs.push_back({operand, i});
-      }
-      LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
-    }
-    return WalkResult::advance();
-  });
-
-  if (walkResult.wasInterrupted())
-    return failure();
+  auto *outputOp = hwModule.getBodyBlock()->getTerminator();
+  for (auto [operand, name] : llvm::zip(outputOp->getOperands(), outputNames)) {
+    for (int64_t i = 0; i < hw::getBitWidth(operand.getType()); ++i)
+      addOutput({operand, i}, llvm::dyn_cast_or_null<StringAttr>(name), i);
+    LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
+  }
 
   numOutputs = outputs.size();
 
@@ -474,7 +514,8 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     } else if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
       // Handle registers (latches in AIGER)
       for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
-        latches.push_back({{regOp.getResult(), i}, {regOp.getInput(), i}});
+        addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
+                 regOp.getNameAttr(), i);
 
         numLatches++;
       }
@@ -496,6 +537,12 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const AIGERExporter::Object &obj) {
   return os << obj.first << "[" << obj.second << "]";
 }
+llvm::raw_ostream &
+operator<<(llvm::raw_ostream &os,
+           const std::pair<AIGERExporter::Object, StringAttr> &obj) {
+  return os << obj.first
+            << (obj.second ? " (" + obj.second.getValue() + ")" : "");
+}
 
 LogicalResult AIGERExporter::assignLiterals() {
   LLVM_DEBUG(llvm::dbgs() << "Assigning literals\n");
@@ -505,7 +552,7 @@ LogicalResult AIGERExporter::assignLiterals() {
 
   // Assign literals to inputs first
   for (auto input : inputs) {
-    valueLiteralMap[input] = nextLiteral;
+    valueLiteralMap[input.first] = nextLiteral;
     LLVM_DEBUG(llvm::dbgs()
                << "  Input literal " << nextLiteral << ": " << input << "\n");
     nextLiteral += 2; // Even literals only (odd = inverted)
@@ -513,7 +560,7 @@ LogicalResult AIGERExporter::assignLiterals() {
 
   // Assign literals to latches (current state)
   for (auto [current, next] : latches) {
-    valueLiteralMap[current] = nextLiteral;
+    valueLiteralMap[current.first] = nextLiteral;
     LLVM_DEBUG(llvm::dbgs()
                << "  Latch literal " << nextLiteral << ": " << current << "\n");
     nextLiteral += 2;
@@ -549,6 +596,10 @@ LogicalResult circt::exportAIGER(hw::HWModuleOp module, llvm::raw_ostream &os,
 llvm::cl::opt<bool> useTextFormat("use-agg",
                                   llvm::cl::desc("Export AIGER in text format"),
                                   llvm::cl::init(false));
+llvm::cl::opt<bool>
+    includeSymbolTable("include-symbol-table",
+                       llvm::cl::desc("Include symbol table in the output"),
+                       llvm::cl::init(false));
 
 void circt::registerToAIGERTranslation() {
   static mlir::TranslateFromMLIRRegistration toAIGER(
@@ -567,6 +618,7 @@ void circt::registerToAIGERTranslation() {
 
         ExportAIGEROptions options;
         options.binaryFormat = !useTextFormat;
+        options.includeSymbolTable = includeSymbolTable;
 
         return exportAIGER(*ops.begin(), os, &options);
       },
