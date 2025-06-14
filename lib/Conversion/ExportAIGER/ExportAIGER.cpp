@@ -15,6 +15,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypes.h"
+#include "circt/Dialect/HW/InnerSymbolTable.h"
 #include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/Version.h"
@@ -84,8 +85,8 @@ private:
       return {};
     if (!name || bitPos == -1)
       return name;
-    return StringAttr::get(name.getContext(), name.getValue() + "_" +
-                                                  std::to_string(bitPos));
+    return StringAttr::get(name.getContext(),
+                           name.getValue() + "_" + std::to_string(bitPos));
   }
 
   void addInput(Object obj, StringAttr name = {}, int bitPos = -1) {
@@ -473,6 +474,40 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
     for (int64_t i = 0; i < hw::getBitWidth(operand.getType()); ++i)
       addOutput({operand, i}, llvm::dyn_cast_or_null<StringAttr>(name), i);
     LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
+  }
+
+  // Handle unknown operations
+  if (options.handleUnknownOperation) {
+    assert(options.unknownOperationOperandHandler &&
+           "unknownOperationOperandHandler must be set if "
+           "handleUnknownOperation is true");
+    assert(options.unknownOperationResultHandler &&
+           "unknownOperationResultHandler must be set if "
+           "handleUnknownOperation is true");
+    module.walk([&](Operation *op) {
+      if (isa<hw::ConstantOp, hw::OutputOp, aig::AndInverterOp, seq::CompRegOp,
+              comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
+        return;
+
+      for (mlir::OpOperand &operand : op->getOpOperands()) {
+        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
+          if (options.unknownOperationOperandHandler(operand, i,
+                                                      outputs.size()))
+            addOutput({operand.get(), i});
+        }
+      }
+
+      for (mlir::OpResult result : op->getOpResults()) {
+        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
+          if (options.unknownOperationResultHandler(result, i, inputs.size()))
+            addInput({result, i});
+          else {
+            // Treat it as a constant
+            valueLiteralMap[{result, i}] = 0;
+          }
+        }
+      }
+    });
   }
 
   numInputs = inputs.size();

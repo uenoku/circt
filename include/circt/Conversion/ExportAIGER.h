@@ -15,6 +15,7 @@
 
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Value.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
@@ -40,6 +41,17 @@ struct ExportAIGEROptions {
   /// Whether to include comments in the output.
   /// Default is true.
   bool includeComments = true;
+
+  /// Callback for unknown operations.
+  /// If true, operand and result will extracted to outputs and inputs respectively.
+  /// Clients are expected to record this information in their use case.
+  bool handleUnknownOperation = false;
+  // Return true if the operand should be added to the output, false otherwise.
+  // If returned false, outputIndex will be invalid for the given operand.
+  std::function<bool(mlir::OpOperand& operand, size_t bitPos, size_t outputIndex)> unknownOperationOperandHandler = nullptr;
+  // Return true if the result should be added to the input, false otherwise.
+  // If returned false, inputIndex will be invalid for the given result.
+  std::function<bool(mlir::OpResult result, size_t bitPos, size_t inputIndex)> unknownOperationResultHandler = nullptr;
 };
 
 /// Export an MLIR module containing AIG dialect operations to AIGER format.
