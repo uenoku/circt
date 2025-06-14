@@ -466,8 +466,6 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "  Input " << index << ": " << arg << "\n");
   }
 
-  numInputs = inputs.size();
-
   // Analyze output ports by looking at hw.output operation
   auto *outputOp = hwModule.getBodyBlock()->getTerminator();
   for (auto [operand, name] : llvm::zip(outputOp->getOperands(), outputNames)) {
@@ -476,6 +474,7 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
   }
 
+  numInputs = inputs.size();
   numOutputs = outputs.size();
 
   LLVM_DEBUG(llvm::dbgs() << "Found " << numInputs << " inputs, " << numOutputs
