@@ -12,7 +12,9 @@
 
 #include "circt/Conversion/ExportAIGER.h"
 #include "circt/Dialect/AIG/AIGOps.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/HWTypes.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/Version.h"
 #include "mlir/IR/Builders.h"
@@ -49,6 +51,8 @@ public:
   /// Export the module to AIGER format
   LogicalResult exportModule();
 
+  using Object = std::pair<Value, int>;
+
 private:
   hw::HWModuleOp module;
   llvm::raw_ostream &os;
@@ -62,11 +66,12 @@ private:
   unsigned numAnds = 0;
 
   // Data structures for tracking variables and gates
-  DenseMap<Value, unsigned> valueLiteralMap;
-  SmallVector<Value> inputs;
-  SmallVector<std::pair<Value, Value>> latches; // current, next
-  SmallVector<Value> outputs;
-  SmallVector<std::tuple<Value, Value, Value>> andGates; // lhs, rhs0, rhs1
+  // <Value, bitPos>
+  DenseMap<Object, unsigned> valueLiteralMap;
+  SmallVector<Object> inputs;
+  SmallVector<std::pair<Object, Object>> latches; // current, next
+  SmallVector<Object> outputs;
+  SmallVector<std::tuple<Object, Object, Object>> andGates; // lhs, rhs0, rhs1
 
   /// Analyze the module and collect information
   LogicalResult analyzeModule();
@@ -102,7 +107,7 @@ private:
   LogicalResult writeComments();
 
   /// Get or assign a literal for a value
-  unsigned getLiteral(Value value, bool inverted = false);
+  unsigned getLiteral(Object obj, bool inverted = false);
 
   /// Emit error message
   InFlightDiagnostic emitError(const Twine &message) {
@@ -186,7 +191,7 @@ LogicalResult AIGERExporter::writeInputs() {
   }
 
   // Write input literals
-  for (Value input : inputs) {
+  for (auto input : inputs) {
     unsigned literal = getLiteral(input);
     os << literal << "\n";
   }
@@ -219,7 +224,7 @@ LogicalResult AIGERExporter::writeOutputs() {
   LLVM_DEBUG(llvm::dbgs() << "Writing outputs\n");
 
   // Write output literals
-  for (Value output : outputs) {
+  for (auto output : outputs) {
     unsigned literal = getLiteral(output);
     os << literal << "\n";
   }
@@ -236,7 +241,7 @@ LogicalResult AIGERExporter::writeAndGates() {
       unsigned lhsLiteral = getLiteral(lhs);
 
       // Get the AND-inverter operation to check inversion flags
-      auto andInvOp = lhs.getDefiningOp<aig::AndInverterOp>();
+      auto andInvOp = lhs.first.getDefiningOp<aig::AndInverterOp>();
       if (!andInvOp || andInvOp.getInputs().size() != 2) {
         return emitError("expected 2-input AND-inverter operation");
       }
@@ -258,6 +263,7 @@ LogicalResult AIGERExporter::writeAndGates() {
       // Delta1 = rhs0 - rhs1
       unsigned delta0 = lhsLiteral - rhs0Literal;
       unsigned delta1 = rhs0Literal - rhs1Literal;
+
       LLVM_DEBUG(llvm::dbgs()
                  << "Writing AND gate: " << lhsLiteral << " = " << rhs0Literal
                  << " & " << rhs1Literal << " (deltas: " << delta0 << ", "
@@ -273,7 +279,7 @@ LogicalResult AIGERExporter::writeAndGates() {
       unsigned lhsLiteral = getLiteral(lhs);
 
       // Get the AND-inverter operation to check inversion flags
-      auto andInvOp = lhs.getDefiningOp<aig::AndInverterOp>();
+      auto andInvOp = lhs.first.getDefiningOp<aig::AndInverterOp>();
       if (!andInvOp || andInvOp.getInputs().size() != 2) {
         return emitError("expected 2-input AND-inverter operation");
       }
@@ -319,8 +325,18 @@ LogicalResult AIGERExporter::writeComments() {
   return success();
 }
 
-unsigned AIGERExporter::getLiteral(Value value, bool inverted) {
+unsigned AIGERExporter::getLiteral(Object obj, bool inverted) {
   // Handle constants
+  auto value = obj.first;
+  auto pos = obj.second;
+  {
+    auto it = valueLiteralMap.find({value, pos});
+    if (it != valueLiteralMap.end()) {
+      unsigned literal = it->second;
+      return inverted ? literal ^ 1 : literal;
+    }
+  }
+
   if (auto constOp = value.getDefiningOp<hw::ConstantOp>()) {
     APInt constValue = constOp.getValue();
     if (constValue.isZero()) {
@@ -337,26 +353,52 @@ unsigned AIGERExporter::getLiteral(Value value, bool inverted) {
       // This is a pure inverter - we need to find the input's literal
       Value input = andInvOp.getInputs()[0];
       bool inputInverted = andInvOp.getInverted()[0];
-
-      // Look up input in literal map
-      auto inputIt = valueLiteralMap.find(input);
-      if (inputIt != valueLiteralMap.end()) {
-        unsigned inputLiteral = inputIt->second;
-        // Apply input inversion
-        if (inputInverted)
-          inputLiteral += 1;
-        // Apply additional inversion if requested
-        return inverted ? (inputLiteral ^ 1) : inputLiteral;
-      }
+      unsigned inputLiteral = getLiteral({input, pos}, inputInverted);
+      // Apply additional inversion if requested
+      valueLiteralMap[{value, pos}] = inputLiteral;
     }
   }
 
+  if (auto concat = value.getDefiningOp<comb::ConcatOp>()) {
+    // Concatenation is handled by looking up the correct operand
+    // based on the position
+    int64_t bitPos = pos;
+    for (auto operand : llvm::reverse(concat.getInputs())) {
+      int64_t operandWidth = hw::getBitWidth(operand.getType());
+      if (bitPos >= operandWidth) {
+        bitPos -= operandWidth;
+        continue;
+      }
+      valueLiteralMap[{value, pos}] = getLiteral({operand, bitPos});
+    }
+  }
+
+  if (auto extract = value.getDefiningOp<comb::ExtractOp>()) {
+    // Extract operation is handled by looking up the correct operand
+    // based on the position
+    int64_t bitPos = pos;
+    valueLiteralMap[{value, pos}] =
+        getLiteral({extract.getInput(), bitPos + extract.getLowBit()});
+  }
+
+  if (auto replicate = value.getDefiningOp<comb::ReplicateOp>()) {
+    // Replication is handled by looking up the correct operand
+    // based on the position
+    int64_t bitPos = pos;
+    int64_t operandWidth = hw::getBitWidth(replicate.getInput().getType());
+    valueLiteralMap[{value, pos}] =
+        getLiteral({replicate.getInput(), bitPos % operandWidth});
+  }
+
   // Look up in the literal map
-  auto it = valueLiteralMap.find(value);
+  auto it = valueLiteralMap.find({value, pos});
   if (it != valueLiteralMap.end()) {
     unsigned literal = it->second;
-    return inverted ? literal + 1 : literal;
+    return inverted ? literal ^ 1 : literal;
   }
+  llvm::errs() << "Unhandled: Value not found in literal map: " << value << "["
+               << pos << "]\n";
+  assert(0 && "Value not found in literal map");
 
   // This should not happen if analysis was done correctly
   llvm_unreachable("Value not found in literal map");
@@ -373,10 +415,10 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
       continue;
 
     // All other inputs should be i1 (1-bit assumption)
-    if (!arg.getType().isInteger(1))
-      return emitError("input port must be i1 type, got ") << arg.getType();
+    for (int64_t i = 0; i < hw::getBitWidth(arg.getType()); ++i) {
+      inputs.push_back({arg, i});
+    }
 
-    inputs.push_back(arg);
     LLVM_DEBUG(llvm::dbgs() << "  Input " << index << ": " << arg << "\n");
   }
 
@@ -386,12 +428,9 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
   auto walkResult = hwModule.walk([&](hw::OutputOp outputOp) {
     for (auto operand : outputOp.getOperands()) {
       // All outputs should be i1 (1-bit assumption)
-      if (!operand.getType().isInteger(1)) {
-        emitError("output port must be i1 type, got ") << operand.getType();
-        return WalkResult::interrupt();
+      for (int64_t i = 0; i < hw::getBitWidth(operand.getType()); ++i) {
+        outputs.push_back({operand, i});
       }
-
-      outputs.push_back(operand);
       LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
     }
     return WalkResult::advance();
@@ -418,9 +457,13 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
         LLVM_DEBUG(llvm::dbgs() << "  Found inverter: " << andInvOp << "\n");
       } else if (andInvOp.getInputs().size() == 2) {
         // Two inputs = AND gate
-        andGates.push_back({andInvOp.getResult(), andInvOp.getInputs()[0],
-                            andInvOp.getInputs()[1]});
-        numAnds++;
+        for (int64_t i = 0; i < hw::getBitWidth(andInvOp.getType()); ++i) {
+          andGates.push_back({{andInvOp.getResult(), i},
+                              {andInvOp.getInputs()[0], i},
+                              {andInvOp.getInputs()[1], i}});
+          numAnds++;
+        }
+
         LLVM_DEBUG(llvm::dbgs() << "  Found AND gate: " << andInvOp << "\n");
       } else {
         // Variadic AND gates need to be lowered first
@@ -430,8 +473,11 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
       }
     } else if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
       // Handle registers (latches in AIGER)
-      latches.push_back({regOp.getResult(), regOp.getInput()});
-      numLatches++;
+      for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
+        latches.push_back({{regOp.getResult(), i}, {regOp.getInput(), i}});
+
+        numLatches++;
+      }
       LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
     }
     // Ignore other operations (hw.output, etc.)
@@ -446,6 +492,11 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
   return success();
 }
 
+llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                              const AIGERExporter::Object &obj) {
+  return os << obj.first << "[" << obj.second << "]";
+}
+
 LogicalResult AIGERExporter::assignLiterals() {
   LLVM_DEBUG(llvm::dbgs() << "Assigning literals\n");
 
@@ -453,7 +504,7 @@ LogicalResult AIGERExporter::assignLiterals() {
       2; // Start from 2 (literal 0 = FALSE, literal 1 = TRUE)
 
   // Assign literals to inputs first
-  for (Value input : inputs) {
+  for (auto input : inputs) {
     valueLiteralMap[input] = nextLiteral;
     LLVM_DEBUG(llvm::dbgs()
                << "  Input literal " << nextLiteral << ": " << input << "\n");
@@ -520,7 +571,8 @@ void circt::registerToAIGERTranslation() {
         return exportAIGER(*ops.begin(), os, &options);
       },
       [](DialectRegistry &registry) {
-        registry.insert<aig::AIGDialect, hw::HWDialect, seq::SeqDialect>();
+        registry.insert<aig::AIGDialect, hw::HWDialect, seq::SeqDialect,
+                        comb::CombDialect>();
       });
 }
 
