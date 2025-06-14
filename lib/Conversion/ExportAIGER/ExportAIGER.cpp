@@ -26,6 +26,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include <mlir/IR/Operation.h>
 #include <string>
 
 using namespace mlir;
@@ -41,7 +42,7 @@ namespace {
 /// Main AIGER exporter class
 class AIGERExporter {
 public:
-  AIGERExporter(ModuleOp module, llvm::raw_ostream &os,
+  AIGERExporter(hw::HWModuleOp module, llvm::raw_ostream &os,
                 const ExportAIGEROptions &options)
       : module(module), os(os), options(options) {}
 
@@ -49,7 +50,7 @@ public:
   LogicalResult exportModule();
 
 private:
-  ModuleOp module;
+  hw::HWModuleOp module;
   llvm::raw_ostream &os;
   const ExportAIGEROptions &options;
 
@@ -107,6 +108,9 @@ private:
   InFlightDiagnostic emitError(const Twine &message) {
     return mlir::emitError(module.getLoc(), message);
   }
+
+  /// Helper method to write unsigned LEB128 encoded integers
+  void writeUnsignedLEB128(unsigned value);
 };
 
 } // anonymous namespace
@@ -118,8 +122,9 @@ private:
 LogicalResult AIGERExporter::exportModule() {
   LLVM_DEBUG(llvm::dbgs() << "Starting AIGER export\n");
 
-  if (failed(analyzeModule()) || failed(writeHeader()) || failed(writeInputs()) ||
-      failed(writeLatches()) || failed(writeOutputs()) || failed(writeAndGates()) ||
+  if (failed(analyzeModule()) || failed(writeHeader()) ||
+      failed(writeInputs()) || failed(writeLatches()) ||
+      failed(writeOutputs()) || failed(writeAndGates()) ||
       failed(writeSymbolTable()) || failed(writeComments()))
     return failure();
 
@@ -130,20 +135,9 @@ LogicalResult AIGERExporter::exportModule() {
 LogicalResult AIGERExporter::analyzeModule() {
   LLVM_DEBUG(llvm::dbgs() << "Analyzing module\n");
 
-  // Find the top-level HW module
-  hw::HWModuleOp topModule = nullptr;
-  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
-    if (!topModule) {
-      topModule = hwModule;
-    } else {
-      return emitError("multiple HW modules found, expected single top module");
-    }
-  }
-
-  if (!topModule)
-    return emitError("no HW module found in the input");
-
-  LLVM_DEBUG(llvm::dbgs() << "Found top module: " << topModule.getModuleName() << "\n");
+  auto topModule = module;
+  LLVM_DEBUG(llvm::dbgs() << "Found top module: " << topModule.getModuleName()
+                          << "\n");
 
   // Analyze module ports
   if (failed(analyzePorts(topModule)))
@@ -237,28 +231,62 @@ LogicalResult AIGERExporter::writeAndGates() {
   LLVM_DEBUG(llvm::dbgs() << "Writing AND gates\n");
 
   if (options.binaryFormat) {
-    // TODO: Implement binary format encoding
-    return emitError("Binary format not yet implemented");
-  }
+    // Implement binary format encoding for AND gates
+    for (auto [lhs, rhs0, rhs1] : andGates) {
+      unsigned lhsLiteral = getLiteral(lhs);
 
-  // Write AND gate definitions
-  for (auto [lhs, rhs0, rhs1] : andGates) {
-    unsigned lhsLiteral = getLiteral(lhs);
+      // Get the AND-inverter operation to check inversion flags
+      auto andInvOp = lhs.getDefiningOp<aig::AndInverterOp>();
+      if (!andInvOp || andInvOp.getInputs().size() != 2) {
+        return emitError("expected 2-input AND-inverter operation");
+      }
 
-    // Get the AND-inverter operation to check inversion flags
-    auto andInvOp = lhs.getDefiningOp<aig::AndInverterOp>();
-    if (!andInvOp || andInvOp.getInputs().size() != 2) {
-      return emitError("expected 2-input AND-inverter operation");
+      // Get operand literals with inversion
+      bool rhs0Inverted = andInvOp.getInverted()[0];
+      bool rhs1Inverted = andInvOp.getInverted()[1];
+
+      unsigned rhs0Literal = getLiteral(rhs0, rhs0Inverted);
+      unsigned rhs1Literal = getLiteral(rhs1, rhs1Inverted);
+
+      // Ensure rhs0 >= rhs1 as required by AIGER format
+      if (rhs0Literal < rhs1Literal) {
+        std::swap(rhs0Literal, rhs1Literal);
+      }
+
+      // In binary format, we need to write the delta values
+      // Delta0 = lhs - rhs0
+      // Delta1 = rhs0 - rhs1
+      unsigned delta0 = lhsLiteral - rhs0Literal;
+      unsigned delta1 = rhs0Literal - rhs1Literal;
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Writing AND gate: " << lhsLiteral << " = " << rhs0Literal
+                 << " & " << rhs1Literal << " (deltas: " << delta0 << ", "
+                 << delta1 << ")\n");
+
+      // Write deltas using variable-length encoding
+      writeUnsignedLEB128(delta0);
+      writeUnsignedLEB128(delta1);
     }
+  } else {
+    // Write AND gate definitions in ASCII format
+    for (auto [lhs, rhs0, rhs1] : andGates) {
+      unsigned lhsLiteral = getLiteral(lhs);
 
-    // Get operand literals with inversion
-    bool rhs0Inverted = andInvOp.getInverted()[0];
-    bool rhs1Inverted = andInvOp.getInverted()[1];
+      // Get the AND-inverter operation to check inversion flags
+      auto andInvOp = lhs.getDefiningOp<aig::AndInverterOp>();
+      if (!andInvOp || andInvOp.getInputs().size() != 2) {
+        return emitError("expected 2-input AND-inverter operation");
+      }
 
-    unsigned rhs0Literal = getLiteral(rhs0, rhs0Inverted);
-    unsigned rhs1Literal = getLiteral(rhs1, rhs1Inverted);
+      // Get operand literals with inversion
+      bool rhs0Inverted = andInvOp.getInverted()[0];
+      bool rhs1Inverted = andInvOp.getInverted()[1];
 
-    os << lhsLiteral << " " << rhs0Literal << " " << rhs1Literal << "\n";
+      unsigned rhs0Literal = getLiteral(rhs0, rhs0Inverted);
+      unsigned rhs1Literal = getLiteral(rhs1, rhs1Inverted);
+
+      os << lhsLiteral << " " << rhs0Literal << " " << rhs1Literal << "\n";
+    }
   }
 
   return success();
@@ -338,7 +366,8 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
   LLVM_DEBUG(llvm::dbgs() << "Analyzing module ports\n");
 
   // Analyze input ports
-  for (auto [index, arg] : llvm::enumerate(hwModule.getBodyBlock()->getArguments())) {
+  for (auto [index, arg] :
+       llvm::enumerate(hwModule.getBodyBlock()->getArguments())) {
     // Skip clock inputs for now (they're handled separately in latches)
     if (isa<seq::ClockType>(arg.getType()))
       continue;
@@ -373,7 +402,8 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
   numOutputs = outputs.size();
 
-  LLVM_DEBUG(llvm::dbgs() << "Found " << numInputs << " inputs, " << numOutputs << " outputs\n");
+  LLVM_DEBUG(llvm::dbgs() << "Found " << numInputs << " inputs, " << numOutputs
+                          << " outputs\n");
   return success();
 }
 
@@ -388,12 +418,14 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
         LLVM_DEBUG(llvm::dbgs() << "  Found inverter: " << andInvOp << "\n");
       } else if (andInvOp.getInputs().size() == 2) {
         // Two inputs = AND gate
-        andGates.push_back({andInvOp.getResult(), andInvOp.getInputs()[0], andInvOp.getInputs()[1]});
+        andGates.push_back({andInvOp.getResult(), andInvOp.getInputs()[0],
+                            andInvOp.getInputs()[1]});
         numAnds++;
         LLVM_DEBUG(llvm::dbgs() << "  Found AND gate: " << andInvOp << "\n");
       } else {
         // Variadic AND gates need to be lowered first
-        emitError("variadic AND gates not supported, run aig-lower-variadic pass first");
+        emitError("variadic AND gates not supported, run aig-lower-variadic "
+                  "pass first");
         return WalkResult::interrupt();
       }
     } else if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
@@ -409,37 +441,43 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
   if (walkResult.wasInterrupted())
     return failure();
 
-  LLVM_DEBUG(llvm::dbgs() << "Found " << numAnds << " AND gates, " << numLatches << " latches\n");
+  LLVM_DEBUG(llvm::dbgs() << "Found " << numAnds << " AND gates, " << numLatches
+                          << " latches\n");
   return success();
 }
 
 LogicalResult AIGERExporter::assignLiterals() {
   LLVM_DEBUG(llvm::dbgs() << "Assigning literals\n");
 
-  unsigned nextLiteral = 2; // Start from 2 (literal 0 = FALSE, literal 1 = TRUE)
+  unsigned nextLiteral =
+      2; // Start from 2 (literal 0 = FALSE, literal 1 = TRUE)
 
   // Assign literals to inputs first
   for (Value input : inputs) {
     valueLiteralMap[input] = nextLiteral;
-    LLVM_DEBUG(llvm::dbgs() << "  Input literal " << nextLiteral << ": " << input << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Input literal " << nextLiteral << ": " << input << "\n");
     nextLiteral += 2; // Even literals only (odd = inverted)
   }
 
   // Assign literals to latches (current state)
   for (auto [current, next] : latches) {
     valueLiteralMap[current] = nextLiteral;
-    LLVM_DEBUG(llvm::dbgs() << "  Latch literal " << nextLiteral << ": " << current << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Latch literal " << nextLiteral << ": " << current << "\n");
     nextLiteral += 2;
   }
 
   // Assign literals to AND gate outputs
   for (auto [lhs, rhs0, rhs1] : andGates) {
     valueLiteralMap[lhs] = nextLiteral;
-    LLVM_DEBUG(llvm::dbgs() << "  AND gate literal " << nextLiteral << ": " << lhs << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "  AND gate literal " << nextLiteral << ": " << lhs << "\n");
     nextLiteral += 2;
   }
 
-  LLVM_DEBUG(llvm::dbgs() << "Assigned " << valueLiteralMap.size() << " literals\n");
+  LLVM_DEBUG(llvm::dbgs() << "Assigned " << valueLiteralMap.size()
+                          << " literals\n");
   return success();
 }
 
@@ -447,7 +485,7 @@ LogicalResult AIGERExporter::assignLiterals() {
 // Public API Implementation
 //===----------------------------------------------------------------------===//
 
-LogicalResult circt::exportAIGER(ModuleOp module, llvm::raw_ostream &os,
+LogicalResult circt::exportAIGER(hw::HWModuleOp module, llvm::raw_ostream &os,
                                  const ExportAIGEROptions *options) {
   ExportAIGEROptions defaultOptions;
   if (!options)
@@ -457,13 +495,42 @@ LogicalResult circt::exportAIGER(ModuleOp module, llvm::raw_ostream &os,
   return exporter.exportModule();
 }
 
+llvm::cl::opt<bool> useTextFormat("use-agg",
+                                  llvm::cl::desc("Export AIGER in text format"),
+                                  llvm::cl::init(false));
+
 void circt::registerToAIGERTranslation() {
   static mlir::TranslateFromMLIRRegistration toAIGER(
       "export-aiger", "Export AIG to AIGER format",
-      [](ModuleOp module, llvm::raw_ostream &os) {
-        return exportAIGER(module, os);
+      [](mlir::ModuleOp module, llvm::raw_ostream &os) {
+        auto ops = module.getOps<hw::HWModuleOp>();
+        if (ops.empty()) {
+          module.emitError("no HW module found in the input");
+          return failure();
+        }
+        if (std::next(ops.begin()) != ops.end()) {
+          module.emitError(
+              "multiple HW modules found, expected single top module");
+          return failure();
+        }
+
+        ExportAIGEROptions options;
+        options.binaryFormat = !useTextFormat;
+
+        return exportAIGER(*ops.begin(), os, &options);
       },
       [](DialectRegistry &registry) {
         registry.insert<aig::AIGDialect, hw::HWDialect, seq::SeqDialect>();
       });
+}
+
+// Helper method to write unsigned LEB128 encoded integers
+void AIGERExporter::writeUnsignedLEB128(unsigned value) {
+  do {
+    uint8_t byte = value & 0x7f;
+    value >>= 7;
+    if (value != 0)
+      byte |= 0x80; // Set high bit if more bytes follow
+    os.write(reinterpret_cast<char *>(&byte), 1);
+  } while (value != 0);
 }
