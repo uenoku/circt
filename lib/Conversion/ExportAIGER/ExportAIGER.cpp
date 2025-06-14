@@ -84,8 +84,8 @@ private:
       return {};
     if (!name || bitPos == -1)
       return name;
-    return StringAttr::get(name.getContext(), name.getValue() + "[" +
-                                                  std::to_string(bitPos) + "]");
+    return StringAttr::get(name.getContext(), name.getValue() + "_" +
+                                                  std::to_string(bitPos));
   }
 
   void addInput(Object obj, StringAttr name = {}, int bitPos = -1) {
@@ -410,6 +410,7 @@ unsigned AIGERExporter::getLiteral(Object obj, bool inverted) {
         continue;
       }
       valueLiteralMap[{value, pos}] = getLiteral({operand, bitPos});
+      break;
     }
   }
 
@@ -589,11 +590,11 @@ LogicalResult circt::exportAIGER(hw::HWModuleOp module, llvm::raw_ostream &os,
   return exporter.exportModule();
 }
 
-llvm::cl::opt<bool> useTextFormat("use-agg",
+llvm::cl::opt<bool> useTextFormat("use-text-format",
                                   llvm::cl::desc("Export AIGER in text format"),
                                   llvm::cl::init(false));
 llvm::cl::opt<bool>
-    includeSymbolTable("include-symbol-table",
+    includeSymbolTable("exclude-symbol-table",
                        llvm::cl::desc("Include symbol table in the output"),
                        llvm::cl::init(false));
 
@@ -614,7 +615,7 @@ void circt::registerToAIGERTranslation() {
 
         ExportAIGEROptions options;
         options.binaryFormat = !useTextFormat;
-        options.includeSymbolTable = includeSymbolTable;
+        options.includeSymbolTable = !includeSymbolTable;
 
         return exportAIGER(*ops.begin(), os, &options);
       },
