@@ -315,5 +315,7 @@ jobs:
     needs: build-test-and-install
     if: always() # Run even if build fails
     uses: ./.github/workflows/cleanupCache.yml
+    permissions:
+      contents: write # Upload assets to release.
     with:
       cache_key_pattern: ${{ needs.build-test-and-install.outputs.cache-key-pattern }}
