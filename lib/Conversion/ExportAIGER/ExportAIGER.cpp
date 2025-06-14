@@ -659,12 +659,12 @@ LogicalResult circt::exportAIGER(hw::HWModuleOp module, llvm::raw_ostream &os,
   return exporter.exportModule();
 }
 
-llvm::cl::opt<bool> useTextFormat("use-text-format",
+llvm::cl::opt<bool> emitTextFormat("emit-text-format",
                                   llvm::cl::desc("Export AIGER in text format"),
                                   llvm::cl::init(false));
 llvm::cl::opt<bool>
     includeSymbolTable("exclude-symbol-table",
-                       llvm::cl::desc("Include symbol table in the output"),
+                       llvm::cl::desc("Exclude symbol table from the output"),
                        llvm::cl::init(false));
 
 void circt::registerToAIGERTranslation() {
@@ -683,7 +683,7 @@ void circt::registerToAIGERTranslation() {
         }
 
         ExportAIGEROptions options;
-        options.binaryFormat = !useTextFormat;
+        options.binaryFormat = !emitTextFormat;
         options.includeSymbolTable = !includeSymbolTable;
 
         return exportAIGER(*ops.begin(), os, &options);
