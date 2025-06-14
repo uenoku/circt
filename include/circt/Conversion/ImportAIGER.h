@@ -33,10 +33,10 @@ struct ImportAIGEROptions {
 
 /// Parse an AIGER file and populate the given MLIR module with corresponding
 /// AIG dialect operations.
-mlir::LogicalResult
-importAIGER(llvm::SourceMgr &sourceMgr, mlir::MLIRContext *context,
-            mlir::TimingScope &ts, mlir::ModuleOp module,
-            const ImportAIGEROptions *options = nullptr);
+mlir::LogicalResult importAIGER(llvm::SourceMgr &sourceMgr,
+                                mlir::MLIRContext *context,
+                                mlir::TimingScope &ts, mlir::ModuleOp module,
+                                const ImportAIGEROptions *options = nullptr);
 
 /// Register the `import-aiger` MLIR translation.
 void registerFromAIGERTranslation();
