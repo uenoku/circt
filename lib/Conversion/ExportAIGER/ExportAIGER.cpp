@@ -522,6 +522,8 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     if (isa<hw::HWModuleOp, hw::ConstantOp, hw::OutputOp,
             comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
       return WalkResult::advance();
+
+    // Handle unknown operations
     if (options.handleUnknownOperation) {
       assert(options.unknownOperationOperandHandler &&
              "unknownOperationOperandHandler must be set if "
