@@ -70,20 +70,31 @@ static llvm::ManagedStatic<StringSet<>, ReservedWordsCreator> reservedWords;
 /// keyword or any other name in the set \p recordNames. Use the int \p
 /// nextGeneratedNameID as a counter for suffix. Update the \p recordNames with
 /// the generated name and return the StringRef.
-StringRef
-circt::sv::resolveKeywordConflict(StringRef origName,
-                                  llvm::StringMap<size_t> &nextGeneratedNameIDs,
-                                  bool caseInsensitiveKeywords) {
+StringRef circt::sv::resolveKeywordConflict(
+    StringRef origName, llvm::StringMap<size_t> &nextGeneratedNameIDs,
+    bool caseInsensitiveKeywords, StringRef suffixString) {
   // Get the list of reserved words we need to avoid.  We could prepopulate this
   // into the used words cache, but it is large and immutable, so we just query
   // it when needed.
 
   // Fast path: name is valid
-  if (!reservedWords->contains(caseInsensitiveKeywords ? origName.lower()
-                                                       : origName)) {
-    auto itAndInserted = nextGeneratedNameIDs.insert({origName, 0});
-    if (itAndInserted.second)
-      return itAndInserted.first->getKey();
+  if (suffixString.empty()) {
+    if (!reservedWords->contains(caseInsensitiveKeywords ? origName.lower()
+                                                         : origName)) {
+      auto itAndInserted = nextGeneratedNameIDs.insert({origName, 0});
+      if (itAndInserted.second)
+        return itAndInserted.first->getKey();
+    }
+  } else {
+    std::string nameBuffer(origName.begin(), origName.end());
+    nameBuffer.append(suffixString.begin(), suffixString.end());
+    if (!reservedWords->contains(caseInsensitiveKeywords
+                                     ? StringRef(nameBuffer).lower()
+                                     : nameBuffer)) {
+      auto itAndInserted = nextGeneratedNameIDs.insert({nameBuffer, 0});
+      if (itAndInserted.second)
+        return itAndInserted.first->getKey();
+    }
   }
 
   // We need to mutate the name, get the copy ready.
@@ -96,6 +107,7 @@ circt::sv::resolveKeywordConflict(StringRef origName,
     // We need to auto-unique it.
     auto suffix = llvm::utostr(nextGeneratedNameID++);
     nameBuffer.append(suffix.begin(), suffix.end());
+    nameBuffer.append(suffixString.begin(), suffixString.end());
 
     // The name may be unique.  No keywords have an underscore followed by a
     // number, so don't check that again.
@@ -136,22 +148,12 @@ StringRef circt::sv::legalizeName(StringRef name,
 
   // The name consists of at least one invalid character.  Escape it.
   SmallString<16> tmpName;
-  if (!isValidVerilogCharacterFirst(name.front()) && name.front() != ' ' &&
-      name.front() != '.')
-    tmpName += '_';
-  for (char ch : name) {
-    if (isValidVerilogCharacter(ch))
-      tmpName += ch;
-    else if (ch == ' ' || ch == '.')
-      tmpName += '_';
-    else {
-      tmpName += llvm::utohexstr((unsigned char)ch);
-    }
-  }
+  tmpName += "\\";
+  tmpName += name;
 
   // Make sure the new valid name does not conflict with any existing names.
   return resolveKeywordConflict(tmpName, nextGeneratedNameIDs,
-                                caseInsensitiveKeywords);
+                                caseInsensitiveKeywords, " ");
 }
 
 /// Check if a name is valid for use in SV output by only containing characters

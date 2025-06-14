@@ -31,7 +31,7 @@ namespace sv {
 llvm::StringRef
 resolveKeywordConflict(llvm::StringRef origName,
                        llvm::StringMap<size_t> &nextGeneratedNameIDs,
-                       bool caseInsensitiveKeywords);
+                       bool caseInsensitiveKeywords, StringRef suffix = "");
 
 /// Legalize the specified name for use in SV output. Auto-uniquifies the name
 /// through \c resolveKeywordConflict if required. If the name is empty, a
