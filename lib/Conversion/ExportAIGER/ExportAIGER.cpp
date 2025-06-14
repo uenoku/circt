@@ -63,10 +63,10 @@ private:
 
   // AIGER file data
   unsigned maxVarIndex = 0;
-  unsigned numInputs = 0;
-  unsigned numLatches = 0;
-  unsigned numOutputs = 0;
-  unsigned numAnds = 0;
+  unsigned getNumInputs() { return inputs.size(); }
+  unsigned getNumLatches() { return latches.size(); }
+  unsigned getNumOutputs() { return outputs.size(); }
+  unsigned getNumAnds() { return andGates.size(); }
 
   // Data structures for tracking variables and gates
   // <Value, bitPos>
@@ -184,8 +184,9 @@ LogicalResult AIGERExporter::analyzeModule() {
   maxVarIndex = (valueLiteralMap.size() > 0) ? valueLiteralMap.size() : 0;
 
   LLVM_DEBUG(llvm::dbgs() << "Analysis complete: M=" << maxVarIndex
-                          << " I=" << numInputs << " L=" << numLatches
-                          << " O=" << numOutputs << " A=" << numAnds << "\n");
+                          << " I=" << getNumInputs() << " L=" << getNumLatches()
+                          << " O=" << getNumOutputs() << " A=" << getNumAnds()
+                          << "\n");
 
   return success();
 }
@@ -200,8 +201,8 @@ LogicalResult AIGERExporter::writeHeader() {
     os << "aag";
 
   // Write M I L O A
-  os << " " << maxVarIndex << " " << numInputs << " " << numLatches << " "
-     << numOutputs << " " << numAnds << "\n";
+  os << " " << maxVarIndex << " " << getNumInputs() << " " << getNumLatches()
+     << " " << getNumOutputs() << " " << getNumAnds() << "\n";
 
   return success();
 }
@@ -476,45 +477,8 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
   }
 
-  // Handle unknown operations
-  if (options.handleUnknownOperation) {
-    assert(options.unknownOperationOperandHandler &&
-           "unknownOperationOperandHandler must be set if "
-           "handleUnknownOperation is true");
-    assert(options.unknownOperationResultHandler &&
-           "unknownOperationResultHandler must be set if "
-           "handleUnknownOperation is true");
-    module.walk([&](Operation *op) {
-      if (isa<hw::ConstantOp, hw::OutputOp, aig::AndInverterOp, seq::CompRegOp,
-              comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
-        return;
-
-      for (mlir::OpOperand &operand : op->getOpOperands()) {
-        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
-          if (options.unknownOperationOperandHandler(operand, i,
-                                                      outputs.size()))
-            addOutput({operand.get(), i});
-        }
-      }
-
-      for (mlir::OpResult result : op->getOpResults()) {
-        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
-          if (options.unknownOperationResultHandler(result, i, inputs.size()))
-            addInput({result, i});
-          else {
-            // Treat it as a constant
-            valueLiteralMap[{result, i}] = 0;
-          }
-        }
-      }
-    });
-  }
-
-  numInputs = inputs.size();
-  numOutputs = outputs.size();
-
-  LLVM_DEBUG(llvm::dbgs() << "Found " << numInputs << " inputs, " << numOutputs
-                          << " outputs\n");
+  LLVM_DEBUG(llvm::dbgs() << "Found " << getNumInputs() << " inputs, "
+                          << getNumOutputs() << " outputs from ports\n");
   return success();
 }
 
@@ -533,7 +497,6 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
           andGates.push_back({{andInvOp.getResult(), i},
                               {andInvOp.getInputs()[0], i},
                               {andInvOp.getInputs()[1], i}});
-          numAnds++;
         }
 
         LLVM_DEBUG(llvm::dbgs() << "  Found AND gate: " << andInvOp << "\n");
@@ -543,25 +506,96 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
                   "pass first");
         return WalkResult::interrupt();
       }
-    } else if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
+      return WalkResult::advance();
+    }
+
+    if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
       // Handle registers (latches in AIGER)
       for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
                  regOp.getNameAttr(), i);
-
-        numLatches++;
       }
       LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
+      return WalkResult::advance();
     }
+
+    if (isa<hw::HWModuleOp, hw::ConstantOp, hw::OutputOp,
+            comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
+      return WalkResult::advance();
+    if (options.handleUnknownOperation) {
+      assert(options.unknownOperationOperandHandler &&
+             "unknownOperationOperandHandler must be set if "
+             "handleUnknownOperation is true");
+      assert(options.unknownOperationResultHandler &&
+             "unknownOperationResultHandler must be set if "
+             "handleUnknownOperation is true");
+
+      for (mlir::OpOperand &operand : op->getOpOperands()) {
+        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
+          if (options.unknownOperationOperandHandler(operand, i,
+                                                     outputs.size()))
+            addOutput({operand.get(), i});
+        }
+      }
+
+      for (mlir::OpResult result : op->getOpResults()) {
+        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
+          if (options.unknownOperationResultHandler(result, i, inputs.size()))
+            addInput({result, i});
+          else {
+            // Treat it as a constant
+            valueLiteralMap[{result, i}] = 0;
+          }
+        }
+      }
+
+      return WalkResult::advance();
+    }
+
+
     // Ignore other operations (hw.output, etc.)
-    return WalkResult::advance();
+    mlir::emitError(op->getLoc(), "unhandled operation: ") << *op;
+    return WalkResult::interrupt();
   });
+  // Handle unknown operations
+  if (options.handleUnknownOperation) {
+    assert(options.unknownOperationOperandHandler &&
+           "unknownOperationOperandHandler must be set if "
+           "handleUnknownOperation is true");
+    assert(options.unknownOperationResultHandler &&
+           "unknownOperationResultHandler must be set if "
+           "handleUnknownOperation is true");
+    module.walk([&](Operation *op) {
+      if (isa<hw::ConstantOp, hw::OutputOp, aig::AndInverterOp, seq::CompRegOp,
+              comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
+        return;
+
+      for (mlir::OpOperand &operand : op->getOpOperands()) {
+        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
+          if (options.unknownOperationOperandHandler(operand, i,
+                                                     outputs.size()))
+            addOutput({operand.get(), i});
+        }
+      }
+
+      for (mlir::OpResult result : op->getOpResults()) {
+        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
+          if (options.unknownOperationResultHandler(result, i, inputs.size()))
+            addInput({result, i});
+          else {
+            // Treat it as a constant
+            valueLiteralMap[{result, i}] = 0;
+          }
+        }
+      }
+    });
+  }
 
   if (walkResult.wasInterrupted())
     return failure();
 
-  LLVM_DEBUG(llvm::dbgs() << "Found " << numAnds << " AND gates, " << numLatches
-                          << " latches\n");
+  LLVM_DEBUG(llvm::dbgs() << "Found " << getNumAnds() << " AND gates, "
+                          << getNumLatches() << " latches\n");
   return success();
 }
 
