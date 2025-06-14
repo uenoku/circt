@@ -332,24 +332,21 @@ LogicalResult AIGERExporter::writeSymbolTable() {
     auto [obj, name] = elem;
     if (!name)
       continue;
-    unsigned literal = getLiteral(obj);
-    os << "i" << literal << " " << name.getValue() << "\n";
+    os << "i" << index << " " << name.getValue() << "\n";
   }
 
   for (auto [index, elem] : llvm::enumerate(latches)) {
     auto [current, next] = elem;
-    unsigned literal = getLiteral(current.first);
     if (!current.second)
       continue;
-    os << "l" << literal << " " << current.second.getValue() << "\n";
+    os << "l" << index << " " << current.second.getValue() << "\n";
   }
 
   for (auto [index, elem] : llvm::enumerate(outputs)) {
     auto [obj, name] = elem;
-    unsigned literal = getLiteral(obj);
     if (!name)
       continue;
-    os << "o" << literal << " " << name.getValue() << "\n";
+    os << "o" << index << " " << name.getValue() << "\n";
   }
 
   return success();
