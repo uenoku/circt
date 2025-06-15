@@ -66,6 +66,8 @@ struct Converter {
   bool unknownOperationOperandHandler(OpOperand &op, size_t bitPos,
                                       size_t outputIndex) {
     auto key = std::make_pair(op.getOwner(), op.getOperandNumber());
+    if (!op.get().getType().isInteger())
+      return false;
     if (operandMap.find(key) == operandMap.end())
       operandMap[key].assign(hw::getBitWidth(op.get().getType()), -1);
     operandMap[key][bitPos] = outputIndex;
@@ -75,9 +77,11 @@ struct Converter {
   // See. ExportAIGER.cpp
   bool unknownOperationResultHandler(Value value, size_t bitPos,
                                      size_t inputIndex) {
-
+    if (!value.getType().isInteger())
+      return false;
     if (valueMap.find(value) == valueMap.end())
       valueMap[value].assign(hw::getBitWidth(value.getType()), -1);
+
     LLVM_DEBUG(llvm::dbgs() << "value: " << value << " bitPos: " << bitPos
                             << " inputIndex: " << inputIndex << "\n");
     valueMap[value][bitPos] = inputIndex;
@@ -202,8 +206,10 @@ void AIGERRunnerPass::runOnOperation() {
   // Export current module to AIGER format
   if (failed(
           exportToAIGER(converter, cast<hw::HWModuleOp>(module), inputPath))) {
-    module.emitError("failed to export module to AIGER format");
-    return signalPassFailure();
+    module->emitError("failed to export module to AIGER format for, but "
+                      "continue for other modules")
+        << module.getModuleNameAttr();
+    return;
   }
 
   // Run the external solver
@@ -213,10 +219,11 @@ void AIGERRunnerPass::runOnOperation() {
   }
 
   // Import the results back
+  bool success = true;
   if (failed(importFromAIGER(converter, outputPath,
                              cast<hw::HWModuleOp>(module)))) {
     module.emitError("failed to import results from AIGER format");
-    return signalPassFailure();
+    success = false;
   }
 
   // Clean up temporary files
@@ -224,11 +231,11 @@ void AIGERRunnerPass::runOnOperation() {
     module.emitError("failed to remove input file: " + inputPath.str());
     return signalPassFailure();
   }
-  if (llvm::sys::fs::remove(outputPath)) {
+  if (success && llvm::sys::fs::remove(outputPath)) {
     module.emitError("failed to remove output file: " + outputPath.str());
     return signalPassFailure();
   }
-  if (llvm::sys::fs::remove(tempDir)) {
+  if (success && llvm::sys::fs::remove(tempDir)) {
     module.emitError("failed to remove temporary directory: " + tempDir.str());
     return signalPassFailure();
   }
@@ -269,12 +276,21 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
     args.push_back(arg);
   }
 
-  int result = llvm::sys::ExecuteAndWait(findProgram.get(), args);
+  int result =
+      llvm::sys::ExecuteAndWait(findProgram.get(), args, /*Env=*/std::nullopt,
+                                /*Redirects=*/{}, /*SecondsToWait=*/60,
+                                /*MemoryLimit=*/0, &error);
 
   if (result != 0) {
-    llvm::errs() << "Solver execution failed with error: " << error << "\n";
-    return failure();
+    llvm::errs() << getOperation().getModuleNameAttr() << " "
+                 << "Solver execution failed with error: " << error << "\n";
+    getOperation().emitError("failed to run external solver");
+
+    return success();
   }
+
+  llvm::errs() << getOperation().getModuleNameAttr() << " "
+               << "Solver execution succeeded\n";
 
   return success();
 }

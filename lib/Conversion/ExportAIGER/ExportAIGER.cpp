@@ -50,6 +50,14 @@ using namespace circt::seq;
 
 #define DEBUG_TYPE "export-aiger"
 
+static int64_t getBitWidth(Value value) {
+  if (auto vecType = dyn_cast<seq::ClockType>(value.getType()))
+    return 1;
+  if (auto memory = dyn_cast<seq::FirMemType>(value.getType()))
+    return memory.getWidth();
+  return hw::getBitWidth(value.getType());
+}
+
 namespace {
 
 /// Main AIGER exporter class
@@ -193,6 +201,10 @@ LogicalResult AIGERExporter::analyzeModule() {
 
   // Calculate final statistics
   maxVarIndex = (valueLiteralMap.size() > 0) ? valueLiteralMap.size() : 0;
+  llvm::errs() << "Analysis complete: M=" << topModule.getModuleName()
+               << " M=" << getNumInputs() + getNumLatches() + getNumAnds()
+               << " I=" << getNumInputs() << " L=" << getNumLatches()
+               << " O=" << getNumOutputs() << " A=" << getNumAnds() << "\n";
 
   LLVM_DEBUG(llvm::dbgs() << "Analysis complete: M=" << maxVarIndex
                           << " I=" << getNumInputs() << " L=" << getNumLatches()
@@ -212,8 +224,9 @@ LogicalResult AIGERExporter::writeHeader() {
     os << "aag";
 
   // Write M I L O A
-  os << " " << maxVarIndex << " " << getNumInputs() << " " << getNumLatches()
-     << " " << getNumOutputs() << " " << getNumAnds() << "\n";
+  os << " " << getNumInputs() + getNumLatches() + getNumAnds() << " "
+     << getNumInputs() << " " << getNumLatches() << " " << getNumOutputs()
+     << " " << getNumAnds() << "\n";
 
   return success();
 }
@@ -430,7 +443,7 @@ unsigned AIGERExporter::getLiteral(Object obj, bool inverted) {
     // based on the position
     int64_t bitPos = pos;
     for (auto operand : llvm::reverse(concat.getInputs())) {
-      int64_t operandWidth = hw::getBitWidth(operand.getType());
+      int64_t operandWidth = ::getBitWidth(operand);
       if (bitPos >= operandWidth) {
         bitPos -= operandWidth;
         continue;
@@ -452,7 +465,7 @@ unsigned AIGERExporter::getLiteral(Object obj, bool inverted) {
     // Replication is handled by looking up the correct operand
     // based on the position
     int64_t bitPos = pos;
-    int64_t operandWidth = hw::getBitWidth(replicate.getInput().getType());
+    int64_t operandWidth = getBitWidth(replicate.getInput());
     valueLiteralMap[{value, pos}] =
         getLiteral({replicate.getInput(), bitPos % operandWidth});
   }
@@ -485,7 +498,7 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
       continue;
 
     // All other inputs should be i1 (1-bit assumption)
-    for (int64_t i = 0; i < hw::getBitWidth(arg.getType()); ++i) {
+    for (int64_t i = 0; i < getBitWidth(arg); ++i) {
       if (options.valueCallabck(arg, i, inputs.size())) {
         addInput({arg, i},
                  llvm::dyn_cast_or_null<StringAttr>(inputNames[index]), i);
@@ -499,7 +512,7 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
   auto *outputOp = hwModule.getBodyBlock()->getTerminator();
   for (auto [operand, name] :
        llvm::zip(outputOp->getOpOperands(), outputNames)) {
-    for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i)
+    for (int64_t i = 0; i < getBitWidth(operand.get()); ++i)
       if (options.operandCallback(operand, i, outputs.size())) {
         addOutput({operand.get(), i}, llvm::dyn_cast_or_null<StringAttr>(name),
                   i);
@@ -546,7 +559,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
         LLVM_DEBUG(llvm::dbgs() << "  Found inverter: " << andInvOp << "\n");
       } else if (andInvOp.getInputs().size() == 2) {
         // Two inputs = AND gate
-        for (int64_t i = 0; i < hw::getBitWidth(andInvOp.getType()); ++i) {
+        for (int64_t i = 0; i < getBitWidth(andInvOp); ++i) {
           andGates.push_back({{andInvOp.getResult(), i},
                               {andInvOp.getInputs()[0], i},
                               {andInvOp.getInputs()[1], i}});
@@ -570,7 +583,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
                                           std::to_string(randomNameIndex++)));
       }
       // Handle registers (latches in AIGER)
-      for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
+      for (int64_t i = 0; i < getBitWidth(regOp); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
                  regOp.getNameAttr(), i);
       }
@@ -585,7 +598,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
                                           std::to_string(randomNameIndex++)));
       }
       // Handle registers (latches in AIGER)
-      for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
+      for (int64_t i = 0; i < getBitWidth(regOp); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getNext(), i},
                  regOp.getNameAttr(), i);
       }
@@ -597,13 +610,13 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     if (auto concat = dyn_cast<comb::ConcatOp>(op)) {
       size_t pos = 0;
       for (auto operand : llvm::reverse(concat.getInputs())) {
-        for (size_t i = 0; i < hw::getBitWidth(operand.getType()); ++i) {
+        for (size_t i = 0; i < getBitWidth(operand); ++i) {
           valueEquivalence.unionSets({operand, i}, {concat.getResult(), pos++});
         }
       }
     }
     if (auto extract = dyn_cast<comb::ExtractOp>(op)) {
-      for (size_t i = 0; i < hw::getBitWidth(extract.getType()); ++i) {
+      for (size_t i = 0; i < getBitWidth(extract); ++i) {
         valueEquivalence.unionSets(
             {extract.getInput(), extract.getLowBit() + i},
             {extract.getResult(), i});
@@ -611,9 +624,9 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     }
 
     if (auto replicate = dyn_cast<comb::ReplicateOp>(op)) {
-      for (size_t i = 0; i < hw::getBitWidth(replicate.getType()); ++i) {
+      for (size_t i = 0; i < getBitWidth(replicate); ++i) {
         valueEquivalence.unionSets(
-            {replicate.getInput(), i % hw::getBitWidth(replicate.getType())},
+            {replicate.getInput(), i % getBitWidth(replicate)},
             {replicate.getResult(), i});
       }
     }
@@ -632,14 +645,14 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
              "handleUnknownOperation is true");
 
       for (mlir::OpOperand &operand : op->getOpOperands()) {
-        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
+        for (int64_t i = 0; i < getBitWidth(operand.get()); ++i) {
           if (options.operandCallback(operand, i, outputs.size()))
             addOutput({operand.get(), i});
         }
       }
 
       for (mlir::OpResult result : op->getOpResults()) {
-        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
+        for (int64_t i = 0; i < getBitWidth(result); ++i) {
           if (options.valueCallabck(result, i, inputs.size()))
             addInput({result, i});
           else {
