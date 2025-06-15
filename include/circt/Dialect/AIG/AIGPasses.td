@@ -29,4 +29,16 @@ def PrintLongestPathAnalysis : Pass<"aig-print-longest-path-analysis", "mlir::Mo
   ];
 }
 
+def AIGERRunner : Pass<"aig-runner", "hw::HWModuleOp"> {
+  let summary = "Run external logic solvers on AIGER files";
+  let options = [
+    Option<"solverPath", "solver-path", "std::string", "", "Path to the external solver executable">,
+    ListOption<"solverArgs", "solver-args", "std::string", "">
+  ];
+
+  let dependentDialects = [
+    "circt::comb::CombDialect", "circt::hw::HWDialect", "circt::aig::AIGDialect", "circt::seq::SeqDialect"
+  ];
+}
+
 #endif // CIRCT_DIALECT_AIG_AIGPASSES_TD

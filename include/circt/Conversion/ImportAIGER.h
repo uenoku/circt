@@ -16,6 +16,8 @@
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/Support/SourceMgr.h"
+#include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
 
 namespace mlir {
 class MLIRContext;
