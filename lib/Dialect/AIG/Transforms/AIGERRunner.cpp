@@ -149,18 +149,6 @@ struct Converter {
             replaced.getBodyBlock()->getArguments().back().getType()))
       argInputs.back() = clock;
 
-    for (auto [index, arg] :
-         llvm::enumerate(ArrayRef(argInputs).take_front(10))) {
-      llvm::errs() << " " << index << " is null\n";
-    }
-
-    for (auto [index, arg] : llvm::enumerate(argInputs)) {
-      if (!arg) {
-        llvm::errs() << "arg " << index << " is null\n";
-        replaced->dump();
-      }
-    }
-
     assert(llvm::all_of(argInputs, [](Value v) { return v; }));
 
     builder.inlineBlockBefore(replaced.getBodyBlock(), module.getBodyBlock(),
@@ -253,7 +241,7 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
   std::vector<std::string> solverArgsStr;
 
   // Process solver arguments
-  for (auto solverArg : solverArgs) {
+  for (const auto &solverArg : solverArgs) {
     std::string arg = solverArg;
     // Replace special tokens with the actual paths
     size_t pos = 0;
@@ -300,11 +288,11 @@ LogicalResult AIGERRunnerPass::exportToAIGER(Converter &converter,
     module.emitError("failed to open output file: " + outputPath.str());
     return failure();
   }
-  llvm::dbgs() << "Exporting " << module.getModuleNameAttr() << "\n";
-
+  LLVM_DEBUG(llvm::dbgs() << "Exporting " << module.getModuleNameAttr()
+                          << "\n");
   ExportAIGEROptions options;
   options.binaryFormat = true;
-  options.includeSymbolTable = false; // For better performance
+  options.includeSymbolTable = true;
   options.includeComments = false;
   options.handleUnknownOperation = true;
   options.operandCallback = [&converter](OpOperand &op, size_t bitPos,

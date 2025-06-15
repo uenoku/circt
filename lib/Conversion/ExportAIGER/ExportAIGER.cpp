@@ -536,6 +536,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     return mlir::emitError(hwModule.getLoc(),
                            "failed to sort operations topologically");
 
+  int randomNameIndex = 0;
   // Walk the operations.
   auto walkResult = hwModule.walk([&](Operation *op) {
     if (auto andInvOp = dyn_cast<aig::AndInverterOp>(op)) {
@@ -563,6 +564,11 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     }
 
     if (auto regOp = dyn_cast<seq::CompRegOp>(op)) {
+      if (!regOp.getName()) {
+        regOp.setName(StringAttr::get(op->getContext(),
+                                      "unamed_reg_generated_for_aiger" +
+                                          std::to_string(randomNameIndex++)));
+      }
       // Handle registers (latches in AIGER)
       for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
@@ -573,6 +579,11 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
       return WalkResult::advance();
     }
     if (auto regOp = dyn_cast<seq::FirRegOp>(op)) {
+      if (regOp.getNameAttr().getValue().empty()) {
+        regOp.setName(StringAttr::get(op->getContext(),
+                                      "unamed_reg_generated_for_aiger" +
+                                          std::to_string(randomNameIndex++)));
+      }
       // Handle registers (latches in AIGER)
       for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getNext(), i},
