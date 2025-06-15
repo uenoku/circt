@@ -23,10 +23,14 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/RegionKindInterface.h"
+#include "mlir/IR/Visitors.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/Timing.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -74,6 +78,7 @@ private:
   // Data structures for tracking variables and gates
   // <Value, bitPos>
   DenseMap<Object, unsigned> valueLiteralMap;
+  llvm::EquivalenceClasses<Object> valueEquivalence;
   SmallVector<std::pair<Object, StringAttr>> inputs;
   SmallVector<std::pair<std::pair<Object, StringAttr>, Object>>
       latches; // current, next
@@ -285,20 +290,31 @@ LogicalResult AIGERExporter::writeAndGates() {
       // Ensure rhs0 >= rhs1 as required by AIGER format
       if (rhs0Literal < rhs1Literal) {
         std::swap(rhs0Literal, rhs1Literal);
+        std::swap(rhs0, rhs1);
+        std::swap(rhs0Inverted, rhs1Inverted);
       }
 
       // In binary format, we need to write the delta values
       // Delta0 = lhs - rhs0
       // Delta1 = rhs0 - rhs1
-      assert(lhsLiteral >= rhs0Literal && "lhsLiteral >= rhs0Literal");
-      assert(rhs0Literal >= rhs1Literal && "rhs0Literal >= rhs1Literal");
       unsigned delta0 = lhsLiteral - rhs0Literal;
       unsigned delta1 = rhs0Literal - rhs1Literal;
+
+      if (lhsLiteral < rhs0Literal) {
+        llvm::dbgs() << "lhs: " << lhs.first << "[" << lhs.second << "]\n";
+        llvm::dbgs() << "rhs0: " << rhs0.first << "[" << rhs0.second << "]\n";
+        llvm::dbgs() << "rhs1: " << rhs1.first << "[" << rhs1.second << "]\n";
+        llvm::dbgs() << "Writing AND gate: " << lhsLiteral << " = "
+                     << rhs0Literal << " & " << rhs1Literal
+                     << " (deltas: " << delta0 << ", " << delta1 << ")\n";
+      }
 
       LLVM_DEBUG(llvm::dbgs()
                  << "Writing AND gate: " << lhsLiteral << " = " << rhs0Literal
                  << " & " << rhs1Literal << " (deltas: " << delta0 << ", "
                  << delta1 << ")\n");
+      assert(lhsLiteral >= rhs0Literal && "lhsLiteral >= rhs0Literal");
+      assert(rhs0Literal >= rhs1Literal && "rhs0Literal >= rhs1Literal");
 
       // Write deltas using variable-length encoding
       writeUnsignedLEB128(delta0);
@@ -495,6 +511,30 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
 LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
   LLVM_DEBUG(llvm::dbgs() << "Analyzing operations\n");
+  // Sort the operations topologically.
+
+  auto result = hwModule.walk([&](Region *region) {
+    auto regionKindOp = dyn_cast<RegionKindInterface>(region->getParentOp());
+    if (!regionKindOp ||
+        regionKindOp.hasSSADominance(region->getRegionNumber()))
+      return WalkResult::advance();
+
+    // Graph region.
+    for (auto &block : *region) {
+      if (!sortTopologically(&block, [&](Value value, Operation *op) {
+            return isa<seq::CompRegOp, hw::InstanceOp>(op);
+          }))
+        return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
+  if (result.wasInterrupted())
+    return mlir::emitError(hwModule.getLoc(), "failed to sort operations topologically");
+
+  hwModule.dump();
+
+  // Walk the operations.
   auto walkResult = hwModule.walk([&](Operation *op) {
     if (auto andInvOp = dyn_cast<aig::AndInverterOp>(op)) {
       // Handle AIG AND-inverter operations
@@ -610,28 +650,85 @@ LogicalResult AIGERExporter::assignLiterals() {
                << "  Latch literal " << nextLiteral << ": " << current << "\n");
     nextLiteral += 2;
   }
-  if (options.binaryFormat) {
+  if (false && options.binaryFormat) {
     // Topo-sort the AND gates.
     llvm::MapVector<Object, std::pair<Object, Object>> graph;
     for (auto [lhs, rhs0, rhs1] : andGates) {
-      graph[lhs] = {rhs0, rhs1};
+      assert(valueEquivalence.getOrInsertLeaderValue(lhs) == lhs);
+      graph[lhs] = {valueEquivalence.getOrInsertLeaderValue(rhs0),
+                    valueEquivalence.getOrInsertLeaderValue(rhs1)};
     }
 
     // Topo-sort the graph.
     SmallVector<Object> sortedAndGates;
     DenseSet<Object> visited;
-    while (!graph.empty()) {
-      auto it = graph.begin();
-      auto [lhs, rhs] = *it;
-      graph.erase(it);
-      sortedAndGates.push_back(lhs);
+    DenseSet<Object> temp; // For cycle detection
+
+    // Helper function for DFS-based topological sort
+    std::function<LogicalResult(const Object &)> visit =
+        [&](const Object &obj) {
+          // Skip if already visited
+          if (visited.contains(obj))
+            return success();
+
+          // Check for cycles
+          if (!temp.insert(obj).second)
+            return failure();
+
+          // Visit dependencies first
+          auto it = graph.find(obj);
+          if (it != graph.end()) {
+            auto [rhs0, rhs1] = it->second;
+            if (failed(visit(rhs0)) || failed(visit(rhs1)))
+              return failure();
+          }
+
+          temp.erase(obj);
+          visited.insert(obj);
+          if (it != graph.end())
+            sortedAndGates.push_back(obj);
+          return success();
+        };
+
+    // Visit all nodes in the graph
+    for (auto &[lhs, _] : graph) {
+      if (!visited.contains(lhs)) {
+        if (failed(visit(lhs)))
+          return emitError("cycle detected in AND gate network");
+      }
     }
-  }
-  for (auto [lhs, rhs0, rhs1] : andGates) {
-    valueLiteralMap[lhs] = nextLiteral;
-    LLVM_DEBUG(llvm::dbgs()
-               << "  AND gate literal " << nextLiteral << ": " << lhs << "\n");
-    nextLiteral += 2;
+
+    // Assign literals in topological order
+    assert(sortedAndGates.size() == andGates.size());
+    for (auto [index, lhs] : llvm::enumerate(sortedAndGates)) {
+      auto [rhs0, rhs1] = graph[lhs];
+      andGates[index] = {lhs, rhs0, rhs1};
+      valueLiteralMap[lhs] = nextLiteral;
+      if (rhs0.first.getDefiningOp<aig::AndInverterOp>()) {
+        if (!valueLiteralMap.count(rhs0)) {
+          llvm::errs() << "lhs: " << lhs << "\n";
+          llvm::errs() << "rhs0 not found: " << rhs0 << "\n";
+        }
+        assert(valueLiteralMap.count(rhs0));
+      }
+      if (rhs1.first.getDefiningOp<aig::AndInverterOp>()) {
+        if (!valueLiteralMap.count(rhs1)) {
+          llvm::errs() << "lhs: " << lhs << "\n";
+          llvm::errs() << "rhs1 not found: " << rhs1 << "\n";
+        }
+        assert(valueLiteralMap.count(rhs1));
+      }
+      // assert(valueLiteralMap.count(rhs1));
+      nextLiteral += 2;
+    }
+  } else {
+    // ASCII format - no need for topological sort
+    for (auto [lhs, rhs0, rhs1] : andGates) {
+      valueLiteralMap[lhs] = nextLiteral;
+      LLVM_DEBUG(llvm::dbgs() << "  AND gate literal " << nextLiteral << ": "
+                              << lhs << "\n");
+      nextLiteral += 2;
+    }
   }
 
   LLVM_DEBUG(llvm::dbgs() << "Assigned " << valueLiteralMap.size()
