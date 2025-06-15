@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Value.h"
 #include "llvm/Support/raw_ostream.h"
+#include <future>
 
 namespace mlir {
 class MLIRContext;
@@ -43,15 +44,26 @@ struct ExportAIGEROptions {
   bool includeComments = true;
 
   /// Callback for unknown operations.
-  /// If true, operand and result will extracted to outputs and inputs respectively.
-  /// Clients are expected to record this information in their use case.
+  /// If true, operand and result will extracted to outputs and inputs
+  /// respectively. Clients are expected to record this information in their use
+  /// case.
   bool handleUnknownOperation = false;
+
   // Return true if the operand should be added to the output, false otherwise.
   // If returned false, outputIndex will be invalid for the given operand.
-  std::function<bool(mlir::OpOperand& operand, size_t bitPos, size_t outputIndex)> unknownOperationOperandHandler = nullptr;
+  std::function<bool(mlir::OpOperand &operand, size_t bitPos,
+                     size_t outputIndex)>
+      operandCallback = [](OpOperand &operand, size_t bitPos,
+                           size_t outputIndex) { return true; };
+
   // Return true if the result should be added to the input, false otherwise.
   // If returned false, inputIndex will be invalid for the given result.
-  std::function<bool(mlir::OpResult result, size_t bitPos, size_t inputIndex)> unknownOperationResultHandler = nullptr;
+  std::function<bool(Value result, size_t bitPos, size_t inputIndex)>
+      valueCallabck =
+          [](Value result, size_t bitPos, size_t inputIndex) { return true; };
+
+  // Callback for notifying that an operation has been emitted.
+  std::function<void(Operation *op)> notifyEmitted = [](Operation *op) {};
 };
 
 /// Export an MLIR module containing AIG dialect operations to AIGER format.

@@ -462,8 +462,10 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
     // All other inputs should be i1 (1-bit assumption)
     for (int64_t i = 0; i < hw::getBitWidth(arg.getType()); ++i) {
-      addInput({arg, i}, llvm::dyn_cast_or_null<StringAttr>(inputNames[index]),
-               i);
+      if (options.valueCallabck(arg, i, inputs.size())) {
+        addInput({arg, i},
+                 llvm::dyn_cast_or_null<StringAttr>(inputNames[index]), i);
+      }
     }
 
     LLVM_DEBUG(llvm::dbgs() << "  Input " << index << ": " << arg << "\n");
@@ -471,10 +473,14 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
   // Analyze output ports by looking at hw.output operation
   auto *outputOp = hwModule.getBodyBlock()->getTerminator();
-  for (auto [operand, name] : llvm::zip(outputOp->getOperands(), outputNames)) {
-    for (int64_t i = 0; i < hw::getBitWidth(operand.getType()); ++i)
-      addOutput({operand, i}, llvm::dyn_cast_or_null<StringAttr>(name), i);
-    LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand << "\n");
+  for (auto [operand, name] :
+       llvm::zip(outputOp->getOpOperands(), outputNames)) {
+    for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i)
+      if (options.operandCallback(operand, i, outputs.size())) {
+        addOutput({operand.get(), i}, llvm::dyn_cast_or_null<StringAttr>(name),
+                  i);
+      }
+    LLVM_DEBUG(llvm::dbgs() << "  Output: " << operand.get() << "\n");
   }
 
   LLVM_DEBUG(llvm::dbgs() << "Found " << getNumInputs() << " inputs, "
@@ -506,6 +512,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
                   "pass first");
         return WalkResult::interrupt();
       }
+      options.notifyEmitted(andInvOp);
       return WalkResult::advance();
     }
 
@@ -515,34 +522,33 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
                  regOp.getNameAttr(), i);
       }
-      LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n"); options.notifyEmitted(regOp);
       return WalkResult::advance();
     }
 
-    if (isa<hw::HWModuleOp, hw::ConstantOp, hw::OutputOp,
-            comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
+    if (isa<hw::HWModuleOp, hw::ConstantOp, hw::OutputOp, comb::ConcatOp,
+            comb::ExtractOp, comb::ReplicateOp>(op))
       return WalkResult::advance();
 
     // Handle unknown operations
     if (options.handleUnknownOperation) {
-      assert(options.unknownOperationOperandHandler &&
+      assert(options.operandCallback &&
              "unknownOperationOperandHandler must be set if "
              "handleUnknownOperation is true");
-      assert(options.unknownOperationResultHandler &&
+      assert(options.valueCallabck &&
              "unknownOperationResultHandler must be set if "
              "handleUnknownOperation is true");
 
       for (mlir::OpOperand &operand : op->getOpOperands()) {
         for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
-          if (options.unknownOperationOperandHandler(operand, i,
-                                                     outputs.size()))
+          if (options.operandCallback(operand, i, outputs.size()))
             addOutput({operand.get(), i});
         }
       }
 
       for (mlir::OpResult result : op->getOpResults()) {
         for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
-          if (options.unknownOperationResultHandler(result, i, inputs.size()))
+          if (options.valueCallabck(result, i, inputs.size()))
             addInput({result, i});
           else {
             // Treat it as a constant
@@ -554,44 +560,10 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
       return WalkResult::advance();
     }
 
-
     // Ignore other operations (hw.output, etc.)
     mlir::emitError(op->getLoc(), "unhandled operation: ") << *op;
     return WalkResult::interrupt();
   });
-  // Handle unknown operations
-  if (options.handleUnknownOperation) {
-    assert(options.unknownOperationOperandHandler &&
-           "unknownOperationOperandHandler must be set if "
-           "handleUnknownOperation is true");
-    assert(options.unknownOperationResultHandler &&
-           "unknownOperationResultHandler must be set if "
-           "handleUnknownOperation is true");
-    module.walk([&](Operation *op) {
-      if (isa<hw::ConstantOp, hw::OutputOp, aig::AndInverterOp, seq::CompRegOp,
-              comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp>(op))
-        return;
-
-      for (mlir::OpOperand &operand : op->getOpOperands()) {
-        for (int64_t i = 0; i < hw::getBitWidth(operand.get().getType()); ++i) {
-          if (options.unknownOperationOperandHandler(operand, i,
-                                                     outputs.size()))
-            addOutput({operand.get(), i});
-        }
-      }
-
-      for (mlir::OpResult result : op->getOpResults()) {
-        for (int64_t i = 0; i < hw::getBitWidth(result.getType()); ++i) {
-          if (options.unknownOperationResultHandler(result, i, inputs.size()))
-            addInput({result, i});
-          else {
-            // Treat it as a constant
-            valueLiteralMap[{result, i}] = 0;
-          }
-        }
-      }
-    });
-  }
 
   if (walkResult.wasInterrupted())
     return failure();
@@ -661,9 +633,10 @@ LogicalResult circt::exportAIGER(hw::HWModuleOp module, llvm::raw_ostream &os,
   return exporter.exportModule();
 }
 
-llvm::cl::opt<bool> emitTextFormat("emit-text-format",
-                                  llvm::cl::desc("Export AIGER in text format"),
-                                  llvm::cl::init(false));
+llvm::cl::opt<bool>
+    emitTextFormat("emit-text-format",
+                   llvm::cl::desc("Export AIGER in text format"),
+                   llvm::cl::init(false));
 llvm::cl::opt<bool>
     includeSymbolTable("exclude-symbol-table",
                        llvm::cl::desc("Exclude symbol table from the output"),

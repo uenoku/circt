@@ -16,15 +16,21 @@
 #include "circt/Conversion/ImportAIGER.h"
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
+#include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Support/UnusedOpPruner.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Support/LLVM.h"
 #include "mlir/Support/Timing.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/ToolOutputFile.h"
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/FileUtilities.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/Path.h"
@@ -34,6 +40,8 @@
 
 using namespace circt;
 using namespace circt::aig;
+
+#define DEBUG_TYPE "aig-runner"
 
 namespace circt {
 namespace aig {
@@ -45,41 +53,86 @@ namespace aig {
 namespace {
 struct Converter {
   using Object = std::pair<Value, size_t>;
-  DenseMap<Value, SmallVector<int>> unknownOperationOperandMap;
-  DenseMap<std::pair<Operation *, size_t>, SmallVector<int>>
-      unknownOperationResultMap;
+  llvm::MapVector<std::pair<Operation *, size_t>, SmallVector<int>>
+      operandMap; // Map from operand to AIGER outputs.
+  llvm::MapVector<Value, SmallVector<int>>
+      valueMap; // Map from result to AIGER inputs
+  UnusedOpPruner pruner;
+  mlir::SetVector<Operation *> willBeErased;
 
   // See. ExportAIGER.cpp
   bool unknownOperationOperandHandler(OpOperand &op, size_t bitPos,
                                       size_t outputIndex) {
-    if (unknownOperationOperandMap.find(op.get()) ==
-        unknownOperationOperandMap.end())
-      unknownOperationOperandMap[op.get()].assign(
-          hw::getBitWidth(op.get().getType()), -1);
-    unknownOperationOperandMap[op.get()][bitPos] = outputIndex;
+    auto key = std::make_pair(op.getOwner(), op.getOperandNumber());
+    if (operandMap.find(key) == operandMap.end())
+      operandMap[key].assign(hw::getBitWidth(op.get().getType()), -1);
+    operandMap[key][bitPos] = outputIndex;
     return true;
   }
 
   // See. ExportAIGER.cpp
-  bool unknownOperationResultHandler(OpResult &opResult, size_t bitPos,
+  bool unknownOperationResultHandler(Value value, size_t bitPos,
                                      size_t inputIndex) {
-    auto *op = opResult.getOwner();
-    auto index = opResult.getResultNumber();
-    if (unknownOperationResultMap.find(std::make_pair(op, index)) ==
-        unknownOperationResultMap.end())
-      unknownOperationResultMap[std::make_pair(op, index)].assign(
-          hw::getBitWidth(op->getResult(index).getType()), -1);
-    unknownOperationResultMap[std::make_pair(op, index)][bitPos] = inputIndex;
+
+    if (valueMap.find(value) == valueMap.end())
+      valueMap[value].assign(hw::getBitWidth(value.getType()), -1);
+    LLVM_DEBUG(llvm::dbgs() << "value: " << value << " bitPos: " << bitPos
+                            << " inputIndex: " << inputIndex << "\n");
+    valueMap[value][bitPos] = inputIndex;
     return true;
+  }
+
+  void eraseLaterIfUnused(Operation *op) {
+    pruner.eraseLaterIfUnused(op);
+    willBeErased.insert(op);
+  }
+
+  void cleanup() {
+    for (auto op : willBeErased) {
+      op->dropAllUses();
+    }
+
+    pruner.eraseNow();
   }
 
   void replaceModule(hw::HWModuleOp module, hw::HWModuleOp replaced) {
     mlir::IRMapping mapping;
-    OpBuilder builder(module->getContext());
+    mlir::IRRewriter builder(module->getContext());
     builder.setInsertionPointToStart(module.getBodyBlock());
-    SmallVector<Value> inputsToReplace;
-    // for ()
-    // builder.create<hw::InstanceOp>(builder.getUnknownLoc(), replaced.getName());
+    auto *replacedTerminator = replaced.getBodyBlock()->getTerminator();
+    auto *moduleTerminator = module.getBodyBlock()->getTerminator();
+
+    // Ok, fix up the uses.
+    for (const auto &[key, value] : operandMap) {
+      auto [op, index] = key;
+      SmallVector<Value> concats;
+      for (auto outputIndex : llvm::reverse(value)) {
+        assert(outputIndex != -1 && "outputIndex is -1");
+        concats.push_back(replacedTerminator->getOperand(outputIndex));
+      }
+
+      if (concats.size() == 1) {
+        op->setOperand(index, concats.front());
+      } else {
+        auto concat = builder.createOrFold<comb::ConcatOp>(op->getLoc(), concats);
+        op->setOperand(index, concat);
+      }
+    }
+
+    SmallVector<Value> argInputs(replaced.getBodyBlock()->getNumArguments());
+    for (const auto &[key, value] : valueMap) {
+      auto targetResult = key;
+      SmallVector<Value> concats;
+      for (auto [index, argIndex] : llvm::enumerate(value)) {
+        // TODO: Cache it.
+        auto extractBits = builder.createOrFold<comb::ExtractOp>(
+            targetResult.getLoc(), targetResult, index, 1);
+        argInputs[argIndex] = extractBits;
+      }
+    }
+    builder.inlineBlockBefore(replaced.getBodyBlock(), module.getBodyBlock(),
+                              moduleTerminator->getIterator(), argInputs);
+    replacedTerminator->erase();
   }
 };
 struct AIGERRunnerPass : public impl::AIGERRunnerBase<AIGERRunnerPass> {
@@ -225,18 +278,20 @@ LogicalResult AIGERRunnerPass::exportToAIGER(Converter &converter,
   options.includeSymbolTable = false; // For better performance
   options.includeComments = false;
   options.handleUnknownOperation = true;
-  options.unknownOperationOperandHandler = [&converter](OpOperand &op,
-                                                        size_t bitPos,
-                                                        size_t outputIndex) {
+  options.operandCallback = [&converter](OpOperand &op, size_t bitPos,
+                                         size_t outputIndex) {
     return converter.unknownOperationOperandHandler(op, bitPos, outputIndex);
   };
-  options.unknownOperationResultHandler =
-      [&converter](OpResult opResult, size_t bitPos, size_t inputIndex) {
-        return converter.unknownOperationResultHandler(opResult, bitPos,
-                                                       inputIndex);
-      };
+  options.valueCallabck = [&converter](Value value, size_t bitPos,
+                                       size_t inputIndex) {
+    return converter.unknownOperationResultHandler(value, bitPos, inputIndex);
+  };
+  options.notifyEmitted = [&converter](Operation *op) {
+    converter.eraseLaterIfUnused(op);
+  };
 
   auto result = exportAIGER(module, outputFile->os(), &options);
+
   outputFile->keep();
   return result;
 }
@@ -270,6 +325,8 @@ LogicalResult AIGERRunnerPass::importFromAIGER(Converter &converter,
 
   // Ok, let's replace the original module with the imported one.
   converter.replaceModule(module, newModule);
+
+  converter.cleanup();
 
   // Replace the original module with the imported one
   return llvm::success();
