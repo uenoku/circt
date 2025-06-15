@@ -571,6 +571,30 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
       return WalkResult::advance();
     }
 
+    if (auto concat = dyn_cast<comb::ConcatOp>(op)) {
+      size_t pos = 0;
+      for (auto operand : llvm::reverse(concat.getInputs())) {
+        for (size_t i = 0; i < hw::getBitWidth(operand.getType()); ++i) {
+          valueEquivalence.unionSets({operand, i}, {concat.getResult(), pos++});
+        }
+      }
+    }
+    if (auto extract = dyn_cast<comb::ExtractOp>(op)) {
+      for (size_t i = 0; i < hw::getBitWidth(extract.getType()); ++i) {
+        valueEquivalence.unionSets(
+            {extract.getInput(), extract.getLowBit() + i},
+            {extract.getResult(), i});
+      }
+    }
+
+    if (auto replicate = dyn_cast<comb::ReplicateOp>(op)) {
+      for (size_t i = 0; i < hw::getBitWidth(replicate.getType()); ++i) {
+        valueEquivalence.unionSets(
+            {replicate.getInput(), i % hw::getBitWidth(replicate.getType())},
+            {replicate.getResult(), i});
+      }
+    }
+
     if (isa<hw::HWModuleOp, hw::ConstantOp, hw::OutputOp, comb::ConcatOp,
             comb::ExtractOp, comb::ReplicateOp>(op))
       return WalkResult::advance();
