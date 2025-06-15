@@ -2,8 +2,7 @@
 // CHECK-LABEL: # Analysis result for "counter"
 // CHECK-NEXT: Found 89 closed paths
 // CHECK-NEXT: Maximum path delay: 46
-hw.module @counter(in %a: i16, in %clk: !seq.clock, out result: i16) {
-    %reg = seq.compreg %add, %clk : i16
-    %add = comb.mul %reg, %a : i16
-    hw.output %reg : i16
+hw.module @counter(in %a: i3, out result: i3) {
+    %add = comb.mul %a, %a : i3
+    hw.output %add : i3
 }

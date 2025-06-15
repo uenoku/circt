@@ -19,6 +19,7 @@
 #include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/Version.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -26,8 +27,10 @@
 #include "mlir/Support/Timing.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -287,6 +290,8 @@ LogicalResult AIGERExporter::writeAndGates() {
       // In binary format, we need to write the delta values
       // Delta0 = lhs - rhs0
       // Delta1 = rhs0 - rhs1
+      assert(lhsLiteral >= rhs0Literal && "lhsLiteral >= rhs0Literal");
+      assert(rhs0Literal >= rhs1Literal && "rhs0Literal >= rhs1Literal");
       unsigned delta0 = lhsLiteral - rhs0Literal;
       unsigned delta1 = rhs0Literal - rhs1Literal;
 
@@ -490,7 +495,6 @@ LogicalResult AIGERExporter::analyzePorts(hw::HWModuleOp hwModule) {
 
 LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
   LLVM_DEBUG(llvm::dbgs() << "Analyzing operations\n");
-
   auto walkResult = hwModule.walk([&](Operation *op) {
     if (auto andInvOp = dyn_cast<aig::AndInverterOp>(op)) {
       // Handle AIG AND-inverter operations
@@ -522,7 +526,8 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
                  regOp.getNameAttr(), i);
       }
-      LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n"); options.notifyEmitted(regOp);
+      LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
+      options.notifyEmitted(regOp);
       return WalkResult::advance();
     }
 
@@ -605,8 +610,23 @@ LogicalResult AIGERExporter::assignLiterals() {
                << "  Latch literal " << nextLiteral << ": " << current << "\n");
     nextLiteral += 2;
   }
+  if (options.binaryFormat) {
+    // Topo-sort the AND gates.
+    llvm::MapVector<Object, std::pair<Object, Object>> graph;
+    for (auto [lhs, rhs0, rhs1] : andGates) {
+      graph[lhs] = {rhs0, rhs1};
+    }
 
-  // Assign literals to AND gate outputs
+    // Topo-sort the graph.
+    SmallVector<Object> sortedAndGates;
+    DenseSet<Object> visited;
+    while (!graph.empty()) {
+      auto it = graph.begin();
+      auto [lhs, rhs] = *it;
+      graph.erase(it);
+      sortedAndGates.push_back(lhs);
+    }
+  }
   for (auto [lhs, rhs0, rhs1] : andGates) {
     valueLiteralMap[lhs] = nextLiteral;
     LLVM_DEBUG(llvm::dbgs()

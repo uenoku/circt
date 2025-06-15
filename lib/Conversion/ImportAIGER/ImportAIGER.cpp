@@ -337,7 +337,6 @@ AIGERToken AIGERLexer::peekToken() {
 //===----------------------------------------------------------------------===//
 
 ParseResult AIGERParser::parse() {
-  llvm::errs() << "curPtr: " << lexer.getCurrentLoc().getPointer() << "\n";
   if (parseHeader() || parseInputs() || parseLatches() || parseOutputs() ||
       parseAndGates() || parseSymbolTable() || parseComments())
     return failure();

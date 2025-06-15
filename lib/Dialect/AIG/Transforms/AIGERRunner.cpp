@@ -88,11 +88,27 @@ struct Converter {
   }
 
   void cleanup() {
-    for (auto op : willBeErased) {
-      op->dropAllUses();
-    }
+    while (!willBeErased.empty()) {
+      auto *op = willBeErased.pop_back_val();
+      op->dropAllReferences();
 
-    pruner.eraseNow();
+      // DFS.
+      SetVector<Operation *> stack, visited;
+      stack.insert(op);
+      while (!stack.empty()) {
+        auto *current = stack.pop_back_val();
+        if (visited.contains(current))
+          continue;
+        visited.insert(current);
+        current->dropAllReferences();
+        for (auto *user : current->getUsers())
+          stack.insert(user);
+      }
+
+      for (auto *user : visited) {
+        user->erase();
+      }
+    }
   }
 
   void replaceModule(hw::HWModuleOp module, hw::HWModuleOp replaced) {
@@ -114,7 +130,8 @@ struct Converter {
       if (concats.size() == 1) {
         op->setOperand(index, concats.front());
       } else {
-        auto concat = builder.createOrFold<comb::ConcatOp>(op->getLoc(), concats);
+        auto concat =
+            builder.createOrFold<comb::ConcatOp>(op->getLoc(), concats);
         op->setOperand(index, concat);
       }
     }
@@ -225,9 +242,7 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
     // Replace special tokens with the actual paths
     size_t pos = 0;
     while ((pos = arg.find("inputFile", pos)) != std::string::npos) {
-      llvm::errs() << "before: " << arg << "\n";
       arg = arg.replace(pos, 9, inputPath.str());
-      llvm::errs() << "after: " << arg << "\n";
       pos += inputPath.size();
     }
     pos = 0;
@@ -235,7 +250,6 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
       arg = arg.replace(pos, 10, outputPath.str());
       pos += outputPath.size();
     }
-    llvm::errs() << "arg: " << arg << "\n";
     solverArgsStr.push_back(arg);
   }
   // Run the solver
@@ -246,11 +260,9 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
     return failure();
   }
 
-  llvm::errs() << "solverPath: " << *findProgram << "\n";
   args.push_back(*findProgram);
   for (auto &arg : solverArgsStr) {
     args.push_back(arg);
-    llvm::errs() << "arg: " << arg << "\n";
   }
 
   int result = llvm::sys::ExecuteAndWait(findProgram.get(), args);
@@ -319,9 +331,6 @@ LogicalResult AIGERRunnerPass::importFromAIGER(Converter &converter,
     return failure();
   }
   auto newModule = cast<hw::HWModuleOp>(buffer.getBody()->front());
-
-  llvm::errs() << "newModule: " << newModule.getName() << "\n";
-  newModule.dump();
 
   // Ok, let's replace the original module with the imported one.
   converter.replaceModule(module, newModule);
