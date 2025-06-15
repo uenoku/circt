@@ -64,6 +64,9 @@ struct ExportAIGEROptions {
 
   // Callback for notifying that an operation has been emitted.
   std::function<void(Operation *op)> notifyEmitted = [](Operation *op) {};
+
+  // Callback for notifying that a clock index has been emitted.
+  std::function<void(Value value)> notifyClock = [](Value value) {};
 };
 
 /// Export an MLIR module containing AIG dialect operations to AIGER format.

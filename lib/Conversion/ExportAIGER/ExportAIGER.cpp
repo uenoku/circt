@@ -17,6 +17,7 @@
 #include "circt/Dialect/HW/HWTypes.h"
 #include "circt/Dialect/HW/InnerSymbolTable.h"
 #include "circt/Dialect/HW/PortImplementation.h"
+#include "circt/Dialect/Seq/SeqOpInterfaces.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/Version.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -84,6 +85,8 @@ private:
       latches; // current, next
   SmallVector<std::pair<Object, StringAttr>> outputs;
   SmallVector<std::tuple<Object, Object, Object>> andGates; // lhs, rhs0, rhs1
+
+  std::optional<Value> clock;
 
   /// Analyze the module and collect information
   LogicalResult analyzeModule();
@@ -321,7 +324,7 @@ LogicalResult AIGERExporter::writeAndGates() {
       writeUnsignedLEB128(delta1);
     }
   } else {
-    // Write AND gate definitions in ASCII format
+    // ASCII format - no need for structural hashing
     for (auto [lhs, rhs0, rhs1] : andGates) {
       unsigned lhsLiteral = getLiteral(lhs);
 
@@ -522,7 +525,7 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
     // Graph region.
     for (auto &block : *region) {
       if (!sortTopologically(&block, [&](Value value, Operation *op) {
-            return isa<seq::CompRegOp, hw::InstanceOp>(op);
+            return isa<seq::CompRegOp, seq::FirRegOp, hw::InstanceOp>(op);
           }))
         return WalkResult::interrupt();
     }
@@ -530,9 +533,8 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
   });
 
   if (result.wasInterrupted())
-    return mlir::emitError(hwModule.getLoc(), "failed to sort operations topologically");
-
-  hwModule.dump();
+    return mlir::emitError(hwModule.getLoc(),
+                           "failed to sort operations topologically");
 
   // Walk the operations.
   auto walkResult = hwModule.walk([&](Operation *op) {
@@ -564,6 +566,16 @@ LogicalResult AIGERExporter::analyzeOperations(hw::HWModuleOp hwModule) {
       // Handle registers (latches in AIGER)
       for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
         addLatch({regOp.getResult(), i}, {regOp.getInput(), i},
+                 regOp.getNameAttr(), i);
+      }
+      LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
+      options.notifyEmitted(regOp);
+      return WalkResult::advance();
+    }
+    if (auto regOp = dyn_cast<seq::FirRegOp>(op)) {
+      // Handle registers (latches in AIGER)
+      for (int64_t i = 0; i < hw::getBitWidth(regOp.getType()); ++i) {
+        addLatch({regOp.getResult(), i}, {regOp.getNext(), i},
                  regOp.getNameAttr(), i);
       }
       LLVM_DEBUG(llvm::dbgs() << "  Found latch: " << regOp << "\n");
@@ -673,7 +685,17 @@ LogicalResult AIGERExporter::assignLiterals() {
     LLVM_DEBUG(llvm::dbgs()
                << "  Latch literal " << nextLiteral << ": " << current << "\n");
     nextLiteral += 2;
+    auto clocked = current.first.first.getDefiningOp<seq::Clocked>();
+    assert(clocked);
+    if (!clock)
+      clock = clocked.getClk();
+    else if (clock != clocked.getClk())
+      return emitError("multiple clocks found in the module");
   }
+
+  if (clock)
+    options.notifyClock(*clock);
+
   if (false && options.binaryFormat) {
     // Topo-sort the AND gates.
     llvm::MapVector<Object, std::pair<Object, Object>> graph;
@@ -728,20 +750,20 @@ LogicalResult AIGERExporter::assignLiterals() {
       auto [rhs0, rhs1] = graph[lhs];
       andGates[index] = {lhs, rhs0, rhs1};
       valueLiteralMap[lhs] = nextLiteral;
-      if (rhs0.first.getDefiningOp<aig::AndInverterOp>()) {
-        if (!valueLiteralMap.count(rhs0)) {
-          llvm::errs() << "lhs: " << lhs << "\n";
-          llvm::errs() << "rhs0 not found: " << rhs0 << "\n";
-        }
-        assert(valueLiteralMap.count(rhs0));
-      }
-      if (rhs1.first.getDefiningOp<aig::AndInverterOp>()) {
-        if (!valueLiteralMap.count(rhs1)) {
-          llvm::errs() << "lhs: " << lhs << "\n";
-          llvm::errs() << "rhs1 not found: " << rhs1 << "\n";
-        }
-        assert(valueLiteralMap.count(rhs1));
-      }
+      // if (rhs0.first.getDefiningOp<aig::AndInverterOp>()) {
+      //   if (!valueLiteralMap.count(rhs0)) {
+      //     llvm::errs() << "lhs: " << lhs << "\n";
+      //     llvm::errs() << "rhs0 not found: " << rhs0 << "\n";
+      //   }
+      //   assert(valueLiteralMap.count(rhs0));
+      // }
+      // if (rhs1.first.getDefiningOp<aig::AndInverterOp>()) {
+      //   if (!valueLiteralMap.count(rhs1)) {
+      //     llvm::errs() << "lhs: " << lhs << "\n";
+      //     llvm::errs() << "rhs1 not found: " << rhs1 << "\n";
+      //   }
+      //   assert(valueLiteralMap.count(rhs1));
+      // }
       // assert(valueLiteralMap.count(rhs1));
       nextLiteral += 2;
     }

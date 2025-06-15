@@ -17,6 +17,7 @@
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
@@ -31,6 +32,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/Path.h"
@@ -87,29 +89,24 @@ struct Converter {
     willBeErased.insert(op);
   }
 
-  void cleanup() {
+  void cleanup(hw::HWModuleOp module) {
+    SetVector<Operation *> toErase;
+
+    // Collect all operations that need to be erased
+    mlir::IRRewriter rewriter(module);
     while (!willBeErased.empty()) {
       auto *op = willBeErased.pop_back_val();
-      op->dropAllReferences();
-
-      // DFS.
-      SetVector<Operation *> stack, visited;
-      stack.insert(op);
-      while (!stack.empty()) {
-        auto *current = stack.pop_back_val();
-        if (visited.contains(current))
-          continue;
-        visited.insert(current);
-        current->dropAllReferences();
-        for (auto *user : current->getUsers())
-          stack.insert(user);
-      }
-
-      for (auto *user : visited) {
-        user->erase();
-      }
+      rewriter.setInsertionPoint(op);
+      auto cast = rewriter.replaceOpWithNewOp<mlir::UnrealizedConversionCastOp>(
+          op, op->getResultTypes(), ValueRange{});
+      cast->setAttr("aig.this_operation_must_be_dead", rewriter.getUnitAttr());
     }
+
+    mlir::runRegionDCE(rewriter, module->getRegions());
   }
+
+  Value clock;
+  void notifyClock(Value value) { clock = value; }
 
   void replaceModule(hw::HWModuleOp module, hw::HWModuleOp replaced) {
     mlir::IRMapping mapping;
@@ -147,6 +144,25 @@ struct Converter {
         argInputs[argIndex] = extractBits;
       }
     }
+
+    if (isa<seq::ClockType>(
+            replaced.getBodyBlock()->getArguments().back().getType()))
+      argInputs.back() = clock;
+
+    for (auto [index, arg] :
+         llvm::enumerate(ArrayRef(argInputs).take_front(10))) {
+      llvm::errs() << " " << index << " is null\n";
+    }
+
+    for (auto [index, arg] : llvm::enumerate(argInputs)) {
+      if (!arg) {
+        llvm::errs() << "arg " << index << " is null\n";
+        replaced->dump();
+      }
+    }
+
+    assert(llvm::all_of(argInputs, [](Value v) { return v; }));
+
     builder.inlineBlockBefore(replaced.getBodyBlock(), module.getBodyBlock(),
                               moduleTerminator->getIterator(), argInputs);
     replacedTerminator->erase();
@@ -284,6 +300,7 @@ LogicalResult AIGERRunnerPass::exportToAIGER(Converter &converter,
     module.emitError("failed to open output file: " + outputPath.str());
     return failure();
   }
+  llvm::dbgs() << "Exporting " << module.getModuleNameAttr() << "\n";
 
   ExportAIGEROptions options;
   options.binaryFormat = true;
@@ -300,6 +317,10 @@ LogicalResult AIGERRunnerPass::exportToAIGER(Converter &converter,
   };
   options.notifyEmitted = [&converter](Operation *op) {
     converter.eraseLaterIfUnused(op);
+  };
+
+  options.notifyClock = [&converter](Value value) {
+    converter.notifyClock(value);
   };
 
   auto result = exportAIGER(module, outputFile->os(), &options);
@@ -335,7 +356,7 @@ LogicalResult AIGERRunnerPass::importFromAIGER(Converter &converter,
   // Ok, let's replace the original module with the imported one.
   converter.replaceModule(module, newModule);
 
-  converter.cleanup();
+  converter.cleanup(module);
 
   // Replace the original module with the imported one
   return llvm::success();

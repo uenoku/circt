@@ -757,16 +757,6 @@ ParseResult AIGERParser::createModule() {
   // Build input/output port info
   SmallVector<hw::PortInfo> ports;
 
-  // Add clock port if we have latches
-  if (numLatches > 0) {
-    hw::PortInfo clockPort;
-    clockPort.name = builder.getStringAttr("clock");
-    clockPort.type = seq::ClockType::get(builder.getContext());
-    clockPort.dir = hw::ModulePort::Direction::Input;
-    clockPort.argNum = 0;
-    ports.push_back(clockPort);
-  }
-
   // Add input ports
   for (unsigned i = 0; i < numInputs; ++i) {
     hw::PortInfo port;
@@ -775,7 +765,7 @@ ParseResult AIGERParser::createModule() {
         name ? name : builder.getStringAttr("input_" + std::to_string(i));
     port.type = builder.getI1Type();
     port.dir = hw::ModulePort::Direction::Input;
-    port.argNum = i + 1;
+    port.argNum = i;
     ports.push_back(port);
   }
 
@@ -787,8 +777,18 @@ ParseResult AIGERParser::createModule() {
         name ? name : builder.getStringAttr("output_" + std::to_string(i));
     port.type = builder.getI1Type();
     port.dir = hw::ModulePort::Direction::Output;
-    port.argNum = numInputs + (numLatches > 0 ? 1 : 0) + i;
+    port.argNum = numInputs + i;
     ports.push_back(port);
+  }
+
+  // Add clock port if we have latches
+  if (numLatches > 0) {
+    hw::PortInfo clockPort;
+    clockPort.name = builder.getStringAttr("clock");
+    clockPort.type = seq::ClockType::get(builder.getContext());
+    clockPort.dir = hw::ModulePort::Direction::Input;
+    clockPort.argNum = numInputs + numOutputs;
+    ports.push_back(clockPort);
   }
 
   // Create the HW module
@@ -801,7 +801,7 @@ ParseResult AIGERParser::createModule() {
   // Get clock and reset values if we have latches
   Value clockValue;
   if (numLatches > 0)
-    clockValue = hwModule.getBodyBlock()->getArgument(0);
+    clockValue = hwModule.getBodyBlock()->getArgument(numInputs);
 
   // Use BackedgeBuilder to handle all values uniformly
   BackedgeBuilder bb(builder, loc);
@@ -821,8 +821,7 @@ ParseResult AIGERParser::createModule() {
 
   // Set input values
   for (unsigned i = 0; i < numInputs; ++i) {
-    Value inputValue =
-        hwModule.getBodyBlock()->getArgument(i + (clockValue ? 1 : 0));
+    Value inputValue = hwModule.getBodyBlock()->getArgument(i);
     unsigned literal = inputLiterals[i];
     backedges[literal].setValue(inputValue);
   }
