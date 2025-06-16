@@ -27,6 +27,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cctype>
@@ -173,6 +174,10 @@ private:
   unsigned numLatches = 0;
   unsigned numOutputs = 0;
   unsigned numAnds = 0;
+  unsigned numBadStates = 0;
+  unsigned numConstraints = 0;
+  unsigned numJustice = 0;
+  unsigned numFairness = 0;
   bool isBinaryFormat = false;
 
   // A mapping from {kind, index} -> symbol where kind is 0 for inputs, 1 for
@@ -232,12 +237,32 @@ private:
 
   /// Parse a number token
   ParseResult parseNumber(unsigned &result);
+  ParseResult parseOptionalNumber(unsigned &result);
 
   /// Parse a binary encoded number (variable-length encoding)
   ParseResult parseBinaryNumber(unsigned &result);
 
   /// Expect and consume a newline token
   ParseResult parseNewLine();
+
+  /// Parse bad states section
+  ParseResult parseBadStates();
+
+  /// Parse constraints section
+  ParseResult parseConstraints();
+
+  /// Parse justice properties section
+  ParseResult parseJusticeProperties();
+
+  /// Parse fairness constraints section
+  ParseResult parseFairnessConstraints();
+
+  /// Storage for bad states, constraints, justice properties, and fairness
+  /// constraints
+  SmallVector<unsigned> badStateLiterals;
+  SmallVector<unsigned> constraintLiterals;
+  SmallVector<SmallVector<unsigned>> justiceProperties;
+  SmallVector<unsigned> fairnessLiterals;
 };
 
 } // anonymous namespace
@@ -338,7 +363,24 @@ AIGERToken AIGERLexer::peekToken() {
 
 ParseResult AIGERParser::parse() {
   if (parseHeader() || parseInputs() || parseLatches() || parseOutputs() ||
-      parseAndGates() || parseSymbolTable() || parseComments())
+      parseAndGates())
+    return failure();
+
+  // Parse optional sections if they exist
+  if (numBadStates > 0 && parseBadStates())
+    return failure();
+
+  if (numConstraints > 0 && parseConstraints())
+    return failure();
+
+  if (numJustice > 0 && parseJusticeProperties())
+    return failure();
+
+  if (numFairness > 0 && parseFairnessConstraints())
+    return failure();
+
+  // Parse symbol table and comments
+  if (parseSymbolTable() || parseComments())
     return failure();
 
   // Create the final module
@@ -362,6 +404,16 @@ ParseResult AIGERParser::parseNumber(unsigned &result) {
   if (token.spelling.getAsInteger(10, result))
     return emitError("invalid number format");
 
+  return success();
+}
+
+ParseResult AIGERParser::parseOptionalNumber(unsigned &result) {
+  AIGERToken token = lexer.peekToken();
+  if (token.kind != AIGERTokenKind::Number)
+    return success();
+  lexer.nextToken();
+  if (token.spelling.getAsInteger(10, result))
+    return emitError("invalid number format");
   return success();
 }
 
@@ -430,16 +482,36 @@ ParseResult AIGERParser::parseHeader() {
   if (parseNumber(numAnds))
     return emitError("failed to parse A (number of AND gates)");
 
-  // Skip until newline.
-  while (!lexer.isAtEOF() &&
-         lexer.peekToken().kind != AIGERTokenKind::Newline) {
-    // TODO: Parse additional numbers. See "AIGER 1.9 And Beyond".
-    return failure();
+  auto peek = lexer.peekToken();
+
+  auto parseIfNumber = [&](unsigned &result) -> ParseResult {
+    if (lexer.peekToken().kind != AIGERTokenKind::Number)
+      return ParseResult::failure();
+    return parseNumber(result);
+  };
+
+  if (parseIfNumber(numBadStates)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Number of bad states: " << numBadStates << "\n");
+  }
+  if (parseIfNumber(numConstraints)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Number of bad states: " << numBadStates << "\n");
+  }
+  if (parseIfNumber(numJustice)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Number of bad states: " << numBadStates << "\n");
+  }
+  if (parseIfNumber(numFairness)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Number of bad states: " << numBadStates << "\n");
   }
 
   LLVM_DEBUG(llvm::dbgs() << "Header: M=" << maxVarIndex << " I=" << numInputs
                           << " L=" << numLatches << " O=" << numOutputs
-                          << " A=" << numAnds << "\n");
+                          << " A=" << numAnds << " B=" << numBadStates
+                          << " C=" << numConstraints << " J=" << numJustice
+                          << " F=" << numFairness << "\n");
 
   // Expect newline after header
   if (parseNewLine())
@@ -481,8 +553,8 @@ ParseResult AIGERParser::parseLatches() {
   if (isBinaryFormat) {
     // In binary format, latches are implicit (literals 2, 4, 6, ...)
     for (unsigned i = 0; i < numLatches; ++i) {
-      unsigned literal;
-      if (parseNumber(literal))
+      unsigned literal, initial;
+      if (parseNumber(literal) || parseOptionalNumber(initial))
         return emitError("failed to parse latch next state literal");
 
       latchDefs.push_back({2 * (i + 1 + numInputs), literal});
@@ -935,4 +1007,92 @@ void circt::registerFromAIGERTranslation() {
           module = {};
         return module;
       });
+}
+
+ParseResult AIGERParser::parseBadStates() {
+  LLVM_DEBUG(llvm::dbgs() << "Parsing " << numBadStates << " bad states\n");
+
+  // Parse bad state literals
+  for (unsigned i = 0; i < numBadStates; ++i) {
+    unsigned literal;
+    if (parseNumber(literal) || parseNewLine())
+      return emitError("failed to parse bad state literal");
+
+    LLVM_DEBUG(llvm::dbgs() << "Bad State " << i << ": " << literal << "\n");
+
+    // Bad state literals can be any valid literal (including inverted)
+    badStateLiterals.push_back(literal);
+  }
+
+  return success();
+}
+
+ParseResult AIGERParser::parseConstraints() {
+  LLVM_DEBUG(llvm::dbgs() << "Parsing " << numConstraints << " constraints\n");
+
+  // Parse constraint literals
+  for (unsigned i = 0; i < numConstraints; ++i) {
+    unsigned literal;
+    if (parseNumber(literal) || parseNewLine())
+      return emitError("failed to parse constraint literal");
+
+    LLVM_DEBUG(llvm::dbgs() << "Constraint " << i << ": " << literal << "\n");
+
+    // Constraint literals can be any valid literal (including inverted)
+    constraintLiterals.push_back(literal);
+  }
+
+  return success();
+}
+
+ParseResult AIGERParser::parseJusticeProperties() {
+  LLVM_DEBUG(llvm::dbgs() << "Parsing " << numJustice
+                          << " justice properties\n");
+
+  // Parse justice properties
+  for (unsigned i = 0; i < numJustice; ++i) {
+    // Parse the number of literals in this justice property
+    unsigned numLiterals;
+    if (parseNumber(numLiterals) || parseNewLine())
+      return emitError("failed to parse justice property size");
+
+    LLVM_DEBUG(llvm::dbgs() << "Justice Property " << i << " has "
+                            << numLiterals << " literals\n");
+
+    // Parse all literals for this justice property
+    SmallVector<unsigned> literals;
+    for (unsigned j = 0; j < numLiterals; ++j) {
+      unsigned literal;
+      if (parseNumber(literal) || parseNewLine())
+        return emitError("failed to parse justice property literal");
+
+      LLVM_DEBUG(llvm::dbgs() << "  Literal " << j << ": " << literal << "\n");
+      literals.push_back(literal);
+    }
+
+    justiceProperties.push_back(literals);
+  }
+
+  return success();
+}
+
+ParseResult AIGERParser::parseFairnessConstraints() {
+  LLVM_DEBUG(llvm::dbgs() << "Parsing " << numFairness
+                          << " fairness constraints\n");
+
+  // Parse fairness constraint literals
+  for (unsigned i = 0; i < numFairness; ++i) {
+    unsigned literal;
+    if (parseNumber(literal) || parseNewLine())
+      return emitError("failed to parse fairness constraint literal");
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Fairness Constraint " << i << ": " << literal << "\n");
+
+    // Fairness constraint literals can be any valid literal (including
+    // inverted)
+    fairnessLiterals.push_back(literal);
+  }
+
+  return success();
 }
