@@ -18,6 +18,7 @@
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -138,6 +139,7 @@ static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
 }
 
 static void populateSynthesisPipeline(PassManager &pm) {
+  pm.addPass(sv::createSVExtractTestCodePass());
   auto pipeline = [](OpPassManager &mpm) {
     // Add the AIG to Comb at the scope exit if requested.
     auto addAIGToComb = llvm::make_scope_exit([&]() {
@@ -248,6 +250,10 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
         std::make_unique<VerbosePassInstrumentation<mlir::ModuleOp>>(
             "circt-synth"));
   populateSynthesisPipeline(pm);
+  // Set a top module name for the longest path analysis.
+  module.get()->setAttr(
+      circt::aig::LongestPathAnalysis::getTopModuleNameAttrName(),
+      FlatSymbolRefAttr::get(&context, topName));
   if (failed(pm.run(module.get())))
     return failure();
 

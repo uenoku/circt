@@ -23,6 +23,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/JSON.h"
 
 namespace mlir {
 class AnalysisManager;
@@ -48,6 +50,7 @@ struct Object {
     return instancePath == other.instancePath && value == other.value &&
            bitPos == other.bitPos;
   }
+  llvm::json::Value toJSON() const;
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
@@ -106,18 +109,11 @@ public:
 
   void print(llvm::raw_ostream &os);
   void setDelay(int64_t delay) { path.delay = delay; }
-  const llvm::ImmutableList<DebugPoint> &getHistory() const {
-    return path.history;
-  }
 
 private:
   Object fanOut;
   OpenPath path;
   hw::HWModuleOp root;
-};
-
-struct LongestPathAnalysisOption {
-  bool traceDebugPoints = false;
 };
 
 // This analysis finds the longest paths in the dataflow graph across modules.
@@ -129,8 +125,12 @@ struct LongestPathAnalysisOption {
 class LongestPathAnalysis {
 public:
   // Entry points for analysis.
+  using VisitorOverrideFn = llvm::function_ref<FailureOr<bool>(
+      llvm::function_ref<LogicalResult(Value, size_t,
+                                       SmallVectorImpl<OpenPath> &)>,
+      Value, size_t, SmallVectorImpl<OpenPath> &)>;
   LongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am,
-                      const LongestPathAnalysisOption &option = {});
+                      VisitorOverrideFn fn = {});
   ~LongestPathAnalysis();
 
   // Return all longest paths to each Fanin for the given value and bit
@@ -138,28 +138,24 @@ public:
   LogicalResult getResults(Value value, size_t bitPos,
                            SmallVectorImpl<DataflowPath> &results) const;
 
-  // Return the maximum delay to the given value for all bit positions.
-  int64_t getMaxDelay(Value value) const;
-
   // Return the average of the maximum delays across all bits of the given
   // value, which is useful approximation for the delay of the value. For each
   // bit position, finds all paths and takes the maximum delay. Then averages
   // these maximum delays across all bits of the value.
   int64_t getAverageMaxDelay(Value value) const;
+  int64_t getMaxDelay(Value value, int64_t bitPos = -1) const;
 
-  // Return paths that are closed under the given module.  Results are
+  int64_t getNumNodes(StringAttr module) const;
+
+  // Paths to paths that are closed under the give module. Results are
   // sorted by delay from longest to shortest. Closed paths are typically
-  // register-to-register paths. A closed path is a path that starts and ends at
-  // sequential elements (registers/flip-flops), forming a complete timing path
-  // through combinational logic. The path may cross module boundaries but both
-  // endpoints are sequential elements, not ports.
+  // register-to-register paths.
   LogicalResult getClosedPaths(StringAttr moduleName,
                                SmallVectorImpl<DataflowPath> &results) const;
 
   // Return open paths for the given module. Results are sorted by delay from
   // longest to shortest. Open paths are typically input-to-register or
-  // register-to-output paths. An open path is a timing path that has at least
-  // one endpoint at a module port rather than a sequential element.
+  // register-to-output paths.
   LogicalResult
   getOpenPaths(StringAttr moduleName,
                SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,

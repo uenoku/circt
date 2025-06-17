@@ -79,6 +79,7 @@ struct Converter {
                                      size_t inputIndex) {
     if (!value.getType().isInteger())
       return false;
+
     if (valueMap.find(value) == valueMap.end())
       valueMap[value].assign(hw::getBitWidth(value.getType()), -1);
 
@@ -278,7 +279,7 @@ LogicalResult AIGERRunnerPass::runSolver(StringRef inputPath,
 
   int result =
       llvm::sys::ExecuteAndWait(findProgram.get(), args, /*Env=*/std::nullopt,
-                                /*Redirects=*/{}, /*SecondsToWait=*/60,
+                                /*Redirects=*/{}, /*SecondsToWait=*/180,
                                 /*MemoryLimit=*/0, &error);
 
   if (result != 0) {

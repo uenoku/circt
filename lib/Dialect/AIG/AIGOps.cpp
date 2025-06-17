@@ -21,6 +21,35 @@ using namespace circt::aig;
 
 #define GET_OP_CLASSES
 #include "circt/Dialect/AIG/AIG.cpp.inc"
+/// A wrapper of `PatternRewriter::replaceOp` to propagate "sv.namehint"
+/// attribute. If a replaced op has a "sv.namehint" attribute, this function
+/// propagates the name to the new value.
+static void replaceOpAndCopyName(PatternRewriter &rewriter, Operation *op,
+                                 Value newValue) {
+  if (auto *newOp = newValue.getDefiningOp()) {
+    auto name = op->getAttrOfType<StringAttr>("sv.namehint");
+    if (name && !newOp->hasAttr("sv.namehint"))
+      rewriter.modifyOpInPlace(newOp,
+                               [&] { newOp->setAttr("sv.namehint", name); });
+  }
+  rewriter.replaceOp(op, newValue);
+}
+
+/// A wrapper of `PatternRewriter::replaceOpWithNewOp` to propagate
+/// "sv.namehint" attribute. If a replaced op has a "sv.namehint" attribute,
+/// this function propagates the name to the new value.
+template <typename OpTy, typename... Args>
+static OpTy replaceOpWithNewOpAndCopyName(PatternRewriter &rewriter,
+                                          Operation *op, Args &&...args) {
+  auto name = op->getAttrOfType<StringAttr>("sv.namehint");
+  auto newOp =
+      rewriter.replaceOpWithNewOp<OpTy>(op, std::forward<Args>(args)...);
+  if (name && !newOp->hasAttr("sv.namehint"))
+    rewriter.modifyOpInPlace(newOp,
+                             [&] { newOp->setAttr("sv.namehint", name); });
+
+  return newOp;
+}
 
 OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
   if (getNumOperands() == 1 && !isInverted(0))
@@ -30,6 +59,114 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
 
 LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
                                           PatternRewriter &rewriter) {
+  if (op.getInputs().size() == 2 && !op.isInverted(1)) {
+    if (auto c = op.getInputs()[1].getDefiningOp<hw::ConstantOp>()) {
+      // Propagate one hot encoding.
+      const APInt &value = c.getValue();
+      if (value.popcount() == 1) {
+        auto lsb = value.countTrailingZeros();
+        auto msb = value.countLeadingZeros();
+        Value extract = rewriter.create<comb::ExtractOp>(
+            op->getLoc(), op.getOperand(0), lsb, 1);
+        if (op.isInverted(0)) {
+          extract = rewriter.create<aig::AndInverterOp>(op->getLoc(), extract,
+                                                        /*invert=*/true);
+        }
+        SmallVector<Value> concatInputs;
+        if (msb) {
+          auto paddingZero = rewriter.create<hw::ConstantOp>(
+              op->getLoc(), rewriter.getIntegerType(msb), 0);
+          concatInputs.push_back(paddingZero);
+        }
+        concatInputs.push_back(extract);
+
+        if (lsb) {
+          auto paddingZero = rewriter.create<hw::ConstantOp>(
+              op->getLoc(), rewriter.getIntegerType(lsb), 0);
+          concatInputs.push_back(paddingZero);
+        }
+
+        replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                      concatInputs);
+        return success();
+      }
+    }
+  }
+  if (op.getInputs().size() == 1 && op.isInverted(0)) {
+    auto concat = op.getInputs()[0].getDefiningOp<comb::ConcatOp>();
+    if (concat && concat->hasOneUse()) {
+      SmallVector<Value> concatInputs;
+      for (auto operand : concat->getOperands()) {
+        concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+            op->getLoc(), operand, /*invert=*/true));
+      }
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, concatInputs);
+      return success();
+    }
+  }
+
+  if (op.getInputs().size() == 2) {
+    auto concatLhs = op.getInputs()[0].getDefiningOp<comb::ConcatOp>();
+    auto concatRhs = op.getInputs()[1].getDefiningOp<comb::ConcatOp>();
+    if (concatLhs && concatRhs && concatLhs->hasOneUse() &&
+        concatRhs->hasOneUse() && concatLhs->getOperands().size() == 3 &&
+        concatRhs->getOperands().size() == 3) {
+      SmallVector<Value> concatInputs;
+      // lhs: {c1, x1, c2}
+      // rhs: {d1, x2, d2}
+      // result: {c1 & d1, x1 & x2, c2 & d2}
+      size_t pos = 0;
+      for (auto operand : llvm::reverse(concatLhs->getOperands())) {
+        auto extract = rewriter.create<comb::ExtractOp>(
+            op->getLoc(), concatRhs, pos,
+            operand.getType().getIntOrFloatBitWidth());
+        concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+            op->getLoc(), operand, extract, op.isInverted(0),
+            op.isInverted(1)));
+        pos += operand.getType().getIntOrFloatBitWidth();
+      }
+      std::reverse(concatInputs.begin(), concatInputs.end());
+
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, concatInputs);
+      return success();
+    }
+
+    auto lhsReplicate = op.getInputs()[0].getDefiningOp<comb::ReplicateOp>();
+    if (lhsReplicate && concatRhs && lhsReplicate->hasOneUse() &&
+        concatRhs->hasOneUse() && !op.isInverted(1) &&
+        lhsReplicate.getInput().getType().getIntOrFloatBitWidth() == 1) {
+
+      bool ok = true;
+      for (auto operand : concatRhs->getOperands()) {
+        auto c = operand.getDefiningOp<hw::ConstantOp>();
+        if (operand.getType().getIntOrFloatBitWidth() == 1 ||
+            (c && c.getValue().isZero())) {
+        } else {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        SmallVector<Value> concatInputs;
+        for (auto operand : concatRhs->getOperands()) {
+          if (operand.getType().getIntOrFloatBitWidth() == 1) {
+            concatInputs.push_back(rewriter.create<aig::AndInverterOp>(
+                op->getLoc(), lhsReplicate.getInput(), operand,
+                op.isInverted(0), op.isInverted(1)));
+
+            continue;
+          }
+          auto c = operand.getDefiningOp<hw::ConstantOp>();
+          assert(c);
+          assert(c.getValue().isZero());
+          concatInputs.push_back(operand);
+        }
+        replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                      concatInputs);
+        return success();
+      }
+    }
+  }
   SmallDenseMap<Value, bool> seen;
   SmallVector<Value> uniqueValues;
   SmallVector<bool> uniqueInverts;
@@ -38,8 +175,11 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
       APInt::getAllOnes(op.getResult().getType().getIntOrFloatBitWidth());
 
   bool invertedConstFound = false;
+  bool flippedFound = false;
+  unsigned knownZero = 0;
 
   for (auto [value, inverted] : llvm::zip(op.getInputs(), op.getInverted())) {
+    bool newInverted = inverted;
     if (auto constOp = value.getDefiningOp<hw::ConstantOp>()) {
       if (inverted) {
         constValue &= ~constOp.getValue();
@@ -50,12 +190,30 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
       continue;
     }
 
+    if (auto concat = value.getDefiningOp<comb::ConcatOp>()) {
+      if (auto c = concat.getInputs().front().getDefiningOp<hw::ConstantOp>()) {
+        if ((!inverted && c.getValue().isZero()) ||
+            (inverted && c.getValue().isAllOnes())) {
+          knownZero = std::max(knownZero, c.getValue().getBitWidth());
+        }
+      }
+    }
+
+    if (auto andInverterOp = value.getDefiningOp<aig::AndInverterOp>()) {
+      if (andInverterOp.getInputs().size() == 1 &&
+          andInverterOp.isInverted(0)) {
+        value = andInverterOp.getOperand(0);
+        newInverted = andInverterOp.isInverted(0) ^ inverted;
+        flippedFound = true;
+      }
+    }
+
     auto it = seen.find(value);
     if (it == seen.end()) {
-      seen.insert({value, inverted});
+      seen.insert({value, newInverted});
       uniqueValues.push_back(value);
-      uniqueInverts.push_back(inverted);
-    } else if (it->second != inverted) {
+      uniqueInverts.push_back(newInverted);
+    } else if (it->second != newInverted) {
       // replace with const 0
       rewriter.replaceOpWithNewOp<hw::ConstantOp>(
           op, APInt::getZero(value.getType().getIntOrFloatBitWidth()));
@@ -69,16 +227,65 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
     return success();
   }
 
+  if (knownZero != 0) {
+    auto c = rewriter.create<hw::ConstantOp>(op.getLoc(), APInt(knownZero, 0));
+    SmallVector<Value> newOperands;
+    for (auto v : uniqueValues) {
+      newOperands.push_back(rewriter.create<comb::ExtractOp>(
+          op->getLoc(), v, 0, v.getType().getIntOrFloatBitWidth() - knownZero));
+    }
+
+    auto inverter = rewriter.create<aig::AndInverterOp>(
+        op->getLoc(), newOperands, uniqueInverts);
+    replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op,
+                                                  ArrayRef<Value>{c, inverter});
+    return success();
+  }
+
   // No change.
-  if (uniqueValues.size() == op.getInputs().size() ||
+  if ((uniqueValues.size() == op.getInputs().size() && !flippedFound) ||
       (!constValue.isAllOnes() && !invertedConstFound &&
        uniqueValues.size() + 1 == op.getInputs().size()))
     return failure();
 
   if (!constValue.isAllOnes()) {
-    auto constOp = rewriter.create<hw::ConstantOp>(op.getLoc(), constValue);
-    uniqueInverts.push_back(false);
-    uniqueValues.push_back(constOp);
+    // Partially bit blast.
+    auto width = op.getType().getIntOrFloatBitWidth();
+    if (width != 1 && uniqueValues.size() != 0) {
+      Value newOp = rewriter.create<aig::AndInverterOp>(
+          op->getLoc(), uniqueValues, uniqueInverts);
+
+      SmallVector<Value> concatResult;
+      int32_t currentBit = -1, start = 0;
+      for (size_t i = 0; i <= width; ++i) {
+        if (i != width && currentBit == constValue[i])
+          continue;
+
+        size_t len = i - start;
+        if (currentBit == 0) {
+          if (i != 0) {
+            concatResult.push_back(rewriter.create<hw::ConstantOp>(
+                op.getLoc(), APInt::getZero(len)));
+          }
+        } else {
+          if (i != 0) {
+            concatResult.push_back(rewriter.create<comb::ExtractOp>(
+                op.getLoc(), newOp, start, len));
+          }
+        }
+        start = i;
+        if (i != width)
+          currentBit = constValue[i];
+      }
+      std::reverse(concatResult.begin(), concatResult.end());
+      replaceOpWithNewOpAndCopyName<comb::ConcatOp>(rewriter, op, op.getType(),
+                                                    concatResult);
+      return success();
+    } else {
+      auto constOp = rewriter.create<hw::ConstantOp>(op.getLoc(), constValue);
+      uniqueInverts.push_back(false);
+      uniqueValues.push_back(constOp);
+    }
   }
 
   // It means the input is reduced to all ones.
@@ -88,8 +295,8 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   }
 
   // build new op with reduced input values
-  rewriter.replaceOpWithNewOp<aig::AndInverterOp>(op, uniqueValues,
-                                                  uniqueInverts);
+  replaceOpWithNewOpAndCopyName<aig::AndInverterOp>(rewriter, op, uniqueValues,
+                                                    uniqueInverts);
   return success();
 }
 
@@ -170,8 +377,8 @@ LogicalResult CutOp::verify() {
   for (auto [input, arg] : llvm::zip(getInputs(), block->getArguments()))
     if (input.getType() != arg.getType())
       return emitOpError("input type ")
-             << input.getType() << " does not match "
-             << "block argument type " << arg.getType();
+             << input.getType() << " does not match " << "block argument type "
+             << arg.getType();
 
   if (getNumResults() != block->getTerminator()->getNumOperands())
     return emitOpError("the number of results and the number of terminator "
