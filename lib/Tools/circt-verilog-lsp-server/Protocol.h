@@ -53,6 +53,35 @@ bool fromJSON(const llvm::json::Value &value,
               VerilogUserProvidedInlayHintParams &result,
               llvm::json::Path path);
 
+//===----------------------------------------------------------------------===//
+// VerilogUserProvidedHover
+//===----------------------------------------------------------------------===//
+
+struct VerilogUserProvidedHover {
+  // The object path to the value.
+  std::string path;
+
+  // The value.
+  std::string value;
+
+  // The root module name (optional).
+  std::optional<std::string> root;
+
+  // The optional id of the hover.
+  std::optional<std::string> group;
+};
+
+/// Add support for JSON serialization.
+bool fromJSON(const llvm::json::Value &value, VerilogUserProvidedHover &result,
+              llvm::json::Path path);
+
+struct VerilogUserProvidedHoverParams {
+  std::vector<VerilogUserProvidedHover> hints;
+};
+
+/// Add support for JSON serialization.
+bool fromJSON(const llvm::json::Value &value,
+              VerilogUserProvidedHoverParams &result, llvm::json::Path path);
 } // namespace lsp
 } // namespace circt
 

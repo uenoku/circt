@@ -144,21 +144,38 @@ struct VerilogServerContext {
         : value(value), group(std::move(group)){};
   };
 
+  struct ObjectHover {
+    std::string value;
+    std::optional<std::string> group;
+    ObjectHover(StringRef value, std::optional<std::string> group)
+        : value(value), group(std::move(group)){};
+  };
+
   // A map from module name and symbol name to the hint.
   llvm::StringMap<llvm::StringMap<llvm::SmallVector<ObjectInlayHint>>>
       inlayHintMappings;
 
+  // A map from module name and symbol name to the hover text.
+  llvm::StringMap<llvm::StringMap<llvm::SmallVector<ObjectHover>>> hoverMap;
+
   // Return user provided inlay hints for the given symbol.
   ArrayRef<ObjectInlayHint> getInlayHintsForSymbol(StringRef moduleName,
                                                    StringRef symbolName) const;
+  // Return user provided hover text for the given symbol.
+  ArrayRef<ObjectHover> getHoverForSymbol(StringRef moduleName,
+                                          StringRef symbolName) const;
 
   void putInlayHintsOnObjects(
       const std::vector<VerilogUserProvidedInlayHint> &hints);
+  void putHoverOnObjects(const std::vector<VerilogUserProvidedHover> &hints);
 
 private:
   void putInlayHintsOnObjects(StringRef moduleName, StringRef symbolName,
                               StringRef hint,
                               const std::optional<std::string> &group);
+  void putHoverOnObjects(StringRef moduleName, StringRef symbolName,
+                         StringRef hint,
+                         const std::optional<std::string> &group);
 };
 
 class VerilogDocument;
@@ -396,7 +413,41 @@ VerilogServerContext::getInlayHintsForSymbol(StringRef moduleName,
   return symbolIt->second;
 }
 
+ArrayRef<VerilogServerContext::ObjectHover>
+VerilogServerContext::getHoverForSymbol(StringRef moduleName,
+                                        StringRef symbolName) const {
+  auto moduleIt = hoverMap.find(moduleName);
+  if (moduleIt == hoverMap.end())
+    return {};
+  auto symbolIt = moduleIt->second.find(symbolName);
+  if (symbolIt == moduleIt->second.end())
+    return {};
+  return symbolIt->second;
+}
+
 void VerilogServerContext::putInlayHintsOnObjects(
+    StringRef moduleName, StringRef symbolName, StringRef hint,
+    const std::optional<std::string> &group) {
+
+  auto &hints = inlayHintMappings[moduleName][symbolName];
+  // If the group is not provided, just append.
+  if (!group) {
+    hints.emplace_back(hint, group);
+    return;
+  }
+
+  // If the id is provided, check if we need to update hints.
+  for (auto &existingHint : hints) {
+    if (existingHint.group == *group) {
+      existingHint.value = hint;
+      return;
+    }
+  }
+
+  hints.emplace_back(hint, group);
+}
+
+void VerilogServerContext::putHoverOnObjects(
     StringRef moduleName, StringRef symbolName, StringRef hint,
     const std::optional<std::string> &group) {
 

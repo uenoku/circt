@@ -41,6 +41,7 @@ using TextDocumentContentChangeEvent =
 using URIForFile = mlir::lsp::URIForFile;
 using Diagnostic = mlir::lsp::Diagnostic;
 struct VerilogUserProvidedInlayHint;
+struct VerilogUserProvidedHover;
 
 /// This class implements all of the Verilog related functionality necessary for
 /// a language server. This class allows for keeping the Verilog specific logic
@@ -84,6 +85,9 @@ public:
   /// Get the hover information for the given position.
   std::optional<mlir::lsp::Hover> findHover(const URIForFile &uri,
                                             const mlir::lsp::Position &pos);
+
+  void putHoverOnObjects(
+      const std::vector<circt::lsp::VerilogUserProvidedHover> &params);
 
 private:
   struct Impl;
