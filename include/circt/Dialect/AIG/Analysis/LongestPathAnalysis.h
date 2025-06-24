@@ -23,6 +23,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
+#include "llvm/ADT/PointerUnion.h"
+#include "llvm/Support/LogicalResult.h"
+#include <mlir/IR/Value.h>
+#include <tuple>
+#include <variant>
 
 namespace mlir {
 class AnalysisManager;
@@ -43,11 +48,15 @@ struct Object {
       : instancePath(path), value(value), bitPos(bitPos) {}
   Object() = default;
   void print(llvm::raw_ostream &os) const;
+  void printLikeVerilog(llvm::raw_ostream &os) const;
 
   bool operator==(const Object &other) const {
     return instancePath == other.instancePath && value == other.value &&
            bitPos == other.bitPos;
   }
+
+  Object &prependPaths(circt::igraph::InstancePathCache &cache,
+                       circt::igraph::InstancePath path);
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
@@ -69,6 +78,7 @@ struct DebugPoint {
   }
 
   void print(llvm::raw_ostream &os) const;
+  void printLikeVerilog(llvm::raw_ostream &os) const;
 
   Object object;
   int64_t delay;
@@ -83,12 +93,23 @@ struct OpenPath {
   // History of debug points represented by linked lists.
   // The head of the list is the farthest point from the fanIn.
   llvm::ImmutableList<DebugPoint> history;
+
   OpenPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
            int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
       : fanIn(path, value, bitPos), delay(delay), history(history) {}
 
+  const Object &getFanIn() const { return fanIn; }
+  int64_t getDelay() const { return delay; }
+  const llvm::ImmutableList<DebugPoint> &getHistory() const { return history; }
+
   OpenPath() = default;
   void print(llvm::raw_ostream &os) const;
+  void printLikeVerilog(llvm::raw_ostream &os);
+
+  OpenPath &
+  prependPaths(circt::igraph::InstancePathCache &cache,
+               llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
+               circt::igraph::InstancePath path);
 };
 
 // A DataflowPath is a complete path from a fanout to a fanin with associated
@@ -97,25 +118,49 @@ class DataflowPath {
 public:
   DataflowPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
       : fanOut(fanOut), path(fanIn), root(root) {}
+  DataflowPath(std::pair<size_t, size_t> fanOut, OpenPath fanIn,
+               hw::HWModuleOp root)
+      : fanOut(fanOut), path(fanIn), root(root) {}
+
   DataflowPath() = default;
 
   int64_t getDelay() const { return path.delay; }
   const Object &getFanIn() const { return path.fanIn; }
-  const Object &getFanOut() const { return fanOut; }
+  // FanOut is either an object, or an output port of the root module.
+  using FanOutType = std::variant<Object, std::pair<size_t, size_t>>;
+  const FanOutType &getFanOut() const { return fanOut; }
+  const Object &getFanOutAsObject() const { return std::get<Object>(fanOut); }
+  const std::pair<size_t, size_t> &getFanOutAsPort() const {
+    return std::get<std::pair<size_t, size_t>>(fanOut);
+  }
   const hw::HWModuleOp &getRoot() const { return root; }
 
-  void print(llvm::raw_ostream &os);
+  Location getFanOutLoc();
+
   void setDelay(int64_t delay) { path.delay = delay; }
   const llvm::ImmutableList<DebugPoint> &getHistory() const {
     return path.history;
   }
 
+  // Printers
+  void print(llvm::raw_ostream &os);
+
+  DataflowPath &
+  prependPaths(circt::igraph::InstancePathCache &cache,
+               llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
+               circt::igraph::InstancePath path);
+  const OpenPath &getPath() { return path; }
+
+  void printFanOut(llvm::raw_ostream &os);
+
 private:
-  Object fanOut;
+  FanOutType fanOut;
   OpenPath path;
   hw::HWModuleOp root;
 };
 
+
+// Options for the longest path analysis.
 struct LongestPathAnalysisOption {
   bool traceDebugPoints = false;
 };
@@ -154,17 +199,25 @@ public:
   // through combinational logic. The path may cross module boundaries but both
   // endpoints are sequential elements, not ports.
   LogicalResult getClosedPaths(StringAttr moduleName,
-                               SmallVectorImpl<DataflowPath> &results) const;
+                               SmallVectorImpl<DataflowPath> &results, bool elaboratedPaths = false) const;
 
   // Return open paths for the given module. Results are sorted by delay from
   // longest to shortest. Open paths are typically input-to-register or
   // register-to-output paths. An open path is a timing path that has at least
   // one endpoint at a module port rather than a sequential element.
-  LogicalResult
-  getOpenPaths(StringAttr moduleName,
-               SmallVectorImpl<std::pair<Object, OpenPath>> &openPathsToFF,
-               SmallVectorImpl<std::tuple<size_t, size_t, OpenPath>>
-                   &openPathsFromOutputPorts) const;
+  LogicalResult getOpenPathsFromInputPortsToInternal(
+      StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
+
+  // Return open paths for the given module. Results are sorted by delay from
+  // longest to shortest. Open paths are typically input-to-register or
+  // register-to-output paths. An open path is a timing path that has at least
+  // one endpoint at a module port rather than a sequential element.
+  LogicalResult getOpenPathsFromInternalToOutputPorts(
+      StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
+
+  // Get all paths in the given module including both closed and open paths.
+  LogicalResult getAllPaths(StringAttr moduleName,
+                            SmallVectorImpl<DataflowPath> &results, bool elaboratedPaths = false) const;
 
   // Return true if the analysis is available for the given module.
   bool isAnalysisAvailable(StringAttr moduleName) const;
@@ -197,4 +250,30 @@ public:
 } // namespace aig
 } // namespace circt
 
+namespace llvm {
+// Provide DenseMapInfo for Object.
+template <>
+struct llvm::DenseMapInfo<circt::aig::Object> {
+  using Info = llvm::DenseMapInfo<
+      std::tuple<circt::igraph::InstancePath, mlir::Value, size_t>>;
+  using Object = circt::aig::Object;
+  static Object getEmptyKey() {
+    auto [path, value, bitPos] = Info::getEmptyKey();
+    return Object(path, value, bitPos);
+  }
+
+  static Object getTombstoneKey() {
+    auto [path, value, bitPos] = Info::getTombstoneKey();
+    return Object(path, value, bitPos);
+  }
+  static llvm::hash_code getHashValue(Object object) {
+    return Info::getHashValue(
+        {object.instancePath, object.value, object.bitPos});
+  }
+  static bool isEqual(const Object &a, const Object &b) {
+    return Info::isEqual({a.instancePath, a.value, a.bitPos},
+                         {b.instancePath, b.value, b.bitPos});
+  }
+};
+} // namespace llvm
 #endif // CIRCT_ANALYSIS_AIG_ANALYSIS_H

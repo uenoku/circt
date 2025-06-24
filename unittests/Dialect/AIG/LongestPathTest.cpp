@@ -87,9 +87,10 @@ TEST(LongestPathTest, BasicTest) {
 
     EXPECT_EQ(results.size(), 4u);
     for (auto path : results)
-      EXPECT_TRUE(answerSet.erase(
-          {path.getFanIn().value, path.getFanIn().bitPos,
-           path.getFanOut().value, path.getFanOut().bitPos, path.getDelay()}));
+      EXPECT_TRUE(
+          answerSet.erase({path.getFanIn().value, path.getFanIn().bitPos,
+                           path.getFanOutAsObject().value,
+                           path.getFanOutAsObject().bitPos, path.getDelay()}));
 
     // Check other API.
     EXPECT_EQ(longestPath.getMaxDelay(concat), 3); // max([3, 3, 0, 0]) = 3
@@ -141,9 +142,10 @@ TEST(LongestPathTest, BasicTest) {
 
     EXPECT_EQ(results.size(), 6u);
     for (auto path : results)
-      EXPECT_TRUE(answerSet.erase(
-          {path.getFanIn().value, path.getFanIn().bitPos,
-           path.getFanOut().value, path.getFanOut().bitPos, path.getDelay()}));
+      EXPECT_TRUE(
+          answerSet.erase({path.getFanIn().value, path.getFanIn().bitPos,
+                           path.getFanOutAsObject().value,
+                           path.getFanOutAsObject().bitPos, path.getDelay()}));
 
     EXPECT_EQ(longestPath.getMaxDelay(concat), 2); // max([2, 2, 0, 0]) = 3
     EXPECT_EQ(longestPath.getAverageMaxDelay(concat),
