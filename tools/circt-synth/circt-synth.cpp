@@ -204,7 +204,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     circt::aig::PrintLongestPathAnalysisOptions options;
     options.outputFile =
         outputFileLongestPath.empty() ? "-" : outputFileLongestPath.getValue();
-    options.showTopKPercent = numberOfFanOutToPrintLongestPath.getValue();
+    options.numberOfFanOutToPrint = numberOfFanOutToPrintLongestPath.getValue();
     pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
   }
 
