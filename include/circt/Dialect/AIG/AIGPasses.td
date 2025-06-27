@@ -48,7 +48,11 @@ def AIGERRunner : Pass<"aig-runner", "hw::HWModuleOp"> {
   let options = [
     Option<"solverPath", "solver-path", "std::string", "",
            "Path to the external solver executable">,
-    ListOption<"solverArgs", "solver-args", "std::string", "">
+    ListOption<"solverArgs", "solver-args", "std::string", "">,
+    Option<"timeout", "timeout", "int", "false",
+           "Timeout in seconds for the external solver">,
+    Option<"continueOnFailure", "continue-on-failure", "bool", "false",
+           "Don't fail even if the AIGER exporter or external solver fails">,
   ];
 
   let dependentDialects = [

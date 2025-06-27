@@ -42,9 +42,9 @@ namespace aig {
 namespace {
 struct PrintLongestPathAnalysisPass
     : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
+  using PrintLongestPathAnalysisBase::numberOfFanOutToPrint;
   using PrintLongestPathAnalysisBase::outputFile;
   using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
-  using PrintLongestPathAnalysisBase::showTopKPercent;
 
   // Type alias for timing path variant
   using TimingPathVariant =
@@ -246,7 +246,7 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
   printTimingLevelStatistics(allTimingPaths, extractDelay, os);
 
   // Print detailed information for top K paths if requested
-  if (showTopKPercent)
+  if (numberOfFanOutToPrint.getValue() > 0)
     printTopKPathDetails(allTimingPaths, extractDelay, top, os);
 
   return success();
@@ -290,11 +290,11 @@ void PrintLongestPathAnalysisPass::printTopKPathDetails(
     const std::function<int64_t(const TimingPathVariant &)> &extractDelay,
     hw::HWModuleOp top, llvm::raw_ostream &os) {
 
-  auto topKPercent = showTopKPercent.getValue();
-  auto topKCount = allTimingPaths.size() * topKPercent / 100;
+  auto topKCount =
+      numberOfFanOutToPrint.getValue() ? numberOfFanOutToPrint.getValue() : 0;
 
-  os << "## Top " << topKCount << " (" << topKPercent << "% of "
-     << allTimingPaths.size() << ") fan-out points\n\n";
+  os << "## Top " << topKCount << " (out of " << allTimingPaths.size()
+     << ") fan-out points\n\n";
 
   // Process paths from highest delay to lowest (reverse order)
   for (size_t i = 0; i < std::min<size_t>(topKCount, allTimingPaths.size());
