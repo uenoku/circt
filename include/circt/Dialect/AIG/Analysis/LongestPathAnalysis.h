@@ -112,51 +112,66 @@ struct OpenPath {
                circt::igraph::InstancePath path);
 };
 
-// A DataflowPath is a complete path from a fanout to a fanin with associated
-// delay information.
+// A DataflowPath represents a complete timing path from a fanout to a fanin
+// with associated delay information. This is the primary result type for
+// longest path analysis, containing both endpoints and path history.
 class DataflowPath {
 public:
+  // Constructor for paths with Object fanout (internal circuit nodes)
   DataflowPath(Object fanOut, OpenPath fanIn, hw::HWModuleOp root)
       : fanOut(fanOut), path(fanIn), root(root) {}
+
+  // Constructor for paths with port fanout (module output ports)
   DataflowPath(std::pair<size_t, size_t> fanOut, OpenPath fanIn,
                hw::HWModuleOp root)
       : fanOut(fanOut), path(fanIn), root(root) {}
 
   DataflowPath() = default;
 
+  // Timing information accessors
   int64_t getDelay() const { return path.delay; }
   const Object &getFanIn() const { return path.fanIn; }
-  // FanOut is either an object, or an output port of the root module.
+
+  // FanOut can be either an internal circuit object or a module output port
+  // This flexibility allows representing both closed paths (register-to-register)
+  // and open paths (register-to-output) in a unified way
   using FanOutType = std::variant<Object, std::pair<size_t, size_t>>;
   const FanOutType &getFanOut() const { return fanOut; }
+
+  // Type-safe accessors for fanout variants
   const Object &getFanOutAsObject() const { return std::get<Object>(fanOut); }
   const std::pair<size_t, size_t> &getFanOutAsPort() const {
     return std::get<std::pair<size_t, size_t>>(fanOut);
   }
+
   const hw::HWModuleOp &getRoot() const { return root; }
 
+  // Get source location for the fanout point (for diagnostics)
   Location getFanOutLoc();
 
+  // Path manipulation
   void setDelay(int64_t delay) { path.delay = delay; }
   const llvm::ImmutableList<DebugPoint> &getHistory() const {
     return path.history;
   }
 
-  // Printers
+  // Output formatting methods
   void print(llvm::raw_ostream &os);
+  void printFanOut(llvm::raw_ostream &os);
 
+  // Path elaboration for hierarchical analysis
+  // Prepends instance path information to create full hierarchical paths
   DataflowPath &
   prependPaths(circt::igraph::InstancePathCache &cache,
                llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
                circt::igraph::InstancePath path);
+
   const OpenPath &getPath() { return path; }
 
-  void printFanOut(llvm::raw_ostream &os);
-
 private:
-  FanOutType fanOut;
-  OpenPath path;
-  hw::HWModuleOp root;
+  FanOutType fanOut;  // Either Object or (port_index, bit_index)
+  OpenPath path;      // The actual timing path with history
+  hw::HWModuleOp root; // Root module for this path
 };
 
 
@@ -201,21 +216,24 @@ public:
   LogicalResult getClosedPaths(StringAttr moduleName,
                                SmallVectorImpl<DataflowPath> &results, bool elaboratedPaths = false) const;
 
-  // Return open paths for the given module. Results are sorted by delay from
-  // longest to shortest. Open paths are typically input-to-register or
-  // register-to-output paths. An open path is a timing path that has at least
-  // one endpoint at a module port rather than a sequential element.
+  // Return input-to-internal timing paths for the given module.
+  // These are open paths from module input ports to internal sequential elements
+  // (registers/flip-flops). Results are sorted by delay from longest to shortest.
+  // These paths represent setup timing constraints for the module.
   LogicalResult getOpenPathsFromInputPortsToInternal(
       StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
 
-  // Return open paths for the given module. Results are sorted by delay from
-  // longest to shortest. Open paths are typically input-to-register or
-  // register-to-output paths. An open path is a timing path that has at least
-  // one endpoint at a module port rather than a sequential element.
+  // Return internal-to-output timing paths for the given module.
+  // These are open paths from internal sequential elements to module output ports.
+  // Results are sorted by delay from longest to shortest.
+  // These paths represent clock-to-output timing for the module.
   LogicalResult getOpenPathsFromInternalToOutputPorts(
       StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
 
-  // Get all paths in the given module including both closed and open paths.
+  // Get all timing paths in the given module including both closed and open paths.
+  // This is a convenience method that combines results from getClosedPaths,
+  // getOpenPathsFromInputPortsToInternal, and getOpenPathsFromInternalToOutputPorts.
+  // If elaboratedPaths is true, paths include full hierarchical instance information.
   LogicalResult getAllPaths(StringAttr moduleName,
                             SmallVectorImpl<DataflowPath> &results, bool elaboratedPaths = false) const;
 

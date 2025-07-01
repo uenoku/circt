@@ -101,21 +101,21 @@ static cl::opt<bool>
                   cl::desc("Convert AIG to Comb at the end of the pipeline"),
                   cl::init(false), cl::cat(mainCategory));
 
+// Longest path analysis options
 static cl::opt<std::string>
     outputFileLongestPath("output-file-longest-path",
                           cl::desc("Output file for longest path analysis "
-                                   "results"),
+                                   "results (use '-' for stdout)"),
                           cl::init(""), cl::cat(mainCategory));
 static cl::opt<bool>
     printLongestPath("print-longest-path",
-                     cl::desc("Output file for longest path analysis "
-                              "results. The analysis is only run "
-                              "if file name is specified"),
+                     cl::desc("Enable longest path analysis and print results "
+                              "to stdout with timing statistics and critical paths"),
                      cl::init(false), cl::cat(mainCategory));
 static cl::opt<int>
     numberOfFanOutToPrintLongestPath("num-longest-path-fanout",
-                                     cl::desc("Print longest path analysis "
-                                              "results to the diagnostics"),
+                                     cl::desc("Number of top critical fanout points "
+                                              "to show detailed path analysis for"),
                                      cl::init(10), cl::cat(mainCategory));
 
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
@@ -206,6 +206,8 @@ static void populateSynthesisPipeline(PassManager &pm) {
     pm.addPass(circt::createHierarchicalRunner(topName, pipeline));
   }
 
+  // Add longest path analysis pass if requested
+  // This provides detailed timing analysis showing critical paths and delay distribution
   if (printLongestPath.getValue() || !outputFileLongestPath.empty()) {
     circt::aig::PrintLongestPathAnalysisOptions options;
     options.outputFile =
