@@ -199,7 +199,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
   if (!outputLongestPath.empty()) {
     circt::aig::PrintLongestPathAnalysisOptions options;
     options.outputFile = outputLongestPath;
-    options.showTopKPercent = 5;
+    options.numberOfFanOutToPrint = 100;
     pm.addPass(circt::aig::createPrintLongestPathAnalysis(options));
   }
 
