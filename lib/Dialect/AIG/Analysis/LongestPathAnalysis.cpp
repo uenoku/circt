@@ -59,6 +59,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Mutex.h"
@@ -299,12 +300,70 @@ Location DataflowPath::getFanOutLoc() {
   return root.getOutputLoc(std::get<std::pair<size_t, size_t>>(fanOut).first);
 }
 
+llvm::json::Value toJSON(const DataflowPath::FanOutType &path,
+                         hw::HWModuleOp root) {
+  if (auto *object = std::get_if<Object>(&path))
+    return llvm::json::toJSON(*object);
+
+  auto &[resultNumber, bitPos] = *std::get_if<std::pair<size_t, size_t>>(&path);
+  return llvm::json::Object{
+      {"instance_path", {}},
+      {"name", root.getOutputName(resultNumber)},
+      {"bit_pos", bitPos},
+  };
+}
+
+llvm::json::Value llvm::json::toJSON(const circt::igraph::InstancePath &path) {
+  llvm::json::Array result;
+  for (auto op : path) {
+    llvm::json::Object obj;
+    obj["instance_name"] = op.getInstanceName();
+    obj["module_name"] = op.getReferencedModuleNames()[0];
+    result.push_back(std::move(obj));
+  }
+  return result;
+}
+
+llvm::json::Value llvm::json::toJSON(const circt::aig::Object &object) {
+  return llvm::json::Object{
+      {"instance_path", toJSON(object.instancePath)},
+      {"name", getNameImpl(object.value).getValue()},
+      {"bit_pos", object.bitPos},
+  };
+}
+
+llvm::json::Value llvm::json::toJSON(const DebugPoint &point) {
+  return llvm::json::Object{
+      {"object", toJSON(point.object)},
+      {"delay", point.delay},
+      {"comment", point.comment},
+  };
+}
+
+llvm::json::Value llvm::json::toJSON(const OpenPath &path) {
+  llvm::json::Array history;
+  for (auto &point : path.history)
+    history.push_back(toJSON(point));
+  return llvm::json::Object{{"fan_in", toJSON(path.fanIn)},
+                            {"delay", path.delay},
+                            {"history", std::move(history)}};
+}
+
+llvm::json::Value llvm::json::toJSON(const DataflowPath &path) {
+  return llvm::json::Object{
+      {"fan_out", ::toJSON(path.getFanOut(), path.getRoot())},
+      {"path", toJSON(path.getFanIn())},
+      {"root", path.getRoot().getModuleName()},
+  };
+}
+
 class LocalVisitor;
 
 //===----------------------------------------------------------------------===//
 // Context
 //===----------------------------------------------------------------------===//
-/// This class provides a thread-safe interface to access the analysis results.
+/// This class provides a thread-safe interface to access the analysis
+/// results.
 
 class Context {
 public:
@@ -695,8 +754,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   auto *node = ctx->instanceGraph->lookup(moduleName);
   assert(node && "module not found");
 
-  // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
-  // fanIn.
+  // Otherwise, if the module is not a HWModuleOp, then we should treat it as
+  // a fanIn.
   if (!isa<hw::HWModuleOp>(node->getModule()))
     return markFanIn(value, bitPos, results);
 
@@ -834,8 +893,8 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputeResults(Value value,
   // Unique the results.
   deduplicatePaths(results);
   LLVM_DEBUG({
-    llvm::dbgs() << value << "[" << bitPos << "] "
-                 << "Found " << results.size() << " paths\n";
+    llvm::dbgs() << value << "[" << bitPos << "] " << "Found " << results.size()
+                 << " paths\n";
     llvm::dbgs() << "====Paths:\n";
     for (auto &path : results) {
       path.print(llvm::dbgs());
@@ -918,8 +977,8 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
         auto newHistory = ctx->doTraceDebugPoints()
                               ? mapList(debugPointFactory.get(), history,
                                         [&](DebugPoint p) {
-                                          // Update the instance path to prepend
-                                          // the current instance.
+                                          // Update the instance path to
+                                          // prepend the current instance.
                                           p.object.instancePath = newPath;
                                           p.delay += result.delay;
                                           return p;

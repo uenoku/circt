@@ -20,8 +20,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMapInfoVariant.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
@@ -53,16 +55,19 @@ struct PrintLongestPathAnalysisPass
   void runOnOperation() override;
   LogicalResult printAnalysisResult(const LongestPathAnalysis &analysis,
                                     igraph::InstancePathCache &pathCache,
-                                    hw::HWModuleOp top, llvm::raw_ostream &os);
+                                    hw::HWModuleOp top, llvm::raw_ostream *os,
+                                    llvm::json::OStream *jsonOS);
 
 private:
   /// Print timing level statistics showing delay distribution
   void printTimingLevelStatistics(SmallVectorImpl<DataflowPath> &allTimingPaths,
-                                  llvm::raw_ostream &os);
+                                  llvm::raw_ostream *os,
+                                  llvm::json::OStream *jsonOS);
 
   /// Print detailed information for the top K critical paths
   void printTopKPathDetails(SmallVectorImpl<DataflowPath> &allTimingPaths,
-                            hw::HWModuleOp top, llvm::raw_ostream &os);
+                            hw::HWModuleOp top, llvm::raw_ostream *os,
+                            llvm::json::OStream *jsonOS);
 
   /// Print detailed history of a timing path showing intermediate debug points
   void printPathHistory(const OpenPath &timingPath, llvm::raw_ostream &os);
@@ -73,7 +78,7 @@ private:
 /// Main method to print comprehensive longest path analysis results.
 LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
     const LongestPathAnalysis &analysis, igraph::InstancePathCache &pathCache,
-    hw::HWModuleOp top, llvm::raw_ostream &os) {
+    hw::HWModuleOp top, llvm::raw_ostream *os, llvm::json::OStream *jsonOS) {
   SmallVector<DataflowPath> results;
   auto moduleName = top.getModuleNameAttr();
 
@@ -94,10 +99,24 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
   }
 
   // Print analysis header
-  os << "# Longest Path Analysis result for " << top.getModuleNameAttr() << "\n"
-     << "Found " << results.size() << " timing paths\n";
+  if (os) {
+    *os << "# Longest Path Analysis result for " << top.getModuleNameAttr()
+        << "\n"
+        << "Found " << results.size() << "paths\n";
 
-  os << "## Showing Levels\n";
+    *os << "## Showing Levels\n";
+  }
+
+  // Handle JSON output.
+  if (jsonOS) {
+    jsonOS->objectBegin();
+    jsonOS->attribute("module_name", top.getModuleNameAttr().getValue());
+  }
+
+  auto deferClose = llvm::make_scope_exit([&]() {
+    if (jsonOS)
+      jsonOS->objectEnd();
+  });
 
   // Deduplicate paths by fanout point, keeping only the worst-case delay per
   // fanout This gives us the critical delay for each fanout point in the design
@@ -119,11 +138,11 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
   });
 
   // Print timing distribution statistics (histogram of delay levels)
-  printTimingLevelStatistics(allTimingPaths, os);
+  printTimingLevelStatistics(allTimingPaths, os, jsonOS);
 
   // Print detailed information for top K critical paths if requested
   if (numberOfFanOutToPrint.getValue() > 0)
-    printTopKPathDetails(allTimingPaths, top, os);
+    printTopKPathDetails(allTimingPaths, top, os, jsonOS);
 
   return success();
 }
@@ -134,15 +153,27 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
 /// This is useful for understanding the overall timing characteristics of the
 /// design.
 void PrintLongestPathAnalysisPass::printTimingLevelStatistics(
-    SmallVectorImpl<DataflowPath> &allTimingPaths, llvm::raw_ostream &os) {
+    SmallVectorImpl<DataflowPath> &allTimingPaths, llvm::raw_ostream *os,
+    llvm::json::OStream *jsonOS) {
 
   int64_t totalTimingPoints = allTimingPaths.size();
   int64_t cumulativeCount = 0;
 
+  if (jsonOS) {
+    jsonOS->attributeBegin("timing_levels");
+    jsonOS->arrayBegin();
+  }
+  auto closeJson = llvm::make_scope_exit([&]() {
+    if (jsonOS) {
+      jsonOS->arrayEnd();
+      jsonOS->attributeEnd();
+    }
+  });
+
   // Process paths grouped by delay level (paths are already sorted by delay)
   for (size_t index = 0; index < allTimingPaths.size();) {
-    auto currentDelay = allTimingPaths[index++].getDelay();
     int64_t oldIndex = index;
+    auto currentDelay = allTimingPaths[index++].getDelay();
 
     // Count all paths with the same delay value to create histogram bins
     while (index < allTimingPaths.size() &&
@@ -159,8 +190,17 @@ void PrintLongestPathAnalysisPass::printTimingLevelStatistics(
 
     // Print formatted timing level statistics in tabular format
     // Format: Level = delay_value . Count = path_count . percentage%
-    os << llvm::format("Level = %-10d. Count = %-10d. %-10.2f%%\n",
-                       currentDelay, pathsWithSameDelay, cumulativePercentage);
+    if (os)
+      *os << llvm::format("Level = %-10d. Count = %-10d. %-10.2f%%\n",
+                          currentDelay, pathsWithSameDelay,
+                          cumulativePercentage);
+    if (jsonOS) {
+      jsonOS->objectBegin();
+      jsonOS->attribute("level", currentDelay);
+      jsonOS->attribute("count", pathsWithSameDelay);
+      jsonOS->attribute("percentage", cumulativePercentage);
+      jsonOS->objectEnd();
+    }
   }
 }
 
@@ -169,36 +209,52 @@ void PrintLongestPathAnalysisPass::printTimingLevelStatistics(
 /// information about each path including fanout/fanin points and path history.
 void PrintLongestPathAnalysisPass::printTopKPathDetails(
     SmallVectorImpl<DataflowPath> &allTimingPaths, hw::HWModuleOp top,
-    llvm::raw_ostream &os) {
+    llvm::raw_ostream *os, llvm::json::OStream *jsonOS) {
 
   auto topKCount =
       numberOfFanOutToPrint.getValue() ? numberOfFanOutToPrint.getValue() : 0;
 
-  os << "## Top " << topKCount << " (out of " << allTimingPaths.size()
-     << ") fan-out points\n\n";
+  if (os)
+    *os << "## Top " << topKCount << " (out of " << allTimingPaths.size()
+        << ") fan-out points\n\n";
+
+  if (jsonOS) {
+    jsonOS->attributeBegin("top_paths");
+    jsonOS->arrayBegin();
+  }
+  auto closeJson = llvm::make_scope_exit([&]() {
+    if (jsonOS) {
+      jsonOS->arrayEnd();
+      jsonOS->attributeEnd();
+    }
+  });
 
   // Process paths from highest delay to lowest (reverse order since paths are
   // sorted ascending)
   for (size_t i = 0; i < std::min<size_t>(topKCount, allTimingPaths.size());
        ++i) {
     auto &path = allTimingPaths[allTimingPaths.size() - i - 1];
+    if (jsonOS)
+      jsonOS->value(llvm::json::toJSON(path));
 
+    if (!os)
+      continue;
     // Print path header with ranking and delay information
-    os << "==============================================\n";
-    os << "#" << i + 1 << ": Distance=" << path.getDelay() << "\n";
+    *os << "==============================================\n"
+        << "#" << i + 1 << ": Distance=" << path.getDelay() << "\n";
 
     // Print fanout point (where the critical path starts)
-    os << "FanOut=";
-    path.printFanOut(os);
+    *os << "FanOut=";
+    path.printFanOut(*os);
 
     // Print fanin point (where the critical path ends)
-    os << "\n"
-       << "FanIn=";
-    path.getFanIn().print(os);
-    os << "\n";
+    *os << "\n"
+        << "FanIn=";
+    path.getFanIn().print(*os);
+    *os << "\n";
 
     // Print detailed path history showing intermediate logic stages
-    printPathHistory(path.getPath(), os);
+    printPathHistory(path.getPath(), *os);
   }
 }
 
@@ -243,9 +299,13 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
     return signalPassFailure();
   }
 
+  auto &os = file->os();
+  llvm::json::OStream jsonOS(os);
+  jsonOS.arrayBegin();
   for (auto top : analysis.getTopModules())
-    if (failed(printAnalysisResult(analysis, pathCache, top, file->os())))
+    if (failed(printAnalysisResult(analysis, pathCache, top, nullptr, &jsonOS)))
       return signalPassFailure();
+  jsonOS.arrayEnd();
   file->keep();
   return markAllAnalysesPreserved();
 }
