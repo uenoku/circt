@@ -26,6 +26,7 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
+#include "circt/Dialect/SV/SVPasses.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
@@ -143,6 +144,7 @@ static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
 }
 
 static void populateSynthesisPipeline(PassManager &pm) {
+  pm.addPass(circt::sv::createSVExtractTestCodePass(false, false, false));
   auto pipeline = [](OpPassManager &mpm) {
     // Add the AIG to Comb at the scope exit if requested.
     auto addAIGToComb = llvm::make_scope_exit([&]() {

@@ -352,7 +352,7 @@ llvm::json::Value llvm::json::toJSON(const OpenPath &path) {
 llvm::json::Value llvm::json::toJSON(const DataflowPath &path) {
   return llvm::json::Object{
       {"fan_out", ::toJSON(path.getFanOut(), path.getRoot())},
-      {"path", toJSON(path.getFanIn())},
+      {"path", toJSON(path.getPath())},
       {"root", path.getRoot().getModuleName()},
   };
 }
@@ -781,11 +781,13 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
       if (ctx->doTraceDebugPoints()) {
         newHistory =
             mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
-              p.object.instancePath = newPath;
+              p.object.instancePath =
+                  instancePathCache->prependInstance(op, p.object.instancePath);
               return p;
             });
         newHistory = debugPointFactory->add(
-            DebugPoint({}, value, bitPos, delay, "output port"), newHistory);
+            DebugPoint(newPath, value, bitPos, delay, "output port"),
+            newHistory);
       }
 
       results.emplace_back(newPath, fanInPoint.value, fanInPoint.bitPos, delay,
@@ -804,12 +806,13 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
         // Update the history to have correct instance path.
         newHistory =
             mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
-              p.object.instancePath = newPath;
+              p.object.instancePath =
+                  instancePathCache->prependInstance(op, p.object.instancePath);
               p.delay += path.delay;
               return p;
             });
-        DebugPoint debugPoint({}, value, bitPos, delay + path.delay,
-                              "output port");
+        DebugPoint debugPoint(instancePathCache->prependInstance(op, {}), value,
+                              bitPos, delay + path.delay, "output port");
         newHistory = debugPointFactory->add(debugPoint, newHistory);
       }
 

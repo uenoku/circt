@@ -138,7 +138,7 @@ public:
   const llvm::ImmutableList<DebugPoint> &getHistory() const {
     return path.history;
   }
-  const OpenPath &getPath() { return path; }
+  const OpenPath &getPath() const { return path; }
 
   // Get source location for the fanout point (for diagnostics)
   Location getFanOutLoc();
