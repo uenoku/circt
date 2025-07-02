@@ -120,29 +120,30 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
 
   // Deduplicate paths by fanout point, keeping only the worst-case delay per
   // fanout This gives us the critical delay for each fanout point in the design
-  SmallVector<DataflowPath> allTimingPaths;
+  SmallVector<DataflowPath> longestPathForEachFanOut;
   llvm::DenseMap<DataflowPath::FanOutType, size_t> index;
   for (auto &path : results) {
     assert(path.getFanIn().value);
     auto [it, inserted] =
-        index.try_emplace(path.getFanOut(), allTimingPaths.size());
+        index.try_emplace(path.getFanOut(), longestPathForEachFanOut.size());
     if (inserted)
-      allTimingPaths.push_back(path);
-    else if (allTimingPaths[it->second].getDelay() < path.getDelay())
-      allTimingPaths[it->second] = path; // Keep the path with higher delay
+      longestPathForEachFanOut.push_back(path);
+    else if (longestPathForEachFanOut[it->second].getDelay() < path.getDelay())
+      longestPathForEachFanOut[it->second] =
+          path; // Keep the path with higher delay
   }
 
   // Sort all timing paths by delay value (ascending order for statistics)
-  llvm::sort(allTimingPaths, [&](const auto &lhs, const auto &rhs) {
+  llvm::sort(longestPathForEachFanOut, [&](const auto &lhs, const auto &rhs) {
     return lhs.getDelay() < rhs.getDelay();
   });
 
   // Print timing distribution statistics (histogram of delay levels)
-  printTimingLevelStatistics(allTimingPaths, os, jsonOS);
+  printTimingLevelStatistics(longestPathForEachFanOut, os, jsonOS);
 
   // Print detailed information for top K critical paths if requested
   if (numberOfFanOutToPrint.getValue() > 0)
-    printTopKPathDetails(allTimingPaths, top, os, jsonOS);
+    printTopKPathDetails(longestPathForEachFanOut, top, os, jsonOS);
 
   return success();
 }
