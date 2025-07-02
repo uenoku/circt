@@ -39,7 +39,9 @@ def PrintLongestPathAnalysis : Pass<"aig-print-longest-path-analysis", "mlir::Mo
     Option<"test", "test", "bool", "false",
            "Emit longest paths as diagnostic remarks for testing">,
     Option<"numberOfFanOutToPrint", "num-fanout", "int", "10",
-           "Number of top critical fanout points to show detailed analysis">
+           "Number of top critical fanout points to show detailed analysis">,
+    Option<"outputJson", "output-json", "bool", "false",
+           "Output analysis results in JSON format">
   ];
 }
 

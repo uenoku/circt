@@ -109,6 +109,12 @@ static cl::opt<std::string>
                                "if file name is specified"),
                       cl::init(""), cl::cat(mainCategory));
 
+static cl::opt<bool>
+    outputLongestPathJson("output-longest-path-json",
+                          cl::desc("Output longest path analysis results in "
+                                   "JSON format"),
+                          cl::init(false), cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));

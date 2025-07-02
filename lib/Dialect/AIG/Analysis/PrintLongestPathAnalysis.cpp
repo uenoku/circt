@@ -27,6 +27,7 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
+#include <memory>
 #include <numeric>
 #include <variant>
 
@@ -48,11 +49,9 @@ namespace aig {
 namespace {
 struct PrintLongestPathAnalysisPass
     : public impl::PrintLongestPathAnalysisBase<PrintLongestPathAnalysisPass> {
-  using PrintLongestPathAnalysisBase::numberOfFanOutToPrint;
-  using PrintLongestPathAnalysisBase::outputFile;
-  using PrintLongestPathAnalysisBase::PrintLongestPathAnalysisBase;
-
   void runOnOperation() override;
+  using impl::PrintLongestPathAnalysisBase<
+      PrintLongestPathAnalysisPass>::PrintLongestPathAnalysisBase;
   LogicalResult printAnalysisResult(const LongestPathAnalysis &analysis,
                                     igraph::InstancePathCache &pathCache,
                                     hw::HWModuleOp top, llvm::raw_ostream *os,
@@ -301,12 +300,21 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
   }
 
   auto &os = file->os();
-  llvm::json::OStream jsonOS(os);
-  jsonOS.arrayBegin();
+  std::unique_ptr<llvm::json::OStream> jsonOS;
+  if (outputJson.getValue()) {
+    jsonOS = std::make_unique<llvm::json::OStream>(os);
+    jsonOS->arrayBegin();
+  }
+
+  auto closeJson = llvm::make_scope_exit([&]() {
+    if (jsonOS)
+      jsonOS->arrayEnd();
+  });
+
   for (auto top : analysis.getTopModules())
-    if (failed(printAnalysisResult(analysis, pathCache, top, nullptr, &jsonOS)))
+    if (failed(printAnalysisResult(analysis, pathCache, top,
+                                   jsonOS ? nullptr : &os, jsonOS.get())))
       return signalPassFailure();
-  jsonOS.arrayEnd();
   file->keep();
   return markAllAnalysesPreserved();
 }
