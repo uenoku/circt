@@ -26,6 +26,7 @@
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
+#include <memory>
 #include <variant>
 
 namespace mlir {
