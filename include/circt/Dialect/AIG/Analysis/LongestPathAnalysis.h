@@ -276,6 +276,9 @@ public:
   // Sort and drop all paths except the longest path per fanout point.
   void sortAndDropNonCriticalPathsPerFanOut();
 
+  void filterByFanOut(StringRef signalName);
+  void filterByFanIn(StringRef signalName);
+
 private:
   MLIRContext *ctx;
 };

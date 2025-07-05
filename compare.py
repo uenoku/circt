@@ -204,28 +204,31 @@ with Context() as ctx, Location.unknown():
   ctx.enable_multithreading(True)
 
   logger.info(f"Creating longest path analysis for module: '{args.module_name}'")
-  analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=False)
-  analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=False)
+  analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=True)
+  analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=True)
 
   logger.info("Running path analysis on both designs")
+
+  # Prepare filter strings for CAPI (empty string means no filter)
+  fanout_filter = args.interesting_fanout if args.interesting_fanout else ""
+  fanin_filter = args.interesting_fanin if args.interesting_fanin else ""
+
+  if fanout_filter or fanin_filter:
+    logger.info(f"Using CAPI filtering: fanout='{fanout_filter}', fanin='{fanin_filter}'")
+
   try:
-    collection_old = analysis_old.get_all_paths(args.module_name)
-    logger.info(f"Found {len(collection_old)} paths in old design")
+    collection_old = analysis_old.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+    logger.info(f"Found {len(collection_old)} paths in old design (after CAPI filtering)")
   except Exception as e:
     logger.error(f"Failed to get paths from old design: {e}")
     sys.exit(1)
 
   try:
-    collection_new = analysis_new.get_all_paths(args.module_name)
-    logger.info(f"Found {len(collection_new)} paths in new design")
+    collection_new = analysis_new.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+    logger.info(f"Found {len(collection_new)} paths in new design (after CAPI filtering)")
   except Exception as e:
     logger.error(f"Failed to get paths from new design: {e}")
     sys.exit(1)
-
-  # Apply filtering if interesting fanout/fanin are specified
-  logger.info("Applying path filtering based on user criteria")
-  filtered_old = filter_paths_by_interest(collection_old, args.interesting_fanout, args.interesting_fanin)
-  filtered_new = filter_paths_by_interest(collection_new, args.interesting_fanout, args.interesting_fanin)
 
   # CHECK-LABEL:      LongestPathAnalysis created successfully!
   print("LongestPathAnalysis created successfully!")
@@ -233,47 +236,34 @@ with Context() as ctx, Location.unknown():
 
   # Print filtering results
   if args.interesting_fanout or args.interesting_fanin:
-    logger.info("Displaying filtering results")
-    print(f"Original paths: old={len(collection_old)}, new={len(collection_new)}")
-    if isinstance(filtered_old, list):
-      print(f"Filtered paths: old={len(filtered_old)}, new={len(filtered_new)}")
-      logger.info(f"Filtering reduced paths from {len(collection_old)} to {len(filtered_old)} (old) and {len(collection_new)} to {len(filtered_new)} (new)")
-      if args.interesting_fanout:
-        print(f"Filtered by fanout containing: '{args.interesting_fanout}'")
-      if args.interesting_fanin:
-        print(f"Filtered by fanin containing: '{args.interesting_fanin}'")
-    else:
-      print("No filtering applied - no interesting signals specified")
-      logger.info("No filtering was applied")
+    logger.info("Displaying CAPI filtering results")
+    print(f"Filtered paths: old={len(collection_old)}, new={len(collection_new)}")
+    if args.interesting_fanout:
+      print(f"Filtered by fanout containing: '{args.interesting_fanout}'")
+    if args.interesting_fanin:
+      print(f"Filtered by fanin containing: '{args.interesting_fanin}'")
+  else:
+    print(f"Total paths: old={len(collection_old)}, new={len(collection_new)}")
+    logger.info("No filtering was applied")
 
-  # Use filtered results for comparison
-  paths_old = filtered_old if isinstance(filtered_old, list) else collection_old
-  paths_new = filtered_new if isinstance(filtered_new, list) else collection_new
+  # Use the collections directly since filtering was done in CAPI
+  paths_old = collection_old
+  paths_new = collection_new
 
   logger.info("Displaying example paths from analysis results")
 
-  # Display some example paths to show the filtering is working
+  # Display some example paths to show the results
   print("\n--- Example paths from old design ---")
-  if isinstance(paths_old, list):
-    logger.debug(f"Showing first 3 paths from {len(paths_old)} filtered paths (old design)")
-    for i, path in enumerate(paths_old[:3]):  # Show first 3 paths
-      print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
-  else:
-    logger.debug(f"Showing first 3 paths from {len(paths_old)} total paths (old design)")
-    for i in range(min(3, len(paths_old))):  # Show first 3 paths
-      path = paths_old[i]
-      print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
+  logger.debug(f"Showing first 3 paths from {len(paths_old)} total paths (old design)")
+  for i in range(min(3, len(paths_old))):  # Show first 3 paths
+    path = paths_old[i]
+    print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
 
   print("\n--- Example paths from new design ---")
-  if isinstance(paths_new, list):
-    logger.debug(f"Showing first 3 paths from {len(paths_new)} filtered paths (new design)")
-    for i, path in enumerate(paths_new[:3]):  # Show first 3 paths
-      print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
-  else:
-    logger.debug(f"Showing first 3 paths from {len(paths_new)} total paths (new design)")
-    for i in range(min(3, len(paths_new))):  # Show first 3 paths
-      path = paths_new[i]
-      print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
+  logger.debug(f"Showing first 3 paths from {len(paths_new)} total paths (new design)")
+  for i in range(min(3, len(paths_new))):  # Show first 3 paths
+    path = paths_new[i]
+    print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
 
 logger.info("Analysis comparison completed successfully")
 
@@ -312,7 +302,7 @@ if args.interactive:
             print(f"Path {i+1}: fanout={path.fan_out.name}, fanin={path.path.fan_in.name}, delay={path.delay}")
         elif cmd == 'stats':
           print(f"\nStatistics:")
-          print(f"  Original paths: old={len(collection_old)}, new={len(collection_new)}")
+          print(f"  Origin/cal paths: old={len(collection_old)}, new={len(collection_new)}")
           if isinstance(paths_old, list):
             print(f"  Filtered paths: old={len(paths_old)}, new={len(paths_new)}")
         elif cmd == 'help':
@@ -330,12 +320,12 @@ if args.interactive:
     # IPython interactive mode
     print("\n=== Starting IPython Interactive Session ===")
     print("Available variables:")
-    print("  collection_old, collection_new - Original path collections")
-    print("  paths_old, paths_new - Filtered path collections")
+    print("  collection_old, collection_new - Path collections (already filtered by CAPI)")
+    print("  paths_old, paths_new - Same as collections (for compatibility)")
     print("  analysis_old, analysis_new - Analysis objects")
     print("  m_old, m_new - MLIR modules")
     print("\nAvailable helper functions:")
-    print("  filter_paths_by_interest(collection, fanout, fanin) - Filter paths")
+    print("  filter_paths_by_interest(collection, fanout, fanin) - Python-based filter (slower)")
     print("  show_path_details(path, index) - Show detailed path info")
     print("  compare_paths(paths_old, paths_new, max_paths) - Compare path collections")
     print("  find_paths_by_signal(collection, signal_name) - Find paths with signal")
@@ -345,7 +335,8 @@ if args.interactive:
     print("  show_path_details(paths_old[0], 1)  # Show details of first path")
     print("  compare_paths(paths_old, paths_new, 5)  # Compare first 5 paths")
     print("  clk_paths = find_paths_by_signal(collection_old, 'clk')  # Find clock paths")
-    print("  filtered = filter_paths_by_interest(collection_old, 'clk', None)  # Filter by fanout")
+    print("  # Note: For efficient filtering, use --interesting_fanout/fanin arguments")
+    print("  # The collections are already filtered by CAPI if those arguments were used")
 
     # Start IPython session with all variables available
     embed()

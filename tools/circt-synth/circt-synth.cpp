@@ -26,6 +26,7 @@
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
+#include "mlir/Bytecode/BytecodeWriter.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
@@ -66,6 +67,10 @@ static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
                                            cl::value_desc("filename"),
                                            cl::init("-"),
                                            cl::cat(mainCategory));
+static cl::opt<bool>
+    emitBytecode("emit-bytecode",
+                 cl::desc("Emit bytecode when generating MLIR output"),
+                 cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<bool>
     verifyPasses("verify-each",
@@ -267,8 +272,14 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
     return failure();
 
   auto timer = ts.nest("Print MLIR output");
-  OpPrintingFlags printingFlags;
-  module->print(outputFile.value()->os(), printingFlags);
+  if (emitBytecode) {
+    // Write bytecode.
+    if (failed(writeBytecodeToFile(*module, outputFile.value()->os())))
+      return failure();
+  } else {
+    OpPrintingFlags printingFlags;
+    module->print(outputFile.value()->os(), printingFlags);
+  }
   outputFile.value()->keep();
   return success();
 }

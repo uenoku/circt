@@ -24,7 +24,7 @@ def ClockConstAttrImpl: I32EnumAttr<"ClockConst", "clock constant",
 }
 
 def ClockConstAttr : EnumAttr<SeqDialect, ClockConstAttrImpl,
-                       "clock_constant",  [TypedAttrInterface]> {
+                       "clock",  [TypedAttrInterface]> {
  let extraClassDeclaration = [{
     mlir::Type getType();
  }];

@@ -364,14 +364,16 @@ class LongestPathAnalysis:
         """
         self.analysis = aig._LongestPathAnalysis(module, trace_debug_points)
 
-    def get_all_paths(self, module_name: str) -> LongestPathCollection:
+    def get_all_paths(self, module_name: str, fanout_filter: str = "", fanin_filter: str = "") -> LongestPathCollection:
         """
         Perform longest path analysis and return all timing paths.
         This method analyzes the specified module and returns a collection
         of all timing paths, sorted by delay in descending order.
         Args:
             module_name: Name of the module to analyze
+            fanout_filter: Optional filter string for fanout signal names (empty = no filter)
+            fanin_filter: Optional filter string for fanin signal names (empty = no filter)
         Returns:
             LongestPathCollection containing all paths sorted by delay
         """
-        return LongestPathCollection(self.analysis.get_all_paths(module_name, True))
+        return LongestPathCollection(self.analysis.get_all_paths(module_name, fanout_filter, fanin_filter, True))

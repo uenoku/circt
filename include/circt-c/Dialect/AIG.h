@@ -46,7 +46,7 @@ aigLongestPathAnalysisDestroy(AIGLongestPathAnalysis analysis);
 
 MLIR_CAPI_EXPORTED AIGLongestPathCollection aigLongestPathAnalysisGetAllPaths(
     AIGLongestPathAnalysis analysis, MlirStringRef moduleName,
-    bool elaboratePaths);
+    MlirStringRef fanoutFilter, MlirStringRef faninFilter, bool elaboratePaths);
 
 //===----------------------------------------------------------------------===//
 // LongestPathCollection

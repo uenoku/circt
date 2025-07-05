@@ -760,7 +760,9 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
 
   // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
   // fanIn.
-  if (!isa<hw::HWModuleOp>(node->getModule()))
+  if (!isa<hw::HWModuleOp>(node->getModule()) ||
+      node->getModule().getModuleName().starts_with(
+          "SiFive_SubsystemL3cacheSlice"))
     return markFanIn(value, bitPos, results);
 
   auto *localVisitor = ctx->getAndWaitLocalVisitor(moduleName);
@@ -899,8 +901,8 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputeResults(Value value,
   // Unique the results.
   deduplicatePaths(results);
   LLVM_DEBUG({
-    llvm::dbgs() << value << "[" << bitPos << "] "
-                 << "Found " << results.size() << " paths\n";
+    llvm::dbgs() << value << "[" << bitPos << "] " << "Found " << results.size()
+                 << " paths\n";
     llvm::dbgs() << "====Paths:\n";
     for (auto &path : results) {
       path.print(llvm::dbgs());
@@ -1500,9 +1502,41 @@ ArrayRef<hw::HWModuleOp> LongestPathAnalysis::getTopModules() const {
 // ===----------------------------------------------------------------------===//
 
 void LongestPathCollection::sortInDescendingOrder() {
-  llvm::sort(paths, [](const DataflowPath &a, const DataflowPath &b) {
+  llvm::stable_sort(paths, [](const DataflowPath &a, const DataflowPath &b) {
     return a.getDelay() > b.getDelay();
   });
+}
+
+void LongestPathCollection::filterByFanOut(StringRef signalName) {
+  if (signalName.empty())
+    return;
+  size_t newSize = 0;
+  for (size_t i = 0; i < paths.size(); ++i) {
+    auto &path = paths[i];
+    if (auto *object = std::get_if<Object>(&path.getFanOut())) {
+      if (!getNameImpl(object->value).getValue().contains(signalName))
+        continue;
+    } else {
+      auto outputName = path.getRoot().getOutputName(
+          std::get<std::pair<size_t, size_t>>(path.getFanOut()).first);
+      if (!outputName.contains(signalName))
+        continue;
+    }
+    paths[newSize++] = std::move(paths[i]);
+  }
+  paths.resize(newSize);
+}
+
+void LongestPathCollection::filterByFanIn(StringRef signalName) {
+  size_t newSize = 0;
+  for (size_t i = 0; i < paths.size(); ++i) {
+    auto &path = paths[i];
+    auto &fanIn = path.getFanIn();
+    if (!getNameImpl(fanIn.value).getValue().contains(signalName))
+      continue;
+    paths[newSize++] = std::move(paths[i]);
+  }
+  paths.resize(newSize);
 }
 
 void LongestPathCollection::sortAndDropNonCriticalPathsPerFanOut() {

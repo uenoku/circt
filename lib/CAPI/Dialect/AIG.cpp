@@ -32,24 +32,8 @@ struct LongestPathAnalysisWrapper {
   std::unique_ptr<LongestPathAnalysis> analysis;
 };
 
-// Helper functions for wrapping/unwrapping
-static inline AIGLongestPathAnalysis wrap(LongestPathAnalysisWrapper *wrapper) {
-  return AIGLongestPathAnalysis{wrapper};
-}
-
-static inline LongestPathAnalysisWrapper *
-unwrap(AIGLongestPathAnalysis analysis) {
-  return static_cast<LongestPathAnalysisWrapper *>(analysis.ptr);
-}
-
-static inline AIGLongestPathCollection wrap(LongestPathCollection *collection) {
-  return AIGLongestPathCollection{collection};
-}
-
-static inline LongestPathCollection *
-unwrap(AIGLongestPathCollection collection) {
-  return static_cast<LongestPathCollection *>(collection.ptr);
-}
+DEFINE_C_API_PTR_METHODS(AIGLongestPathAnalysis, LongestPathAnalysisWrapper)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathCollection, LongestPathCollection)
 
 //===----------------------------------------------------------------------===//
 // LongestPathAnalysis C API
@@ -73,10 +57,10 @@ void aigLongestPathAnalysisDestroy(AIGLongestPathAnalysis analysis) {
   delete unwrap(analysis);
 }
 
-AIGLongestPathCollection
-aigLongestPathAnalysisGetAllPaths(AIGLongestPathAnalysis analysis,
-                                  MlirStringRef moduleName,
-                                  bool elaboratePaths) {
+AIGLongestPathCollection aigLongestPathAnalysisGetAllPaths(
+    AIGLongestPathAnalysis analysis, MlirStringRef moduleName,
+    MlirStringRef fanoutFilter, MlirStringRef faninFilter,
+    bool elaboratePaths) {
   auto *wrapper = unwrap(analysis);
   auto *lpa = wrapper->analysis.get();
   auto moduleNameAttr = StringAttr::get(lpa->getContext(), unwrap(moduleName));
@@ -88,6 +72,8 @@ aigLongestPathAnalysisGetAllPaths(AIGLongestPathAnalysis analysis,
     return {nullptr};
 
   collection->sortInDescendingOrder();
+  collection->filterByFanOut(unwrap(fanoutFilter));
+  collection->filterByFanIn(unwrap(faninFilter));
   return wrap(collection);
 }
 

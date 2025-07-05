@@ -41,23 +41,33 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            [](AIGLongestPathAnalysis &self) {
              aigLongestPathAnalysisDestroy(self);
            })
-      .def("get_all_paths",
-           [](AIGLongestPathAnalysis *self, const std::string &moduleName,
-              bool elaboratePaths) -> AIGLongestPathCollection {
-             MlirStringRef moduleNameRef =
-                 mlirStringRefCreateFromCString(moduleName.c_str());
+      .def(
+          "get_all_paths",
+          [](AIGLongestPathAnalysis *self, const std::string &moduleName,
+             const std::string &fanoutFilter, const std::string &faninFilter,
+             bool elaboratePaths) -> AIGLongestPathCollection {
+            MlirStringRef moduleNameRef =
+                mlirStringRefCreateFromCString(moduleName.c_str());
+            MlirStringRef fanoutFilterRef =
+                mlirStringRefCreateFromCString(fanoutFilter.c_str());
+            MlirStringRef faninFilterRef =
+                mlirStringRefCreateFromCString(faninFilter.c_str());
 
-             if (aigLongestPathCollectionIsNull(
-                     aigLongestPathAnalysisGetAllPaths(*self, moduleNameRef,
-                                                       elaboratePaths)))
-               throw nb::value_error(
-                   "Failed to get all paths, see previous error(s).");
+            if (aigLongestPathCollectionIsNull(
+                    aigLongestPathAnalysisGetAllPaths(
+                        *self, moduleNameRef, fanoutFilterRef, faninFilterRef,
+                        elaboratePaths)))
+              throw nb::value_error(
+                  "Failed to get all paths, see previous error(s).");
 
-             auto collection =
-                 AIGLongestPathCollection(aigLongestPathAnalysisGetAllPaths(
-                     *self, moduleNameRef, elaboratePaths));
-             return collection;
-           });
+            auto collection =
+                AIGLongestPathCollection(aigLongestPathAnalysisGetAllPaths(
+                    *self, moduleNameRef, fanoutFilterRef, faninFilterRef,
+                    elaboratePaths));
+            return collection;
+          },
+          nb::arg("module_name"), nb::arg("fanout_filter") = "",
+          nb::arg("fanin_filter") = "", nb::arg("elaborate_paths") = true);
 
   nb::class_<AIGLongestPathCollection>(m, "_LongestPathCollection")
       .def("__del__",
