@@ -19,6 +19,7 @@
 #include "circt/Dialect/HW/HWTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
@@ -30,6 +31,7 @@
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LogicalResult.h"
 #include <functional>
 #include <memory>
 
@@ -67,44 +69,118 @@ struct TruthTable {
 };
 
 } // end anonymous namespace
+
 /// Represents a cut in the AIG network
 struct Cut {
-  llvm::SmallSetVector<Value, 4> inputs;           // Cut inputs (leaves)
-  llvm::TinyPtrVector<Value> outputs;              // Cut roots (outputs)
-  llvm::SmallSetVector<Operation *, 4> operations; // Operations in the cut
-  double delay = 0;                                // Delay of the cut
-  double area = 0;                                 // Area of the cut
+  llvm::SmallSetVector<Value, 4> inputs; // Cut inputs (leaves)
+  // Operations in the cut. Operation is topologcically sorted, with the root
+  // operation at the front.
+  llvm::SmallSetVector<Operation *, 4> operations;
+
+  double delay = 0; // Delay of the cut
+  double area = 0;  // Area of the cut
 
   Cut() = default;
-  Cut(Value root) : outputs(root) {}
 
-  /// Check if this cut can be merged with another cut
-  bool canMergeWith(const Cut &other, unsigned maxCutSize) const {
-    auto merged = inputs;
-    for (Value input : other.inputs)
-      merged.insert(input);
-    return merged.size() <= maxCutSize;
+  Operation *getRoot() const {
+    return operations.front(); // The last operation is the root
+  }
+
+  Cut(Operation *root) {
+    // Create a cut with the root operation
+    operations.insert(root);
+    for (auto value : root->getOperands()) {
+      // Only consider integer values. No integer type such as seq.clock,
+      // aggregate are pass through the
+      if (!value.getType().isInteger(1))
+        continue;
+      auto *defOp = value.getDefiningOp();
+      if (defOp) {
+        operations.insert(defOp);
+      } else {
+        // If the value has no defining operation, it is an input
+        inputs.insert(value);
+      }
+    }
+    // Update area and delay based on the root operation
+    area = 0.0;  // TODO: Set area based on the root operation
+    delay = 0.0; // TODO: Set delay based on the root operation
   }
 
   /// Merge this cut with another cut
-  Cut mergeWith(const Cut &other, Value newRoot) const {
-    Cut mergedCut;
-    mergedCut.inputs.insert(inputs.begin(), inputs.end());
-    mergedCut.inputs.insert(other.inputs.begin(), other.inputs.end());
-    mergedCut.outputs.push_back(newRoot);
-    mergedCut.operations.insert(operations.begin(), operations.end());
-    mergedCut.operations.insert(other.operations.begin(),
-                                other.operations.end());
+  Cut mergeWith(const Cut &other, Operation *root) const {
+    // Create a new cut that combines this cut and the other cut
+    Cut newCut;
+    SmallVector<Operation *, 4> worklist{root};
+    while (!worklist.empty()) {
+      auto *op = worklist.pop_back_val();
+      auto result = newCut.operations.insert(op);
+      if (result) {
+        for (auto value : op->getOperands()) {
+          // Only consider integer values. No integer type such as seq.clock,
+          // aggregate are pass through the cut.
+          if (!value.getType().isInteger(1))
+            continue;
+
+          if (inputs.contains(value) && other.inputs.contains(value)) {
+            // If the value is in *both* cuts, it is an input. The input is
+            // constructed later, so we skip it here.
+            continue;
+          }
+
+          auto *defOp = value.getDefiningOp();
+          if (defOp) {
+            worklist.push_back(defOp);
+          } else {
+            // Block arguments or other values without defining operations
+            assert(false && "Block arguments must have been added as inputs");
+          }
+        }
+      }
+    }
+
+    // Construct inputs. Reverse the order to ensure inputs are added in the
+    // consistent order
+    for (auto *operation : llvm::reverse(newCut.operations)) {
+      for (auto value : operation->getOperands()) {
+        // No constnant values won't be added to the cut inputs
+        if (!value.getType().isInteger(1))
+          continue;
+        bool isInput = false;
+        if (auto *defOp = value.getDefiningOp()) {
+          // If the operation is not in the cut, it is an input
+          isInput = !newCut.operations.contains(defOp);
+        } else {
+          isInput = true;
+        }
+
+        if (isInput)
+          // Add the input to the cut
+          newCut.inputs.insert(value);
+      }
+    }
+
     // Update area and delay based on the merged cuts
-    mergedCut.area = area + other.area;
-    mergedCut.delay = std::max(delay, other.delay);
-    return mergedCut;
+    return newCut;
   }
 
   /// Get the size of this cut
-  unsigned getInputSize() const { return inputs.size(); }
+  unsigned getInputSize() const {}
+  unsigned getCutSize() const { return operations.size(); }
+  unsigned getOutputSize() const {
+    // The output size is the number of results of the root operation
+    return getRoot()->getNumResults();
+  }
 
-  unsigned getOutputSize() const { return outputs.size(); }
+  bool isOutputSingleBit() const {
+    // Check if the output is a single bit
+    size_t count = 0;
+    for (auto result : getRoot()->getResults()) {
+      if (!result.getType().isInteger(1) || count++ > 0)
+        return false; // Not a single bit output
+    }
+    return true; // All outputs are single bit
+  }
 
   /// Check if this cut dominates another cut (better in all metrics)
   /// Priority cuts algorithm uses area and delay as metrics.
@@ -113,7 +189,7 @@ struct Cut {
   }
 
   TruthTable getTruthTable() {
-    TruthTable tt(inputs.size(), outputs.size());
+    TruthTable tt(inputs.size(), getOutputSize());
     // Simulate the IR.
     // For each input combination, compute the output values.
     for (uint64_t i = 0; i < (1 << inputs.size()); ++i) {
@@ -130,24 +206,10 @@ private:
   llvm::SmallVector<Cut, 12> cuts;
 
 public:
-  /// Add a cut to the set, maintaining priority order
-  void addCut(Cut cut, unsigned maxCuts,
-              llvm::function_ref<bool(const Cut &, const Cut &)> compare) {
-    // Remove dominated cuts
-    cuts.erase(std::remove_if(cuts.begin(), cuts.end(),
-                              [&](const Cut &existing) {
-                                return cut.dominates(existing);
-                              }),
-               cuts.end());
-
-    // Check if new cut is dominated
-    for (const Cut &existing : cuts) {
-      if (existing.dominates(cut))
-        return; // New cut is dominated, don't add
-    }
-
-    cuts.push_back(std::move(cut));
-
+  // Keep the cuts sorted by priority. The priority is determined by the
+  // optimization mode (area or delay). The cuts are sorted in descending order,
+  void pruneCut(unsigned maxCuts,
+                llvm::function_ref<bool(const Cut &, const Cut &)> compare) {
     // Maintain size limit by removing worst cuts
     if (cuts.size() > maxCuts) {
       // Sort by priority using the provided comparison function
@@ -155,6 +217,9 @@ public:
       cuts.resize(maxCuts);
     }
   }
+
+  /// Add a cut to the set, maintaining priority order
+  void addCut(Cut cut) { cuts.push_back(std::move(cut)); }
 
   /// Get the best cut based on optimization mode
   const Cut *
@@ -193,11 +258,13 @@ struct MappedLibrary {
 
   // Benefit of the cut in the library
   virtual double getArea() const = 0;
+
   // Get delay for a specific input-output pair.
   virtual double getDelay(size_t inputIndex, size_t outputIndex) const = 0;
-  // TODO: Power could be also very complicated (sometimes it's based on
-  // internal states). So consider extending this to support more complex
-  // power calculations.
+
+  // TODO: Right now it's very simple. Power could be also very complicated
+  // (usually it's based on internal states). So consider extending this to
+  // support more complex power calculations.
   virtual double getPower() const = 0;
 
   virtual unsigned getNumInputs() const = 0;
@@ -216,8 +283,10 @@ struct LibraryPrimitive : public MappedLibrary {
   /// Rewrite the cut set using this library primitive
   LogicalResult rewrite(mlir::PatternRewriter &rewriter,
                         Cut &cut) const override {
-    // TOOD: Implement the actual rewrite logic
-    llvm::report_fatal_error("LibraryPrimitive::rewrite not implemented yet");
+    // Compute permutations of inputs and outputs
+    // and rewrite the cut using the library primitive.
+
+    return success();
   }
 
   double getAttr(StringRef name) const {
@@ -256,10 +325,7 @@ struct GenericLUT : public MappedLibrary {
     if (cutSet.getInputSize() > getNumInputs())
       return false;
 
-    if (cutSet.getOutputSize() > 1)
-      return false;
-
-    return true;
+    return cutSet.isOutputSingleBit();
   }
 
   double getArea() const override {
@@ -280,7 +346,13 @@ struct GenericLUT : public MappedLibrary {
     // TODO: Implement the actual rewrite logic
     llvm::report_fatal_error("GenericLUT::rewrite not implemented yet");
     auto truthTable = cut.getTruthTable();
-    // Here we would generate the truth table for the LUT based on the cut
+    // Generate comb.truth table operation.
+    auto truthTableOp = rewriter.create<comb::TruthTableOp>(
+        cut.getRoot()->getLoc(), truthTable.table, truthTable.numInputs,
+        truthTable.numOutputs);
+
+    // Replace the root operation with the truth table operation
+    rewriter.replaceOp(cut.getRoot(), truthTableOp.getResults());
   }
 };
 
@@ -290,6 +362,7 @@ private:
   ModuleOp topModule;
   bool areaMode;
   unsigned maxCutSize;
+  unsigned maxCutInputSize = 6; // Default max cut input size
   unsigned maxCutsPerNode;
   bool verbose;
   bool enableTiming;
@@ -324,12 +397,8 @@ public:
 
   /// Initialize the technology library
   void initializeLibrary(ArrayRef<std::string> libraryModules) {
-    if (libraryModules.empty()) {
-      // Default K-LUT library
-      // In a real implementation, we would create actual HW modules
-      // For now, we'll work with the assumption that appropriate modules exist
+    if (libraryModules.empty())
       return;
-    }
 
     // Find library modules in the top module
     for (const std::string &moduleName : libraryModules) {
@@ -384,6 +453,21 @@ private:
       return failure();
 
     return success();
+  }
+
+  LogicalResult enumerateCuts(Operation *op) {
+    if (verbose) {
+      llvm::outs() << "Enumerating cuts for operation: " << op->getName()
+                   << "\n";
+    }
+
+    // Check if the operation is a HW module
+    if (auto hwModule = dyn_cast<hw::HWModuleOp>(op)) {
+      return enumerateCuts(hwModule);
+    }
+
+    // Generate cuts for this operation
+    return generateCutsForOp(op);
   }
 
   /// Enumerate cuts for all nodes in the module
@@ -444,11 +528,11 @@ private:
 
     if (isa<hw::ConstantOp>(op) || op->getNumOperands() == 0) {
       // Trivial cut for inputs/constants
-      Cut trivialCut(result);
+      Cut trivialCut(op);
       trivialCut.inputs.insert(result);
       trivialCut.area = 0.0;
       trivialCut.delay = 0.0;
-      cutSet.addCut(trivialCut, maxCutsPerNode, compare);
+      cutSet.addCut(std::move(trivialCut));
       return success();
     }
 
@@ -457,11 +541,11 @@ private:
     }
 
     // For other operations, create a trivial cut
-    Cut trivialCut(result);
+    Cut trivialCut(op);
     trivialCut.inputs.insert(result);
     trivialCut.area = 1.0;
     trivialCut.delay = 1.0;
-    cutSet.addCut(trivialCut, maxCutsPerNode, compare);
+    cutSet.addCut(std::move(trivialCut));
 
     return success();
   }
@@ -469,40 +553,20 @@ private:
   /// Generate cuts for AND-inverter operations
   LogicalResult generateCutsForAndOp(aig::AndInverterOp andOp) {
     Value result = andOp.getResult();
-    CutSet &resultCutSet = cutSets[result];
+    auto &lhs = cutSets.at(andOp->getOperand(0));
+    auto &rhs = cutSets.at(andOp->getOperand(1));
 
     // Add trivial cut
-    Cut trivialCut(result);
-    trivialCut.inputs.insert(result);
-    trivialCut.area = 1.0;
-    trivialCut.delay = 1.0;
-    resultCutSet.addCut(trivialCut, maxCutsPerNode, compare);
-
-    if (andOp.getInputs().size() != 2) {
-      // Only handle binary operations for now
-      return success();
-    }
-
-    Value input0 = andOp.getInputs()[0];
-    Value input1 = andOp.getInputs()[1];
-
-    // Get cuts for both inputs
-    auto it0 = cutSets.find(input0);
-    auto it1 = cutSets.find(input1);
-
-    if (it0 == cutSets.end() || it1 == cutSets.end())
-      return success();
-
-    const CutSet &cutSet0 = it0->second;
-    const CutSet &cutSet1 = it1->second;
-
     // Combine cuts from both inputs
-    for (const Cut &cut0 : cutSet0.getCuts()) {
-      for (const Cut &cut1 : cutSet1.getCuts()) {
-        auto mergedCut = cut0.mergeWith(cut1, result);
-        if (mergedCut.inputs.size() > maxCutSize)
-          continue; // Skip if merged cut exceeds max size
-        resultCutSet.addCut(std::move(mergedCut), maxCutsPerNode, compare);
+    auto &resultCutSet = cutSets[result];
+    for (const Cut &cut0 : lhs.getCuts()) {
+      for (const Cut &cut1 : rhs.getCuts()) {
+        auto mergedCut = cut0.mergeWith(cut1, andOp);
+        if (mergedCut.getCutSize() > maxCutSize)
+          continue; // Skip cuts that are too large
+        if (mergedCut.getInputSize() > maxCutInputSize)
+          continue; // Skip if merged cut exceeds max input size
+        resultCutSet.addCut(std::move(mergedCut));
       }
     }
 
