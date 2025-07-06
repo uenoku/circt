@@ -8,8 +8,11 @@
 
 #include "circt-c/Synthesis.h"
 
-#include "circt/Synthesis/SynthesisPipeline.h"
+#include "circt/Synthesis/Transforms/SynthesisPipeline.h"
+#include "circt/Synthesis/Transforms/Passes.h"
+
 
 void registerSynthesisPipeline() {
-  circt::synthesis::registerSynthesisPipeline();
+  circt::synthesis::registerPipelines();
+  circt::synthesis::registerPasses();
 }

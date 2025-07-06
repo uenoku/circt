@@ -290,14 +290,15 @@ class LongestPathCollection:
     """Get the number of paths in the collection."""
     return self.length
 
-  def __getitem__(self, index: int) -> DataflowPath:
+  def __getitem__(self, index):
     """
         Get a specific path from the collection by index.
         Supports negative indexing. Results are cached to avoid expensive
         JSON parsing on repeated access.
-        Args:
-            index: Index of the path to retrieve (0 = longest path)
         """
+    if isinstance(index, slice):
+      return [self[i] for i in range(*index.indices(len(self)))]
+
     # Handle negative indexing
     if index < 0:
       index += self.length
