@@ -2,6 +2,7 @@ add_circt_dialect_library(CIRCTAIGTransforms
   AIGERRunner.cpp
   LowerVariadic.cpp
   LowerWordToBits.cpp
+  Mapper.cpp
 
   DEPENDS
   CIRCTAIGPassesIncGen
