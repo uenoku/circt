@@ -32,6 +32,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -165,12 +166,9 @@ struct Cut {
   }
 
   /// Get the size of this cut
-  unsigned getInputSize() const {}
+  size_t getInputSize() const { return inputs.size(); }
   unsigned getCutSize() const { return operations.size(); }
-  unsigned getOutputSize() const {
-    // The output size is the number of results of the root operation
-    return getRoot()->getNumResults();
-  }
+  size_t getOutputSize() const { return getRoot()->getNumResults(); }
 
   bool isOutputSingleBit() const {
     // Check if the output is a single bit
@@ -189,14 +187,45 @@ struct Cut {
   }
 
   TruthTable getTruthTable() {
-    TruthTable tt(inputs.size(), getOutputSize());
+    int64_t numInputs = getInputSize();
+    int64_t numOutputs = getOutputSize();
+    TruthTable tt(numInputs, numOutputs);
+    assert(numInputs < 16 && "Too many inputs for truth table");
     // Simulate the IR.
     // For each input combination, compute the output values.
-    for (uint64_t i = 0; i < (1 << inputs.size()); ++i) {
+    for (uint64_t i = 0; i < 1 << numInputs; ++i) {
       // Compute the input vector
-      APInt input(inputs.size(), i);
+      APInt input(numInputs, i);
+      // Simulate the cut
+      APInt output = simulate(input);
+      // Store the output in the truth table
+      tt.table.insertBits(output, i * numOutputs);
     }
     return tt;
+  }
+
+  FailureOr<APInt> simulateOp(Operation *op, DenseMap<Value, APInt> &values) {
+    if (auto andOp = dyn_cast<AndOp>(op)) {
+      auto lhs = values[andOp.getLhs()];
+      auto rhs = values[andOp.getRhs()];
+      values[andOp] = lhs & rhs;
+      return values[andOp];
+    }
+  }
+
+  FailureOr<APInt> simulate(APInt input) {
+    DenseMap<Value, APInt> values;
+    size_t bitPos = 0;
+    for (auto value : inputs) {
+      assert(value.getType().isInteger(1));
+      values[value] = input.extractBits(1, bitPos++);
+    }
+    for (auto *op : operations) {
+      if (failed(simulateOp(op, values))) {
+        return APInt(1, 0);
+      }
+    }
+    return values[getRoot()];
   }
 };
 
@@ -347,12 +376,12 @@ struct GenericLUT : public MappedLibrary {
     llvm::report_fatal_error("GenericLUT::rewrite not implemented yet");
     auto truthTable = cut.getTruthTable();
     // Generate comb.truth table operation.
-    auto truthTableOp = rewriter.create<comb::TruthTableOp>(
-        cut.getRoot()->getLoc(), truthTable.table, truthTable.numInputs,
-        truthTable.numOutputs);
+    // auto truthTableOp = rewriter.create<comb::TruthTableOp>(
+    //     cut.getRoot()->getLoc(), truthTable.table, truthTable.numInputs,
+    //     truthTable.numOutputs);
 
-    // Replace the root operation with the truth table operation
-    rewriter.replaceOp(cut.getRoot(), truthTableOp.getResults());
+    // // Replace the root operation with the truth table operation
+    // rewriter.replaceOp(cut.getRoot(), truthTableOp.getResults());
   }
 };
 
