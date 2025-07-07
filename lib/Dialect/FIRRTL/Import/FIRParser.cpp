@@ -1356,6 +1356,7 @@ struct UnbundledValueRestorer {
 } // namespace
 
 using SubaccessCache = llvm::DenseMap<std::pair<Value, unsigned>, Value>;
+using ObjectAnyCastCache = llvm::DenseMap<Value, Value>;
 
 namespace {
 /// This struct provides context information that is global to the module we're
@@ -1414,6 +1415,13 @@ struct FIRModuleContext : public FIRParser {
       if (it != scopeMap.end())
         it->second->scopedSubaccesses.push_back({result, index});
     }
+    return result;
+  }
+
+  //===--------------------------------------------------------------------===//
+  // ObjectAnyCastCache
+  Value getCachedObjectAnyCast(ImplicitLocOpBuilder &builder, Value value) {
+    auto result = builder.create<ObjectAnyRefCastOp>(value);
     return result;
   }
 
@@ -1502,6 +1510,10 @@ private:
   /// recreate large chains of them.  This maps a bundle value + index to the
   /// subaccess result.
   SubaccessCache subaccessCache;
+
+  /// This is a cache of object_any_cast operations so we don't constantly
+  /// recreate them.  This maps a object value to the anyref result.
+  ObjectAnyCastCache objectAnyCastCache;
 
   /// This maps a block to related ContextScope.
   DenseMap<Block *, ContextScope *> scopeMap;
@@ -2545,7 +2557,7 @@ ParseResult FIRStmtParser::parseListExp(Value &result) {
             return emitError(loc, "unexpected expression of type ")
                    << operand.getType() << " in List expression of type "
                    << elementType;
-          operand = builder.create<ObjectAnyRefCastOp>(operand);
+          operand = moduleContext.getCachedObjectAnyCast(builder, operand);
         }
 
         operands.push_back(operand);
@@ -4237,7 +4249,7 @@ ParseResult FIRStmtParser::parsePropAssign() {
   if (lhsType != rhsType) {
     // If the lhs is anyref, and the rhs is a ClassType, insert a cast.
     if (isa<AnyRefType>(lhsType) && isa<ClassType>(rhsType))
-      rhs = builder.create<ObjectAnyRefCastOp>(rhs);
+      rhs = moduleContext.getCachedObjectAnyCast(builder, rhs);
     else
       return emitError(loc, "cannot propassign non-equivalent type ")
              << rhsType << " to " << lhsType;

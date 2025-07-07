@@ -533,12 +533,52 @@ private:
 
   LogicalResult visit(seq::FirMemReadOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results) {
-    return markFanIn(op, bitPos, results);
+    LLVM_DEBUG(llvm::dbgs() << "FanIn: " << op << "\n");
+    auto address = op.getAddress();
+    auto enable = op.getEnable();
+    // read[i] =  mux(enable, reg[addres][i], 0)[i]
+    // read[i] =  mux(enable, reg[addres][i], 0)
+    // read[i] = mux(enable, reg[address][i], 0)
+
+    // Consider mux tree.
+    // I don't know. Just depth.
+
+    // What's the cost model of a memory read?
+    auto depth = getBitWidth(address);
+    for (size_t i = 0; i < depth; ++i) {
+      if (failed(addEdge(address, i, 2 * depth, results)))
+        return failure();
+    }
+    if (enable)
+      if (failed(addEdge(enable, 0, 1, results)))
+        return failure();
+
+    return success();
   }
 
   LogicalResult visit(seq::FirMemReadWriteOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results) {
-    return markFanIn(op, bitPos, results);
+    LLVM_DEBUG(llvm::dbgs() << "FanIn: " << op << "\n");
+    auto address = op.getAddress();
+    auto enable = op.getEnable();
+    // read[i] =  mux(enable, reg[addres][i], 0)[i]
+    // read[i] =  mux(enable, reg[addres][i], 0)
+    // read[i] = mux(enable, reg[address][i], 0)
+
+    // Consider mux tree.
+    // I don't know. Just depth.
+
+    // What's the cost model of a memory read?
+    auto depth = getBitWidth(address);
+    for (size_t i = 0; i < depth; ++i) {
+      if (failed(addEdge(address, i, 2 * depth, results)))
+        return failure();
+    }
+    if (enable)
+      if (failed(addEdge(enable, 0, 1, results)))
+        return failure();
+
+    return success();
   }
 
   LogicalResult visitDefault(Operation *op, size_t bitPos,
@@ -758,8 +798,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   auto *node = ctx->instanceGraph->lookup(moduleName);
   assert(node && "module not found");
 
-  // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
-  // fanIn.
+  // Otherwise, if the module is not a HWModuleOp, then we should treat it as
+  // a fanIn.
   if (!isa<hw::HWModuleOp>(node->getModule()) ||
       node->getModule().getModuleName().starts_with(
           "SiFive_SubsystemL3cacheSlice"))
@@ -985,8 +1025,8 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
         auto newHistory = ctx->doTraceDebugPoints()
                               ? mapList(debugPointFactory.get(), history,
                                         [&](DebugPoint p) {
-                                          // Update the instance path to prepend
-                                          // the current instance.
+                                          // Update the instance path to
+                                          // prepend the current instance.
                                           p.object.instancePath = newPath;
                                           p.delay += result.delay;
                                           return p;
@@ -1184,7 +1224,9 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
 
   for (auto &path : localVisitor->getResults(value, bitPos)) {
     auto arg = dyn_cast<BlockArgument>(path.fanIn.value);
-    if (!arg || localVisitor->isTopLevel()) {
+    if (!arg || localVisitor->isTopLevel() ||
+        localVisitor->getHWModuleOp().getModuleName().starts_with(
+            "SiFive_SubsystemL3cacheSlice")) {
       // If the value is not a block argument, then we are done.
       results.push_back({originalObject, path, parentHWModule});
       continue;

@@ -18,6 +18,7 @@
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/Comb/CombPasses.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -159,6 +160,7 @@ static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
 }
 
 static void populateSynthesisPipeline(PassManager &pm) {
+  pm.addPass(comb::createConstProp());
   auto pipeline = [](OpPassManager &mpm) {
     // Add the AIG to Comb at the scope exit if requested.
     auto addAIGToComb = llvm::make_scope_exit([&]() {

@@ -34,4 +34,20 @@ def CombIntRangeNarrowing : Pass<"comb-int-range-narrowing"> {
   }];
 }
 
+def ConstProp : Pass<
+  "comb-constprop", "mlir::ModuleOp"
+> {
+  let summary = "Inter-module constant propagation";
+  let dependentDialects = [
+    "circt::comb::CombDialect",
+    "circt::hw::HWDialect"
+  ];
+  let statistics = [
+     Statistic<"numValuesFolded", "num-values-folded",
+               "Number of values folded to a constant">,
+     Statistic<"numOpsErased", "num-ops-erased",
+               "Number of dead ops erased">,
+  ];
+}
+
 #endif // CIRCT_DIALECT_COMB_PASSES_TD

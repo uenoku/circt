@@ -9,6 +9,9 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
 
 try:
     from IPython import embed
@@ -46,6 +49,9 @@ parser.add_argument("--interactive", "-i", action="store_true",
 # Progress bar option
 parser.add_argument("--no-progress", action="store_true",
                    help="Disable progress bars (useful for scripting)")
+# Parallel execution option
+parser.add_argument("--parallel", action="store_true",
+                   help="Run analysis on both designs in parallel (faster for large designs)")
 args = parser.parse_args()
 
 # Configure logging
@@ -189,6 +195,36 @@ def find_paths_by_signal(collection, signal_name, search_fanout=True, search_fan
     return matching_paths
 
 
+def run_single_analysis(module, module_name, fanout_filter, fanin_filter, design_name):
+    """Run longest path analysis on a single design."""
+    thread_id = threading.current_thread().ident
+    logger.info(f"[Thread {thread_id}] Starting analysis for {design_name}")
+
+    try:
+        analysis = LongestPathAnalysis(module.operation, trace_debug_points=True)
+        logger.debug(f"[Thread {thread_id}] Created analysis object for {design_name}")
+
+        collection = analysis.get_all_paths(module_name, fanout_filter, fanin_filter)
+        logger.info(f"[Thread {thread_id}] Found {len(collection)} paths in {design_name} (after CAPI filtering)")
+
+        return {
+            'design_name': design_name,
+            'analysis': analysis,
+            'collection': collection,
+            'success': True,
+            'error': None
+        }
+    except Exception as e:
+        logger.error(f"[Thread {thread_id}] Failed to analyze {design_name}: {e}")
+        return {
+            'design_name': design_name,
+            'analysis': None,
+            'collection': None,
+            'success': False,
+            'error': str(e)
+        }
+
+
 
 logger.info("Starting longest path analysis comparison")
 
@@ -203,11 +239,7 @@ with Context() as ctx, Location.unknown():
   m_new = load_module_from_file(Path(args.mlir_file_new), ctx)
   ctx.enable_multithreading(True)
 
-  logger.info(f"Creating longest path analysis for module: '{args.module_name}'")
-  analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=True)
-  analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=True)
-
-  logger.info("Running path analysis on both designs")
+  logger.info(f"Preparing to analyze module: '{args.module_name}'")
 
   # Prepare filter strings for CAPI (empty string means no filter)
   fanout_filter = args.interesting_fanout if args.interesting_fanout else ""
@@ -216,19 +248,61 @@ with Context() as ctx, Location.unknown():
   if fanout_filter or fanin_filter:
     logger.info(f"Using CAPI filtering: fanout='{fanout_filter}', fanin='{fanin_filter}'")
 
-  try:
-    collection_old = analysis_old.get_all_paths(args.module_name, fanout_filter, fanin_filter)
-    logger.info(f"Found {len(collection_old)} paths in old design (after CAPI filtering)")
-  except Exception as e:
-    logger.error(f"Failed to get paths from old design: {e}")
-    sys.exit(1)
+  if args.parallel:
+    logger.info("Running path analysis on both designs in parallel")
+    start_time = time.time()
 
-  try:
-    collection_new = analysis_new.get_all_paths(args.module_name, fanout_filter, fanin_filter)
-    logger.info(f"Found {len(collection_new)} paths in new design (after CAPI filtering)")
-  except Exception as e:
-    logger.error(f"Failed to get paths from new design: {e}")
-    sys.exit(1)
+    # Run analyses in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as executor:
+      # Submit both analysis tasks
+      future_old = executor.submit(run_single_analysis, m_old, args.module_name,
+                                   fanout_filter, fanin_filter, "old design")
+      future_new = executor.submit(run_single_analysis, m_new, args.module_name,
+                                   fanout_filter, fanin_filter, "new design")
+
+      # Collect results as they complete
+      results = {}
+      for future in as_completed([future_old, future_new]):
+        result = future.result()
+        results[result['design_name']] = result
+
+        if result['success']:
+          logger.info(f"Completed analysis for {result['design_name']}")
+        else:
+          logger.error(f"Failed analysis for {result['design_name']}: {result['error']}")
+          sys.exit(1)
+
+    parallel_time = time.time() - start_time
+    logger.info(f"Parallel analysis completed in {parallel_time:.2f} seconds")
+
+    # Extract results
+    analysis_old = results['old design']['analysis']
+    analysis_new = results['new design']['analysis']
+    collection_old = results['old design']['collection']
+    collection_new = results['new design']['collection']
+
+  else:
+    logger.info("Running path analysis on both designs sequentially")
+    start_time = time.time()
+
+    try:
+      analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=True)
+      collection_old = analysis_old.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+      logger.info(f"Found {len(collection_old)} paths in old design (after CAPI filtering)")
+    except Exception as e:
+      logger.error(f"Failed to get paths from old design: {e}")
+      sys.exit(1)
+
+    try:
+      analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=True)
+      collection_new = analysis_new.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+      logger.info(f"Found {len(collection_new)} paths in new design (after CAPI filtering)")
+    except Exception as e:
+      logger.error(f"Failed to get paths from new design: {e}")
+      sys.exit(1)
+
+    sequential_time = time.time() - start_time
+    logger.info(f"Sequential analysis completed in {sequential_time:.2f} seconds")
 
   # CHECK-LABEL:      LongestPathAnalysis created successfully!
   print("LongestPathAnalysis created successfully!")
