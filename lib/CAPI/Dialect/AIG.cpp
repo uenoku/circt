@@ -94,9 +94,25 @@ size_t aigLongestPathCollectionGetSize(AIGLongestPathCollection collection) {
   return wrapper->paths.size();
 }
 
-MlirStringRef
+AIGLongestPathDataflowPath
 aigLongestPathCollectionGetPath(AIGLongestPathCollection collection,
                                 int pathIndex) {
+  auto *wrapper = unwrap(collection);
+
+  // Check if pathIndex is valid
+  if (pathIndex < 0 || pathIndex >= static_cast<int>(wrapper->paths.size()))
+    return {nullptr};
+
+  AIGLongestPathDataflowPath path;
+  // It's safe to const_cast here because the C API does not allow
+  // modification of the path.
+  path.ptr = const_cast<DataflowPath *>(&wrapper->getPath(pathIndex));
+  return path;
+}
+
+MlirStringRef
+aigLongestPathCollectionGetPathAsJson(AIGLongestPathCollection collection,
+                                      int pathIndex) {
   auto *wrapper = unwrap(collection);
 
   // Check if pathIndex is valid

@@ -10,6 +10,7 @@
 #define CIRCT_C_DIALECT_AIG_H
 
 #include "mlir-c/IR.h"
+#include <mlir-c/Support.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,15 @@ MLIR_CAPI_EXPORTED void registerAIGPasses(void);
 //===----------------------------------------------------------------------===//
 // LongestPathAnalysis
 //===----------------------------------------------------------------------===//
+
+// Opaque handle to LongestPathAnalysis
+DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
+
+// Opaque handle to LongestPathAnalysis
+DEFINE_C_API_STRUCT(AIGLongestPathDataflowPath, void);
+
+// Opaque handle to LongestPathAnalysis
+DEFINE_C_API_STRUCT(AIGLongestPathHistory, void);
 
 // Opaque handle to LongestPathAnalysis
 DEFINE_C_API_STRUCT(AIGLongestPathAnalysis, void);
@@ -65,13 +75,38 @@ MLIR_CAPI_EXPORTED size_t
 aigLongestPathCollectionGetSize(AIGLongestPathCollection collection);
 
 // Get a specific path from the collection as JSON
-MLIR_CAPI_EXPORTED MlirStringRef aigLongestPathCollectionGetPath(
+MLIR_CAPI_EXPORTED MlirStringRef aigLongestPathCollectionGetPathAsJson(
     AIGLongestPathCollection collection, int pathIndex);
+
+MLIR_CAPI_EXPORTED AIGLongestPathDataflowPath aigLongestPathCollectionGetPath(
+    AIGLongestPathCollection collection, int pathIndex);
+
+MLIR_CAPI_EXPORTED int64_t
+aigLongestPathDataflowPathGetDelay(AIGLongestPathDataflowPath dataflowPath);
+
+MLIR_CAPI_EXPORTED AIGLongestPathObject
+aigLongestPathDataflowPathGetFanIn(AIGLongestPathDataflowPath dataflowPath);
+
+MLIR_CAPI_EXPORTED AIGLongestPathObject
+aigLongestPathDataflowPathGetFanOut(AIGLongestPathDataflowPath dataflowPath);
+
+MLIR_CAPI_EXPORTED AIGLongestPathHistory
+aigLongestPathDataflowPathGetHistory(AIGLongestPathDataflowPath dataflowPath);
+
+MLIR_CAPI_EXPORTED void aigLongestPathHistoryGet(AIGLongestPathHistory history,
+                                                 size_t index,
+                                                 AIGLongestPathObject *object,
+                                                 int64_t *delay,
+                                                 MlirAttribute *comment);
+
+MLIR_CAPI_EXPORTED size_t
+aigLongestPathHistoryGetSize(AIGLongestPathHistory history);
 
 MLIR_CAPI_EXPORTED bool aigLongestPathCollectionDiff(
     AIGLongestPathCollection lhs, AIGLongestPathCollection rhs,
     AIGLongestPathCollection *uniqueLhs, AIGLongestPathCollection *uniqueRhs,
-    AIGLongestPathCollection *differentLhs, AIGLongestPathCollection *differentRhs);
+    AIGLongestPathCollection *differentLhs,
+    AIGLongestPathCollection *differentRhs);
 
 #ifdef __cplusplus
 }
