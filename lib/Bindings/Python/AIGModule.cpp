@@ -84,5 +84,22 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
              MlirStringRef pathRef =
                  aigLongestPathCollectionGetPath(self, pathIndex);
              return std::string_view(pathRef.data, pathRef.length);
-           });
+           })
+      .def(
+          "_diff",
+          [](AIGLongestPathCollection &self, AIGLongestPathCollection &other)
+              -> std::tuple<AIGLongestPathCollection, AIGLongestPathCollection,
+                            AIGLongestPathCollection,
+                            AIGLongestPathCollection> {
+            AIGLongestPathCollection uniqueLhs, uniqueRhs, differentLhs,
+                differentRhs;
+            if (!aigLongestPathCollectionDiff(self, other, &uniqueLhs,
+                                              &uniqueRhs, &differentLhs,
+                                              &differentRhs))
+              throw nb::value_error(
+                  "Failed to diff collections, see previous error(s).");
+            return std::make_tuple(uniqueLhs, uniqueRhs, differentLhs,
+                                   differentRhs);
+          },
+          nb::arg("other"));
 }

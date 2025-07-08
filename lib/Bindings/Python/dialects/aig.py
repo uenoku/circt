@@ -337,6 +337,23 @@ class LongestPathCollection:
         print(f"99th percentile delay: {self.get_by_delay_ratio(0.99).delay}")
         print(f"99.9th percentile delay: {self.get_by_delay_ratio(0.999).delay}")
 
+    def diff(self, other: "LongestPathCollection") -> 'Difference':
+        """
+        Compare this analysis result with another and return the differences.
+        This method compares the timing paths in this analysis result with
+        those in another analysis result. It returns four collections:
+        - Paths unique to this analysis
+        - Paths unique to the other analysis
+        - Paths common to both analyses but with different delays in this analysis
+        - Paths common to both analyses but with different delays in the other analysis
+        Args:
+            other: Another LongestPathAnalysis object to compare with
+        Returns:
+            Tuple of four LongestPathCollection objects representing the differences
+        """
+        unique_lhs, unique_rhs, different_lhs, different_rhs = self.collection._diff(other.collection)
+        return Difference(unique_lhs, unique_rhs, different_lhs, different_rhs)
+
 
 # ============================================================================
 # Main Analysis Interface
@@ -377,3 +394,37 @@ class LongestPathAnalysis:
             LongestPathCollection containing all paths sorted by delay
         """
         return LongestPathCollection(self.analysis.get_all_paths(module_name, fanout_filter, fanin_filter, True))
+
+
+
+
+class Difference:
+    """
+    Represents the differences between two LongestPathAnalysis results.
+    This class provides a Python wrapper around the C++ Difference struct,
+    offering convenient access to the differences between two analysis results.
+    Attributes:
+        unique_lhs: Paths unique to the first analysis
+        unique_rhs: Paths unique to the second analysis
+        different_lhs: Paths common to both analyses but with different delays in the first analysis    
+        different_rhs: Paths common to both analyses but with different delays in the second analysis
+    """
+
+    def __init__(self, unique_lhs: LongestPathCollection, unique_rhs: LongestPathCollection, different_lhs: LongestPathCollection, different_rhs: LongestPathCollection):
+        """
+        Initialize the difference wrapper.
+        Args:
+            diff: Tuple of four LongestPathCollection objects representing the differences
+        """
+        self.unique_lhs = LongestPathCollection(unique_lhs)
+        self.unique_rhs = LongestPathCollection(unique_rhs)
+        self.different_lhs = LongestPathCollection(different_lhs)
+        self.different_rhs = LongestPathCollection(different_rhs)
+    
+    def print_summary(self) -> None:
+        """Print a summary of the differences."""
+        print(f"Unique to first analysis: {len(self.unique_lhs)}")
+        print(f"Unique to second analysis: {len(self.unique_rhs)}")
+        print(f"Different in first analysis: {len(self.different_lhs)}")
+        print(f"Different in second analysis: {len(self.different_rhs)}")
+        print(f"Total differences: {len(self.unique_lhs) + len(self.unique_rhs) + len(self.different_lhs) + len(self.different_rhs)}")

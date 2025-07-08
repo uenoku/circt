@@ -1593,3 +1593,140 @@ void LongestPathCollection::sortAndDropNonCriticalPathsPerFanOut() {
   }
   paths.resize(seen.size());
 }
+
+struct ObjectPathInfo {
+  using Object = circt::aig::DataflowPath::FanOutType;
+  static Object getEmptyKey() { return DenseMapInfo<Object>::getEmptyKey(); }
+
+  static Object getTombstoneKey() {
+    return DenseMapInfo<Object>::getTombstoneKey();
+  }
+
+  static llvm::hash_code getHashValue(Object signal) {
+    if (auto *object = std::get_if<circt::aig::Object>(&signal)) {
+      auto hash = llvm::hash_value(object->bitPos);
+      for (auto inst : object->instancePath)
+        hash = llvm::hash_combine(hash, inst.getInstanceNameAttr());
+
+      hash =
+          llvm::hash_combine(hash, circt::aig::getNameForValue(object->value));
+      return hash;
+    }
+
+    auto &[resultNumber, bitPos] =
+        *std::get_if<std::pair<size_t, size_t>>(&signal);
+    auto hash = llvm::hash_value(bitPos);
+    hash = llvm::hash_combine(hash, resultNumber);
+    return hash;
+  }
+
+  static bool isEqual(const Object &a, const Object &b) {
+    auto tombstone = getTombstoneKey();
+    bool isLhsTombstone = DenseMapInfo<Object>::isEqual(a, tombstone);
+    bool isRhsTombstone = DenseMapInfo<Object>::isEqual(b, tombstone);
+    if (isLhsTombstone || isRhsTombstone)
+      return isLhsTombstone && isRhsTombstone;
+
+    auto empty = getEmptyKey();
+    bool isLhsEmpty = DenseMapInfo<Object>::isEqual(a, empty);
+    bool isRhsEmpty = DenseMapInfo<Object>::isEqual(b, empty);
+    if (isLhsEmpty || isRhsEmpty)
+      return isLhsEmpty && isRhsEmpty;
+
+    if (std::holds_alternative<circt::aig::Object>(a) !=
+        std::holds_alternative<circt::aig::Object>(b))
+      return false;
+
+    if (auto *aObject = std::get_if<circt::aig::Object>(&a)) {
+      auto *bObject = std::get_if<circt::aig::Object>(&b);
+      if (aObject->bitPos != bObject->bitPos ||
+          circt::aig::getNameForValue(aObject->value) !=
+              circt::aig::getNameForValue(bObject->value))
+        return false;
+
+      // Check instance path names match.
+      if (aObject->instancePath.size() != bObject->instancePath.size())
+        return false;
+      for (size_t i = 0; i < aObject->instancePath.size(); ++i) {
+        if (aObject->instancePath[i].getInstanceNameAttr() !=
+            bObject->instancePath[i].getInstanceNameAttr())
+          return false;
+      }
+      return true;
+    }
+
+    auto aPair = std::get<std::pair<size_t, size_t>>(a);
+    auto bPair = std::get<std::pair<size_t, size_t>>(b);
+    return aPair == bPair;
+  }
+};
+
+circt::aig::Difference::Difference(const LongestPathCollection &lhs,
+                                   const LongestPathCollection &rhs) {
+
+  // 1. Compare paths in both collections.
+  using IndexMapTy =
+      DenseMap<circt::aig::DataflowPath::FanOutType, unsigned, ObjectPathInfo>;
+  llvm::MapVector<circt::aig::DataflowPath::FanOutType,
+                  llvm::MapVector<circt::aig::DataflowPath::FanOutType,
+                                  const DataflowPath *, IndexMapTy>,
+                  IndexMapTy>
+      lhsMap, rhsMap;
+  for (auto &path : lhs.paths)
+    lhsMap[path.getFanOut()][path.getFanIn()] = &path;
+  for (auto &path : rhs.paths)
+    rhsMap[path.getFanOut()][path.getFanIn()] = &path;
+
+  for (auto &path : lhs.paths) {
+    auto &rhsPaths = rhsMap[path.getFanOut()];
+    auto *rhsPath = rhsPaths[path.getFanIn()];
+    if (!rhsPath) {
+      lhsUniquePaths->paths.push_back(path);
+      continue;
+    }
+    if (path.getDelay() != rhsPath->getDelay())
+      lhsDifferentDelay->paths.push_back(path);
+  }
+
+  for (auto &path : rhs.paths) {
+    auto &lhsPaths = lhsMap[path.getFanOut()];
+    auto *lhsPath = lhsPaths[path.getFanIn()];
+    if (!lhsPath) {
+      rhsUniquePaths->paths.push_back(path);
+      continue;
+    }
+    if (lhsPath->getDelay() != path.getDelay())
+      rhsDifferentDelay->paths.push_back(path);
+  }
+
+  // for (auto &[fanOut, lhsPaths] : lhsMap) {
+  //   auto &rhsPaths = rhsMap[fanOut];
+  //   for (auto &[fanIn, lhsPath] : lhsPaths) {
+  //     auto *rhsPath = rhsPaths[fanIn];
+  //     if (!rhsPath) {
+  //       diff.lhsUniquePaths->paths.push_back(*lhsPath);
+  //       continue;
+  //     }
+  //     if (lhsPath->getDelay() != rhsPath->getDelay())
+  //       diff.lhsDifferentDelay->paths.push_back(*lhsPath);
+  //   }
+  // }
+
+  // for (auto &[fanOut, rhsPaths] : rhsMap) {
+  //   auto &lhsPaths = lhsMap[fanOut];
+  //   for (auto &[fanIn, rhsPath] : rhsPaths) {
+  //     if (!lhsPaths.count(fanIn)) {
+  //       diff.rhsUniquePaths->paths.push_back(*rhsPath);
+  //     }
+
+  //     if (lhsPaths[fanIn]->getDelay() != rhsPath->getDelay())
+  //       diff.rhsDifferentDelay->paths.push_back(*rhsPath);
+  //   }
+  // }
+
+  // Compare paths in both collections.
+}
+
+StringAttr circt::aig::getNameForValue(Value value) {
+  return getNameImpl(value);
+}

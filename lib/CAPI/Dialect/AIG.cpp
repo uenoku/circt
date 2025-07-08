@@ -121,3 +121,25 @@ aigLongestPathCollectionGetPath(AIGLongestPathCollection collection,
       mlirStringAttrGet(ctx, mlirStringRefCreateFromCString(os.str().c_str()));
   return mlirStringAttrGetValue(strAttr);
 }
+
+bool aigLongestPathCollectionDiff(AIGLongestPathCollection lhs,
+                                  AIGLongestPathCollection rhs,
+                                  AIGLongestPathCollection *uniqueLhs,
+                                  AIGLongestPathCollection *uniqueRhs,
+                                  AIGLongestPathCollection *differentLhs,
+                                  AIGLongestPathCollection *differentRhs) {
+  auto *lhsCollection = unwrap(lhs);
+  auto *rhsCollection = unwrap(rhs);
+  Difference diff(*lhsCollection, *rhsCollection);
+
+  if (uniqueLhs)
+    *uniqueLhs = wrap(diff.lhsUniquePaths.release());
+  if (uniqueRhs)
+    *uniqueRhs = wrap(diff.rhsUniquePaths.release());
+  if (differentLhs)
+    *differentLhs = wrap(diff.lhsDifferentDelay.release());
+  if (differentRhs)
+    *differentRhs = wrap(diff.rhsDifferentDelay.release());
+
+  return true;
+}

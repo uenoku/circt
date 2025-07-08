@@ -68,6 +68,11 @@ aigLongestPathCollectionGetSize(AIGLongestPathCollection collection);
 MLIR_CAPI_EXPORTED MlirStringRef aigLongestPathCollectionGetPath(
     AIGLongestPathCollection collection, int pathIndex);
 
+MLIR_CAPI_EXPORTED bool aigLongestPathCollectionDiff(
+    AIGLongestPathCollection lhs, AIGLongestPathCollection rhs,
+    AIGLongestPathCollection *uniqueLhs, AIGLongestPathCollection *uniqueRhs,
+    AIGLongestPathCollection *differentLhs, AIGLongestPathCollection *differentRhs);
+
 #ifdef __cplusplus
 }
 #endif

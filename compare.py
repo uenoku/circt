@@ -3,7 +3,7 @@
 
 import circt
 from circt.dialects import aig, hw
-from circt.ir import Context, Location, Module, InsertionPoint, IntegerType
+from circt.ir import Context, Location, Module, InsertionPoint, IntegerType, FlatSymbolRefAttr, StringAttr
 from circt.dialects.aig import LongestPathAnalysis, LongestPathCollection
 import argparse
 import logging
@@ -239,6 +239,13 @@ with Context() as ctx, Location.unknown():
   m_new = load_module_from_file(Path(args.mlir_file_new), ctx)
   ctx.enable_multithreading(True)
 
+  # m_old 
+  attr_name = "aig.longest-path-analysis-top"
+  marker = FlatSymbolRefAttr.get(args.module_name)
+
+  m_old.operation.attributes[attr_name] = marker
+  m_new.operation.attributes[attr_name] = marker
+
   logger.info(f"Preparing to analyze module: '{args.module_name}'")
 
   # Prepare filter strings for CAPI (empty string means no filter)
@@ -323,6 +330,10 @@ with Context() as ctx, Location.unknown():
   # Use the collections directly since filtering was done in CAPI
   paths_old = collection_old
   paths_new = collection_new
+
+  # Compare the two analyses
+  diff = collection_old.diff(collection_new)
+  diff.print_summary()
 
   logger.info("Displaying example paths from analysis results")
 
