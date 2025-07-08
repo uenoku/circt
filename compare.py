@@ -231,6 +231,7 @@ logger.info("Starting longest path analysis comparison")
 with Context() as ctx, Location.unknown():
   logger.debug("Registering CIRCT dialects")
   circt.register_dialects(ctx)
+  ctx.allow_unregistered_dialects = True
   ctx.enable_multithreading(False)
 
   # Parse from arguments
@@ -293,16 +294,16 @@ with Context() as ctx, Location.unknown():
     start_time = time.time()
 
     try:
-      analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=True)
-      collection_old = analysis_old.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+      analysis_old = LongestPathAnalysis(m_old.operation, trace_debug_points=False)
+      collection_old = analysis_old.get_all_paths(args.module_name, fanout_filter, fanin_filter, elaborate_paths=False)
       logger.info(f"Found {len(collection_old)} paths in old design (after CAPI filtering)")
     except Exception as e:
       logger.error(f"Failed to get paths from old design: {e}")
       sys.exit(1)
 
     try:
-      analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=True)
-      collection_new = analysis_new.get_all_paths(args.module_name, fanout_filter, fanin_filter)
+      analysis_new = LongestPathAnalysis(m_new.operation, trace_debug_points=False)
+      collection_new = analysis_new.get_all_paths(args.module_name, fanout_filter, fanin_filter, elaborate_paths=False)
       logger.info(f"Found {len(collection_new)} paths in new design (after CAPI filtering)")
     except Exception as e:
       logger.error(f"Failed to get paths from new design: {e}")

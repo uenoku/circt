@@ -1203,55 +1203,157 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
     SmallVectorImpl<DataflowPath> &results,
     circt::igraph::InstancePathCache *instancePathCache,
     llvm::ImmutableListFactory<DebugPoint> *debugPointFactory) const {
+  LLVM_DEBUG({
+    llvm::dbgs() << "[getResultsImpl] Starting analysis for value " << value
+                 << " at bit position " << bitPos << "\n";
+  });
+
   auto parentHWModule =
       value.getParentRegion()->getParentOfType<hw::HWModuleOp>();
-  if (!parentHWModule)
+  if (!parentHWModule) {
+    LLVM_DEBUG({
+      llvm::dbgs()
+          << "[getResultsImpl] ERROR: query value is not in a HWModuleOp\n";
+    });
     return mlir::emitError(value.getLoc())
            << "query value is not in a HWModuleOp";
+  }
+
   auto *localVisitor = ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
-  if (!localVisitor)
+  if (!localVisitor) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "[getResultsImpl] No local visitor found for module "
+                   << parentHWModule.getModuleNameAttr()
+                   << ", returning success\n";
+    });
     return success();
+  }
 
   size_t oldIndex = results.size();
   auto *node =
       ctx.instanceGraph
           ? ctx.instanceGraph->lookup(parentHWModule.getModuleNameAttr())
           : nullptr;
+
   LLVM_DEBUG({
-    llvm::dbgs() << "Running " << parentHWModule.getModuleNameAttr() << " "
-                 << value << " " << bitPos << "\n";
+    llvm::dbgs() << "[getResultsImpl] Running "
+                 << parentHWModule.getModuleNameAttr() << " " << value << " "
+                 << bitPos << "\n";
+    llvm::dbgs() << "[getResultsImpl] Initial results size: " << oldIndex
+                 << "\n";
+    llvm::dbgs() << "[getResultsImpl] Instance graph node: "
+                 << (node ? "found" : "not found") << "\n";
   });
 
-  for (auto &path : localVisitor->getResults(value, bitPos)) {
+  auto localResults = localVisitor->getResults(value, bitPos);
+  LLVM_DEBUG({
+    llvm::dbgs() << "[getResultsImpl] Found " << localResults.size()
+                 << " local paths\n";
+  });
+
+  for (auto &path : localResults) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "[getResultsImpl] Processing path with fanIn value: "
+                   << path.fanIn.value << ", delay: " << path.delay << "\n";
+    });
+
     auto arg = dyn_cast<BlockArgument>(path.fanIn.value);
     if (!arg || localVisitor->isTopLevel() ||
         localVisitor->getHWModuleOp().getModuleName().starts_with(
             "SiFive_SubsystemL3cacheSlice")) {
       // If the value is not a block argument, then we are done.
+      LLVM_DEBUG({
+        if (!arg) {
+          llvm::dbgs() << "[getResultsImpl] Path fanIn is not a block "
+                          "argument, adding to results\n";
+        } else if (localVisitor->isTopLevel()) {
+          llvm::dbgs() << "[getResultsImpl] Local visitor is top level, adding "
+                          "to results\n";
+        } else {
+          llvm::dbgs() << "[getResultsImpl] Module name starts with "
+                          "SiFive_SubsystemL3cacheSlice, adding to results\n";
+        }
+      });
       results.push_back({originalObject, path, parentHWModule});
       continue;
     }
 
+    LLVM_DEBUG({
+      llvm::dbgs() << "[getResultsImpl] Path fanIn is block argument "
+                   << arg.getArgNumber() << ", traversing instances\n";
+    });
+
     auto newObject = originalObject;
     assert(node && "If an instance graph is not available, localVisitor must "
                    "be a toplevel");
+
+    size_t numUses = std::distance(node->uses().begin(), node->uses().end());
+    LLVM_DEBUG({
+      llvm::dbgs() << "[getResultsImpl] Found " << numUses
+                   << " instance uses\n";
+    });
+
     for (auto *inst : node->uses()) {
       auto startIndex = results.size();
-      if (instancePathCache)
+      auto instanceOp = inst->getInstance();
+      LLVM_DEBUG({
+        llvm::dbgs() << "[getResultsImpl] Processing instance: "
+                     << instanceOp.getInstanceName()
+                     << ", results start index: " << startIndex << "\n";
+      });
+
+      if (instancePathCache) {
         newObject.instancePath = instancePathCache->appendInstance(
-            originalObject.instancePath, inst->getInstance());
+            originalObject.instancePath, instanceOp);
+        LLVM_DEBUG({
+          llvm::dbgs() << "[getResultsImpl] Updated instance path cache\n";
+        });
+      }
 
       auto result = getResultsImpl(
-          newObject, inst->getInstance()->getOperand(arg.getArgNumber()),
+          newObject, instanceOp->getOperand(arg.getArgNumber()),
           path.fanIn.bitPos, results, instancePathCache, debugPointFactory);
-      if (failed(result))
+      if (failed(result)) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "[getResultsImpl] Recursive call failed for instance "
+                       << instanceOp.getInstanceName() << "\n";
+        });
         return result;
-      for (auto i = startIndex, e = results.size(); i < e; ++i)
+      }
+
+      LLVM_DEBUG({
+        llvm::dbgs()
+            << "[getResultsImpl] Recursive call succeeded, updating delays for "
+            << (results.size() - startIndex) << " new results\n";
+      });
+
+      for (auto i = startIndex, e = results.size(); i < e; ++i) {
+        auto oldDelay = results[i].getDelay();
         results[i].setDelay(results[i].getDelay() + path.delay);
+        LLVM_DEBUG({
+          llvm::dbgs() << "[getResultsImpl] Updated result " << i
+                       << " delay from " << oldDelay << " to "
+                       << results[i].getDelay() << "\n";
+        });
+      }
     }
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "[getResultsImpl] Before deduplication: " << results.size()
+                 << " results\n";
+  });
+
   deduplicatePaths(results, oldIndex);
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "[getResultsImpl] After deduplication: " << results.size()
+                 << " results\n";
+    llvm::dbgs() << "[getResultsImpl] Analysis complete for "
+                 << parentHWModule.getModuleNameAttr() << ", added "
+                 << (results.size() - oldIndex) << " new results\n";
+  });
+
   return success();
 }
 
@@ -1403,7 +1505,8 @@ LongestPathAnalysis::Impl::initializeAndRun(mlir::ModuleOp module) {
 
     for (auto *child : *node) {
       auto childOp = child->getInstance();
-      if (!childOp || childOp->hasAttr("doNotPrint"))
+      if (!childOp || childOp->hasAttr("doNotPrint") ||
+          childOp->getNumResults() == 0)
         continue;
 
       worklist.push_back(child->getTarget());
@@ -1662,7 +1765,13 @@ struct ObjectPathInfo {
 };
 
 circt::aig::Difference::Difference(const LongestPathCollection &lhs,
-                                   const LongestPathCollection &rhs) {
+                                   const LongestPathCollection &rhs)
+    : lhsUniquePaths(std::make_unique<LongestPathCollection>(lhs.getContext())),
+      rhsUniquePaths(std::make_unique<LongestPathCollection>(rhs.getContext())),
+      lhsDifferentDelay(
+          std::make_unique<LongestPathCollection>(lhs.getContext())),
+      rhsDifferentDelay(
+          std::make_unique<LongestPathCollection>(rhs.getContext())) {
 
   // 1. Compare paths in both collections.
   using IndexMapTy =

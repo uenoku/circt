@@ -193,7 +193,7 @@ static void populateSynthesisPipeline(PassManager &pm) {
     // TODO: LowerWordToBits is not scalable for large designs. Change to
     // conditionally enable the pass once the rest of the pipeline was able
     // to handle multibit operands properly.
-    mpm.addPass(aig::createLowerWordToBits());
+    // mpm.addPass(aig::createLowerWordToBits());
     mpm.addPass(createCSEPass());
     mpm.addPass(createSimpleCanonicalizerPass());
     if (!abcCommands.empty()) {

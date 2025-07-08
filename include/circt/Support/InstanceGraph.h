@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/DOTGraphTraits.h"
+#include "llvm/Support/ErrorHandling.h"
 
 /// The InstanceGraph op interface, see InstanceGraphInterface.td for more
 /// details.
@@ -333,6 +334,7 @@ public:
 private:
   // Either path cache or DenseMapInfo is allowed to create paths.
   friend struct InstancePathCache;
+  friend class InternedInstancePathCache;
   friend struct llvm::DenseMapInfo<InstancePath>;
   InstancePath(ArrayRef<InstanceOpInterface> path) : path(path) {}
 
@@ -354,6 +356,8 @@ struct InstancePathCache {
   explicit InstancePathCache(InstanceGraph &instanceGraph)
       : instanceGraph(instanceGraph) {}
 
+  virtual ~InstancePathCache() = default;
+
   // Return all absolute paths from the top-level node to the given module.
   ArrayRef<InstancePath> getAbsolutePaths(ModuleOpInterface op);
 
@@ -362,16 +366,19 @@ struct InstancePathCache {
                                           InstanceGraphNode *node);
 
   /// Replace an InstanceOp. This is required to keep the cache updated.
-  void replaceInstance(InstanceOpInterface oldOp, InstanceOpInterface newOp);
+  virtual void replaceInstance(InstanceOpInterface oldOp,
+                               InstanceOpInterface newOp);
 
   /// Append an instance to a path.
-  InstancePath appendInstance(InstancePath path, InstanceOpInterface inst);
+  virtual InstancePath appendInstance(InstancePath path,
+                                      InstanceOpInterface inst);
 
   /// Prepend an instance to a path.
-  InstancePath prependInstance(InstanceOpInterface inst, InstancePath path);
+  virtual InstancePath prependInstance(InstanceOpInterface inst,
+                                       InstancePath path);
 
   /// Concatenate two paths.
-  InstancePath concatPath(InstancePath path1, InstancePath path2);
+  virtual InstancePath concatPath(InstancePath path1, InstancePath path2);
 
 private:
   using PathsCache = DenseMap<Operation *, ArrayRef<InstancePath>>;
@@ -386,6 +393,52 @@ private:
 
   /// Cached relative instance paths.
   DenseMap<InstanceGraphNode *, PathsCache> relativePathsCache;
+};
+
+class InternedInstancePathCache : InstancePathCache {
+public:
+  InternedInstancePathCache(InstanceGraph &instanceGraph)
+      : InstancePathCache(instanceGraph) {}
+
+  InstancePath appendInstance(InstancePath path,
+                              InstanceOpInterface inst) override {
+    auto key = std::make_pair(path, InstancePath(inst));
+    auto it = internedPaths.find(key);
+    if (it != internedPaths.end())
+      return it->second;
+    auto result = InstancePathCache::appendInstance(path, inst);
+    internedPaths.insert({key, result});
+    return result;
+  }
+
+  InstancePath prependInstance(InstanceOpInterface inst,
+                               InstancePath path) override {
+    auto key = std::make_pair(InstancePath(inst), path);
+    auto it = internedPaths.find(key);
+    if (it != internedPaths.end())
+      return it->second;
+    auto result = InstancePathCache::prependInstance(inst, path);
+    internedPaths.insert({key, result});
+    return result;
+  }
+
+  InstancePath concatPath(InstancePath path1, InstancePath path2) override {
+    auto key = std::make_pair(path1, path2);
+    auto it = internedPaths.find(key);
+    if (it != internedPaths.end())
+      return it->second;
+    auto result = InstancePathCache::concatPath(path1, path2);
+    internedPaths.insert({key, result});
+    return result;
+  }
+
+  void replaceInstance(InstanceOpInterface oldOp,
+                       InstanceOpInterface newOp) override {
+    llvm::report_fatal_error(
+        "you cannot replace instances in an interned path cache");
+  }
+
+  DenseMap<std::pair<InstancePath, InstancePath>, InstancePath> internedPaths;
 };
 
 } // namespace igraph
