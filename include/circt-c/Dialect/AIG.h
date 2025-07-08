@@ -30,7 +30,15 @@ MLIR_CAPI_EXPORTED void registerAIGPasses(void);
 //===----------------------------------------------------------------------===//
 
 // Opaque handle to LongestPathAnalysis
-DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
+struct AIGLongestPathObject {
+  union {
+    void *object;
+    struct {
+      size_t resultNumber;
+      size_t bitPos;
+    } outputPort;
+  } ptr;
+};
 
 // Opaque handle to LongestPathAnalysis
 DEFINE_C_API_STRUCT(AIGLongestPathDataflowPath, void);

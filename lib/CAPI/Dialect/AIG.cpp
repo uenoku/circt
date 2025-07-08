@@ -34,6 +34,9 @@ struct LongestPathAnalysisWrapper {
 
 DEFINE_C_API_PTR_METHODS(AIGLongestPathAnalysis, LongestPathAnalysisWrapper)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathCollection, LongestPathCollection)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathDataflowPath, DataflowPath)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathObject, DataflowPath::FanOutType)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathHistory, llvm::ImmutableList<DebugPoint>)
 
 //===----------------------------------------------------------------------===//
 // LongestPathAnalysis C API
@@ -158,4 +161,120 @@ bool aigLongestPathCollectionDiff(AIGLongestPathCollection lhs,
     *differentRhs = wrap(diff.rhsDifferentDelay.release());
 
   return true;
+}
+
+//===----------------------------------------------------------------------===//
+// DataflowPath C API
+//===----------------------------------------------------------------------===//
+
+int64_t
+aigLongestPathDataflowPathGetDelay(AIGLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  if (!path)
+    return -1;
+  return path->getDelay();
+}
+
+AIGLongestPathObject
+aigLongestPathDataflowPathGetFanIn(AIGLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  if (!path)
+    return {nullptr};
+
+  // Return a pointer to the fanIn object
+  return wrap(const_cast<Object *>(&path->getFanIn()));
+}
+
+AIGLongestPathObject
+aigLongestPathDataflowPathGetFanOut(AIGLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  if (!path)
+    return {nullptr};
+
+  // Check if fanOut is an Object (not an output port)
+  const auto &fanOut = path->getFanOut();
+  if (auto *object = std::get_if<Object>(&fanOut)) {
+    return wrap(const_cast<Object *>(object));
+  }
+
+  // If it's an output port, we can't return it as an Object
+  // Return null to indicate this is not an Object
+  return {nullptr};
+}
+
+AIGLongestPathHistory
+aigLongestPathDataflowPathGetHistory(AIGLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  if (!path)
+    return {nullptr};
+
+  // Return a pointer to the history list
+  return wrap(
+      const_cast<llvm::ImmutableList<DebugPoint> *>(&path->getHistory()));
+}
+
+//===----------------------------------------------------------------------===//
+// LongestPathHistory C API
+//===----------------------------------------------------------------------===//
+
+size_t aigLongestPathHistoryGetSize(AIGLongestPathHistory history) {
+  auto *historyList = unwrap(history);
+  if (!historyList)
+    return 0;
+
+  // Count the elements in the immutable list
+  size_t count = 0;
+  for (auto it = historyList->begin(); it != historyList->end(); ++it) {
+    count++;
+  }
+  return count;
+}
+
+void aigLongestPathHistoryGet(AIGLongestPathHistory history, size_t index,
+                              AIGLongestPathObject *object, int64_t *delay,
+                              MlirAttribute *comment) {
+  auto *historyList = unwrap(history);
+  if (!historyList) {
+    if (object)
+      *object = {nullptr};
+    if (delay)
+      *delay = -1;
+    if (comment)
+      *comment = {nullptr};
+    return;
+  }
+
+  // Find the element at the given index
+  size_t currentIndex = 0;
+  for (auto it = historyList->begin(); it != historyList->end();
+       ++it, ++currentIndex) {
+    if (currentIndex == index) {
+      const DebugPoint &debugPoint = *it;
+
+      if (object) {
+        *object = wrap(const_cast<Object *>(&debugPoint.object));
+      }
+
+      if (delay) {
+        *delay = debugPoint.delay;
+      }
+
+      if (comment) {
+        // Convert StringRef to MlirAttribute (StringAttr)
+        auto *ctx = debugPoint.object.value.getContext();
+        auto strAttr = StringAttr::get(ctx, debugPoint.comment);
+        *comment = wrap(static_cast<Attribute>(strAttr));
+      }
+
+      return;
+    }
+  }
+
+  // Index out of bounds
+  if (object)
+    *object = {nullptr};
+  if (delay)
+    *delay = -1;
+  if (comment)
+    *comment = {nullptr};
 }
