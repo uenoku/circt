@@ -35,7 +35,6 @@ struct LongestPathAnalysisWrapper {
 DEFINE_C_API_PTR_METHODS(AIGLongestPathAnalysis, LongestPathAnalysisWrapper)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathCollection, LongestPathCollection)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathDataflowPath, DataflowPath)
-DEFINE_C_API_PTR_METHODS(AIGLongestPathObject, DataflowPath::FanOutType)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathHistory, llvm::ImmutableList<DebugPoint>)
 
 //===----------------------------------------------------------------------===//
@@ -182,7 +181,23 @@ aigLongestPathDataflowPathGetFanIn(AIGLongestPathDataflowPath dataflowPath) {
     return {nullptr};
 
   // Return a pointer to the fanIn object
-  return wrap(const_cast<Object *>(&path->getFanIn()));
+  AIGLongestPathObject object;
+  object.ptr.object = const_cast<Object *>(&path->getFanIn());
+  return object;
+}
+
+AIGLongestPathObject wrap(Object *object) {
+  AIGLongestPathObject aigObject;
+  aigObject.ptr.object = object;
+  return aigObject;
+}
+
+AIGLongestPathObject wrap(uint32_t resultNumber, uint32_t bitPos) {
+  AIGLongestPathObject aigObject;
+  aigObject.ptr.outputPort |= 1;
+  aigObject.ptr.outputPort |= (static_cast<uint64_t>(resultNumber) << 32);
+  aigObject.ptr.outputPort |= (static_cast<uint64_t>(bitPos) << 1);
+  return aigObject;
 }
 
 AIGLongestPathObject

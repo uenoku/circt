@@ -4,7 +4,7 @@
 
 from . import aig
 from ._aig_ops_gen import *
-from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection
+from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection, _LongestPathDataflowPath
 
 import json
 from dataclasses import dataclass
@@ -50,10 +50,30 @@ class Object:
         bit_pos: Bit position for multi-bit signals (0 for single-bit)
     """
 
-    instance_path: List[InstancePathElement]
-    name: str
-    bit_pos: int
+    _object : _LongestPathObject
     # TODO: Associate with an MLIR value/op
+
+    @classmethod
+    def from_cpp(cls, obj: _LongestPathObject) -> "Object":
+        return cls(_object=obj)
+
+    @property
+    def instance_path(self) -> List[InstancePathElement]:
+        """Get the hierarchical path to the module containing this object."""
+        return [
+            InstancePathElement.from_dict(elem)
+            for elem in json.loads(self.object.instancePath)
+        ]
+
+    @property
+    def name(self) -> str:
+        """Get the signal/port name within the module."""
+        return self._object.name
+
+    @property
+    def bit_pos(self) -> int:
+        """Get the bit position for multi-bit signals (0 for single-bit)."""
+        return self._object.bitPos
 
     def __str__(self) -> str:
         """
@@ -144,23 +164,27 @@ class DataflowPath:
         root: The root module name for this analysis
     """
 
-    fan_out: Object  # Output endpoint of the path
-    path: OpenPath  # Detailed path information with history
-    root: str  # Root module name
+    _path : _LongestPathDataflowPath
 
     # ========================================================================
     # Factory Methods for Object Creation
     # ========================================================================
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DataflowPath":
-        """Create a DataflowPath from a dictionary representation."""
-        return cls(
-            fan_out=Object.from_dict(data["fan_out"]),
-            path=OpenPath.from_dict(data["path"]),
-            root=data["root"],
-        )
+    @property
+    def delay(self) -> int:
+        """Get the total delay of this path in timing units."""
+        return Object(self._path.get_delay())
 
+    @property
+    def fan_in(self) -> Object:
+        """Get the input signal/object where this path segment begins."""
+        return Object(self._path.get_fan_in())
+
+    @property
+    def fan_out(self) -> Object:
+        """Get the output signal/object where this path ends."""
+        return Object(self._path.get_fan_out())
+        
     @classmethod
     def from_json_string(cls, json_str: str) -> "DataflowPath":
         """Create a DataflowPath from a JSON string representation."""

@@ -32,11 +32,14 @@ MLIR_CAPI_EXPORTED void registerAIGPasses(void);
 // Opaque handle to LongestPathAnalysis
 struct AIGLongestPathObject {
   union {
+    // LSB is reserved for a tag.
+    // 0 indicates an object, 1 indicates an output port.
     void *object;
-    struct {
-      size_t resultNumber;
-      size_t bitPos;
-    } outputPort;
+
+    // outputPort[0] is tag.
+    // outputPort[1:31] is the output port number.
+    // outputPort[32:63] is the bit position.
+    uint64_t outputPort;
   } ptr;
 };
 

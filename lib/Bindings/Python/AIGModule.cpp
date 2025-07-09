@@ -80,10 +80,8 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            })
       .def("get_path",
            [](AIGLongestPathCollection &self,
-              int pathIndex) -> std::string_view {
-             MlirStringRef pathRef =
-                 aigLongestPathCollectionGetPath(self, pathIndex);
-             return std::string_view(pathRef.data, pathRef.length);
+              int pathIndex) -> AIGLongestPathDataflowPath {
+             return aigLongestPathCollectionGetPath(self, pathIndex);
            })
       .def(
           "_diff",
@@ -102,4 +100,20 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
                                    differentRhs);
           },
           nb::arg("other"));
+  nb::class_<AIGLongestPathDataflowPath>(m, "_LongestPathDataflowPath")
+      .def("get_delay",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetDelay(self);
+           })
+      .def("get_fan_in",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetFanIn(self);
+           })
+      .def("get_fan_out",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetFanOut(self);
+           })
+      .def("get_history", [](AIGLongestPathDataflowPath &self) {
+        return aigLongestPathDataflowPathGetHistory(self);
+      });
 }
