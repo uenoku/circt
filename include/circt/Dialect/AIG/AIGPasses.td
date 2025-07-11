@@ -120,16 +120,23 @@ def Mapper : Pass<"aig-mapper", "mlir::ModuleOp"> {
   let options = [
     Option<"maxCutSize", "max-cut-size", "int", "4",
            "Maximum cut size (K-LUT size) for technology mapping">,
-    Option<"areaMode", "area-mode", "bool", "false",
-           "Enable area-oriented mapping (default is delay-oriented)">,
     Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
            "Maximum number of cuts to maintain per node">,
     ListOption<"libraryModules", "library-modules", "std::string",
                "List of hw::HWModuleOp names to use as technology library primitives">,
-    Option<"verbose", "verbose", "bool", "false",
-           "Enable verbose output for debugging">,
-    Option<"enableTiming", "enable-timing", "bool", "false",
-           "Enable timing-driven mapping with arrival times">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
+}
+
+def GenericLutMap : Pass<"aig-generic-lut-mapper", "mlir::ModuleOp"> {
+  let summary = "Map AIG to genernic LUT operations(comb.truth_table)";
+  let description = [{
+  }];
+  let options = [
+    Option<"maxLutSize", "max-lut-size", "int", "6",
+           "Maximum cut size (K-LUT size) for technology mapping">,
+    Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
+           "Maximum number of cuts to maintain per node">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
 }

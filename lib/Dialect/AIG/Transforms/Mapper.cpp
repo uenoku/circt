@@ -10,6 +10,13 @@
 // algorithms. It implements priority cuts and supports both area-oriented
 // and delay-oriented mapping modes.
 //
+// The implementaion is based on following papers:
+//
+// * Combinational and Sequential Mapping with Priority Cuts, ICCAD 2007,
+//   Alan M. et al.
+// * Reducing Structural Bias in Technology Mapping, ICCAD 2006, Satrajit C. et
+// al.
+//
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/AIG/AIGOps.h"
@@ -55,9 +62,9 @@ using namespace aig;
 namespace {
 
 struct TruthTable {
-  APInt table;         // Truth table represented as an APInt
   unsigned numInputs;  // Number of inputs for this cut
   unsigned numOutputs; // Number of outputs for this cut
+  APInt table;         // Truth table represented as an APInt
   TruthTable(unsigned numInputs, unsigned numOutputs)
       : numInputs(numInputs), numOutputs(numOutputs),
         table((1 << numInputs) * numOutputs, 0) {}
@@ -84,7 +91,7 @@ struct Cut {
   Cut() = default;
 
   Operation *getRoot() const {
-    return operations.front(); // The last operation is the root
+    return operations.front(); // The first operation is the root
   }
 
   Cut(Operation *root) {
@@ -166,7 +173,11 @@ struct Cut {
   }
 
   /// Get the size of this cut
+<<<<<<< HEAD
   size_t getInputSize() const { return inputs.size(); }
+=======
+  unsigned getInputSize() const { return inputs.size(); }
+>>>>>>> 57faba9e3 (save)
   unsigned getCutSize() const { return operations.size(); }
   size_t getOutputSize() const { return getRoot()->getNumResults(); }
 
@@ -272,17 +283,26 @@ public:
 };
 
 // Base class for tech libraries.
-struct MappedLibrary {
-  virtual ~MappedLibrary() = default;
+struct CutRewriterPattern {
+  virtual ~CutRewriterPattern() = default;
 
   // Run heavy initialization logic here if needed.
-  virtual void initialize() {};
+  virtual LogicalResult initialize() { return success(); }
 
-  // Return true if the cut matches this library primitive.
+  // Return true if the cut matches this library primitive. If
+  // `useTruthTableMatcher` is implemented to return true, this method is called
+  // only when the truth table matches the cut set.
   virtual bool match(const Cut &cutSet) const = 0;
 
-  // Rewrite the cut.
-  virtual LogicalResult rewrite(mlir::PatternRewriter &rewriter,
+  // Populate truthtable set and return true if the pattern is applicable if
+  // the truth table matches the cut set.
+  virtual bool useTruthTableMatcher(SmallVectorImpl<APInt> &truthTable) const {
+    return false;
+  }
+
+  // Rewrite the cut. This is similar to MLIR's PatternRewriter. If success is
+  // returned, the cut root operation must be replaced with other operation.
+  virtual LogicalResult rewrite(PatternRewriter &rewriter,
                                 Cut &cutSet) const = 0;
 
   // Benefit of the cut in the library
@@ -301,7 +321,7 @@ struct MappedLibrary {
 };
 
 /// Technology library primitive
-struct LibraryPrimitive : public MappedLibrary {
+struct LibraryPrimitive : public CutRewriterPattern {
   hw::HWModuleOp module;
 
   LibraryPrimitive(hw::HWModuleOp mod) : module(mod) {}
@@ -345,7 +365,7 @@ struct LibraryPrimitive : public MappedLibrary {
   }
 };
 
-struct GenericLUT : public MappedLibrary {
+struct GenericLUT : public CutRewriterPattern {
   /// Generic LUT primitive with k inputs
   size_t k; // Number of inputs for the LUT
   GenericLUT(size_t k) : k(k) {}
@@ -373,7 +393,6 @@ struct GenericLUT : public MappedLibrary {
   LogicalResult rewrite(mlir::PatternRewriter &rewriter,
                         Cut &cut) const override {
     // TODO: Implement the actual rewrite logic
-    llvm::report_fatal_error("GenericLUT::rewrite not implemented yet");
     auto truthTable = cut.getTruthTable();
     // Generate comb.truth table operation.
     // auto truthTableOp = rewriter.create<comb::TruthTableOp>(
@@ -381,46 +400,48 @@ struct GenericLUT : public MappedLibrary {
     //     truthTable.numOutputs);
 
     // // Replace the root operation with the truth table operation
+<<<<<<< HEAD
     // rewriter.replaceOp(cut.getRoot(), truthTableOp.getResults());
+=======
+    // rewriter.replaceOp(cut.getRoot(), truthTableOp);
+    return success();
+>>>>>>> 57faba9e3 (save)
   }
 };
+
+// TODO: Add power estimation
+enum MappingStrategy { Area, Timing };
 
 /// Main mapper class
 class AIGMapper {
 private:
   ModuleOp topModule;
-  bool areaMode;
+  MappingStrategy strategy; // Mapping strategy (area or timing)
   unsigned maxCutSize;
   unsigned maxCutInputSize = 6; // Default max cut input size
   unsigned maxCutsPerNode;
-  bool verbose;
-  bool enableTiming;
 
   // Technology library
-  llvm::SmallVector<std::unique_ptr<MappedLibrary>> library;
+  llvm::SmallVector<std::unique_ptr<CutRewriterPattern>> library;
   llvm::DenseMap<Value, CutSet> cutSets;
   llvm::DenseMap<Value, double> arrivalTimes;
   std::function<bool(const Cut &, const Cut &)> compare;
 
 public:
-  AIGMapper(ModuleOp module, bool areaMode, unsigned maxCutSize,
-            unsigned maxCutsPerNode, bool verbose, bool enableTiming,
-            ArrayRef<std::string> libraryModules)
-      : topModule(module), areaMode(areaMode), maxCutSize(maxCutSize),
-        maxCutsPerNode(maxCutsPerNode), verbose(verbose),
-        enableTiming(enableTiming) {
+  AIGMapper(ModuleOp module, MappingStrategy strategy, unsigned maxCutSize,
+            unsigned maxCutsPerNode, ArrayRef<std::string> libraryModules)
+      : topModule(module), strategy(strategy), maxCutSize(maxCutSize),
+        maxCutsPerNode(maxCutsPerNode) {
     // Set the comparison function based on area or delay mode
-    if (areaMode) {
+    if (MappingStrategy::Area == strategy) {
       compare = [](const Cut &a, const Cut &b) {
         return a.area < b.area || (a.area == b.area && a.delay < b.delay);
       };
-    } else {
+    } else if (MappingStrategy::Timing == strategy) {
       compare = [](const Cut &a, const Cut &b) {
         return a.delay < b.delay || (a.delay == b.delay && a.area < b.area);
       };
-    }
-
-    // Initialize library
+    } // Initialize library
     initializeLibrary(libraryModules);
   }
 
@@ -433,12 +454,11 @@ public:
     for (const std::string &moduleName : libraryModules) {
       topModule.walk([&](hw::HWModuleOp hwModule) {
         if (hwModule.getModuleName() == moduleName) {
-          std::unique_ptr<MappedLibrary> it =
-              std::unique_ptr<MappedLibrary>(new LibraryPrimitive(hwModule));
+          std::unique_ptr<CutRewriterPattern> it =
+              std::unique_ptr<CutRewriterPattern>(
+                  new LibraryPrimitive(hwModule));
           library.emplace_back(std::move(it));
-          if (verbose) {
-            llvm::outs() << "Added library module: " << moduleName;
-          }
+          LLVM_DEBUG(llvm::dbgs() << "Added library module: " << moduleName);
         }
       });
     }
@@ -446,12 +466,13 @@ public:
 
   /// Run the mapping algorithm
   LogicalResult runMapper() {
-    if (verbose) {
-      llvm::outs() << "Starting AIG technology mapping\n";
-      llvm::outs() << "Mode: " << (areaMode ? "area" : "delay") << "\n";
-      llvm::outs() << "Max cut size: " << maxCutSize << "\n";
-      llvm::outs() << "Max cuts per node: " << maxCutsPerNode << "\n";
-    }
+    LLVM_DEBUG(llvm::dbgs() << "Starting AIG technology mapping\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "Mode: "
+               << (MappingStrategy::Area == strategy ? "area" : "delay")
+               << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Max cut size: " << maxCutSize << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Max cuts per node: " << maxCutsPerNode << "\n");
 
     // Process each HW module
     for (hw::HWModuleOp hwModule : topModule.getOps<hw::HWModuleOp>()) {
@@ -465,9 +486,8 @@ public:
 private:
   /// Map a single HW module
   LogicalResult mapModule(hw::HWModuleOp hwModule) {
-    if (verbose) {
-      llvm::outs() << "Mapping module: " << hwModule.getModuleName() << "\n";
-    }
+    LLVM_DEBUG(llvm::dbgs()
+               << "Mapping module: " << hwModule.getModuleName() << "\n");
 
     // Clear previous state
     cutSets.clear();
@@ -485,10 +505,8 @@ private:
   }
 
   LogicalResult enumerateCuts(Operation *op) {
-    if (verbose) {
-      llvm::outs() << "Enumerating cuts for operation: " << op->getName()
-                   << "\n";
-    }
+    LLVM_DEBUG(llvm::dbgs()
+               << "Enumerating cuts for operation: " << op->getName() << "\n");
 
     // Check if the operation is a HW module
     if (auto hwModule = dyn_cast<hw::HWModuleOp>(op)) {
@@ -501,9 +519,7 @@ private:
 
   /// Enumerate cuts for all nodes in the module
   LogicalResult enumerateCuts(hw::HWModuleOp hwModule) {
-    if (verbose) {
-      llvm::outs() << "Enumerating cuts...\n";
-    }
+    LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
 
     // Topological traversal
     llvm::SmallVector<Operation *> worklist;
@@ -604,9 +620,7 @@ private:
 
   /// Perform the actual technology mapping
   LogicalResult performMapping(hw::HWModuleOp hwModule) {
-    if (verbose) {
-      llvm::outs() << "Performing technology mapping...\n";
-    }
+    LLVM_DEBUG(llvm::dbgs() << "Performing technology mapping...\n");
 
     // For now, just report the cuts found
     unsigned totalCuts = 0;
@@ -617,23 +631,21 @@ private:
         const CutSet &cutSet = it->second;
         totalCuts += cutSet.getCuts().size();
 
-        if (verbose) {
+        LLVM_DEBUG({
           const Cut *bestCut = cutSet.getBestCut(compare);
           if (bestCut) {
-            llvm::outs() << "  Node " << result << ": "
+            llvm::dbgs() << "  Node " << result << ": "
                          << cutSet.getCuts().size() << " cuts, best: "
                          << "outputSize=" << bestCut->getOutputSize()
                          << "inputSize=" << bestCut->getInputSize()
                          << " area=" << bestCut->area
                          << " delay=" << bestCut->delay << "\n";
           }
-        }
+        });
       }
     });
 
-    if (verbose) {
-      llvm::outs() << "Total cuts enumerated: " << totalCuts << "\n";
-    }
+    LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
 
     // TODO: Implement actual technology mapping transformation
     // This would involve:
@@ -656,8 +668,8 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    AIGMapper mapper(module, areaMode, maxCutSize, maxCutsPerNode, verbose,
-                     enableTiming, libraryModules);
+    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode,
+                     libraryModules);
 
     if (failed(mapper.runMapper())) {
       signalPassFailure();
@@ -665,4 +677,14 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
     }
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Generic LUT Pass
+//===----------------------------------------------------------------------===//
+struct GenericLUTPass : public impl::GenericLUTBase<GenericLUTPass> {
+  using GenericLUTBase<GenericLUTPass>::GenericLUTBase;
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+  }
+} // namespace
 } // namespace
