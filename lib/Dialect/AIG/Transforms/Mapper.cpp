@@ -10,12 +10,11 @@
 // algorithms. It implements priority cuts and supports both area-oriented
 // and delay-oriented mapping modes.
 //
-// The implementaion is based on following papers:
-//
+// References:
 // * Combinational and Sequential Mapping with Priority Cuts, ICCAD 2007,
-//   Alan M. et al.
-// * Reducing Structural Bias in Technology Mapping, ICCAD 2006, Satrajit C. et
-// al.
+// * Reducing Structural Bias in Technology Mapping, ICCAD 2006
+// * Fast Boolean Matching Based on NPN Classification, FPT 2013
+//   Used for NPN class computation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -457,22 +456,6 @@ public:
     // Add more operation types as needed
     return failure();
   }
-
-  LogicalResult simulate(const APInt &input) {
-    DenseMap<Value, APInt> values;
-    size_t bitPos = 0;
-    for (auto value : inputs) {
-      assert(value.getType().isInteger(1));
-      values[value] = input.extractBits(1, bitPos++);
-    }
-    for (auto *op : operations) {
-      if (failed(simulateOp(op, values))) {
-        return failure();
-      }
-    }
-
-    return llvm::success();
-  }
 };
 
 /// Cut set for a node using priority cuts algorithm
@@ -557,11 +540,11 @@ struct CutRewriterPattern {
   virtual unsigned getNumOutputs() const = 0;
 };
 
-/// Technology library primitive
-struct LibraryPrimitive : public CutRewriterPattern {
+/// Simple technology library encoded as a HWModuleOp.
+struct TechLibraryPattern : public CutRewriterPattern {
   hw::HWModuleOp module;
 
-  LibraryPrimitive(hw::HWModuleOp mod) : module(mod) {}
+  TechLibraryPattern(hw::HWModuleOp mod) : module(mod) {}
 
   /// Match the cut set against this library primitive
   bool match(const Cut &cutSet) const override { return false; }
@@ -700,9 +683,10 @@ private:
 
 public:
   AIGMapper(ModuleOp module, MappingStrategy strategy, unsigned maxCutSize,
-            unsigned maxCutsPerNode, ArrayRef<std::string> libraryModules)
+            unsigned maxCutsPerNode,
+            SmallVector<std::unique_ptr<CutRewriterPattern>> patterns)
       : topModule(module), strategy(strategy), maxCutSize(maxCutSize),
-        maxCutsPerNode(maxCutsPerNode) {
+        maxCutsPerNode(maxCutsPerNode), library(std::move(patterns)) {
     // Set the comparison function based on area or delay mode
     if (MappingStrategy::Area == strategy) {
       compare = [](const Cut &a, const Cut &b) {
@@ -713,27 +697,9 @@ public:
         return a.delay < b.delay || (a.delay == b.delay && a.area < b.area);
       };
     } // Initialize library
-    initializeLibrary(libraryModules);
   }
 
   /// Initialize the technology library
-  void initializeLibrary(ArrayRef<std::string> libraryModules) {
-    if (libraryModules.empty())
-      return;
-
-    // Find library modules in the top module
-    for (const std::string &moduleName : libraryModules) {
-      topModule.walk([&](hw::HWModuleOp hwModule) {
-        if (hwModule.getModuleName() == moduleName) {
-          std::unique_ptr<CutRewriterPattern> it =
-              std::unique_ptr<CutRewriterPattern>(
-                  new LibraryPrimitive(hwModule));
-          library.emplace_back(std::move(it));
-          LLVM_DEBUG(llvm::dbgs() << "Added library module: " << moduleName);
-        }
-      });
-    }
-  }
 
   /// Run the mapping algorithm
   LogicalResult runMapper() {
@@ -942,8 +908,23 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode,
-                     libraryModules);
+    if (libraryModules.empty())
+      return;
+
+    auto symbolTable = getAnalysis<SymbolTable>();
+
+    // Find library modules in the top module
+    for (const std::string &moduleName : libraryModules) {
+      if (hwModule.getModuleName() == moduleName) {
+        std::unique_ptr<CutRewriterPattern> it =
+            std::unique_ptr<CutRewriterPattern>(
+                new TechLibraryPattern(hwModule));
+        library.emplace_back(std::move(it));
+        LLVM_DEBUG(llvm::dbgs() << "Added library module: " << moduleName);
+      }
+    }
+
+    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode);
 
     if (failed(mapper.runMapper())) {
       signalPassFailure();
