@@ -14,7 +14,6 @@
 // * Combinational and Sequential Mapping with Priority Cuts, ICCAD 2007,
 // * Reducing Structural Bias in Technology Mapping, ICCAD 2006
 // * Fast Boolean Matching Based on NPN Classification, FPT 2013
-//   Used for NPN class computation.
 //
 //===----------------------------------------------------------------------===//
 
