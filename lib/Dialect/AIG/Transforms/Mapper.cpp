@@ -539,10 +539,7 @@ struct CutRewriterPattern {
   // Get delay for a specific input-output pair.
   virtual double getDelay(size_t inputIndex, size_t outputIndex) const = 0;
 
-  // TODO: Right now it's very simple. Power could be also very complicated
-  // (usually it's based on internal states). So consider extending this to
-  // support more complex power calculations.
-  virtual double getPower() const = 0;
+  // TODO: Include power.
 
   virtual unsigned getNumInputs() const = 0;
   virtual unsigned getNumOutputs() const = 0;
@@ -582,8 +579,6 @@ struct TechLibraryPattern : public CutRewriterPattern {
     return getAttr("delay");
   }
 
-  double getPower() const override { return getAttr("power"); }
-
   unsigned getNumInputs() const override {
     return static_cast<hw::HWModuleOp>(module).getNumInputPorts();
   }
@@ -591,6 +586,31 @@ struct TechLibraryPattern : public CutRewriterPattern {
   unsigned getNumOutputs() const override {
     return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
   }
+};
+
+struct TestTechLibraryPattern : public CutRewriterPattern {
+  /// Test pattern for a simple AND gate
+  bool match(const Cut &cutSet) const override {
+    // Match if the cut has exactly 2 inputs and 1 output
+    return cutSet.getInputSize() == 2 && cutSet.getOutputSize() == 1;
+  }
+
+  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
+                        Cut &cut) const override {
+    // Create an AND operation with the inputs of the cut
+    auto *root = cut.getRoot();
+    rewriter.replaceOpWithNewOp<aig::AndInverterOp>(root, cut.inputs[0],
+                                                    cut.inputs[1]);
+    return success();
+  }
+
+  double getArea() const override { return 1.0; }
+  double getDelay(size_t inputIndex, size_t outputIndex) const override {
+    return 1.0; // Fixed delay for AND gate
+  }
+
+  unsigned getNumInputs() const override { return 2; }
+  unsigned getNumOutputs() const override { return 1; }
 };
 
 struct GenericLUT : public CutRewriterPattern {
