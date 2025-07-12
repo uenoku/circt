@@ -440,32 +440,25 @@ public:
                            DenseMap<Value, APInt> &values) const {
     if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
       auto inputs = andOp.getInputs();
-      if (inputs.size() != 2) {
-        return failure(); // Only support binary operations for now
+      SmallVector<APInt, 2> operands;
+      for (auto input : inputs) {
+        auto it = values.find(input);
+        if (it == values.end()) {
+          llvm::errs() << "Input value not found: " << input << "\n";
+          return failure();
+        }
+        operands.push_back(it->second);
       }
 
-      auto lhs = values[inputs[0]];
-      auto rhs = values[inputs[1]];
-      APInt result = lhs & rhs;
-
-      // Apply inversions
-      if (andOp.isInverted(0)) {
-        lhs = ~lhs;
-        result = lhs & rhs;
-      }
-      if (andOp.isInverted(1)) {
-        rhs = ~rhs;
-        result = lhs & rhs;
-      }
-
-      values[andOp.getResult()] = result;
+      // Simulate the AND operation
+      values[andOp.getResult()] = andOp.evaluate(operands);
       return success();
     }
     // Add more operation types as needed
     return failure();
   }
 
-  APInt simulate(const APInt &input) {
+  LogicalResult simulate(const APInt &input) {
     DenseMap<Value, APInt> values;
     size_t bitPos = 0;
     for (auto value : inputs) {
@@ -474,16 +467,11 @@ public:
     }
     for (auto *op : operations) {
       if (failed(simulateOp(op, values))) {
-        return APInt(1, 0);
+        return failure();
       }
     }
 
-    // The root operation should have the output value
-    auto rootResults = getRoot()->getResults();
-    if (!rootResults.empty()) {
-      return values[rootResults[0]];
-    }
-    return APInt(1, 0);
+    return llvm::success();
   }
 };
 
