@@ -596,6 +596,9 @@ struct GenericLUT : public CutRewriterPattern {
     return cutSet.isOutputSingleBit();
   }
 
+  unsigned getNumInputs() const override { return k; }
+  unsigned getNumOutputs() const override { return 1; } // Single output LUT
+
   double getArea() const override {
     // Assume a fixed area for the generic LUT
     return 1.0; // Placeholder value
@@ -911,24 +914,41 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
       return;
 
     auto symbolTable = getAnalysis<SymbolTable>();
+    SmallVector<std::unique_ptr<CutRewriterPattern>> libraryPatterns;
 
     // Find library modules in the top module
     for (const std::string &moduleName : libraryModules) {
-      if (hwModule.getModuleName() == moduleName) {
-        std::unique_ptr<CutRewriterPattern> it =
-            std::unique_ptr<CutRewriterPattern>(
-                new TechLibraryPattern(hwModule));
-        library.emplace_back(std::move(it));
-        LLVM_DEBUG(llvm::dbgs() << "Added library module: " << moduleName);
+      // Find the module in the symbol table
+      auto hwModule = symbolTable.lookup<hw::HWModuleOp>(moduleName);
+      if (!hwModule) {
+        llvm::errs() << "Library module not found: " << moduleName;
+        signalPassFailure();
+        return;
       }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Found library module: " << moduleName << "\n");
+      // Create a CutRewriterPattern for the library module
+      std::unique_ptr<CutRewriterPattern> pattern =
+          std::make_unique<TechLibraryPattern>(hwModule);
+
+      // Initialize the pattern.
+      // TODO: Consider initialize asynchronously.
+      if (failed(pattern->initialize())) {
+        llvm::errs() << "Failed to initialize library pattern: " << moduleName
+                     << "\n";
+        signalPassFailure();
+        return;
+      }
+
+      // Add the pattern to the library
+      libraryPatterns.push_back(std::move(pattern));
     }
 
-    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode);
+    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode,
+                     std::move(libraryPatterns));
 
-    if (failed(mapper.runMapper())) {
+    if (failed(mapper.runMapper()))
       signalPassFailure();
-      return;
-    }
   }
 };
 
@@ -938,6 +958,16 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
 struct GenericLUTMapperPass
     : public impl::GenericLutMapperBase<GenericLUTMapperPass> {
   using GenericLutMapperBase<GenericLUTMapperPass>::GenericLutMapperBase;
-  void runOnOperation() override { ModuleOp module = getOperation(); }
+  void runOnOperation() override {
+
+    // Add LUT pattern.
+    ModuleOp module = getOperation();
+    SmallVector<std::unique_ptr<CutRewriterPattern>> patterns;
+    patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
+    AIGMapper mapper(module, MappingStrategy::Area, maxLutSize, maxCutsPerNode,
+                     std::move(patterns));
+    if (failed(mapper.runMapper()))
+      signalPassFailure();
+  }
 }; // namespace
 } // namespace
