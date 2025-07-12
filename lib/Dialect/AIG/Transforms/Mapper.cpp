@@ -74,6 +74,110 @@ struct TruthTable {
     assert(input.getBitWidth() == numInputs && "Input width mismatch");
     return table.extractBits(numOutputs, input.getZExtValue() * numOutputs);
   }
+
+  /// Set the output value for a given input combination
+  void setOutput(const APInt &input, const APInt &output) {
+    assert(input.getBitWidth() == numInputs && "Input width mismatch");
+    assert(output.getBitWidth() == numOutputs && "Output width mismatch");
+    unsigned offset = input.getZExtValue() * numOutputs;
+    for (unsigned i = 0; i < numOutputs; ++i) {
+      table.setBitVal(offset + i, output[i]);
+    }
+  }
+
+  /// Apply input permutation to the truth table
+  TruthTable applyPermutation(const SmallVector<unsigned> &permutation) const {
+    assert(permutation.size() == numInputs && "Permutation size mismatch");
+    TruthTable result(numInputs, numOutputs);
+    
+    for (unsigned i = 0; i < (1u << numInputs); ++i) {
+      APInt input(numInputs, i);
+      APInt permutedInput(numInputs, 0);
+      
+      // Apply permutation
+      for (unsigned j = 0; j < numInputs; ++j) {
+        permutedInput.setBitVal(j, input[permutation[j]]);
+      }
+      
+      result.setOutput(permutedInput, getOutput(input));
+    }
+    
+    return result;
+  }
+
+  /// Apply input negation to the truth table
+  TruthTable applyInputNegation(const SmallVector<bool> &negation) const {
+    assert(negation.size() == numInputs && "Negation size mismatch");
+    TruthTable result(numInputs, numOutputs);
+    
+    for (unsigned i = 0; i < (1u << numInputs); ++i) {
+      APInt input(numInputs, i);
+      APInt negatedInput(numInputs, 0);
+      
+      // Apply negation
+      for (unsigned j = 0; j < numInputs; ++j) {
+        negatedInput.setBitVal(j, negation[j] ? !input[j] : input[j]);
+      }
+      
+      result.setOutput(negatedInput, getOutput(input));
+    }
+    
+    return result;
+  }
+
+  /// Apply output negation to the truth table
+  TruthTable applyOutputNegation(const SmallVector<bool> &negation) const {
+    assert(negation.size() == numOutputs && "Negation size mismatch");
+    TruthTable result(numInputs, numOutputs);
+    
+    for (unsigned i = 0; i < (1u << numInputs); ++i) {
+      APInt input(numInputs, i);
+      APInt output = getOutput(input);
+      APInt negatedOutput(numOutputs, 0);
+      
+      // Apply negation
+      for (unsigned j = 0; j < numOutputs; ++j) {
+        negatedOutput.setBitVal(j, negation[j] ? !output[j] : output[j]);
+      }
+      
+      result.setOutput(input, negatedOutput);
+    }
+    
+    return result;
+  }
+
+  /// Get canonical hash for comparison
+  uint64_t getHash() const {
+    // Simple hash based on the table content
+    uint64_t hash = 0;
+    for (unsigned i = 0; i < table.getBitWidth(); ++i) {
+      if (table[i]) {
+        hash ^= i + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+      }
+    }
+    return hash;
+  }
+
+  /// Check if this truth table is lexicographically smaller than another
+  bool isLexicographicallySmaller(const TruthTable &other) const {
+    assert(numInputs == other.numInputs && numOutputs == other.numOutputs);
+    return table.ult(other.table);
+  }
+
+  bool operator==(const TruthTable &other) const {
+    return numInputs == other.numInputs && numOutputs == other.numOutputs &&
+           table == other.table;
+  }
+};
+
+/// NPN canonical form representation
+struct NPNCanonicalForm {
+  TruthTable canonicalTT;
+  SmallVector<unsigned> inputPermutation;
+  SmallVector<bool> inputNegation;
+  SmallVector<bool> outputNegation;
+  
+  NPNCanonicalForm(const TruthTable &tt) : canonicalTT(tt) {}
 };
 
 } // end anonymous namespace
@@ -81,7 +185,7 @@ struct TruthTable {
 /// Represents a cut in the AIG network
 struct Cut {
   llvm::SmallSetVector<Value, 4> inputs; // Cut inputs (leaves)
-  // Operations in the cut. Operation is topologcically sorted, with the root
+  // Operations in the cut. Operation is topologcally sorted, with the root
   // operation at the front.
   llvm::SmallSetVector<Operation *, 4> operations;
 
@@ -92,7 +196,99 @@ struct Cut {
 
   Operation *getRoot() const {
     return operations.front(); // The first operation is the root
+  }  FailureOr<TruthTable> computeNPN() {
+    // Compute the NPN (Negation Permutation Negation) canonical form for this cut
+    auto truthTable = getTruthTable();
+    if (failed(truthTable))
+      return failure();
+
+    // For single-output functions, compute NPN canonical form
+    if (truthTable->numOutputs == 1) {
+      auto canonicalForm = computeNPNCanonicalForm(*truthTable);
+      return canonicalForm.canonicalTT;
+    }
+
+    // For multi-output functions, return the original truth table
+    return *truthTable;
   }
+
+private:
+  /// Compute NPN canonical form using the algorithm from the paper
+  NPNCanonicalForm computeNPNCanonicalForm(const TruthTable &tt) {
+    NPNCanonicalForm canonical(tt);
+    
+    // Initialize permutation and negation vectors
+    canonical.inputPermutation.resize(tt.numInputs);
+    canonical.inputNegation.resize(tt.numInputs, false);
+    canonical.outputNegation.resize(tt.numOutputs, false);
+    
+    // Initialize identity permutation
+    for (unsigned i = 0; i < tt.numInputs; ++i) {
+      canonical.inputPermutation[i] = i;
+    }
+    
+    TruthTable bestTT = tt;
+    
+    // Try all possible input negations (2^n combinations)
+    for (unsigned negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
+      SmallVector<bool> inputNeg(tt.numInputs);
+      for (unsigned i = 0; i < tt.numInputs; ++i) {
+        inputNeg[i] = (negMask >> i) & 1;
+      }
+      
+      TruthTable negatedTT = tt.applyInputNegation(inputNeg);
+      
+      // Try all possible permutations
+      SmallVector<unsigned> permutation(tt.numInputs);
+      for (unsigned i = 0; i < tt.numInputs; ++i) {
+        permutation[i] = i;
+      }
+      
+      do {
+        TruthTable permutedTT = negatedTT.applyPermutation(permutation);
+        
+        // Try output negation (for single output)
+        if (tt.numOutputs == 1) {
+          SmallVector<bool> outputNeg(1, false);
+          TruthTable candidate = permutedTT;
+          
+          // Try without output negation
+          if (candidate.isLexicographicallySmaller(bestTT)) {
+            bestTT = candidate;
+            canonical.canonicalTT = candidate;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = inputNeg;
+            canonical.outputNegation = outputNeg;
+          }
+          
+          // Try with output negation
+          outputNeg[0] = true;
+          candidate = permutedTT.applyOutputNegation(outputNeg);
+          if (candidate.isLexicographicallySmaller(bestTT)) {
+            bestTT = candidate;
+            canonical.canonicalTT = candidate;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = inputNeg;
+            canonical.outputNegation = outputNeg;
+          }
+        } else {
+          // For multi-output, just check without output negation
+          if (permutedTT.isLexicographicallySmaller(bestTT)) {
+            bestTT = permutedTT;
+            canonical.canonicalTT = permutedTT;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = inputNeg;
+          }
+        }
+      } while (std::next_permutation(permutation.begin(), permutation.end()));
+    }
+    
+    return canonical;
+  }
+
+public:
+
+
 
   Cut(Operation *root) {
     // Create a cut with the root operation
@@ -173,11 +369,7 @@ struct Cut {
   }
 
   /// Get the size of this cut
-<<<<<<< HEAD
-  size_t getInputSize() const { return inputs.size(); }
-=======
   unsigned getInputSize() const { return inputs.size(); }
->>>>>>> 57faba9e3 (save)
   unsigned getCutSize() const { return operations.size(); }
   size_t getOutputSize() const { return getRoot()->getNumResults(); }
 
@@ -197,34 +389,94 @@ struct Cut {
     return area < other.area && delay < other.delay;
   }
 
-  TruthTable getTruthTable() {
+  FailureOr<TruthTable> getTruthTable() {
     int64_t numInputs = getInputSize();
     int64_t numOutputs = getOutputSize();
     TruthTable tt(numInputs, numOutputs);
     assert(numInputs < 16 && "Too many inputs for truth table");
     // Simulate the IR.
     // For each input combination, compute the output values.
-    for (uint64_t i = 0; i < 1 << numInputs; ++i) {
-      // Compute the input vector
-      APInt input(numInputs, i);
-      // Simulate the cut
-      APInt output = simulate(input);
-      // Store the output in the truth table
-      tt.table.insertBits(output, i * numOutputs);
+
+    // 2. Lower the cut to a LUT. We can get a truth table by evaluating the cut
+    // body with every possible combination of the input values.
+    uint32_t tableSize = 1 << numInputs;
+    DenseMap<Value, APInt> eval;
+    for (uint32_t i = 0; i < numInputs; ++i) {
+      APInt value(tableSize, 0);
+      for (uint32_t j = 0; j < tableSize; ++j) {
+        // Make sure the order of the bits is correct.
+        value.setBitVal(j, (j >> i) & 1);
+      }
+      // Set the input value for the truth table
+      eval[inputs[i]] = value;
     }
+
+    // Simulate the operations in the cut
+    for (auto *op : operations) {
+      auto result = simulateOp(op, eval);
+      if (failed(result)) {
+        llvm::errs() << "Failed to simulate operation: " << op->getName()
+                     << "\n";
+        return failure();
+      }
+      // Set the output value for the truth table
+      for (size_t j = 0; j < op->getNumResults(); ++j) {
+        auto outputValue = op->getResult(j);
+        if (!outputValue.getType().isInteger(1)) {
+          llvm::errs() << "Output value is not a single bit: " << outputValue
+                       << "\n";
+          return failure();
+        }
+      }
+    }
+
+    // Extract the truth table from the root operation
+    auto rootResults = getRoot()->getResults();
+    for (size_t i = 0; i < rootResults.size(); ++i) {
+      auto result = rootResults[i];
+      if (eval.find(result) != eval.end()) {
+        APInt resultValue = eval[result];
+        // Set the truth table entries
+        for (uint32_t j = 0; j < tableSize; ++j) {
+          APInt input(numInputs, j);
+          APInt output(numOutputs, resultValue[j] ? 1 : 0);
+          tt.setOutput(input, output);
+        }
+      }
+    }
+
     return tt;
   }
 
-  FailureOr<APInt> simulateOp(Operation *op, DenseMap<Value, APInt> &values) {
-    if (auto andOp = dyn_cast<AndOp>(op)) {
-      auto lhs = values[andOp.getLhs()];
-      auto rhs = values[andOp.getRhs()];
-      values[andOp] = lhs & rhs;
-      return values[andOp];
+  LogicalResult simulateOp(Operation *op, DenseMap<Value, APInt> &values) {
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+      auto inputs = andOp.getInputs();
+      if (inputs.size() != 2) {
+        return failure(); // Only support binary operations for now
+      }
+      
+      auto lhs = values[inputs[0]];
+      auto rhs = values[inputs[1]];
+      APInt result = lhs & rhs;
+      
+      // Apply inversions
+      if (andOp.isInverted(0)) {
+        lhs = ~lhs;
+        result = lhs & rhs;
+      }
+      if (andOp.isInverted(1)) {
+        rhs = ~rhs;
+        result = lhs & rhs;
+      }
+      
+      values[andOp.getResult()] = result;
+      return success();
     }
+    // Add more operation types as needed
+    return failure();
   }
 
-  FailureOr<APInt> simulate(APInt input) {
+  APInt simulate(const APInt &input) {
     DenseMap<Value, APInt> values;
     size_t bitPos = 0;
     for (auto value : inputs) {
@@ -236,7 +488,13 @@ struct Cut {
         return APInt(1, 0);
       }
     }
-    return values[getRoot()];
+
+    // The root operation should have the output value
+    auto rootResults = getRoot()->getResults();
+    if (!rootResults.empty()) {
+      return values[rootResults[0]];
+    }
+    return APInt(1, 0);
   }
 };
 
@@ -247,7 +505,8 @@ private:
 
 public:
   // Keep the cuts sorted by priority. The priority is determined by the
-  // optimization mode (area or delay). The cuts are sorted in descending order,
+  // optimization mode (area or timing). The cuts are sorted in descending
+  // order,
   void pruneCut(unsigned maxCuts,
                 llvm::function_ref<bool(const Cut &, const Cut &)> compare) {
     // Maintain size limit by removing worst cuts
@@ -290,8 +549,8 @@ struct CutRewriterPattern {
   virtual LogicalResult initialize() { return success(); }
 
   // Return true if the cut matches this library primitive. If
-  // `useTruthTableMatcher` is implemented to return true, this method is called
-  // only when the truth table matches the cut set.
+  // `useTruthTableMatcher` is implemented to return true, this method is
+  // called only when the truth table matches the cut set.
   virtual bool match(const Cut &cutSet) const = 0;
 
   // Populate truthtable set and return true if the pattern is applicable if
@@ -300,8 +559,9 @@ struct CutRewriterPattern {
     return false;
   }
 
-  // Rewrite the cut. This is similar to MLIR's PatternRewriter. If success is
-  // returned, the cut root operation must be replaced with other operation.
+  // Rewrite the cut. This is similar to MLIR's PatternRewriter. If success
+  // is returned, the cut root operation must be replaced with other
+  // operation.
   virtual LogicalResult rewrite(PatternRewriter &rewriter,
                                 Cut &cutSet) const = 0;
 
@@ -394,23 +654,53 @@ struct GenericLUT : public CutRewriterPattern {
                         Cut &cut) const override {
     // TODO: Implement the actual rewrite logic
     auto truthTable = cut.getTruthTable();
+    if (failed(truthTable))
+      return failure();
+    
     // Generate comb.truth table operation.
     // auto truthTableOp = rewriter.create<comb::TruthTableOp>(
-    //     cut.getRoot()->getLoc(), truthTable.table, truthTable.numInputs,
-    //     truthTable.numOutputs);
+    //     cut.getRoot()->getLoc(), truthTable->table, truthTable->numInputs,
+    //     truthTable->numOutputs);
 
-    // // Replace the root operation with the truth table operation
-<<<<<<< HEAD
-    // rewriter.replaceOp(cut.getRoot(), truthTableOp.getResults());
-=======
+    // Replace the root operation with the truth table operation
     // rewriter.replaceOp(cut.getRoot(), truthTableOp);
     return success();
->>>>>>> 57faba9e3 (save)
   }
 };
 
 // TODO: Add power estimation
 enum MappingStrategy { Area, Timing };
+
+/// Test function to verify NPN computation
+static void testNPNComputation() {
+  LLVM_DEBUG({
+    // Create a simple 2-input truth table for AND function
+    TruthTable tt(2, 1);
+    
+    // Set truth table for AND: (0,0)->0, (0,1)->0, (1,0)->0, (1,1)->1
+    tt.setOutput(APInt(2, 0), APInt(1, 0)); // 00 -> 0
+    tt.setOutput(APInt(2, 1), APInt(1, 0)); // 01 -> 0
+    tt.setOutput(APInt(2, 2), APInt(1, 0)); // 10 -> 0
+    tt.setOutput(APInt(2, 3), APInt(1, 1)); // 11 -> 1
+    
+    llvm::dbgs() << "Original truth table hash: " << tt.getHash() << "\n";
+    
+    // Test permutation
+    SmallVector<unsigned> perm = {1, 0}; // Swap inputs
+    TruthTable permuted = tt.applyPermutation(perm);
+    llvm::dbgs() << "Permuted truth table hash: " << permuted.getHash() << "\n";
+    
+    // Test input negation
+    SmallVector<bool> negation = {true, false}; // Negate first input
+    TruthTable negated = tt.applyInputNegation(negation);
+    llvm::dbgs() << "Negated truth table hash: " << negated.getHash() << "\n";
+    
+    // Test output negation
+    SmallVector<bool> outputNeg = {true}; // Negate output
+    TruthTable outputNegated = tt.applyOutputNegation(outputNeg);
+    llvm::dbgs() << "Output negated truth table hash: " << outputNegated.getHash() << "\n";
+  });
+}
 
 /// Main mapper class
 class AIGMapper {
@@ -473,6 +763,9 @@ public:
                << "\n");
     LLVM_DEBUG(llvm::dbgs() << "Max cut size: " << maxCutSize << "\n");
     LLVM_DEBUG(llvm::dbgs() << "Max cuts per node: " << maxCutsPerNode << "\n");
+
+    // Test NPN computation
+    LLVM_DEBUG(testNPNComputation());
 
     // Process each HW module
     for (hw::HWModuleOp hwModule : topModule.getOps<hw::HWModuleOp>()) {
@@ -548,7 +841,7 @@ private:
 
         bool allOperandsReady = true;
         for (Value operand : user->getOperands()) {
-          if (auto defOp = operand.getDefiningOp()) {
+          if (auto *defOp = operand.getDefiningOp()) {
             if (!visited.count(defOp)) {
               allOperandsReady = false;
               break;
@@ -657,34 +950,3 @@ private:
   }
 };
 
-//===----------------------------------------------------------------------===//
-// Mapper Pass
-//===----------------------------------------------------------------------===//
-
-namespace {
-struct MapperPass : public impl::MapperBase<MapperPass> {
-  using MapperBase<MapperPass>::MapperBase;
-
-  void runOnOperation() override {
-    ModuleOp module = getOperation();
-
-    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode,
-                     libraryModules);
-
-    if (failed(mapper.runMapper())) {
-      signalPassFailure();
-      return;
-    }
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Generic LUT Pass
-//===----------------------------------------------------------------------===//
-struct GenericLUTPass : public impl::GenericLUTBase<GenericLUTPass> {
-  using GenericLUTBase<GenericLUTPass>::GenericLUTBase;
-  void runOnOperation() override {
-    ModuleOp module = getOperation();
-  }
-} // namespace
-} // namespace
