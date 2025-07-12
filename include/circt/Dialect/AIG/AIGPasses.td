@@ -128,7 +128,7 @@ def Mapper : Pass<"aig-mapper", "mlir::ModuleOp"> {
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
 }
 
-def GenericLutMap : Pass<"aig-generic-lut-mapper", "mlir::ModuleOp"> {
+def GenericLutMapper : Pass<"aig-generic-lut-mapper", "mlir::ModuleOp"> {
   let summary = "Map AIG to genernic LUT operations(comb.truth_table)";
   let description = [{
   }];

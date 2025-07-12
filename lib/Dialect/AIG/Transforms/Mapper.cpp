@@ -42,12 +42,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #define DEBUG_TYPE "aig-mapper"
 
 namespace circt {
 namespace aig {
 #define GEN_PASS_DEF_MAPPER
+#define GEN_PASS_DEF_GENERICLUTMAPPER
 #include "circt/Dialect/AIG/AIGPasses.h.inc"
 } // namespace aig
 } // namespace circt
@@ -80,82 +82,66 @@ struct TruthTable {
     assert(input.getBitWidth() == numInputs && "Input width mismatch");
     assert(output.getBitWidth() == numOutputs && "Output width mismatch");
     unsigned offset = input.getZExtValue() * numOutputs;
-    for (unsigned i = 0; i < numOutputs; ++i) {
+    for (unsigned i = 0; i < numOutputs; ++i)
       table.setBitVal(offset + i, output[i]);
-    }
   }
 
   /// Apply input permutation to the truth table
-  TruthTable applyPermutation(const SmallVector<unsigned> &permutation) const {
+  TruthTable
+  applyPermutation(const SmallVectorImpl<unsigned> &permutation) const {
     assert(permutation.size() == numInputs && "Permutation size mismatch");
     TruthTable result(numInputs, numOutputs);
-    
+
     for (unsigned i = 0; i < (1u << numInputs); ++i) {
       APInt input(numInputs, i);
       APInt permutedInput(numInputs, 0);
-      
+
       // Apply permutation
-      for (unsigned j = 0; j < numInputs; ++j) {
+      for (unsigned j = 0; j < numInputs; ++j)
         permutedInput.setBitVal(j, input[permutation[j]]);
-      }
-      
+
       result.setOutput(permutedInput, getOutput(input));
     }
-    
+
     return result;
   }
 
   /// Apply input negation to the truth table
-  TruthTable applyInputNegation(const SmallVector<bool> &negation) const {
-    assert(negation.size() == numInputs && "Negation size mismatch");
+  TruthTable applyInputNegation(unsigned mask) const {
     TruthTable result(numInputs, numOutputs);
-    
+
     for (unsigned i = 0; i < (1u << numInputs); ++i) {
       APInt input(numInputs, i);
       APInt negatedInput(numInputs, 0);
-      
+
       // Apply negation
-      for (unsigned j = 0; j < numInputs; ++j) {
-        negatedInput.setBitVal(j, negation[j] ? !input[j] : input[j]);
-      }
-      
+      for (unsigned j = 0; j < numInputs; ++j)
+        negatedInput.setBitVal(j, (mask & (1u << j)) ? !input[j] : input[j]);
+
       result.setOutput(negatedInput, getOutput(input));
     }
-    
+
     return result;
   }
 
   /// Apply output negation to the truth table
-  TruthTable applyOutputNegation(const SmallVector<bool> &negation) const {
-    assert(negation.size() == numOutputs && "Negation size mismatch");
+  TruthTable applyOutputNegation(unsigned negation) const {
     TruthTable result(numInputs, numOutputs);
-    
+
     for (unsigned i = 0; i < (1u << numInputs); ++i) {
       APInt input(numInputs, i);
       APInt output = getOutput(input);
       APInt negatedOutput(numOutputs, 0);
-      
+
       // Apply negation
-      for (unsigned j = 0; j < numOutputs; ++j) {
-        negatedOutput.setBitVal(j, negation[j] ? !output[j] : output[j]);
-      }
-      
+      for (unsigned j = 0; j < numOutputs; ++j)
+        negatedOutput.setBitVal(j, (negation & (1u << j)) ? !output[j]
+                                                          : output[j]);
+
       result.setOutput(input, negatedOutput);
     }
-    
-    return result;
-  }
 
-  /// Get canonical hash for comparison
-  uint64_t getHash() const {
-    // Simple hash based on the table content
-    uint64_t hash = 0;
-    for (unsigned i = 0; i < table.getBitWidth(); ++i) {
-      if (table[i]) {
-        hash ^= i + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-      }
-    }
-    return hash;
+    return result;
   }
 
   /// Check if this truth table is lexicographically smaller than another
@@ -174,10 +160,75 @@ struct TruthTable {
 struct NPNCanonicalForm {
   TruthTable canonicalTT;
   SmallVector<unsigned> inputPermutation;
-  SmallVector<bool> inputNegation;
-  SmallVector<bool> outputNegation;
-  
+  unsigned inputNegation = 0;
+  unsigned outputNegation = 0;
   NPNCanonicalForm(const TruthTable &tt) : canonicalTT(tt) {}
+
+  /// Compute NPN canonical form using the algorithm from the paper
+  /// "Fast Boolean Matching Based on NPN Classification".
+  static NPNCanonicalForm computeNPNCanonicalForm(const TruthTable &tt) {
+    NPNCanonicalForm canonical(tt);
+
+    // Initialize permutation and negation vectors
+    canonical.inputPermutation.resize(tt.numInputs);
+
+    // Initialize identity permutation
+    for (unsigned i = 0; i < tt.numInputs; ++i)
+      canonical.inputPermutation[i] = i;
+
+    TruthTable bestTT = tt;
+
+    // Try all possible input negations (2^n combinations)
+    assert(tt.numInputs <= 20 && "Too many inputs for input negation mask");
+    for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
+      TruthTable negatedTT = tt.applyInputNegation(negMask);
+
+      // Try all possible permutations
+      SmallVector<unsigned> permutation(tt.numInputs);
+      for (uint32_t i = 0; i < tt.numInputs; ++i) {
+        permutation[i] = i;
+      }
+
+      do {
+        TruthTable permutedTT = negatedTT.applyPermutation(permutation);
+
+        // Try output negation (for single output)
+        if (tt.numOutputs == 1) {
+          unsigned outputNegMask = 0;
+          TruthTable candidate = permutedTT;
+
+          // Try without output negation
+          if (candidate.isLexicographicallySmaller(bestTT)) {
+            bestTT = candidate;
+            canonical.canonicalTT = candidate;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = negMask;
+            canonical.outputNegation = outputNegMask;
+          }
+
+          // Try with output negation
+          candidate = permutedTT.applyOutputNegation(1);
+          if (candidate.isLexicographicallySmaller(bestTT)) {
+            bestTT = candidate;
+            canonical.canonicalTT = candidate;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = negMask;
+            canonical.outputNegation = 1;
+          }
+        } else {
+          // For multi-output, just check without output negation
+          if (permutedTT.isLexicographicallySmaller(bestTT)) {
+            bestTT = permutedTT;
+            canonical.canonicalTT = permutedTT;
+            canonical.inputPermutation = permutation;
+            canonical.inputNegation = negMask;
+          }
+        }
+      } while (std::next_permutation(permutation.begin(), permutation.end()));
+    }
+
+    return canonical;
+  }
 };
 
 } // end anonymous namespace
@@ -196,100 +247,31 @@ struct Cut {
 
   Operation *getRoot() const {
     return operations.front(); // The first operation is the root
-  }  FailureOr<TruthTable> computeNPN() {
-    // Compute the NPN (Negation Permutation Negation) canonical form for this cut
-    auto truthTable = getTruthTable();
-    if (failed(truthTable))
-      return failure();
-
-    // For single-output functions, compute NPN canonical form
-    if (truthTable->numOutputs == 1) {
-      auto canonicalForm = computeNPNCanonicalForm(*truthTable);
-      return canonicalForm.canonicalTT;
-    }
-
-    // For multi-output functions, return the original truth table
-    return *truthTable;
   }
 
-private:
-  /// Compute NPN canonical form using the algorithm from the paper
-  NPNCanonicalForm computeNPNCanonicalForm(const TruthTable &tt) {
-    NPNCanonicalForm canonical(tt);
-    
-    // Initialize permutation and negation vectors
-    canonical.inputPermutation.resize(tt.numInputs);
-    canonical.inputNegation.resize(tt.numInputs, false);
-    canonical.outputNegation.resize(tt.numOutputs, false);
-    
-    // Initialize identity permutation
-    for (unsigned i = 0; i < tt.numInputs; ++i) {
-      canonical.inputPermutation[i] = i;
-    }
-    
-    TruthTable bestTT = tt;
-    
-    // Try all possible input negations (2^n combinations)
-    for (unsigned negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
-      SmallVector<bool> inputNeg(tt.numInputs);
-      for (unsigned i = 0; i < tt.numInputs; ++i) {
-        inputNeg[i] = (negMask >> i) & 1;
-      }
-      
-      TruthTable negatedTT = tt.applyInputNegation(inputNeg);
-      
-      // Try all possible permutations
-      SmallVector<unsigned> permutation(tt.numInputs);
-      for (unsigned i = 0; i < tt.numInputs; ++i) {
-        permutation[i] = i;
-      }
-      
-      do {
-        TruthTable permutedTT = negatedTT.applyPermutation(permutation);
-        
-        // Try output negation (for single output)
-        if (tt.numOutputs == 1) {
-          SmallVector<bool> outputNeg(1, false);
-          TruthTable candidate = permutedTT;
-          
-          // Try without output negation
-          if (candidate.isLexicographicallySmaller(bestTT)) {
-            bestTT = candidate;
-            canonical.canonicalTT = candidate;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = inputNeg;
-            canonical.outputNegation = outputNeg;
-          }
-          
-          // Try with output negation
-          outputNeg[0] = true;
-          candidate = permutedTT.applyOutputNegation(outputNeg);
-          if (candidate.isLexicographicallySmaller(bestTT)) {
-            bestTT = candidate;
-            canonical.canonicalTT = candidate;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = inputNeg;
-            canonical.outputNegation = outputNeg;
-          }
-        } else {
-          // For multi-output, just check without output negation
-          if (permutedTT.isLexicographicallySmaller(bestTT)) {
-            bestTT = permutedTT;
-            canonical.canonicalTT = permutedTT;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = inputNeg;
-          }
-        }
-      } while (std::next_permutation(permutation.begin(), permutation.end()));
-    }
-    
-    return canonical;
+  // Cache for the truth table of this cut
+  mutable std::optional<TruthTable> truthTable;
+  // Compute the NPN canonical form for this cut
+  mutable std::optional<NPNCanonicalForm> computedNPN;
+
+  const NPNCanonicalForm &computeNPN() const {
+    // If the truth table is already computed, return it
+    if (computedNPN)
+      return *computedNPN;
+
+    // Compute the NPN (Negation Permutation Negation) canonical form for this
+    // cut
+    auto truthTable = getTruthTable();
+    assert(succeeded(truthTable) && "Failed to compute truth table");
+
+    // Compute the NPN canonical form
+    auto canonicalForm = NPNCanonicalForm::computeNPNCanonicalForm(*truthTable);
+
+    computedNPN.emplace(std::move(canonicalForm));
+    return *computedNPN;
   }
 
 public:
-
-
-
   Cut(Operation *root) {
     // Create a cut with the root operation
     operations.insert(root);
@@ -389,7 +371,10 @@ public:
     return area < other.area && delay < other.delay;
   }
 
-  FailureOr<TruthTable> getTruthTable() {
+  FailureOr<TruthTable> getTruthTable() const {
+    if (truthTable)
+      return *truthTable;
+
     int64_t numInputs = getInputSize();
     int64_t numOutputs = getOutputSize();
     TruthTable tt(numInputs, numOutputs);
@@ -445,20 +430,24 @@ public:
       }
     }
 
+    // Cache the truth table
+    truthTable = tt;
+
     return tt;
   }
 
-  LogicalResult simulateOp(Operation *op, DenseMap<Value, APInt> &values) {
+  LogicalResult simulateOp(Operation *op,
+                           DenseMap<Value, APInt> &values) const {
     if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
       auto inputs = andOp.getInputs();
       if (inputs.size() != 2) {
         return failure(); // Only support binary operations for now
       }
-      
+
       auto lhs = values[inputs[0]];
       auto rhs = values[inputs[1]];
       APInt result = lhs & rhs;
-      
+
       // Apply inversions
       if (andOp.isInverted(0)) {
         lhs = ~lhs;
@@ -468,7 +457,7 @@ public:
         rhs = ~rhs;
         result = lhs & rhs;
       }
-      
+
       values[andOp.getResult()] = result;
       return success();
     }
@@ -656,7 +645,7 @@ struct GenericLUT : public CutRewriterPattern {
     auto truthTable = cut.getTruthTable();
     if (failed(truthTable))
       return failure();
-    
+
     // Generate comb.truth table operation.
     // auto truthTableOp = rewriter.create<comb::TruthTableOp>(
     //     cut.getRoot()->getLoc(), truthTable->table, truthTable->numInputs,
@@ -676,29 +665,33 @@ static void testNPNComputation() {
   LLVM_DEBUG({
     // Create a simple 2-input truth table for AND function
     TruthTable tt(2, 1);
-    
+
     // Set truth table for AND: (0,0)->0, (0,1)->0, (1,0)->0, (1,1)->1
     tt.setOutput(APInt(2, 0), APInt(1, 0)); // 00 -> 0
     tt.setOutput(APInt(2, 1), APInt(1, 0)); // 01 -> 0
     tt.setOutput(APInt(2, 2), APInt(1, 0)); // 10 -> 0
     tt.setOutput(APInt(2, 3), APInt(1, 1)); // 11 -> 1
-    
-    llvm::dbgs() << "Original truth table hash: " << tt.getHash() << "\n";
-    
+
+    llvm::dbgs() << "Original truth table hash: " << tt.table.getZExtValue()
+                 << "\n";
+
     // Test permutation
     SmallVector<unsigned> perm = {1, 0}; // Swap inputs
     TruthTable permuted = tt.applyPermutation(perm);
-    llvm::dbgs() << "Permuted truth table hash: " << permuted.getHash() << "\n";
-    
+    llvm::dbgs() << "Permuted truth table hash: "
+                 << permuted.table.getZExtValue() << "\n";
+
     // Test input negation
-    SmallVector<bool> negation = {true, false}; // Negate first input
-    TruthTable negated = tt.applyInputNegation(negation);
-    llvm::dbgs() << "Negated truth table hash: " << negated.getHash() << "\n";
-    
+    unsigned negMask = 0b10; // Negate first input
+    TruthTable negated = tt.applyInputNegation(negMask);
+    llvm::dbgs() << "Negated truth table hash: " << negated.table.getZExtValue()
+                 << "\n";
+
     // Test output negation
-    SmallVector<bool> outputNeg = {true}; // Negate output
+    unsigned outputNeg = 1; // Negate output
     TruthTable outputNegated = tt.applyOutputNegation(outputNeg);
-    llvm::dbgs() << "Output negated truth table hash: " << outputNegated.getHash() << "\n";
+    llvm::dbgs() << "Output negated truth table hash: "
+                 << outputNegated.table.getZExtValue() << "\n";
   });
 }
 
@@ -950,3 +943,33 @@ private:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Mapper Pass
+//===----------------------------------------------------------------------===//
+
+namespace {
+struct MapperPass : public impl::MapperBase<MapperPass> {
+  using MapperBase<MapperPass>::MapperBase;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+
+    AIGMapper mapper(module, MappingStrategy::Area, maxCutSize, maxCutsPerNode,
+                     libraryModules);
+
+    if (failed(mapper.runMapper())) {
+      signalPassFailure();
+      return;
+    }
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Generic LUT Pass
+//===----------------------------------------------------------------------===//
+struct GenericLUTMapperPass
+    : public impl::GenericLutMapperBase<GenericLUTMapperPass> {
+  using GenericLutMapperBase<GenericLUTMapperPass>::GenericLutMapperBase;
+  void runOnOperation() override { ModuleOp module = getOperation(); }
+}; // namespace
+} // namespace
