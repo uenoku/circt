@@ -636,10 +636,6 @@ struct GenericLUT : public CutRewriterPattern {
     // Assume a fixed delay for the generic LUT
     return 1.0; // Placeholder value
   }
-  double getPower() const override {
-    // Assume a fixed power for the generic LUT
-    return 1.0; // Placeholder value
-  }
 
   LogicalResult rewrite(mlir::PatternRewriter &rewriter,
                         Cut &cut) const override {
