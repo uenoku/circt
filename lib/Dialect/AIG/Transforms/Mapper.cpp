@@ -1,4 +1,4 @@
-//===- Mapper.cpp - AIG Technology Mapping Pass ----------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -507,25 +507,34 @@ struct CutRewriterPattern {
   // Run heavy initialization logic here if needed.
   virtual LogicalResult initialize() { return success(); }
 
-  // Return true if the cut matches this library primitive. If
+  // Return true if the cut matches this cut rewriter pattern. If
   // `useTruthTableMatcher` is implemented to return true, this method is
   // called only when the truth table matches the cut set.
-  virtual bool match(const Cut &cutSet) const = 0;
+  virtual bool match(const Cut &cut) const = 0;
 
-  // Populate truthtable set and return true if the pattern is applicable if
-  // the truth table matches the cut set.
-  virtual bool useTruthTableMatcher(SmallVectorImpl<APInt> &truthTable) const {
+  // If necessary, populate `truthTable` with the truth table this pattern
+  // potentially matches.  and return true if the pattern is applicable if the
+  // truth table matches the cut set.
+  virtual bool
+  useTruthTableMatcher(SmallVectorImpl<TruthTable> &truthTable) const {
     return false;
   }
 
-  // Rewrite the cut. This is similar to MLIR's PatternRewriter. If success
-  // is returned, the cut root operation must be replaced with other
-  // operation.
+  // Rewrite the cut. If success is returned, the cut root operation must be
+  // replaced with other operation. `match` is called before this method,
+  // so the cut set is guaranteed to match this pattern.
   virtual LogicalResult rewrite(PatternRewriter &rewriter,
                                 Cut &cutSet) const = 0;
 
-  // Benefit of the cut in the library
+  // Interface for cut priorities.
+
   virtual double getArea() const = 0;
+
+  virtual bool hasUniformDelay() const {
+    // If the delay is uniform, it means that the delay does not depend on the
+    // input-output pair. This is used for micro optimization.
+    return false;
+  }
 
   // Get delay for a specific input-output pair.
   virtual double getDelay(size_t inputIndex, size_t outputIndex) const = 0;
@@ -953,7 +962,7 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
 };
 
 //===----------------------------------------------------------------------===//
-// Generic LUT Pass
+// Generic LUT Mapper Pass
 //===----------------------------------------------------------------------===//
 struct GenericLUTMapperPass
     : public impl::GenericLutMapperBase<GenericLUTMapperPass> {

@@ -129,8 +129,9 @@ def Mapper : Pass<"aig-mapper", "mlir::ModuleOp"> {
 }
 
 def GenericLutMapper : Pass<"aig-generic-lut-mapper", "mlir::ModuleOp"> {
-  let summary = "Map AIG to genernic LUT operations(comb.truth_table)";
+  let summary = "Map AIG to genernic LUT operations (comb.truth_table)";
   let description = [{
+     This transformation maps aig network into LUT operation.
   }];
   let options = [
     Option<"maxLutSize", "max-lut-size", "int", "6",
