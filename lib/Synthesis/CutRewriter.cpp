@@ -627,7 +627,7 @@ LogicalResult CutRewriter::run() {
     return failure();
 
   // Step 2: Select best cuts and perform mapping
-  if (failed(performMapping(topOp)))
+  if (failed(performRewriting(topOp)))
     return failure();
 
   return success();
@@ -814,14 +814,14 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   return MatchedPattern(bestPattern, &cut, bestArrivalTime);
 }
 
-LogicalResult CutRewriter::performMapping(Operation *hwModule) {
-  LLVM_DEBUG(llvm::dbgs() << "Performing technology mapping...\n");
+LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
+  LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
 
   // For now, just report the cuts found
   unsigned totalCuts = 0;
   LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
 
-  // TODO: Implement actual technology mapping transformation
+  // TODO: Implement actual cut-based rewriting transformation
   // This would involve:
   // 1. Select best cuts for each node
   // 2. Replace AIG nodes with library primitives

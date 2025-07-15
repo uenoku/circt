@@ -1,4 +1,4 @@
-//===- CutRewriter.h - Cut-based Technology Mapping ------------*- C++ -*-===//
+//===- CutRewriter.h - Cut-based Rewriting Framework -----------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,16 +6,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This header file defines classes and data structures for cut-based technology
-// mapping. The CutRewriter performs technology mapping by enumerating cuts
-// (subgraphs) in an AIG (And-Inverter Graph) network and matching them against
-// library patterns to optimize for area or timing.
+// This header file defines a general cut-based rewriting framework for 
+// combinational logic optimization. The framework uses NPN-equivalence matching
+// with area and delay metrics to rewrite cuts (subgraphs) in combinational
+// circuits with optimal patterns.
+//
+// Applications include:
+// - Technology mapping (cell library mapping)
+// - AIG rewriting and optimization
+// - Lazy Man's synthesis
+// - General combinational logic optimization
+//
+// The framework works with any combinational logic representation, though
+// And-Inverter Graphs (AIGs) are particularly well-suited.
 //
 // Key components:
 // - TruthTable: Represents boolean functions as truth tables
 // - NPNClass: Canonical form for NPN (Negation-Permutation-Negation) equivalence
-// - Cut: Represents a cut in the AIG network
-// - CutRewriter: Main technology mapping algorithm
+// - Cut: Represents a cut in the combinational network
+// - CutRewriter: Main cut-based rewriting algorithm
 //
 //===----------------------------------------------------------------------===//
 
@@ -51,8 +60,8 @@ class Value;
 namespace circt {
 namespace synthesis {
 
-/// Optimization strategy for technology mapping.
-/// Determines whether to prioritize area or timing during mapping.
+/// Optimization strategy for cut-based rewriting.
+/// Determines whether to prioritize area or timing during rewriting.
 enum CutRewriteStrategy { 
   Area,   ///< Optimize for minimal area (gate count)
   Timing  ///< Optimize for minimal critical path delay
@@ -183,10 +192,10 @@ class CutRewriter;
 struct CutRewriterPattern;
 struct CutRewriterOptions;
 
-/// Represents a cut in the AIG (And-Inverter Graph) network.
+/// Represents a cut in the combinational logic network.
 ///
-/// A cut is a subset of nodes in the AIG that forms a complete subgraph
-/// with a single output. It represents a portion of the circuit that can
+/// A cut is a subset of nodes in the combinational logic that forms a complete 
+/// subgraph with a single output. It represents a portion of the circuit that can
 /// potentially be replaced with a single library gate or pattern.
 ///
 /// The cut contains:
@@ -194,8 +203,8 @@ struct CutRewriterOptions;
 /// - Operations: The logic operations within the cut boundary
 /// - Root operation: The output-driving operation of the cut
 ///
-/// Cuts are used in technology mapping to identify regions that can be
-/// optimized and replaced with library components.
+/// Cuts are used in combinational logic optimization to identify regions that
+/// can be optimized and replaced with more efficient implementations.
 struct Cut {
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
@@ -270,10 +279,10 @@ public:
                            DenseMap<mlir::Value, llvm::APInt> &values) const;
 };
 
-/// Represents a cut that has been successfully matched to a library pattern.
+/// Represents a cut that has been successfully matched to a rewriting pattern.
 ///
-/// This class encapsulates the result of matching a cut against a library
-/// pattern during technology mapping. It stores the matched pattern, the
+/// This class encapsulates the result of matching a cut against a rewriting
+/// pattern during optimization. It stores the matched pattern, the
 /// cut that was matched, and timing information needed for optimization.
 class MatchedPattern {
 private:
@@ -319,10 +328,10 @@ public:
   bool isValid() const;
 };
 
-/// Manages a collection of cuts for a single AIG node using priority cuts algorithm.
+/// Manages a collection of cuts for a single logic node using priority cuts algorithm.
 ///
-/// Each node in the AIG network can have multiple cuts representing different
-/// ways to group it with surrounding logic. The CutSet manages these cuts and
+/// Each node in the combinational logic network can have multiple cuts representing 
+/// different ways to group it with surrounding logic. The CutSet manages these cuts and
 /// selects the best one based on the optimization strategy (area or timing).
 ///
 /// The priority cuts algorithm maintains a bounded set of the most promising
@@ -383,10 +392,10 @@ public:
   ArrayRef<Cut> getCuts() const;
 };
 
-/// Base class for cut rewriting patterns used in technology mapping.
+/// Base class for cut rewriting patterns used in combinational logic optimization.
 ///
 /// A CutRewriterPattern represents a library component or optimization pattern
-/// that can replace cuts in the AIG network. Each pattern defines:
+/// that can replace cuts in the combinational logic network. Each pattern defines:
 /// - How to recognize matching cuts
 /// - How to transform/replace the matched cuts
 /// - Area and timing characteristics
@@ -452,16 +461,16 @@ struct CutRewriterPattern {
   virtual unsigned getNumOutputs() const = 0;
 };
 
-/// Manages a collection of rewriting patterns for technology mapping.
+/// Manages a collection of rewriting patterns for combinational logic optimization.
 ///
 /// This class organizes and provides efficient access to rewriting patterns
-/// used during technology mapping. It maintains:
+/// used during cut-based optimization. It maintains:
 /// - A collection of all available patterns
 /// - Fast lookup tables for truth table-based matching
 /// - Separation of truth table vs. custom matching patterns
 ///
 /// The pattern set is used by the CutRewriter to find suitable replacements
-/// for cuts in the AIG network.
+/// for cuts in the combinational logic network.
 class CutRewriterPatternSet {
 public:
   /// Constructor that takes ownership of the provided patterns.
@@ -490,9 +499,9 @@ private:
   friend class CutRewriter;
 };
 
-/// Configuration options for the cut-based technology mapping algorithm.
+/// Configuration options for the cut-based rewriting algorithm.
 ///
-/// These options control various aspects of the mapping process including
+/// These options control various aspects of the rewriting process including
 /// optimization strategy, resource limits, and algorithmic parameters.
 struct CutRewriterOptions {
   /// Optimization strategy (area vs. timing).
@@ -503,21 +512,21 @@ struct CutRewriterOptions {
   /// computational complexity exponentially.
   unsigned maxCutInputSize;
   
-  /// Maximum number of cuts to maintain per AIG node.
+  /// Maximum number of cuts to maintain per logic node.
   /// The priority cuts algorithm keeps only the most promising cuts
   /// to prevent exponential explosion.
   unsigned maxCutSizePerRoot;
 };
 
-/// Main technology mapping algorithm using cut-based rewriting.
+/// Main cut-based rewriting algorithm for combinational logic optimization.
 ///
-/// The CutRewriter implements a cut-based technology mapping algorithm that:
-/// 1. Enumerates cuts in the AIG network using a priority cuts algorithm
-/// 2. Matches cuts against available library patterns
+/// The CutRewriter implements a cut-based rewriting algorithm that:
+/// 1. Enumerates cuts in the combinational logic network using a priority cuts algorithm
+/// 2. Matches cuts against available rewriting patterns
 /// 3. Selects optimal patterns based on area or timing objectives
 /// 4. Rewrites the circuit using the selected patterns
 ///
-/// The algorithm processes the AIG in topological order, building up cut sets
+/// The algorithm processes the network in topological order, building up cut sets
 /// for each node and selecting the best implementation based on the specified
 /// optimization strategy.
 ///
@@ -528,42 +537,42 @@ struct CutRewriterOptions {
 /// options.maxCutInputSize = 4;
 /// options.maxCutSizePerRoot = 8;
 /// 
-/// CutRewriterPatternSet patterns(std::move(libraryPatterns));
+/// CutRewriterPatternSet patterns(std::move(optimizationPatterns));
 /// CutRewriter rewriter(module, options, patterns);
 /// 
 /// if (failed(rewriter.run())) {
-///   // Handle mapping failure
+///   // Handle rewriting failure
 /// }
 /// ```
 class CutRewriter {
 public:
   /// Constructor for the cut rewriter.
-  /// \param op Root operation to perform mapping on
-  /// \param options Configuration options for the mapping process
+  /// \param op Root operation to perform rewriting on
+  /// \param options Configuration options for the rewriting process
   /// \param patterns Set of available rewriting patterns
   CutRewriter(Operation *op, const CutRewriterOptions &options,
               CutRewriterPatternSet &patterns)
       : topOp(op), options(options), patterns(patterns) {}
 
-  /// Execute the complete technology mapping algorithm.
+  /// Execute the complete cut-based rewriting algorithm.
   /// 
-  /// This method orchestrates the entire mapping process:
-  /// 1. Enumerate cuts for all nodes in the AIG
+  /// This method orchestrates the entire rewriting process:
+  /// 1. Enumerate cuts for all nodes in the combinational logic
   /// 2. Match cuts against available patterns
   /// 3. Select optimal patterns based on strategy
   /// 4. Rewrite the circuit with selected patterns
   ///
-  /// \return Success if mapping completed successfully
+  /// \return Success if rewriting completed successfully
   LogicalResult run();
 
 private:
   /// Enumerate cuts for all nodes in the given module.
-  /// \param hwModule Module containing the AIG to process
+  /// \param hwModule Module containing the combinational logic to process
   /// \return Success if enumeration completed successfully
   LogicalResult enumerateCuts(Operation *hwModule);
 
-  /// Generate cuts for a specific AND-inverter operation.
-  /// \param op AND-inverter operation to generate cuts for
+  /// Generate cuts for a specific combinational logic operation.
+  /// \param op Combinational logic operation to generate cuts for
   /// \return Success if cut generation completed successfully
   LogicalResult generateCutsForAndOp(Operation *op);
 
@@ -592,9 +601,9 @@ private:
   /// Perform the actual circuit rewriting using selected patterns.
   /// \param hwModule Module to rewrite
   /// \return Success if rewriting completed successfully
-  LogicalResult performMapping(Operation *hwModule);
+  LogicalResult performRewriting(Operation *hwModule);
 
-  Operation *topOp;                         ///< Root operation being mapped
+  Operation *topOp;                         ///< Root operation being rewritten
   const CutRewriterOptions &options;        ///< Configuration options
   const CutRewriterPatternSet &patterns;    ///< Available rewriting patterns
   
