@@ -10,7 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Synthesis/SynthesisPipeline.h"
+#include "circt/Synthesis/Transforms/Passes.h"
+#include "circt/Synthesis/Transforms/SynthesisPipeline.h"
 #include "circt/Conversion/CombToAIG.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/Comb/CombOps.h"
@@ -84,7 +85,7 @@ void circt::synthesis::buildAIGOptimizationPipeline(
 // Pipeline Registration
 //===----------------------------------------------------------------------===//
 
-void circt::synthesis::registerSynthesisPipeline() {
+void circt::synthesis::registerPipelines() {
   PassPipelineRegistration<EmptyPipelineOptions>(
       "synthesis-aig-lowering-pipeline",
       "The default pipeline for until AIG lowering", buildAIGLoweringPipeline);

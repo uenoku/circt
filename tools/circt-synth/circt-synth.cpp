@@ -30,7 +30,8 @@
 #include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/Passes.h"
 #include "circt/Support/Version.h"
-#include "circt/Synthesis/SynthesisPipeline.h"
+#include "circt/Synthesis/Transforms/SynthesisPipeline.h"
+#include "circt/Synthesis/Transforms/Passes.h"
 #include "circt/Transforms/Passes.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/Diagnostics.h"
@@ -206,10 +207,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
 
     if (lowerToGenericLUTK > 0) {
       // Lower AIG to generic LUTs with K inputs.
-      aig::GenericLutMapperOptions lutOptions;
+      circt::synthesis::GenericLutMapperOptions lutOptions;
       lutOptions.maxLutSize = lowerToGenericLUTK;
       lutOptions.maxCutsPerNode = 12; // Default value, can be adjusted.
-      pm.addPass(circt::aig::createGenericLutMapper(lutOptions));
+      pm.addPass(circt::synthesis::createGenericLutMapper(lutOptions));
     }
   };
 
