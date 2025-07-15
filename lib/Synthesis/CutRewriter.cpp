@@ -786,15 +786,23 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     // If the pattern matches the cut, compute the arrival time
     double patternArrivalTime = 0.0;
     auto &cutNPN = cut.getNPNClass();
+    
+    // Build inverse permutation mapping from cut's canonical form to original cut inputs
+    llvm::SmallVector<unsigned> cutInversePermutation(cut.getInputSize());
+    for (size_t i = 0; i < cut.getInputSize(); ++i) {
+      cutInversePermutation[cutNPN->inputPermutation[i]] = i;
+    }
+    
     // Compute the maximum delay for each output from inputs
     for (size_t i = 0; i < cut.getInputSize(); ++i) {
       for (size_t j = 0; j < cut.getOutputSize(); ++j) {
-        unsigned npnInput =
-            cutNPN->inputPermutation[patternNPN.inputPermutation[i]];
+        // Map pattern input i to cut input through NPN transformations
+        unsigned patternCanonicalInput = patternNPN.inputPermutation[i];
+        unsigned cutOriginalInput = cutInversePermutation[patternCanonicalInput];
 
         patternArrivalTime =
-            std::max(patternArrivalTime, pattern->getDelay(cut, npnInput, j) +
-                                             inputArrivalTimes[npnInput]);
+            std::max(patternArrivalTime, pattern->getDelay(cut, cutOriginalInput, j) +
+                                             inputArrivalTimes[cutOriginalInput]);
       }
     }
 
@@ -829,8 +837,8 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     }
   };
 
-  for (auto &[_, pattern] : getMatchingPatternFromTruthTable(cut))
-    tryPattern(pattern);
+  for (auto &[patternNPN, pattern] : getMatchingPatternFromTruthTable(cut))
+    tryNPNPattern(patternNPN, pattern);
 
   for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
     tryPattern(pattern);
