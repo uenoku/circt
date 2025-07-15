@@ -12,10 +12,9 @@
 // circuits with optimal patterns.
 //
 // Applications include:
-// - Technology mapping (cell library mapping)
+// - Technology mapping and LUT mapping
 // - AIG rewriting and optimization
 // - Lazy Man's synthesis
-// - General combinational logic optimization
 //
 // The framework works with any combinational logic representation, though
 // And-Inverter Graphs (AIGs) are particularly well-suited.
