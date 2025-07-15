@@ -839,12 +839,13 @@ struct GenericLUT : public CutRewriterPattern {
   unsigned getNumOutputs() const override { return 1; } // Single output LUT
 
   double getArea() const override {
-    // Assume a fixed area for the generic LUT
-    return 1.0; // Placeholder value
+    // TODO: Implement area-flow.
+    return 1.0;
   }
+
   double getDelay(size_t inputIndex, size_t outputIndex) const override {
     // Assume a fixed delay for the generic LUT
-    return 1.0; // Placeholder value
+    return 1.0;
   }
 
   LogicalResult rewrite(mlir::PatternRewriter &rewriter,
@@ -871,10 +872,9 @@ struct GenericLUT : public CutRewriterPattern {
 
     SmallVector<bool> lutTable;
     // Convert the truth table to a LUT table
-    for (uint32_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
-      // Convert output to a single bit attribute
+    for (uint32_t i = 0; i < truthTable->table.getBitWidth(); ++i)
       lutTable.push_back(truthTable->table[i]);
-    }
+
     auto arrayAttr = rewriter.getBoolArrayAttr(
         lutTable); // Create a boolean array attribute.
 

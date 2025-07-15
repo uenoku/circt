@@ -9,7 +9,7 @@
 
 // Make sure json is emitted.
 // JSON: {"module_name":"counter","timing_levels":[
-hw.module @counter(in %a: i8, in %b: i8, out result: i8) {
-    %add = comb.add %b, %a : i8
-    hw.output %add : i8
+hw.module @counter(in %a: i16, in %b: i16, out result: i16) {
+    %add = comb.mul %b, %a : i16
+    hw.output %add : i16
 }
