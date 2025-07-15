@@ -94,9 +94,11 @@ struct TruthTable {
   unsigned numOutputs; // Number of outputs for this cut
   APInt table;         // Truth table represented as an APInt
   TruthTable() = default;
+  TruthTable(unsigned numInputs, unsigned numOutputs, const APInt &eval)
+      : numInputs(numInputs), numOutputs(numOutputs), table(eval) {}
   TruthTable(unsigned numInputs, unsigned numOutputs)
       : numInputs(numInputs), numOutputs(numOutputs),
-        table((1 << numInputs) * numOutputs, 0) {}
+        table((1u << numInputs) * numOutputs, 0) {}
 
   /// Get the output value for a given input combination
   APInt getOutput(const APInt &input) const {
@@ -387,8 +389,8 @@ struct Cut {
     }
 
     llvm::dbgs() << "Inputs: ";
-    for (auto input : inputs) {
-      llvm::dbgs() << input << " ";
+    for (auto [idx, input] : llvm::enumerate(inputs)) {
+      llvm::dbgs() << "Input " << idx << ": " << input << "\n";
     }
     llvm::dbgs() << "\nOperations: ";
     for (auto *op : operations) {
@@ -526,7 +528,6 @@ public:
 
     int64_t numInputs = getInputSize();
     int64_t numOutputs = getOutputSize();
-    TruthTable tt(numInputs, numOutputs);
     assert(numInputs < 20 && "Truth table is too large");
     // Simulate the IR.
     // For each input combination, compute the output values.
@@ -542,7 +543,7 @@ public:
         value.setBitVal(j, (j >> i) & 1);
       }
       // Set the input value for the truth table
-      eval[inputs[i]] = value;
+      eval[inputs[i]] = std::move(value);
     }
 
     // Simulate the operations in the cut
@@ -564,23 +565,13 @@ public:
 
     // Extract the truth table from the root operation
     auto rootResults = getRoot()->getResults();
-    for (size_t i = 0; i < rootResults.size(); ++i) {
-      auto result = rootResults[i];
-      if (eval.find(result) != eval.end()) {
-        APInt resultValue = eval[result];
-        // Set the truth table entries
-        for (uint32_t j = 0; j < tableSize; ++j) {
-          APInt input(numInputs, j);
-          APInt output(numOutputs, resultValue[j] ? 1 : 0);
-          tt.setOutput(input, output);
-        }
-      }
-    }
+    assert(rootResults.size() == 1 &&
+           "For now we only support single output cuts");
+    auto result = rootResults[0];
 
     // Cache the truth table
-    truthTable = tt;
-
-    return tt;
+    truthTable.emplace(numInputs, numOutputs, eval[result]);
+    return *truthTable;
   }
 
   LogicalResult simulateOp(Operation *op,
@@ -838,8 +829,9 @@ struct GenericLUT : public CutRewriterPattern {
   GenericLUT(size_t k) : k(k) {}
   bool match(const Cut &cutSet) const override {
     // Check if the cut matches the LUT primitive
-    llvm::dbgs() << "Matching cut set with " << cutSet.getInputSize()
-                 << " inputs against LUT with " << k << " inputs.\n";
+    LLVM_DEBUG(llvm::dbgs()
+                   << "Matching cut set with " << cutSet.getInputSize()
+                   << " inputs against LUT with " << k << " inputs.\n";);
     return cutSet.getInputSize() <= k;
   }
 
@@ -857,15 +849,25 @@ struct GenericLUT : public CutRewriterPattern {
 
   LogicalResult rewrite(mlir::PatternRewriter &rewriter,
                         Cut &cut) const override {
+    // NOTE: Don't use NPN because it's necessary to consider polarity etc.
     auto truthTable = cut.getTruthTable();
     if (failed(truthTable))
       return failure();
 
-    cut.dump();
-    llvm::errs() << "Truth table: " << truthTable->table << "\n";
-    llvm::errs() << "Truth table size: " << truthTable->table.getBitWidth()
-                 << "\n";
-    llvm::errs() << "Truth table inputs: " << cut.getInputSize() << "\n";
+    LLVM_DEBUG({
+      llvm::dbgs() << "Rewriting cut with " << cut.getInputSize()
+                   << " inputs and " << cut.getCutSize()
+                   << " operations to a generic LUT with " << k << " inputs.\n";
+      cut.dump();
+      llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
+      for (size_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
+        for (size_t j = 0; j < cut.getInputSize(); ++j) {
+          // Print the input values for the truth table
+          llvm::dbgs() << (i & (1u << j) ? "1" : "0");
+        }
+        llvm::dbgs() << " " << (truthTable->table[i] ? "1" : "0") << "\n";
+      }
+    });
 
     SmallVector<bool> lutTable;
     // Convert the truth table to a LUT table
@@ -876,9 +878,11 @@ struct GenericLUT : public CutRewriterPattern {
     auto arrayAttr = rewriter.getBoolArrayAttr(
         lutTable); // Create a boolean array attribute.
 
+    SmallVector<Value> lutInputs(cut.inputs.rbegin(), cut.inputs.rend());
+
     // Generate comb.truth table operation.
     auto truthTableOp = rewriter.create<comb::TruthTableOp>(
-        cut.getRoot()->getLoc(), cut.inputs.getArrayRef(), arrayAttr);
+        cut.getRoot()->getLoc(), lutInputs, arrayAttr);
 
     // Replace the root operation with the truth table operation
     rewriter.replaceOp(cut.getRoot(), truthTableOp);
@@ -958,7 +962,7 @@ private:
 /// Main mapper class
 class CutRewriter {
 private:
-  ModuleOp topModule;
+  Operation *topOp;
   MappingStrategy strategy; // Mapping strategy (area or timing)
   unsigned maxCutInputSize;
   unsigned maxCutSizePerRoot;
@@ -967,10 +971,9 @@ private:
   std::function<bool(const Cut &, const Cut &)> compare;
 
 public:
-  CutRewriter(ModuleOp module, MappingStrategy strategy,
-              unsigned maxCutInputSize, unsigned maxCutSizePerRoot,
-              CutRewriterPatternSet &patterns)
-      : topModule(module), strategy(strategy), maxCutInputSize(maxCutInputSize),
+  CutRewriter(Operation *op, MappingStrategy strategy, unsigned maxCutInputSize,
+              unsigned maxCutSizePerRoot, CutRewriterPatternSet &patterns)
+      : topOp(op), strategy(strategy), maxCutInputSize(maxCutInputSize),
         maxCutSizePerRoot(maxCutSizePerRoot), patterns(patterns) {
     // Set the comparison function based on area or delay mode
     if (MappingStrategy::Area == strategy) {
@@ -1003,20 +1006,12 @@ public:
     LLVM_DEBUG(testNPNComputation());
 
     // Process each HW module
-    for (hw::HWModuleOp hwModule : topModule.getOps<hw::HWModuleOp>()) {
-      if (failed(mapModule(hwModule)))
-        return failure();
-    }
-
-    return success();
+    return mapModule(topOp);
   }
 
 private:
   /// Map a single HW module
-  LogicalResult mapModule(hw::HWModuleOp hwModule) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Mapping module: " << hwModule.getModuleName() << "\n");
-
+  LogicalResult mapModule(Operation *hwModule) {
     // Clear previous state
     cutSets.clear();
 
@@ -1032,14 +1027,14 @@ private:
   }
 
   /// Enumerate cuts for all nodes in the module
-  LogicalResult enumerateCuts(hw::HWModuleOp hwModule) {
+  LogicalResult enumerateCuts(Operation *hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
 
     // Topological traversal
     llvm::SmallVector<Operation *> worklist;
     llvm::DenseSet<Operation *> visited;
 
-    auto result = hwModule.walk([&](Operation *op) {
+    auto result = hwModule->walk([&](Operation *op) {
       if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
         if (failed(generateCutsForAndOp(andOp)))
           return mlir::WalkResult::interrupt();
@@ -1055,7 +1050,7 @@ private:
     });
 
     if (result.wasInterrupted()) {
-      hwModule.emitError("Failed to generate cuts for AND operations");
+      hwModule->emitError("Failed to generate cuts for AND operations");
       return failure();
     }
 
@@ -1099,7 +1094,6 @@ private:
     inputArrivalTimes.reserve(cut.getInputSize());
     outputArrivalTimes.reserve(cut.getOutputSize());
     for (auto input : cut.inputs) {
-      llvm::errs() << "Input: " << input << "\n";
       assert(input.getType().isInteger(1));
       // If the input is a primary input, it has no delay
       auto *arrivalTime = cutSets.find(input);
@@ -1239,7 +1233,7 @@ private:
   }
 
   /// Perform the actual technology mapping
-  LogicalResult performMapping(hw::HWModuleOp hwModule) {
+  LogicalResult performMapping(Operation *hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "Performing technology mapping...\n");
 
     // For now, just report the cuts found
@@ -1253,7 +1247,7 @@ private:
     // 3. Connect the mapped circuit
     auto cutVector = cutSets.takeVector();
     UnusedOpPruner pruner;
-    PatternRewriter rewriter(hwModule.getContext());
+    PatternRewriter rewriter(hwModule->getContext());
     for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
       if (value.use_empty()) {
         if (auto *op = value.getDefiningOp())
@@ -1270,7 +1264,7 @@ private:
       LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
       auto *bestCut = cutSet.getMatched();
       if (!bestCut) {
-        return mlir::emitError(hwModule.getLoc(),
+        return mlir::emitError(hwModule->getLoc(),
                                "No matching cut found for value: ")
                << value;
       }
@@ -1355,7 +1349,7 @@ struct GenericLUTMapperPass
   void runOnOperation() override {
 
     // Add LUT pattern.
-    ModuleOp module = getOperation();
+    auto module = getOperation();
     SmallVector<std::unique_ptr<CutRewriterPattern>> patterns;
     patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
     CutRewriterPatternSet patternSet(std::move(patterns));

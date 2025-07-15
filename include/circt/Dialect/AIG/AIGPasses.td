@@ -128,7 +128,7 @@ def Mapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
 }
 
-def GenericLutMapper : Pass<"synthesis-generic-lut-mapper", "mlir::ModuleOp"> {
+def GenericLutMapper : Pass<"synthesis-generic-lut-mapper"> {
   let summary = "Map AIG to genernic LUT operations (comb.truth_table)";
   let description = [{
      This transformation maps aig network into generic LUT operation. 
