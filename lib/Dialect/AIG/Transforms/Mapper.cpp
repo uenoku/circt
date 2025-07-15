@@ -58,7 +58,7 @@
 
 namespace circt {
 namespace aig {
-#define GEN_PASS_DEF_MAPPER
+#define GEN_PASS_DEF_TECHMAPPER
 #define GEN_PASS_DEF_GENERICLUTMAPPER
 #include "circt/Dialect/AIG/AIGPasses.h.inc"
 } // namespace aig
@@ -70,14 +70,15 @@ using namespace aig;
 namespace {
 
 // TODO: Add power estimation
-enum MappingStrategy { Area, Timing };
-bool compareDelayAndArea(MappingStrategy strategy, double newArea,
+enum CutRewriteStrategy { Area, Timing };
+
+bool compareDelayAndArea(CutRewriteStrategy strategy, double newArea,
                          double newDelay, double oldArea, double rhsDelay) {
-  if (MappingStrategy::Area == strategy) {
+  if (CutRewriteStrategy::Area == strategy) {
     // Compare by area only
     return newArea < oldArea || (newArea == oldArea && newDelay < rhsDelay);
   }
-  if (MappingStrategy::Timing == strategy) {
+  if (CutRewriteStrategy::Timing == strategy) {
     // Compare by delay only
     return newDelay < rhsDelay || (newDelay == rhsDelay && newArea < oldArea);
   }
@@ -302,14 +303,14 @@ struct Cut {
   }
 
   // Cache for the truth table of this cut
-  mutable std::optional<TruthTable> truthTable;
+  mutable std::optional<FailureOr<TruthTable>> truthTable;
   // Compute the NPN canonical form for this cut
-  mutable std::optional<NPNClass> computedNPN;
+  mutable std::optional<FailureOr<NPNClass>> npnClass;
 
-  const NPNClass &computeNPN() const {
+  const FailureOr<NPNClass> &getNPNClass() const {
     // If the truth table is already computed, return it
-    if (computedNPN)
-      return *computedNPN;
+    if (npnClass)
+      return *npnClass;
 
     // Compute the NPN (Negation Permutation Negation) canonical form for this
     // cut
@@ -319,8 +320,8 @@ struct Cut {
     // Compute the NPN canonical form
     auto canonicalForm = NPNClass::computeNPNCanonicalForm(*truthTable);
 
-    computedNPN.emplace(std::move(canonicalForm));
-    return *computedNPN;
+    npnClass.emplace(std::move(canonicalForm));
+    return *npnClass;
   }
 
   void dump() const {
@@ -345,8 +346,8 @@ struct Cut {
     auto truthTable = getTruthTable();
     llvm::dbgs() << truthTable->table << "\n";
     llvm::dbgs() << "NPN Class: ";
-    auto npnClass = computeNPN();
-    llvm::dbgs() << npnClass.truthTable.table << "\n";
+    auto &npnClass = getNPNClass();
+    llvm::dbgs() << npnClass->truthTable.table << "\n";
 
     llvm::dbgs() << "==========================\n";
   }
@@ -450,7 +451,7 @@ public:
   unsigned getCutSize() const { return operations.size(); }
   size_t getOutputSize() const { return getRoot()->getNumResults(); }
 
-  FailureOr<TruthTable> getTruthTable() const {
+  const FailureOr<TruthTable> &getTruthTable() const {
     assert(!isPrimaryInput() && "Primary input cuts do not have truth tables");
 
     if (truthTable)
@@ -500,7 +501,7 @@ public:
     auto result = rootResults[0];
 
     // Cache the truth table
-    truthTable.emplace(numInputs, numOutputs, eval[result]);
+    truthTable = TruthTable(numInputs, numOutputs, eval[result]);
     return *truthTable;
   }
 
@@ -595,7 +596,7 @@ public:
   // order. This also removes duplicate cuts based on their inputs and root
   // operation.
   void freezeCutSet(
-      MappingStrategy storategy, unsigned maxCuts,
+      CutRewriteStrategy storategy, unsigned maxCuts,
       llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
     DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
     size_t uniqueCount = 0;
@@ -666,17 +667,11 @@ public:
   /// Iterator that returns all the cuts.
   /// This is a range-based for loop compatible iterator.
   ArrayRef<Cut> getCuts() const { return cuts; }
-
-  /// Clear all cuts
-  void clear() { cuts.clear(); }
 };
 
 // Base class for Cut rewriting patterns.
 struct CutRewriterPattern {
   virtual ~CutRewriterPattern() = default;
-
-  // Run heavy initialization logic here if needed.
-  virtual LogicalResult initialize() { return success(); }
 
   // Return true if the cut matches this cut rewriter pattern. If
   // `useTruthTableMatcher` is implemented to return true, this method is
@@ -710,144 +705,6 @@ struct CutRewriterPattern {
 
   virtual unsigned getNumInputs() const = 0;
   virtual unsigned getNumOutputs() const = 0;
-};
-
-/// Simple technology library encoded as a HWModuleOp.
-struct TechLibraryPattern : public CutRewriterPattern {
-  hw::HWModuleOp module;
-
-  TechLibraryPattern(hw::HWModuleOp mod) : module(mod) {}
-
-  /// Match the cut set against this library primitive
-  bool match(const Cut &cutSet) const override { return false; }
-
-  /// Rewrite the cut set using this library primitive
-  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
-                        Cut &cut) const override {
-    // Compute permutations of inputs and outputs
-    // and rewrite the cut using the library primitive.
-
-    return success();
-  }
-
-  double getAttr(StringRef name) const {
-    auto dict = module->getAttrOfType<DictionaryAttr>("hw.techlib.info");
-    if (!dict)
-      return 0.0; // No attributes available
-    auto attr = dict.get(name);
-    if (!attr)
-      return 0.0; // Attribute not found
-    return cast<FloatAttr>(attr).getValue().convertToDouble();
-  }
-
-  double getArea(const Cut &cut) const override { return getAttr("area"); }
-
-  double getDelay(const Cut &cut, size_t inputIndex,
-                  size_t outputIndex) const override {
-    return getAttr("delay");
-  }
-
-  unsigned getNumInputs() const override {
-    return static_cast<hw::HWModuleOp>(module).getNumInputPorts();
-  }
-
-  unsigned getNumOutputs() const override {
-    return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
-  }
-};
-
-struct TestTechLibraryPattern : public CutRewriterPattern {
-  /// Test pattern for a simple AND gate
-  bool match(const Cut &cutSet) const override {
-    // Match if the cut has exactly 2 inputs and 1 output
-    return cutSet.getInputSize() == 2 && cutSet.getOutputSize() == 1;
-  }
-
-  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
-                        Cut &cut) const override {
-    // Create an AND operation with the inputs of the cut
-    auto *root = cut.getRoot();
-    rewriter.replaceOpWithNewOp<aig::AndInverterOp>(root, cut.inputs[0],
-                                                    cut.inputs[1]);
-    return success();
-  }
-
-  double getArea(const Cut &cut) const override { return 1.0; }
-  double getDelay(const Cut &cut, size_t inputIndex,
-                  size_t outputIndex) const override {
-    return 1.0; // Fixed delay for AND gate
-  }
-
-  unsigned getNumInputs() const override { return 2; }
-  unsigned getNumOutputs() const override { return 1; }
-};
-
-struct GenericLUT : public CutRewriterPattern {
-  /// Generic LUT primitive with k inputs
-  size_t k; // Number of inputs for the LUT
-  GenericLUT(size_t k) : k(k) {}
-  bool match(const Cut &cutSet) const override {
-    // Check if the cut matches the LUT primitive
-    LLVM_DEBUG(llvm::dbgs()
-                   << "Matching cut set with " << cutSet.getInputSize()
-                   << " inputs against LUT with " << k << " inputs.\n";);
-    return cutSet.getInputSize() <= k;
-  }
-
-  unsigned getNumInputs() const override { return k; }
-  unsigned getNumOutputs() const override { return 1; } // Single output LUT
-
-  double getArea(const Cut &cut) const override {
-    // TODO: Implement area-flow.
-    return 1.0;
-  }
-
-  double getDelay(const Cut &cut, size_t inputIndex,
-                  size_t outputIndex) const override {
-    // Assume a fixed delay for the generic LUT
-    return 1.0;
-  }
-
-  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
-                        Cut &cut) const override {
-    // NOTE: Don't use NPN because it's necessary to consider polarity etc.
-    auto truthTable = cut.getTruthTable();
-    if (failed(truthTable))
-      return failure();
-
-    LLVM_DEBUG({
-      llvm::dbgs() << "Rewriting cut with " << cut.getInputSize()
-                   << " inputs and " << cut.getCutSize()
-                   << " operations to a generic LUT with " << k << " inputs.\n";
-      cut.dump();
-      llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
-      for (size_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
-        for (size_t j = 0; j < cut.getInputSize(); ++j) {
-          // Print the input values for the truth table
-          llvm::dbgs() << (i & (1u << j) ? "1" : "0");
-        }
-        llvm::dbgs() << " " << (truthTable->table[i] ? "1" : "0") << "\n";
-      }
-    });
-
-    SmallVector<bool> lutTable;
-    // Convert the truth table to a LUT table
-    for (uint32_t i = 0; i < truthTable->table.getBitWidth(); ++i)
-      lutTable.push_back(truthTable->table[i]);
-
-    auto arrayAttr = rewriter.getBoolArrayAttr(
-        lutTable); // Create a boolean array attribute.
-
-    SmallVector<Value> lutInputs(cut.inputs.rbegin(), cut.inputs.rend());
-
-    // Generate comb.truth table operation.
-    auto truthTableOp = rewriter.create<comb::TruthTableOp>(
-        cut.getRoot()->getLoc(), lutInputs, arrayAttr);
-
-    // Replace the root operation with the truth table operation
-    rewriter.replaceOp(cut.getRoot(), truthTableOp);
-    return success();
-  }
 };
 
 /// Test function to verify NPN computation
@@ -923,55 +780,43 @@ private:
 class CutRewriter {
 private:
   Operation *topOp;
-  MappingStrategy strategy;   // Mapping strategy (area or timing)
-  unsigned maxCutInputSize;   // Maximum cut input size
-  unsigned maxCutSizePerRoot; // Maximum cut size per root operation
+  CutRewriteStrategy strategy; // Mapping strategy (area or timing)
+  unsigned maxCutInputSize;    // Maximum cut input size
+  unsigned maxCutSizePerRoot;  // Maximum cut size per root operation
   const CutRewriterPatternSet &patterns;
   llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
 
 public:
-  CutRewriter(Operation *op, MappingStrategy strategy, unsigned maxCutInputSize,
-              unsigned maxCutSizePerRoot, CutRewriterPatternSet &patterns)
+  CutRewriter(Operation *op, CutRewriteStrategy strategy,
+              unsigned maxCutInputSize, unsigned maxCutSizePerRoot,
+              CutRewriterPatternSet &patterns)
       : topOp(op), strategy(strategy), maxCutInputSize(maxCutInputSize),
         maxCutSizePerRoot(maxCutSizePerRoot), patterns(patterns) {}
 
-  /// Initialize the technology library
-
   /// Run the mapping algorithm
   LogicalResult run() {
-    LLVM_DEBUG(llvm::dbgs() << "Starting AIG technology mapping\n");
-    LLVM_DEBUG(llvm::dbgs()
-               << "Mode: "
-               << (MappingStrategy::Area == strategy ? "area" : "delay")
-               << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "Max cut size: " << maxCutSizePerRoot << "\n");
-    LLVM_DEBUG(llvm::dbgs()
-               << "Max cuts per node: " << maxCutSizePerRoot << "\n");
-
-    // Test NPN computation
-    LLVM_DEBUG(testNPNComputation());
+    LLVM_DEBUG({
+      llvm::dbgs() << "Starting Cut Rewriter\n";
+      llvm::dbgs() << "Mode: "
+                   << (CutRewriteStrategy::Area == strategy ? "area" : "delay")
+                   << "\n";
+      llvm::dbgs() << "Max cut size: " << maxCutSizePerRoot << "\n";
+      llvm::dbgs() << "Max cuts per node: " << maxCutSizePerRoot << "\n";
+    });
 
     // Process each HW module
-    return mapModule(topOp);
-  }
-
-private:
-  /// Map a single HW module
-  LogicalResult mapModule(Operation *hwModule) {
-    // Clear previous state
-    cutSets.clear();
-
     // Step 1: Enumerate cuts for all nodes
-    if (failed(enumerateCuts(hwModule)))
+    if (failed(enumerateCuts(topOp)))
       return failure();
 
     // Step 2: Select best cuts and perform mapping
-    if (failed(performMapping(hwModule)))
+    if (failed(performMapping(topOp)))
       return failure();
 
     return success();
   }
 
+private:
   /// Enumerate cuts for all nodes in the module
   LogicalResult enumerateCuts(Operation *hwModule) {
     LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
@@ -1030,8 +875,8 @@ private:
     if (patterns.npnToPatternMap.empty())
       return {};
 
-    auto &npnClass = cut.computeNPN();
-    auto it = patterns.npnToPatternMap.find(npnClass.truthTable.table);
+    auto &npnClass = cut.getNPNClass();
+    auto it = patterns.npnToPatternMap.find(npnClass->truthTable.table);
     if (it == patterns.npnToPatternMap.end())
       return {};
     return it->getSecond();
@@ -1207,21 +1052,65 @@ private:
 };
 
 //===----------------------------------------------------------------------===//
-// Mapper Pass
+// Tech Mapper Pass
 //===----------------------------------------------------------------------===//
 
+/// Simple technology library encoded as a HWModuleOp.
+struct TechLibraryPattern : public CutRewriterPattern {
+  hw::HWModuleOp module;
+
+  TechLibraryPattern(hw::HWModuleOp mod) : module(mod) {}
+
+  /// Match the cut set against this library primitive
+  bool match(const Cut &cutSet) const override { return false; }
+
+  /// Rewrite the cut set using this library primitive
+  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
+                        Cut &cut) const override {
+    cut.getCutSize();
+    return success();
+  }
+
+  double getAttr(StringRef name) const {
+    auto dict = module->getAttrOfType<DictionaryAttr>("hw.techlib.info");
+    if (!dict)
+      return 0.0; // No attributes available
+    auto attr = dict.get(name);
+    if (!attr)
+      return 0.0; // Attribute not found
+    return cast<FloatAttr>(attr).getValue().convertToDouble();
+  }
+
+  double getArea(const Cut &cut) const override { return getAttr("area"); }
+
+  double getDelay(const Cut &cut, size_t inputIndex,
+                  size_t outputIndex) const override {
+    return getAttr("delay");
+  }
+
+  unsigned getNumInputs() const override {
+    return static_cast<hw::HWModuleOp>(module).getNumInputPorts();
+  }
+
+  unsigned getNumOutputs() const override {
+    return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
+  }
+};
+
 namespace {
-struct MapperPass : public impl::MapperBase<MapperPass> {
-  using MapperBase<MapperPass>::MapperBase;
+struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
+  using TechMapperBase<TechMapperPass>::TechMapperBase;
 
   void runOnOperation() override {
-    ModuleOp module = getOperation();
+    auto module = getOperation();
 
     if (libraryModules.empty())
-      return;
+      return markAllAnalysesPreserved();
 
     auto &symbolTable = getAnalysis<SymbolTable>();
     SmallVector<std::unique_ptr<CutRewriterPattern>> libraryPatterns;
+
+    unsigned maxInputSize = 0;
 
     // Find library modules in the top module
     for (const std::string &moduleName : libraryModules) {
@@ -1234,25 +1123,20 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
       }
       LLVM_DEBUG(llvm::dbgs()
                  << "Found library module: " << moduleName << "\n");
+
       // Create a CutRewriterPattern for the library module
       std::unique_ptr<CutRewriterPattern> pattern =
           std::make_unique<TechLibraryPattern>(hwModule);
 
-      // Initialize the pattern.
-      // TODO: Consider initialize asynchronously.
-      if (failed(pattern->initialize())) {
-        module->emitError("Failed to initialize library pattern: ")
-            << moduleName;
-        signalPassFailure();
-        return;
-      }
+      // Update the maximum input size
+      maxInputSize = std::max(maxInputSize, pattern->getNumInputs());
 
       // Add the pattern to the library
       libraryPatterns.push_back(std::move(pattern));
     }
 
     CutRewriterPatternSet patternSet(std::move(libraryPatterns));
-    CutRewriter mapper(module, MappingStrategy::Area, maxCutSize,
+    CutRewriter mapper(module, CutRewriteStrategy::Area, maxInputSize,
                        maxCutsPerNode, patternSet);
 
     if (failed(mapper.run()))
@@ -1263,6 +1147,74 @@ struct MapperPass : public impl::MapperBase<MapperPass> {
 //===----------------------------------------------------------------------===//
 // Generic LUT Mapper Pass
 //===----------------------------------------------------------------------===//
+
+struct GenericLUT : public CutRewriterPattern {
+  /// Generic LUT primitive with k inputs
+  size_t k; // Number of inputs for the LUT
+  GenericLUT(size_t k) : k(k) {}
+  bool match(const Cut &cutSet) const override {
+    // Check if the cut matches the LUT primitive
+    LLVM_DEBUG(llvm::dbgs()
+                   << "Matching cut set with " << cutSet.getInputSize()
+                   << " inputs against LUT with " << k << " inputs.\n";);
+    return cutSet.getInputSize() <= k;
+  }
+
+  unsigned getNumInputs() const override { return k; }
+  unsigned getNumOutputs() const override { return 1; } // Single output LUT
+
+  double getArea(const Cut &cut) const override {
+    // TODO: Implement area-flow.
+    return 1.0;
+  }
+
+  double getDelay(const Cut &cut, size_t inputIndex,
+                  size_t outputIndex) const override {
+    // Assume a fixed delay for the generic LUT
+    return 1.0;
+  }
+
+  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
+                        Cut &cut) const override {
+    // NOTE: Don't use NPN because it's necessary to consider polarity etc.
+    auto truthTable = cut.getTruthTable();
+    if (failed(truthTable))
+      return failure();
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "Rewriting cut with " << cut.getInputSize()
+                   << " inputs and " << cut.getCutSize()
+                   << " operations to a generic LUT with " << k << " inputs.\n";
+      cut.dump();
+      llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
+      for (size_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
+        for (size_t j = 0; j < cut.getInputSize(); ++j) {
+          // Print the input values for the truth table
+          llvm::dbgs() << (i & (1u << j) ? "1" : "0");
+        }
+        llvm::dbgs() << " " << (truthTable->table[i] ? "1" : "0") << "\n";
+      }
+    });
+
+    SmallVector<bool> lutTable;
+    // Convert the truth table to a LUT table
+    for (uint32_t i = 0; i < truthTable->table.getBitWidth(); ++i)
+      lutTable.push_back(truthTable->table[i]);
+
+    auto arrayAttr = rewriter.getBoolArrayAttr(
+        lutTable); // Create a boolean array attribute.
+
+    SmallVector<Value> lutInputs(cut.inputs.rbegin(), cut.inputs.rend());
+
+    // Generate comb.truth table operation.
+    auto truthTableOp = rewriter.create<comb::TruthTableOp>(
+        cut.getRoot()->getLoc(), lutInputs, arrayAttr);
+
+    // Replace the root operation with the truth table operation
+    rewriter.replaceOp(cut.getRoot(), truthTableOp);
+    return success();
+  }
+};
 struct GenericLUTMapperPass
     : public impl::GenericLutMapperBase<GenericLUTMapperPass> {
   using GenericLutMapperBase<GenericLUTMapperPass>::GenericLutMapperBase;
@@ -1274,7 +1226,7 @@ struct GenericLUTMapperPass
     patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
     CutRewriterPatternSet patternSet(std::move(patterns));
 
-    CutRewriter mapper(module, MappingStrategy::Area, maxLutSize,
+    CutRewriter mapper(module, CutRewriteStrategy::Area, maxLutSize,
                        maxCutsPerNode, patternSet);
     if (failed(mapper.run()))
       signalPassFailure();

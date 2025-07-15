@@ -92,8 +92,8 @@ def ABCRunner : ExternalSolverPass<"abc-runner"> {
   ];
 }
 
-def Mapper : Pass<"test-cut-rewriter", "mlir::ModuleOp"> {
-  let summary = "Test cut rewriter implementation";
+def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
+  let summary = "";
   let description = [{
   }];
   let options = [
