@@ -92,34 +92,11 @@ def ABCRunner : ExternalSolverPass<"abc-runner"> {
   ];
 }
 
-def Mapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
-  let summary = "Technology mapping pass for AIG circuits";
+def Mapper : Pass<"test-cut-rewriter", "mlir::ModuleOp"> {
+  let summary = "Test cut rewriter implementation";
   let description = [{
-    This pass performs technology mapping on AIG circuits using cut-based algorithms.
-    It implements the approach described in "Improvements to Technology Mapping for
-    LUT-Based FPGAs" by Mishchenko et al.
-
-    The mapper performs the following steps:
-    1. Cut enumeration: Generates all possible cuts for each node in the AIG
-    2. Cut selection: Selects the best cuts based on area and delay metrics using priority cuts
-    3. Technology mapping: Maps the selected cuts to target HW modules
-
-    Key features:
-    - Support for K-LUT mapping (configurable K)
-    - Area-oriented and delay-oriented mapping modes
-    - Priority cuts algorithm for improved quality of results
-    - Support for sequential elements (registers)
-    - Hierarchical mapping across module boundaries
-    - Custom technology library using hw::HWModuleOp definitions
-
-    The pass operates on AIG circuits represented using aig.and_inv operations
-    and produces optimized circuits suitable for FPGA or ASIC implementation.
-    Technology library is specified as a list of hw::HWModuleOp names that define
-    the available primitives for mapping.
   }];
   let options = [
-    Option<"maxCutSize", "max-cut-size", "int", "4",
-           "Maximum cut size (K-LUT size) for technology mapping">,
     Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
            "Maximum number of cuts to maintain per node">,
     ListOption<"libraryModules", "library-modules", "std::string",

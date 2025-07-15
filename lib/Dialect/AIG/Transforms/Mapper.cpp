@@ -67,27 +67,22 @@ namespace aig {
 using namespace circt;
 using namespace aig;
 
-//===----------------------------------------------------------------------===//
-// Cut Data Structures
-//===----------------------------------------------------------------------===//
+namespace {
+
 // TODO: Add power estimation
 enum MappingStrategy { Area, Timing };
-
-static bool compareDelayAndArea(MappingStrategy strategy, double lhsArea,
-                                double lhsDelay, double rhsArea,
-                                double rhsDelay) {
+bool compareDelayAndArea(MappingStrategy strategy, double newArea,
+                         double newDelay, double oldArea, double rhsDelay) {
   if (MappingStrategy::Area == strategy) {
     // Compare by area only
-    return lhsArea < rhsArea || (lhsArea == rhsArea && lhsDelay < rhsDelay);
+    return newArea < oldArea || (newArea == oldArea && newDelay < rhsDelay);
   }
   if (MappingStrategy::Timing == strategy) {
     // Compare by delay only
-    return lhsDelay < rhsDelay || (lhsDelay == rhsDelay && lhsArea < rhsArea);
+    return newDelay < rhsDelay || (newDelay == rhsDelay && newArea < oldArea);
   }
   llvm_unreachable("Unknown mapping strategy");
 }
-
-namespace {
 
 struct TruthTable {
   unsigned numInputs;  // Number of inputs for this cut
@@ -193,8 +188,9 @@ struct NPNClass {
   NPNClass() = default;
   NPNClass(const TruthTable &tt) : truthTable(tt) {}
 
-  /// Compute "exact" NPN canonical form using the algorithm from the paper
-  /// "Fast Boolean Matching Based on NPN Classification".
+  /// Compute "exact" NPN canonical form. This is not practical for large
+  /// truth tables.
+  /// TODO: Use semi-canonical NPN form instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt) {
     NPNClass canonical(tt);
 
@@ -258,42 +254,6 @@ struct NPNClass {
 
     return canonical;
   }
-
-  // Get semi canonical form for this NPN class
-  static NPNClass computeSemiNPNCanonicalForm(const TruthTable &tt) {
-    NPNClass semiCanonical(tt);
-    size_t bitWidth = tt.table.getBitWidth();
-
-    // Step 1. Determine the polarity of the output bits.
-    // Check output polarity.
-    if (2 * tt.table.countl_one() > bitWidth) {
-      // If more than half of the bits are 1, we can flip the output polarity
-      semiCanonical.outputNegation =
-          (1 << tt.numOutputs) - 1; // All bits negated
-      // Flip the truth table
-      semiCanonical.truthTable.table.flipAllBits();
-    } else {
-      semiCanonical.outputNegation = 0;
-    }
-
-    // Step 2. Determine the polarity of inputs.
-
-    semiCanonical.truthTable;
-
-    // Step 3. Determine the input permutation.
-    semiCanonical.inputPermutation.resize(tt.numInputs);
-    for (unsigned i = 0; i < tt.numInputs; ++i)
-      semiCanonical.inputPermutation[i] = i;
-
-    // For semi-canonical form, we only consider input negation
-    semiCanonical.inputNegation = 0;
-    semiCanonical.outputNegation = 0;
-
-    // The truth table is already in its canonical form
-    semiCanonical.truthTable = tt;
-
-    return semiCanonical;
-  }
 };
 
 } // end anonymous namespace
@@ -313,15 +273,19 @@ static bool isAlwaysCutInput(Value value) {
   return !isa<aig::AndInverterOp>(op);
 }
 
+//===----------------------------------------------------------------------===//
+// Cut Data Structures
+//===----------------------------------------------------------------------===//
+
 class CutRewriterPatternSet;
 class CutRewriter;
-class CutRewriterPattern;
+struct CutRewriterPattern;
 
 /// Represents a cut in the AIG network
 struct Cut {
   llvm::SmallSetVector<Value, 4> inputs; // Cut inputs.
   // Operations in the cut. Operation is topologcally sorted, with the root
-  // operation at the front.
+  // operation at the back.
   llvm::SmallSetVector<Operation *, 4> operations;
 
   bool isPrimaryInput() const {
@@ -329,32 +293,12 @@ struct Cut {
     return operations.empty() && inputs.size() == 1;
   }
 
-  // If empty, the arrival time is not computed yet. If failure, there is no
-  // matching pattern for this cut. If arrival time is success, it contains the
-  // arrival time of the cut.
-  std::optional<FailureOr<double>> arrivalTime; // Arrival time of the cut
-  std::optional<CutRewriterPattern *> matchedPattern;
-
   Cut() = default;
 
   Operation *getRoot() const {
     return operations.empty()
                ? nullptr
                : operations.back(); // The first operation is the root
-  }
-
-  auto getArrivalTime() const { return arrivalTime; }
-  auto getMatchedPattern() const { return *matchedPattern; }
-  std::optional<FailureOr<double>> getArea() const;
-  void setNoMatchingPattern() {
-    this->matchedPattern.emplace(nullptr);
-    this->arrivalTime = failure();
-  }
-
-  void setMatchedPatternAndArrivalTime(CutRewriterPattern *matchedPattern,
-                                       double arrivalTime) {
-    this->matchedPattern = matchedPattern;
-    this->arrivalTime = arrivalTime;
   }
 
   // Cache for the truth table of this cut
@@ -431,21 +375,6 @@ public:
     return cut;
   }
 
-  Cut(Operation *root) {
-    // Create a cut with the root operation
-    operations.insert(root);
-    for (auto value : root->getOperands()) {
-      if (inputs.count(value) || !value.getType().isInteger(1))
-        continue;
-
-      auto *defOp = value.getDefiningOp();
-      assert(defOp && "Value must have a defining operation");
-      if (defOp) {
-        operations.insert(defOp);
-      }
-    }
-  }
-
   /// Merge this cut with another cut
   Cut mergeWith(const Cut &other, Operation *root) const {
     // Create a new cut that combines this cut and the other cut
@@ -492,6 +421,7 @@ public:
       // Add the operation to the cut
       newCut.operations.insert(op);
     };
+
     populateOperations(root);
 
     // Construct inputs.
@@ -598,14 +528,32 @@ public:
 };
 
 class MatchedPattern {
-public:
   CutRewriterPattern *pattern = nullptr; // Matched pattern
   Cut *cut = nullptr;                    // Cut that matched the pattern
   double arrivalTime;                    // Arrival time of the cut
 
+public:
   MatchedPattern() = default;
   MatchedPattern(CutRewriterPattern *pattern, Cut *cut, double arrivalTime)
       : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
+
+  double getArrivalTime() const {
+    assert(pattern && "Pattern must be set to get arrival time");
+    return arrivalTime;
+  }
+
+  CutRewriterPattern *getPattern() const {
+    assert(pattern && "Pattern must be set to get the pattern");
+    return pattern;
+  }
+
+  Cut *getCut() const {
+    assert(cut && "Cut must be set to get the cut");
+    return cut;
+  }
+
+  double getArea() const;
+  double getDelay(unsigned inputIndex, unsigned outputIndex) const;
 
   bool isValid() const { return pattern != nullptr; }
 };
@@ -614,24 +562,41 @@ public:
 class CutSet {
 private:
   llvm::SmallVector<Cut, 12> cuts;
-  std::optional<FailureOr<double>> arrivalTime;
+  std::optional<MatchedPattern>
+      matchedPattern; // Matched pattern for this cut set
+
+  bool isFrozen = false; // Whether the cut set is frozen
 
 public:
   virtual ~CutSet() = default;
-  auto getArrivalTime() const { return arrivalTime; }
-  Cut *getMatched() {
-    if (cuts.empty())
-      return nullptr;
-    return &cuts[0];
+
+  bool isMatched() const {
+    return matchedPattern.has_value() && matchedPattern->isValid();
+  }
+
+  double getArrivalTime() const {
+    assert(isMatched() &&
+           "Matched pattern must be set before getting arrival time");
+    return matchedPattern->getArrivalTime();
+  }
+
+  std::optional<MatchedPattern> getMatchedPattern() const {
+    return matchedPattern;
+  }
+
+  Cut *getMatchedCut() {
+    assert(isMatched() &&
+           "Matched pattern must be set before getting matched cut");
+    return matchedPattern->getCut();
   }
 
   // Keep the cuts sorted by priority. The priority is determined by the
   // optimization mode (area or timing). The cuts are sorted in descending
   // order. This also removes duplicate cuts based on their inputs and root
   // operation.
-  void freezeCutSet(MappingStrategy storategy, unsigned maxCuts,
-                    llvm::function_ref<bool(const Cut &, const Cut &)> compare,
-                    llvm::function_ref<bool(Cut &)> hasMatching) {
+  void freezeCutSet(
+      MappingStrategy storategy, unsigned maxCuts,
+      llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
     DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
     size_t uniqueCount = 0;
     for (size_t i = 0; i < cuts.size(); ++i) {
@@ -646,7 +611,8 @@ public:
           std::swap(cuts[uniqueCount], cuts[i]);
         }
 
-        // Beaware of lifetime of arrayref.
+        // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
+        // after this point.
         uniqueCuts.insert({cuts[uniqueCount].inputs.getArrayRef(),
                            cuts[uniqueCount].getRoot()});
         ++uniqueCount;
@@ -660,98 +626,52 @@ public:
 
     // Maintain size limit by removing worst cuts
     if (cuts.size() > maxCuts) {
-      // Sort by priority using the provided comparison function
-      std::sort(cuts.begin(), cuts.end(), compare);
-
-      // We should keep at least one cut that matches the current pattern
-      // sets.
-      bool matched = false;
-      for (size_t i = 0; i < maxCuts; ++i) {
-        if (hasMatching(cuts[i])) {
-          matched = true;
-        }
-      }
-
-      if (!matched) {
-        // Ok, try searching a cut.
-        for (size_t i = maxCuts; i < cuts.size(); ++i) {
-          if (hasMatching(cuts[i])) {
-            // Found a cut that matches the current pattern sets.
-            std::swap(cuts[maxCuts - 1], cuts[i]);
-            break;
-          }
-        }
-      }
-
+      // Sort by priority using heuristic.
+      // TODO: Make this configurable.
+      std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+        return a.getCutSize() < b.getCutSize();
+      });
       cuts.resize(maxCuts);
+      // TODO: Pririty cuts may prune all matching cuts, so we may need to
+      //       keep the matching cut before pruning.
     }
 
     // Find the best matching pattern for this cut set
-    arrivalTime = std::numeric_limits<double>::max();
-    double lhsArea = std::numeric_limits<double>::max();
-    for (size_t i = 0; i < cuts.size(); ++i) {
-      if (hasMatching(cuts[i])) {
-        auto rhsTime = **cuts[i].getArrivalTime();
-        auto rhsArea = **cuts[i].getArea();
+    double bestArrivalTime = std::numeric_limits<double>::max();
+    double bestArea = std::numeric_limits<double>::max();
 
-        if (compareDelayAndArea(storategy, rhsArea, rhsTime, lhsArea,
-                                **arrivalTime)) {
-          arrivalTime = rhsTime;
-          lhsArea = rhsArea;
-          if (i)
-            std::swap(cuts[0], cuts[i]);
-        }
+    for (auto &cut : cuts) {
+      auto currentMatchedPattern =
+          matchCut(cut); // Match the cut against the pattern set
+      if (!currentMatchedPattern)
+        continue;
+
+      if (compareDelayAndArea(storategy, currentMatchedPattern->getArea(),
+                              currentMatchedPattern->getArrivalTime(), bestArea,
+                              bestArrivalTime)) {
+        // Found a better matching pattern
+        matchedPattern = currentMatchedPattern;
       }
     }
   }
 
   size_t size() const { return cuts.size(); }
 
-  /// Add a cut to the set, maintaining priority order
-  void addCut(Cut cut) { cuts.push_back(std::move(cut)); }
-
-  /// Get the best cut based on optimization mode
-  const Cut *
-  getBestCut(llvm::function_ref<bool(const Cut &, const Cut &)> compare) const {
-    if (cuts.empty())
-      return nullptr;
-
-    const Cut *best = &cuts[0];
-    for (const Cut &cut : cuts) {
-      if (compare(cut, *best))
-        best = &cut; // Found a better cut
-    }
-    return best;
+  /// Add a cut to the set.
+  void addCut(Cut cut) {
+    assert(!isFrozen && "Cannot add cuts to a frozen cut set");
+    cuts.push_back(std::move(cut));
   }
 
   /// Iterator that returns all the cuts.
   /// This is a range-based for loop compatible iterator.
   ArrayRef<Cut> getCuts() const { return cuts; }
 
-  virtual void notifyBestMatch(Cut &cut) {
-    // This method is called when a cut matches a pattern.
-    // It can be used to update the cut set or perform additional actions.
-    // Default implementation does nothing.
-  }
-
-  /// Notify that a cut has failed to match a pattern.
-  virtual void notifyMatchFailure(Cut &cut) {}
-
   /// Clear all cuts
   void clear() { cuts.clear(); }
 };
 
-struct CutSetWithAreaFlow : CutSet {
-  double areaFlow = 0.0;
-  // The node state is used to store the cut set for each node in the AIG
-  // network. It is used to keep track of the cuts for each node and their
-  virtual ~CutSetWithAreaFlow() = default;
-
-  void notifyBestMatch(Cut &cut) override {}
-  void notifyMatchFailure(Cut &cut) override {}
-};
-
-// Base class for tech libraries.
+// Base class for Cut rewriting patterns.
 struct CutRewriterPattern {
   virtual ~CutRewriterPattern() = default;
 
@@ -763,9 +683,9 @@ struct CutRewriterPattern {
   // called only when the truth table matches the cut set.
   virtual bool match(const Cut &cut) const = 0;
 
-  // If necessary, populate `truthTable` with the truth table this pattern
-  // potentially matches.  and return true if the pattern is applicable if the
-  // truth table matches the cut set.
+  // If the pattern can be matched using a truth table, populate `truthTable`
+  // with the truth table this pattern potentially matches. If false is
+  // returned, the pattern is always tried to match against the cut set.
   virtual bool
   useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const {
     return false;
@@ -780,14 +700,13 @@ struct CutRewriterPattern {
   virtual LogicalResult rewrite(PatternRewriter &rewriter,
                                 Cut &cutSet) const = 0;
 
-  // Interface for cut priorities.
+  // Get the area after the rewrite. `cut` is guaranteed to match this pattern.
   virtual double getArea(const Cut &cut) const = 0;
 
-  // Get delay for a specific input-output pair.
+  // Get the delay between two specific ports. `cut` is guaranteed to match this
+  // pattern.
   virtual double getDelay(const Cut &cut, size_t inputIndex,
                           size_t outputIndex) const = 0;
-
-  // TODO: Include power.
 
   virtual unsigned getNumInputs() const = 0;
   virtual unsigned getNumOutputs() const = 0;
@@ -1004,31 +923,17 @@ private:
 class CutRewriter {
 private:
   Operation *topOp;
-  MappingStrategy strategy; // Mapping strategy (area or timing)
-  unsigned maxCutInputSize;
-  unsigned maxCutSizePerRoot;
+  MappingStrategy strategy;   // Mapping strategy (area or timing)
+  unsigned maxCutInputSize;   // Maximum cut input size
+  unsigned maxCutSizePerRoot; // Maximum cut size per root operation
   const CutRewriterPatternSet &patterns;
   llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
-  std::function<bool(const Cut &, const Cut &)> compare;
 
 public:
   CutRewriter(Operation *op, MappingStrategy strategy, unsigned maxCutInputSize,
               unsigned maxCutSizePerRoot, CutRewriterPatternSet &patterns)
       : topOp(op), strategy(strategy), maxCutInputSize(maxCutInputSize),
-        maxCutSizePerRoot(maxCutSizePerRoot), patterns(patterns) {
-    // Set the comparison function based on area or delay mode
-    if (MappingStrategy::Area == strategy) {
-      compare = [](const Cut &a, const Cut &b) {
-        return a.getCutSize() < b.getCutSize();
-      };
-    } else if (MappingStrategy::Timing == strategy) {
-      compare = [](const Cut &a, const Cut &b) {
-        // Implement depth.
-        assert(false);
-        return true;
-      };
-    } // Initialize library
-  }
+        maxCutSizePerRoot(maxCutSizePerRoot), patterns(patterns) {}
 
   /// Initialize the technology library
 
@@ -1133,13 +1038,10 @@ private:
   }
 
   // Compute arrival time to this cut.
-  void matchCutToPattern(Cut &cut) {
-    if (cut.matchedPattern)
-      return; // Cut already has a matched pattern
-    if (cut.isPrimaryInput()) {
-      cut.setMatchedPatternAndArrivalTime(nullptr, 0.0);
-      return;
-    }
+  std::optional<MatchedPattern> matchCutToPattern(Cut &cut) {
+    if (cut.isPrimaryInput())
+      return {};
+
     double bestArrivalTime = std::numeric_limits<double>::max();
     CutRewriterPattern *bestPattern = nullptr;
     SmallVector<double, 4> inputArrivalTimes, outputArrivalTimes;
@@ -1154,21 +1056,15 @@ private:
         inputArrivalTimes.push_back(0.0);
       } else if (arrivalTime != cutSets.end()) {
         // If the arrival time is already computed, use it
-        auto arrivalTimeOpt = arrivalTime->second->getArrivalTime();
-        assert(arrivalTimeOpt &&
-               "Cut must have a valid arrival time after pruning");
-        if (failed(*arrivalTimeOpt)) {
-          cut.setNoMatchingPattern();
-          return;
-        }
-
-        inputArrivalTimes.push_back(**arrivalTimeOpt);
+        auto pattern = arrivalTime->second->getMatchedPattern();
+        if (!pattern)
+          return {};
+        inputArrivalTimes.push_back(pattern->getArrivalTime());
       } else {
-        // If the input is not a primary input, it has no arrival time yet
-        cut.setNoMatchingPattern();
-        return;
+        assert(false && "Input must have a valid arrival time");
       }
     }
+
     auto tryPattern = [&](CutRewriterPattern *pattern) {
       if (!pattern->match(cut))
         return;
@@ -1198,12 +1094,10 @@ private:
     for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
       tryPattern(pattern);
 
-    // Set the arrival time for the cut
-    if (bestPattern) {
-      cut.setMatchedPatternAndArrivalTime(bestPattern, bestArrivalTime);
-    } else {
-      cut.setNoMatchingPattern();
-    }
+    if (!bestPattern)
+      return std::nullopt; // No matching pattern found
+
+    return MatchedPattern(bestPattern, &cut, bestArrivalTime);
   }
 
   /// Generate cuts for AND-inverter operations
@@ -1228,29 +1122,8 @@ private:
     auto prune = llvm::make_scope_exit([&]() {
       // Prune the cut set to maintain the maximum number of cuts
       getOrCreateCutSet(result)->freezeCutSet(
-          strategy, maxCutSizePerRoot, compare, [&](Cut &cut) {
-            // Check if the cut matches any pattern
-            matchCutToPattern(cut);
-            return succeeded(*cut.getArrivalTime());
-          });
-      /*
-            for (const Cut &cut : resultCutSet.getCuts()) {
-              auto arrivalTime = cut.getArrivalTime();
-              assert(arrivalTime &&
-                     "Cut must have a valid arrival time after pruning");
-              if (failed(*arrivalTime))
-                continue;
-              // Update the arrival time for the result
-              auto matchedPattern = cut.getMatchedPattern();
-              assert(matchedPattern &&
-                     "Cut must have a matched pattern after pruning");
-              auto [it, inserted] = arrivalTimes.try_emplace(result,
-         **arrivalTime); if (!inserted) {
-                // If the arrival time already exists, take the minimum
-                it->second = std::min(it->second, **arrivalTime);
-              }
-            }
-              */
+          strategy, maxCutSizePerRoot,
+          [&](Cut &cut) { return matchCutToPattern(cut); });
     });
 
     // Operation itself is a cut, so add it to the cut set
@@ -1315,28 +1188,16 @@ private:
       }
 
       LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
-      auto *bestCut = cutSet->getMatched();
-      if (!bestCut) {
+      auto matchedPattern = cutSet->getMatchedPattern();
+      if (!matchedPattern) {
         return mlir::emitError(hwModule->getLoc(),
                                "No matching cut found for value: ")
                << value;
       }
 
-      LLVM_DEBUG(llvm::dbgs() << "Best cut: " << bestCut->getRoot() << "\n");
-      // Match the cut to a pattern and rewrite it
-      auto *matchedPattern = bestCut->getMatchedPattern();
-      if (!matchedPattern) {
-        llvm::dbgs() << "Cut set size: " << cutSet->size() << "\n";
-        // If no pattern matched, we cannot rewrite the cut
-        bestCut->dump();
-        continue;
-      }
-      assert(matchedPattern && "Cut must have a matched pattern after pruning");
-      assert(matchedPattern->match(*bestCut) &&
-             "Cut must match the pattern after pruning");
-
-      rewriter.setInsertionPoint(bestCut->getRoot());
-      if (failed(matchedPattern->rewrite(rewriter, *bestCut))) {
+      auto *cut = matchedPattern->getCut();
+      rewriter.setInsertionPoint(cut->getRoot());
+      if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut))) {
         return failure();
       }
     }
@@ -1408,7 +1269,7 @@ struct GenericLUTMapperPass
   void runOnOperation() override {
 
     // Add LUT pattern.
-    auto module = getOperation();
+    auto *module = getOperation();
     SmallVector<std::unique_ptr<CutRewriterPattern>> patterns;
     patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
     CutRewriterPatternSet patternSet(std::move(patterns));
@@ -1421,14 +1282,13 @@ struct GenericLUTMapperPass
 }; // namespace
 } // namespace
 
-std::optional<FailureOr<double>> Cut::getArea() const {
-  if (isPrimaryInput())
-    return 0.0; // Primary inputs do not have area
-  if (!matchedPattern)
-    return {}; // Matching is not performed yet.
+double MatchedPattern::getArea() const {
+  assert(pattern && cut && "Pattern and cut must be set to get area");
+  return pattern->getArea(*cut);
+}
 
-  if (!*matchedPattern)
-    return failure();
-
-  return (*matchedPattern)->getArea(*this);
+double MatchedPattern::getDelay(unsigned inputIndex,
+                                unsigned outputIndex) const {
+  assert(pattern && cut && "Pattern and cut must be set to get delay");
+  return pattern->getDelay(*cut, inputIndex, outputIndex);
 }
