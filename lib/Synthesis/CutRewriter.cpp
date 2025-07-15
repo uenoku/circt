@@ -779,35 +779,36 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     }
   }
 
-  auto checkAndUpdate = [&](CutRewriterPattern *pattern,
-                            llvm::function_ref<unsigned(unsigned)> mapInput) {
-    // If the pattern matches the cut, compute the arrival time
-    double patternArrivalTime = 0.0;
+  auto computeArrivalTimeAndPickBest =
+      [&](CutRewriterPattern *pattern,
+          llvm::function_ref<unsigned(unsigned)> mapInput) {
+        // If the pattern matches the cut, compute the arrival time
+        double patternArrivalTime = 0.0;
 
-    // Compute the maximum delay for each output from inputs
-    for (size_t i = 0; i < cut.getInputSize(); ++i) {
-      for (size_t j = 0; j < cut.getOutputSize(); ++j) {
-        // Map pattern input i to cut input through NPN transformations
-        unsigned cutOriginalInput = mapInput(i);
-        patternArrivalTime = std::max(
-            patternArrivalTime, pattern->getDelay(cut, cutOriginalInput, j) +
-                                    inputArrivalTimes[cutOriginalInput]);
-      }
-    }
+        // Compute the maximum delay for each output from inputs
+        for (size_t i = 0; i < cut.getInputSize(); ++i) {
+          for (size_t j = 0; j < cut.getOutputSize(); ++j) {
+            // Map pattern input i to cut input through NPN transformations
+            unsigned cutOriginalInput = mapInput(i);
+            patternArrivalTime =
+                std::max(patternArrivalTime,
+                         pattern->getDelay(cut, cutOriginalInput, j) +
+                             inputArrivalTimes[cutOriginalInput]);
+          }
+        }
 
-    if (!bestPattern ||
-        compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                            patternArrivalTime, bestPattern->getArea(cut),
-                            bestArrivalTime)) {
-      bestArrivalTime = patternArrivalTime;
-      bestPattern = pattern;
-    }
-  };
+        if (!bestPattern ||
+            compareDelayAndArea(options.strategy, pattern->getArea(cut),
+                                patternArrivalTime, bestPattern->getArea(cut),
+                                bestArrivalTime)) {
+          bestArrivalTime = patternArrivalTime;
+          bestPattern = pattern;
+        }
+      };
 
-  auto tryNPNPattern = [&](const NPNClass &patternNPN,
-                           CutRewriterPattern *pattern) {
+  for (auto &[patternNPN, pattern] : getMatchingPatternFromTruthTable(cut)) {
     if (!pattern->match(cut))
-      return;
+      continue;
     auto &cutNPN = cut.getNPNClass();
 
     // Build inverse permutation mapping from cut's canonical form to original
@@ -818,21 +819,13 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
       cutInversePermutation[cutNPN->inputPermutation[i]] = i;
     }
 
-    checkAndUpdate(pattern,
-                   [&](unsigned i) { return cutInversePermutation[i]; });
-  };
-
-  for (auto &[patternNPN, pattern] : getMatchingPatternFromTruthTable(cut))
-    tryNPNPattern(patternNPN, pattern);
-
-  auto tryPattern = [&](CutRewriterPattern *pattern) {
-    if (!pattern->match(cut))
-      return;
-    checkAndUpdate(pattern, [&](unsigned i) { return i; });
-  };
+    computeArrivalTimeAndPickBest(
+        pattern, [&](unsigned i) { return cutInversePermutation[i]; });
+  }
 
   for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
-    tryPattern(pattern);
+    if (pattern->match(cut))
+      computeArrivalTimeAndPickBest(pattern, [&](unsigned i) { return i; });
 
   if (!bestPattern)
     return std::nullopt; // No matching pattern found

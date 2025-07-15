@@ -134,6 +134,13 @@ struct NPNClass {
   /// NOTE: This implementation uses exact canonicalization. For larger
   /// truth tables, semi-canonical forms should be used instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
+
+  /// Equality comparison for NPN classes.
+  bool equivalentOtherThanPermutation(const NPNClass &other) const {
+    return truthTable == other.truthTable &&
+           inputNegation == other.inputNegation &&
+           outputNegation == other.outputNegation;
+  }
 };
 
 //===----------------------------------------------------------------------===//
