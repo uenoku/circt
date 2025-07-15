@@ -205,7 +205,7 @@ public:
   /// Get the number of operations in this cut.
   unsigned getCutSize() const;
 
-  /// Get the number of outputs from root operation. 
+  /// Get the number of outputs from root operation.
   size_t getOutputSize() const;
 
   /// Get the truth table for this cut.
@@ -277,15 +277,15 @@ public:
   /// Virtual destructor for base class.
   virtual ~CutSet() = default;
 
+  /// Get the best matched pattern for this cut set.
+  std::optional<MatchedPattern> getMatchedPattern() const;
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const;
 
   /// Get the arrival time of the best matched pattern.
   /// NOTE: isMatched() must be true
   double getArrivalTime() const;
-
-  /// Get the best matched pattern for this cut set.
-  std::optional<MatchedPattern> getMatchedPattern() const;
 
   /// Get the cut associated with the best matched pattern.
   /// NOTE: isMatched() must be true
@@ -349,7 +349,7 @@ struct CutRewriterPattern {
   ///
   /// This method performs the actual transformation, replacing the cut's
   /// operations with the pattern's implementation. The cut's root operation
-  /// must be replaced or removed.
+  /// must be replaced or removed if returning success.
   virtual LogicalResult rewrite(PatternRewriter &rewriter,
                                 Cut &cutSet) const = 0;
 
