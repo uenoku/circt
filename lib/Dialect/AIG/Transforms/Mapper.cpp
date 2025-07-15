@@ -619,20 +619,24 @@ public:
   void freezeCutSet(MappingStrategy storategy, unsigned maxCuts,
                     llvm::function_ref<bool(const Cut &, const Cut &)> compare,
                     llvm::function_ref<bool(Cut &)> hasMatching) {
-    DenseSet<ArrayRef<Value>> uniqueCuts;
+    DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
     size_t uniqueCount = 0;
     for (size_t i = 0; i < cuts.size(); ++i) {
       auto &cut = cuts[i];
       // Create a unique identifier for the cut based on its inputs and root
       auto inputs = cut.inputs.getArrayRef();
-      if (uniqueCuts.insert(inputs).second) {
-        uniqueCount++;
-        if (i != uniqueCount - 1) {
+      if (!uniqueCuts.contains({inputs, cut.getRoot()})) {
+        if (i != uniqueCount) {
           // Move the unique cut to the front of the vector
           // This maintains the order of cuts while removing duplicates
           // by swapping with the last unique cut found.
-          std::swap(cuts[uniqueCount - 1], cuts[i]);
+          std::swap(cuts[uniqueCount], cuts[i]);
         }
+
+        // Beaware of lifetime of arrayref.
+        uniqueCuts.insert({cuts[uniqueCount].inputs.getArrayRef(),
+                           cuts[uniqueCount].getRoot()});
+        ++uniqueCount;
       }
     }
 
@@ -1098,7 +1102,6 @@ private:
     if (!cutSets.contains(value)) {
       // Add a trivial cut for primary inputs
       cutSets[value] = std::make_unique<CutSet>();
-      cutSets[value]->addCut(Cut::getAsPrimaryInput(value));
     }
 
     return cutSets.find(value)->second.get();
@@ -1309,6 +1312,12 @@ private:
       LLVM_DEBUG(llvm::dbgs() << "Best cut: " << bestCut->getRoot() << "\n");
       // Match the cut to a pattern and rewrite it
       auto *matchedPattern = bestCut->getMatchedPattern();
+      if (!matchedPattern) {
+        llvm::dbgs() << "Cut set size: " << cutSet->size() << "\n";
+        // If no pattern matched, we cannot rewrite the cut
+        bestCut->dump();
+        continue;
+      }
       assert(matchedPattern && "Cut must have a matched pattern after pruning");
       assert(matchedPattern->match(*bestCut) &&
              "Cut must match the pattern after pruning");
