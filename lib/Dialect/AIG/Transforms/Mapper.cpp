@@ -597,6 +597,19 @@ public:
   }
 };
 
+class MatchedPattern {
+public:
+  CutRewriterPattern *pattern = nullptr; // Matched pattern
+  Cut *cut = nullptr;                    // Cut that matched the pattern
+  double arrivalTime;                    // Arrival time of the cut
+
+  MatchedPattern() = default;
+  MatchedPattern(CutRewriterPattern *pattern, Cut *cut, double arrivalTime)
+      : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
+
+  bool isValid() const { return pattern != nullptr; }
+};
+
 /// Cut set for a node using priority cuts algorithm
 class CutSet {
 private:
