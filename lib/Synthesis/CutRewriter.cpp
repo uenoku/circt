@@ -1,16 +1,11 @@
 #include "circt/Synthesis/CutRewriter.h"
 
 #include "circt/Dialect/AIG/AIGOps.h"
-#include "circt/Dialect/AIG/AIGPasses.h"
-#include "circt/Dialect/Comb/CombOps.h"
-#include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/HW/HWTypes.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
@@ -22,14 +17,9 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TinyPtrVector.h"
-#include "llvm/IR/InlineAsm.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
-#include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -246,265 +236,6 @@ circt::synthesis::Cut::simulateOp(Operation *op,
   }
   // Add more operation types as needed
   return llvm::failure();
-}
-
-LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
-  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
-
-  // Topological traversal
-  llvm::SmallVector<Operation *> worklist;
-  llvm::DenseSet<Operation *> visited;
-
-  auto result = hwModule->walk([&](Operation *op) {
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-      if (failed(generateCutsForAndOp(andOp)))
-        return mlir::WalkResult::interrupt();
-      auto &cutSet = getCutSet(andOp.getResult());
-      LLVM_DEBUG(llvm::dbgs() << "Generated cut for AND operation: "
-                              << andOp.getResult() << "\n");
-      for (const Cut &cut : cutSet.getCuts()) {
-        LLVM_DEBUG(cut.dump());
-      }
-    }
-
-    return mlir::WalkResult::advance();
-  });
-
-  if (result.wasInterrupted()) {
-    hwModule->emitError("Failed to generate cuts for AND operations");
-    return failure();
-  }
-
-  return success();
-}
-
-/// Generate cuts for AND-inverter operations
-LogicalResult CutRewriter::generateCutsForAndOp(Operation *logicOp) {
-  assert(logicOp->getNumResults() == 1 &&
-         "Logic operation must have a single result");
-  Value result = logicOp->getResult(0);
-
-  size_t numOperands = logicOp->getNumOperands();
-  if (numOperands > 2)
-    return logicOp->emitError("when computing cuts operation must have 1 or "
-                              "2 operands, found: ")
-           << numOperands;
-
-  if (!logicOp->getOpResult(0).getType().isInteger(1))
-    return logicOp->emitError("Result type must be a single bit integer");
-
-  Cut singletonCut = getSingletonCut(logicOp);
-
-  auto *resultCutSet = getOrCreateCutSet(result);
-
-  auto prune = llvm::make_scope_exit([&]() {
-    // Prune the cut set to maintain the maximum number of cuts
-    resultCutSet->freezeCutSet(
-        options, [&](Cut &cut) { return matchCutToPattern(cut); });
-  });
-
-  // Operation itself is a cut, so add it to the cut set
-  resultCutSet->addCut(singletonCut);
-
-  if (numOperands == 1) {
-    auto inputCutSet = getCutSet(logicOp->getOperand(0));
-    for (const Cut &cut : inputCutSet.getCuts()) {
-      // Merge the singleton cut with the input cut
-      Cut newCut = cut.mergeWith(singletonCut, logicOp);
-      if (newCut.getInputSize() > options.maxCutInputSize)
-        continue; // Skip if merged cut exceeds max input size
-      resultCutSet->addCut(std::move(newCut));
-    }
-    return success();
-  }
-
-  auto lhs = getCutSet(logicOp->getOperand(0));
-  auto rhs = getCutSet(logicOp->getOperand(1));
-  // Combine cuts from both inputs
-  for (const Cut &cut0 : lhs.getCuts()) {
-    for (const Cut &cut1 : rhs.getCuts()) {
-      auto mergedCut = cut0.mergeWith(cut1, logicOp);
-      if (mergedCut.getCutSize() > options.maxCutSizePerRoot)
-        continue; // Skip cuts that are too large
-      if (mergedCut.getInputSize() > options.maxCutInputSize)
-        continue; // Skip if merged cut exceeds max input size
-      resultCutSet->addCut(std::move(mergedCut));
-    }
-  }
-
-  return success();
-}
-LogicalResult CutRewriter::performMapping(Operation *hwModule) {
-  LLVM_DEBUG(llvm::dbgs() << "Performing technology mapping...\n");
-
-  // For now, just report the cuts found
-  unsigned totalCuts = 0;
-  LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
-
-  // TODO: Implement actual technology mapping transformation
-  // This would involve:
-  // 1. Select best cuts for each node
-  // 2. Replace AIG nodes with library primitives
-  // 3. Connect the mapped circuit
-  auto cutVector = cutSets.takeVector();
-  UnusedOpPruner pruner;
-  PatternRewriter rewriter(hwModule->getContext());
-  for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
-    if (value.use_empty()) {
-      if (auto *op = value.getDefiningOp())
-        pruner.eraseNow(op);
-      continue;
-    }
-
-    if (isAlwaysCutInput(value)) {
-      // If the value is a primary input, skip it
-      LLVM_DEBUG(llvm::dbgs() << "Skipping primary input: " << value << "\n");
-      continue;
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
-    auto matchedPattern = cutSet->getMatchedPattern();
-    if (!matchedPattern) {
-      return mlir::emitError(hwModule->getLoc(),
-                             "No matching cut found for value: ")
-             << value;
-    }
-
-    auto *cut = matchedPattern->getCut();
-    rewriter.setInsertionPoint(cut->getRoot());
-    if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut))) {
-      return failure();
-    }
-  }
-
-  return success();
-}
-const CutSet &CutRewriter::getCutSet(Value value) {
-  // If the cut set does not exist, create a new one
-  if (!cutSets.contains(value)) {
-    // Add a trivial cut for primary inputs
-    cutSets[value] = std::make_unique<CutSet>();
-    cutSets[value]->addCut(getAsPrimaryInput(value));
-  }
-
-  return *cutSets.find(value)->second;
-}
-
-std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
-  if (cut.isPrimaryInput())
-    return {};
-
-  double bestArrivalTime = std::numeric_limits<double>::max();
-  CutRewriterPattern *bestPattern = nullptr;
-  SmallVector<double, 4> inputArrivalTimes, outputArrivalTimes;
-  inputArrivalTimes.reserve(cut.getInputSize());
-  outputArrivalTimes.reserve(cut.getOutputSize());
-  for (auto input : cut.inputs) {
-    assert(input.getType().isInteger(1));
-    // If the input is a primary input, it has no delay
-    auto *arrivalTime = cutSets.find(input);
-    if (isAlwaysCutInput(input)) {
-      // If the input is a primary input, it has no delay
-      inputArrivalTimes.push_back(0.0);
-    } else if (arrivalTime != cutSets.end()) {
-      // If the arrival time is already computed, use it
-      auto pattern = arrivalTime->second->getMatchedPattern();
-      if (!pattern)
-        return {};
-      inputArrivalTimes.push_back(pattern->getArrivalTime());
-    } else {
-      assert(false && "Input must have a valid arrival time");
-    }
-  }
-
-  auto tryPattern = [&](CutRewriterPattern *pattern) {
-    if (!pattern->match(cut))
-      return;
-    // If the pattern matches the cut, compute the arrival time
-    double patternArrivalTime = 0.0;
-    // Compute the maximum delay for each output from inputs
-    for (size_t i = 0; i < cut.getInputSize(); ++i) {
-      for (size_t j = 0; j < cut.getOutputSize(); ++j) {
-        patternArrivalTime =
-            std::max(patternArrivalTime,
-                     pattern->getDelay(cut, i, j) + inputArrivalTimes[i]);
-      }
-    }
-
-    if (!bestPattern ||
-        compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                            patternArrivalTime, bestPattern->getArea(cut),
-                            bestArrivalTime)) {
-      bestArrivalTime = patternArrivalTime;
-      bestPattern = pattern;
-    }
-  };
-
-  for (auto &[_, pattern] : getMatchingPatternFromTruthTable(cut))
-    tryPattern(pattern);
-
-  for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
-    tryPattern(pattern);
-
-  if (!bestPattern)
-    return std::nullopt; // No matching pattern found
-
-  return MatchedPattern(bestPattern, &cut, bestArrivalTime);
-}
-ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
-CutRewriter::getMatchingPatternFromTruthTable(const Cut &cut) const {
-  if (patterns.npnToPatternMap.empty())
-    return {};
-
-  auto &npnClass = cut.getNPNClass();
-  auto it = patterns.npnToPatternMap.find(npnClass->truthTable.table);
-  if (it == patterns.npnToPatternMap.end())
-    return {};
-  return it->getSecond();
-}
-
-CutSet *CutRewriter::getOrCreateCutSet(Value value) {
-  // If the cut set does not exist, create a new one
-  if (!cutSets.contains(value)) {
-    // Add a trivial cut for primary inputs
-    cutSets[value] = std::make_unique<CutSet>();
-  }
-
-  return cutSets.find(value)->second.get();
-}
-
-LogicalResult CutRewriter::run() {
-  LLVM_DEBUG({
-    llvm::dbgs() << "Starting Cut Rewriter\n";
-    llvm::dbgs() << "Mode: "
-                 << (CutRewriteStrategy::Area == options.strategy ? "area"
-                                                                  : "timing")
-                 << "\n";
-    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
-    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
-  });
-
-  // Process each HW module
-  // Step 1: Enumerate cuts for all nodes
-  if (failed(enumerateCuts(topOp)))
-    return failure();
-
-  // Step 2: Select best cuts and perform mapping
-  if (failed(performMapping(topOp)))
-    return failure();
-
-  return success();
-}
-
-double MatchedPattern::getArea() const {
-  assert(pattern && cut && "Pattern and cut must be set to get area");
-  return pattern->getArea(*cut);
-}
-
-double MatchedPattern::getDelay(unsigned inputIndex,
-                                unsigned outputIndex) const {
-  assert(pattern && cut && "Pattern and cut must be set to get delay");
-  return pattern->getDelay(*cut, inputIndex, outputIndex);
 }
 
 //===----------------------------------------------------------------------===//
@@ -778,7 +509,7 @@ const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
 }
 
 //===----------------------------------------------------------------------===//
-// MatchedPattern Implementation
+// MatchedPattern
 //===----------------------------------------------------------------------===//
 
 double MatchedPattern::getArrivalTime() const {
@@ -798,8 +529,19 @@ Cut *MatchedPattern::getCut() const {
 
 bool MatchedPattern::isValid() const { return pattern != nullptr; }
 
+double MatchedPattern::getArea() const {
+  assert(pattern && "Pattern must be set to get area");
+  return pattern->getArea(*cut);
+}
+
+double MatchedPattern::getDelay(unsigned inputIndex,
+                                unsigned outputIndex) const {
+  assert(pattern && "Pattern must be set to get delay");
+  return pattern->getDelay(*cut, inputIndex, outputIndex);
+}
+
 //===----------------------------------------------------------------------===//
-// CutSet Implementation
+// CutSet
 //===----------------------------------------------------------------------===//
 
 bool CutSet::isMatched() const {
@@ -832,7 +574,7 @@ void CutSet::addCut(Cut cut) {
 ArrayRef<Cut> CutSet::getCuts() const { return cuts; }
 
 //===----------------------------------------------------------------------===//
-// CutRewriterPattern Implementation
+// CutRewriterPattern
 //===----------------------------------------------------------------------===//
 
 bool CutRewriterPattern::useTruthTableMatcher(
@@ -841,7 +583,7 @@ bool CutRewriterPattern::useTruthTableMatcher(
 }
 
 //===----------------------------------------------------------------------===//
-// CutRewriterPatternSet Implementation
+// CutRewriterPatternSet
 //===----------------------------------------------------------------------===//
 
 CutRewriterPatternSet::CutRewriterPatternSet(
@@ -862,4 +604,258 @@ CutRewriterPatternSet::CutRewriterPatternSet(
       nonTruthTablePatterns.push_back(pattern.get());
     }
   }
+}
+
+//===----------------------------------------------------------------------===//
+// CutRewriter
+//===----------------------------------------------------------------------===//
+
+LogicalResult CutRewriter::run() {
+  LLVM_DEBUG({
+    llvm::dbgs() << "Starting Cut Rewriter\n";
+    llvm::dbgs() << "Mode: "
+                 << (CutRewriteStrategy::Area == options.strategy ? "area"
+                                                                  : "timing")
+                 << "\n";
+    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
+    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
+  });
+
+  // Process each HW module
+  // Step 1: Enumerate cuts for all nodes
+  if (failed(enumerateCuts(topOp)))
+    return failure();
+
+  // Step 2: Select best cuts and perform mapping
+  if (failed(performMapping(topOp)))
+    return failure();
+
+  return success();
+}
+
+LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
+  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
+
+  // Topological traversal
+  llvm::SmallVector<Operation *> worklist;
+  llvm::DenseSet<Operation *> visited;
+
+  auto result = hwModule->walk([&](Operation *op) {
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+      if (failed(generateCutsForAndOp(andOp)))
+        return mlir::WalkResult::interrupt();
+      auto &cutSet = getCutSet(andOp.getResult());
+      LLVM_DEBUG(llvm::dbgs() << "Generated cut for AND operation: "
+                              << andOp.getResult() << "\n");
+      for (const Cut &cut : cutSet.getCuts()) {
+        LLVM_DEBUG(cut.dump());
+      }
+    }
+
+    return mlir::WalkResult::advance();
+  });
+
+  if (result.wasInterrupted()) {
+    hwModule->emitError("Failed to generate cuts");
+    return failure();
+  }
+
+  return success();
+}
+
+LogicalResult CutRewriter::generateCutsForAndOp(Operation *logicOp) {
+  assert(logicOp->getNumResults() == 1 &&
+         "Logic operation must have a single result");
+  Value result = logicOp->getResult(0);
+
+  size_t numOperands = logicOp->getNumOperands();
+  if (numOperands > 2)
+    return logicOp->emitError("when computing cuts operation must have 1 or "
+                              "2 operands, found: ")
+           << numOperands;
+
+  if (!logicOp->getOpResult(0).getType().isInteger(1))
+    return logicOp->emitError("Result type must be a single bit integer");
+
+  Cut singletonCut = getSingletonCut(logicOp);
+
+  auto *resultCutSet = getOrCreateCutSet(result);
+
+  auto prune = llvm::make_scope_exit([&]() {
+    // Prune the cut set to maintain the maximum number of cuts
+    resultCutSet->freezeCutSet(
+        options, [&](Cut &cut) { return matchCutToPattern(cut); });
+  });
+
+  // Operation itself is a cut, so add it to the cut set
+  resultCutSet->addCut(singletonCut);
+
+  if (numOperands == 1) {
+    auto inputCutSet = getCutSet(logicOp->getOperand(0));
+    for (const Cut &cut : inputCutSet.getCuts()) {
+      // Merge the singleton cut with the input cut
+      Cut newCut = cut.mergeWith(singletonCut, logicOp);
+      if (newCut.getInputSize() > options.maxCutInputSize)
+        continue; // Skip if merged cut exceeds max input size
+      resultCutSet->addCut(std::move(newCut));
+    }
+    return success();
+  }
+
+  auto lhs = getCutSet(logicOp->getOperand(0));
+  auto rhs = getCutSet(logicOp->getOperand(1));
+  // Combine cuts from both inputs
+  for (const Cut &cut0 : lhs.getCuts()) {
+    for (const Cut &cut1 : rhs.getCuts()) {
+      auto mergedCut = cut0.mergeWith(cut1, logicOp);
+      if (mergedCut.getCutSize() > options.maxCutSizePerRoot)
+        continue; // Skip cuts that are too large
+      if (mergedCut.getInputSize() > options.maxCutInputSize)
+        continue; // Skip if merged cut exceeds max input size
+      resultCutSet->addCut(std::move(mergedCut));
+    }
+  }
+
+  return success();
+}
+
+const CutSet &CutRewriter::getCutSet(Value value) {
+  // If the cut set does not exist, create a new one
+  if (!cutSets.contains(value)) {
+    // Add a trivial cut for primary inputs
+    cutSets[value] = std::make_unique<CutSet>();
+    cutSets[value]->addCut(getAsPrimaryInput(value));
+  }
+
+  return *cutSets.find(value)->second;
+}
+
+CutSet *CutRewriter::getOrCreateCutSet(Value value) {
+  // If the cut set does not exist, create a new one
+  if (!cutSets.contains(value)) {
+    // Add a trivial cut for primary inputs
+    cutSets[value] = std::make_unique<CutSet>();
+  }
+
+  return cutSets.find(value)->second.get();
+}
+
+ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
+CutRewriter::getMatchingPatternFromTruthTable(const Cut &cut) const {
+  if (patterns.npnToPatternMap.empty())
+    return {};
+
+  auto &npnClass = cut.getNPNClass();
+  auto it = patterns.npnToPatternMap.find(npnClass->truthTable.table);
+  if (it == patterns.npnToPatternMap.end())
+    return {};
+  return it->getSecond();
+}
+
+std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
+  if (cut.isPrimaryInput())
+    return {};
+
+  double bestArrivalTime = std::numeric_limits<double>::max();
+  CutRewriterPattern *bestPattern = nullptr;
+  SmallVector<double, 4> inputArrivalTimes, outputArrivalTimes;
+  inputArrivalTimes.reserve(cut.getInputSize());
+  outputArrivalTimes.reserve(cut.getOutputSize());
+  for (auto input : cut.inputs) {
+    assert(input.getType().isInteger(1));
+    // If the input is a primary input, it has no delay
+    auto *arrivalTime = cutSets.find(input);
+    if (isAlwaysCutInput(input)) {
+      // If the input is a primary input, it has no delay
+      inputArrivalTimes.push_back(0.0);
+    } else if (arrivalTime != cutSets.end()) {
+      // If the arrival time is already computed, use it
+      auto pattern = arrivalTime->second->getMatchedPattern();
+      if (!pattern)
+        return {};
+      inputArrivalTimes.push_back(pattern->getArrivalTime());
+    } else {
+      assert(false && "Input must have a valid arrival time");
+    }
+  }
+
+  auto tryPattern = [&](CutRewriterPattern *pattern) {
+    if (!pattern->match(cut))
+      return;
+    // If the pattern matches the cut, compute the arrival time
+    double patternArrivalTime = 0.0;
+    // Compute the maximum delay for each output from inputs
+    for (size_t i = 0; i < cut.getInputSize(); ++i) {
+      for (size_t j = 0; j < cut.getOutputSize(); ++j) {
+        patternArrivalTime =
+            std::max(patternArrivalTime,
+                     pattern->getDelay(cut, i, j) + inputArrivalTimes[i]);
+      }
+    }
+
+    if (!bestPattern ||
+        compareDelayAndArea(options.strategy, pattern->getArea(cut),
+                            patternArrivalTime, bestPattern->getArea(cut),
+                            bestArrivalTime)) {
+      bestArrivalTime = patternArrivalTime;
+      bestPattern = pattern;
+    }
+  };
+
+  for (auto &[_, pattern] : getMatchingPatternFromTruthTable(cut))
+    tryPattern(pattern);
+
+  for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
+    tryPattern(pattern);
+
+  if (!bestPattern)
+    return std::nullopt; // No matching pattern found
+
+  return MatchedPattern(bestPattern, &cut, bestArrivalTime);
+}
+
+LogicalResult CutRewriter::performMapping(Operation *hwModule) {
+  LLVM_DEBUG(llvm::dbgs() << "Performing technology mapping...\n");
+
+  // For now, just report the cuts found
+  unsigned totalCuts = 0;
+  LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
+
+  // TODO: Implement actual technology mapping transformation
+  // This would involve:
+  // 1. Select best cuts for each node
+  // 2. Replace AIG nodes with library primitives
+  // 3. Connect the mapped circuit
+  auto cutVector = cutSets.takeVector();
+  UnusedOpPruner pruner;
+  PatternRewriter rewriter(hwModule->getContext());
+  for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
+    if (value.use_empty()) {
+      if (auto *op = value.getDefiningOp())
+        pruner.eraseNow(op);
+      continue;
+    }
+
+    if (isAlwaysCutInput(value)) {
+      // If the value is a primary input, skip it
+      LLVM_DEBUG(llvm::dbgs() << "Skipping primary input: " << value << "\n");
+      continue;
+    }
+
+    LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
+    auto matchedPattern = cutSet->getMatchedPattern();
+    if (!matchedPattern) {
+      return mlir::emitError(hwModule->getLoc(),
+                             "No matching cut found for value: ")
+             << value;
+    }
+
+    auto *cut = matchedPattern->getCut();
+    rewriter.setInsertionPoint(cut->getRoot());
+    if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut))) {
+      return failure();
+    }
+  }
+
+  return success();
 }
