@@ -779,30 +779,16 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     }
   }
 
-  auto tryNPNPattern = [&](const NPNClass &patternNPN,
-                           CutRewriterPattern *pattern) {
-    if (!pattern->match(cut))
-      return;
+  auto checkAndUpdate = [&](CutRewriterPattern *pattern,
+                            llvm::function_ref<unsigned(unsigned)> mapInput) {
     // If the pattern matches the cut, compute the arrival time
     double patternArrivalTime = 0.0;
-    auto &cutNPN = cut.getNPNClass();
-
-    // Build inverse permutation mapping from cut's canonical form to original
-    // cut inputs
-    // TODO: Cache permutation/inv-permutation via unique id.
-    llvm::SmallVector<unsigned> cutInversePermutation(cut.getInputSize());
-    for (size_t i = 0; i < cut.getInputSize(); ++i) {
-      cutInversePermutation[cutNPN->inputPermutation[i]] = i;
-    }
 
     // Compute the maximum delay for each output from inputs
     for (size_t i = 0; i < cut.getInputSize(); ++i) {
       for (size_t j = 0; j < cut.getOutputSize(); ++j) {
         // Map pattern input i to cut input through NPN transformations
-        unsigned patternCanonicalInput = patternNPN.inputPermutation[i];
-        unsigned cutOriginalInput =
-            cutInversePermutation[patternCanonicalInput];
-
+        unsigned cutOriginalInput = mapInput(i);
         patternArrivalTime = std::max(
             patternArrivalTime, pattern->getDelay(cut, cutOriginalInput, j) +
                                     inputArrivalTimes[cutOriginalInput]);
@@ -817,31 +803,33 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
       bestPattern = pattern;
     }
   };
-  auto tryPattern = [&](CutRewriterPattern *pattern) {
+
+  auto tryNPNPattern = [&](const NPNClass &patternNPN,
+                           CutRewriterPattern *pattern) {
     if (!pattern->match(cut))
       return;
-    // If the pattern matches the cut, compute the arrival time
-    double patternArrivalTime = 0.0;
-    // Compute the maximum delay for each output from inputs
+    auto &cutNPN = cut.getNPNClass();
+
+    // Build inverse permutation mapping from cut's canonical form to original
+    // cut inputs
+    // TODO: Cache permutation/inv-permutation via unique id.
+    llvm::SmallVector<unsigned> cutInversePermutation(cut.getInputSize());
     for (size_t i = 0; i < cut.getInputSize(); ++i) {
-      for (size_t j = 0; j < cut.getOutputSize(); ++j) {
-        patternArrivalTime =
-            std::max(patternArrivalTime,
-                     pattern->getDelay(cut, i, j) + inputArrivalTimes[i]);
-      }
+      cutInversePermutation[cutNPN->inputPermutation[i]] = i;
     }
 
-    if (!bestPattern ||
-        compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                            patternArrivalTime, bestPattern->getArea(cut),
-                            bestArrivalTime)) {
-      bestArrivalTime = patternArrivalTime;
-      bestPattern = pattern;
-    }
+    checkAndUpdate(pattern,
+                   [&](unsigned i) { return cutInversePermutation[i]; });
   };
 
   for (auto &[patternNPN, pattern] : getMatchingPatternFromTruthTable(cut))
     tryNPNPattern(patternNPN, pattern);
+
+  auto tryPattern = [&](CutRewriterPattern *pattern) {
+    if (!pattern->match(cut))
+      return;
+    checkAndUpdate(pattern, [&](unsigned i) { return i; });
+  };
 
   for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
     tryPattern(pattern);
