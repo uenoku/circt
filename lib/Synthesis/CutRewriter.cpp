@@ -35,7 +35,6 @@
 #include <memory>
 #include <optional>
 
-
 using namespace circt;
 using namespace circt::synthesis;
 
@@ -224,8 +223,9 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   return newCut;
 }
 
-LogicalResult circt::synthesis::Cut::simulateOp(Operation *op,
-                              DenseMap<Value, APInt> &values) const {
+LogicalResult
+circt::synthesis::Cut::simulateOp(Operation *op,
+                                  DenseMap<Value, APInt> &values) const {
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
     auto inputs = andOp.getInputs();
     SmallVector<APInt, 2> operands;

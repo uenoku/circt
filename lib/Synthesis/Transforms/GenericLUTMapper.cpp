@@ -1,7 +1,6 @@
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Synthesis/CutRewriter.h"
 #include "circt/Synthesis/Transforms/Passes.h"
-#include "circt/Dialect/Comb/CombOps.h"
-
 
 namespace circt {
 namespace synthesis {

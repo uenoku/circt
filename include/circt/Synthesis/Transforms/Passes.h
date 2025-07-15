@@ -27,9 +27,7 @@ namespace synthesis {
 #include "circt/Synthesis/Transforms/Passes.h.inc"
 
 void registerPasses();
-}
-
-
+} // namespace synthesis
 
 } // namespace circt
 

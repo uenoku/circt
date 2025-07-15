@@ -10,7 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Synthesis/Transforms/Passes.h"
 #include "circt/Synthesis/Transforms/SynthesisPipeline.h"
 #include "circt/Conversion/CombToAIG.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
@@ -18,6 +17,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWPasses.h"
 #include "circt/Support/Passes.h"
+#include "circt/Synthesis/Transforms/Passes.h"
 #include "circt/Transforms/Passes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"

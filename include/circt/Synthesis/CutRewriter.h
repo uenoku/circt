@@ -521,7 +521,7 @@ private:
   /// Enumerate cuts for all nodes in the module
   LogicalResult enumerateCuts(Operation *hwModule);
 
-  LogicalResult generateCutsForAndOp(Operation* op);
+  LogicalResult generateCutsForAndOp(Operation *op);
 
   /// Get the cut set for a specific operation
   const CutSet &getCutSet(Value value);
