@@ -3,9 +3,9 @@
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
@@ -779,6 +779,33 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     }
   }
 
+  auto tryNPNPattern = [&](const NPNClass &patternNPN,
+                           CutRewriterPattern *pattern) {
+    if (!pattern->match(cut))
+      return;
+    // If the pattern matches the cut, compute the arrival time
+    double patternArrivalTime = 0.0;
+    auto &cutNPN = cut.getNPNClass();
+    // Compute the maximum delay for each output from inputs
+    for (size_t i = 0; i < cut.getInputSize(); ++i) {
+      for (size_t j = 0; j < cut.getOutputSize(); ++j) {
+        unsigned npnInput =
+            cutNPN->inputPermutation[patternNPN.inputPermutation[i]];
+
+        patternArrivalTime =
+            std::max(patternArrivalTime, pattern->getDelay(cut, npnInput, j) +
+                                             inputArrivalTimes[npnInput]);
+      }
+    }
+
+    if (!bestPattern ||
+        compareDelayAndArea(options.strategy, pattern->getArea(cut),
+                            patternArrivalTime, bestPattern->getArea(cut),
+                            bestArrivalTime)) {
+      bestArrivalTime = patternArrivalTime;
+      bestPattern = pattern;
+    }
+  };
   auto tryPattern = [&](CutRewriterPattern *pattern) {
     if (!pattern->match(cut))
       return;
