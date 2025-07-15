@@ -14,12 +14,10 @@
 #define CIRCT_SYNTHESIS_CUT_REWRITER_H
 
 #include "circt/Support/LLVM.h"
-#include "circt/Support/Namespace.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 #define DEBUG_TYPE "synthesis-cut-rewriter"
 
@@ -40,88 +38,25 @@ struct TruthTable {
         table((1u << numInputs) * numOutputs, 0) {}
 
   /// Get the output value for a given input combination
-  llvm::APInt getOutput(const llvm::APInt &input) const {
-    assert(input.getBitWidth() == numInputs && "Input width mismatch");
-    return table.extractBits(numOutputs, input.getZExtValue() * numOutputs);
-  }
+  llvm::APInt getOutput(const llvm::APInt &input) const;
 
   /// Set the output value for a given input combination
-  void setOutput(const llvm::APInt &input, const llvm::APInt &output) {
-    assert(input.getBitWidth() == numInputs && "Input width mismatch");
-    assert(output.getBitWidth() == numOutputs && "Output width mismatch");
-    unsigned offset = input.getZExtValue() * numOutputs;
-    for (unsigned i = 0; i < numOutputs; ++i)
-      table.setBitVal(offset + i, output[i]);
-  }
+  void setOutput(const llvm::APInt &input, const llvm::APInt &output);
 
   /// Apply input permutation to the truth table
   TruthTable
-  applyPermutation(const llvm::SmallVectorImpl<unsigned> &permutation) const {
-    assert(permutation.size() == numInputs && "Permutation size mismatch");
-    TruthTable result(numInputs, numOutputs);
-
-    for (unsigned i = 0; i < (1u << numInputs); ++i) {
-      llvm::APInt input(numInputs, i);
-      llvm::APInt permutedInput(numInputs, 0);
-
-      // Apply permutation
-      for (unsigned j = 0; j < numInputs; ++j)
-        permutedInput.setBitVal(j, input[permutation[j]]);
-
-      result.setOutput(permutedInput, getOutput(input));
-    }
-
-    return result;
-  }
+  applyPermutation(const llvm::SmallVectorImpl<unsigned> &permutation) const;
 
   /// Apply input negation to the truth table
-  TruthTable applyInputNegation(unsigned mask) const {
-    TruthTable result(numInputs, numOutputs);
-
-    for (unsigned i = 0; i < (1u << numInputs); ++i) {
-      llvm::APInt input(numInputs, i);
-      llvm::APInt negatedInput(numInputs, 0);
-
-      // Apply negation
-      for (unsigned j = 0; j < numInputs; ++j)
-        negatedInput.setBitVal(j, (mask & (1u << j)) ? !input[j] : input[j]);
-
-      result.setOutput(negatedInput, getOutput(input));
-    }
-
-    return result;
-  }
+  TruthTable applyInputNegation(unsigned mask) const;
 
   /// Apply output negation to the truth table
-  TruthTable applyOutputNegation(unsigned negation) const {
-    TruthTable result(numInputs, numOutputs);
-
-    for (unsigned i = 0; i < (1u << numInputs); ++i) {
-      llvm::APInt input(numInputs, i);
-      llvm::APInt output = getOutput(input);
-      llvm::APInt negatedOutput(numOutputs, 0);
-
-      // Apply negation
-      for (unsigned j = 0; j < numOutputs; ++j)
-        negatedOutput.setBitVal(j, (negation & (1u << j)) ? !output[j]
-                                                          : output[j]);
-
-      result.setOutput(input, negatedOutput);
-    }
-
-    return result;
-  }
+  TruthTable applyOutputNegation(unsigned negation) const;
 
   /// Check if this truth table is lexicographically smaller than another
-  bool isLexicographicallySmaller(const TruthTable &other) const {
-    assert(numInputs == other.numInputs && numOutputs == other.numOutputs);
-    return table.ult(other.table);
-  }
+  bool isLexicographicallySmaller(const TruthTable &other) const;
 
-  bool operator==(const TruthTable &other) const {
-    return numInputs == other.numInputs && numOutputs == other.numOutputs &&
-           table == other.table;
-  }
+  bool operator==(const TruthTable &other) const;
 };
 
 struct NPNClass {
@@ -135,69 +70,7 @@ struct NPNClass {
   /// Compute "exact" NPN canonical form. This is not practical for large
   /// truth tables.
   /// TODO: Use semi-canonical NPN form instead.
-  static NPNClass computeNPNCanonicalForm(const TruthTable &tt) {
-    NPNClass canonical(tt);
-
-    // Initialize permutation and negation vectors
-    canonical.inputPermutation.resize(tt.numInputs);
-
-    // Initialize identity permutation
-    for (unsigned i = 0; i < tt.numInputs; ++i)
-      canonical.inputPermutation[i] = i;
-
-    TruthTable bestTT = tt;
-
-    // Try all possible input negations (2^n combinations)
-    assert(tt.numInputs <= 20 && "Too many inputs for input negation mask");
-    for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
-      TruthTable negatedTT = tt.applyInputNegation(negMask);
-
-      // Try all possible permutations
-      llvm::SmallVector<unsigned> permutation(tt.numInputs);
-      for (uint32_t i = 0; i < tt.numInputs; ++i) {
-        permutation[i] = i;
-      }
-
-      do {
-        TruthTable permutedTT = negatedTT.applyPermutation(permutation);
-
-        // Try output negation (for single output)
-        if (tt.numOutputs == 1) {
-          unsigned outputNegMask = 0;
-          TruthTable candidate = permutedTT;
-
-          // Try without output negation
-          if (candidate.isLexicographicallySmaller(bestTT)) {
-            bestTT = candidate;
-            canonical.truthTable = candidate;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = negMask;
-            canonical.outputNegation = outputNegMask;
-          }
-
-          // Try with output negation
-          candidate = permutedTT.applyOutputNegation(1);
-          if (candidate.isLexicographicallySmaller(bestTT)) {
-            bestTT = candidate;
-            canonical.truthTable = candidate;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = negMask;
-            canonical.outputNegation = 1;
-          }
-        } else {
-          // For multi-output, just check without output negation
-          if (permutedTT.isLexicographicallySmaller(bestTT)) {
-            bestTT = permutedTT;
-            canonical.truthTable = permutedTT;
-            canonical.inputPermutation = permutation;
-            canonical.inputNegation = negMask;
-          }
-        }
-      } while (std::next_permutation(permutation.begin(), permutation.end()));
-    }
-
-    return canonical;
-  }
+  static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
 };
 
 //===----------------------------------------------------------------------===//
@@ -216,130 +89,31 @@ struct Cut {
   // operation at the back.
   llvm::SmallSetVector<mlir::Operation *, 4> operations;
 
-  bool isPrimaryInput() const {
-    // A cut is a primary input if it has no operations and only one input
-    return operations.empty() && inputs.size() == 1;
-  }
+  bool isPrimaryInput() const;
 
   Cut() = default;
 
-  mlir::Operation *getRoot() const {
-    return operations.empty()
-               ? nullptr
-               : operations.back(); // The first operation is the root
-  }
+  mlir::Operation *getRoot() const;
 
   // Cache for the truth table of this cut
   mutable std::optional<mlir::FailureOr<TruthTable>> truthTable;
   // Compute the NPN canonical form for this cut
   mutable std::optional<mlir::FailureOr<NPNClass>> npnClass;
 
-  const mlir::FailureOr<NPNClass> &getNPNClass() const {
-    // If the truth table is already computed, return it
-    if (npnClass)
-      return *npnClass;
+  const mlir::FailureOr<NPNClass> &getNPNClass() const;
 
-    // Compute the NPN (Negation Permutation Negation) canonical form for this
-    // cut
-    auto truthTable = getTruthTable();
-    assert(succeeded(truthTable) && "Failed to compute truth table");
-
-    // Compute the NPN canonical form
-    auto canonicalForm = NPNClass::computeNPNCanonicalForm(*truthTable);
-
-    npnClass.emplace(std::move(canonicalForm));
-    return *npnClass;
-  }
-
-  void dump() const {
-    llvm::dbgs() << "==========================\n";
-    llvm::dbgs() << "Cut with " << getInputSize() << " inputs and "
-                 << getCutSize() << " operations:\n";
-    if (isPrimaryInput()) {
-      llvm::dbgs() << "Primary input cut: " << *inputs.begin() << "\n";
-      return;
-    }
-
-    llvm::dbgs() << "Inputs: ";
-    for (auto [idx, input] : llvm::enumerate(inputs)) {
-      llvm::dbgs() << "Input " << idx << ": " << input << "\n";
-    }
-    llvm::dbgs() << "\nOperations: ";
-    for (auto *op : operations) {
-      op->dump();
-      llvm::dbgs() << "\n";
-    }
-    llvm::dbgs() << "Truth Table: ";
-    auto truthTable = getTruthTable();
-    llvm::dbgs() << truthTable->table << "\n";
-    llvm::dbgs() << "NPN Class: ";
-    auto &npnClass = getNPNClass();
-    llvm::dbgs() << npnClass->truthTable.table << "\n";
-
-    llvm::dbgs() << "==========================\n";
-  }
+  void dump() const;
 
 public:
   /// Merge this cut with another cut
   Cut mergeWith(const Cut &other, Operation *root) const;
 
   /// Get the size of this cut
-  unsigned getInputSize() const { return inputs.size(); }
-  unsigned getCutSize() const { return operations.size(); }
-  size_t getOutputSize() const { return getRoot()->getNumResults(); }
+  unsigned getInputSize() const;
+  unsigned getCutSize() const;
+  size_t getOutputSize() const;
 
-  const llvm::FailureOr<TruthTable> &getTruthTable() const {
-    assert(!isPrimaryInput() && "Primary input cuts do not have truth tables");
-
-    if (truthTable)
-      return *truthTable;
-
-    int64_t numInputs = getInputSize();
-    int64_t numOutputs = getOutputSize();
-    assert(numInputs < 20 && "Truth table is too large");
-
-    // Simulate the IR.
-    uint32_t tableSize = 1 << numInputs;
-    DenseMap<Value, APInt> eval;
-    for (uint32_t i = 0; i < numInputs; ++i) {
-      APInt value(tableSize, 0);
-      for (uint32_t j = 0; j < tableSize; ++j) {
-        // Make sure the order of the bits is correct.
-        value.setBitVal(j, (j >> i) & 1);
-      }
-      // Set the input value for the truth table
-      eval[inputs[i]] = std::move(value);
-    }
-
-    // Simulate the operations in the cut
-    for (auto *op : operations) {
-      auto result = simulateOp(op, eval);
-      if (failed(result)) {
-        op->emitError("Failed to simulate operation");
-        truthTable = failure();
-        return *truthTable;
-      }
-      // Set the output value for the truth table
-      for (size_t j = 0; j < op->getNumResults(); ++j) {
-        auto outputValue = op->getResult(j);
-        if (!outputValue.getType().isInteger(1)) {
-          op->emitError("Output value is not a single bit: ") << outputValue;
-          truthTable = failure();
-          return *truthTable;
-        }
-      }
-    }
-
-    // Extract the truth table from the root operation
-    auto rootResults = getRoot()->getResults();
-    assert(rootResults.size() == 1 &&
-           "For now we only support single output cuts");
-    auto result = rootResults[0];
-
-    // Cache the truth table
-    truthTable = TruthTable(numInputs, numOutputs, eval[result]);
-    return *truthTable;
-  }
+  const llvm::FailureOr<TruthTable> &getTruthTable() const;
 
   LogicalResult simulateOp(Operation *op,
                            DenseMap<mlir::Value, llvm::APInt> &values) const;
@@ -355,25 +129,16 @@ public:
   MatchedPattern(CutRewriterPattern *pattern, Cut *cut, double arrivalTime)
       : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
 
-  double getArrivalTime() const {
-    assert(pattern && "Pattern must be set to get arrival time");
-    return arrivalTime;
-  }
+  double getArrivalTime() const;
 
-  CutRewriterPattern *getPattern() const {
-    assert(pattern && "Pattern must be set to get the pattern");
-    return pattern;
-  }
+  CutRewriterPattern *getPattern() const;
 
-  Cut *getCut() const {
-    assert(cut && "Cut must be set to get the cut");
-    return cut;
-  }
+  Cut *getCut() const;
 
   double getArea() const;
   double getDelay(unsigned inputIndex, unsigned outputIndex) const;
 
-  bool isValid() const { return pattern != nullptr; }
+  bool isValid() const;
 };
 
 /// Cut set for a node using priority cuts algorithm
@@ -388,25 +153,13 @@ private:
 public:
   virtual ~CutSet() = default;
 
-  bool isMatched() const {
-    return matchedPattern.has_value() && matchedPattern->isValid();
-  }
+  bool isMatched() const;
 
-  double getArrivalTime() const {
-    assert(isMatched() &&
-           "Matched pattern must be set before getting arrival time");
-    return matchedPattern->getArrivalTime();
-  }
+  double getArrivalTime() const;
 
-  std::optional<MatchedPattern> getMatchedPattern() const {
-    return matchedPattern;
-  }
+  std::optional<MatchedPattern> getMatchedPattern() const;
 
-  Cut *getMatchedCut() {
-    assert(isMatched() &&
-           "Matched pattern must be set before getting matched cut");
-    return matchedPattern->getCut();
-  }
+  Cut *getMatchedCut();
 
   // Keep the cuts sorted by priority. The priority is determined by the
   // optimization mode (area or timing). The cuts are sorted in descending
@@ -416,17 +169,14 @@ public:
       const CutRewriterOptions &options,
       llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
 
-  size_t size() const { return cuts.size(); }
+  size_t size() const;
 
   /// Add a cut to the set.
-  void addCut(Cut cut) {
-    assert(!isFrozen && "Cannot add cuts to a frozen cut set");
-    cuts.push_back(std::move(cut));
-  }
+  void addCut(Cut cut);
 
   /// Iterator that returns all the cuts.
   /// This is a range-based for loop compatible iterator.
-  ArrayRef<Cut> getCuts() const { return cuts; }
+  ArrayRef<Cut> getCuts() const;
 };
 
 // Base class for Cut rewriting patterns.
@@ -442,9 +192,7 @@ struct CutRewriterPattern {
   // with the truth table this pattern potentially matches. If false is
   // returned, the pattern is always tried to match against the cut set.
   virtual bool
-  useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const {
-    return false;
-  }
+  useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
 
   // Rewrite the cut. If success is returned, the cut root operation must be
   // replaced with other operation. `match` is called before this method,
@@ -470,24 +218,7 @@ struct CutRewriterPattern {
 class CutRewriterPatternSet {
 public:
   CutRewriterPatternSet(
-      llvm::SmallVector<std::unique_ptr<CutRewriterPattern>, 4> patterns)
-      : patterns(std::move(patterns)) {
-    // Initialize the NPN to pattern map
-    for (auto &pattern : this->patterns) {
-      SmallVector<NPNClass, 2> npnClasses;
-      if (pattern->useTruthTableMatcher(npnClasses)) {
-        for (auto npnClass : npnClasses) {
-          // Create a NPN class from the truth table
-          npnToPatternMap[npnClass.truthTable.table].push_back(
-              std::make_pair(std::move(npnClass), pattern.get()));
-        }
-      } else {
-        // If the pattern does not use truth table matcher, add it to the
-        // non-truth table patterns
-        nonTruthTablePatterns.push_back(pattern.get());
-      }
-    }
-  }
+      llvm::SmallVector<std::unique_ptr<CutRewriterPattern>, 4> patterns);
 
 private:
   // Owns a set of patterns for cut rewriting
