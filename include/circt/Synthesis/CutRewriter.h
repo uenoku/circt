@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This header file defines a general cut-based rewriting framework for 
+// This header file defines a general cut-based rewriting framework for
 // combinational logic optimization. The framework uses NPN-equivalence matching
 // with area and delay metrics to rewrite cuts (subgraphs) in combinational
 // circuits with optimal patterns.
@@ -35,41 +35,25 @@
 #include <optional>
 #define DEBUG_TYPE "synthesis-cut-rewriter"
 
-// Forward declarations
-namespace llvm {
-template <typename T> class ArrayRef;
-template <typename KeyT, typename ValueT, typename KeyInfoT, typename BucketT>
-class DenseMap;
-template <typename KeyT, typename ValueT, typename MapTy, typename VectorTy>
-class MapVector;
-template <typename T> class SmallVectorImpl;
-template <typename T> class function_ref;
-} // namespace llvm
-
-namespace mlir {
-class PatternRewriter;
-class Value;
-} // namespace mlir
-
 namespace circt {
 namespace synthesis {
 
 /// Optimization strategy for cut-based rewriting.
 /// Determines whether to prioritize area or timing during rewriting.
-enum CutRewriteStrategy { 
-  Area,   ///< Optimize for minimal area (gate count)
-  Timing  ///< Optimize for minimal critical path delay
+enum CutRewriteStrategy {
+  Area,  ///< Optimize for minimal area
+  Timing ///< Optimize for minimal critical path delay
 };
 
 /// Represents a boolean function as a truth table.
-/// 
+///
 /// A truth table stores the output values for all possible input combinations
 /// of a boolean function. For a function with n inputs and m outputs, the
 /// truth table contains 2^n entries, each with m output bits.
 ///
 /// Example: For a 2-input AND gate:
 /// - Input 00 -> Output 0
-/// - Input 01 -> Output 0  
+/// - Input 01 -> Output 0
 /// - Input 10 -> Output 0
 /// - Input 11 -> Output 1
 /// This would be stored as the bit pattern 0001 in the truth table.
@@ -77,14 +61,14 @@ struct TruthTable {
   unsigned numInputs;  ///< Number of inputs for this boolean function
   unsigned numOutputs; ///< Number of outputs for this boolean function
   llvm::APInt table;   ///< Truth table data as a packed bit vector
-  
+
   /// Default constructor creates an empty truth table.
   TruthTable() = default;
-  
+
   /// Constructor for a truth table with given dimensions and evaluation data.
   TruthTable(unsigned numInputs, unsigned numOutputs, const llvm::APInt &eval)
       : numInputs(numInputs), numOutputs(numOutputs), table(eval) {}
-      
+
   /// Constructor for a truth table with given dimensions, initialized to zero.
   TruthTable(unsigned numInputs, unsigned numOutputs)
       : numInputs(numInputs), numOutputs(numOutputs),
@@ -119,35 +103,35 @@ struct TruthTable {
 
 /// Represents the canonical form of a boolean function under NPN equivalence.
 ///
-/// NPN (Negation-Permutation-Negation) equivalence considers two boolean 
+/// NPN (Negation-Permutation-Negation) equivalence considers two boolean
 /// functions equivalent if one can be obtained from the other by:
 /// 1. Negating some inputs (pre-negation)
-/// 2. Permuting the inputs 
+/// 2. Permuting the inputs
 /// 3. Negating some outputs (post-negation)
 ///
 /// This canonical form is used to efficiently match cuts against library
 /// patterns, as functions in the same NPN class can be implemented by the
 /// same circuit with appropriate input/output inversions.
 struct NPNClass {
-  TruthTable truthTable;                    ///< Canonical truth table
+  TruthTable truthTable;                        ///< Canonical truth table
   llvm::SmallVector<unsigned> inputPermutation; ///< Input permutation applied
-  unsigned inputNegation = 0;               ///< Input negation mask
-  unsigned outputNegation = 0;              ///< Output negation mask
-  
+  unsigned inputNegation = 0;                   ///< Input negation mask
+  unsigned outputNegation = 0;                  ///< Output negation mask
+
   /// Default constructor creates an empty NPN class.
   NPNClass() = default;
-  
+
   /// Constructor from a truth table.
   NPNClass(const TruthTable &tt) : truthTable(tt) {}
 
   /// Compute the canonical NPN form for a given truth table.
-  /// 
+  ///
   /// This method exhaustively tries all possible input permutations and
   /// negations to find the lexicographically smallest canonical form.
-  /// 
+  ///
   /// WARNING: This is exponential in the number of inputs and should only
   /// be used for small truth tables (< 20 inputs).
-  /// 
+  ///
   /// NOTE: This implementation uses exact canonicalization. For larger
   /// truth tables, semi-canonical forms should be used instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
@@ -165,9 +149,9 @@ struct CutRewriterOptions;
 
 /// Represents a cut in the combinational logic network.
 ///
-/// A cut is a subset of nodes in the combinational logic that forms a complete 
-/// subgraph with a single output. It represents a portion of the circuit that can
-/// potentially be replaced with a single library gate or pattern.
+/// A cut is a subset of nodes in the combinational logic that forms a complete
+/// subgraph with a single output. It represents a portion of the circuit that
+/// can potentially be replaced with a single library gate or pattern.
 ///
 /// The cut contains:
 /// - Input values: The boundary between the cut and the rest of the circuit
@@ -176,11 +160,20 @@ struct CutRewriterOptions;
 ///
 /// Cuts are used in combinational logic optimization to identify regions that
 /// can be optimized and replaced with more efficient implementations.
-struct Cut {
+class Cut {
+  /// Cached truth table for this cut.
+  /// Computed lazily when first accessed to avoid unnecessary computation.
+  mutable std::optional<mlir::FailureOr<TruthTable>> truthTable;
+
+  /// Cached NPN canonical form for this cut.
+  /// Computed lazily from the truth table when first accessed.
+  mutable std::optional<mlir::FailureOr<NPNClass>> npnClass;
+
+public:
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
   llvm::SmallSetVector<mlir::Value, 4> inputs;
-  
+
   /// Operations contained within this cut.
   /// Stored in topological order with the root operation at the end.
   llvm::SmallSetVector<mlir::Operation *, 4> operations;
@@ -196,22 +189,10 @@ struct Cut {
   /// The root operation produces the output of the cut.
   mlir::Operation *getRoot() const;
 
-private:
-  /// Cached truth table for this cut.
-  /// Computed lazily when first accessed to avoid unnecessary computation.
-  mutable std::optional<mlir::FailureOr<TruthTable>> truthTable;
-  
-  /// Cached NPN canonical form for this cut.
-  /// Computed lazily from the truth table when first accessed.
-  mutable std::optional<mlir::FailureOr<NPNClass>> npnClass;
-
-public:
   /// Get the NPN canonical form for this cut.
   /// This is used for efficient pattern matching against library components.
   const mlir::FailureOr<NPNClass> &getNPNClass() const;
 
-  /// Debug method to print cut information.
-  /// Outputs cut size, inputs, operations, truth table, and NPN class.
   void dump() const;
 
   /// Merge this cut with another cut to form a new cut.
@@ -220,11 +201,11 @@ public:
 
   /// Get the number of inputs to this cut.
   unsigned getInputSize() const;
-  
+
   /// Get the number of operations in this cut.
   unsigned getCutSize() const;
-  
-  /// Get the number of outputs from this cut.
+
+  /// Get the number of outputs from root operation. 
   size_t getOutputSize() const;
 
   /// Get the truth table for this cut.
@@ -251,7 +232,7 @@ private:
 public:
   /// Default constructor creates an invalid matched pattern.
   MatchedPattern() = default;
-  
+
   /// Constructor for a valid matched pattern.
   MatchedPattern(CutRewriterPattern *pattern, Cut *cut, double arrivalTime)
       : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
@@ -267,7 +248,7 @@ public:
 
   /// Get the area cost of using this pattern.
   double getArea() const;
-  
+
   /// Get the delay between specific input and output pins.
   double getDelay(unsigned inputIndex, unsigned outputIndex) const;
 
@@ -275,19 +256,22 @@ public:
   bool isValid() const;
 };
 
-/// Manages a collection of cuts for a single logic node using priority cuts algorithm.
+/// Manages a collection of cuts for a single logic node using priority cuts
+/// algorithm.
 ///
-/// Each node in the combinational logic network can have multiple cuts representing 
-/// different ways to group it with surrounding logic. The CutSet manages these cuts and
-/// selects the best one based on the optimization strategy (area or timing).
+/// Each node in the combinational logic network can have multiple cuts
+/// representing different ways to group it with surrounding logic. The CutSet
+/// manages these cuts and selects the best one based on the optimization
+/// strategy (area or timing).
 ///
 /// The priority cuts algorithm maintains a bounded set of the most promising
-/// cuts to avoid exponential explosion while ensuring good optimization results.
+/// cuts to avoid exponential explosion while ensuring good optimization
+/// results.
 class CutSet {
 private:
-  llvm::SmallVector<Cut, 12> cuts;          ///< Collection of cuts for this node
+  llvm::SmallVector<Cut, 12> cuts; ///< Collection of cuts for this node
   std::optional<MatchedPattern> matchedPattern; ///< Best matched pattern found
-  bool isFrozen = false;                    ///< Whether cut set is finalized
+  bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
   /// Virtual destructor for base class.
@@ -307,7 +291,8 @@ public:
   /// NOTE: isMatched() must be true
   Cut *getMatchedCut();
 
-  /// Finalize the cut set by removing duplicates and selecting the best pattern.
+  /// Finalize the cut set by removing duplicates and selecting the best
+  /// pattern.
   ///
   /// This method:
   /// 1. Removes duplicate cuts based on inputs and root operation
@@ -329,15 +314,17 @@ public:
   ArrayRef<Cut> getCuts() const;
 };
 
-/// Base class for cut rewriting patterns used in combinational logic optimization.
+/// Base class for cut rewriting patterns used in combinational logic
+/// optimization.
 ///
 /// A CutRewriterPattern represents a library component or optimization pattern
-/// that can replace cuts in the combinational logic network. Each pattern defines:
+/// that can replace cuts in the combinational logic network. Each pattern
+/// defines:
 /// - How to recognize matching cuts
 /// - How to transform/replace the matched cuts
 /// - Area and timing characteristics
 ///
-/// Patterns can use truth table matching for efficient recognition or 
+/// Patterns can use truth table matching for efficient recognition or
 /// implement custom matching logic for more complex cases.
 struct CutRewriterPattern {
   /// Virtual destructor for base class.
@@ -375,12 +362,13 @@ struct CutRewriterPattern {
 
   /// Get the number of inputs this pattern expects.
   virtual unsigned getNumInputs() const = 0;
-  
+
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;
 };
 
-/// Manages a collection of rewriting patterns for combinational logic optimization.
+/// Manages a collection of rewriting patterns for combinational logic
+/// optimization.
 ///
 /// This class organizes and provides efficient access to rewriting patterns
 /// used during cut-based optimization. It maintains:
@@ -393,7 +381,7 @@ struct CutRewriterPattern {
 class CutRewriterPatternSet {
 public:
   /// Constructor that takes ownership of the provided patterns.
-  /// 
+  ///
   /// During construction, patterns are analyzed and organized for efficient
   /// lookup. Truth table matchers are indexed by their NPN canonical forms.
   CutRewriterPatternSet(
@@ -407,7 +395,7 @@ private:
   /// Each entry maps an NPN truth table to patterns that can handle it.
   DenseMap<APInt, SmallVector<std::pair<NPNClass, CutRewriterPattern *>>>
       npnToPatternMap;
-      
+
   /// Patterns that use custom matching logic instead of truth tables.
   /// These patterns are checked against every cut.
   SmallVector<CutRewriterPattern *, 4> nonTruthTablePatterns;
@@ -423,12 +411,12 @@ private:
 struct CutRewriterOptions {
   /// Optimization strategy (area vs. timing).
   CutRewriteStrategy strategy;
-  
+
   /// Maximum number of inputs allowed for any cut.
   /// Larger cuts provide more optimization opportunities but increase
   /// computational complexity exponentially.
   unsigned maxCutInputSize;
-  
+
   /// Maximum number of cuts to maintain per logic node.
   /// The priority cuts algorithm keeps only the most promising cuts
   /// to prevent exponential explosion.
@@ -438,14 +426,15 @@ struct CutRewriterOptions {
 /// Main cut-based rewriting algorithm for combinational logic optimization.
 ///
 /// The CutRewriter implements a cut-based rewriting algorithm that:
-/// 1. Enumerates cuts in the combinational logic network using a priority cuts algorithm
+/// 1. Enumerates cuts in the combinational logic network using a priority cuts
+/// algorithm
 /// 2. Matches cuts against available rewriting patterns
 /// 3. Selects optimal patterns based on area or timing objectives
 /// 4. Rewrites the circuit using the selected patterns
 ///
-/// The algorithm processes the network in topological order, building up cut sets
-/// for each node and selecting the best implementation based on the specified
-/// optimization strategy.
+/// The algorithm processes the network in topological order, building up cut
+/// sets for each node and selecting the best implementation based on the
+/// specified optimization strategy.
 ///
 /// Usage example:
 /// ```cpp
@@ -453,10 +442,10 @@ struct CutRewriterOptions {
 /// options.strategy = CutRewriteStrategy::Area;
 /// options.maxCutInputSize = 4;
 /// options.maxCutSizePerRoot = 8;
-/// 
+///
 /// CutRewriterPatternSet patterns(std::move(optimizationPatterns));
 /// CutRewriter rewriter(module, options, patterns);
-/// 
+///
 /// if (failed(rewriter.run())) {
 ///   // Handle rewriting failure
 /// }
@@ -469,7 +458,7 @@ public:
       : topOp(op), options(options), patterns(patterns) {}
 
   /// Execute the complete cut-based rewriting algorithm.
-  /// 
+  ///
   /// This method orchestrates the entire rewriting process:
   /// 1. Enumerate cuts for all nodes in the combinational logic
   /// 2. Match cuts against available patterns
@@ -487,7 +476,7 @@ private:
   /// Get the cut set for a specific value.
   /// Creates a new cut set if one doesn't exist.
   const CutSet &getCutSet(Value value);
-  
+
   /// Get or create a cut set for a specific value.
   CutSet *getOrCreateCutSet(Value value);
 
@@ -501,10 +490,10 @@ private:
   /// Perform the actual circuit rewriting using selected patterns.
   LogicalResult performRewriting(Operation *hwModule);
 
-  Operation *topOp;                         ///< Root operation being rewritten
-  const CutRewriterOptions &options;        ///< Configuration options
-  const CutRewriterPatternSet &patterns;    ///< Available rewriting patterns
-  
+  Operation *topOp;                      ///< Root operation being rewritten
+  const CutRewriterOptions &options;     ///< Configuration options
+  const CutRewriterPatternSet &patterns; ///< Available rewriting patterns
+
   /// Maps values to their associated cut sets.
   llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
 };
