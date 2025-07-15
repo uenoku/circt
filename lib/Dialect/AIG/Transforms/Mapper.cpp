@@ -604,6 +604,7 @@ private:
   std::optional<FailureOr<double>> arrivalTime;
 
 public:
+  virtual ~CutSet() = default;
   auto getArrivalTime() const { return arrivalTime; }
   Cut *getMatched() {
     if (cuts.empty())
@@ -618,13 +619,13 @@ public:
   void freezeCutSet(MappingStrategy storategy, unsigned maxCuts,
                     llvm::function_ref<bool(const Cut &, const Cut &)> compare,
                     llvm::function_ref<bool(Cut &)> hasMatching) {
-    DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
+    DenseSet<ArrayRef<Value>> uniqueCuts;
     size_t uniqueCount = 0;
     for (size_t i = 0; i < cuts.size(); ++i) {
       auto &cut = cuts[i];
       // Create a unique identifier for the cut based on its inputs and root
-      auto key = std::make_pair(cut.inputs.getArrayRef(), cut.getRoot());
-      if (uniqueCuts.insert(key).second) {
+      auto inputs = cut.inputs.getArrayRef();
+      if (uniqueCuts.insert(inputs).second) {
         uniqueCount++;
         if (i != uniqueCount - 1) {
           // Move the unique cut to the front of the vector
@@ -710,8 +711,27 @@ public:
   /// This is a range-based for loop compatible iterator.
   ArrayRef<Cut> getCuts() const { return cuts; }
 
+  virtual void notifyBestMatch(Cut &cut) {
+    // This method is called when a cut matches a pattern.
+    // It can be used to update the cut set or perform additional actions.
+    // Default implementation does nothing.
+  }
+
+  /// Notify that a cut has failed to match a pattern.
+  virtual void notifyMatchFailure(Cut &cut) {}
+
   /// Clear all cuts
   void clear() { cuts.clear(); }
+};
+
+struct CutSetWithAreaFlow : CutSet {
+  double areaFlow = 0.0;
+  // The node state is used to store the cut set for each node in the AIG
+  // network. It is used to keep track of the cuts for each node and their
+  virtual ~CutSetWithAreaFlow() = default;
+
+  void notifyBestMatch(Cut &cut) override {}
+  void notifyMatchFailure(Cut &cut) override {}
 };
 
 // Base class for tech libraries.
@@ -744,10 +764,11 @@ struct CutRewriterPattern {
                                 Cut &cutSet) const = 0;
 
   // Interface for cut priorities.
-  virtual double getArea() const = 0;
+  virtual double getArea(const Cut &cut) const = 0;
 
   // Get delay for a specific input-output pair.
-  virtual double getDelay(size_t inputIndex, size_t outputIndex) const = 0;
+  virtual double getDelay(const Cut &cut, size_t inputIndex,
+                          size_t outputIndex) const = 0;
 
   // TODO: Include power.
 
@@ -783,9 +804,10 @@ struct TechLibraryPattern : public CutRewriterPattern {
     return cast<FloatAttr>(attr).getValue().convertToDouble();
   }
 
-  double getArea() const override { return getAttr("area"); }
+  double getArea(const Cut &cut) const override { return getAttr("area"); }
 
-  double getDelay(size_t inputIndex, size_t outputIndex) const override {
+  double getDelay(const Cut &cut, size_t inputIndex,
+                  size_t outputIndex) const override {
     return getAttr("delay");
   }
 
@@ -814,8 +836,9 @@ struct TestTechLibraryPattern : public CutRewriterPattern {
     return success();
   }
 
-  double getArea() const override { return 1.0; }
-  double getDelay(size_t inputIndex, size_t outputIndex) const override {
+  double getArea(const Cut &cut) const override { return 1.0; }
+  double getDelay(const Cut &cut, size_t inputIndex,
+                  size_t outputIndex) const override {
     return 1.0; // Fixed delay for AND gate
   }
 
@@ -838,12 +861,13 @@ struct GenericLUT : public CutRewriterPattern {
   unsigned getNumInputs() const override { return k; }
   unsigned getNumOutputs() const override { return 1; } // Single output LUT
 
-  double getArea() const override {
+  double getArea(const Cut &cut) const override {
     // TODO: Implement area-flow.
     return 1.0;
   }
 
-  double getDelay(size_t inputIndex, size_t outputIndex) const override {
+  double getDelay(const Cut &cut, size_t inputIndex,
+                  size_t outputIndex) const override {
     // Assume a fixed delay for the generic LUT
     return 1.0;
   }
@@ -967,7 +991,7 @@ private:
   unsigned maxCutInputSize;
   unsigned maxCutSizePerRoot;
   const CutRewriterPatternSet &patterns;
-  llvm::MapVector<Value, CutSet> cutSets;
+  llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
   std::function<bool(const Cut &, const Cut &)> compare;
 
 public:
@@ -1062,10 +1086,22 @@ private:
     // If the cut set does not exist, create a new one
     if (!cutSets.contains(value)) {
       // Add a trivial cut for primary inputs
-      cutSets[value].addCut(Cut::getAsPrimaryInput(value));
+      cutSets[value] = std::make_unique<CutSet>();
+      cutSets[value]->addCut(Cut::getAsPrimaryInput(value));
     }
 
-    return cutSets.find(value)->second;
+    return *cutSets.find(value)->second;
+  }
+
+  CutSet *getOrCreateCutSet(Value value) {
+    // If the cut set does not exist, create a new one
+    if (!cutSets.contains(value)) {
+      // Add a trivial cut for primary inputs
+      cutSets[value] = std::make_unique<CutSet>();
+      cutSets[value]->addCut(Cut::getAsPrimaryInput(value));
+    }
+
+    return cutSets.find(value)->second.get();
   }
 
   ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
@@ -1102,7 +1138,7 @@ private:
         inputArrivalTimes.push_back(0.0);
       } else if (arrivalTime != cutSets.end()) {
         // If the arrival time is already computed, use it
-        auto arrivalTimeOpt = arrivalTime->second.getArrivalTime();
+        auto arrivalTimeOpt = arrivalTime->second->getArrivalTime();
         assert(arrivalTimeOpt &&
                "Cut must have a valid arrival time after pruning");
         if (failed(*arrivalTimeOpt)) {
@@ -1127,13 +1163,14 @@ private:
         for (size_t j = 0; j < cut.getOutputSize(); ++j) {
           patternArrivalTime =
               std::max(patternArrivalTime,
-                       pattern->getDelay(i, j) + inputArrivalTimes[i]);
+                       pattern->getDelay(cut, i, j) + inputArrivalTimes[i]);
         }
       }
 
       if (!bestPattern ||
-          compareDelayAndArea(strategy, pattern->getArea(), patternArrivalTime,
-                              bestPattern->getArea(), bestArrivalTime)) {
+          compareDelayAndArea(strategy, pattern->getArea(cut),
+                              patternArrivalTime, bestPattern->getArea(cut),
+                              bestArrivalTime)) {
         bestArrivalTime = patternArrivalTime;
         bestPattern = pattern;
       }
@@ -1170,14 +1207,16 @@ private:
 
     Cut singletonCut = Cut::getSingletonCut(logicOp);
 
+    auto *resultCutSet = getOrCreateCutSet(result);
+
     auto prune = llvm::make_scope_exit([&]() {
       // Prune the cut set to maintain the maximum number of cuts
-      cutSets[result].freezeCutSet(strategy, maxCutSizePerRoot, compare,
-                                   [&](Cut &cut) {
-                                     // Check if the cut matches any pattern
-                                     matchCutToPattern(cut);
-                                     return succeeded(*cut.getArrivalTime());
-                                   });
+      getOrCreateCutSet(result)->freezeCutSet(
+          strategy, maxCutSizePerRoot, compare, [&](Cut &cut) {
+            // Check if the cut matches any pattern
+            matchCutToPattern(cut);
+            return succeeded(*cut.getArrivalTime());
+          });
       /*
             for (const Cut &cut : resultCutSet.getCuts()) {
               auto arrivalTime = cut.getArrivalTime();
@@ -1198,10 +1237,8 @@ private:
               */
     });
 
-    auto &resultCutSet = cutSets[result];
-
     // Operation itself is a cut, so add it to the cut set
-    resultCutSet.addCut(singletonCut);
+    resultCutSet->addCut(singletonCut);
 
     if (numOperands == 1) {
       auto inputCutSet = getCutSet(logicOp->getOperand(0));
@@ -1210,7 +1247,7 @@ private:
         Cut newCut = cut.mergeWith(singletonCut, logicOp);
         if (newCut.getInputSize() > maxCutInputSize)
           continue; // Skip if merged cut exceeds max input size
-        cutSets[result].addCut(std::move(newCut));
+        resultCutSet->addCut(std::move(newCut));
       }
       return success();
     }
@@ -1225,7 +1262,7 @@ private:
           continue; // Skip cuts that are too large
         if (mergedCut.getInputSize() > maxCutInputSize)
           continue; // Skip if merged cut exceeds max input size
-        cutSets[result].addCut(std::move(mergedCut));
+        resultCutSet->addCut(std::move(mergedCut));
       }
     }
 
@@ -1262,7 +1299,7 @@ private:
       }
 
       LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
-      auto *bestCut = cutSet.getMatched();
+      auto *bestCut = cutSet->getMatched();
       if (!bestCut) {
         return mlir::emitError(hwModule->getLoc(),
                                "No matching cut found for value: ")
@@ -1371,5 +1408,5 @@ std::optional<FailureOr<double>> Cut::getArea() const {
   if (!*matchedPattern)
     return failure();
 
-  return (*matchedPattern)->getArea();
+  return (*matchedPattern)->getArea(*this);
 }
