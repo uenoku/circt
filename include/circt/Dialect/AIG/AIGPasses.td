@@ -111,7 +111,7 @@ def GenericLutMapper : Pass<"synthesis-generic-lut-mapper"> {
      This transformation maps aig network into generic LUT operation. 
   }];
   let options = [
-    Option<"maxLutSize", "max-lut-size", "int", "8",
+    Option<"maxLutSize", "max-lut-size", "int", "6",
            "Maximum cut size (K-LUT size) for technology mapping">,
     Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
            "Maximum number of cuts to maintain per node">

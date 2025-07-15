@@ -281,6 +281,7 @@ static bool isAlwaysCutInput(Value value) {
 class CutRewriterPatternSet;
 class CutRewriter;
 struct CutRewriterPattern;
+struct CutRewriterOptions;
 
 /// Represents a cut in the AIG network
 struct Cut {
@@ -460,11 +461,8 @@ public:
     int64_t numInputs = getInputSize();
     int64_t numOutputs = getOutputSize();
     assert(numInputs < 20 && "Truth table is too large");
-    // Simulate the IR.
-    // For each input combination, compute the output values.
 
-    // 2. Lower the cut to a LUT. We can get a truth table by evaluating the
-    // cut body with every possible combination of the input values.
+    // Simulate the IR.
     uint32_t tableSize = 1 << numInputs;
     DenseMap<Value, APInt> eval;
     for (uint32_t i = 0; i < numInputs; ++i) {
@@ -482,14 +480,16 @@ public:
       auto result = simulateOp(op, eval);
       if (failed(result)) {
         op->emitError("Failed to simulate operation");
-        return failure();
+        truthTable = failure();
+        return *truthTable;
       }
       // Set the output value for the truth table
       for (size_t j = 0; j < op->getNumResults(); ++j) {
         auto outputValue = op->getResult(j);
         if (!outputValue.getType().isInteger(1)) {
           op->emitError("Output value is not a single bit: ") << outputValue;
-          return failure();
+          truthTable = failure();
+          return *truthTable;
         }
       }
     }
@@ -596,65 +596,8 @@ public:
   // order. This also removes duplicate cuts based on their inputs and root
   // operation.
   void freezeCutSet(
-      CutRewriteStrategy storategy, unsigned maxCuts,
-      llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
-    DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
-    size_t uniqueCount = 0;
-    for (size_t i = 0; i < cuts.size(); ++i) {
-      auto &cut = cuts[i];
-      // Create a unique identifier for the cut based on its inputs and root
-      auto inputs = cut.inputs.getArrayRef();
-      if (!uniqueCuts.contains({inputs, cut.getRoot()})) {
-        if (i != uniqueCount) {
-          // Move the unique cut to the front of the vector
-          // This maintains the order of cuts while removing duplicates
-          // by swapping with the last unique cut found.
-          std::swap(cuts[uniqueCount], cuts[i]);
-        }
-
-        // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
-        // after this point.
-        uniqueCuts.insert({cuts[uniqueCount].inputs.getArrayRef(),
-                           cuts[uniqueCount].getRoot()});
-        ++uniqueCount;
-      }
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
-                            << " Unique cuts: " << uniqueCount << "\n");
-    // Resize the cuts vector to the number of unique cuts found
-    cuts.resize(uniqueCount);
-
-    // Maintain size limit by removing worst cuts
-    if (cuts.size() > maxCuts) {
-      // Sort by priority using heuristic.
-      // TODO: Make this configurable.
-      std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
-        return a.getCutSize() < b.getCutSize();
-      });
-      cuts.resize(maxCuts);
-      // TODO: Pririty cuts may prune all matching cuts, so we may need to
-      //       keep the matching cut before pruning.
-    }
-
-    // Find the best matching pattern for this cut set
-    double bestArrivalTime = std::numeric_limits<double>::max();
-    double bestArea = std::numeric_limits<double>::max();
-
-    for (auto &cut : cuts) {
-      auto currentMatchedPattern =
-          matchCut(cut); // Match the cut against the pattern set
-      if (!currentMatchedPattern)
-        continue;
-
-      if (compareDelayAndArea(storategy, currentMatchedPattern->getArea(),
-                              currentMatchedPattern->getArrivalTime(), bestArea,
-                              bestArrivalTime)) {
-        // Found a better matching pattern
-        matchedPattern = currentMatchedPattern;
-      }
-    }
-  }
+      const CutRewriterOptions &options,
+      llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
 
   size_t size() const { return cuts.size(); }
 
@@ -768,7 +711,7 @@ private:
   // Owns a set of patterns for cut rewriting
   llvm::SmallVector<std::unique_ptr<CutRewriterPattern>, 4> patterns;
 
-  // Maps NPN classes to patterns
+  // Map NPN's truth table to NPN classes and pattern.
   DenseMap<APInt, SmallVector<std::pair<NPNClass, CutRewriterPattern *>>>
       npnToPatternMap;
   SmallVector<CutRewriterPattern *, 4> nonTruthTablePatterns;
@@ -776,32 +719,36 @@ private:
   friend class CutRewriter;
 };
 
+struct CutRewriterOptions {
+  CutRewriteStrategy strategy; // Mapping strategy (area or timing)
+  unsigned maxCutInputSize;    // Maximum cut input size
+  unsigned maxCutSizePerRoot;  // Maximum cut size per root operation
+};
+
 /// Main mapper class
 class CutRewriter {
 private:
   Operation *topOp;
-  CutRewriteStrategy strategy; // Mapping strategy (area or timing)
-  unsigned maxCutInputSize;    // Maximum cut input size
-  unsigned maxCutSizePerRoot;  // Maximum cut size per root operation
+  const CutRewriterOptions &options;
   const CutRewriterPatternSet &patterns;
   llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
 
 public:
-  CutRewriter(Operation *op, CutRewriteStrategy strategy,
-              unsigned maxCutInputSize, unsigned maxCutSizePerRoot,
+  CutRewriter(Operation *op, const CutRewriterOptions &options,
               CutRewriterPatternSet &patterns)
-      : topOp(op), strategy(strategy), maxCutInputSize(maxCutInputSize),
-        maxCutSizePerRoot(maxCutSizePerRoot), patterns(patterns) {}
+      : topOp(op), options(options), patterns(patterns) {}
 
   /// Run the mapping algorithm
   LogicalResult run() {
     LLVM_DEBUG({
       llvm::dbgs() << "Starting Cut Rewriter\n";
       llvm::dbgs() << "Mode: "
-                   << (CutRewriteStrategy::Area == strategy ? "area" : "delay")
+                   << (CutRewriteStrategy::Area == options.strategy ? "area"
+                                                                    : "timing")
                    << "\n";
-      llvm::dbgs() << "Max cut size: " << maxCutSizePerRoot << "\n";
-      llvm::dbgs() << "Max cuts per node: " << maxCutSizePerRoot << "\n";
+      llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
+      llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot
+                   << "\n";
     });
 
     // Process each HW module
@@ -925,7 +872,7 @@ private:
       }
 
       if (!bestPattern ||
-          compareDelayAndArea(strategy, pattern->getArea(cut),
+          compareDelayAndArea(options.strategy, pattern->getArea(cut),
                               patternArrivalTime, bestPattern->getArea(cut),
                               bestArrivalTime)) {
         bestArrivalTime = patternArrivalTime;
@@ -966,9 +913,8 @@ private:
 
     auto prune = llvm::make_scope_exit([&]() {
       // Prune the cut set to maintain the maximum number of cuts
-      getOrCreateCutSet(result)->freezeCutSet(
-          strategy, maxCutSizePerRoot,
-          [&](Cut &cut) { return matchCutToPattern(cut); });
+      resultCutSet->freezeCutSet(
+          options, [&](Cut &cut) { return matchCutToPattern(cut); });
     });
 
     // Operation itself is a cut, so add it to the cut set
@@ -979,7 +925,7 @@ private:
       for (const Cut &cut : inputCutSet.getCuts()) {
         // Merge the singleton cut with the input cut
         Cut newCut = cut.mergeWith(singletonCut, logicOp);
-        if (newCut.getInputSize() > maxCutInputSize)
+        if (newCut.getInputSize() > options.maxCutInputSize)
           continue; // Skip if merged cut exceeds max input size
         resultCutSet->addCut(std::move(newCut));
       }
@@ -992,9 +938,9 @@ private:
     for (const Cut &cut0 : lhs.getCuts()) {
       for (const Cut &cut1 : rhs.getCuts()) {
         auto mergedCut = cut0.mergeWith(cut1, logicOp);
-        if (mergedCut.getCutSize() > maxCutSizePerRoot)
+        if (mergedCut.getCutSize() > options.maxCutSizePerRoot)
           continue; // Skip cuts that are too large
-        if (mergedCut.getInputSize() > maxCutInputSize)
+        if (mergedCut.getInputSize() > options.maxCutInputSize)
           continue; // Skip if merged cut exceeds max input size
         resultCutSet->addCut(std::move(mergedCut));
       }
@@ -1050,6 +996,69 @@ private:
     return success();
   }
 };
+
+void CutSet::freezeCutSet(
+    const CutRewriterOptions &options,
+    llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
+  DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
+  size_t uniqueCount = 0;
+  for (size_t i = 0; i < cuts.size(); ++i) {
+    auto &cut = cuts[i];
+    // Create a unique identifier for the cut based on its inputs and root
+    auto inputs = cut.inputs.getArrayRef();
+    if (!uniqueCuts.contains({inputs, cut.getRoot()})) {
+      if (i != uniqueCount) {
+        // Move the unique cut to the front of the vector
+        // This maintains the order of cuts while removing duplicates
+        // by swapping with the last unique cut found.
+        std::swap(cuts[uniqueCount], cuts[i]);
+      }
+
+      // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
+      // after this point.
+      uniqueCuts.insert({cuts[uniqueCount].inputs.getArrayRef(),
+                         cuts[uniqueCount].getRoot()});
+      ++uniqueCount;
+    }
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
+                          << " Unique cuts: " << uniqueCount << "\n");
+  // Resize the cuts vector to the number of unique cuts found
+  cuts.resize(uniqueCount);
+
+  // Maintain size limit by removing worst cuts
+  if (cuts.size() > options.maxCutSizePerRoot) {
+    // Sort by priority using heuristic.
+    // TODO: Make this configurable.
+    std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+      return a.getCutSize() < b.getCutSize();
+    });
+    cuts.resize(options.maxCutSizePerRoot);
+    // TODO: Pririty cuts may prune all matching cuts, so we may need to
+    //       keep the matching cut before pruning.
+  }
+
+  // Find the best matching pattern for this cut set
+  double bestArrivalTime = std::numeric_limits<double>::max();
+  double bestArea = std::numeric_limits<double>::max();
+
+  for (auto &cut : cuts) {
+    auto currentMatchedPattern =
+        matchCut(cut); // Match the cut against the pattern set
+    if (!currentMatchedPattern)
+      continue;
+
+    if (compareDelayAndArea(options.strategy, currentMatchedPattern->getArea(),
+                            currentMatchedPattern->getArrivalTime(), bestArea,
+                            bestArrivalTime)) {
+      // Found a better matching pattern
+      matchedPattern = currentMatchedPattern;
+    }
+  }
+
+  isFrozen = true; // Mark the cut set as frozen
+}
 
 //===----------------------------------------------------------------------===//
 // Tech Mapper Pass
@@ -1136,9 +1145,11 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     }
 
     CutRewriterPatternSet patternSet(std::move(libraryPatterns));
-    CutRewriter mapper(module, CutRewriteStrategy::Area, maxInputSize,
-                       maxCutsPerNode, patternSet);
-
+    CutRewriterOptions options;
+    options.strategy = CutRewriteStrategy::Area; // Use area optimization
+    options.maxCutInputSize = maxInputSize;
+    options.maxCutSizePerRoot = maxCutsPerNode;
+    CutRewriter mapper(module, options, patternSet);
     if (failed(mapper.run()))
       signalPassFailure();
   }
@@ -1204,6 +1215,7 @@ struct GenericLUT : public CutRewriterPattern {
     auto arrayAttr = rewriter.getBoolArrayAttr(
         lutTable); // Create a boolean array attribute.
 
+    // Reverse the inputs to match the LUT input order
     SmallVector<Value> lutInputs(cut.inputs.rbegin(), cut.inputs.rend());
 
     // Generate comb.truth table operation.
@@ -1226,8 +1238,12 @@ struct GenericLUTMapperPass
     patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
     CutRewriterPatternSet patternSet(std::move(patterns));
 
-    CutRewriter mapper(module, CutRewriteStrategy::Area, maxLutSize,
-                       maxCutsPerNode, patternSet);
+    // Create the cut rewriter with the area optimization strategy.
+    CutRewriterOptions options;
+    options.strategy = CutRewriteStrategy::Area;
+    options.maxCutInputSize = maxLutSize;
+    options.maxCutSizePerRoot = maxCutsPerNode;
+    CutRewriter mapper(module, options, patternSet);
     if (failed(mapper.run()))
       signalPassFailure();
   }
