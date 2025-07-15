@@ -38,16 +38,18 @@
 using namespace circt;
 using namespace circt::synthesis;
 
+// Return true if the new area/delay is better than the old area/delay in the
+// context of the given strategy.
 static bool compareDelayAndArea(CutRewriteStrategy strategy, double newArea,
                                 double newDelay, double oldArea,
-                                double rhsDelay) {
+                                double oldDelay) {
   if (CutRewriteStrategy::Area == strategy) {
-    // Compare by area only
-    return newArea < oldArea || (newArea == oldArea && newDelay < rhsDelay);
+    // Compare by area first.
+    return newArea < oldArea || (newArea == oldArea && newDelay < oldDelay);
   }
   if (CutRewriteStrategy::Timing == strategy) {
-    // Compare by delay only
-    return newDelay < rhsDelay || (newDelay == rhsDelay && newArea < oldArea);
+    // Compare by delay first. 
+    return newDelay < oldDelay || (newDelay == oldDelay && newArea < oldArea);
   }
   llvm_unreachable("Unknown mapping strategy");
 }
@@ -67,7 +69,7 @@ static bool isAlwaysCutInput(Value value) {
   return !isa<aig::AndInverterOp>(op);
 }
 
-void circt::synthesis::CutSet::freezeCutSet(
+void CutSet::freezeCutSet(
     const CutRewriterOptions &options,
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
   DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
