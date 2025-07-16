@@ -30,7 +30,6 @@ MLIR_CAPI_EXPORTED void registerAIGPasses(void);
 //===----------------------------------------------------------------------===//
 
 // Opaque handle to LongestPathAnalysis
-DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
 
 // Opaque handle to LongestPathAnalysis
 DEFINE_C_API_STRUCT(AIGLongestPathDataflowPath, void);
@@ -43,6 +42,18 @@ DEFINE_C_API_STRUCT(AIGLongestPathAnalysis, void);
 
 // Opaque handle to LongestPathCollection
 DEFINE_C_API_STRUCT(AIGLongestPathCollection, void);
+
+// Opaque handle to HWInstancePath
+DEFINE_C_API_STRUCT(HWInstancePath, void);
+
+// Opaque handle to HWInstancePath
+DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
+
+// struct AIGLongestPathObject {
+//   HWInstancePath instancePath;
+//   MlirStringRef name;
+//   size_t bitPos;
+// };
 
 #undef DEFINE_C_API_STRUCT
 
@@ -57,7 +68,6 @@ aigLongestPathAnalysisDestroy(AIGLongestPathAnalysis analysis);
 MLIR_CAPI_EXPORTED AIGLongestPathCollection aigLongestPathAnalysisGetAllPaths(
     AIGLongestPathAnalysis analysis, MlirStringRef moduleName,
     MlirStringRef fanoutFilter, MlirStringRef faninFilter, bool elaboratePaths);
-
 
 //===----------------------------------------------------------------------===//
 // LongestPathCollection
@@ -80,7 +90,7 @@ MLIR_CAPI_EXPORTED MlirStringRef aigLongestPathCollectionGetPathAsJson(
     AIGLongestPathCollection collection, int pathIndex);
 
 MLIR_CAPI_EXPORTED AIGLongestPathDataflowPath aigLongestPathCollectionGetPath(
-    AIGLongestPathCollection collection, int pathIndex);
+    AIGLongestPathCollection collection, size_t pathIndex);
 
 MLIR_CAPI_EXPORTED int64_t
 aigLongestPathDataflowPathGetDelay(AIGLongestPathDataflowPath dataflowPath);
@@ -94,20 +104,40 @@ aigLongestPathDataflowPathGetFanOut(AIGLongestPathDataflowPath dataflowPath);
 MLIR_CAPI_EXPORTED AIGLongestPathHistory
 aigLongestPathDataflowPathGetHistory(AIGLongestPathDataflowPath dataflowPath);
 
+MLIR_CAPI_EXPORTED MlirOperation
+aigLongestPathDataflowPathGetRoot(AIGLongestPathDataflowPath dataflowPath);
+
 MLIR_CAPI_EXPORTED void aigLongestPathHistoryGet(AIGLongestPathHistory history,
-                                                 size_t* index,
+                                                 size_t *index,
                                                  AIGLongestPathObject *object,
                                                  int64_t *delay,
                                                  MlirAttribute *comment);
 
-MLIR_CAPI_EXPORTED size_t
-aigLongestPathHistoryGetSize(AIGLongestPathHistory history);
+MLIR_CAPI_EXPORTED size_t hwInstancePathSize(HWInstancePath instancePath);
+MLIR_CAPI_EXPORTED void hwInstancePathGet(HWInstancePath instancePath,
+                                          size_t size, MlirOperation *instance);
+
+MLIR_CAPI_EXPORTED bool
+aigLongestPathHistoryIsEmpty(AIGLongestPathHistory history);
+MLIR_CAPI_EXPORTED void
+aigLongestPathHistoryGetHead(AIGLongestPathHistory history,
+                             AIGLongestPathObject *object, int64_t *delay,
+                             MlirStringRef *comment);
+MLIR_CAPI_EXPORTED AIGLongestPathHistory
+aigLongestPathHistoryGetTail(AIGLongestPathHistory history);
 
 MLIR_CAPI_EXPORTED bool aigLongestPathCollectionDiff(
     AIGLongestPathCollection lhs, AIGLongestPathCollection rhs,
     AIGLongestPathCollection *uniqueLhs, AIGLongestPathCollection *uniqueRhs,
     AIGLongestPathCollection *differentLhs,
     AIGLongestPathCollection *differentRhs);
+
+MLIR_CAPI_EXPORTED HWInstancePath
+aigLongestPathObjectGetInstancePath(AIGLongestPathObject object);
+MLIR_CAPI_EXPORTED MlirStringRef
+aigLongestPathObjectName(AIGLongestPathObject object);
+MLIR_CAPI_EXPORTED size_t
+aigLongestPathObjectBitPos(AIGLongestPathObject object);
 
 #ifdef __cplusplus
 }

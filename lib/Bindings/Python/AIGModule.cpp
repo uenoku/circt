@@ -97,19 +97,63 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
           },
           nb::arg("other"));
   nb::class_<AIGLongestPathDataflowPath>(m, "_LongestPathDataflowPath")
-      .def("get_delay",
-           [](AIGLongestPathDataflowPath &self) {
-             return aigLongestPathDataflowPathGetDelay(self);
-           })
-      .def("get_fan_in",
-           [](AIGLongestPathDataflowPath &self) {
-             return aigLongestPathDataflowPathGetFanIn(self);
-           })
-      .def("get_fan_out",
-           [](AIGLongestPathDataflowPath &self) {
-             return aigLongestPathDataflowPathGetFanOut(self);
-           })
-      .def("get_history", [](AIGLongestPathDataflowPath &self) {
-        return aigLongestPathDataflowPathGetHistory(self);
+      .def_prop_ro("delay",
+                   [](AIGLongestPathDataflowPath &self) {
+                     return aigLongestPathDataflowPathGetDelay(self);
+                   })
+      .def_prop_ro("fan_in",
+                   [](AIGLongestPathDataflowPath &self) {
+                     return aigLongestPathDataflowPathGetFanIn(self);
+                   })
+      .def_prop_ro("fan_out",
+                   [](AIGLongestPathDataflowPath &self) {
+                     return aigLongestPathDataflowPathGetFanOut(self);
+                   })
+      .def_prop_ro("history",
+                   [](AIGLongestPathDataflowPath &self) {
+                     return aigLongestPathDataflowPathGetHistory(self);
+                   })
+      .def_prop_ro("root", [](AIGLongestPathDataflowPath &self) {
+        return aigLongestPathDataflowPathGetRoot(self);
+      });
+
+  nb::class_<AIGLongestPathHistory>(m, "_LongestPathHistory")
+      .def_prop_ro("empty",
+                   [](AIGLongestPathHistory &self) {
+                     return aigLongestPathHistoryIsEmpty(self);
+                   })
+      .def_prop_ro("head",
+                   [](AIGLongestPathHistory &self) {
+                     AIGLongestPathObject object;
+                     int64_t delay;
+                     MlirStringRef comment;
+                     aigLongestPathHistoryGetHead(self, &object, &delay,
+                                                  &comment);
+                     return std::make_tuple(object, delay, comment);
+                   })
+      .def_prop_ro("tail", [](AIGLongestPathHistory &self) {
+        return aigLongestPathHistoryGetTail(self);
+      });
+
+  nb::class_<AIGLongestPathObject>(m, "_LongestPathObject")
+      .def_prop_ro("instance_path",
+                   [](AIGLongestPathObject &self) {
+                     auto path = aigLongestPathObjectGetInstancePath(self);
+                     // TODO: Add is NULL
+                     if (!path.ptr)
+                       return std::vector<MlirOperation>();
+                     assert(path.ptr);
+                     assert(hwInstancePathSize(path) >= 0);
+                     std::vector<MlirOperation> result;
+                     result.resize(hwInstancePathSize(path));
+                     hwInstancePathGet(path, result.size(), result.data());
+                     return result;
+                   })
+      .def_prop_ro("name",
+                   [](AIGLongestPathObject &self) {
+                     return aigLongestPathObjectName(self);
+                   })
+      .def_prop_ro("bit_pos", [](AIGLongestPathObject &self) {
+        return aigLongestPathObjectBitPos(self);
       });
 }
