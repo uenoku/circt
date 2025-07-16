@@ -57,21 +57,24 @@ void aigLongestPathAnalysisDestroy(AIGLongestPathAnalysis analysis) {
   delete unwrap(analysis);
 }
 
-AIGLongestPathCollection
-aigLongestPathAnalysisGetAllPaths(AIGLongestPathAnalysis analysis,
-                                  MlirStringRef moduleName,
-                                  bool elaboratePaths) {
+AIGLongestPathCollection aigLongestPathAnalysisGetAllPaths(
+    AIGLongestPathAnalysis analysis, MlirStringRef moduleName,
+    MlirStringRef fanoutFilter, MlirStringRef faninFilter,
+    bool elaboratePaths) {
   auto *wrapper = unwrap(analysis);
   auto *lpa = wrapper->analysis.get();
   auto moduleNameAttr = StringAttr::get(lpa->getContext(), unwrap(moduleName));
 
   auto *collection = new LongestPathCollection(lpa->getContext());
+
   if (!lpa->isAnalysisAvailable(moduleNameAttr) ||
       failed(
           lpa->getAllPaths(moduleNameAttr, collection->paths, elaboratePaths)))
     return {nullptr};
 
   collection->sortInDescendingOrder();
+  collection->filterByFanOut(unwrap(fanoutFilter));
+  collection->filterByFanIn(unwrap(faninFilter));
   return wrap(collection);
 }
 
@@ -92,30 +95,24 @@ size_t aigLongestPathCollectionGetSize(AIGLongestPathCollection collection) {
   return wrapper->paths.size();
 }
 
-MlirStringRef
-aigLongestPathCollectionGetPath(AIGLongestPathCollection collection,
-                                int pathIndex) {
-  auto *wrapper = unwrap(collection);
+bool aigLongestPathCollectionDiff(AIGLongestPathCollection lhs,
+                                  AIGLongestPathCollection rhs,
+                                  AIGLongestPathCollection *uniqueLhs,
+                                  AIGLongestPathCollection *uniqueRhs,
+                                  AIGLongestPathCollection *differentLhs,
+                                  AIGLongestPathCollection *differentRhs) {
+  auto *lhsCollection = unwrap(lhs);
+  auto *rhsCollection = unwrap(rhs);
+  Difference diff(*lhsCollection, *rhsCollection);
 
-  // Check if pathIndex is valid
-  if (pathIndex < 0 || pathIndex >= static_cast<int>(wrapper->paths.size()))
-    return wrap(llvm::StringRef(""));
+  if (uniqueLhs)
+    *uniqueLhs = wrap(diff.lhsUniquePaths.release());
+  if (uniqueRhs)
+    *uniqueRhs = wrap(diff.rhsUniquePaths.release());
+  if (differentLhs)
+    *differentLhs = wrap(diff.lhsDifferentDelay.release());
+  if (differentRhs)
+    *differentRhs = wrap(diff.rhsDifferentDelay.release());
 
-  // Convert the specific path to JSON
-  // FIXME: Avoid converting to JSON and then back to string. Use native
-  // CAPI instead once data structure is stabilized.
-  llvm::json::Value pathJson = toJSON(wrapper->paths[pathIndex]);
-
-  std::string jsonStr;
-  llvm::raw_string_ostream os(jsonStr);
-  os << pathJson;
-
-  auto ctx = wrap(wrapper->getContext());
-
-  // Use MLIR StringAttr to manage the string lifetime.
-  // FIXME: This is safe but expensive. Consider manually managing the string
-  // lifetime.
-  MlirAttribute strAttr =
-      mlirStringAttrGet(ctx, mlirStringRefCreateFromCString(os.str().c_str()));
-  return mlirStringAttrGetValue(strAttr);
+  return true;
 }

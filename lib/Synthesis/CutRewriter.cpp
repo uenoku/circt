@@ -621,7 +621,6 @@ LogicalResult CutRewriter::run() {
     llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
   });
 
-  // Process each HW module
   // Step 1: Enumerate cuts for all nodes
   if (failed(enumerateCuts(topOp)))
     return failure();

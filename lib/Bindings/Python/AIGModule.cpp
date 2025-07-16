@@ -41,22 +41,29 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            [](AIGLongestPathAnalysis &self) {
              aigLongestPathAnalysisDestroy(self);
            })
-      .def("get_all_paths",
-           [](AIGLongestPathAnalysis *self, const std::string &moduleName,
-              bool elaboratePaths) -> AIGLongestPathCollection {
-             MlirStringRef moduleNameRef =
-                 mlirStringRefCreateFromCString(moduleName.c_str());
+      .def(
+          "get_all_paths",
+          [](AIGLongestPathAnalysis *self, const std::string &moduleName,
+             const std::string &fanoutFilter, const std::string &faninFilter,
+             bool elaboratePaths) -> AIGLongestPathCollection {
+            MlirStringRef moduleNameRef =
+                mlirStringRefCreateFromCString(moduleName.c_str());
+            MlirStringRef fanoutFilterRef =
+                mlirStringRefCreateFromCString(fanoutFilter.c_str());
+            MlirStringRef faninFilterRef =
+                mlirStringRefCreateFromCString(faninFilter.c_str());
 
-             auto collection =
-                 AIGLongestPathCollection(aigLongestPathAnalysisGetAllPaths(
-                     *self, moduleNameRef, elaboratePaths));
+            auto collection = aigLongestPathAnalysisGetAllPaths(
+                *self, moduleNameRef, fanoutFilterRef, faninFilterRef,
+                elaboratePaths);
+            if (aigLongestPathCollectionIsNull(collection))
+              throw nb::value_error(
+                  "Failed to get all paths, see previous error(s).");
 
-             if (aigLongestPathCollectionIsNull(collection))
-               throw nb::value_error(
-                   "Failed to get all paths, see previous error(s).");
-
-             return collection;
-           });
+            return collection;
+          },
+          nb::arg("module_name"), nb::arg("fanout_filter") = "",
+          nb::arg("fanin_filter") = "", nb::arg("elaborate_paths") = true);
 
   nb::class_<AIGLongestPathCollection>(m, "_LongestPathCollection")
       .def("__del__",
@@ -69,9 +76,40 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            })
       .def("get_path",
            [](AIGLongestPathCollection &self,
-              int pathIndex) -> std::string_view {
-             MlirStringRef pathRef =
-                 aigLongestPathCollectionGetPath(self, pathIndex);
-             return std::string_view(pathRef.data, pathRef.length);
-           });
+              int pathIndex) -> AIGLongestPathDataflowPath {
+             return aigLongestPathCollectionGetPath(self, pathIndex);
+           })
+      .def(
+          "_diff",
+          [](AIGLongestPathCollection &self, AIGLongestPathCollection &other)
+              -> std::tuple<AIGLongestPathCollection, AIGLongestPathCollection,
+                            AIGLongestPathCollection,
+                            AIGLongestPathCollection> {
+            AIGLongestPathCollection uniqueLhs, uniqueRhs, differentLhs,
+                differentRhs;
+            if (!aigLongestPathCollectionDiff(self, other, &uniqueLhs,
+                                              &uniqueRhs, &differentLhs,
+                                              &differentRhs))
+              throw nb::value_error(
+                  "Failed to diff collections, see previous error(s).");
+            return std::make_tuple(uniqueLhs, uniqueRhs, differentLhs,
+                                   differentRhs);
+          },
+          nb::arg("other"));
+  nb::class_<AIGLongestPathDataflowPath>(m, "_LongestPathDataflowPath")
+      .def("get_delay",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetDelay(self);
+           })
+      .def("get_fan_in",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetFanIn(self);
+           })
+      .def("get_fan_out",
+           [](AIGLongestPathDataflowPath &self) {
+             return aigLongestPathDataflowPathGetFanOut(self);
+           })
+      .def("get_history", [](AIGLongestPathDataflowPath &self) {
+        return aigLongestPathDataflowPathGetHistory(self);
+      });
 }
