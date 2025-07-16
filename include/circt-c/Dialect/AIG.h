@@ -44,7 +44,10 @@ DEFINE_C_API_STRUCT(AIGLongestPathAnalysis, void);
 DEFINE_C_API_STRUCT(AIGLongestPathCollection, void);
 
 // Opaque handle to HWInstancePath
-DEFINE_C_API_STRUCT(HWInstancePath, void);
+struct HWInstancePath {
+  void *ptr;
+  size_t size;
+};
 
 // Opaque handle to HWInstancePath
 DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
@@ -114,8 +117,8 @@ MLIR_CAPI_EXPORTED void aigLongestPathHistoryGet(AIGLongestPathHistory history,
                                                  MlirAttribute *comment);
 
 MLIR_CAPI_EXPORTED size_t hwInstancePathSize(HWInstancePath instancePath);
-MLIR_CAPI_EXPORTED void hwInstancePathGet(HWInstancePath instancePath,
-                                          size_t size, MlirOperation *instance);
+MLIR_CAPI_EXPORTED MlirOperation hwInstancePathGet(HWInstancePath instancePath,
+                                                   size_t index);
 
 MLIR_CAPI_EXPORTED bool
 aigLongestPathHistoryIsEmpty(AIGLongestPathHistory history);

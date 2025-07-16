@@ -73,13 +73,8 @@ with Context() as ctx, Location.unknown():
     for p in list(collection)[:2]:
       # CHECK-NEXT: delay 2 : out2[{{[0-9]+}}]
       # CHECK-NEXT: delay 2 : out2[{{[0-9]+}}]
-      print('nya')
-      foo = p.fan_out
-      print('got foo')
       print("delay", p.delay)
-      print("fanout", p.fan_out)
-
-    print("ok")
+      print("fanout", p.fan_in)
 
     # Test framegraph emission.
     # CHECK:      top:test_aig;a[7] 0

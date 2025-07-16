@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt-c/Dialect/AIG.h"
+#include "circt/Analysis/DebugInfo.h"
 #include "circt/Dialect/AIG/AIGDialect.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "circt/Support/InstanceGraph.h"
+#include "circt/Support/InstanceGraphInterface.h"
 #include "mlir-c/BuiltinAttributes.h"
 #include "mlir-c/IR.h"
 #include "mlir-c/Support.h"
@@ -38,26 +40,43 @@ struct LongestPathAnalysisWrapper {
   std::unique_ptr<LongestPathAnalysis> analysis;
 };
 
-struct LongestPathObjectWrapper {
-  llvm::PointerUnion<Object *, DataflowPath::OutputPort *> object;
-};
-
 DEFINE_C_API_PTR_METHODS(AIGLongestPathAnalysis, LongestPathAnalysisWrapper)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathCollection, LongestPathCollection)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathDataflowPath, DataflowPath)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathHistory,
                          llvm::ImmutableListImpl<DebugPoint>)
-DEFINE_C_API_PTR_METHODS(HWInstancePath, circt::igraph::InstancePath)
 
-LongestPathObjectWrapper unwrap(AIGLongestPathObject object) {
-  LongestPathObjectWrapper wrapper;
-  wrapper.object = llvm::PointerUnion<
+llvm::PointerUnion<Object *, DataflowPath::OutputPort *>
+unwrap(AIGLongestPathObject object) {
+  return llvm::PointerUnion<
       Object *, DataflowPath::OutputPort *>::getFromOpaqueValue(object.ptr);
-  return wrapper;
 }
 
-AIGLongestPathObject wrap(LongestPathObjectWrapper object) {
-  return AIGLongestPathObject{object.object.getOpaqueValue()};
+AIGLongestPathObject
+wrap(llvm::PointerUnion<Object *, DataflowPath::OutputPort *> object) {
+  return AIGLongestPathObject{object.getOpaqueValue()};
+}
+AIGLongestPathObject wrap(const Object *object) {
+  auto ptr = llvm::PointerUnion<Object *, DataflowPath::OutputPort *>(
+      const_cast<Object *>(object));
+  return wrap(ptr);
+}
+AIGLongestPathObject wrap(const DataflowPath::OutputPort *object) {
+  auto ptr = llvm::PointerUnion<Object *, DataflowPath::OutputPort *>(
+      const_cast<DataflowPath::OutputPort *>(object));
+  return wrap(ptr);
+}
+
+ArrayRef<igraph::InstanceOpInterface> unwrap(HWInstancePath instancePath) {
+  return ArrayRef(
+      reinterpret_cast<igraph::InstanceOpInterface *>(instancePath.ptr),
+      instancePath.size);
+}
+
+HWInstancePath wrap(ArrayRef<igraph::InstanceOpInterface> instancePath) {
+  return HWInstancePath{
+      const_cast<igraph::InstanceOpInterface *>(instancePath.data()),
+      instancePath.size()};
 }
 
 //===----------------------------------------------------------------------===//
@@ -167,22 +186,17 @@ AIGLongestPathObject
 aigLongestPathDataflowPathGetFanIn(AIGLongestPathDataflowPath path) {
   auto *wrapper = unwrap(path);
   auto &fanIn = wrapper->getFanIn();
-  AIGLongestPathObject object;
-  object.ptr = const_cast<Object *>(&fanIn);
-  return object;
+  return wrap(const_cast<Object *>(&fanIn));
 }
 
 AIGLongestPathObject
 aigLongestPathDataflowPathGetFanOut(AIGLongestPathDataflowPath path) {
   auto *wrapper = unwrap(path);
-  AIGLongestPathObject result;
   if (auto *object = std::get_if<Object>(&wrapper->getFanOut())) {
-    result.ptr = const_cast<Object *>(object);
-  } else {
-    auto *ptr = std::get_if<DataflowPath::OutputPort>(&wrapper->getFanOut());
-    result.ptr = const_cast<DataflowPath::OutputPort *>(ptr);
+    return wrap(object);
   }
-  return result;
+  auto *ptr = std::get_if<DataflowPath::OutputPort>(&wrapper->getFanOut());
+  return wrap(ptr);
 }
 
 AIGLongestPathHistory
@@ -208,7 +222,7 @@ void aigLongestPathHistoryGetHead(AIGLongestPathHistory history,
   auto list = llvm::ImmutableList<DebugPoint>(wrapper);
 
   auto &head = list.getHead();
-  object->ptr = const_cast<Object *>(&head.object);
+  *object = wrap(&head.object);
   *delay = head.delay;
   *comment = mlirStringRefCreate(head.comment.data(), head.comment.size());
 }
@@ -226,22 +240,19 @@ aigLongestPathHistoryGetTail(AIGLongestPathHistory history) {
 // ===----------------------------------------------------------------------===//
 
 size_t hwInstancePathSize(HWInstancePath instancePath) {
-  auto *wrapper = unwrap(instancePath);
-  return wrapper->size();
+  return unwrap(instancePath).size();
 }
 
-void hwInstancePathGet(HWInstancePath instancePath, size_t index,
-                       MlirOperation *instance) {
-  auto *wrapper = unwrap(instancePath);
-  auto path = wrapper->getPath();
-  assert(wrapper->size() == index);
+MlirOperation hwInstancePathGet(HWInstancePath instancePath, size_t index) {
+  assert(instancePath.ptr);
+  auto path = unwrap(instancePath);
   llvm::errs() << "Instance " << index << "\n";
-
-  for (size_t i = 0; i < index; i++) {
+  for (size_t i = 0; i < path.size(); i++) {
     llvm::errs() << "Instance " << i << ": " << path[i] << "\n";
-    auto inst = path[i];
-    instance[i] = wrap(inst);
   }
+  assert(path.size());
+  Operation *operation = path[index];
+  return wrap(operation);
 }
 
 MlirOperation
@@ -253,36 +264,39 @@ aigLongestPathDataflowPathGetRoot(AIGLongestPathDataflowPath path) {
 HWInstancePath
 aigLongestPathObjectGetInstancePath(AIGLongestPathObject object) {
   auto wrapper = unwrap(object);
-  auto *ptr = wrapper.object.dyn_cast<Object *>();
+  auto *ptr = wrapper.dyn_cast<Object *>();
   if (ptr)
-    return wrap(&ptr->instancePath);
+    return wrap(ptr->instancePath.getPath());
 
-  return {nullptr};
+  HWInstancePath result;
+  result.ptr = nullptr;
+  result.size = 0;
+  return result;
 }
 
 MlirStringRef aigLongestPathObjectName(AIGLongestPathObject object) {
   auto wrapper = unwrap(object);
-  auto *ptr = wrapper.object.dyn_cast<Object *>();
+  auto *ptr = wrapper.dyn_cast<Object *>();
 
   if (ptr) {
     auto name = getNameForValue(ptr->value);
     return mlirStringRefCreate(name.data(), name.size());
   }
-  assert(wrapper.object.is<DataflowPath::OutputPort *>());
+  assert(wrapper.is<DataflowPath::OutputPort *>());
 
   auto [module, resultNumber, bitPos] =
-      *wrapper.object.dyn_cast<DataflowPath::OutputPort *>();
+      *wrapper.dyn_cast<DataflowPath::OutputPort *>();
   auto name = module.getOutputName(resultNumber);
   return mlirStringRefCreate(name.data(), name.size());
 }
 
 size_t aigLongestPathObjectBitPos(AIGLongestPathObject object) {
   auto wrapper = unwrap(object);
-  auto *ptr = wrapper.object.dyn_cast<Object *>();
+  auto *ptr = wrapper.dyn_cast<Object *>();
   if (ptr)
     return ptr->bitPos;
 
   auto [module, resultNumber, bitPos] =
-      *wrapper.object.dyn_cast<DataflowPath::OutputPort *>();
+      *wrapper.dyn_cast<DataflowPath::OutputPort *>();
   return bitPos;
 }

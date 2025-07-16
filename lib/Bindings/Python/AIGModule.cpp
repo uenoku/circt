@@ -143,10 +143,10 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
                      if (!path.ptr)
                        return std::vector<MlirOperation>();
                      assert(path.ptr);
-                     assert(hwInstancePathSize(path) >= 0);
+                     size_t size = hwInstancePathSize(path);
                      std::vector<MlirOperation> result;
-                     result.resize(hwInstancePathSize(path));
-                     hwInstancePathGet(path, result.size(), result.data());
+                     for (size_t i = 0; i < size; ++i)
+                       result.push_back(hwInstancePathGet(path, i));
                      return result;
                    })
       .def_prop_ro("name",

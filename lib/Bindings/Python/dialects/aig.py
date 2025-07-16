@@ -79,13 +79,11 @@ class Object:
 
   @property
   def name(self) -> str:
-    print("name")
     """Get the name of this signal/port."""
     return self._object.name
 
   @property
   def bit_pos(self) -> int:
-    print("bit_pos")
     """Get the bit position for multi-bit signals."""
     return self._object.bit_pos
 
@@ -148,12 +146,13 @@ class DataflowPath:
   @property
   def history(self) -> List[DebugPoint]:
     """Get the history of debug points along this path."""
-    return self._path.history
+    history = LongestPathHistory(self._path.history)
+    return list(history)
   
   @property
   def root(self) -> str:
     """Get the root module name for this analysis."""
-    return self._path.root
+    return self._path.root.attributes["sym_name"].value
 
   # ========================================================================
   # Visualization and Analysis Methods
@@ -354,3 +353,22 @@ class LongestPathAnalysis:
             LongestPathCollection containing all paths sorted by delay
         """
     return LongestPathCollection(self.analysis.get_all_paths(module_name,  fanout_filter, fanin_filter, elaborate_paths))
+
+@dataclass
+class LongestPathHistory:
+  """
+    Represents the history of a timing path, including intermediate debug points.
+    This class provides a Python wrapper around the C++ LongestPathHistory,
+    enabling iteration over the path's history and access to debug points.
+    Attributes:
+        history: The underlying C++ history object
+    """
+  history: _LongestPathHistory
+
+  def __iter__(self):
+    """Iterate over the debug points in the history."""
+    while not self.history.empty:
+      object, delay, comment = self.history.head
+      yield DebugPoint(Object(object), delay, comment)
+      self.history = self.history.tail
+ 
