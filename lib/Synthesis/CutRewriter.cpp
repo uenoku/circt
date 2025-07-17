@@ -1,6 +1,7 @@
 #include "circt/Synthesis/CutRewriter.h"
 
 #include "circt/Dialect/AIG/AIGOps.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
@@ -654,7 +655,8 @@ LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
                       &block, [&](Value value, Operation *op) -> bool {
                         // Topologically sort AND-inverters and purely dataflow
                         // ops. Other operations can be scheduled.
-                        return !(isa<aig::AndInverterOp>(op));
+                        return !(isa<aig::AndInverterOp, comb::ExtractOp,
+                                     comb::ReplicateOp, comb::ConcatOp>(op));
                       }))
                 return WalkResult::interrupt();
             }
