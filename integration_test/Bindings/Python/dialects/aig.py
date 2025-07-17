@@ -19,7 +19,6 @@ with Context() as ctx, Location.unknown():
       a, b = module.entry_block.arguments
 
       result1 = aig.and_inv([a, b], [False, True])
-      result1.attributes["sv.namehint"] = "foo"
       result2 = aig.and_inv([a, result1], [True, False])
 
       hw.OutputOp([result1, result2])

@@ -231,7 +231,7 @@ AIGLongestPathHistory
 aigLongestPathHistoryGetTail(AIGLongestPathHistory history) {
   auto *wrapper = unwrap(history);
   auto list = llvm::ImmutableList<DebugPoint>(wrapper);
-  auto* tail = list.getTail().getInternalPointer();
+  auto *tail = list.getTail().getInternalPointer();
   return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(tail));
 }
 
@@ -246,11 +246,6 @@ size_t hwInstancePathSize(HWInstancePath instancePath) {
 MlirOperation hwInstancePathGet(HWInstancePath instancePath, size_t index) {
   assert(instancePath.ptr);
   auto path = unwrap(instancePath);
-  llvm::errs() << "Instance " << index << "\n";
-  for (size_t i = 0; i < path.size(); i++) {
-    llvm::errs() << "Instance " << i << ": " << path[i] << "\n";
-  }
-  assert(path.size());
   Operation *operation = path[index];
   return wrap(operation);
 }

@@ -73,7 +73,7 @@ class Object:
     def extract(instance):
       return InstancePathElement(
           instance_name=str(instance.attributes["instanceName"].value),
-          module_name=str(list(instance.attributes["moduleNames"].value)[0]),
+          module_name=str(instance.attributes["moduleName"].value),
       )
     return [extract(op) for op in operations]
 
@@ -147,7 +147,7 @@ class DataflowPath:
   def history(self) -> List[DebugPoint]:
     """Get the history of debug points along this path."""
     result = []
-    history = self.history
+    history = self._path.history
     while not history.empty:
       object, delay, comment = history.head
       result.append(DebugPoint(Object(object), delay, comment))
