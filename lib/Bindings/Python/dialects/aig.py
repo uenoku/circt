@@ -146,8 +146,13 @@ class DataflowPath:
   @property
   def history(self) -> List[DebugPoint]:
     """Get the history of debug points along this path."""
-    history = LongestPathHistory(self._path.history)
-    return list(history)
+    result = []
+    history = self.history
+    while not history.empty:
+      object, delay, comment = history.head
+      result.append(DebugPoint(Object(object), delay, comment))
+      history = history.tail
+    return result
   
   @property
   def root(self) -> str:

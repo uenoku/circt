@@ -231,7 +231,7 @@ AIGLongestPathHistory
 aigLongestPathHistoryGetTail(AIGLongestPathHistory history) {
   auto *wrapper = unwrap(history);
   auto list = llvm::ImmutableList<DebugPoint>(wrapper);
-  auto tail = list.getTail().getInternalPointer();
+  auto* tail = list.getTail().getInternalPointer();
   return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(tail));
 }
 
