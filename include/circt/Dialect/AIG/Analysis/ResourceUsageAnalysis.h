@@ -42,8 +42,8 @@ public:
   ResourceUsageAnalysis(mlir::Operation *moduleOp, mlir::AnalysisManager &am);
 
   struct ResourceUsage {
-    ResourceUsage(uint64_t numAndInverterGates, uint64_t numDFFBits)
-        : numAndInverterGates(numAndInverterGates), numDFFBits(numDFFBits) {}
+    ResourceUsage(uint64_t numAndInverterGates, uint64_t numDFFBits,  uint64_t numLUTs)
+        : numAndInverterGates(numAndInverterGates), numDFFBits(numDFFBits), numLUTs(numLUTs) {}
     ResourceUsage() = default;
     ResourceUsage &operator+=(const ResourceUsage &other) {
       numAndInverterGates += other.numAndInverterGates;

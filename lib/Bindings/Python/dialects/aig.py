@@ -4,7 +4,7 @@
 
 from . import aig
 from ._aig_ops_gen import *
-from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection, _LongestPathDataflowPath, _LongestPathHistory, _LongestPathObject
+from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection, _LongestPathDataflowPath, _LongestPathHistory, _LongestPathObject, resource_usage_analysis_get_result
 
 import json
 from dataclasses import dataclass

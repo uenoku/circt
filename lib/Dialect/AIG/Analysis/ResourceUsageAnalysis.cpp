@@ -14,6 +14,7 @@
 #include "circt/Dialect/AIG/Analysis/ResourceUsageAnalysis.h"
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Support/InstanceGraph.h"
@@ -50,7 +51,7 @@ circt::aig::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp top) {
       return it->second.get();
   }
   auto *topNode = instanceGraph->lookup(top.getModuleNameAttr());
-  uint64_t countAndInverterGates = 0, numDFFBits = 0;
+  uint64_t countAndInverterGates = 0, numDFFBits = 0, numLUTs = 0;
   top.walk([&](Operation *op) {
     TypeSwitch<Operation *>(op)
         .Case<aig::AndInverterOp>([&](auto aigOp) {
@@ -69,13 +70,17 @@ circt::aig::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp top) {
           // TODO: We need to take into account the number of andInverterGates
           // used for reset.
         })
+        .Case<comb::TruthTableOp>([&](auto memOp) {
+          // TODO: Add support for memory for more accurate resource usage.
+          numLUTs += 1;
+        })
         // TODO: Add support for memory for more accurate resource usage.
         // TODO: Consider rejecting operations that could introduce
         // AndInverter.
         .Default([](auto) {});
   });
 
-  ResourceUsage local(countAndInverterGates, numDFFBits);
+  ResourceUsage local(countAndInverterGates, numDFFBits, numLUTs);
   auto moduleUsage = std::make_unique<ModuleResourceUsage>(
       top.getModuleNameAttr(), local, local);
 
@@ -108,6 +113,7 @@ getModuleResourceUsageJSON(const ResourceUsageAnalysis::ResourceUsage &usage) {
   llvm::json::Object obj;
   obj["numAndInverterGates"] = usage.getNumAndInverterGates();
   obj["numDFFBits"] = usage.getNumDFFBits();
+  obj["numLUTs"] = usage.getNumLUTs();
   return obj;
 }
 

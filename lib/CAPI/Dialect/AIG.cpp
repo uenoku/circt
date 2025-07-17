@@ -11,6 +11,7 @@
 #include "circt/Dialect/AIG/AIGDialect.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/AIG/Analysis/ResourceUsageAnalysis.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/InstanceGraphInterface.h"
 #include "mlir-c/BuiltinAttributes.h"
@@ -294,4 +295,22 @@ size_t aigLongestPathObjectBitPos(AIGLongestPathObject object) {
   auto [module, resultNumber, bitPos] =
       *wrapper.dyn_cast<DataflowPath::OutputPort *>();
   return bitPos;
+}
+
+// ===----------------------------------------------------------------------===//
+// ResourceUsageAnalysis
+// ===----------------------------------------------------------------------===//
+
+MlirStringRef aigResourceUsageAnalysisGetResult(MlirOperation module,
+                                                MlirStringRef moduleName) {
+  auto *op = unwrap(module);
+  auto manager = mlir::ModuleAnalysisManager(op, nullptr);
+  mlir::AnalysisManager am(manager);
+  aig::ResourceUsageAnalysis analysis(op, am);
+  auto moduleNameAttr = StringAttr::get(op->getContext(), unwrap(moduleName));
+  auto *usage = analysis.getResourceUsage(moduleNameAttr);
+  SmallString<16> str;
+  llvm::raw_svector_ostream os(str);
+  usage->emitJSON(os);
+  return mlirStringRefCreate(str.data(), str.size());
 }

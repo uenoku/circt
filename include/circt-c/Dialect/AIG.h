@@ -142,6 +142,10 @@ aigLongestPathObjectName(AIGLongestPathObject object);
 MLIR_CAPI_EXPORTED size_t
 aigLongestPathObjectBitPos(AIGLongestPathObject object);
 
+// Create a LongestPathAnalysis for the given module
+MLIR_CAPI_EXPORTED MlirStringRef aigResourceUsageAnalysisGetResult(
+    MlirOperation module, MlirStringRef moduleName);
+
 #ifdef __cplusplus
 }
 #endif

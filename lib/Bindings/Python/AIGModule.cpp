@@ -156,4 +156,13 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
       .def_prop_ro("bit_pos", [](AIGLongestPathObject &self) {
         return aigLongestPathObjectBitPos(self);
       });
+
+  m.def(
+      "resource_usage_analysis_get_result",
+      [](MlirOperation module, const std::string &moduleName) {
+        MlirStringRef moduleNameRef =
+            mlirStringRefCreateFromCString(moduleName.c_str());
+        return aigResourceUsageAnalysisGetResult(module, moduleNameRef);
+      },
+      nb::arg("module"), nb::arg("module_name"));
 }
