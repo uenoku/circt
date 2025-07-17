@@ -175,11 +175,10 @@ class DataflowPath:
             String in FlameGraph format showing the timing path progression
         """
     trace = []
-    prefix = f"top:{self.root}"
 
     # Build hierarchy strings for start and end points
-    fan_in_hierarchy = self._build_hierarchy_string(self.fan_in, prefix)
-    fan_out_hierarchy = self._build_hierarchy_string(self.fan_out, prefix)
+    fan_in_hierarchy = self._build_hierarchy_string(self.fan_in, self.root)
+    fan_out_hierarchy = self._build_hierarchy_string(self.fan_out, self.root)
 
     # Track current position and delay for incremental output
     current_hierarchy = fan_in_hierarchy
@@ -188,7 +187,7 @@ class DataflowPath:
     # Process debug history points in reverse order (from input to output)
     for debug_point in self.history[::-1]:
       history_hierarchy = self._build_hierarchy_string(debug_point.object,
-                                                       prefix)
+                                                       self.root)
       if history_hierarchy:
         # Add segment from current position to this debug point
         delay_increment = debug_point.delay - current_delay
@@ -205,7 +204,7 @@ class DataflowPath:
 
     return "\n".join(trace)
 
-  def _build_hierarchy_string(self, obj: Object, prefix: str = "") -> str:
+  def _build_hierarchy_string(self, obj: Object, root: str = "") -> str:
     """
         Build a hierarchical string representation of an Object for FlameGraph format.
         This method constructs a semicolon-separated hierarchy string that represents
@@ -217,14 +216,17 @@ class DataflowPath:
         Returns:
             Hierarchical string in format: "top:root;module1:inst1;module2:inst2;signal[bit]"
         """
-    parts = [prefix]
+    top = f"top:{root}"
+    parts = [top]
+    prev = root
 
     # Add each level of the instance hierarchy
     for elem in obj.instance_path:
-      parts.append(f"{elem.module_name}:{elem.instance_name}")
+      parts.append(f"{prev}:{elem.instance_name}")
+      prev = elem.module_name
 
     # Add the signal name with bit position if applicable
-    signal_part = obj.name
+    signal_part = prev + ":" + obj.name
     if obj.bit_pos > 0:
       signal_part += f"[{obj.bit_pos}]"
     parts.append(signal_part)
