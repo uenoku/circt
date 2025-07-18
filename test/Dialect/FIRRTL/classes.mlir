@@ -45,7 +45,7 @@ firrtl.circuit "Classes" {
     // CHECK: %3 = firrtl.object.subfield %0[out_str] : !firrtl.class<@StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)>
     // CHECK: firrtl.propassign %2, %1 : !firrtl.string
     // CHECK: firrtl.propassign %out, %3 : !firrtl.string
-    %0 = firrtl.object @StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)
+    %2, %3 = firrtl.object @StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)
     %1 = firrtl.string "foo"
     %2  = firrtl.object.subfield %0[in_str] : !firrtl.class<@StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)>
     %3 = firrtl.object.subfield %0[out_str] : !firrtl.class<@StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)>

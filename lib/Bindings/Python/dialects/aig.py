@@ -321,7 +321,18 @@ class LongestPathCollection:
     print(f"95th percentile delay: {self.get_by_delay_ratio(0.95).delay}")
     print(f"99th percentile delay: {self.get_by_delay_ratio(0.99).delay}")
     print(f"99.9th percentile delay: {self.get_by_delay_ratio(0.999).delay}")
-
+  
+  def diff(self, other: "LongestPathCollection") -> "LongestPathDiff":
+    """
+        Compare this collection to another and return the differences.
+        This method compares the paths in this collection to those in another
+        collection and returns four new collections representing the differences:
+        - Paths unique to this collection
+        - Paths unique to the other collection
+        - Paths common
+    """
+    a, b, c, d = self.collection._diff(other.collection)
+    return LongestPathDiff(LongestPathCollection(a), LongestPathCollection(b), LongestPathCollection(c), LongestPathCollection(d))
 
 # ============================================================================
 # Main Analysis Interface
@@ -378,4 +389,22 @@ class LongestPathHistory:
       object, delay, comment = self.history.head
       yield DebugPoint(Object(object), delay, comment)
       self.history = self.history.tail
- 
+
+@dataclass
+class LongestPathDiff:
+  """
+    Represents the difference between two LongestPathCollections.
+    This class provides a Python wrapper around the C++ LongestPathDiff,
+    enabling access to the paths that are unique to each collection and
+    the paths that have different delays.
+    Attributes:
+        lhs_unique: Paths unique to the left collection
+        rhs_unique: Paths unique to the right collection
+        lhs_different: Paths with different delays in the left collection
+        rhs_different: Paths with different delays in the right collection
+    """
+
+  lhs_unique: LongestPathCollection
+  rhs_unique: LongestPathCollection
+  lhs_different: LongestPathCollection
+  rhs_different: LongestPathCollection
