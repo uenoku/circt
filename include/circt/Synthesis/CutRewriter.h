@@ -29,10 +29,10 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/LogicalResult.h"
 #include <memory>
 #include <optional>
-#define DEBUG_TYPE "synthesis-cut-rewriter"
 
 namespace circt {
 namespace synthesis {
@@ -123,6 +123,11 @@ struct NPNClass {
   /// Constructor from a truth table.
   NPNClass(const TruthTable &tt) : truthTable(tt) {}
 
+  NPNClass(const TruthTable &tt, llvm::SmallVector<unsigned> inputPerm,
+           unsigned inputNeg, unsigned outputNeg)
+      : truthTable(tt), inputPermutation(std::move(inputPerm)),
+        inputNegation(inputNeg), outputNegation(outputNeg) {}
+
   /// Compute the canonical NPN form for a given truth table.
   ///
   /// This method exhaustively tries all possible input permutations and
@@ -140,6 +145,14 @@ struct NPNClass {
     return truthTable == other.truthTable &&
            inputNegation == other.inputNegation &&
            outputNegation == other.outputNegation;
+  }
+
+  bool isLexicographicallySmaller(const NPNClass &other) const {
+    if (truthTable.table != other.truthTable.table)
+      return truthTable.isLexicographicallySmaller(other.truthTable);
+    if (inputNegation != other.inputNegation)
+      return inputNegation < other.inputNegation;
+    return outputNegation < other.outputNegation;
   }
 };
 

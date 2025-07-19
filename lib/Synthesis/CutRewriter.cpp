@@ -27,6 +27,8 @@
 #include <memory>
 #include <optional>
 
+#define DEBUG_TYPE "synthesis-cut-rewriter"
+
 using namespace circt;
 using namespace circt::synthesis;
 
@@ -335,8 +337,6 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   for (unsigned i = 0; i < tt.numInputs; ++i)
     canonical.inputPermutation[i] = i;
 
-  TruthTable bestTT = tt;
-
   // Try all possible input negations (2^n combinations)
   assert(tt.numInputs <= 20 && "Too many inputs for input negation mask");
   for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
@@ -350,38 +350,37 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
 
     do {
       TruthTable permutedTT = negatedTT.applyPermutation(permutation);
+      unsigned currentNegMask = 0;
+      for (unsigned i = 0; i < tt.numInputs; ++i) {
+        // Permute the negation mask according to the permutation
+        if (negMask & (1u << i)) {
+          currentNegMask |= (1u << permutation[i]);
+        } else {
+          currentNegMask &= ~(1u << permutation[i]);
+        }
+      }
 
       // Try output negation (for single output)
       if (tt.numOutputs == 1) {
         unsigned outputNegMask = 0;
         TruthTable candidate = permutedTT;
 
+        NPNClass canonicalCandidate(permutedTT, permutation, currentNegMask, 0);
+
         // Try without output negation
-        if (candidate.isLexicographicallySmaller(bestTT)) {
-          bestTT = candidate;
-          canonical.truthTable = candidate;
-          canonical.inputPermutation = permutation;
-          canonical.inputNegation = negMask;
-          canonical.outputNegation = outputNegMask;
+        if (canonicalCandidate.isLexicographicallySmaller(canonical)) {
+          canonical = canonicalCandidate;
         }
 
         // Try with output negation
         candidate = permutedTT.applyOutputNegation(1);
-        if (candidate.isLexicographicallySmaller(bestTT)) {
-          bestTT = candidate;
-          canonical.truthTable = candidate;
-          canonical.inputPermutation = permutation;
-          canonical.inputNegation = negMask;
-          canonical.outputNegation = 1;
+        NPNClass newCanonical(permutedTT.applyOutputNegation(1), permutation,
+                              currentNegMask, 1);
+        if (newCanonical.isLexicographicallySmaller(canonical)) {
+          canonical = newCanonical;
         }
       } else {
-        // For multi-output, just check without output negation
-        if (permutedTT.isLexicographicallySmaller(bestTT)) {
-          bestTT = permutedTT;
-          canonical.truthTable = permutedTT;
-          canonical.inputPermutation = permutation;
-          canonical.inputNegation = negMask;
-        }
+        assert(false);
       }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
   }
@@ -422,7 +421,8 @@ const mlir::FailureOr<NPNClass> &Cut::getNPNClass() const {
 }
 
 void Cut::dump() const {
-  llvm::dbgs() << "==========================\n";
+  llvm::dbgs() << "// === Cut Dump ===\n";
+
   llvm::dbgs() << "Cut with " << getInputSize() << " inputs and "
                << getCutSize() << " operations:\n";
   if (isPrimaryInput()) {
@@ -430,9 +430,9 @@ void Cut::dump() const {
     return;
   }
 
-  llvm::dbgs() << "Inputs: ";
+  llvm::dbgs() << "Inputs: \n";
   for (auto [idx, input] : llvm::enumerate(inputs)) {
-    llvm::dbgs() << "Input " << idx << ": " << input << "\n";
+    llvm::dbgs() << "  Input " << idx << ": " << input << "\n";
   }
   llvm::dbgs() << "\nOperations: ";
   for (auto *op : operations) {
@@ -445,8 +445,10 @@ void Cut::dump() const {
   llvm::dbgs() << "NPN Class: ";
   auto &npnClass = getNPNClass();
   llvm::dbgs() << npnClass->truthTable.table << "\n";
+  llvm::dbgs() << npnClass->inputNegation << " (input negation) "
+               << npnClass->outputNegation << " (output negation)\n";
 
-  llvm::dbgs() << "==========================\n";
+  llvm::dbgs() << "// === Cut End ===\n";
 }
 
 unsigned Cut::getInputSize() const { return inputs.size(); }

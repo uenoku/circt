@@ -2,6 +2,8 @@
 #include "circt/Synthesis/CutRewriter.h"
 #include "circt/Synthesis/Transforms/Passes.h"
 
+#define DEBUG_TYPE "synthesis-generic-lut-mapper"
+
 namespace circt {
 namespace synthesis {
 #define GEN_PASS_DEF_GENERICLUTMAPPER

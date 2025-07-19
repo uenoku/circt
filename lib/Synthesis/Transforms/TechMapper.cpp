@@ -6,6 +6,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/Debug.h"
 
 namespace circt {
 namespace synthesis {
@@ -16,6 +17,8 @@ namespace synthesis {
 
 using namespace circt;
 using namespace circt::synthesis;
+
+#define DEBUG_TYPE "synthesis-tech-mapper"
 
 //===----------------------------------------------------------------------===//
 // Tech Mapper Pass
@@ -131,6 +134,17 @@ struct TechLibraryPattern : public CutRewriterPattern {
   TechLibraryPattern(hw::HWModuleOp mod) : module(mod) {
     // Create an NPN class from the module's truth table
     npnClass = getNPNClassFromModule(module);
+    LLVM_DEBUG(
+      llvm::dbgs() << "Created Tech Library Pattern for module: "
+                   << module.getModuleName() << "\n";
+      llvm::dbgs() << "NPN Class: "
+                   << npnClass.truthTable.table << "\n";
+      llvm::dbgs() << "Inputs: " << npnClass.inputPermutation.size() << "\n";
+      llvm::dbgs() << "Input Negation: " << npnClass.inputNegation
+                   << "\n";
+      llvm::dbgs() << "Output Negation: " << npnClass.outputNegation
+                   << "\n";
+    );
   }
 
   StringRef getPatternName() const override {

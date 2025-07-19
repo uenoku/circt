@@ -10,7 +10,7 @@
 // CHECK-LABEL: @and(
 // COMB-LABEL: @and(
 // DISABLE_WORD-LABEL: @and(
-hw.module @and(in %a: i2, in %b: i2, in %c: i2, in %d: i1, out and: i2) {
+hw.module @and(in %a: i2, in %b: i2, in %c: i2, out and: i2) {
   // AIG-NEXT:  %[[AND_INV:.+]] = aig.and_inv %a, %b, %c : i2
   // AIG-NEXT: dbg.variable
   // AIG-NEXT: hw.output %[[AND_INV]] : i2
