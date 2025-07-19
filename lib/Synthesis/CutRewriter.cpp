@@ -2,6 +2,7 @@
 
 #include "circt/Dialect/AIG/AIGOps.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Support/LLVM.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
@@ -35,8 +36,8 @@ using namespace circt::synthesis;
 // Return true if the new area/delay is better than the old area/delay in the
 // context of the given strategy.
 static bool compareDelayAndArea(CutRewriteStrategy strategy, double newArea,
-                                DelayType newDelay, double oldArea,
-                                DelayType oldDelay) {
+                                ArrayRef<DelayType> newDelay, double oldArea,
+                                ArrayRef<DelayType> oldDelay) {
   if (CutRewriteStrategy::Area == strategy) {
     // Compare by area first.
     return newArea < oldArea || (newArea == oldArea && newDelay < oldDelay);
@@ -114,9 +115,9 @@ void CutSet::finalize(
 
     if (!matchedPattern ||
         compareDelayAndArea(options.strategy, matchResult->getArea(),
-                            matchResult->getArrivalTime(),
+                            matchResult->getArrivalTimes(),
                             matchedPattern->getArea(),
-                            matchedPattern->getArrivalTime())) {
+                            matchedPattern->getArrivalTimes())) {
       // Found a better matching pattern
       matchedPattern = matchResult;
     }
@@ -515,9 +516,14 @@ const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
 // MatchedPattern
 //===----------------------------------------------------------------------===//
 
-DelayType MatchedPattern::getArrivalTime() const {
+ArrayRef<DelayType> MatchedPattern::getArrivalTimes() const {
   assert(pattern && "Pattern must be set to get arrival time");
-  return arrivalTime;
+  return arrivalTimes;
+}
+
+DelayType MatchedPattern::getArrivalTime(size_t index) const {
+  assert(pattern && "Pattern must be set to get arrival time");
+  return arrivalTimes[index];
 }
 
 const CutRewriterPattern *MatchedPattern::getPattern() const {
@@ -549,12 +555,6 @@ DelayType MatchedPattern::getDelay(unsigned inputIndex,
 
 bool CutSet::isMatched() const {
   return matchedPattern.has_value() && matchedPattern->isValid();
-}
-
-DelayType CutSet::getArrivalTime() const {
-  assert(isMatched() &&
-         "Matched pattern must be set before getting arrival time");
-  return matchedPattern->getArrivalTime();
 }
 
 std::optional<MatchedPattern> CutSet::getMatchedPattern() const {
@@ -807,17 +807,19 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   if (cut.isPrimaryInput())
     return {};
 
-  DelayType bestArrivalTime = std::numeric_limits<DelayType>::max();
   CutRewriterPattern *bestPattern = nullptr;
-  SmallVector<DelayType, 4> inputArrivalTimes, outputArrivalTimes;
+  SmallVector<DelayType, 4> inputArrivalTimes;
+  SmallVector<DelayType, 2> bestArrivalTimes;
   inputArrivalTimes.reserve(cut.getInputSize());
-  outputArrivalTimes.reserve(cut.getOutputSize());
+  bestArrivalTimes.reserve(cut.getOutputSize());
 
   // Compute arrival times for each input.
   for (auto input : cut.inputs) {
     assert(input.getType().isInteger(1));
     if (isAlwaysCutInput(input)) {
-      // If the input is a primary input, it has no delay
+      // If the input is a primary input, it has no delay.
+      // TODO: This doesn't consider a global delay. Need to capture
+      // `arrivalTime` on the IR to make the primary input delays visible.
       inputArrivalTimes.push_back(0.0);
       continue;
     }
@@ -829,37 +831,56 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     // input in the cut rewriting. So abort early.
     if (!matchedPattern)
       return {};
-    inputArrivalTimes.push_back(matchedPattern->getArrivalTime());
+
+    // This must be a block argument must have been a cut input.
+    auto resultNumber = cast<mlir::OpResult>(input);
+    inputArrivalTimes.push_back(
+        matchedPattern->getArrivalTime(resultNumber.getResultNumber()));
   }
 
   auto computeArrivalTimeAndPickBest =
       [&](CutRewriterPattern *pattern,
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
-        // Compute the arrival time for the pattern based on the inputs.
-        DelayType patternArrivalTime = 0;
-
-        // Compute the maximum delay for each output from inputs
-        for (size_t i = 0; i < cut.getInputSize(); ++i) {
-          for (size_t j = 0; j < cut.getOutputSize(); ++j) {
+        SmallVector<DelayType, 2> patternArrivalTimes;
+        // Compute the maximum delay for each output from inputs.
+        for (size_t outputIndex = 0; outputIndex < cut.getOutputSize();
+             ++outputIndex) {
+          // Compute the arrival time for the pattern based on the inputs.
+          DelayType patternArrivalTime = 0;
+          for (size_t inputIndex = 0; inputIndex < cut.getInputSize();
+               ++inputIndex) {
             // Map pattern input i to cut input through NPN transformations
-            unsigned cutOriginalInput = mapIndex(i);
+            unsigned cutOriginalInput = mapIndex(inputIndex);
             patternArrivalTime =
                 std::max(patternArrivalTime,
-                         pattern->getDelay(cut, cutOriginalInput, j) +
+                         pattern->getDelay(cut, cutOriginalInput, outputIndex) +
                              inputArrivalTimes[cutOriginalInput]);
           }
+
+          patternArrivalTimes.push_back(patternArrivalTime);
         }
 
         // Update the arrival time
         if (!bestPattern ||
             compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                                patternArrivalTime, bestPattern->getArea(cut),
-                                bestArrivalTime)) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Picking pattern: " << pattern->getPatternName()
-                     << " with arrival time: " << patternArrivalTime
-                     << " and area: " << pattern->getArea(cut) << "\n");
-          bestArrivalTime = patternArrivalTime;
+                                patternArrivalTimes, bestPattern->getArea(cut),
+                                bestArrivalTimes)) {
+          LLVM_DEBUG({
+            llvm::dbgs() << "Found better pattern: "
+                         << pattern->getPatternName();
+            llvm::dbgs() << " with area: " << pattern->getArea(cut);
+            llvm::dbgs() << " and input arrival times: ";
+            for (size_t i = 0; i < patternArrivalTimes.size(); ++i) {
+              llvm::dbgs() << " " << patternArrivalTimes[i];
+            }
+            llvm::dbgs() << " and arrival times: ";
+
+            for (auto arrivalTime : patternArrivalTimes) {
+              llvm::dbgs() << " " << arrivalTime;
+            }
+            llvm::dbgs() << "\n";
+          });
+          bestArrivalTimes = std::move(patternArrivalTimes);
           bestPattern = pattern;
         }
       };
@@ -888,7 +909,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   if (!bestPattern)
     return std::nullopt; // No matching pattern found
 
-  return MatchedPattern(bestPattern, &cut, bestArrivalTime);
+  return MatchedPattern(bestPattern, &cut, std::move(bestArrivalTimes));
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
@@ -907,6 +928,7 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());
   DelayType maximumArrivalTime = 0;
+  (void)maximumArrivalTime; // Used only for debug mode.
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
     if (value.use_empty()) {
       if (auto *op = value.getDefiningOp())
@@ -933,12 +955,15 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut)))
       return failure();
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "Rewrote cut for value: " << value << " with pattern: "
-               << matchedPattern->getPattern()->getPatternName() << "\n");
-    // Update maximum arrival time
-    maximumArrivalTime =
-        std::max(maximumArrivalTime, matchedPattern->getArrivalTime());
+    LLVM_DEBUG({
+      llvm::dbgs() << "Rewrote cut for value: " << value << " with pattern: "
+                   << matchedPattern->getPattern()->getPatternName() << "\n";
+
+      // Update maximum arrival time
+      for (size_t i = 0; i < cut->getOutputSize(); ++i)
+        maximumArrivalTime =
+            std::max(maximumArrivalTime, matchedPattern->getArrivalTime(i));
+    });
   }
 
   // If we have a maximum arrival time, report it

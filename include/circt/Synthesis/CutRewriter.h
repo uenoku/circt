@@ -39,7 +39,7 @@ namespace synthesis {
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (e.g., nano
 // or pico).
-using DelayType = double;
+using DelayType = uint64_t;
 
 /// Optimization strategy for cut-based rewriting.
 /// Determines whether to prioritize area or timing during rewriting.
@@ -250,7 +250,7 @@ class MatchedPattern {
 private:
   const CutRewriterPattern *pattern = nullptr; ///< The matched library pattern
   Cut *cut = nullptr;                          ///< The cut that was matched
-  DelayType arrivalTime; ///< Arrival time through this pattern
+  SmallVector<DelayType, 2> arrivalTimes; ///< Arrival time through this pattern
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -258,11 +258,12 @@ public:
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewriterPattern *pattern, Cut *cut,
-                 double arrivalTime)
-      : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
+                 SmallVector<DelayType, 2> arrivalTimes)
+      : pattern(pattern), cut(cut), arrivalTimes(std::move(arrivalTimes)) {}
 
   /// Get the arrival time of signals through this pattern.
-  DelayType getArrivalTime() const;
+  DelayType getArrivalTime(size_t outputIndex) const;
+  ArrayRef<DelayType> getArrivalTimes() const;
 
   /// Get the library pattern that was matched.
   const CutRewriterPattern *getPattern() const;
@@ -306,10 +307,6 @@ public:
 
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const;
-
-  /// Get the arrival time of the best matched pattern.
-  /// NOTE: isMatched() must be true
-  DelayType getArrivalTime() const;
 
   /// Get the cut associated with the best matched pattern.
   /// NOTE: isMatched() must be true
