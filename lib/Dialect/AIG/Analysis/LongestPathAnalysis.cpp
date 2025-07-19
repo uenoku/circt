@@ -87,26 +87,25 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
                      llvm::function_ref<Key(const T &)> keyFn,
                      llvm::function_ref<int64_t(const T &)> delayFn) {
   // Take only maximum for each path destination.
-  DenseMap<Key, T> saved;
-  for (auto [i, path] :
-       llvm::enumerate(ArrayRef(results).drop_front(startIndex))) {
+  DenseMap<Key, size_t> keyToIndex;
+  for (size_t i = startIndex; i < results.size(); ++i) {
+    auto &path = results[i];
     auto key = keyFn(path);
-    auto it = saved.find(key);
-    if (it == saved.end()) {
-      saved[key] = path;
-    } else {
-      // Keep the path with higher delay
-      if (delayFn(it->second) < delayFn(path))
-        it->second = path;
+    auto delay = delayFn(path);
+    auto it = keyToIndex.find(key);
+    if (it == keyToIndex.end()) {
+      // Insert a new entry.
+      size_t newIndex = keyToIndex.size() + startIndex;
+      keyToIndex[key] = newIndex;
+      results[newIndex] = std::move(results[i]);
+      continue;
+    }
+    if (delay > delayFn(results[it->second])) {
+      results[it->second] = std::move(results[i]);
     }
   }
 
-  // Copy the deduplicated paths back to results
-  size_t writeIndex = startIndex;
-  for (auto &[key, path] : saved) {
-    results[writeIndex++] = path;
-  }
-  results.resize(writeIndex);
+  results.resize(keyToIndex.size() + startIndex);
 }
 
 static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
