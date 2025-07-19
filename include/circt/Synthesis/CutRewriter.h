@@ -445,6 +445,52 @@ struct CutRewriterOptions {
   unsigned maxCutSizePerRoot;
 };
 
+class CutEnumerator {
+public:
+  /// Maps values to their associated cut sets.
+  /// Enumerate cuts for all nodes in the given module.
+  LogicalResult enumerateCuts(
+      Operation *hwModule,
+      llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
+  CutEnumerator(const CutRewriterOptions &options) : options(options) {}
+
+  /// Get the cut set for a specific value.
+  CutSet *lookup(Value value) const {
+    auto *it = cutSets.find(value);
+    if (it != cutSets.end())
+      return it->second.get();
+    return nullptr;
+  }
+
+  CutSet *createNewCutSet(Value value) {
+    assert(!cutSets.contains(value) && "Cut set already exists for this value");
+    auto cutSet = std::make_unique<CutSet>();
+    auto *cutSetPtr = cutSet.get();
+    cutSets[value] = std::move(cutSet);
+    return cutSetPtr;
+  }
+
+  /// Get the cut set for a specific value.
+  /// Creates a new cut set if one doesn't exist.
+  const CutSet &getCutSet(Value value);
+
+  /// Move and return the cut set for a specific value.
+
+  auto takeVector() { return std::move(cutSets); }
+
+  void clear() { cutSets.clear(); }
+
+private:
+  LogicalResult visit(Operation *op);
+  LogicalResult visitLogicOp(Operation *logicOp);
+
+  llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
+  const CutRewriterOptions &options;
+
+  llvm::function_ref<std::optional<MatchedPattern>(Cut &)>
+      matchCut; ///< Function to match cuts against patterns
+};
+
 /// Main cut-based rewriting algorithm for combinational logic optimization.
 ///
 /// The CutRewriter implements a cut-based rewriting algorithm that:
@@ -477,7 +523,8 @@ public:
   /// Constructor for the cut rewriter.
   CutRewriter(Operation *op, const CutRewriterOptions &options,
               CutRewriterPatternSet &patterns)
-      : topOp(op), options(options), patterns(patterns) {}
+      : topOp(op), options(options), patterns(patterns),
+        cutEnumerator(options) {}
 
   /// Execute the complete cut-based rewriting algorithm.
   ///
@@ -491,9 +538,6 @@ public:
 private:
   /// Enumerate cuts for all nodes in the given module.
   LogicalResult enumerateCuts(Operation *hwModule);
-
-  /// Generate cuts for a specific combinational logic operation.
-  LogicalResult generateCutsForAndOp(Operation *op);
 
   /// Get the cut set for a specific value.
   /// Creates a new cut set if one doesn't exist.
@@ -515,9 +559,7 @@ private:
   Operation *topOp;                      ///< Root operation being rewritten
   const CutRewriterOptions &options;     ///< Configuration options
   const CutRewriterPatternSet &patterns; ///< Available rewriting patterns
-
-  /// Maps values to their associated cut sets.
-  llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
+  CutEnumerator cutEnumerator;
 };
 
 } // namespace synthesis

@@ -668,30 +668,14 @@ LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
     return mlir::emitError(hwModule->getLoc(),
                            "failed to sort operations topologically");
 
-  auto result = hwModule->walk([&](Operation *op) {
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-      if (failed(generateCutsForAndOp(andOp)))
-        return mlir::WalkResult::interrupt();
-      auto &cutSet = getCutSet(andOp.getResult());
-      LLVM_DEBUG(llvm::dbgs() << "Generated cut for AND operation: "
-                              << andOp.getResult() << "\n");
-      for (const Cut &cut : cutSet.getCuts()) {
-        LLVM_DEBUG(cut.dump());
-      }
-    }
-
-    return mlir::WalkResult::advance();
-  });
-
-  if (result.wasInterrupted()) {
-    hwModule->emitError("Failed to generate cuts");
-    return failure();
-  }
-
-  return success();
+  return cutEnumerator.enumerateCuts(
+      hwModule, [&](Cut &cut) -> std::optional<MatchedPattern> {
+        // Match the cut against the patterns
+        return matchCutToPattern(cut);
+      });
 }
 
-LogicalResult CutRewriter::generateCutsForAndOp(Operation *logicOp) {
+LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   assert(logicOp->getNumResults() == 1 &&
          "Logic operation must have a single result");
   Value result = logicOp->getResult(0);
@@ -707,16 +691,14 @@ LogicalResult CutRewriter::generateCutsForAndOp(Operation *logicOp) {
 
   Cut singletonCut = getSingletonCut(logicOp);
 
-  auto *resultCutSet = getOrCreateCutSet(result);
+  auto *resultCutSet = createNewCutSet(result);
+  // Operation itself is a cut, so add it to the cut set
+  resultCutSet->addCut(singletonCut);
 
   auto prune = llvm::make_scope_exit([&]() {
     // Prune the cut set to maintain the maximum number of cuts
-    resultCutSet->freezeCutSet(
-        options, [&](Cut &cut) { return matchCutToPattern(cut); });
+    resultCutSet->freezeCutSet(options, matchCut);
   });
-
-  // Operation itself is a cut, so add it to the cut set
-  resultCutSet->addCut(singletonCut);
 
   if (numOperands == 1) {
     auto inputCutSet = getCutSet(logicOp->getOperand(0));
@@ -747,7 +729,34 @@ LogicalResult CutRewriter::generateCutsForAndOp(Operation *logicOp) {
   return success();
 }
 
-const CutSet &CutRewriter::getCutSet(Value value) {
+LogicalResult CutEnumerator::enumerateCuts(
+    Operation *hwModule,
+    llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
+  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: "
+                          << hwModule->getName() << "\n");
+  this->matchCut = matchCut;
+  auto result = hwModule->walk([&](Operation *op) {
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+      if (failed(visitLogicOp(andOp)))
+        return mlir::WalkResult::interrupt();
+      auto &cutSet = getCutSet(andOp.getResult());
+      LLVM_DEBUG(llvm::dbgs() << "Generated cut for AND operation: "
+                              << andOp.getResult() << "\n");
+      for (const Cut &cut : cutSet.getCuts()) {
+        LLVM_DEBUG(cut.dump());
+      }
+    }
+
+    return mlir::WalkResult::advance();
+  });
+
+  return result.wasInterrupted()
+             ? mlir::emitError(hwModule->getLoc(),
+                               "failed to enumerate cuts for module")
+             : success();
+}
+
+const CutSet &CutEnumerator::getCutSet(Value value) {
   // If the cut set does not exist, create a new one
   if (!cutSets.contains(value)) {
     // Add a trivial cut for primary inputs
@@ -756,16 +765,6 @@ const CutSet &CutRewriter::getCutSet(Value value) {
   }
 
   return *cutSets.find(value)->second;
-}
-
-CutSet *CutRewriter::getOrCreateCutSet(Value value) {
-  // If the cut set does not exist, create a new one
-  if (!cutSets.contains(value)) {
-    // Add a trivial cut for primary inputs
-    cutSets[value] = std::make_unique<CutSet>();
-  }
-
-  return cutSets.find(value)->second.get();
 }
 
 ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
@@ -791,14 +790,15 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   outputArrivalTimes.reserve(cut.getOutputSize());
   for (auto input : cut.inputs) {
     assert(input.getType().isInteger(1));
-    // If the input is a primary input, it has no delay
-    auto *arrivalTime = cutSets.find(input);
     if (isAlwaysCutInput(input)) {
       // If the input is a primary input, it has no delay
       inputArrivalTimes.push_back(0.0);
-    } else if (arrivalTime != cutSets.end()) {
+      continue;
+    }
+    auto *cutSet = cutEnumerator.lookup(input);
+    if (cutSet) {
       // If the arrival time is already computed, use it
-      auto pattern = arrivalTime->second->getMatchedPattern();
+      auto pattern = cutSet->getMatchedPattern();
       if (!pattern)
         return {};
       inputArrivalTimes.push_back(pattern->getArrivalTime());
@@ -843,8 +843,8 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
       continue;
     auto &cutNPN = cut.getNPNClass();
 
-    // Build inverse permutation mapping from cut's canonical form to original
-    // cut inputs
+    // Build inverse permutation mapping from cut's canonical form to
+    // original cut inputs
     // TODO: Cache permutation/inv-permutation via unique id.
     llvm::SmallVector<unsigned> cutInversePermutation(cut.getInputSize());
     for (size_t i = 0; i < cut.getInputSize(); ++i) {
@@ -877,7 +877,7 @@ LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
   // 1. Select best cuts for each node
   // 2. Replace AIG nodes with library primitives
   // 3. Connect the mapped circuit
-  auto cutVector = cutSets.takeVector();
+  auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
   PatternRewriter rewriter(hwModule->getContext());
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
