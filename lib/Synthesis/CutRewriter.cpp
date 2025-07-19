@@ -812,6 +812,8 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   SmallVector<DelayType, 4> inputArrivalTimes, outputArrivalTimes;
   inputArrivalTimes.reserve(cut.getInputSize());
   outputArrivalTimes.reserve(cut.getOutputSize());
+
+  // Compute arrival times for each input.
   for (auto input : cut.inputs) {
     assert(input.getType().isInteger(1));
     if (isAlwaysCutInput(input)) {
@@ -820,28 +822,27 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
       continue;
     }
     auto *cutSet = cutEnumerator.lookup(input);
-    if (cutSet) {
-      // If the arrival time is already computed, use it
-      auto pattern = cutSet->getMatchedPattern();
-      if (!pattern)
-        return {};
-      inputArrivalTimes.push_back(pattern->getArrivalTime());
-    } else {
-      assert(false && "Input must have a valid arrival time");
-    }
+    assert(cutSet && "Input must have a valid cut set");
+
+    auto matchedPattern = cutSet->getMatchedPattern();
+    // If there is no matching pattern, it means it's not possilbe to use the
+    // input in the cut rewriting. So abort early.
+    if (!matchedPattern)
+      return {};
+    inputArrivalTimes.push_back(matchedPattern->getArrivalTime());
   }
 
   auto computeArrivalTimeAndPickBest =
       [&](CutRewriterPattern *pattern,
-          llvm::function_ref<unsigned(unsigned)> mapInput) {
-        // If the pattern matches the cut, compute the arrival time
+          llvm::function_ref<unsigned(unsigned)> mapIndex) {
+        // Compute the arrival time for the pattern based on the inputs.
         DelayType patternArrivalTime = 0;
 
         // Compute the maximum delay for each output from inputs
         for (size_t i = 0; i < cut.getInputSize(); ++i) {
           for (size_t j = 0; j < cut.getOutputSize(); ++j) {
             // Map pattern input i to cut input through NPN transformations
-            unsigned cutOriginalInput = mapInput(i);
+            unsigned cutOriginalInput = mapIndex(i);
             patternArrivalTime =
                 std::max(patternArrivalTime,
                          pattern->getDelay(cut, cutOriginalInput, j) +
@@ -849,6 +850,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
           }
         }
 
+        // Update the arrival time
         if (!bestPattern ||
             compareDelayAndArea(options.strategy, pattern->getArea(cut),
                                 patternArrivalTime, bestPattern->getArea(cut),
