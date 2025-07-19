@@ -639,6 +639,7 @@ LogicalResult CutRewriter::sortOperationsTopologically(Operation *hwModule) {
           .wasInterrupted())
     return mlir::emitError(hwModule->getLoc(),
                            "failed to sort operations topologically");
+  return success();
 }
 
 LogicalResult CutRewriter::run() {
@@ -903,6 +904,7 @@ LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
   auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
   PatternRewriter rewriter(hwModule->getContext());
+  double maximumArrivalTime = 0.0;
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
     if (value.use_empty()) {
       if (auto *op = value.getDefiningOp())
@@ -929,7 +931,20 @@ LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
     if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut))) {
       return failure();
     }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Rewrote cut for value: " << value << " with pattern: "
+               << matchedPattern->getPattern()->getPatternName() << "\n");
+    // Update maximum arrival time
+    maximumArrivalTime =
+        std::max(maximumArrivalTime, matchedPattern->getArrivalTime());
   }
+
+  // If we have a maximum arrival time, report it
+  LLVM_DEBUG({
+    llvm::dbgs() << "Maximum arrival time after rewriting: "
+                 << maximumArrivalTime << "\n";
+  });
 
   return success();
 }
