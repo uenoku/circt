@@ -36,9 +36,10 @@
 
 namespace circt {
 namespace synthesis {
-// Use uint64_t for delay units. It's user's responsibility to use consistent
-// units, i.e., all delays should be in the same unit (e.g., nano or pico).
-using DelayType = uint64_t;
+// Type for representing delays in the circuit. It's user's responsibility to
+// use consistent units, i.e., all delays should be in the same unit (e.g., nano
+// or pico).
+using DelayType = double;
 
 /// Optimization strategy for cut-based rewriting.
 /// Determines whether to prioritize area or timing during rewriting.
