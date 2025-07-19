@@ -546,10 +546,9 @@ private:
 class CutRewriter {
 public:
   /// Constructor for the cut rewriter.
-  CutRewriter(Operation *op, const CutRewriterOptions &options,
+  CutRewriter(const CutRewriterOptions &options,
               CutRewriterPatternSet &patterns)
-      : topOp(op), options(options), patterns(patterns),
-        cutEnumerator(options) {}
+      : options(options), patterns(patterns), cutEnumerator(options) {}
 
   /// Execute the complete cut-based rewriting algorithm.
   ///
@@ -558,14 +557,14 @@ public:
   /// 2. Match cuts against available patterns
   /// 3. Select optimal patterns based on strategy
   /// 4. Rewrite the circuit with selected patterns
-  LogicalResult run();
+  LogicalResult run(Operation *topOp);
 
 private:
   /// Enumerate cuts for all nodes in the given module.
-  LogicalResult enumerateCuts(Operation *hwModule);
+  LogicalResult enumerateCuts(Operation *topOp);
 
   /// Sort operations in topological order to ensure correct processing order.
-  LogicalResult sortOperationsTopologically(Operation *hwModule);
+  LogicalResult sortOperationsTopologically(Operation *topOp);
 
   /// Get the cut set for a specific value.
   /// Creates a new cut set if one doesn't exist.
@@ -582,9 +581,8 @@ private:
   std::optional<MatchedPattern> matchCutToPattern(Cut &cut);
 
   /// Perform the actual circuit rewriting using selected patterns.
-  LogicalResult performRewriting(Operation *hwModule);
+  LogicalResult performRewriting(Operation *topOp);
 
-  Operation *topOp;                      ///< Root operation being rewritten
   const CutRewriterOptions &options;     ///< Configuration options
   const CutRewriterPatternSet &patterns; ///< Available rewriting patterns
   CutEnumerator cutEnumerator;

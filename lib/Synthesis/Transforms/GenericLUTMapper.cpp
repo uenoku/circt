@@ -105,8 +105,8 @@ struct GenericLUTMapperPass
     options.strategy = CutRewriteStrategy::Timing;
     options.maxCutInputSize = maxLutSize;
     options.maxCutSizePerRoot = maxCutsPerNode;
-    CutRewriter mapper(module, options, patternSet);
-    if (failed(mapper.run()))
+    CutRewriter mapper(options, patternSet);
+    if (failed(mapper.run(module)))
       signalPassFailure();
   }
 }; // namespace

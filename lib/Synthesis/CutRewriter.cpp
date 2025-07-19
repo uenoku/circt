@@ -642,7 +642,7 @@ LogicalResult CutRewriter::sortOperationsTopologically(Operation *hwModule) {
   return success();
 }
 
-LogicalResult CutRewriter::run() {
+LogicalResult CutRewriter::run(Operation *topOp) {
   LLVM_DEBUG({
     llvm::dbgs() << "Starting Cut Rewriter\n";
     llvm::dbgs() << "Mode: "

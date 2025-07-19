@@ -265,8 +265,8 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       if (libraryModuleSet.contains(hwModule.getModuleName()))
         continue; // Skip if this module is a library module
 
-      CutRewriter mapper(hwModule, options, patternSet);
-      if (failed(mapper.run()))
+      CutRewriter mapper(options, patternSet);
+      if (failed(mapper.run(hwModule)))
         signalPassFailure();
     }
   }
