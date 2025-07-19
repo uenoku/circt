@@ -678,50 +678,68 @@ LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
 LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   assert(logicOp->getNumResults() == 1 &&
          "Logic operation must have a single result");
+
   Value result = logicOp->getResult(0);
-
   size_t numOperands = logicOp->getNumOperands();
-  if (numOperands > 2)
-    return logicOp->emitError("when computing cuts operation must have 1 or "
-                              "2 operands, found: ")
+
+  // Validate operation constraints
+  if (numOperands > 2) {
+    return logicOp->emitError("Cut enumeration supports at most 2 operands, "
+                              "found: ")
            << numOperands;
+  }
 
-  if (!logicOp->getOpResult(0).getType().isInteger(1))
+  if (!logicOp->getOpResult(0).getType().isInteger(1)) {
     return logicOp->emitError("Result type must be a single bit integer");
+  }
 
+  // Create the singleton cut (just this operation)
   Cut singletonCut = getSingletonCut(logicOp);
-
   auto *resultCutSet = createNewCutSet(result);
-  // Operation itself is a cut, so add it to the cut set
+
+  // Add the singleton cut first
   resultCutSet->addCut(singletonCut);
 
+  // Schedule cut set finalization when exiting this scope
   auto prune = llvm::make_scope_exit([&]() {
-    // Prune the cut set to maintain the maximum number of cuts
+    // Finalize cut set: remove duplicates, limit size, and match patterns
     resultCutSet->freezeCutSet(options, matchCut);
   });
 
+  // Handle unary operations (like NOT gates)
   if (numOperands == 1) {
-    auto inputCutSet = getCutSet(logicOp->getOperand(0));
-    for (const Cut &cut : inputCutSet.getCuts()) {
-      // Merge the singleton cut with the input cut
-      Cut newCut = cut.mergeWith(singletonCut, logicOp);
-      if (newCut.getInputSize() > options.maxCutInputSize)
-        continue; // Skip if merged cut exceeds max input size
-      resultCutSet->addCut(std::move(newCut));
+    const auto &inputCutSet = getCutSet(logicOp->getOperand(0));
+
+    // Try to extend each input cut by including this operation
+    for (const Cut &inputCut : inputCutSet.getCuts()) {
+      Cut extendedCut = inputCut.mergeWith(singletonCut, logicOp);
+
+      // Skip cuts that exceed input size limit
+      if (extendedCut.getInputSize() > options.maxCutInputSize)
+        continue;
+
+      resultCutSet->addCut(std::move(extendedCut));
     }
     return success();
   }
 
-  auto lhs = getCutSet(logicOp->getOperand(0));
-  auto rhs = getCutSet(logicOp->getOperand(1));
-  // Combine cuts from both inputs
-  for (const Cut &cut0 : lhs.getCuts()) {
-    for (const Cut &cut1 : rhs.getCuts()) {
-      auto mergedCut = cut0.mergeWith(cut1, logicOp);
+  // Handle binary operations (like AND, OR, XOR gates)
+  assert(numOperands == 2 && "Expected binary operation");
+
+  const auto &lhsCutSet = getCutSet(logicOp->getOperand(0));
+  const auto &rhsCutSet = getCutSet(logicOp->getOperand(1));
+
+  // Combine cuts from both inputs to create larger cuts
+  for (const Cut &lhsCut : lhsCutSet.getCuts()) {
+    for (const Cut &rhsCut : rhsCutSet.getCuts()) {
+      Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
+
+      // Skip cuts that exceed size limits
       if (mergedCut.getCutSize() > options.maxCutSizePerRoot)
-        continue; // Skip cuts that are too large
+        continue;
       if (mergedCut.getInputSize() > options.maxCutInputSize)
-        continue; // Skip if merged cut exceeds max input size
+        continue;
+
       resultCutSet->addCut(std::move(mergedCut));
     }
   }
@@ -734,34 +752,52 @@ LogicalResult CutEnumerator::enumerateCuts(
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
   LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: "
                           << hwModule->getName() << "\n");
+
+  // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
+
+  // Walk through all operations in the module in a topological manner
   auto result = hwModule->walk([&](Operation *op) {
+    if (failed(visit(op))) {
+      return mlir::WalkResult::interrupt();
+    }
+
+    // Debug output for generated cuts
     if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-      if (failed(visitLogicOp(andOp)))
-        return mlir::WalkResult::interrupt();
-      auto &cutSet = getCutSet(andOp.getResult());
-      LLVM_DEBUG(llvm::dbgs() << "Generated cut for AND operation: "
-                              << andOp.getResult() << "\n");
-      for (const Cut &cut : cutSet.getCuts()) {
-        LLVM_DEBUG(cut.dump());
-      }
+      const auto &cutSet = getCutSet(andOp.getResult());
+      LLVM_DEBUG({
+        llvm::dbgs() << "Generated " << cutSet.size()
+                     << " cuts for AND operation: " << andOp.getResult()
+                     << "\n";
+        for (const Cut &cut : cutSet.getCuts()) {
+          cut.dump();
+        }
+      });
     }
 
     return mlir::WalkResult::advance();
   });
 
-  return result.wasInterrupted()
-             ? mlir::emitError(hwModule->getLoc(),
-                               "failed to enumerate cuts for module")
-             : success();
+  if (result.wasInterrupted()) {
+    return mlir::emitError(hwModule->getLoc(),
+                           "Failed to enumerate cuts for module");
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
+  return success();
 }
 
 const CutSet &CutEnumerator::getCutSet(Value value) {
-  // If the cut set does not exist, create a new one
+  // Check if cut set already exists
   if (!cutSets.contains(value)) {
-    // Add a trivial cut for primary inputs
+    // Create new cut set for primary input or unprocessed value
     cutSets[value] = std::make_unique<CutSet>();
+
+    // Primary inputs get a trivial cut containing just themselves
     cutSets[value]->addCut(getAsPrimaryInput(value));
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Created primary input cut for: " << value << "\n");
   }
 
   return *cutSets.find(value)->second;
@@ -908,5 +944,43 @@ LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
     }
   }
 
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// CutEnumerator Implementation
+//===----------------------------------------------------------------------===//
+
+CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
+    : options(options) {}
+
+CutSet *CutEnumerator::lookup(Value value) const {
+  const auto *it = cutSets.find(value);
+  if (it != cutSets.end())
+    return it->second.get();
+  return nullptr;
+}
+
+CutSet *CutEnumerator::createNewCutSet(Value value) {
+  assert(!cutSets.contains(value) && "Cut set already exists for this value");
+  auto cutSet = std::make_unique<CutSet>();
+  auto *cutSetPtr = cutSet.get();
+  cutSets[value] = std::move(cutSet);
+  return cutSetPtr;
+}
+
+llvm::MapVector<Value, std::unique_ptr<CutSet>> CutEnumerator::takeVector() {
+  return std::move(cutSets);
+}
+
+void CutEnumerator::clear() { cutSets.clear(); }
+
+LogicalResult CutEnumerator::visit(Operation *op) {
+  // For now, delegate to visitLogicOp for combinational operations
+  if (isa<aig::AndInverterOp>(op)) {
+    return visitLogicOp(op);
+  }
+
+  // Skip non-combinational operations
   return success();
 }

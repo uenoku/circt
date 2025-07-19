@@ -445,50 +445,72 @@ struct CutRewriterOptions {
   unsigned maxCutSizePerRoot;
 };
 
+//===----------------------------------------------------------------------===//
+// Cut Enumeration Engine
+//===----------------------------------------------------------------------===//
+
+/// Cut enumeration engine for combinational logic networks.
+///
+/// The CutEnumerator is responsible for systematically generating all possible
+/// cuts for each node in a combinational logic network. It uses a priority cuts
+/// algorithm to maintain a bounded set of promising cuts while avoiding
+/// exponential explosion.
+///
+/// The enumeration process works by:
+/// 1. Visiting nodes in topological order
+/// 2. For each node, combining cuts from its inputs
+/// 3. Matching generated cuts against available patterns
+/// 4. Maintaining only the most promising cuts per node
 class CutEnumerator {
 public:
-  /// Maps values to their associated cut sets.
+  /// Constructor for cut enumerator.
+  explicit CutEnumerator(const CutRewriterOptions &options);
+
   /// Enumerate cuts for all nodes in the given module.
+  ///
+  /// This is the main entry point that orchestrates the cut enumeration
+  /// process. It visits all operations in the module and generates cuts
+  /// for combinational logic operations.
   LogicalResult enumerateCuts(
       Operation *hwModule,
       llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
-  CutEnumerator(const CutRewriterOptions &options) : options(options) {}
 
-  /// Get the cut set for a specific value.
-  CutSet *lookup(Value value) const {
-    auto *it = cutSets.find(value);
-    if (it != cutSets.end())
-      return it->second.get();
-    return nullptr;
-  }
+  /// Look up existing cut set for a value.
+  CutSet *lookup(Value value) const;
 
-  CutSet *createNewCutSet(Value value) {
-    assert(!cutSets.contains(value) && "Cut set already exists for this value");
-    auto cutSet = std::make_unique<CutSet>();
-    auto *cutSetPtr = cutSet.get();
-    cutSets[value] = std::move(cutSet);
-    return cutSetPtr;
-  }
+  /// Create a new cut set for a value.
+  /// The value must not already have a cut set.
+  CutSet *createNewCutSet(Value value);
 
   /// Get the cut set for a specific value.
   /// Creates a new cut set if one doesn't exist.
   const CutSet &getCutSet(Value value);
 
-  /// Move and return the cut set for a specific value.
+  /// Move ownership of all cut sets to caller.
+  /// After calling this, the enumerator is left in an empty state.
+  llvm::MapVector<Value, std::unique_ptr<CutSet>> takeVector();
 
-  auto takeVector() { return std::move(cutSets); }
-
-  void clear() { cutSets.clear(); }
+  /// Clear all cut sets and reset the enumerator.
+  void clear();
 
 private:
+  /// Visit a single operation and generate cuts for it.
   LogicalResult visit(Operation *op);
+
+  /// Visit a combinational logic operation and generate cuts.
+  /// This handles the core cut enumeration logic for operations
+  /// like AND, OR, XOR, etc.
   LogicalResult visitLogicOp(Operation *logicOp);
 
+  /// Maps values to their associated cut sets.
   llvm::MapVector<Value, std::unique_ptr<CutSet>> cutSets;
+
+  /// Configuration options for cut enumeration.
   const CutRewriterOptions &options;
 
-  llvm::function_ref<std::optional<MatchedPattern>(Cut &)>
-      matchCut; ///< Function to match cuts against patterns
+  /// Function to match cuts against available patterns.
+  /// Set during enumeration and used when finalizing cut sets.
+  llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut;
 };
 
 /// Main cut-based rewriting algorithm for combinational logic optimization.
