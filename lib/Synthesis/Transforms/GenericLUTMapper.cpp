@@ -1,6 +1,8 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Synthesis/CutRewriter.h"
 #include "circt/Synthesis/Transforms/Passes.h"
+#include "mlir/IR/Builders.h"
+#include "llvm/Support/LogicalResult.h"
 
 #define DEBUG_TYPE "synthesis-generic-lut-mapper"
 
@@ -45,8 +47,8 @@ struct GenericLUT : public CutRewriterPattern {
     return 1.0;
   }
 
-  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
-                        Cut &cut) const override {
+  llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &rewriter,
+                                       Cut &cut) const override {
     // NOTE: Don't use NPN because it's necessary to consider polarity etc.
     auto truthTable = cut.getTruthTable();
     if (failed(truthTable))
@@ -83,8 +85,7 @@ struct GenericLUT : public CutRewriterPattern {
         cut.getRoot()->getLoc(), lutInputs, arrayAttr);
 
     // Replace the root operation with the truth table operation
-    rewriter.replaceOp(cut.getRoot(), truthTableOp);
-    return success();
+    return truthTableOp.getOperation();
   }
 };
 struct GenericLUTMapperPass

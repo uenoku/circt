@@ -927,8 +927,6 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());
-  DelayType maximumArrivalTime = 0;
-  (void)maximumArrivalTime; // Used only for debug mode.
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
     if (value.use_empty()) {
       if (auto *op = value.getDefiningOp())
@@ -952,25 +950,10 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
 
     auto *cut = matchedPattern->getCut();
     rewriter.setInsertionPoint(cut->getRoot());
+    auto result = matchedPattern->getPattern()->rewrite(rewriter, *cut);
     if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut)))
       return failure();
-
-    LLVM_DEBUG({
-      llvm::dbgs() << "Rewrote cut for value: " << value << " with pattern: "
-                   << matchedPattern->getPattern()->getPatternName() << "\n";
-
-      // Update maximum arrival time
-      for (size_t i = 0; i < cut->getOutputSize(); ++i)
-        maximumArrivalTime =
-            std::max(maximumArrivalTime, matchedPattern->getArrivalTime(i));
-    });
   }
-
-  // If we have a maximum arrival time, report it
-  LLVM_DEBUG({
-    llvm::dbgs() << "Maximum arrival time after rewriting: "
-                 << maximumArrivalTime << "\n";
-  });
 
   return success();
 }

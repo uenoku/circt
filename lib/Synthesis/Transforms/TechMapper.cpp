@@ -3,10 +3,12 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Synthesis/CutRewriter.h"
 #include "circt/Synthesis/Transforms/Passes.h"
+#include "mlir/IR/Builders.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace circt {
 namespace synthesis {
@@ -162,14 +164,13 @@ struct TechLibraryPattern : public CutRewriterPattern {
   }
 
   /// Rewrite the cut set using this library primitive
-  LogicalResult rewrite(mlir::PatternRewriter &rewriter,
-                        Cut &cut) const override {
+  llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &rewriter,
+                                       Cut &cut) const override {
     // Create a new instance of the module
     SmallVector<Value> inputs;
     SmallVector<unsigned> cutInversePermutation;
     // Permutate based on the NPN class
     const auto &permutation = cut.getNPNClass()->inputPermutation;
-    // Inverse.
     cutInversePermutation.resize(permutation.size());
     for (unsigned i = 0; i < permutation.size(); ++i)
       cutInversePermutation[permutation[i]] = i;
@@ -179,9 +180,9 @@ struct TechLibraryPattern : public CutRewriterPattern {
       inputs.push_back(cut.inputs[moduleInputIndex]);
     }
 
-    rewriter.replaceOpWithNewOp<hw::InstanceOp>(cut.getRoot(), module, "mapped",
-                                                inputs);
-    return success();
+    auto instanceOp = rewriter.create<hw::InstanceOp>(
+        cut.getRoot()->getLoc(), module, "mapped", ArrayRef<Value>(inputs));
+    return instanceOp.getOperation();
   }
 
   double getAttr(StringRef name) const {

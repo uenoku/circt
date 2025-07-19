@@ -25,6 +25,7 @@
 #define CIRCT_SYNTHESIS_CUT_REWRITER_H
 
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -366,13 +367,13 @@ struct CutRewriterPattern {
   virtual bool
   useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
 
-  /// Rewrite a matched cut by replacing it with this pattern.
+  /// Return a new operation that implements this pattern.
   ///
   /// This method performs the actual transformation, replacing the cut's
-  /// operations with the pattern's implementation. The cut's root operation
-  /// must be replaced or removed if returning success.
-  virtual LogicalResult rewrite(PatternRewriter &rewriter,
-                                Cut &cutSet) const = 0;
+  /// operations with the pattern's implementation.
+  ///
+  virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
+                                         Cut &cut) const = 0;
 
   /// Get the area cost of this pattern.
   virtual double getArea(const Cut &cut) const = 0;
