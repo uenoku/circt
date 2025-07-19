@@ -40,7 +40,7 @@ namespace synthesis {
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (e.g., nano
 // or pico).
-using DelayType = uint64_t;
+using DelayType = int64_t;
 
 /// Optimization strategy for cut-based rewriting.
 /// Determines whether to prioritize area or timing during rewriting.
@@ -369,9 +369,9 @@ struct CutRewriterPattern {
 
   /// Return a new operation that implements this pattern.
   ///
-  /// This method performs the actual transformation, replacing the cut's
-  /// operations with the pattern's implementation.
-  ///
+  /// Unlike MLIR's `RewritePattern`, this method does not allow actual
+  /// rewriting of operations with the pattern's implementation.
+
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          Cut &cut) const = 0;
 
@@ -446,6 +446,9 @@ struct CutRewriterOptions {
   /// The priority cuts algorithm keeps only the most promising cuts
   /// to prevent exponential explosion.
   unsigned maxCutSizePerRoot;
+
+  /// Put arrival times to rewritten operations.
+  bool attachDebugTiming = false;
 };
 
 //===----------------------------------------------------------------------===//

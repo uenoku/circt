@@ -260,6 +260,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
             : CutRewriteStrategy::Timing; // Use area optimization
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerNode;
+    options.attachDebugTiming = true;
     for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
       LLVM_DEBUG(llvm::dbgs()
                  << "Processing HW module: " << hwModule.getName() << "\n");

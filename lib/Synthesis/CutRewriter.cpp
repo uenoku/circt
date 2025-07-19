@@ -951,8 +951,17 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     auto *cut = matchedPattern->getCut();
     rewriter.setInsertionPoint(cut->getRoot());
     auto result = matchedPattern->getPattern()->rewrite(rewriter, *cut);
-    if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut)))
+    if (failed(result))
       return failure();
+
+    auto *newOp = *result;
+
+    rewriter.replaceOp(cut->getRoot(), newOp);
+
+    if (options.attachDebugTiming) {
+      auto array = rewriter.getI64ArrayAttr(matchedPattern->getArrivalTimes());
+      newOp->setAttr("debug.arrival_times", array);
+    }
   }
 
   return success();

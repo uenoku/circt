@@ -90,13 +90,13 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
   DenseMap<Key, size_t> saved;
   for (auto [i, path] :
        llvm::enumerate(ArrayRef(results).drop_front(startIndex))) {
-    auto &slot = saved[keyFn(path)];
-    if (slot == 0) {
-      slot = startIndex + i + 1;
-      continue;
-    }
-    if (delayFn(results[slot - 1]) < delayFn(path))
-      results[slot - 1] = path;
+    auto key = keyFn(path);
+    auto it = saved.try_emplace(key, saved.size() + startIndex);
+    if (it.second)
+      continue; // New key, no need to update
+  
+    if (delayFn(results[it.first->second]) < delayFn(path))
+      results[it.first->second] = path;
   }
 
   results.resize(saved.size() + startIndex);
@@ -715,12 +715,13 @@ LogicalResult LocalVisitor::visit(comb::XorOp op, size_t bitPos,
 
 LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
+  auto oldResultsSize = results.size();
   // Add a cost of 1 for the mux.
   if (failed(addEdge(op.getCond(), 0, 1, results)) ||
       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
     return failure();
-  deduplicatePaths(results);
+  deduplicatePaths(results, oldResultsSize);
   return success();
 }
 
@@ -856,21 +857,23 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
                                        SmallVectorImpl<OpenPath> &results) {
   auto size = op->getNumOperands();
   auto cost = llvm::Log2_64_Ceil(size);
+  size_t oldResult = results.size();
   // Create edges each operand with cost ceil(log(size)).
   for (auto operand : op->getOperands())
     if (failed(addEdge(operand, bitPos, cost, results)))
       return failure();
 
-  deduplicatePaths(results);
+  deduplicatePaths(results, oldResult);
   return success();
 }
 
 LogicalResult LocalVisitor::visit(comb::TruthTableOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
+  size_t oldResult = results.size();
   for (auto operand : op->getOperands())
     if (failed(addEdge(operand, bitPos, 1, results)))
       return failure();
-  deduplicatePaths(results);
+  deduplicatePaths(results, oldResult);
   return success();
 }
 
@@ -1078,7 +1081,7 @@ LogicalResult LocalVisitor::initializeAndRun() {
                                    op.getEnable());
             })
             .Case<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
-                  comb::MuxOp>([&](auto op) {
+                  comb::MuxOp, comb::TruthTableOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               for (size_t i = 0, e = getBitWidth(op); i < e; ++i)
