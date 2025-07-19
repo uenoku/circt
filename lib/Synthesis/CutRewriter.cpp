@@ -758,30 +758,14 @@ LogicalResult CutEnumerator::enumerateCuts(
 
   // Walk through all operations in the module in a topological manner
   auto result = hwModule->walk([&](Operation *op) {
-    if (failed(visit(op))) {
+    if (failed(visit(op)))
       return mlir::WalkResult::interrupt();
-    }
-
-    // Debug output for generated cuts
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-      const auto &cutSet = getCutSet(andOp.getResult());
-      LLVM_DEBUG({
-        llvm::dbgs() << "Generated " << cutSet.size()
-                     << " cuts for AND operation: " << andOp.getResult()
-                     << "\n";
-        for (const Cut &cut : cutSet.getCuts()) {
-          cut.dump();
-        }
-      });
-    }
-
     return mlir::WalkResult::advance();
   });
 
-  if (result.wasInterrupted()) {
+  if (result.wasInterrupted())
     return mlir::emitError(hwModule->getLoc(),
                            "Failed to enumerate cuts for module");
-  }
 
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
   return success();
@@ -977,9 +961,8 @@ void CutEnumerator::clear() { cutSets.clear(); }
 
 LogicalResult CutEnumerator::visit(Operation *op) {
   // For now, delegate to visitLogicOp for combinational operations
-  if (isa<aig::AndInverterOp>(op)) {
+  if (isa<aig::AndInverterOp>(op))
     return visitLogicOp(op);
-  }
 
   // Skip non-combinational operations
   return success();

@@ -472,7 +472,7 @@ public:
   /// process. It visits all operations in the module and generates cuts
   /// for combinational logic operations.
   LogicalResult enumerateCuts(
-      Operation *hwModule,
+      Operation *topOp,
       llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
 
   /// Look up existing cut set for a value.
