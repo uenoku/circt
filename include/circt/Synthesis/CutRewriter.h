@@ -36,8 +36,8 @@
 
 namespace circt {
 namespace synthesis {
-// Use uint64_t for delay units.
-// It's user's responsibility to use consistent units.
+// Use uint64_t for delay units. It's user's responsibility to use consistent
+// units, i.e., all delays should be in the same unit (e.g., nano or pico).
 using DelayType = uint64_t;
 
 /// Optimization strategy for cut-based rewriting.
@@ -321,9 +321,9 @@ public:
   /// 2. Limits the number of cuts to prevent exponential growth
   /// 3. Matches each cut against available patterns
   /// 4. Selects the best pattern based on the optimization strategy
-  void freezeCutSet(
-      const CutRewriterOptions &options,
-      llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
+  void
+  finalize(const CutRewriterOptions &options,
+           llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
 
   /// Get the number of cuts in this set.
   size_t size() const;

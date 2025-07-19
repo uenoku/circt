@@ -63,7 +63,7 @@ static bool isAlwaysCutInput(Value value) {
   return !isa<aig::AndInverterOp>(op);
 }
 
-void CutSet::freezeCutSet(
+void CutSet::finalize(
     const CutRewriterOptions &options,
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
   DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
@@ -707,7 +707,7 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   // Schedule cut set finalization when exiting this scope
   auto prune = llvm::make_scope_exit([&]() {
     // Finalize cut set: remove duplicates, limit size, and match patterns
-    resultCutSet->freezeCutSet(options, matchCut);
+    resultCutSet->finalize(options, matchCut);
   });
 
   // Handle unary operations (like NOT gates)
