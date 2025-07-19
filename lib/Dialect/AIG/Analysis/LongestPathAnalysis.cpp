@@ -874,11 +874,10 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
 
 LogicalResult LocalVisitor::visit(comb::TruthTableOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
-  size_t oldResult = results.size();
   for (auto operand : op->getOperands())
     if (failed(addEdge(operand, bitPos, 1, results)))
       return failure();
-  deduplicatePaths(results, oldResult);
+  deduplicatePaths(results);
   return success();
 }
 

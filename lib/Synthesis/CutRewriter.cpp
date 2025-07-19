@@ -78,7 +78,7 @@ void CutSet::finalize(
         // Move the unique cut to the front of the vector
         // This maintains the order of cuts while removing duplicates
         // by swapping with the last unique cut found.
-        std::swap(cuts[uniqueCount], cuts[i]);
+        cuts[uniqueCount] = std::move(cuts[i]);
       }
 
       // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
