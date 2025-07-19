@@ -100,9 +100,8 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
       results[newIndex] = std::move(results[i]);
       continue;
     }
-    if (delay > delayFn(results[it->second])) {
+    if (delay > delayFn(results[it->second]))
       results[it->second] = std::move(results[i]);
-    }
   }
 
   results.resize(keyToIndex.size() + startIndex);
