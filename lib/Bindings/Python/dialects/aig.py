@@ -4,7 +4,7 @@
 
 from . import aig
 from ._aig_ops_gen import *
-from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection
+from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection, _LongestPathDataflowPath, _LongestPathHistory, _LongestPathObject, resource_usage_analysis_get_result
 
 import json
 from dataclasses import dataclass
@@ -50,9 +50,7 @@ class Object:
         bit_pos: Bit position for multi-bit signals (0 for single-bit)
     """
 
-  instance_path: List[InstancePathElement]
-  name: str
-  bit_pos: int
+  _object: _LongestPathObject
 
   # TODO: Associate with an MLIR value/op
 
@@ -64,17 +62,30 @@ class Object:
     path = "/".join(f"{elem.module_name}:{elem.instance_name}"
                     for elem in self.instance_path)
     return f"{path} {self.name}[{self.bit_pos}]"
+  
+  def __repr__(self) -> str:
+    return f"Object({self.instance_path}, {self.name}, {self.bit_pos})"
 
-  @classmethod
-  def from_dict(cls, data: Dict[str, Any]) -> "Object":
-    """Create an Object from a dictionary representation."""
-    instance_path = [
-        InstancePathElement.from_dict(elem) for elem in data["instance_path"]
-    ]
-    return cls(instance_path=instance_path,
-               name=data["name"],
-               bit_pos=data["bit_pos"])
+  @property
+  def instance_path(self) -> List[InstancePathElement]:
+    """Get the hierarchical instance path to this object."""
+    operations =  self._object.instance_path
+    def extract(instance):
+      return InstancePathElement(
+          instance_name=str(instance.attributes["instanceName"].value),
+          module_name=str(instance.attributes["moduleName"].value),
+      )
+    return [extract(op) for op in operations]
 
+  @property
+  def name(self) -> str:
+    """Get the name of this signal/port."""
+    return self._object.name
+
+  @property
+  def bit_pos(self) -> int:
+    """Get the bit position for multi-bit signals."""
+    return self._object.bit_pos
 
 @dataclass
 class DebugPoint:
@@ -102,35 +113,6 @@ class DebugPoint:
         comment=data["comment"],
     )
 
-
-@dataclass
-class OpenPath:
-  """
-    Represents an open timing path with detailed history.
-    An open path represents a timing path that hasn't reached its final
-    destination yet. It contains the current fan-in point, accumulated delay,
-    and a history of debug points showing how the signal propagated.
-    Attributes:
-        fan_in: The input signal/object where this path segment begins
-        delay: Total accumulated delay for this path segment
-        history: Chronological list of debug points along the path
-    """
-
-  fan_in: Object
-  delay: int
-  history: List[DebugPoint]
-
-  @classmethod
-  def from_dict(cls, data: Dict[str, Any]) -> "OpenPath":
-    """Create an OpenPath from a dictionary representation."""
-    history = [DebugPoint.from_dict(point) for point in data["history"]]
-    return cls(
-        fan_in=Object.from_dict(data["fan_in"]),
-        delay=data["delay"],
-        history=history,
-    )
-
-
 @dataclass
 class DataflowPath:
   """
@@ -144,43 +126,38 @@ class DataflowPath:
         root: The root module name for this analysis
     """
 
-  fan_out: Object  # Output endpoint of the path
-  path: OpenPath  # Detailed path information with history
-  root: str  # Root module name
-
-  # ========================================================================
-  # Factory Methods for Object Creation
-  # ========================================================================
-
-  @classmethod
-  def from_dict(cls, data: Dict[str, Any]) -> "DataflowPath":
-    """Create a DataflowPath from a dictionary representation."""
-    return cls(
-        fan_out=Object.from_dict(data["fan_out"]),
-        path=OpenPath.from_dict(data["path"]),
-        root=data["root"],
-    )
-
-  @classmethod
-  def from_json_string(cls, json_str: str) -> "DataflowPath":
-    """Create a DataflowPath from a JSON string representation."""
-    data = json.loads(json_str)
-    return cls.from_dict(data)
+  _path: _LongestPathDataflowPath
 
   @property
   def delay(self) -> int:
     """Get the total delay of this path in timing units."""
-    return self.path.delay
+    return self._path.delay
 
   @property
-  def fan_in(self) -> "DataflowPath":
+  def fan_in(self) -> Object:
     """Get the input signal/object where this path begins."""
-    return self.path.fan_in
+    return Object(self._path.fan_in)
+
+  @property
+  def fan_out(self) -> Object:
+    """Get the output signal/object where this path ends."""
+    return Object(self._path.fan_out)
 
   @property
   def history(self) -> List[DebugPoint]:
     """Get the history of debug points along this path."""
-    return self.path.history
+    result = []
+    history = self._path.history
+    while not history.empty:
+      object, delay, comment = history.head
+      result.append(DebugPoint(Object(object), delay, comment))
+      history = history.tail
+    return result
+  
+  @property
+  def root(self) -> str:
+    """Get the root module name for this analysis."""
+    return self._path.root.attributes["sym_name"].value
 
   # ========================================================================
   # Visualization and Analysis Methods
@@ -198,11 +175,10 @@ class DataflowPath:
             String in FlameGraph format showing the timing path progression
         """
     trace = []
-    prefix = f"top:{self.root}"
 
     # Build hierarchy strings for start and end points
-    fan_in_hierarchy = self._build_hierarchy_string(self.fan_in, prefix)
-    fan_out_hierarchy = self._build_hierarchy_string(self.fan_out, prefix)
+    fan_in_hierarchy = self._build_hierarchy_string(self.fan_in, self.root)
+    fan_out_hierarchy = self._build_hierarchy_string(self.fan_out, self.root)
 
     # Track current position and delay for incremental output
     current_hierarchy = fan_in_hierarchy
@@ -211,7 +187,7 @@ class DataflowPath:
     # Process debug history points in reverse order (from input to output)
     for debug_point in self.history[::-1]:
       history_hierarchy = self._build_hierarchy_string(debug_point.object,
-                                                       prefix)
+                                                       self.root)
       if history_hierarchy:
         # Add segment from current position to this debug point
         delay_increment = debug_point.delay - current_delay
@@ -228,7 +204,7 @@ class DataflowPath:
 
     return "\n".join(trace)
 
-  def _build_hierarchy_string(self, obj: Object, prefix: str = "") -> str:
+  def _build_hierarchy_string(self, obj: Object, root: str = "") -> str:
     """
         Build a hierarchical string representation of an Object for FlameGraph format.
         This method constructs a semicolon-separated hierarchy string that represents
@@ -240,11 +216,14 @@ class DataflowPath:
         Returns:
             Hierarchical string in format: "top:root;module1:inst1;module2:inst2;signal[bit]"
         """
-    parts = [prefix]
+    top = f"top:{root}"
+    parts = [top]
+    prev = root
 
     # Add each level of the instance hierarchy
     for elem in obj.instance_path:
-      parts.append(f"{elem.module_name}:{elem.instance_name}")
+      parts.append(f"{prev}:{elem.instance_name}")
+      prev = elem.module_name
 
     # Add the signal name with bit position if applicable
     signal_part = obj.name
@@ -289,6 +268,7 @@ class LongestPathCollection:
     """Get the number of paths in the collection."""
     return self.length
 
+<<<<<<< HEAD
   def __getitem__(
       self, index: Union[slice,
                          int]) -> Union[DataflowPath, List[DataflowPath]]:
@@ -305,6 +285,13 @@ class LongestPathCollection:
 
         Raises:
             IndexError: If index is out of range
+=======
+  def __getitem__(self, index):
+    """
+        Get a specific path from the collection by index.
+        Supports negative indexing. Results are cached to avoid expensive
+        JSON parsing on repeated access.
+>>>>>>> e88f432ba ([Synthesis] Add CutRewriter framework)
         """
     if isinstance(index, slice):
       return [self[i] for i in range(*index.indices(len(self)))]
@@ -315,14 +302,7 @@ class LongestPathCollection:
     if index < 0 or index >= self.length:
       raise IndexError("Index out of range")
 
-    # Use cache to avoid expensive JSON parsing
-    if self.cache[index] is not None:
-      return self.cache[index]
-
-    # Parse JSON and cache the result
-    json_str = self.collection.get_path(index)
-    self.cache[index] = DataflowPath.from_json_string(json_str)
-    return self.cache[index]
+    return DataflowPath(self.collection.get_path(index))
 
   # ========================================================================
   # Analysis and Query Methods
@@ -359,7 +339,18 @@ class LongestPathCollection:
     print(f"95th percentile delay: {self.get_by_delay_ratio(0.95).delay}")
     print(f"99th percentile delay: {self.get_by_delay_ratio(0.99).delay}")
     print(f"99.9th percentile delay: {self.get_by_delay_ratio(0.999).delay}")
-
+  
+  def diff(self, other: "LongestPathCollection") -> "LongestPathDiff":
+    """
+        Compare this collection to another and return the differences.
+        This method compares the paths in this collection to those in another
+        collection and returns four new collections representing the differences:
+        - Paths unique to this collection
+        - Paths unique to the other collection
+        - Paths common
+    """
+    a, b, c, d = self.collection._diff(other.collection)
+    return LongestPathDiff(LongestPathCollection(a), LongestPathCollection(b), LongestPathCollection(c), LongestPathCollection(d))
 
 # ============================================================================
 # Main Analysis Interface
@@ -387,7 +378,7 @@ class LongestPathAnalysis:
         """
     self.analysis = aig._LongestPathAnalysis(module, trace_debug_points)
 
-  def get_all_paths(self, module_name: str) -> LongestPathCollection:
+  def get_all_paths(self, module_name: str,  fanout_filter: str = "", fanin_filter: str = "", elaborate_paths: bool = True) -> LongestPathCollection:
     """
         Perform longest path analysis and return all timing paths.
         This method analyzes the specified module and returns a collection
@@ -397,4 +388,41 @@ class LongestPathAnalysis:
         Returns:
             LongestPathCollection containing all paths sorted by delay
         """
-    return LongestPathCollection(self.analysis.get_all_paths(module_name, True))
+    return LongestPathCollection(self.analysis.get_all_paths(module_name,  fanout_filter, fanin_filter, elaborate_paths))
+
+@dataclass
+class LongestPathHistory:
+  """
+    Represents the history of a timing path, including intermediate debug points.
+    This class provides a Python wrapper around the C++ LongestPathHistory,
+    enabling iteration over the path's history and access to debug points.
+    Attributes:
+        history: The underlying C++ history object
+    """
+  history: _LongestPathHistory
+
+  def __iter__(self):
+    """Iterate over the debug points in the history."""
+    while not self.history.empty:
+      object, delay, comment = self.history.head
+      yield DebugPoint(Object(object), delay, comment)
+      self.history = self.history.tail
+
+@dataclass
+class LongestPathDiff:
+  """
+    Represents the difference between two LongestPathCollections.
+    This class provides a Python wrapper around the C++ LongestPathDiff,
+    enabling access to the paths that are unique to each collection and
+    the paths that have different delays.
+    Attributes:
+        lhs_unique: Paths unique to the left collection
+        rhs_unique: Paths unique to the right collection
+        lhs_different: Paths with different delays in the left collection
+        rhs_different: Paths with different delays in the right collection
+    """
+
+  lhs_unique: LongestPathCollection
+  rhs_unique: LongestPathCollection
+  lhs_different: LongestPathCollection
+  rhs_different: LongestPathCollection

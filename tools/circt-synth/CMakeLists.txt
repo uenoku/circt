@@ -5,6 +5,7 @@ target_link_libraries(circt-synth
   CIRCTAIGToComb
   CIRCTAIGAnalysis
   CIRCTComb
+  CIRCTCombTransforms
   CIRCTDebug
   CIRCTEmit
   CIRCTHW
@@ -15,6 +16,7 @@ target_link_libraries(circt-synth
   CIRCTSV
   CIRCTSVTransforms
   CIRCTSynthesis
+  CIRCTSynthesisTransforms
   CIRCTTransforms
   CIRCTVerif
   MLIRBytecodeWriter

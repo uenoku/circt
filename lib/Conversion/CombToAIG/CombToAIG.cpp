@@ -1198,6 +1198,7 @@ void ConvertCombToAIGPass::runOnOperation() {
 
   // AIG is target dialect.
   target.addLegalDialect<aig::AIGDialect>();
+  target.addLegalOp<comb::TruthTableOp>();
 
   // If additional legal ops are specified, add them to the target.
   if (!additionalLegalOps.empty())
