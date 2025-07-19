@@ -613,35 +613,7 @@ CutRewriterPatternSet::CutRewriterPatternSet(
 // CutRewriter
 //===----------------------------------------------------------------------===//
 
-LogicalResult CutRewriter::run() {
-  LLVM_DEBUG({
-    llvm::dbgs() << "Starting Cut Rewriter\n";
-    llvm::dbgs() << "Mode: "
-                 << (CutRewriteStrategy::Area == options.strategy ? "area"
-                                                                  : "timing")
-                 << "\n";
-    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
-    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
-  });
-
-  // Step 1: Enumerate cuts for all nodes
-  if (failed(enumerateCuts(topOp)))
-    return failure();
-
-  // Step 2: Select best cuts and perform mapping
-  if (failed(performRewriting(topOp)))
-    return failure();
-
-  return success();
-}
-
-LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
-  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
-
-  // Topological traversal
-  llvm::SmallVector<Operation *> worklist;
-  llvm::DenseSet<Operation *> visited;
-
+LogicalResult CutRewriter::sortOperationsTopologically(Operation *hwModule) {
   // Sort the operations topologically
   if (hwModule
           ->walk([&](Region *region) {
@@ -667,6 +639,37 @@ LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
           .wasInterrupted())
     return mlir::emitError(hwModule->getLoc(),
                            "failed to sort operations topologically");
+}
+
+LogicalResult CutRewriter::run() {
+  LLVM_DEBUG({
+    llvm::dbgs() << "Starting Cut Rewriter\n";
+    llvm::dbgs() << "Mode: "
+                 << (CutRewriteStrategy::Area == options.strategy ? "area"
+                                                                  : "timing")
+                 << "\n";
+    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
+    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
+  });
+
+  // First sort the operations topologically to ensure we can process them
+  // in a valid order.
+  if (failed(sortOperationsTopologically(topOp)))
+    return failure();
+
+  // Enumerate cuts for all nodes
+  if (failed(enumerateCuts(topOp)))
+    return failure();
+
+  // Select best cuts and perform mapping
+  if (failed(performRewriting(topOp)))
+    return failure();
+
+  return success();
+}
+
+LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
+  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
 
   return cutEnumerator.enumerateCuts(
       hwModule, [&](Cut &cut) -> std::optional<MatchedPattern> {

@@ -561,6 +561,9 @@ private:
   /// Enumerate cuts for all nodes in the given module.
   LogicalResult enumerateCuts(Operation *hwModule);
 
+  /// Sort operations in topological order to ensure correct processing order.
+  LogicalResult sortOperationsTopologically(Operation *hwModule);
+
   /// Get the cut set for a specific value.
   /// Creates a new cut set if one doesn't exist.
   const CutSet &getCutSet(Value value);
