@@ -582,7 +582,7 @@ private:
   std::optional<MatchedPattern> matchCutToPattern(Cut &cut);
 
   /// Perform the actual circuit rewriting using selected patterns.
-  LogicalResult performRewriting(Operation *topOp);
+  LogicalResult runBottomUpRewrite(Operation *topOp);
 
   const CutRewriterOptions &options;     ///< Configuration options
   const CutRewriterPatternSet &patterns; ///< Available rewriting patterns

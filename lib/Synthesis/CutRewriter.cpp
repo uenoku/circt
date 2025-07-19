@@ -663,7 +663,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     return failure();
 
   // Select best cuts and perform mapping
-  if (failed(performRewriting(topOp)))
+  if (failed(runBottomUpRewrite(topOp)))
     return failure();
 
   return success();
@@ -891,7 +891,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   return MatchedPattern(bestPattern, &cut, bestArrivalTime);
 }
 
-LogicalResult CutRewriter::performRewriting(Operation *hwModule) {
+LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
 
   // For now, just report the cuts found
