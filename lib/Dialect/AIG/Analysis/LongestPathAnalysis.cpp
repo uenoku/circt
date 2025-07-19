@@ -91,10 +91,10 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
   for (auto [i, path] :
        llvm::enumerate(ArrayRef(results).drop_front(startIndex))) {
     auto key = keyFn(path);
-    auto it = saved.try_emplace(key, saved.size() + startIndex);
+    auto it = saved.try_emplace(key, i + startIndex);
     if (it.second)
       continue; // New key, no need to update
-  
+
     if (delayFn(results[it.first->second]) < delayFn(path))
       results[it.first->second] = path;
   }
