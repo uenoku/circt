@@ -135,16 +135,13 @@ struct TechLibraryPattern : public CutRewriterPattern {
     // Create an NPN class from the module's truth table
     npnClass = getNPNClassFromModule(module);
     LLVM_DEBUG(
-      llvm::dbgs() << "Created Tech Library Pattern for module: "
-                   << module.getModuleName() << "\n";
-      llvm::dbgs() << "NPN Class: "
-                   << npnClass.truthTable.table << "\n";
-      llvm::dbgs() << "Inputs: " << npnClass.inputPermutation.size() << "\n";
-      llvm::dbgs() << "Input Negation: " << npnClass.inputNegation
-                   << "\n";
-      llvm::dbgs() << "Output Negation: " << npnClass.outputNegation
-                   << "\n";
-    );
+        llvm::dbgs() << "Created Tech Library Pattern for module: "
+                     << module.getModuleName() << "\n";
+        llvm::dbgs() << "NPN Class: " << npnClass.truthTable.table << "\n";
+        llvm::dbgs() << "Inputs: " << npnClass.inputPermutation.size() << "\n";
+        llvm::dbgs() << "Input Negation: " << npnClass.inputNegation << "\n";
+        llvm::dbgs() << "Output Negation: " << npnClass.outputNegation
+                     << "\n";);
   }
 
   StringRef getPatternName() const override {
@@ -199,8 +196,8 @@ struct TechLibraryPattern : public CutRewriterPattern {
 
   double getArea(const Cut &cut) const override { return getAttr("area"); }
 
-  double getDelay(const Cut &cut, size_t inputIndex,
-                  size_t outputIndex) const override {
+  DelayType getDelay(const Cut &cut, size_t inputIndex,
+                     size_t outputIndex) const override {
     return getAttr("delay");
   }
 

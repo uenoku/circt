@@ -39,8 +39,8 @@ struct GenericLUT : public CutRewriterPattern {
     return 1.0;
   }
 
-  double getDelay(const Cut &cut, size_t inputIndex,
-                  size_t outputIndex) const override {
+  DelayType getDelay(const Cut &cut, size_t inputIndex,
+                     size_t outputIndex) const override {
     // Assume a fixed delay for the generic LUT
     return 1.0;
   }

@@ -36,6 +36,9 @@
 
 namespace circt {
 namespace synthesis {
+// Use uint64_t for delay units.
+// It's user's responsibility to use consistent units.
+using DelayType = uint64_t;
 
 /// Optimization strategy for cut-based rewriting.
 /// Determines whether to prioritize area or timing during rewriting.
@@ -246,7 +249,7 @@ class MatchedPattern {
 private:
   CutRewriterPattern *pattern = nullptr; ///< The matched library pattern
   Cut *cut = nullptr;                    ///< The cut that was matched
-  double arrivalTime;                    ///< Arrival time through this pattern
+  DelayType arrivalTime;                 ///< Arrival time through this pattern
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -257,7 +260,7 @@ public:
       : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
 
   /// Get the arrival time of signals through this pattern.
-  double getArrivalTime() const;
+  DelayType getArrivalTime() const;
 
   /// Get the library pattern that was matched.
   CutRewriterPattern *getPattern() const;
@@ -269,7 +272,7 @@ public:
   double getArea() const;
 
   /// Get the delay between specific input and output pins.
-  double getDelay(unsigned inputIndex, unsigned outputIndex) const;
+  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const;
 
   /// Check if this is a valid matched pattern.
   bool isValid() const;
@@ -304,7 +307,7 @@ public:
 
   /// Get the arrival time of the best matched pattern.
   /// NOTE: isMatched() must be true
-  double getArrivalTime() const;
+  DelayType getArrivalTime() const;
 
   /// Get the cut associated with the best matched pattern.
   /// NOTE: isMatched() must be true
@@ -376,8 +379,8 @@ struct CutRewriterPattern {
   virtual double getArea(const Cut &cut) const = 0;
 
   /// Get the delay between specific input and output pins.
-  virtual double getDelay(const Cut &cut, size_t inputIndex,
-                          size_t outputIndex) const = 0;
+  virtual DelayType getDelay(const Cut &cut, size_t inputIndex,
+                             size_t outputIndex) const = 0;
 
   /// Get the number of inputs this pattern expects.
   virtual unsigned getNumInputs() const = 0;
