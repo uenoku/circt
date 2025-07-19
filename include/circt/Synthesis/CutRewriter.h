@@ -248,23 +248,24 @@ public:
 /// cut that was matched, and timing information needed for optimization.
 class MatchedPattern {
 private:
-  CutRewriterPattern *pattern = nullptr; ///< The matched library pattern
-  Cut *cut = nullptr;                    ///< The cut that was matched
-  DelayType arrivalTime;                 ///< Arrival time through this pattern
+  const CutRewriterPattern *pattern = nullptr; ///< The matched library pattern
+  Cut *cut = nullptr;                          ///< The cut that was matched
+  DelayType arrivalTime; ///< Arrival time through this pattern
 
 public:
   /// Default constructor creates an invalid matched pattern.
   MatchedPattern() = default;
 
   /// Constructor for a valid matched pattern.
-  MatchedPattern(CutRewriterPattern *pattern, Cut *cut, double arrivalTime)
+  MatchedPattern(const CutRewriterPattern *pattern, Cut *cut,
+                 double arrivalTime)
       : pattern(pattern), cut(cut), arrivalTime(arrivalTime) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime() const;
 
   /// Get the library pattern that was matched.
-  CutRewriterPattern *getPattern() const;
+  const CutRewriterPattern *getPattern() const;
 
   /// Get the cut that was matched to the pattern.
   Cut *getCut() const;
@@ -566,13 +567,6 @@ private:
 
   /// Sort operations in topological order to ensure correct processing order.
   LogicalResult sortOperationsTopologically(Operation *topOp);
-
-  /// Get the cut set for a specific value.
-  /// Creates a new cut set if one doesn't exist.
-  const CutSet &getCutSet(Value value);
-
-  /// Get or create a cut set for a specific value.
-  CutSet *getOrCreateCutSet(Value value);
 
   /// Find patterns that match a cut's truth table.
   ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>

@@ -520,7 +520,7 @@ DelayType MatchedPattern::getArrivalTime() const {
   return arrivalTime;
 }
 
-CutRewriterPattern *MatchedPattern::getPattern() const {
+const CutRewriterPattern *MatchedPattern::getPattern() const {
   assert(pattern && "Pattern must be set to get the pattern");
   return pattern;
 }
@@ -905,7 +905,7 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   // 3. Connect the mapped circuit
   auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
-  PatternRewriter rewriter(hwModule->getContext());
+  PatternRewriter rewriter(top->getContext());
   DelayType maximumArrivalTime = 0;
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
     if (value.use_empty()) {
@@ -923,16 +923,15 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
     auto matchedPattern = cutSet->getMatchedPattern();
     if (!matchedPattern) {
-      return mlir::emitError(hwModule->getLoc(),
+      return mlir::emitError(value.getLoc(),
                              "No matching cut found for value: ")
              << value;
     }
 
     auto *cut = matchedPattern->getCut();
     rewriter.setInsertionPoint(cut->getRoot());
-    if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut))) {
+    if (failed(matchedPattern->getPattern()->rewrite(rewriter, *cut)))
       return failure();
-    }
 
     LLVM_DEBUG(llvm::dbgs()
                << "Rewrote cut for value: " << value << " with pattern: "
