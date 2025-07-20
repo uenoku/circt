@@ -470,10 +470,9 @@ struct CutRewriterOptions {
 
 /// Cut enumeration engine for combinational logic networks.
 ///
-/// The CutEnumerator is responsible for systematically generating all possible
-/// cuts for each node in a combinational logic network. It uses a priority cuts
-/// algorithm to maintain a bounded set of promising cuts while avoiding
-/// exponential explosion.
+/// The CutEnumerator is responsible for generating cuts for each node in a
+/// combinational logic network. It uses a priority cuts algorithm to maintain a
+/// bounded set of promising cuts while avoiding exponential explosion.
 ///
 /// The enumeration process works by:
 /// 1. Visiting nodes in topological order
