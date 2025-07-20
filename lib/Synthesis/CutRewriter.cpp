@@ -866,6 +866,9 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
                                 patternArrivalTimes, bestPattern->getArea(cut),
                                 bestArrivalTimes)) {
           LLVM_DEBUG({
+            llvm::dbgs() << "== Matched Pattern ==============\n";
+            llvm::dbgs() << "Matching cut: \n";
+            cut.dump();
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
             llvm::dbgs() << " with area: " << pattern->getArea(cut);
@@ -879,6 +882,8 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
               llvm::dbgs() << " " << arrivalTime;
             }
             llvm::dbgs() << "\n";
+            llvm::dbgs() << "== Matched Pattern End ==============\n";
+
           });
           bestArrivalTimes = std::move(patternArrivalTimes);
           bestPattern = pattern;

@@ -32,7 +32,7 @@ hw.module @and_inv_3(in %a : i1, in %b : i1, in %c : i1, out result : i1) attrib
 // TIMING:  @and_inv_3
 hw.module @test_strategy(in %a : i1, in %b : i1, in %c : i1, out result : i1) {
     %0 = aig.and_inv %a, %b : i1
-    %1 = aig.and_inv %0, not %c : i1
+    %1 = aig.and_inv not %0, %c : i1
     hw.output %1 : i1
 }
 
@@ -55,10 +55,22 @@ hw.module @add(in %a : i2, in %b : i2, out result : i2) {
   hw.output %13 : i2
 }
 
-// PERMUTATION-LABEL: hw.module @permutation(in %a : i1, in %b : i1, in %c : i1, in %b : i1, out result : i1)
 hw.module @permutation(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out result: i1) attributes {hw.techlib.info = {area = 1.0 : f64, delay = 1.0 : f64}} {
     %0 = aig.and_inv %a, not %b : i1
     %1 = aig.and_inv %c, not %d : i1
+    %2 = aig.and_inv %0, not %1 : i1
+    hw.output %2 : i1
+}
+
+// PERMUTATION-LABEL: hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
+hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
+    // a -> s
+    // b -> p
+    // c -> q
+    // d -> r
+    // PERMUTATION: hw.instance {{.+}} @permutation(a: %r: i1, b: %q: i1, c: %s: i1, d: %p: i1) -> (result: i1) {debug.arrival_times = [1]} 
+    %0 = aig.and_inv %s, not %p : i1
+    %1 = aig.and_inv %q, not %r : i1
     %2 = aig.and_inv %0, not %1 : i1
     hw.output %2 : i1
 }
