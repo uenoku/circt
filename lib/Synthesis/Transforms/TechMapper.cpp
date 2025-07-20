@@ -47,7 +47,7 @@ static LogicalResult simulateHWOp(Operation *op,
   return op->emitError("Unsupported operation for truth table generation");
 }
 
-static NPNClass getNPNClassFromModule(hw::HWModuleOp module) {
+static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   // Get input and output ports
   auto inputTypes = module.getInputTypes();
   auto outputTypes = module.getOutputTypes();
@@ -57,22 +57,16 @@ static NPNClass getNPNClassFromModule(hw::HWModuleOp module) {
 
   // Verify all ports are single bit
   for (auto type : inputTypes) {
-    if (!type.isInteger(1)) {
-      module->emitError("All input ports must be single bit");
-      return NPNClass();
-    }
+    if (!type.isInteger(1))
+      return module->emitError("All input ports must be single bit");
   }
   for (auto type : outputTypes) {
-    if (!type.isInteger(1)) {
-      module->emitError("All output ports must be single bit");
-      return NPNClass();
-    }
+    if (!type.isInteger(1))
+      return module->emitError("All output ports must be single bit");
   }
 
-  if (numInputs >= 20) {
-    module->emitError("Too many inputs for truth table generation");
-    return NPNClass();
-  }
+  if (numInputs >= 8)
+    return module->emitError("Too many inputs for truth table generation");
 
   // Create truth table
   uint32_t tableSize = 1 << numInputs;
@@ -132,15 +126,12 @@ static NPNClass getNPNClassFromModule(hw::HWModuleOp module) {
 
 /// Simple technology library encoded as a HWModuleOp.
 struct TechLibraryPattern : public CutRewriterPattern {
-  hw::HWModuleOp module;
-  NPNClass npnClass;
-
   TechLibraryPattern(hw::HWModuleOp module, double area,
-                     SmallVector<SmallVector<DelayType, 2>, 4> delay)
-      : CutRewriterPattern(module->getContext()), module(module), area(area),
-        delay(std::move(delay)) {
-    // Create an NPN class from the module's truth table
-    npnClass = getNPNClassFromModule(module);
+                     SmallVector<SmallVector<DelayType, 2>, 4> delay,
+                     NPNClass npnClass)
+      : CutRewriterPattern(module->getContext()), area(area),
+        delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
+
     LLVM_DEBUG(
         llvm::dbgs() << "Created Tech Library Pattern for module: "
                      << module.getModuleName() << "\n";
@@ -209,8 +200,11 @@ struct TechLibraryPattern : public CutRewriterPattern {
     return module.getLoc();
   }
 
+private:
   const double area;
   const SmallVector<SmallVector<DelayType, 2>, 4> delay;
+  hw::HWModuleOp module;
+  NPNClass npnClass;
 };
 
 namespace {
@@ -263,11 +257,18 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         }
         delay.push_back(std::move(delayRow));
       }
+      // Compute NPN Class for the module.
+      auto npnClass = getNPNClassFromModule(hwModule);
+      if (failed(npnClass)) {
+        hwModule->emitError("Failed to compute NPN class for module");
+        signalPassFailure();
+        return;
+      }
 
       // Create a CutRewriterPattern for the library module
       std::unique_ptr<CutRewriterPattern> pattern =
-          std::make_unique<TechLibraryPattern>(hwModule, area,
-                                               std::move(delay));
+          std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
+                                               std::move(*npnClass));
 
       // Update the maximum input size
       maxInputSize = std::max(maxInputSize, pattern->getNumInputs());
@@ -281,10 +282,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
     CutRewriterPatternSet patternSet(std::move(libraryPatterns));
     CutRewriterOptions options;
-    options.strategy =
-        strategy == synthesis::OptimizationStrategyArea
-            ? CutRewriteStrategy::Area
-            : CutRewriteStrategy::Timing; // Use area optimization
+    options.strategy = strategy == synthesis::OptimizationStrategyArea
+                           ? CutRewriteStrategy::Area
+                           : CutRewriteStrategy::Timing;
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerNode;
     options.attachDebugTiming = true;
