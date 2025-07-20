@@ -591,8 +591,12 @@ private:
   /// Perform the actual circuit rewriting using selected patterns.
   LogicalResult runBottomUpRewrite(Operation *topOp);
 
-  const CutRewriterOptions &options;     ///< Configuration options
-  const CutRewriterPatternSet &patterns; ///< Available rewriting patterns
+  /// Configuration options
+  const CutRewriterOptions &options;
+
+  /// Available rewriting patterns
+  const CutRewriterPatternSet &patterns;
+
   CutEnumerator cutEnumerator;
 };
 
