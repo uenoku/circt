@@ -4,6 +4,7 @@
 #include "circt/Synthesis/CutRewriter.h"
 #include "circt/Synthesis/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -133,7 +134,9 @@ struct TechLibraryPattern : public CutRewriterPattern {
   hw::HWModuleOp module;
   NPNClass npnClass;
 
-  TechLibraryPattern(hw::HWModuleOp mod) : module(mod) {
+  TechLibraryPattern(hw::HWModuleOp module, double area,
+                     SmallVector<SmallVector<DelayType, 2>, 4> delay)
+      : module(module), area(area), delay(std::move(delay)) {
     // Create an NPN class from the module's truth table
     npnClass = getNPNClassFromModule(module);
     LLVM_DEBUG(
@@ -184,21 +187,11 @@ struct TechLibraryPattern : public CutRewriterPattern {
     return instanceOp.getOperation();
   }
 
-  double getAttr(StringRef name) const {
-    auto dict = module->getAttrOfType<DictionaryAttr>("hw.techlib.info");
-    if (!dict)
-      return 0.0; // No attributes available
-    auto attr = dict.get(name);
-    if (!attr)
-      return 0.0; // Attribute not found
-    return cast<FloatAttr>(attr).getValue().convertToDouble();
-  }
-
-  double getArea(const Cut &cut) const override { return getAttr("area"); }
+  double getArea(const Cut &cut) const override { return area; }
 
   DelayType getDelay(const Cut &cut, size_t inputIndex,
                      size_t outputIndex) const override {
-    return getAttr("delay");
+    return delay[inputIndex][outputIndex];
   }
 
   unsigned getNumInputs() const override {
@@ -208,6 +201,9 @@ struct TechLibraryPattern : public CutRewriterPattern {
   unsigned getNumOutputs() const override {
     return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
   }
+
+  const double area;
+  const SmallVector<SmallVector<DelayType, 2>, 4> delay;
 };
 
 namespace {
@@ -239,10 +235,46 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       }
       LLVM_DEBUG(llvm::dbgs()
                  << "Found library module: " << moduleName << "\n");
+      // Check if the module has the required attributes
+      auto techInfo =
+          hwModule->getAttrOfType<DictionaryAttr>("hw.techlib.info");
+      if (!techInfo) {
+        hwModule->emitError(
+            "Library module must have 'hw.techlib.info' attribute");
+        signalPassFailure();
+        return;
+      }
+
+      // Get area and delay attributes
+      auto areaAttr = techInfo.getAs<FloatAttr>("area");
+      auto delayAttr = techInfo.getAs<ArrayAttr>("delay");
+      if (!areaAttr || !delayAttr) {
+        hwModule->emitError(
+            "Library module must have 'area' and 'delay' attributes");
+        signalPassFailure();
+        return;
+      }
+
+      double area = areaAttr.getValue().convertToDouble();
+
+      SmallVector<SmallVector<DelayType, 2>, 4> delay;
+      for (auto delayValue : delayAttr) {
+        auto delayArray = cast<ArrayAttr>(delayValue);
+        SmallVector<DelayType, 2> delayRow;
+        for (auto delayElement : delayArray) {
+          // FIXME: Currently we assume delay is given as integer attributes,
+          // this should be replaced once we have a proper cell op with
+          // dedicated timing attributes with units.
+          delayRow.push_back(
+              cast<mlir::IntegerAttr>(delayElement).getValue().getZExtValue());
+        }
+        delay.push_back(std::move(delayRow));
+      }
 
       // Create a CutRewriterPattern for the library module
       std::unique_ptr<CutRewriterPattern> pattern =
-          std::make_unique<TechLibraryPattern>(hwModule);
+          std::make_unique<TechLibraryPattern>(hwModule, area,
+                                               std::move(delay));
 
       // Update the maximum input size
       maxInputSize = std::max(maxInputSize, pattern->getNumInputs());
