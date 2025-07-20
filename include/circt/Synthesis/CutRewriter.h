@@ -89,8 +89,7 @@ struct TruthTable {
 
   /// Apply input permutation to create a new truth table.
   /// This reorders the input variables according to the given permutation.
-  TruthTable
-  applyPermutation(const llvm::SmallVectorImpl<unsigned> &permutation) const;
+  TruthTable applyPermutation(ArrayRef<unsigned> permutation) const;
 
   /// Apply input negation to create a new truth table.
   /// This negates selected input variables based on the mask.
@@ -293,9 +292,6 @@ public:
 
   /// Get the delay between specific input and output pins.
   DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const;
-
-  /// Check if this is a valid matched pattern.
-  bool isValid() const;
 };
 
 /// Manages a collection of cuts for a single logic node using priority cuts

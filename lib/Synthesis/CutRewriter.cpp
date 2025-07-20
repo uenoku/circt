@@ -170,9 +170,9 @@ static Cut getSingletonCut(mlir::Operation *op) {
 Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   // Create a new cut that combines this cut and the other cut
   Cut newCut;
-  llvm::SmallVector<Operation *, 4> worklist{root};
-
   // Topological sort the operations in the new cut.
+  // TODO: Merge-sort `operations` and `other.operations` by operation index
+  // (since it's already topo-sorted, we can use a simple merge).
   std::function<void(Operation *)> populateOperations = [&](Operation *op) {
     // If the operation is already in the cut, skip it
     if (newCut.operations.contains(op))
@@ -237,9 +237,8 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   return newCut;
 }
 
-LogicalResult
-circt::synthesis::Cut::simulateOp(Operation *op,
-                                  DenseMap<Value, APInt> &values) const {
+LogicalResult Cut::simulateOp(Operation *op,
+                              DenseMap<Value, APInt> &values) const {
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
     auto inputs = andOp.getInputs();
     SmallVector<APInt, 2> operands;
@@ -257,7 +256,7 @@ circt::synthesis::Cut::simulateOp(Operation *op,
     return llvm::success();
   }
   // Add more operation types as needed
-  return llvm::failure();
+  return failure();
 }
 
 //===----------------------------------------------------------------------===//
@@ -278,8 +277,7 @@ void TruthTable::setOutput(const llvm::APInt &input,
     table.setBitVal(offset + i, output[i]);
 }
 
-TruthTable TruthTable::applyPermutation(
-    const llvm::SmallVectorImpl<unsigned> &permutation) const {
+TruthTable TruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
   assert(permutation.size() == numInputs && "Permutation size mismatch");
   TruthTable result(numInputs, numOutputs);
 
@@ -355,18 +353,16 @@ namespace {
 /// Result[i] = i for all i in [0, size).
 static llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
   llvm::SmallVector<unsigned> identity(size);
-  for (unsigned i = 0; i < size; ++i) {
+  for (unsigned i = 0; i < size; ++i)
     identity[i] = i;
-  }
   return identity;
 }
 
 /// Apply a permutation to a negation mask.
 /// Given a negation mask and a permutation, returns a new mask where
 /// the negation bits are reordered according to the permutation.
-static unsigned
-permuteNegationMask(unsigned negationMask,
-                    const llvm::SmallVectorImpl<unsigned> &permutation) {
+static unsigned permuteNegationMask(unsigned negationMask,
+                                    ArrayRef<unsigned> permutation) {
   unsigned result = 0;
   for (unsigned i = 0; i < permutation.size(); ++i) {
     if (negationMask & (1u << i)) {
@@ -378,8 +374,7 @@ permuteNegationMask(unsigned negationMask,
 
 /// Create the inverse of a permutation.
 /// If permutation[i] = j, then inverse[j] = i.
-llvm::SmallVector<unsigned>
-invertPermutation(const llvm::SmallVectorImpl<unsigned> &permutation) {
+llvm::SmallVector<unsigned> invertPermutation(ArrayRef<unsigned> permutation) {
   llvm::SmallVector<unsigned> inverse(permutation.size());
   for (unsigned i = 0; i < permutation.size(); ++i) {
     inverse[permutation[i]] = i;
@@ -604,8 +599,6 @@ Cut *MatchedPattern::getCut() const {
   return cut;
 }
 
-bool MatchedPattern::isValid() const { return pattern != nullptr; }
-
 double MatchedPattern::getArea() const {
   assert(pattern && "Pattern must be set to get area");
   return pattern->getArea(*cut);
@@ -622,7 +615,7 @@ DelayType MatchedPattern::getDelay(unsigned inputIndex,
 //===----------------------------------------------------------------------===//
 
 bool CutSet::isMatched() const {
-  return matchedPattern.has_value() && matchedPattern->isValid();
+  return matchedPattern.has_value() && matchedPattern->getPattern();
 }
 
 std::optional<MatchedPattern> CutSet::getMatchedPattern() const {
@@ -920,29 +913,29 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
   auto computeArrivalTimeAndPickBest =
       [&](CutRewriterPattern *pattern,
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
-        SmallVector<DelayType, 2> patternArrivalTimes;
+        SmallVector<DelayType, 2> outputArrivalTimes;
         // Compute the maximum delay for each output from inputs.
         for (size_t outputIndex = 0; outputIndex < cut.getOutputSize();
              ++outputIndex) {
-          // Compute the arrival time for the pattern based on the inputs.
-          DelayType patternArrivalTime = 0;
+          // Compute the arrival time for this outpu.
+          DelayType outputArrivalTime = 0;
           for (size_t inputIndex = 0; inputIndex < cut.getInputSize();
                ++inputIndex) {
             // Map pattern input i to cut input through NPN transformations
             unsigned cutOriginalInput = mapIndex(inputIndex);
-            patternArrivalTime =
-                std::max(patternArrivalTime,
+            outputArrivalTime =
+                std::max(outputArrivalTime,
                          pattern->getDelay(cut, cutOriginalInput, outputIndex) +
                              inputArrivalTimes[cutOriginalInput]);
           }
 
-          patternArrivalTimes.push_back(patternArrivalTime);
+          outputArrivalTimes.push_back(outputArrivalTime);
         }
 
         // Update the arrival time
         if (!bestPattern ||
             compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                                patternArrivalTimes, bestPattern->getArea(cut),
+                                outputArrivalTimes, bestPattern->getArea(cut),
                                 bestArrivalTimes)) {
           LLVM_DEBUG({
             llvm::dbgs() << "== Matched Pattern ==============\n";
@@ -952,19 +945,19 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
                          << pattern->getPatternName();
             llvm::dbgs() << " with area: " << pattern->getArea(cut);
             llvm::dbgs() << " and input arrival times: ";
-            for (size_t i = 0; i < patternArrivalTimes.size(); ++i) {
-              llvm::dbgs() << " " << patternArrivalTimes[i];
+            for (size_t i = 0; i < inputArrivalTimes.size(); ++i) {
+              llvm::dbgs() << " " << inputArrivalTimes[i];
             }
             llvm::dbgs() << " and arrival times: ";
 
-            for (auto arrivalTime : patternArrivalTimes) {
+            for (auto arrivalTime : outputArrivalTimes) {
               llvm::dbgs() << " " << arrivalTime;
             }
             llvm::dbgs() << "\n";
             llvm::dbgs() << "== Matched Pattern End ==============\n";
           });
 
-          bestArrivalTimes = std::move(patternArrivalTimes);
+          bestArrivalTimes = std::move(outputArrivalTimes);
           bestPattern = pattern;
         }
       };
@@ -975,9 +968,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     auto &cutNPN = cut.getNPNClass();
 
     // Get the input mapping from pattern's NPN class to cut's NPN class
-    // TODO: Cache permutation/inv-permutation via unique id.
     auto inputMapping = cutNPN->getInputMappingTo(patternNPN);
-
     computeArrivalTimeAndPickBest(pattern,
                                   [&](unsigned i) { return inputMapping[i]; });
   }
@@ -994,11 +985,6 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
-
-  // For now, just report the cuts found
-  unsigned totalCuts = 0;
-  LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
-
   auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());
@@ -1020,8 +1006,7 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     if (!matchedPattern) {
       if (options.allowNoMatch)
         continue; // No matching pattern found, skip this value
-      return mlir::emitError(value.getLoc(),
-                             "No matching cut found for value: ")
+      return emitError(value.getLoc(), "No matching cut found for value: ")
              << value;
     }
 
@@ -1031,13 +1016,11 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     if (failed(result))
       return failure();
 
-    auto *newOp = *result;
-
-    rewriter.replaceOp(cut->getRoot(), newOp);
+    rewriter.replaceOp(cut->getRoot(), *result);
 
     if (options.attachDebugTiming) {
       auto array = rewriter.getI64ArrayAttr(matchedPattern->getArrivalTimes());
-      newOp->setAttr("test.arrival_times", array);
+      (*result)->setAttr("test.arrival_times", array);
     }
   }
 
