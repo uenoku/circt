@@ -217,12 +217,11 @@ hw.module @extract_concat_test(in %data : i4, in %ctrl : i2, out result : i3) {
     // CHECK: comb.extract %data from 3
     // CHECK: comb.extract %ctrl from 0
     // CHECK: comb.extract %ctrl from 1
-    // CHECK: hw.instance {{.*}} @and_inv
-    // CHECK: hw.instance {{.*}} @and_inv_n
-    // CHECK: hw.instance {{.*}} @and_inv
-    // CHECK: hw.instance {{.*}} @and_inv
-    // CHECK: hw.instance {{.*}} @and_inv_n
-    // CHECK: hw.instance {{.*}} @and_inv
+    // CHECK: hw.instance {{.*}} @and_inv(a: %{{.+}}: i1, b: %{{.+}}: i1)
+    // CHECK: hw.instance {{.*}} @and_inv_n(a: %{{.+}}: i1, b: %{{.+}}: i1)
+    // CHECK: hw.instance {{.*}} @and_inv(a: %{{.+}}: i1, b: %{{.+}}: i1)
+    // CHECK: hw.instance {{.*}} @and_inv_n(a: %{{.+}}: i1, b: %{{.+}}: i1)
+    // CHECK: hw.instance {{.*}} @and_inv(a: %{{.+}}: i1, b: %{{.+}}: i1)
     // CHECK: comb.concat
     
     hw.output %result_concat : i3
