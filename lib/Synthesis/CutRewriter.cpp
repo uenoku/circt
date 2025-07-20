@@ -6,7 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// This file implements a DAG-based boolean matching cut rewriting algorithm
+// for technology mapping. The algorithm uses priority cuts and NPN
+// (Negation-Permutation-Negation) canonical forms to efficiently match
+// circuit cuts against technology library patterns.
+//
 //===----------------------------------------------------------------------===//
+
 #include "circt/Synthesis/CutRewriter.h"
 
 #include "circt/Dialect/AIG/AIGOps.h"
@@ -80,12 +86,12 @@ void CutSet::finalize(
   size_t uniqueCount = 0;
   for (size_t i = 0; i < cuts.size(); ++i) {
     auto &cut = cuts[i];
-    // Create a unique identifier for the cut based on its inputs and root
+    // Create a unique identifier for the cut based on its inputs.
     auto inputs = cut.inputs.getArrayRef();
-    if (uniqueCuts.contains({inputs, cut.getRoot()})) {
-      // This cut is a duplicate, skip it
+
+    // If the cut is a duplicate, skip it.
+    if (uniqueCuts.contains({inputs, cut.getRoot()}))
       continue;
-    }
 
     if (i != uniqueCount) {
       // Move the unique cut to the front of the vector
