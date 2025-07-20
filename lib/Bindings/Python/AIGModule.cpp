@@ -41,29 +41,22 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            [](AIGLongestPathAnalysis &self) {
              aigLongestPathAnalysisDestroy(self);
            })
-      .def(
-          "get_all_paths",
-          [](AIGLongestPathAnalysis *self, const std::string &moduleName,
-             const std::string &fanoutFilter, const std::string &faninFilter,
-             bool elaboratePaths) -> AIGLongestPathCollection {
-            MlirStringRef moduleNameRef =
-                mlirStringRefCreateFromCString(moduleName.c_str());
-            MlirStringRef fanoutFilterRef =
-                mlirStringRefCreateFromCString(fanoutFilter.c_str());
-            MlirStringRef faninFilterRef =
-                mlirStringRefCreateFromCString(faninFilter.c_str());
+      .def("get_all_paths",
+           [](AIGLongestPathAnalysis *self, const std::string &moduleName,
+              bool elaboratePaths) -> AIGLongestPathCollection {
+             MlirStringRef moduleNameRef =
+                 mlirStringRefCreateFromCString(moduleName.c_str());
 
-            auto collection = aigLongestPathAnalysisGetAllPaths(
-                *self, moduleNameRef, fanoutFilterRef, faninFilterRef,
-                elaboratePaths);
-            if (aigLongestPathCollectionIsNull(collection))
-              throw nb::value_error(
-                  "Failed to get all paths, see previous error(s).");
+             auto collection =
+                 AIGLongestPathCollection(aigLongestPathAnalysisGetAllPaths(
+                     *self, moduleNameRef, elaboratePaths));
 
-            return collection;
-          },
-          nb::arg("module_name"), nb::arg("fanout_filter") = "",
-          nb::arg("fanin_filter") = "", nb::arg("elaborate_paths") = true);
+             if (aigLongestPathCollectionIsNull(collection))
+               throw nb::value_error(
+                   "Failed to get all paths, see previous error(s).");
+
+             return collection;
+           });
 
   nb::class_<AIGLongestPathCollection>(m, "_LongestPathCollection")
       .def("__del__",
@@ -76,93 +69,9 @@ void circt::python::populateDialectAIGSubmodule(nb::module_ &m) {
            })
       .def("get_path",
            [](AIGLongestPathCollection &self,
-              int pathIndex) -> AIGLongestPathDataflowPath {
-             return aigLongestPathCollectionGetPath(self, pathIndex);
-           })
-      .def(
-          "_diff",
-          [](AIGLongestPathCollection &self, AIGLongestPathCollection &other)
-              -> std::tuple<AIGLongestPathCollection, AIGLongestPathCollection,
-                            AIGLongestPathCollection,
-                            AIGLongestPathCollection> {
-            AIGLongestPathCollection uniqueLhs, uniqueRhs, differentLhs,
-                differentRhs;
-            if (!aigLongestPathCollectionDiff(self, other, &uniqueLhs,
-                                              &uniqueRhs, &differentLhs,
-                                              &differentRhs))
-              throw nb::value_error(
-                  "Failed to diff collections, see previous error(s).");
-            return std::make_tuple(uniqueLhs, uniqueRhs, differentLhs,
-                                   differentRhs);
-          },
-          nb::arg("other"));
-  nb::class_<AIGLongestPathDataflowPath>(m, "_LongestPathDataflowPath")
-      .def_prop_ro("delay",
-                   [](AIGLongestPathDataflowPath &self) {
-                     return aigLongestPathDataflowPathGetDelay(self);
-                   })
-      .def_prop_ro("fan_in",
-                   [](AIGLongestPathDataflowPath &self) {
-                     return aigLongestPathDataflowPathGetFanIn(self);
-                   })
-      .def_prop_ro("fan_out",
-                   [](AIGLongestPathDataflowPath &self) {
-                     return aigLongestPathDataflowPathGetFanOut(self);
-                   })
-      .def_prop_ro("history",
-                   [](AIGLongestPathDataflowPath &self) {
-                     return aigLongestPathDataflowPathGetHistory(self);
-                   })
-      .def_prop_ro("root", [](AIGLongestPathDataflowPath &self) {
-        return aigLongestPathDataflowPathGetRoot(self);
-      });
-
-  nb::class_<AIGLongestPathHistory>(m, "_LongestPathHistory")
-      .def_prop_ro("empty",
-                   [](AIGLongestPathHistory &self) {
-                     return aigLongestPathHistoryIsEmpty(self);
-                   })
-      .def_prop_ro("head",
-                   [](AIGLongestPathHistory &self) {
-                     AIGLongestPathObject object;
-                     int64_t delay;
-                     MlirStringRef comment;
-                     aigLongestPathHistoryGetHead(self, &object, &delay,
-                                                  &comment);
-                     return std::make_tuple(object, delay, comment);
-                   })
-      .def_prop_ro("tail", [](AIGLongestPathHistory &self) {
-        return aigLongestPathHistoryGetTail(self);
-      });
-
-  nb::class_<AIGLongestPathObject>(m, "_LongestPathObject")
-      .def_prop_ro("instance_path",
-                   [](AIGLongestPathObject &self) {
-                     auto path = aigLongestPathObjectGetInstancePath(self);
-                     // TODO: Add is NULL
-                     if (!path.ptr)
-                       return std::vector<MlirOperation>();
-                     assert(path.ptr);
-                     size_t size = hwInstancePathSize(path);
-                     std::vector<MlirOperation> result;
-                     for (size_t i = 0; i < size; ++i)
-                       result.push_back(hwInstancePathGet(path, i));
-                     return result;
-                   })
-      .def_prop_ro("name",
-                   [](AIGLongestPathObject &self) {
-                     return aigLongestPathObjectName(self);
-                   })
-      .def_prop_ro("bit_pos", [](AIGLongestPathObject &self) {
-        return aigLongestPathObjectBitPos(self);
-      });
-
-  m.def(
-      "resource_usage_analysis_get_result",
-      [](MlirOperation module, const std::string &moduleName) {
-        MlirStringRef moduleNameRef =
-            mlirStringRefCreateFromCString(moduleName.c_str());
-        return aigResourceUsageAnalysisGetResult(module, moduleNameRef);
-      },
-      nb::arg("module"), nb::arg("module_name"));
+              int pathIndex) -> std::string_view {
+             MlirStringRef pathRef =
+                 aigLongestPathCollectionGetPath(self, pathIndex);
+             return std::string_view(pathRef.data, pathRef.length);
+           });
 }

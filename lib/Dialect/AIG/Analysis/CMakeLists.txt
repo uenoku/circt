@@ -1,7 +1,6 @@
 add_circt_dialect_library(CIRCTAIGAnalysis
   LongestPathAnalysis.cpp
   PrintLongestPathAnalysis.cpp
-  ResourceUsageAnalysis.cpp
 
   DEPENDS
   CIRCTAIGPassesIncGen

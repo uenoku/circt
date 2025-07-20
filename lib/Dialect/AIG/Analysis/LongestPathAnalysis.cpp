@@ -87,24 +87,19 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
                      llvm::function_ref<Key(const T &)> keyFn,
                      llvm::function_ref<int64_t(const T &)> delayFn) {
   // Take only maximum for each path destination.
-  DenseMap<Key, size_t> keyToIndex;
-  for (size_t i = startIndex; i < results.size(); ++i) {
-    auto &path = results[i];
-    auto key = keyFn(path);
-    auto delay = delayFn(path);
-    auto it = keyToIndex.find(key);
-    if (it == keyToIndex.end()) {
-      // Insert a new entry.
-      size_t newIndex = keyToIndex.size() + startIndex;
-      keyToIndex[key] = newIndex;
-      results[newIndex] = std::move(results[i]);
+  DenseMap<Key, size_t> saved;
+  for (auto [i, path] :
+       llvm::enumerate(ArrayRef(results).drop_front(startIndex))) {
+    auto &slot = saved[keyFn(path)];
+    if (slot == 0) {
+      slot = startIndex + i + 1;
       continue;
     }
-    if (delay > delayFn(results[it->second]))
-      results[it->second] = std::move(results[i]);
+    if (delayFn(results[slot - 1]) < delayFn(path))
+      results[slot - 1] = path;
   }
 
-  results.resize(keyToIndex.size() + startIndex);
+  results.resize(saved.size() + startIndex);
 }
 
 static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
@@ -234,8 +229,8 @@ void DataflowPath::printFanOut(llvm::raw_ostream &os) {
   if (auto *object = std::get_if<Object>(&fanOut)) {
     object->print(os);
   } else {
-    auto &[module, resultNumber, bitPos] =
-        *std::get_if<DataflowPath::OutputPort>(&fanOut);
+    auto &[resultNumber, bitPos] =
+        *std::get_if<std::pair<size_t, size_t>>(&fanOut);
     auto outputPortName = root.getOutputName(resultNumber);
     os << "Object($root." << outputPortName << "[" << bitPos << "])";
   }
@@ -302,9 +297,7 @@ Location DataflowPath::getFanOutLoc() {
     return object->value.getLoc();
 
   // Return output port location.
-  auto &[module, resultNumber, bitPos] =
-      *std::get_if<DataflowPath::OutputPort>(&fanOut);
-  return module.getOutputLoc(resultNumber);
+  return root.getOutputLoc(std::get<std::pair<size_t, size_t>>(fanOut).first);
 }
 
 //===----------------------------------------------------------------------===//
@@ -336,8 +329,7 @@ static llvm::json::Value toJSON(const DataflowPath::FanOutType &path,
   if (auto *object = std::get_if<circt::aig::Object>(&path))
     return toJSON(*object);
 
-  auto &[module, resultNumber, bitPos] =
-      *std::get_if<DataflowPath::OutputPort>(&path);
+  auto &[resultNumber, bitPos] = *std::get_if<std::pair<size_t, size_t>>(&path);
   return llvm::json::Object{
       {"instance_path", {}}, // Instance path is empty for output ports.
       {"name", root.getOutputName(resultNumber)},
@@ -521,9 +513,6 @@ private:
                       SmallVectorImpl<OpenPath> &results);
   LogicalResult addLogicOp(Operation *op, size_t bitPos,
                            SmallVectorImpl<OpenPath> &results);
-
-  LogicalResult visit(comb::TruthTableOp op, size_t bitPos,
-                      SmallVectorImpl<OpenPath> &results);
 
   // Constants.
   LogicalResult visit(hw::ConstantOp op, size_t bitPos,
@@ -720,13 +709,12 @@ LogicalResult LocalVisitor::visit(comb::XorOp op, size_t bitPos,
 
 LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
-  auto oldResultsSize = results.size();
   // Add a cost of 1 for the mux.
   if (failed(addEdge(op.getCond(), 0, 1, results)) ||
       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
     return failure();
-  deduplicatePaths(results, oldResultsSize);
+  deduplicatePaths(results);
   return success();
 }
 
@@ -862,21 +850,11 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
                                        SmallVectorImpl<OpenPath> &results) {
   auto size = op->getNumOperands();
   auto cost = llvm::Log2_64_Ceil(size);
-  size_t oldResult = results.size();
   // Create edges each operand with cost ceil(log(size)).
   for (auto operand : op->getOperands())
     if (failed(addEdge(operand, bitPos, cost, results)))
       return failure();
 
-  deduplicatePaths(results, oldResult);
-  return success();
-}
-
-LogicalResult LocalVisitor::visit(comb::TruthTableOp op, size_t bitPos,
-                                  SmallVectorImpl<OpenPath> &results) {
-  for (auto operand : op->getOperands())
-    if (failed(addEdge(operand, bitPos, 1, results)))
-      return failure();
   deduplicatePaths(results);
   return success();
 }
@@ -953,24 +931,24 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
           .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
                 aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::MuxOp,
                 comb::XorOp, seq::FirRegOp, seq::CompRegOp, hw::ConstantOp,
-                comb::TruthTableOp, seq::FirMemReadOp, seq::FirMemReadWriteOp,
-                hw::WireOp>([&](auto op) {
-            size_t idx = results.size();
-            auto result = visit(op, bitPos, results);
-            if (ctx->doTraceDebugPoints())
-              if (auto name =
-                      op->template getAttrOfType<StringAttr>("sv.namehint")) {
+                seq::FirMemReadOp, seq::FirMemReadWriteOp, hw::WireOp>(
+              [&](auto op) {
+                size_t idx = results.size();
+                auto result = visit(op, bitPos, results);
+                if (ctx->doTraceDebugPoints())
+                  if (auto name = op->template getAttrOfType<StringAttr>(
+                          "sv.namehint")) {
 
-                for (auto i = idx, e = results.size(); i < e; ++i) {
-                  DebugPoint debugPoint({}, value, bitPos, results[i].delay,
-                                        "namehint");
-                  auto newHistory =
-                      debugPointFactory->add(debugPoint, results[i].history);
-                  results[i].history = newHistory;
-                }
-              }
-            return result;
-          })
+                    for (auto i = idx, e = results.size(); i < e; ++i) {
+                      DebugPoint debugPoint({}, value, bitPos, results[i].delay,
+                                            "namehint");
+                      auto newHistory = debugPointFactory->add(
+                          debugPoint, results[i].history);
+                      results[i].history = newHistory;
+                    }
+                  }
+                return result;
+              })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
             return visit(op, bitPos, cast<OpResult>(value).getResultNumber(),
                          results);
@@ -1085,7 +1063,7 @@ LogicalResult LocalVisitor::initializeAndRun() {
                                    op.getEnable());
             })
             .Case<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
-                  comb::MuxOp, comb::TruthTableOp>([&](auto op) {
+                  comb::MuxOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               for (size_t i = 0, e = getBitWidth(op); i < e; ++i)
@@ -1304,10 +1282,9 @@ LogicalResult LongestPathAnalysis::Impl::getOpenPathsFromInternalToOutputPorts(
     for (auto [point, delayAndHistory] : value) {
       auto [path, start, startBitPos] = point;
       auto [delay, history] = delayAndHistory;
-      results.emplace_back(
-          std::make_tuple(visitor->getHWModuleOp(), resultNum, bitPos),
-          OpenPath(path, start, startBitPos, delay, history),
-          visitor->getHWModuleOp());
+      results.emplace_back(std::make_pair(resultNum, bitPos),
+                           OpenPath(path, start, startBitPos, delay, history),
+                           visitor->getHWModuleOp());
     }
   }
 
@@ -1539,181 +1516,4 @@ void LongestPathCollection::sortAndDropNonCriticalPathsPerFanOut() {
       paths[seen.size() - 1] = std::move(paths[i]);
   }
   paths.resize(seen.size());
-}
-
-void LongestPathCollection::filterByFanOut(StringRef signalName) {
-  if (signalName.empty())
-    return;
-  size_t newSize = 0;
-  for (size_t i = 0; i < paths.size(); ++i) {
-    auto &path = paths[i];
-    if (auto *object = std::get_if<Object>(&path.getFanOut())) {
-      if (!getNameImpl(object->value).getValue().contains(signalName))
-        continue;
-    } else {
-      auto [module, resultNumber, bitPos] =
-          std::get<DataflowPath::OutputPort>(path.getFanOut());
-      auto outputName = module.getOutputName(resultNumber);
-      if (!outputName.contains(signalName))
-        continue;
-    }
-    paths[newSize++] = std::move(paths[i]);
-  }
-  paths.resize(newSize);
-}
-
-void LongestPathCollection::filterByFanIn(StringRef signalName) {
-  size_t newSize = 0;
-  for (size_t i = 0; i < paths.size(); ++i) {
-    auto &path = paths[i];
-    auto &fanIn = path.getFanIn();
-    if (!getNameImpl(fanIn.value).getValue().contains(signalName))
-      continue;
-    paths[newSize++] = std::move(paths[i]);
-  }
-  paths.resize(newSize);
-}
-
-struct ObjectPathInfo {
-  using Object = circt::aig::DataflowPath::FanOutType;
-  static Object getEmptyKey() { return DenseMapInfo<Object>::getEmptyKey(); }
-
-  static Object getTombstoneKey() {
-    return DenseMapInfo<Object>::getTombstoneKey();
-  }
-
-  static llvm::hash_code getHashValue(Object signal) {
-    if (auto *object = std::get_if<circt::aig::Object>(&signal)) {
-      auto hash = llvm::hash_value(object->bitPos);
-      for (auto inst : object->instancePath)
-        hash = llvm::hash_combine(hash, inst.getInstanceNameAttr());
-
-      hash =
-          llvm::hash_combine(hash, circt::aig::getNameForValue(object->value));
-      return hash;
-    }
-
-    auto &[module, resultNumber, bitPos] =
-        *std::get_if<DataflowPath::OutputPort>(&signal);
-    auto hash = llvm::hash_value(bitPos);
-    hash = llvm::hash_combine(hash, resultNumber);
-    hash = llvm::hash_combine(hash, module.getAsOpaquePointer());
-    return hash;
-  }
-
-  static bool isEqual(const Object &a, const Object &b) {
-    auto tombstone = getTombstoneKey();
-    bool isLhsTombstone = DenseMapInfo<Object>::isEqual(a, tombstone);
-    bool isRhsTombstone = DenseMapInfo<Object>::isEqual(b, tombstone);
-    if (isLhsTombstone || isRhsTombstone)
-      return isLhsTombstone && isRhsTombstone;
-
-    auto empty = getEmptyKey();
-    bool isLhsEmpty = DenseMapInfo<Object>::isEqual(a, empty);
-    bool isRhsEmpty = DenseMapInfo<Object>::isEqual(b, empty);
-    if (isLhsEmpty || isRhsEmpty)
-      return isLhsEmpty && isRhsEmpty;
-
-    if (std::holds_alternative<circt::aig::Object>(a) !=
-        std::holds_alternative<circt::aig::Object>(b))
-      return false;
-
-    if (auto *aObject = std::get_if<circt::aig::Object>(&a)) {
-      auto *bObject = std::get_if<circt::aig::Object>(&b);
-      if (aObject->bitPos != bObject->bitPos ||
-          circt::aig::getNameForValue(aObject->value) !=
-              circt::aig::getNameForValue(bObject->value))
-        return false;
-
-      // Check instance path names match.
-      if (aObject->instancePath.size() != bObject->instancePath.size())
-        return false;
-      for (size_t i = 0; i < aObject->instancePath.size(); ++i) {
-        if (aObject->instancePath[i].getInstanceNameAttr() !=
-            bObject->instancePath[i].getInstanceNameAttr())
-          return false;
-      }
-      return true;
-    }
-
-    auto aPair = std::get<DataflowPath::OutputPort>(a);
-    auto bPair = std::get<DataflowPath::OutputPort>(b);
-    return aPair == bPair;
-  }
-};
-
-circt::aig::Difference::Difference(const LongestPathCollection &lhs,
-                                   const LongestPathCollection &rhs)
-    : lhsUniquePaths(std::make_unique<LongestPathCollection>(lhs.getContext())),
-      rhsUniquePaths(std::make_unique<LongestPathCollection>(rhs.getContext())),
-      lhsDifferentDelay(
-          std::make_unique<LongestPathCollection>(lhs.getContext())),
-      rhsDifferentDelay(
-          std::make_unique<LongestPathCollection>(rhs.getContext())) {
-
-  // 1. Compare paths in both collections.
-  using IndexMapTy =
-      DenseMap<circt::aig::DataflowPath::FanOutType, unsigned, ObjectPathInfo>;
-  llvm::MapVector<circt::aig::DataflowPath::FanOutType,
-                  llvm::MapVector<circt::aig::DataflowPath::FanOutType,
-                                  const DataflowPath *, IndexMapTy>,
-                  IndexMapTy>
-      lhsMap, rhsMap;
-  for (auto &path : lhs.paths)
-    lhsMap[path.getFanOut()][path.getFanIn()] = &path;
-  for (auto &path : rhs.paths)
-    rhsMap[path.getFanOut()][path.getFanIn()] = &path;
-
-  for (auto &path : lhs.paths) {
-    auto &rhsPaths = rhsMap[path.getFanOut()];
-    auto *rhsPath = rhsPaths[path.getFanIn()];
-    if (!rhsPath) {
-      lhsUniquePaths->paths.push_back(path);
-      continue;
-    }
-    if (path.getDelay() != rhsPath->getDelay())
-      lhsDifferentDelay->paths.push_back(path);
-  }
-
-  for (auto &path : rhs.paths) {
-    auto &lhsPaths = lhsMap[path.getFanOut()];
-    auto *lhsPath = lhsPaths[path.getFanIn()];
-    if (!lhsPath) {
-      rhsUniquePaths->paths.push_back(path);
-      continue;
-    }
-    if (lhsPath->getDelay() != path.getDelay())
-      rhsDifferentDelay->paths.push_back(path);
-  }
-
-  // for (auto &[fanOut, lhsPaths] : lhsMap) {
-  //   auto &rhsPaths = rhsMap[fanOut];
-  //   for (auto &[fanIn, lhsPath] : lhsPaths) {
-  //     auto *rhsPath = rhsPaths[fanIn];
-  //     if (!rhsPath) {
-  //       diff.lhsUniquePaths->paths.push_back(*lhsPath);
-  //       continue;
-  //     }
-  //     if (lhsPath->getDelay() != rhsPath->getDelay())
-  //       diff.lhsDifferentDelay->paths.push_back(*lhsPath);
-  //   }
-  // }
-
-  // for (auto &[fanOut, rhsPaths] : rhsMap) {
-  //   auto &lhsPaths = lhsMap[fanOut];
-  //   for (auto &[fanIn, rhsPath] : rhsPaths) {
-  //     if (!lhsPaths.count(fanIn)) {
-  //       diff.rhsUniquePaths->paths.push_back(*rhsPath);
-  //     }
-
-  //     if (lhsPaths[fanIn]->getDelay() != rhsPath->getDelay())
-  //       diff.rhsDifferentDelay->paths.push_back(*rhsPath);
-  //   }
-  // }
-
-  // Compare paths in both collections.
-}
-
-StringAttr circt::aig::getNameForValue(Value value) {
-  return getNameImpl(value);
 }
