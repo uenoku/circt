@@ -27,7 +27,7 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
     Supports both area and timing optimization strategies.
   }];
   let options = [
-    Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
+    Option<"maxCutsPerNode", "max-cuts-per-node", "int", "8",
            "Maximum number of cuts to maintain per node">,
     Option<"strategy", "strategy", "synthesis::OptimizationStrategy",
            /*default=*/"synthesis::OptimizationStrategyTiming",
@@ -48,9 +48,9 @@ def GenericLutMapper : Pass<"synthesis-generic-lut-mapper"> {
      This transformation maps logic network into generic LUT operation. 
   }];
   let options = [
-    Option<"maxLutSize", "max-lut-size", "int", "6",
+    Option<"maxLutSize", "max-lut-size", "int", "8",
            "Maximum cut size (K-LUT size) for technology mapping">,
-    Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
+    Option<"maxCutsPerNode", "max-cuts-per-node", "int", "8",
            "Maximum number of cuts to maintain per node">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];

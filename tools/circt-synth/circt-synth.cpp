@@ -156,6 +156,10 @@ static cl::opt<int>
                        cl::desc("Lower AIG to generic LUTs with K inputs"),
                        cl::init(0), cl::cat(mainCategory));
 
+static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
+                                      cl::desc("Maximum cut size per root"),
+                                      cl::init(8), cl::cat(mainCategory));
+
 enum SynthesisStrategy {
   Area,
   Timing
@@ -223,7 +227,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       // Lower AIG to generic LUTs with K inputs.
       circt::synthesis::GenericLutMapperOptions lutOptions;
       lutOptions.maxLutSize = lowerToGenericLUTK;
-      lutOptions.maxCutsPerNode = 12; // Default value, can be adjusted.
+      lutOptions.maxCutsPerNode =
+          maxCutSizePerRoot; // Default value, can be adjusted.
       pm.addPass(circt::synthesis::createGenericLutMapper(lutOptions));
     }
   };
@@ -232,6 +237,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   if (!untilReached(UntilMapping) && lowerToGenericLUTK == 0) {
     // Add technology mapping pass if no LUT mapping is performed.
     // This is no-op if no technology library is provided in the IR.
+    circt::synthesis::TechMapperOptions options;
+    options.maxCutsPerNode = maxCutSizePerRoot;
     pm.addPass(circt::synthesis::createTechMapper());
   }
 
