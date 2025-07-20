@@ -1,4 +1,3 @@
-
 set(LLVM_TARGET_DEFINITIONS Passes.td)
 mlir_tablegen(Passes.h.inc -gen-pass-decls)
 mlir_tablegen(Transforms.capi.h.inc -gen-pass-capi-header)
