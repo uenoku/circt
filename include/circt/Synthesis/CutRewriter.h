@@ -26,6 +26,8 @@
 
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
@@ -363,6 +365,7 @@ public:
 /// Patterns can use truth table matching for efficient recognition or
 /// implement custom matching logic for more complex cases.
 struct CutRewriterPattern {
+  CutRewriterPattern(mlir::MLIRContext *context) : context(context) {}
   /// Virtual destructor for base class.
   virtual ~CutRewriterPattern() = default;
 
@@ -406,6 +409,16 @@ struct CutRewriterPattern {
 
   /// Get the name of this pattern. Used for debugging.
   virtual StringRef getPatternName() const { return "<unnamed>"; }
+
+  /// Get location for this pattern(optional).
+  virtual LocationAttr getLoc() const { return mlir::UnknownLoc::get(context); }
+
+  /// Get the MLIR context associated with this pattern.
+  mlir::MLIRContext *getContext() const { return context; }
+
+private:
+  /// The MLIR context associated with this pattern.
+  mlir::MLIRContext *context;
 };
 
 /// Manages a collection of rewriting patterns for combinational logic

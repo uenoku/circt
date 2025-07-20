@@ -137,7 +137,8 @@ struct TechLibraryPattern : public CutRewriterPattern {
 
   TechLibraryPattern(hw::HWModuleOp module, double area,
                      SmallVector<SmallVector<DelayType, 2>, 4> delay)
-      : module(module), area(area), delay(std::move(delay)) {
+      : CutRewriterPattern(module->getContext()), module(module), area(area),
+        delay(std::move(delay)) {
     // Create an NPN class from the module's truth table
     npnClass = getNPNClassFromModule(module);
     LLVM_DEBUG(
@@ -201,6 +202,11 @@ struct TechLibraryPattern : public CutRewriterPattern {
 
   unsigned getNumOutputs() const override {
     return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
+  }
+
+  LocationAttr getLoc() const override {
+    auto module = this->module;
+    return module.getLoc();
   }
 
   const double area;

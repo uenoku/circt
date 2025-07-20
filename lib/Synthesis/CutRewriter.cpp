@@ -418,9 +418,11 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
 
   // Initialize permutation with identity
   canonical.inputPermutation = identityPermutation(tt.numInputs);
-
-  // Try all possible input negations (2^n combinations)
-  assert(tt.numInputs <= 20 && "Too many inputs for input negation mask");
+  assert(tt.numInputs <= 8 && "Too many inputs for input negation mask");
+  // Try all possible tables and pick the lexicographically smallest.
+  // FIXME: The time complexity is O(n! * 2^(n + m)) where n is the number
+  // of inputs and m is the number of outputs. This is not scalable so
+  // semi-canonical forms should be used instead.
   for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
     TruthTable negatedTT = tt.applyInputNegation(negMask);
 
@@ -433,26 +435,21 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
       // Permute the negation mask according to the permutation
       unsigned currentNegMask = permuteNegationMask(negMask, permutation);
 
-      // Try output negation (for single output)
-      if (tt.numOutputs == 1) {
-        TruthTable candidate = permutedTT;
+      // Try all negation masks for the output
+      for (unsigned outputNegMask = 0; outputNegMask < (1u << tt.numOutputs);
+           ++outputNegMask) {
+        // Apply output negation
+        TruthTable candidateTT = permutedTT.applyOutputNegation(outputNegMask);
 
-        NPNClass canonicalCandidate(permutedTT, permutation, currentNegMask, 0);
+        // Create a new NPN class for the candidate
+        NPNClass candidate(candidateTT, permutation, currentNegMask,
+                           outputNegMask);
 
-        // Try without output negation
-        if (canonicalCandidate.isLexicographicallySmaller(canonical)) {
-          canonical = canonicalCandidate;
+        // Check if this candidate is lexicographically smaller than the
+        // current canonical form
+        if (candidate.isLexicographicallySmaller(canonical)) {
+          canonical = std::move(candidate);
         }
-
-        // Try with output negation
-        candidate = permutedTT.applyOutputNegation(1);
-        NPNClass newCanonical(permutedTT.applyOutputNegation(1), permutation,
-                              currentNegMask, 1);
-        if (newCanonical.isLexicographicallySmaller(canonical)) {
-          canonical = newCanonical;
-        }
-      } else {
-        assert(false);
       }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
   }
@@ -472,7 +469,7 @@ bool Cut::isPrimaryInput() const {
 mlir::Operation *Cut::getRoot() const {
   return operations.empty()
              ? nullptr
-             : operations.back(); // The first operation is the root
+             : operations.back(); // The last operation is the root
 }
 
 const mlir::FailureOr<NPNClass> &Cut::getNPNClass() const {
@@ -723,6 +720,17 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
     llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
   });
+
+  // Currrently we don't support patterns with multiple outputs.
+  // So check that.
+  // TODO: This must be removed when we support multiple outputs.
+  for (auto &pattern : patterns.patterns) {
+    if (pattern->getNumOutputs() > 1) {
+      return mlir::emitError(pattern->getLoc(),
+                             "Cut rewriter does not support patterns with "
+                             "multiple outputs yet");
+    }
+  }
 
   // First sort the operations topologically to ensure we can process them
   // in a valid order.

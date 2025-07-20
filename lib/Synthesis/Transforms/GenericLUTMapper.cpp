@@ -24,7 +24,8 @@ namespace {
 struct GenericLUT : public CutRewriterPattern {
   /// Generic LUT primitive with k inputs
   size_t k; // Number of inputs for the LUT
-  GenericLUT(size_t k) : k(k) {}
+  GenericLUT(mlir::MLIRContext *context, size_t k)
+      : CutRewriterPattern(context), k(k) {}
   bool match(const Cut &cutSet) const override {
     // Check if the cut matches the LUT primitive
     LLVM_DEBUG(llvm::dbgs()
@@ -93,11 +94,11 @@ struct GenericLUTMapperPass
     : public impl::GenericLutMapperBase<GenericLUTMapperPass> {
   using GenericLutMapperBase<GenericLUTMapperPass>::GenericLutMapperBase;
   void runOnOperation() override {
-
     // Add LUT pattern.
     auto *module = getOperation();
     SmallVector<std::unique_ptr<CutRewriterPattern>> patterns;
-    patterns.push_back(std::make_unique<GenericLUT>(maxLutSize));
+    patterns.push_back(
+        std::make_unique<GenericLUT>(module->getContext(), maxLutSize));
     CutRewriterPatternSet patternSet(std::move(patterns));
 
     // Create the cut rewriter with the area optimization strategy.
