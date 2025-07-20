@@ -45,8 +45,11 @@ struct BinaryTruthTable {
 
   /// Constructor for a truth table with given dimensions and evaluation data.
   BinaryTruthTable(unsigned numInputs, unsigned numOutputs,
-                   const llvm::APInt &eval)
-      : numInputs(numInputs), numOutputs(numOutputs), table(eval) {}
+                   const llvm::APInt &table)
+      : numInputs(numInputs), numOutputs(numOutputs), table(table) {
+    assert(table.getBitWidth() == (1u << numInputs) * numOutputs &&
+           "Truth table size mismatch");
+  }
 
   /// Constructor for a truth table with given dimensions, initialized to zero.
   BinaryTruthTable(unsigned numInputs, unsigned numOutputs)
