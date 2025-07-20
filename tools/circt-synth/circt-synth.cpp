@@ -214,17 +214,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.disableWordToBits.setValue(disableWordToBits);
 
     circt::synthesis::buildAIGOptimizationPipeline(pm, options);
-
-    if (untilReached(UntilMapping))
-      return;
-
   };
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
   if (!untilReached(UntilMapping)) {
-    // Add technology mapping pass if no LUT mapping is performed.
-    // This is no-op if no technology library is provided in the IR.
     circt::synthesis::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     pm.addPass(circt::synthesis::createTechMapper());
