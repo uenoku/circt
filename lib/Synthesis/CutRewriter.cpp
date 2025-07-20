@@ -12,7 +12,6 @@
 // (Negation-Permutation-Negation) canonical forms to efficiently match cuts
 // against rewriting patterns.
 //
-// Combinational and Sequential Mapping with Priority Cuts
 //===----------------------------------------------------------------------===//
 
 #include "circt/Synthesis/CutRewriter.h"
