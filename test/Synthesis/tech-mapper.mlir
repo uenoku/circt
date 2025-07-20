@@ -76,18 +76,19 @@ hw.module @and_inv_5_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e:
     // CHECK-NEXT: hw.output %[[area_0]], %[[area_1]] : i1, i1
 }
 
-// This is a test that needs area-flow to get an optimal result.
-// It produces sub-optimal mappings since currently area-flow is not implemented.
-// CHECK-LABEL: @area_flow_test
 hw.module @area_flow(in %a : i1, in %b : i1, in %c: i1, out result : i1) attributes {hw.techlib.info = {area = 1.5 : f64, delay = [[10], [10], [10], [10], [10]]}} {
     %0 = aig.and_inv not %a, not %b : i1
     %1 = aig.and_inv not %c, %0 : i1
     hw.output %1 : i1
 }
 
+// This is a test that needs area-flow to get an optimal result.
+// It produces sub-optimal mappings since currently area-flow is not implemented.
+// CHECK-LABEL: @area_flow_test
 hw.module @area_flow_test(in %a : i1, in %b : i1, in %c: i1, out result : i1) {
-    // %mapped.result = hw.instance "mapped" @and_inv_nn(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-    // %mapped.result_0 = hw.instance "mapped" @and_inv_n(a: %c: i1, b: %mapped.result: i1) -> (result: i1) {test.arrival_times = [2]}
+    // FIXME: If area-flow is implemented, this should be mapped to @area_flow with area strategy.
+    // CHECK:       hw.instance {{.*}} @and_inv_nn(
+    // CHECK-NEXT:  hw.instance {{.*}} @and_inv_n(
     %0 = aig.and_inv not %a, not %b : i1
     %1 = aig.and_inv not %c, %0 : i1
     hw.output %1 : i1

@@ -35,9 +35,9 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
 }
 
 def GenericLutMapper : Pass<"synthesis-generic-lut-mapper"> {
-  let summary = "Map AIG to genernic LUT operations (comb.truth_table)";
+  let summary = "Map to genernic LUT operations (comb.truth_table)";
   let description = [{
-     This transformation maps aig network into generic LUT operation. 
+     This transformation maps logic network into generic LUT operation. 
   }];
   let options = [
     Option<"maxLutSize", "max-lut-size", "int", "6",
