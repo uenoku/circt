@@ -168,16 +168,24 @@ struct TechLibraryPattern : public CutRewriterPattern {
                                        Cut &cut) const override {
     // Create a new instance of the module
     SmallVector<Value> inputs;
-    SmallVector<unsigned> cutInversePermutation;
-    // Permutate based on the NPN class
-    const auto &permutation = cut.getNPNClass()->inputPermutation;
-    cutInversePermutation.resize(permutation.size());
-    for (unsigned i = 0; i < permutation.size(); ++i)
-      cutInversePermutation[permutation[i]] = i;
+    
+    // Get both permutations
+    const auto &cutPermutation = cut.getNPNClass()->inputPermutation;
+    const auto &patternPermutation = npnClass.inputPermutation;
+    
+    // Build inverse permutation mapping from cut's canonical form to
+    // original cut inputs
+    SmallVector<unsigned> cutInversePermutation(cutPermutation.size());
+    for (unsigned i = 0; i < cutPermutation.size(); ++i)
+      cutInversePermutation[cutPermutation[i]] = i;
+    
+    // For each module input position, find the corresponding cut input
     for (unsigned i = 0; i < cut.getInputSize(); ++i) {
-      // Map cut inputs to module inputs using the inverse permutation
-      unsigned moduleInputIndex = cutInversePermutation[i];
-      inputs.push_back(cut.inputs[moduleInputIndex]);
+      // Module input i corresponds to canonical position patternPermutation[i]
+      // We need the cut input that maps to the same canonical position
+      unsigned canonicalPos = patternPermutation[i];
+      unsigned cutInputIndex = cutInversePermutation[canonicalPos];
+      inputs.push_back(cut.inputs[cutInputIndex]);
     }
 
     auto instanceOp = rewriter.create<hw::InstanceOp>(

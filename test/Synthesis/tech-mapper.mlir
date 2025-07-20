@@ -1,6 +1,6 @@
 // RUN: circt-opt --pass-pipeline='builtin.module(synthesis-tech-mapper{library-modules=and_inv,and_inv_n,and_inv_nn,and_inv_3 strategy=area})' %s | FileCheck %s --check-prefixes CHECK,AREA
 // RUN: circt-opt --pass-pipeline='builtin.module(synthesis-tech-mapper{library-modules=and_inv,and_inv_n,and_inv_nn,and_inv_3 strategy=timing})' %s | FileCheck %s --check-prefixes CHECK,TIMING
-// RUN: circt-opt --pass-pipeline='builtin.module(synthesis-tech-mapper{library-modules=permutation})' %s | FileCheck %s --check PERMUTATION
+// RUN: circt-opt --pass-pipeline='builtin.module(synthesis-tech-mapper{library-modules=and_inv,and_inv_n,and_inv_nn,and_inv_3,permutation})' %s | FileCheck %s --check-prefix PERMUTATION
 
 hw.module @and_inv(in %a : i1, in %b : i1, out result : i1) attributes {hw.techlib.info = {area = 1.0 : f64, delay = 1.0 : f64}} {
     %0 = aig.and_inv %a, %b : i1
@@ -62,13 +62,13 @@ hw.module @permutation(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out result: i
     hw.output %2 : i1
 }
 
-// PERMUTATION-LABEL: hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
+// PERMUTATION-LABEL: hw.module @permutation_test(in %p : i1, in %q : i1, in %r : i1, in %s : i1, out result : i1) {
 hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
     // a -> s
     // b -> p
     // c -> q
     // d -> r
-    // PERMUTATION: hw.instance {{.+}} @permutation(a: %r: i1, b: %q: i1, c: %s: i1, d: %p: i1) -> (result: i1) {debug.arrival_times = [1]} 
+    // PERMUTATION: hw.instance "{{.+}}" @permutation(a: %s: i1, b: %p: i1, c: %q: i1, d: %r: i1) -> (result: i1) {debug.arrival_times = [1]}
     %0 = aig.and_inv %s, not %p : i1
     %1 = aig.and_inv %q, not %r : i1
     %2 = aig.and_inv %0, not %1 : i1
