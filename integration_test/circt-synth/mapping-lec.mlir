@@ -7,12 +7,6 @@
 
 // COMB_MUL_TECHMAP: c1 == c2
 
-// RUN: circt-synth %s -o %t3.mlir -convert-to-comb -lower-to-lut-k=4
-// RUN: circt-opt %s --convert-aig-to-comb -o %t4.mlir
-// RUN: circt-lec %t3.mlir %t4.mlir -c1=mul -c2=mul --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_MUL_LUT
-
-// COMB_MUL_LUT: c1 == c2
-
 // Set delay for binary and inv op to 5 so that others will be prioritized
 hw.module @and_inv(in %a : i1, in %b : i1, out result : i1) attributes {hw.techlib.info = {area = 1.0 : f64, delay = [[5], [5]]}} {
     %0 = aig.and_inv %a, %b : i1

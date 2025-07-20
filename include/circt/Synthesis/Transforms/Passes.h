@@ -1,4 +1,4 @@
-//===- Passes.h - Pass Entrypoints ------------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This header file defines prototypes for CIRCT transformation passes.
+// This header file defines prototypes for transformation passes related to
+// synthesis.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,7 +21,7 @@
 namespace circt {
 namespace synthesis {
 /// Optimization strategy.
-/// Determines whether to prioritize area or timing during rewriting.
+/// Determines whether to prioritize area or timing.
 enum OptimizationStrategy {
   OptimizationStrategyArea,  ///< Optimize for minimal area
   OptimizationStrategyTiming ///< Optimize for minimal critical path delay

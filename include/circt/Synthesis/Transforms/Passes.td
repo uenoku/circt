@@ -37,21 +37,8 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
                         "Optimize for area"),
              clEnumValN(synthesis::OptimizationStrategyTiming, "timing",
                         "Optimize for timing")
-           )}]>
-  ];
-  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
-}
-
-def GenericLutMapper : Pass<"synthesis-generic-lut-mapper"> {
-  let summary = "Map to genernic LUT operations (comb.truth_table)";
-  let description = [{
-     This transformation maps logic network into generic LUT operation. 
-  }];
-  let options = [
-    Option<"maxLutSize", "max-lut-size", "int", "8",
-           "Maximum cut size (K-LUT size) for technology mapping">,
-    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "8",
-           "Maximum number of cuts to maintain per node">
+           )}]>,
+    Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
 }

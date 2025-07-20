@@ -151,11 +151,6 @@ static cl::opt<bool>
 static cl::opt<bool> disableWordToBits("disable-word-to-bits",
                                        cl::desc("Disable LowerWordToBits pass"),
                                        cl::init(false), cl::cat(mainCategory));
-static cl::opt<int>
-    lowerToGenericLUTK("lower-to-lut-k",
-                       cl::desc("Lower AIG to generic LUTs with K inputs"),
-                       cl::init(0), cl::cat(mainCategory));
-
 static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
                                       cl::init(8), cl::cat(mainCategory));
@@ -223,18 +218,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     if (untilReached(UntilMapping))
       return;
 
-    if (lowerToGenericLUTK > 0) {
-      // Lower AIG to generic LUTs with K inputs.
-      circt::synthesis::GenericLutMapperOptions lutOptions;
-      lutOptions.maxLutSize = lowerToGenericLUTK;
-      lutOptions.maxCutsPerRoot =
-          maxCutSizePerRoot; // Default value, can be adjusted.
-      pm.addPass(circt::synthesis::createGenericLutMapper(lutOptions));
-    }
   };
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
-  if (!untilReached(UntilMapping) && lowerToGenericLUTK == 0) {
+
+  if (!untilReached(UntilMapping)) {
     // Add technology mapping pass if no LUT mapping is performed.
     // This is no-op if no technology library is provided in the IR.
     circt::synthesis::TechMapperOptions options;
@@ -256,8 +244,6 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
         pm,
         [&](OpPassManager &pm) {
           pm.addPass(circt::createConvertAIGToComb());
-          if (lowerToGenericLUTK)
-            pm.addPass(circt::comb::createLowerComb());
           pm.addPass(createCSEPass());
         },
         topName);

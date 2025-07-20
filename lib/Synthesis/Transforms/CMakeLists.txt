@@ -1,5 +1,4 @@
 add_circt_library(CIRCTSynthesisTransforms
-  GenericLUTMapper.cpp
   SynthesisPipeline.cpp
   TechMapper.cpp
 
