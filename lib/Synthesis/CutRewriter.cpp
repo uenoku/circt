@@ -357,16 +357,18 @@ permuteNegationMask(unsigned negationMask,
   return result;
 }
 
-} // anonymous namespace
-
-llvm::SmallVector<unsigned> NPNClass::invertPermutation(
-    const llvm::SmallVectorImpl<unsigned> &permutation) {
+/// Create the inverse of a permutation.
+/// If permutation[i] = j, then inverse[j] = i.
+llvm::SmallVector<unsigned>
+invertPermutation(const llvm::SmallVectorImpl<unsigned> &permutation) {
   llvm::SmallVector<unsigned> inverse(permutation.size());
   for (unsigned i = 0; i < permutation.size(); ++i) {
     inverse[permutation[i]] = i;
   }
   return inverse;
 }
+
+} // anonymous namespace
 
 llvm::SmallVector<unsigned>
 NPNClass::getInputMappingTo(const NPNClass &targetNPN) const {
@@ -804,8 +806,8 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
 LogicalResult CutEnumerator::enumerateCuts(
     Operation *topOp,
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
-  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: "
-                          << topOp->getName() << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: " << topOp->getName()
+                          << "\n");
 
   // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
@@ -969,11 +971,6 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   unsigned totalCuts = 0;
   LLVM_DEBUG(llvm::dbgs() << "Total cuts enumerated: " << totalCuts << "\n");
 
-  // TODO: Implement actual cut-based rewriting transformation
-  // This would involve:
-  // 1. Select best cuts for each node
-  // 2. Replace AIG nodes with library primitives
-  // 3. Connect the mapped circuit
   auto cutVector = cutEnumerator.takeVector();
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());

@@ -145,10 +145,6 @@ struct NPNClass {
   /// truth tables, semi-canonical forms should be used instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
 
-  /// Create the inverse of a permutation.
-  /// If permutation[i] = j, then inverse[j] = i.
-  static llvm::SmallVector<unsigned>
-  invertPermutation(const llvm::SmallVectorImpl<unsigned> &permutation);
 
   /// Get input mapping from this NPN class to another equivalent NPN class.
   ///
