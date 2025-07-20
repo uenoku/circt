@@ -84,12 +84,12 @@ static bool isAlwaysCutInput(Value value) {
 // TruthTable
 //===----------------------------------------------------------------------===//
 
-llvm::APInt TruthTable::getOutput(const llvm::APInt &input) const {
+llvm::APInt BinaryTruthTable::getOutput(const llvm::APInt &input) const {
   assert(input.getBitWidth() == numInputs && "Input width mismatch");
   return table.extractBits(numOutputs, input.getZExtValue() * numOutputs);
 }
 
-void TruthTable::setOutput(const llvm::APInt &input,
+void BinaryTruthTable::setOutput(const llvm::APInt &input,
                            const llvm::APInt &output) {
   assert(input.getBitWidth() == numInputs && "Input width mismatch");
   assert(output.getBitWidth() == numOutputs && "Output width mismatch");
@@ -98,9 +98,9 @@ void TruthTable::setOutput(const llvm::APInt &input,
     table.setBitVal(offset + i, output[i]);
 }
 
-TruthTable TruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
+BinaryTruthTable BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
   assert(permutation.size() == numInputs && "Permutation size mismatch");
-  TruthTable result(numInputs, numOutputs);
+  BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -116,8 +116,8 @@ TruthTable TruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
   return result;
 }
 
-TruthTable TruthTable::applyInputNegation(unsigned mask) const {
-  TruthTable result(numInputs, numOutputs);
+BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
+  BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -133,8 +133,8 @@ TruthTable TruthTable::applyInputNegation(unsigned mask) const {
   return result;
 }
 
-TruthTable TruthTable::applyOutputNegation(unsigned negation) const {
-  TruthTable result(numInputs, numOutputs);
+BinaryTruthTable BinaryTruthTable::applyOutputNegation(unsigned negation) const {
+  BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -152,17 +152,17 @@ TruthTable TruthTable::applyOutputNegation(unsigned negation) const {
   return result;
 }
 
-bool TruthTable::isLexicographicallySmaller(const TruthTable &other) const {
+bool BinaryTruthTable::isLexicographicallySmaller(const BinaryTruthTable &other) const {
   assert(numInputs == other.numInputs && numOutputs == other.numOutputs);
   return table.ult(other.table);
 }
 
-bool TruthTable::operator==(const TruthTable &other) const {
+bool BinaryTruthTable::operator==(const BinaryTruthTable &other) const {
   return numInputs == other.numInputs && numOutputs == other.numOutputs &&
          table == other.table;
 }
 
-void TruthTable::dump(llvm::raw_ostream &os) const {
+void BinaryTruthTable::dump(llvm::raw_ostream &os) const {
   os << "TruthTable(" << numInputs << " inputs, " << numOutputs << " outputs, "
      << "value=";
   os << table << ")\n";
@@ -267,7 +267,7 @@ NPNClass::getInputMappingTo(const NPNClass &targetNPN) const {
   return mapping;
 }
 
-NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
+NPNClass NPNClass::computeNPNCanonicalForm(const BinaryTruthTable &tt) {
   NPNClass canonical(tt);
   // Initialize permutation with identity
   canonical.inputPermutation = identityPermutation(tt.numInputs);
@@ -277,13 +277,13 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   // of inputs and m is the number of outputs. This is not scalable so
   // semi-canonical forms should be used instead.
   for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
-    TruthTable negatedTT = tt.applyInputNegation(negMask);
+    BinaryTruthTable negatedTT = tt.applyInputNegation(negMask);
 
     // Try all possible permutations
     auto permutation = identityPermutation(tt.numInputs);
 
     do {
-      TruthTable permutedTT = negatedTT.applyPermutation(permutation);
+      BinaryTruthTable permutedTT = negatedTT.applyPermutation(permutation);
 
       // Permute the negation mask according to the permutation
       unsigned currentNegMask = permuteNegationMask(negMask, permutation);
@@ -292,7 +292,7 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
       for (unsigned outputNegMask = 0; outputNegMask < (1u << tt.numOutputs);
            ++outputNegMask) {
         // Apply output negation
-        TruthTable candidateTT = permutedTT.applyOutputNegation(outputNegMask);
+        BinaryTruthTable candidateTT = permutedTT.applyOutputNegation(outputNegMask);
 
         // Create a new NPN class for the candidate
         NPNClass candidate(candidateTT, permutation, currentNegMask,
@@ -396,7 +396,7 @@ unsigned Cut::getCutSize() const { return operations.size(); }
 
 unsigned Cut::getOutputSize() const { return getRoot()->getNumResults(); }
 
-const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
+const llvm::FailureOr<BinaryTruthTable> &Cut::getTruthTable() const {
   assert(!isPrimaryInput() && "Primary input cuts do not have truth tables");
 
   if (truthTable)
@@ -446,7 +446,7 @@ const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
   auto result = rootResults[0];
 
   // Cache the truth table
-  truthTable = TruthTable(numInputs, numOutputs, eval[result]);
+  truthTable = BinaryTruthTable(numInputs, numOutputs, eval[result]);
   return *truthTable;
 }
 

@@ -117,7 +117,7 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   }
 
   // Create TruthTable and compute NPN canonical form
-  TruthTable truthTable(numInputs, numOutputs, truthTableBits);
+  BinaryTruthTable truthTable(numInputs, numOutputs, truthTableBits);
   return NPNClass::computeNPNCanonicalForm(truthTable);
 }
 

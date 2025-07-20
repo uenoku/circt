@@ -58,20 +58,21 @@ using DelayType = int64_t;
 /// - Input 10 -> Output 0
 /// - Input 11 -> Output 1
 /// This would be stored as the bit pattern 0001 in the truth table.
-struct TruthTable {
+struct BinaryTruthTable {
   unsigned numInputs;  ///< Number of inputs for this boolean function
   unsigned numOutputs; ///< Number of outputs for this boolean function
   llvm::APInt table;   ///< Truth table data as a packed bit vector
 
   /// Default constructor creates an empty truth table.
-  TruthTable() = default;
+  BinaryTruthTable() = default;
 
   /// Constructor for a truth table with given dimensions and evaluation data.
-  TruthTable(unsigned numInputs, unsigned numOutputs, const llvm::APInt &eval)
+  BinaryTruthTable(unsigned numInputs, unsigned numOutputs,
+                   const llvm::APInt &eval)
       : numInputs(numInputs), numOutputs(numOutputs), table(eval) {}
 
   /// Constructor for a truth table with given dimensions, initialized to zero.
-  TruthTable(unsigned numInputs, unsigned numOutputs)
+  BinaryTruthTable(unsigned numInputs, unsigned numOutputs)
       : numInputs(numInputs), numOutputs(numOutputs),
         table((1u << numInputs) * numOutputs, 0) {}
 
@@ -83,22 +84,22 @@ struct TruthTable {
 
   /// Apply input permutation to create a new truth table.
   /// This reorders the input variables according to the given permutation.
-  TruthTable applyPermutation(ArrayRef<unsigned> permutation) const;
+  BinaryTruthTable applyPermutation(ArrayRef<unsigned> permutation) const;
 
   /// Apply input negation to create a new truth table.
   /// This negates selected input variables based on the mask.
-  TruthTable applyInputNegation(unsigned mask) const;
+  BinaryTruthTable applyInputNegation(unsigned mask) const;
 
   /// Apply output negation to create a new truth table.
   /// This negates selected output variables based on the mask.
-  TruthTable applyOutputNegation(unsigned negation) const;
+  BinaryTruthTable applyOutputNegation(unsigned negation) const;
 
   /// Check if this truth table is lexicographically smaller than another.
   /// Used for canonical ordering of truth tables.
-  bool isLexicographicallySmaller(const TruthTable &other) const;
+  bool isLexicographicallySmaller(const BinaryTruthTable &other) const;
 
   /// Equality comparison for truth tables.
-  bool operator==(const TruthTable &other) const;
+  bool operator==(const BinaryTruthTable &other) const;
 
   /// Debug dump method for truth tables.
   void dump(llvm::raw_ostream &os = llvm::errs()) const;
@@ -116,7 +117,7 @@ struct TruthTable {
 /// patterns, as functions in the same NPN class can be implemented by the
 /// same circuit with appropriate input/output inversions.
 struct NPNClass {
-  TruthTable truthTable;                        ///< Canonical truth table
+  BinaryTruthTable truthTable;                  ///< Canonical truth table
   llvm::SmallVector<unsigned> inputPermutation; ///< Input permutation applied
   unsigned inputNegation = 0;                   ///< Input negation mask
   unsigned outputNegation = 0;                  ///< Output negation mask
@@ -125,9 +126,9 @@ struct NPNClass {
   NPNClass() = default;
 
   /// Constructor from a truth table.
-  NPNClass(const TruthTable &tt) : truthTable(tt) {}
+  NPNClass(const BinaryTruthTable &tt) : truthTable(tt) {}
 
-  NPNClass(const TruthTable &tt, llvm::SmallVector<unsigned> inputPerm,
+  NPNClass(const BinaryTruthTable &tt, llvm::SmallVector<unsigned> inputPerm,
            unsigned inputNeg, unsigned outputNeg)
       : truthTable(tt), inputPermutation(std::move(inputPerm)),
         inputNegation(inputNeg), outputNegation(outputNeg) {}
@@ -140,7 +141,7 @@ struct NPNClass {
   /// FIXME: Currently we are using exact canonicalization which doesn't scale
   /// well. For larger truth tables, semi-canonical forms should be used
   /// instead.
-  static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
+  static NPNClass computeNPNCanonicalForm(const BinaryTruthTable &tt);
 
   /// Get input mapping from this NPN class to another equivalent NPN class.
   ///
@@ -202,7 +203,7 @@ struct CutRewriterOptions;
 class Cut {
   /// Cached truth table for this cut.
   /// Computed lazily when first accessed to avoid unnecessary computation.
-  mutable std::optional<mlir::FailureOr<TruthTable>> truthTable;
+  mutable std::optional<mlir::FailureOr<BinaryTruthTable>> truthTable;
 
   /// Cached NPN canonical form for this cut.
   /// Computed lazily from the truth table when first accessed.
@@ -249,7 +250,7 @@ public:
 
   /// Get the truth table for this cut.
   /// The truth table represents the boolean function computed by this cut.
-  const llvm::FailureOr<TruthTable> &getTruthTable() const;
+  const llvm::FailureOr<BinaryTruthTable> &getTruthTable() const;
 
   /// Simulate a single operation for truth table computation.
   /// This method evaluates the operation's logic function with given inputs.
