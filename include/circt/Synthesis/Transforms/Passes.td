@@ -1,4 +1,4 @@
-//===-- Passes.td - Transforms pass definition file --------*- tablegen -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains definitions for passes within the Transforms/ directory.
+// This file contains definitions for passes related to Synthesis.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,8 +17,14 @@
 include "mlir/Pass/PassBase.td"
 
 def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
-  let summary = "";
+  let summary = "Technology mapping using cut rewriting";
   let description = [{
+    This pass performs technology mapping by converting logic network
+    (AIG etc) representations into technology-specific gate implementations.
+    It uses cut-based rewriting with priority cuts and NPN canonical forms for
+    efficient pattern matching.
+
+    Supports both area and timing optimization strategies.
   }];
   let options = [
     Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
@@ -27,8 +33,10 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
            /*default=*/"synthesis::OptimizationStrategyTiming",
            "Optimization strategy (area vs. timing)",
            [{::llvm::cl::values(
-             clEnumValN(synthesis::OptimizationStrategyArea, "area", "Optimize for area"),
-             clEnumValN(synthesis::OptimizationStrategyTiming, "timing", "Optimize for timing")
+             clEnumValN(synthesis::OptimizationStrategyArea, "area",
+                        "Optimize for area"),
+             clEnumValN(synthesis::OptimizationStrategyTiming, "timing",
+                        "Optimize for timing")
            )}]>
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
