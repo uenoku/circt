@@ -25,6 +25,7 @@
 #define CIRCT_SYNTHESIS_CUT_REWRITER_H
 
 #include "circt/Support/LLVM.h"
+#include "circt/Synthesis/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
@@ -44,13 +45,6 @@ namespace synthesis {
 // use consistent units, i.e., all delays should be in the same unit (e.g., nano
 // or pico).
 using DelayType = int64_t;
-
-/// Optimization strategy for cut-based rewriting.
-/// Determines whether to prioritize area or timing during rewriting.
-enum CutRewriteStrategy {
-  Area,  ///< Optimize for minimal area
-  Timing ///< Optimize for minimal critical path delay
-};
 
 /// Represents a boolean function as a truth table.
 ///
@@ -187,9 +181,9 @@ struct NPNClass {
 //===----------------------------------------------------------------------===//
 
 // Forward declarations
-class CutRewriterPatternSet;
+class CutRewritePatternSet;
 class CutRewriter;
-struct CutRewriterPattern;
+struct CutRewritePattern;
 struct CutRewriterOptions;
 
 /// Represents a cut in the combinational logic network.
@@ -270,8 +264,8 @@ public:
 /// cut that was matched, and timing information needed for optimization.
 class MatchedPattern {
 private:
-  const CutRewriterPattern *pattern = nullptr; ///< The matched library pattern
-  Cut *cut = nullptr;                          ///< The cut that was matched
+  const CutRewritePattern *pattern = nullptr; ///< The matched library pattern
+  Cut *cut = nullptr;                         ///< The cut that was matched
   SmallVector<DelayType, 2> arrivalTimes; ///< Arrival time through this pattern
 
 public:
@@ -279,7 +273,7 @@ public:
   MatchedPattern() = default;
 
   /// Constructor for a valid matched pattern.
-  MatchedPattern(const CutRewriterPattern *pattern, Cut *cut,
+  MatchedPattern(const CutRewritePattern *pattern, Cut *cut,
                  SmallVector<DelayType, 2> arrivalTimes)
       : pattern(pattern), cut(cut), arrivalTimes(std::move(arrivalTimes)) {}
 
@@ -288,7 +282,7 @@ public:
   ArrayRef<DelayType> getArrivalTimes() const;
 
   /// Get the library pattern that was matched.
-  const CutRewriterPattern *getPattern() const;
+  const CutRewritePattern *getPattern() const;
 
   /// Get the cut that was matched to the pattern.
   Cut *getCut() const;
@@ -357,7 +351,7 @@ public:
 /// Base class for cut rewriting patterns used in combinational logic
 /// optimization.
 ///
-/// A CutRewriterPattern represents a library component or optimization pattern
+/// A CutRewritePattern represents a library component or optimization pattern
 /// that can replace cuts in the combinational logic network. Each pattern
 /// defines:
 /// - How to recognize matching cuts
@@ -366,12 +360,10 @@ public:
 ///
 /// Patterns can use truth table matching for efficient recognition or
 /// implement custom matching logic for more complex cases.
-struct CutRewriterPattern {
-  CutRewriterPattern(mlir::MLIRContext *context) : context(context) {}
+struct CutRewritePattern {
+  CutRewritePattern(mlir::MLIRContext *context) : context(context) {}
   /// Virtual destructor for base class.
-  virtual ~CutRewriterPattern() = default;
-
-  virtual LogicalResult initialize() { return success(); };
+  virtual ~CutRewritePattern() = default;
 
   /// Check if a cut matches this pattern.
   ///
@@ -388,11 +380,14 @@ struct CutRewriterPattern {
   virtual bool
   useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
 
-  /// Return a new operation that implements this pattern.
+  /// Return a new operation that replaces the matched cut.
   ///
-  /// Unlike MLIR's `RewritePattern`, this method does not allow actual
-  /// rewriting of operations with the pattern's implementation.
-
+  /// Unlike MLIR's RewritePattern framework which allows arbitrary in-place
+  /// modifications, this method creates a new operation to replace the matched
+  /// cut rather than modifying existing operations. This constraint exists
+  /// because the cut enumerator maintains references to operations throughout
+  /// the circuit, making it safe to only replace the root operation of each
+  /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          Cut &cut) const = 0;
 
@@ -400,7 +395,9 @@ struct CutRewriterPattern {
   virtual double getArea(const Cut &cut) const = 0;
 
   /// Get the delay between specific input and output.
-  virtual DelayType getDelay(const Cut &cut, unsigned inputIndex,
+  /// NOTE: The input index is already permuted according to the pattern's
+  /// input permutation, so it's not necessary to account for it here.
+  virtual DelayType getDelay(unsigned inputIndex,
                              unsigned outputIndex) const = 0;
 
   /// Get the number of inputs this pattern expects.
@@ -415,11 +412,9 @@ struct CutRewriterPattern {
   /// Get location for this pattern(optional).
   virtual LocationAttr getLoc() const { return mlir::UnknownLoc::get(context); }
 
-  /// Get the MLIR context associated with this pattern.
   mlir::MLIRContext *getContext() const { return context; }
 
 private:
-  /// The MLIR context associated with this pattern.
   mlir::MLIRContext *context;
 };
 
@@ -434,27 +429,27 @@ private:
 ///
 /// The pattern set is used by the CutRewriter to find suitable replacements
 /// for cuts in the combinational logic network.
-class CutRewriterPatternSet {
+class CutRewritePatternSet {
 public:
   /// Constructor that takes ownership of the provided patterns.
   ///
   /// During construction, patterns are analyzed and organized for efficient
   /// lookup. Truth table matchers are indexed by their NPN canonical forms.
-  CutRewriterPatternSet(
-      llvm::SmallVector<std::unique_ptr<CutRewriterPattern>, 4> patterns);
+  CutRewritePatternSet(
+      llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns);
 
 private:
   /// Owned collection of all rewriting patterns.
-  llvm::SmallVector<std::unique_ptr<CutRewriterPattern>, 4> patterns;
+  llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
 
   /// Fast lookup table mapping NPN canonical forms to matching patterns.
   /// Each entry maps an NPN truth table to patterns that can handle it.
-  DenseMap<APInt, SmallVector<std::pair<NPNClass, CutRewriterPattern *>>>
+  DenseMap<APInt, SmallVector<std::pair<NPNClass, CutRewritePattern *>>>
       npnToPatternMap;
 
   /// Patterns that use custom matching logic instead of truth tables.
   /// These patterns are checked against every cut.
-  SmallVector<CutRewriterPattern *, 4> nonTruthTablePatterns;
+  SmallVector<CutRewritePattern *, 4> nonTruthTablePatterns;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
@@ -466,7 +461,7 @@ private:
 /// optimization strategy, resource limits, and algorithmic parameters.
 struct CutRewriterOptions {
   /// Optimization strategy (area vs. timing).
-  CutRewriteStrategy strategy;
+  OptimizationStrategy strategy;
 
   /// Maximum number of inputs allowed for any cut.
   /// Larger cuts provide more optimization opportunities but increase
@@ -568,11 +563,11 @@ private:
 /// Usage example:
 /// ```cpp
 /// CutRewriterOptions options;
-/// options.strategy = CutRewriteStrategy::Area;
+/// options.strategy = OptimizationStrategy::Area;
 /// options.maxCutInputSize = 4;
 /// options.maxCutSizePerRoot = 8;
 ///
-/// CutRewriterPatternSet patterns(std::move(optimizationPatterns));
+/// CutRewritePatternSet patterns(std::move(optimizationPatterns));
 /// CutRewriter rewriter(module, options, patterns);
 ///
 /// if (failed(rewriter.run())) {
@@ -582,8 +577,7 @@ private:
 class CutRewriter {
 public:
   /// Constructor for the cut rewriter.
-  CutRewriter(const CutRewriterOptions &options,
-              CutRewriterPatternSet &patterns)
+  CutRewriter(const CutRewriterOptions &options, CutRewritePatternSet &patterns)
       : options(options), patterns(patterns), cutEnumerator(options) {}
 
   /// Execute the complete cut-based rewriting algorithm.
@@ -603,11 +597,11 @@ private:
   LogicalResult sortOperationsTopologically(Operation *topOp);
 
   /// Find patterns that match a cut's truth table.
-  ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
+  ArrayRef<std::pair<NPNClass, CutRewritePattern *>>
   getMatchingPatternFromTruthTable(const Cut &cut) const;
 
   /// Match a cut against available patterns and compute arrival time.
-  std::optional<MatchedPattern> matchCutToPattern(Cut &cut);
+  std::optional<MatchedPattern> patternMatchCut(Cut &cut);
 
   /// Perform the actual circuit rewriting using selected patterns.
   LogicalResult runBottomUpRewrite(Operation *topOp);
@@ -616,7 +610,7 @@ private:
   const CutRewriterOptions &options;
 
   /// Available rewriting patterns
-  const CutRewriterPatternSet &patterns;
+  const CutRewritePatternSet &patterns;
 
   CutEnumerator cutEnumerator;
 };

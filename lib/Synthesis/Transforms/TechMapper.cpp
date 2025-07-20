@@ -122,11 +122,11 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
 }
 
 /// Simple technology library encoded as a HWModuleOp.
-struct TechLibraryPattern : public CutRewriterPattern {
+struct TechLibraryPattern : public CutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,
                      SmallVector<SmallVector<DelayType, 2>, 4> delay,
                      NPNClass npnClass)
-      : CutRewriterPattern(module->getContext()), area(area),
+      : CutRewritePattern(module->getContext()), area(area),
         delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
 
     LLVM_DEBUG(
@@ -179,8 +179,7 @@ struct TechLibraryPattern : public CutRewriterPattern {
 
   double getArea(const Cut &cut) const override { return area; }
 
-  DelayType getDelay(const Cut &cut, unsigned inputIndex,
-                     unsigned outputIndex) const override {
+  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
     return delay[inputIndex][outputIndex];
   }
 
@@ -211,7 +210,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
   void runOnOperation() override {
     auto module = getOperation();
 
-    SmallVector<std::unique_ptr<CutRewriterPattern>> libraryPatterns;
+    SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
     unsigned maxInputSize = 0;
     // Consider modules with the "hw.techlib.info" attribute as library modules.
@@ -262,8 +261,8 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         return;
       }
 
-      // Create a CutRewriterPattern for the library module
-      std::unique_ptr<CutRewriterPattern> pattern =
+      // Create a CutRewritePattern for the library module
+      std::unique_ptr<CutRewritePattern> pattern =
           std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
                                                std::move(*npnClass));
 
@@ -277,11 +276,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     if (libraryPatterns.empty())
       return markAllAnalysesPreserved();
 
-    CutRewriterPatternSet patternSet(std::move(libraryPatterns));
+    CutRewritePatternSet patternSet(std::move(libraryPatterns));
     CutRewriterOptions options;
-    options.strategy = strategy == synthesis::OptimizationStrategyArea
-                           ? CutRewriteStrategy::Area
-                           : CutRewriteStrategy::Timing;
+    options.strategy = strategy;
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = true;

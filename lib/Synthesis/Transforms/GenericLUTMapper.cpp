@@ -21,11 +21,11 @@ using namespace circt;
 using namespace circt::synthesis;
 namespace {
 
-struct GenericLUT : public CutRewriterPattern {
+struct GenericLUT : public CutRewritePattern {
   /// Generic LUT primitive with k inputs
   unsigned k; // Number of inputs for the LUT
   GenericLUT(mlir::MLIRContext *context, unsigned k)
-      : CutRewriterPattern(context), k(k) {}
+      : CutRewritePattern(context), k(k) {}
   bool match(const Cut &cutSet) const override {
     // Check if the cut matches the LUT primitive
     LLVM_DEBUG(llvm::dbgs()
@@ -42,8 +42,7 @@ struct GenericLUT : public CutRewriterPattern {
     return 1.0;
   }
 
-  DelayType getDelay(const Cut &cut, unsigned inputIndex,
-                     unsigned outputIndex) const override {
+  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
     // Assume a fixed delay for the generic LUT
     return 1.0;
   }
@@ -90,16 +89,16 @@ struct GenericLUTMapperPass
   void runOnOperation() override {
     // Add LUT pattern.
     auto *module = getOperation();
-    SmallVector<std::unique_ptr<CutRewriterPattern>> patterns;
+    SmallVector<std::unique_ptr<CutRewritePattern>> patterns;
     patterns.push_back(
         std::make_unique<GenericLUT>(module->getContext(), maxLutSize));
-    CutRewriterPatternSet patternSet(std::move(patterns));
+    CutRewritePatternSet patternSet(std::move(patterns));
 
     // Create the cut rewriter with the area optimization strategy.
     CutRewriterOptions options;
     // TODO: Currently we don't have implemented area-flow, so there is no
     //       difference in using area or timing.
-    options.strategy = CutRewriteStrategy::Timing;
+    options.strategy = OptimizationStrategyTiming;
     options.maxCutInputSize = maxLutSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = true; // Attach debug timing attributes
