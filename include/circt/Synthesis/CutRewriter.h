@@ -145,7 +145,8 @@ struct NPNClass {
   /// truth tables, semi-canonical forms should be used instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
 
-  /// Compose two permutations to create a mapping from one input space to another.
+  /// Compose two permutations to create a mapping from one input space to
+  /// another.
   ///
   /// Given permutations A and B, computes the composition that maps:
   /// result[i] = A[B[i]]
@@ -174,8 +175,24 @@ struct NPNClass {
   /// Apply a permutation to a negation mask.
   /// Given a negation mask and a permutation, returns a new mask where
   /// the negation bits are reordered according to the permutation.
-  static unsigned permuteNegationMask(unsigned negationMask,
-                                      const llvm::SmallVectorImpl<unsigned> &permutation);
+  static unsigned
+  permuteNegationMask(unsigned negationMask,
+                      const llvm::SmallVectorImpl<unsigned> &permutation);
+
+  /// Get input mapping from this NPN class to another equivalent NPN class.
+  ///
+  /// When two NPN classes are equivalent (same canonical truth table), they
+  /// may have different input permutations. This function computes a mapping
+  /// that allows transforming input indices from the target NPN class to
+  /// input indices of this NPN class.
+  ///
+  /// Returns a vector where result[i] gives the input index in this NPN class
+  /// that corresponds to input i in the target NPN class.
+  ///
+  /// Example: If this has permutation [2,0,1] and target has [1,2,0],
+  /// the mapping allows connecting target inputs to this inputs correctly.
+  llvm::SmallVector<unsigned>
+  getInputMappingTo(const NPNClass &targetNPN) const;
 
   /// Equality comparison for NPN classes.
   bool equivalentOtherThanPermutation(const NPNClass &other) const {

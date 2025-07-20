@@ -333,7 +333,7 @@ llvm::SmallVector<unsigned> NPNClass::composePermutations(
     const llvm::SmallVectorImpl<unsigned> &toPermutation) {
   assert(fromPermutation.size() == toPermutation.size() &&
          "Permutations must have the same size");
-  
+
   llvm::SmallVector<unsigned> result(fromPermutation.size());
   for (unsigned i = 0; i < fromPermutation.size(); ++i) {
     result[i] = fromPermutation[toPermutation[i]];
@@ -369,6 +369,30 @@ unsigned NPNClass::permuteNegationMask(
   return result;
 }
 
+llvm::SmallVector<unsigned>
+NPNClass::getInputMappingTo(const NPNClass &targetNPN) const {
+  assert(inputPermutation.size() == targetNPN.inputPermutation.size() &&
+         "NPN classes must have the same number of inputs");
+  assert(equivalentOtherThanPermutation(targetNPN) &&
+         "NPN classes must be equivalent for input mapping");
+
+  // Create inverse permutation for this NPN class
+  auto thisInverse = invertPermutation(inputPermutation);
+
+  // For each input position in the target NPN class, find the corresponding
+  // input position in this NPN class
+  llvm::SmallVector<unsigned> mapping(targetNPN.inputPermutation.size());
+  for (unsigned i = 0; i < targetNPN.inputPermutation.size(); ++i) {
+    // Target input i maps to canonical position targetNPN.inputPermutation[i]
+    // We need the input in this NPN class that maps to the same canonical
+    // position
+    unsigned canonicalPos = targetNPN.inputPermutation[i];
+    mapping[i] = thisInverse[canonicalPos];
+  }
+
+  return mapping;
+}
+
 NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   NPNClass canonical(tt);
 
@@ -385,7 +409,7 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
 
     do {
       TruthTable permutedTT = negatedTT.applyPermutation(permutation);
-      
+
       // Permute the negation mask according to the permutation
       unsigned currentNegMask = permuteNegationMask(negMask, permutation);
 
@@ -911,7 +935,6 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
             }
             llvm::dbgs() << "\n";
             llvm::dbgs() << "== Matched Pattern End ==============\n";
-
           });
           bestArrivalTimes = std::move(patternArrivalTimes);
           bestPattern = pattern;
@@ -923,13 +946,12 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
       continue;
     auto &cutNPN = cut.getNPNClass();
 
-    // Build inverse permutation mapping from cut's canonical form to
-    // original cut inputs
+    // Get the input mapping from pattern's NPN class to cut's NPN class
     // TODO: Cache permutation/inv-permutation via unique id.
-    auto cutInversePermutation = NPNClass::invertPermutation(cutNPN->inputPermutation);
+    auto inputMapping = cutNPN->getInputMappingTo(patternNPN);
 
-    computeArrivalTimeAndPickBest(
-        pattern, [&](unsigned i) { return cutInversePermutation[i]; });
+    computeArrivalTimeAndPickBest(pattern,
+                                  [&](unsigned i) { return inputMapping[i]; });
   }
 
   for (CutRewriterPattern *pattern : patterns.nonTruthTablePatterns)
@@ -990,7 +1012,7 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
 
     if (options.attachDebugTiming) {
       auto array = rewriter.getI64ArrayAttr(matchedPattern->getArrivalTimes());
-      newOp->setAttr("debug.arrival_times", array);
+      newOp->setAttr("test.arrival_times", array);
     }
   }
 

@@ -68,7 +68,7 @@ hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out resu
     // b -> p
     // c -> q
     // d -> r
-    // PERMUTATION: hw.instance "{{.+}}" @permutation(a: %s: i1, b: %p: i1, c: %q: i1, d: %r: i1) -> (result: i1) {debug.arrival_times = [1]}
+    // PERMUTATION: hw.instance "{{.+}}" @permutation(a: %s: i1, b: %p: i1, c: %q: i1, d: %r: i1) -> (result: i1) {test.arrival_times = [1]}
     %0 = aig.and_inv %s, not %p : i1
     %1 = aig.and_inv %q, not %r : i1
     %2 = aig.and_inv %0, not %1 : i1

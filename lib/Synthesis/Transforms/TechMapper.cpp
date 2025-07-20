@@ -168,29 +168,17 @@ struct TechLibraryPattern : public CutRewriterPattern {
                                        Cut &cut) const override {
     // Create a new instance of the module
     SmallVector<Value> inputs;
-    
-    // Get both NPN classes to compose their permutations
-    const auto &cutNPN = *cut.getNPNClass();
-    const auto &patternNPN = npnClass;
-    
-    // Compute the composed permutation that maps from module input positions
-    // to cut input positions. This accounts for both the cut's canonical form
-    // and the pattern's canonical form.
-    auto cutInversePermutation = NPNClass::invertPermutation(cutNPN.inputPermutation);
-    
-    // Alternative approach using composePermutations:
-    // auto directMapping = NPNClass::composePermutations(cutInversePermutation, patternNPN.inputPermutation);
-    // Then: inputs.push_back(cut.inputs[directMapping[i]]);
-    
-    // For each module input position, find the corresponding cut input
-    for (unsigned i = 0; i < cut.getInputSize(); ++i) {
-      // Module input i corresponds to canonical position patternNPN.inputPermutation[i]
-      // We need the cut input that maps to the same canonical position
-      unsigned canonicalPos = patternNPN.inputPermutation[i];
-      unsigned cutInputIndex = cutInversePermutation[canonicalPos];
-      inputs.push_back(cut.inputs[cutInputIndex]);
-    }
 
+    // Get the input mapping from the pattern's NPN class to the cut's NPN class
+    // This tells us which cut input should be connected to each module input
+    auto inputMapping = cut.getNPNClass()->getInputMappingTo(npnClass);
+
+    // Connect inputs: for each module input position i, use the cut input
+    // at position inputMapping[i]
+    for (auto inputIndex : inputMapping)
+      inputs.push_back(cut.inputs[inputIndex]);
+
+    // TODO: Give a better name to the instance
     auto instanceOp = rewriter.create<hw::InstanceOp>(
         cut.getRoot()->getLoc(), module, "mapped", ArrayRef<Value>(inputs));
     return instanceOp.getOperation();
