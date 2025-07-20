@@ -83,8 +83,8 @@ void CutSet::finalize(
     const CutRewriterOptions &options,
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
   DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
-  size_t uniqueCount = 0;
-  for (size_t i = 0; i < cuts.size(); ++i) {
+  unsigned uniqueCount = 0;
+  for (unsigned i = 0; i < cuts.size(); ++i) {
     auto &cut = cuts[i];
     // Create a unique identifier for the cut based on its inputs.
     auto inputs = cut.inputs.getArrayRef();
@@ -521,7 +521,7 @@ unsigned Cut::getInputSize() const { return inputs.size(); }
 
 unsigned Cut::getCutSize() const { return operations.size(); }
 
-size_t Cut::getOutputSize() const { return getRoot()->getNumResults(); }
+unsigned Cut::getOutputSize() const { return getRoot()->getNumResults(); }
 
 const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
   assert(!isPrimaryInput() && "Primary input cuts do not have truth tables");
@@ -555,7 +555,7 @@ const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
       return *truthTable;
     }
     // Set the output value for the truth table
-    for (size_t j = 0; j < op->getNumResults(); ++j) {
+    for (unsigned j = 0; j < op->getNumResults(); ++j) {
       auto outputValue = op->getResult(j);
       if (!outputValue.getType().isInteger(1)) {
         mlir::emitError(op->getLoc(), "Output value is not a single bit: ")
@@ -586,7 +586,7 @@ ArrayRef<DelayType> MatchedPattern::getArrivalTimes() const {
   return arrivalTimes;
 }
 
-DelayType MatchedPattern::getArrivalTime(size_t index) const {
+DelayType MatchedPattern::getArrivalTime(unsigned index) const {
   assert(pattern && "Pattern must be set to get arrival time");
   return arrivalTimes[index];
 }
@@ -630,7 +630,7 @@ Cut *CutSet::getMatchedCut() {
   return matchedPattern->getCut();
 }
 
-size_t CutSet::size() const { return cuts.size(); }
+unsigned CutSet::size() const { return cuts.size(); }
 
 void CutSet::addCut(Cut cut) {
   assert(!isFrozen && "Cannot add cuts to a frozen cut set");
@@ -759,7 +759,7 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
          "Logic operation must have a single result");
 
   Value result = logicOp->getResult(0);
-  size_t numOperands = logicOp->getNumOperands();
+  unsigned numOperands = logicOp->getNumOperands();
 
   // Validate operation constraints
   if (numOperands > 2) {
@@ -917,11 +917,11 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
         SmallVector<DelayType, 2> outputArrivalTimes;
         // Compute the maximum delay for each output from inputs.
-        for (size_t outputIndex = 0; outputIndex < cut.getOutputSize();
+        for (unsigned outputIndex = 0; outputIndex < cut.getOutputSize();
              ++outputIndex) {
           // Compute the arrival time for this outpu.
           DelayType outputArrivalTime = 0;
-          for (size_t inputIndex = 0; inputIndex < cut.getInputSize();
+          for (unsigned inputIndex = 0; inputIndex < cut.getInputSize();
                ++inputIndex) {
             // Map pattern input i to cut input through NPN transformations
             unsigned cutOriginalInput = mapIndex(inputIndex);
@@ -947,7 +947,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
                          << pattern->getPatternName();
             llvm::dbgs() << " with area: " << pattern->getArea(cut);
             llvm::dbgs() << " and input arrival times: ";
-            for (size_t i = 0; i < inputArrivalTimes.size(); ++i) {
+            for (unsigned i = 0; i < inputArrivalTimes.size(); ++i) {
               llvm::dbgs() << " " << inputArrivalTimes[i];
             }
             llvm::dbgs() << " and arrival times: ";

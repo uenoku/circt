@@ -179,8 +179,8 @@ struct TechLibraryPattern : public CutRewriterPattern {
 
   double getArea(const Cut &cut) const override { return area; }
 
-  DelayType getDelay(const Cut &cut, size_t inputIndex,
-                     size_t outputIndex) const override {
+  DelayType getDelay(const Cut &cut, unsigned inputIndex,
+                     unsigned outputIndex) const override {
     return delay[inputIndex][outputIndex];
   }
 

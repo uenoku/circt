@@ -23,8 +23,8 @@ namespace {
 
 struct GenericLUT : public CutRewriterPattern {
   /// Generic LUT primitive with k inputs
-  size_t k; // Number of inputs for the LUT
-  GenericLUT(mlir::MLIRContext *context, size_t k)
+  unsigned k; // Number of inputs for the LUT
+  GenericLUT(mlir::MLIRContext *context, unsigned k)
       : CutRewriterPattern(context), k(k) {}
   bool match(const Cut &cutSet) const override {
     // Check if the cut matches the LUT primitive
@@ -42,8 +42,8 @@ struct GenericLUT : public CutRewriterPattern {
     return 1.0;
   }
 
-  DelayType getDelay(const Cut &cut, size_t inputIndex,
-                     size_t outputIndex) const override {
+  DelayType getDelay(const Cut &cut, unsigned inputIndex,
+                     unsigned outputIndex) const override {
     // Assume a fixed delay for the generic LUT
     return 1.0;
   }
@@ -61,8 +61,8 @@ struct GenericLUT : public CutRewriterPattern {
                    << " operations to a generic LUT with " << k << " inputs.\n";
       cut.dump(llvm::dbgs());
       llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
-      for (size_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
-        for (size_t j = 0; j < cut.getInputSize(); ++j) {
+      for (unsigned i = 0; i < truthTable->table.getBitWidth(); ++i) {
+        for (unsigned j = 0; j < cut.getInputSize(); ++j) {
           // Print the input values for the truth table
           llvm::dbgs() << (i & (1u << j) ? "1" : "0");
         }

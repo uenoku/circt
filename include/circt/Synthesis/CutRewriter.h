@@ -245,7 +245,7 @@ public:
   unsigned getCutSize() const;
 
   /// Get the number of outputs from root operation.
-  size_t getOutputSize() const;
+  unsigned getOutputSize() const;
 
   /// Get the truth table for this cut.
   /// The truth table represents the boolean function computed by this cut.
@@ -278,7 +278,7 @@ public:
       : pattern(pattern), cut(cut), arrivalTimes(std::move(arrivalTimes)) {}
 
   /// Get the arrival time of signals through this pattern.
-  DelayType getArrivalTime(size_t outputIndex) const;
+  DelayType getArrivalTime(unsigned outputIndex) const;
   ArrayRef<DelayType> getArrivalTimes() const;
 
   /// Get the library pattern that was matched.
@@ -338,7 +338,7 @@ public:
            llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut);
 
   /// Get the number of cuts in this set.
-  size_t size() const;
+  unsigned size() const;
 
   /// Add a new cut to this set.
   /// NOTE: The cut set must not be frozen
@@ -394,8 +394,8 @@ struct CutRewriterPattern {
   virtual double getArea(const Cut &cut) const = 0;
 
   /// Get the delay between specific input and output.
-  virtual DelayType getDelay(const Cut &cut, size_t inputIndex,
-                             size_t outputIndex) const = 0;
+  virtual DelayType getDelay(const Cut &cut, unsigned inputIndex,
+                             unsigned outputIndex) const = 0;
 
   /// Get the number of inputs this pattern expects.
   virtual unsigned getNumInputs() const = 0;
