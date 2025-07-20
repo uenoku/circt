@@ -49,7 +49,7 @@ struct GenericLUT : public CutRewriterPattern {
 
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &rewriter,
                                        Cut &cut) const override {
-    // NOTE: Don't use NPN because it's necessary to consider polarity etc.
+    // NOTE: Don't use NPN since it's unnecessary.
     auto truthTable = cut.getTruthTable();
     if (failed(truthTable))
       return failure();
@@ -58,7 +58,7 @@ struct GenericLUT : public CutRewriterPattern {
       llvm::dbgs() << "Rewriting cut with " << cut.getInputSize()
                    << " inputs and " << cut.getCutSize()
                    << " operations to a generic LUT with " << k << " inputs.\n";
-      cut.dump();
+      cut.dump(llvm::dbgs());
       llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
       for (size_t i = 0; i < truthTable->table.getBitWidth(); ++i) {
         for (size_t j = 0; j < cut.getInputSize(); ++j) {
@@ -88,6 +88,7 @@ struct GenericLUT : public CutRewriterPattern {
     return truthTableOp.getOperation();
   }
 };
+
 struct GenericLUTMapperPass
     : public impl::GenericLutMapperBase<GenericLUTMapperPass> {
   using GenericLutMapperBase<GenericLUTMapperPass>::GenericLutMapperBase;

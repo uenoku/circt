@@ -492,35 +492,35 @@ const mlir::FailureOr<NPNClass> &Cut::getNPNClass() const {
   return *npnClass;
 }
 
-void Cut::dump() const {
-  llvm::dbgs() << "// === Cut Dump ===\n";
+void Cut::dump(llvm::raw_ostream &os) const {
+  os << "// === Cut Dump ===\n";
 
-  llvm::dbgs() << "Cut with " << getInputSize() << " inputs and "
-               << getCutSize() << " operations:\n";
+  os << "Cut with " << getInputSize() << " inputs and " << getCutSize()
+     << " operations:\n";
   if (isPrimaryInput()) {
-    llvm::dbgs() << "Primary input cut: " << *inputs.begin() << "\n";
+    os << "Primary input cut: " << *inputs.begin() << "\n";
     return;
   }
 
-  llvm::dbgs() << "Inputs: \n";
+  os << "Inputs: \n";
   for (auto [idx, input] : llvm::enumerate(inputs)) {
-    llvm::dbgs() << "  Input " << idx << ": " << input << "\n";
+    os << "  Input " << idx << ": " << input << "\n";
   }
-  llvm::dbgs() << "\nOperations: ";
+  os << "\nOperations: ";
   for (auto *op : operations) {
-    op->dump();
-    llvm::dbgs() << "\n";
+    op->print(os);
+    os << "\n";
   }
-  llvm::dbgs() << "Truth Table: ";
+  os << "Truth Table: ";
   auto truthTable = getTruthTable();
-  llvm::dbgs() << truthTable->table << "\n";
-  llvm::dbgs() << "NPN Class: ";
+  os << truthTable->table << "\n";
+  os << "NPN Class: ";
   auto &npnClass = getNPNClass();
-  llvm::dbgs() << npnClass->truthTable.table << "\n";
-  llvm::dbgs() << npnClass->inputNegation << " (input negation) "
-               << npnClass->outputNegation << " (output negation)\n";
+  os << npnClass->truthTable.table << "\n";
+  os << npnClass->inputNegation << " (input negation) "
+     << npnClass->outputNegation << " (output negation)\n";
 
-  llvm::dbgs() << "// === Cut End ===\n";
+  os << "// === Cut End ===\n";
 }
 
 unsigned Cut::getInputSize() const { return inputs.size(); }
@@ -939,7 +939,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
           LLVM_DEBUG({
             llvm::dbgs() << "== Matched Pattern ==============\n";
             llvm::dbgs() << "Matching cut: \n";
-            cut.dump();
+            cut.dump(llvm::dbgs());
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
             llvm::dbgs() << " with area: " << pattern->getArea(cut);
@@ -955,6 +955,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
             llvm::dbgs() << "\n";
             llvm::dbgs() << "== Matched Pattern End ==============\n";
           });
+
           bestArrivalTimes = std::move(patternArrivalTimes);
           bestPattern = pattern;
         }

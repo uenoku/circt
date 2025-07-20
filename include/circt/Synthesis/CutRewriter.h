@@ -32,6 +32,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/raw_ostream.h"
 #include <memory>
 #include <optional>
 
@@ -230,7 +231,7 @@ public:
   /// This is used for efficient pattern matching against library components.
   const mlir::FailureOr<NPNClass> &getNPNClass() const;
 
-  void dump() const;
+  void dump(llvm::raw_ostream &os) const;
 
   /// Merge this cut with another cut to form a new cut.
   /// The new cut combines the operations from both cuts with the given root.
