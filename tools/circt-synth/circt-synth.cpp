@@ -229,7 +229,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   };
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
-  if (untilReached(UntilEnd) && lowerToGenericLUTK == 0) {
+  if (!untilReached(UntilMapping) && lowerToGenericLUTK == 0) {
     // Add technology mapping pass if no LUT mapping is performed.
     // This is no-op if no technology library is provided in the IR.
     pm.addPass(circt::synthesis::createTechMapper());

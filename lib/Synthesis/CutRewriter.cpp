@@ -717,6 +717,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
                  << (CutRewriteStrategy::Area == options.strategy ? "area"
                                                                   : "timing")
                  << "\n";
+    llvm::dbgs() << "Max input size: " << options.maxCutInputSize << "\n";
     llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
     llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
   });
