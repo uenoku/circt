@@ -328,18 +328,36 @@ bool TruthTable::operator==(const TruthTable &other) const {
 // NPNClass Implementation
 //===----------------------------------------------------------------------===//
 
-llvm::SmallVector<unsigned> NPNClass::composePermutations(
-    const llvm::SmallVectorImpl<unsigned> &fromPermutation,
-    const llvm::SmallVectorImpl<unsigned> &toPermutation) {
-  assert(fromPermutation.size() == toPermutation.size() &&
-         "Permutations must have the same size");
+namespace {
+// Helper functions for permutation manipulation - kept as implementation
+// details
 
-  llvm::SmallVector<unsigned> result(fromPermutation.size());
-  for (unsigned i = 0; i < fromPermutation.size(); ++i) {
-    result[i] = fromPermutation[toPermutation[i]];
+/// Create an identity permutation of the given size.
+/// Result[i] = i for all i in [0, size).
+static llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
+  llvm::SmallVector<unsigned> identity(size);
+  for (unsigned i = 0; i < size; ++i) {
+    identity[i] = i;
+  }
+  return identity;
+}
+
+/// Apply a permutation to a negation mask.
+/// Given a negation mask and a permutation, returns a new mask where
+/// the negation bits are reordered according to the permutation.
+static unsigned
+permuteNegationMask(unsigned negationMask,
+                    const llvm::SmallVectorImpl<unsigned> &permutation) {
+  unsigned result = 0;
+  for (unsigned i = 0; i < permutation.size(); ++i) {
+    if (negationMask & (1u << i)) {
+      result |= (1u << permutation[i]);
+    }
   }
   return result;
 }
+
+} // anonymous namespace
 
 llvm::SmallVector<unsigned> NPNClass::invertPermutation(
     const llvm::SmallVectorImpl<unsigned> &permutation) {
@@ -348,25 +366,6 @@ llvm::SmallVector<unsigned> NPNClass::invertPermutation(
     inverse[permutation[i]] = i;
   }
   return inverse;
-}
-
-llvm::SmallVector<unsigned> NPNClass::identityPermutation(unsigned size) {
-  llvm::SmallVector<unsigned> identity(size);
-  for (unsigned i = 0; i < size; ++i) {
-    identity[i] = i;
-  }
-  return identity;
-}
-
-unsigned NPNClass::permuteNegationMask(
-    unsigned negationMask, const llvm::SmallVectorImpl<unsigned> &permutation) {
-  unsigned result = 0;
-  for (unsigned i = 0; i < permutation.size(); ++i) {
-    if (negationMask & (1u << i)) {
-      result |= (1u << permutation[i]);
-    }
-  }
-  return result;
 }
 
 llvm::SmallVector<unsigned>
@@ -415,7 +414,6 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
 
       // Try output negation (for single output)
       if (tt.numOutputs == 1) {
-        unsigned outputNegMask = 0;
         TruthTable candidate = permutedTT;
 
         NPNClass canonicalCandidate(permutedTT, permutation, currentNegMask, 0);
@@ -665,9 +663,9 @@ CutRewriterPatternSet::CutRewriterPatternSet(
 // CutRewriter
 //===----------------------------------------------------------------------===//
 
-LogicalResult CutRewriter::sortOperationsTopologically(Operation *hwModule) {
+LogicalResult CutRewriter::sortOperationsTopologically(Operation *topOp) {
   // Sort the operations topologically
-  if (hwModule
+  if (topOp
           ->walk([&](Region *region) {
             auto regionKindOp =
                 dyn_cast<mlir::RegionKindInterface>(region->getParentOp());
@@ -689,7 +687,7 @@ LogicalResult CutRewriter::sortOperationsTopologically(Operation *hwModule) {
             return WalkResult::advance();
           })
           .wasInterrupted())
-    return mlir::emitError(hwModule->getLoc(),
+    return mlir::emitError(topOp->getLoc(),
                            "failed to sort operations topologically");
   return success();
 }
