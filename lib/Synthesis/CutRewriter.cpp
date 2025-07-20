@@ -479,9 +479,8 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
 
         // Check if this candidate is lexicographically smaller than the
         // current canonical form
-        if (candidate.isLexicographicallySmaller(canonical)) {
+        if (candidate.isLexicographicallySmaller(canonical))
           canonical = std::move(candidate);
-        }
       }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
   }
@@ -561,15 +560,11 @@ void Cut::dump(llvm::raw_ostream &os) const {
   for (auto [idx, input] : llvm::enumerate(inputs)) {
     os << "  Input " << idx << ": " << input << "\n";
   }
-  os << "\nOperations: ";
+  os << "\nOperations: \n";
   for (auto *op : operations) {
     op->print(os);
     os << "\n";
   }
-  os << "Truth Table:\n";
-  auto truthTable = getTruthTable();
-  truthTable->dump(os);
-  os << "NPN Class:\n";
   auto &npnClass = getNPNClass();
   npnClass->dump(os);
 
