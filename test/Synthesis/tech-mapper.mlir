@@ -65,15 +65,15 @@ hw.module @and_inv_5_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e:
     %1 = aig.and_inv not %c, %d : i1
     %2 = aig.and_inv %0, %1 : i1
     %3 = aig.and_inv %2, not %e : i1
-    // CHECK-NEXT: %[[area_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %a: i1, b: %b: i1, c: %c: i1, d: %d: i1, e: %e: i1)
+    // CHECK-NEXT: %[[result_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %a: i1, b: %b: i1, c: %c: i1, d: %d: i1, e: %e: i1)
     %4 = aig.and_inv not %a, not %d : i1
     %5 = aig.and_inv not %b, %e : i1
     %6 = aig.and_inv %5, %c : i1
     %7 = aig.and_inv %6, %4 : i1
-    // CHECK-NEXT: %[[area_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %b: i1, b: %e: i1, c: %a: i1, d: %c: i1, e: %d: i1)
+    // CHECK-NEXT: %[[result_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %b: i1, b: %e: i1, c: %a: i1, d: %c: i1, e: %d: i1)
     
     hw.output %3, %7 : i1, i1
-    // CHECK-NEXT: hw.output %[[area_0]], %[[area_1]] : i1, i1
+    // CHECK-NEXT: hw.output %[[result_0]], %[[result_1]] : i1, i1
 }
 
 hw.module @area_flow(in %a : i1, in %b : i1, in %c: i1, out result : i1) attributes {hw.techlib.info = {area = 1.5 : f64, delay = [[10], [10], [10], [10], [10]]}} {

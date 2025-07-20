@@ -94,10 +94,11 @@ static cl::opt<bool>
                               cl::desc("Allow unknown dialects in the input"),
                               cl::init(false), cl::cat(mainCategory));
 
-enum Until { UntilAIGLowering, UntilEnd };
+enum Until { UntilAIGLowering, UntilMapping, UntilEnd };
 
 static auto runUntilValues = llvm::cl::values(
     clEnumValN(UntilAIGLowering, "aig-lowering", "Lowering of AIG"),
+    clEnumValN(UntilMapping, "mapping", "Run technology/lut mapping"),
     clEnumValN(UntilEnd, "all", "Run entire pipeline (default)"));
 
 static llvm::cl::opt<Until> runUntilBefore(
@@ -215,6 +216,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
 
     circt::synthesis::buildAIGOptimizationPipeline(pm, options);
 
+    if (untilReached(UntilMapping))
+      return;
+
     if (lowerToGenericLUTK > 0) {
       // Lower AIG to generic LUTs with K inputs.
       circt::synthesis::GenericLutMapperOptions lutOptions;
@@ -225,6 +229,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   };
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
+  if (untilReached(UntilEnd) && lowerToGenericLUTK == 0) {
+    // Add technology mapping pass if no LUT mapping is performed.
+    // This is no-op if no technology library is provided in the IR.
+    pm.addPass(circt::synthesis::createTechMapper());
+  }
 
   // Run analysis if requested.
   if (!outputLongestPath.empty()) {
