@@ -23,12 +23,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
-#include <memory>
-#include <mlir/IR/Attributes.h>
 #include <variant>
 
 namespace mlir {
@@ -119,7 +116,7 @@ public:
   // FanOut can be either an internal circuit object or a module output port
   // This flexibility allows representing both closed paths
   // (register-to-register) and open paths (register-to-output) in a unified way
-  using OutputPort = std::tuple<hw::HWModuleOp, size_t, size_t>;
+  using OutputPort = std::pair<size_t, size_t>;
   using FanOutType = std::variant<Object, OutputPort>;
 
   // Constructor for paths with Object fanout (internal circuit nodes)
@@ -279,36 +276,9 @@ public:
   // Sort and drop all paths except the longest path per fanout point.
   void sortAndDropNonCriticalPathsPerFanOut();
 
-  void filterByFanOut(StringRef signalName);
-  void filterByFanIn(StringRef signalName);
-
 private:
   MLIRContext *ctx;
-  struct Impl;
-  Impl *impl;
 };
-
-struct Difference {
-  // Take a diff of two collections and return the paths that are
-  // unique to each collection.
-  Difference(const LongestPathCollection &lhs,
-             const LongestPathCollection &rhs);
-
-  // Paths that are unique to the left collection.
-  std::unique_ptr<LongestPathCollection> lhsUniquePaths;
-
-  // Paths that are unique to the right collection.
-  std::unique_ptr<LongestPathCollection> rhsUniquePaths;
-
-  // Paths that are in both collections, but with different delay.
-
-  std::unique_ptr<LongestPathCollection> lhsDifferentDelay;
-
-  // Paths that are in both collections, but with different delay.
-  std::unique_ptr<LongestPathCollection> rhsDifferentDelay;
-};
-
-StringAttr getNameForValue(Value value);
 
 } // namespace aig
 } // namespace circt
@@ -338,6 +308,5 @@ struct DenseMapInfo<circt::aig::Object> {
                          {b.instancePath, b.value, b.bitPos});
   }
 };
-
 } // namespace llvm
 #endif // CIRCT_ANALYSIS_AIG_ANALYSIS_H

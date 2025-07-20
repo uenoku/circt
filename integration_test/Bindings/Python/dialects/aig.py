@@ -56,6 +56,11 @@ with Context() as ctx, Location.unknown():
     # CHECK-NEXT: index -1 delay: 1
     print("index 1 delay:", collection[1].delay)
     print("index -1 delay:", collection[-1].delay)
+    # CHECK-NEXT: collection.get_path(5) == collection[5]: True
+    print(
+        "collection.get_path(5) == collection[5]:",
+        DataflowPath.from_json_string(
+            collection.collection.get_path(5)) == collection[5])
     # Check that len and get_size are the same
     # CHECK-NEXT: 96 96
     print(len(collection), collection.collection.get_size())
@@ -73,8 +78,7 @@ with Context() as ctx, Location.unknown():
     for p in collection[:2]:
       # CHECK-NEXT: delay 2 : out2[{{[0-9]+}}]
       # CHECK-NEXT: delay 2 : out2[{{[0-9]+}}]
-      print("delay", p.delay)
-      print("fanout", p.fan_in)
+      print("delay", p.delay, ":", p.fan_out)
 
     # CHECK-NEXT: minus index slice: True
     print("minus index slice:", len(collection[:-2]) == len(collection) - 2)
