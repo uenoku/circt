@@ -87,7 +87,7 @@ TEST(BinaryTruthTableTest, InputNegation) {
   original.setOutput(APInt(2, 2), output0); // f(1,0) = 0
   original.setOutput(APInt(2, 3), output1); // f(1,1) = 1
 
-  // Apply input negation mask 1 (negate first input)
+  // Apply input negation mask 1 (negate the the second)
   BinaryTruthTable negated = original.applyInputNegation(1);
 
   // Debug: Let's check what we actually get
@@ -97,10 +97,10 @@ TEST(BinaryTruthTableTest, InputNegation) {
   APInt result11 = negated.getOutput(APInt(2, 3));
 
   // For input negation mask 1, the mapping is:
-  // g(0,0) gets the output from f(1,0) = 0  ✓
-  // g(0,1) gets the output from f(1,1) = 1  ✗ (actually gets 0)
-  // g(1,0) gets the output from f(0,0) = 0  ✗ (actually gets 1)  
-  // g(1,1) gets the output from f(0,1) = 0  ✓
+  // g(0,0) gets the output from f(0,1) = 0
+  // g(1,0) gets the output from f(1,1) = 1
+  // g(0,1) gets the output from f(0,0) = 1
+  // g(1,1) gets the output from f(1,0) = 0
   // So the actual mapping seems to be swapped from what I expected
   EXPECT_EQ(result00, output0); // g(0,0) = 0
   EXPECT_EQ(result01, output0); // g(0,1) = 0 (not 1)
@@ -199,8 +199,6 @@ TEST(NPNClassTest, InputMapping) {
 
   // Verify the mapping is correct
   EXPECT_EQ(mapping.size(), 3u);
-  // The mapping should allow connecting npn2's inputs to npn1's inputs
-  // such that they reach the same canonical positions
 }
 
 TEST(NPNClassTest, LexicographicalOrdering) {
