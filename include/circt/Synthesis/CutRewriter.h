@@ -391,7 +391,7 @@ struct CutRewriterPattern {
   /// Get the area cost of this pattern.
   virtual double getArea(const Cut &cut) const = 0;
 
-  /// Get the delay between specific input and output pins.
+  /// Get the delay between specific input and output.
   virtual DelayType getDelay(const Cut &cut, size_t inputIndex,
                              size_t outputIndex) const = 0;
 
