@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Support/NPNClass.h"
-#include "gtest/gtest.h"
 #include "llvm/ADT/APInt.h"
+#include "gtest/gtest.h"
 
 using namespace circt;
 using namespace llvm;
@@ -199,6 +199,16 @@ TEST(NPNClassTest, InputMapping) {
 
   // Verify the mapping is correct
   EXPECT_EQ(mapping.size(), 3u);
+  
+  // For each target input position i, mapping[i] should give us the input position
+  // in npn1 that corresponds to the same canonical position
+  for (unsigned i = 0; i < 3; ++i) {
+    // Target input i maps to canonical position npn2.inputPermutation[i]
+    unsigned targetCanonicalPos = npn2.inputPermutation[i];
+    // npn1's input mapping[i] should map to the same canonical position
+    unsigned npn1CanonicalPos = npn1.inputPermutation[mapping[i]];
+    EXPECT_EQ(targetCanonicalPos, npn1CanonicalPos);
+  }
 }
 
 TEST(NPNClassTest, LexicographicalOrdering) {
@@ -230,8 +240,9 @@ TEST(NPNClassTest, ConstantFunctions) {
 
   NPNClass canonical1 = NPNClass::computeNPNCanonicalForm(const1);
   // The canonical form algorithm may choose to use output negation to make
-  // the constant 1 function into constant 0 (which is lexicographically smaller)
-  // So we check the actual function behavior rather than the raw table value
+  // the constant 1 function into constant 0 (which is lexicographically
+  // smaller) So we check the actual function behavior rather than the raw table
+  // value
   EXPECT_EQ(canonical1.truthTable.getOutput(APInt(2, 0)).getZExtValue(),
             canonical1.outputNegation & 1 ? 0u : 1u);
 }
@@ -244,7 +255,8 @@ TEST(NPNClassTest, Commutativity) {
   andTT.setOutput(APInt(2, 2), APInt(1, 0));
   andTT.setOutput(APInt(2, 3), APInt(1, 1));
 
-  // Create swapped version (should be same canonical form since AND is commutative)
+  // Create swapped version (should be same canonical form since AND is
+  // commutative)
   BinaryTruthTable andTTSwapped(2, 1);
   andTTSwapped.setOutput(APInt(2, 0), APInt(1, 0)); // f(0,0) = 0
   andTTSwapped.setOutput(APInt(2, 1), APInt(1, 0)); // f(0,1) = 0
