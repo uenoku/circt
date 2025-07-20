@@ -145,6 +145,38 @@ struct NPNClass {
   /// truth tables, semi-canonical forms should be used instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
 
+  /// Compose two permutations to create a mapping from one input space to another.
+  ///
+  /// Given permutations A and B, computes the composition that maps:
+  /// result[i] = A[B[i]]
+  ///
+  /// This is useful when matching NPN classes with different permutations:
+  /// - fromPermutation: maps from canonical positions to original positions
+  /// - toPermutation: maps from canonical positions to target positions
+  /// - Result: maps from target positions to original positions
+  ///
+  /// Example: When matching a cut with permutation [2,0,1] to a pattern
+  /// with permutation [1,2,0], the composition gives the direct mapping
+  /// from pattern inputs to cut inputs.
+  static llvm::SmallVector<unsigned>
+  composePermutations(const llvm::SmallVectorImpl<unsigned> &fromPermutation,
+                      const llvm::SmallVectorImpl<unsigned> &toPermutation);
+
+  /// Create the inverse of a permutation.
+  /// If permutation[i] = j, then inverse[j] = i.
+  static llvm::SmallVector<unsigned>
+  invertPermutation(const llvm::SmallVectorImpl<unsigned> &permutation);
+
+  /// Create an identity permutation of the given size.
+  /// Result[i] = i for all i in [0, size).
+  static llvm::SmallVector<unsigned> identityPermutation(unsigned size);
+
+  /// Apply a permutation to a negation mask.
+  /// Given a negation mask and a permutation, returns a new mask where
+  /// the negation bits are reordered according to the permutation.
+  static unsigned permuteNegationMask(unsigned negationMask,
+                                      const llvm::SmallVectorImpl<unsigned> &permutation);
+
   /// Equality comparison for NPN classes.
   bool equivalentOtherThanPermutation(const NPNClass &other) const {
     return truthTable == other.truthTable &&

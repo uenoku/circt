@@ -169,21 +169,24 @@ struct TechLibraryPattern : public CutRewriterPattern {
     // Create a new instance of the module
     SmallVector<Value> inputs;
     
-    // Get both permutations
-    const auto &cutPermutation = cut.getNPNClass()->inputPermutation;
-    const auto &patternPermutation = npnClass.inputPermutation;
+    // Get both NPN classes to compose their permutations
+    const auto &cutNPN = *cut.getNPNClass();
+    const auto &patternNPN = npnClass;
     
-    // Build inverse permutation mapping from cut's canonical form to
-    // original cut inputs
-    SmallVector<unsigned> cutInversePermutation(cutPermutation.size());
-    for (unsigned i = 0; i < cutPermutation.size(); ++i)
-      cutInversePermutation[cutPermutation[i]] = i;
+    // Compute the composed permutation that maps from module input positions
+    // to cut input positions. This accounts for both the cut's canonical form
+    // and the pattern's canonical form.
+    auto cutInversePermutation = NPNClass::invertPermutation(cutNPN.inputPermutation);
+    
+    // Alternative approach using composePermutations:
+    // auto directMapping = NPNClass::composePermutations(cutInversePermutation, patternNPN.inputPermutation);
+    // Then: inputs.push_back(cut.inputs[directMapping[i]]);
     
     // For each module input position, find the corresponding cut input
     for (unsigned i = 0; i < cut.getInputSize(); ++i) {
-      // Module input i corresponds to canonical position patternPermutation[i]
+      // Module input i corresponds to canonical position patternNPN.inputPermutation[i]
       // We need the cut input that maps to the same canonical position
-      unsigned canonicalPos = patternPermutation[i];
+      unsigned canonicalPos = patternNPN.inputPermutation[i];
       unsigned cutInputIndex = cutInversePermutation[canonicalPos];
       inputs.push_back(cut.inputs[cutInputIndex]);
     }

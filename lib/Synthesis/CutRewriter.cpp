@@ -328,15 +328,52 @@ bool TruthTable::operator==(const TruthTable &other) const {
 // NPNClass Implementation
 //===----------------------------------------------------------------------===//
 
+llvm::SmallVector<unsigned> NPNClass::composePermutations(
+    const llvm::SmallVectorImpl<unsigned> &fromPermutation,
+    const llvm::SmallVectorImpl<unsigned> &toPermutation) {
+  assert(fromPermutation.size() == toPermutation.size() &&
+         "Permutations must have the same size");
+  
+  llvm::SmallVector<unsigned> result(fromPermutation.size());
+  for (unsigned i = 0; i < fromPermutation.size(); ++i) {
+    result[i] = fromPermutation[toPermutation[i]];
+  }
+  return result;
+}
+
+llvm::SmallVector<unsigned> NPNClass::invertPermutation(
+    const llvm::SmallVectorImpl<unsigned> &permutation) {
+  llvm::SmallVector<unsigned> inverse(permutation.size());
+  for (unsigned i = 0; i < permutation.size(); ++i) {
+    inverse[permutation[i]] = i;
+  }
+  return inverse;
+}
+
+llvm::SmallVector<unsigned> NPNClass::identityPermutation(unsigned size) {
+  llvm::SmallVector<unsigned> identity(size);
+  for (unsigned i = 0; i < size; ++i) {
+    identity[i] = i;
+  }
+  return identity;
+}
+
+unsigned NPNClass::permuteNegationMask(
+    unsigned negationMask, const llvm::SmallVectorImpl<unsigned> &permutation) {
+  unsigned result = 0;
+  for (unsigned i = 0; i < permutation.size(); ++i) {
+    if (negationMask & (1u << i)) {
+      result |= (1u << permutation[i]);
+    }
+  }
+  return result;
+}
+
 NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   NPNClass canonical(tt);
 
-  // Initialize permutation and negation vectors
-  canonical.inputPermutation.resize(tt.numInputs);
-
-  // Initialize identity permutation
-  for (unsigned i = 0; i < tt.numInputs; ++i)
-    canonical.inputPermutation[i] = i;
+  // Initialize permutation with identity
+  canonical.inputPermutation = identityPermutation(tt.numInputs);
 
   // Try all possible input negations (2^n combinations)
   assert(tt.numInputs <= 20 && "Too many inputs for input negation mask");
@@ -344,22 +381,13 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
     TruthTable negatedTT = tt.applyInputNegation(negMask);
 
     // Try all possible permutations
-    llvm::SmallVector<unsigned> permutation(tt.numInputs);
-    for (uint32_t i = 0; i < tt.numInputs; ++i) {
-      permutation[i] = i;
-    }
+    auto permutation = identityPermutation(tt.numInputs);
 
     do {
       TruthTable permutedTT = negatedTT.applyPermutation(permutation);
-      unsigned currentNegMask = 0;
-      for (unsigned i = 0; i < tt.numInputs; ++i) {
-        // Permute the negation mask according to the permutation
-        if (negMask & (1u << i)) {
-          currentNegMask |= (1u << permutation[i]);
-        } else {
-          currentNegMask &= ~(1u << permutation[i]);
-        }
-      }
+      
+      // Permute the negation mask according to the permutation
+      unsigned currentNegMask = permuteNegationMask(negMask, permutation);
 
       // Try output negation (for single output)
       if (tt.numOutputs == 1) {
@@ -898,10 +926,7 @@ std::optional<MatchedPattern> CutRewriter::matchCutToPattern(Cut &cut) {
     // Build inverse permutation mapping from cut's canonical form to
     // original cut inputs
     // TODO: Cache permutation/inv-permutation via unique id.
-    llvm::SmallVector<unsigned> cutInversePermutation(cut.getInputSize());
-    for (size_t i = 0; i < cut.getInputSize(); ++i) {
-      cutInversePermutation[cutNPN->inputPermutation[i]] = i;
-    }
+    auto cutInversePermutation = NPNClass::invertPermutation(cutNPN->inputPermutation);
 
     computeArrivalTimeAndPickBest(
         pattern, [&](unsigned i) { return cutInversePermutation[i]; });
