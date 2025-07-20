@@ -6,11 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements a DAG-based boolean matching cut rewriting algorithm
-// for technology mapping. The algorithm uses priority cuts and NPN
-// (Negation-Permutation-Negation) canonical forms to efficiently match
-// circuit cuts against technology library patterns.
+// This file implements a DAG-based boolean matching cut rewriting algorithm for
+// applications like technology/LUT mapping and combinational logic
+// optimization. The algorithm uses priority cuts and NPN
+// (Negation-Permutation-Negation) canonical forms to efficiently match cuts
+// against rewriting patterns.
 //
+// Combinational and Sequential Mapping with Priority Cuts
 //===----------------------------------------------------------------------===//
 
 #include "circt/Synthesis/CutRewriter.h"
@@ -79,188 +81,8 @@ static bool isAlwaysCutInput(Value value) {
   return !isa<aig::AndInverterOp>(op);
 }
 
-void CutSet::finalize(
-    const CutRewriterOptions &options,
-    llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
-  DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
-  unsigned uniqueCount = 0;
-  for (unsigned i = 0; i < cuts.size(); ++i) {
-    auto &cut = cuts[i];
-    // Create a unique identifier for the cut based on its inputs.
-    auto inputs = cut.inputs.getArrayRef();
-
-    // If the cut is a duplicate, skip it.
-    if (uniqueCuts.contains({inputs, cut.getRoot()}))
-      continue;
-
-    if (i != uniqueCount) {
-      // Move the unique cut to the front of the vector
-      // This maintains the order of cuts while removing duplicates
-      // by swapping with the last unique cut found.
-      cuts[uniqueCount] = std::move(cuts[i]);
-    }
-
-    // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
-    // after this point.
-    uniqueCuts.insert(
-        {cuts[uniqueCount].inputs.getArrayRef(), cuts[uniqueCount].getRoot()});
-    ++uniqueCount;
-  }
-
-  LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
-                          << " Unique cuts: " << uniqueCount << "\n");
-  // Resize the cuts vector to the number of unique cuts found
-  cuts.resize(uniqueCount);
-
-  // Maintain size limit by removing worst cuts
-  if (cuts.size() > options.maxCutSizePerRoot) {
-    // Sort by priority using heuristic.
-    // TODO: Make this configurable.
-    std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
-      return a.getCutSize() < b.getCutSize();
-    });
-    // TODO: Pririty cuts may prune all matching cuts, so we may need to
-    //       keep the matching cut before pruning.
-    cuts.resize(options.maxCutSizePerRoot);
-  }
-
-  // Find the best matching pattern for this cut set
-  for (auto &cut : cuts) {
-    // Match the cut against the pattern set
-    auto matchResult = matchCut(cut);
-    if (!matchResult)
-      continue;
-
-    if (!matchedPattern ||
-        compareDelayAndArea(options.strategy, matchResult->getArea(),
-                            matchResult->getArrivalTimes(),
-                            matchedPattern->getArea(),
-                            matchedPattern->getArrivalTimes())) {
-      // Found a better matching pattern
-      matchedPattern = matchResult;
-    }
-  }
-
-  isFrozen = true; // Mark the cut set as frozen
-}
-
-static Cut getAsPrimaryInput(mlir::Value value) {
-  // Create a cut with a single root operation
-  Cut cut;
-  // There is no input for the primary input cut.
-  cut.inputs.insert(value);
-
-  return cut;
-}
-
-static Cut getSingletonCut(mlir::Operation *op) {
-  // Create a cut with a single input value
-  Cut cut;
-  cut.operations.insert(op);
-  for (auto value : op->getOperands()) {
-    // Only consider integer values. No integer type such as seq.clock,
-    // aggregate are pass through the cut.
-    assert(value.getType().isInteger(1));
-
-    cut.inputs.insert(value);
-  }
-  return cut;
-}
-
-Cut Cut::mergeWith(const Cut &other, Operation *root) const {
-  // Create a new cut that combines this cut and the other cut
-  Cut newCut;
-  // Topological sort the operations in the new cut.
-  // TODO: Merge-sort `operations` and `other.operations` by operation index
-  // (since it's already topo-sorted, we can use a simple merge).
-  std::function<void(Operation *)> populateOperations = [&](Operation *op) {
-    // If the operation is already in the cut, skip it
-    if (newCut.operations.contains(op))
-      return;
-
-    // Add its operands to the worklist
-    for (auto value : op->getOperands()) {
-      if (isAlwaysCutInput(value)) {
-        // If the value is a primary input, add it to the cut inputs
-        continue;
-      }
-
-      // If the value is in *both* cuts inputs, it is an input. So skip
-      // it.
-      bool isInput = inputs.contains(value);
-      bool isOtherInput = other.inputs.contains(value);
-      // If the value is in this cut inputs, it is an input. So skip it
-      if (isInput && isOtherInput) {
-        continue;
-      }
-      auto *defOp = value.getDefiningOp();
-
-      assert(defOp);
-
-      if (isInput) {
-        if (!other.operations.contains(defOp)) // op is in the other cut.
-          continue;
-      }
-
-      if (isOtherInput) {
-        if (!operations.contains(defOp)) // op is in this cut.
-          continue;
-      }
-
-      populateOperations(defOp);
-    }
-
-    // Add the operation to the cut
-    newCut.operations.insert(op);
-  };
-
-  populateOperations(root);
-
-  // Construct inputs.
-  for (auto *operation : newCut.operations) {
-    for (auto value : operation->getOperands()) {
-      if (isAlwaysCutInput(value)) {
-        newCut.inputs.insert(value);
-        continue;
-      }
-
-      auto *defOp = value.getDefiningOp();
-      assert(defOp && "Value must have a defining operation");
-      // If the operation is not in the cut, it is an input
-      if (!newCut.operations.contains(defOp))
-        // Add the input to the cut
-        newCut.inputs.insert(value);
-    }
-  }
-
-  // Update area and delay based on the merged cuts
-  return newCut;
-}
-
-LogicalResult Cut::simulateOp(Operation *op,
-                              DenseMap<Value, APInt> &values) const {
-  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-    auto inputs = andOp.getInputs();
-    SmallVector<APInt, 2> operands;
-    for (auto input : inputs) {
-      auto it = values.find(input);
-      if (it == values.end()) {
-        op->emitError("Input value not found: ") << input;
-        return failure();
-      }
-      operands.push_back(it->second);
-    }
-
-    // Simulate the AND operation
-    values[andOp.getResult()] = andOp.evaluate(operands);
-    return llvm::success();
-  }
-  // Add more operation types as needed
-  return failure();
-}
-
 //===----------------------------------------------------------------------===//
-// TruthTable Implementation
+// TruthTable
 //===----------------------------------------------------------------------===//
 
 llvm::APInt TruthTable::getOutput(const llvm::APInt &input) const {
@@ -380,7 +202,7 @@ void TruthTable::dump(llvm::raw_ostream &os) const {
 }
 
 //===----------------------------------------------------------------------===//
-// NPNClass Implementation
+// NPNClass
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -389,7 +211,7 @@ namespace {
 
 /// Create an identity permutation of the given size.
 /// Result[i] = i for all i in [0, size).
-static llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
+llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
   llvm::SmallVector<unsigned> identity(size);
   for (unsigned i = 0; i < size; ++i)
     identity[i] = i;
@@ -399,8 +221,8 @@ static llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
 /// Apply a permutation to a negation mask.
 /// Given a negation mask and a permutation, returns a new mask where
 /// the negation bits are reordered according to the permutation.
-static unsigned permuteNegationMask(unsigned negationMask,
-                                    ArrayRef<unsigned> permutation) {
+unsigned permuteNegationMask(unsigned negationMask,
+                             ArrayRef<unsigned> permutation) {
   unsigned result = 0;
   for (unsigned i = 0; i < permutation.size(); ++i) {
     if (negationMask & (1u << i)) {
@@ -512,7 +334,7 @@ void NPNClass::dump(llvm::raw_ostream &os) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Cut Implementation
+// Cut
 //===----------------------------------------------------------------------===//
 
 bool Cut::isPrimaryInput() const {
@@ -527,12 +349,10 @@ mlir::Operation *Cut::getRoot() const {
 }
 
 const mlir::FailureOr<NPNClass> &Cut::getNPNClass() const {
-  // If the truth table is already computed, return it
+  // If the NPN is already computed, return it
   if (npnClass)
     return *npnClass;
 
-  // Compute the NPN (Negation Permutation Negation) canonical form for this
-  // cut
   auto truthTable = getTruthTable();
   if (failed(truthTable)) {
     npnClass = failure();
@@ -631,6 +451,121 @@ const llvm::FailureOr<TruthTable> &Cut::getTruthTable() const {
   return *truthTable;
 }
 
+static Cut getAsPrimaryInput(mlir::Value value) {
+  // Create a cut with a single root operation
+  Cut cut;
+  // There is no input for the primary input cut.
+  cut.inputs.insert(value);
+
+  return cut;
+}
+
+static Cut getSingletonCut(mlir::Operation *op) {
+  // Create a cut with a single input value
+  Cut cut;
+  cut.operations.insert(op);
+  for (auto value : op->getOperands()) {
+    // Only consider integer values. No integer type such as seq.clock,
+    // aggregate are pass through the cut.
+    assert(value.getType().isInteger(1));
+
+    cut.inputs.insert(value);
+  }
+  return cut;
+}
+
+Cut Cut::mergeWith(const Cut &other, Operation *root) const {
+  // Create a new cut that combines this cut and the other cut
+  Cut newCut;
+  // Topological sort the operations in the new cut.
+  // TODO: Merge-sort `operations` and `other.operations` by operation index
+  // (since it's already topo-sorted, we can use a simple merge).
+  std::function<void(Operation *)> populateOperations = [&](Operation *op) {
+    // If the operation is already in the cut, skip it
+    if (newCut.operations.contains(op))
+      return;
+
+    // Add its operands to the worklist
+    for (auto value : op->getOperands()) {
+      if (isAlwaysCutInput(value)) {
+        // If the value is a primary input, add it to the cut inputs
+        continue;
+      }
+
+      // If the value is in *both* cuts inputs, it is an input. So skip
+      // it.
+      bool isInput = inputs.contains(value);
+      bool isOtherInput = other.inputs.contains(value);
+      // If the value is in this cut inputs, it is an input. So skip it
+      if (isInput && isOtherInput) {
+        continue;
+      }
+      auto *defOp = value.getDefiningOp();
+
+      assert(defOp);
+
+      if (isInput) {
+        if (!other.operations.contains(defOp)) // op is in the other cut.
+          continue;
+      }
+
+      if (isOtherInput) {
+        if (!operations.contains(defOp)) // op is in this cut.
+          continue;
+      }
+
+      populateOperations(defOp);
+    }
+
+    // Add the operation to the cut
+    newCut.operations.insert(op);
+  };
+
+  populateOperations(root);
+
+  // Construct inputs.
+  for (auto *operation : newCut.operations) {
+    for (auto value : operation->getOperands()) {
+      if (isAlwaysCutInput(value)) {
+        newCut.inputs.insert(value);
+        continue;
+      }
+
+      auto *defOp = value.getDefiningOp();
+      assert(defOp && "Value must have a defining operation");
+      // If the operation is not in the cut, it is an input
+      if (!newCut.operations.contains(defOp))
+        // Add the input to the cut
+        newCut.inputs.insert(value);
+    }
+  }
+
+  // Update area and delay based on the merged cuts
+  return newCut;
+}
+
+LogicalResult Cut::simulateOp(Operation *op,
+                              DenseMap<Value, APInt> &values) const {
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+    auto inputs = andOp.getInputs();
+    SmallVector<APInt, 2> operands;
+    for (auto input : inputs) {
+      auto it = values.find(input);
+      if (it == values.end()) {
+        op->emitError("Input value not found: ") << input;
+        return failure();
+      }
+      operands.push_back(it->second);
+    }
+
+    // Simulate the AND operation
+    values[andOp.getResult()] = andOp.evaluate(operands);
+    return llvm::success();
+  }
+  // Add more operation types as needed
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // MatchedPattern
 //===----------------------------------------------------------------------===//
@@ -693,6 +628,74 @@ void CutSet::addCut(Cut cut) {
 
 ArrayRef<Cut> CutSet::getCuts() const { return cuts; }
 
+void CutSet::finalize(
+    const CutRewriterOptions &options,
+    llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
+  DenseSet<std::pair<ArrayRef<Value>, Operation *>> uniqueCuts;
+  unsigned uniqueCount = 0;
+  for (unsigned i = 0; i < cuts.size(); ++i) {
+    auto &cut = cuts[i];
+    // Create a unique identifier for the cut based on its inputs.
+    auto inputs = cut.inputs.getArrayRef();
+
+    // If the cut is a duplicate, skip it.
+    if (uniqueCuts.contains({inputs, cut.getRoot()}))
+      continue;
+
+    if (i != uniqueCount) {
+      // Move the unique cut to the front of the vector
+      // This maintains the order of cuts while removing duplicates
+      // by swapping with the last unique cut found.
+      cuts[uniqueCount] = std::move(cuts[i]);
+    }
+
+    // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
+    // after this point.
+    uniqueCuts.insert(
+        {cuts[uniqueCount].inputs.getArrayRef(), cuts[uniqueCount].getRoot()});
+    ++uniqueCount;
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
+                          << " Unique cuts: " << uniqueCount << "\n");
+  // Resize the cuts vector to the number of unique cuts found
+  cuts.resize(uniqueCount);
+
+  // Maintain size limit by removing worst cuts
+  if (cuts.size() > options.maxCutSizePerRoot) {
+    // Sort by priority using heuristic.
+    // TODO: Make this configurable.
+    std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+      return a.getCutSize() < b.getCutSize();
+    });
+
+    // TODO: Implement pruning based on dominance.
+
+    // TODO: Pririty cuts may prune all matching cuts, so we may need to
+    //       keep the matching cut before pruning.
+    cuts.resize(options.maxCutSizePerRoot);
+  }
+
+  // Find the best matching pattern for this cut set
+  for (auto &cut : cuts) {
+    // Match the cut against the pattern set
+    auto matchResult = matchCut(cut);
+    if (!matchResult)
+      continue;
+
+    if (!matchedPattern ||
+        compareDelayAndArea(options.strategy, matchResult->getArea(),
+                            matchResult->getArrivalTimes(),
+                            matchedPattern->getArea(),
+                            matchedPattern->getArrivalTimes())) {
+      // Found a better matching pattern
+      matchedPattern = matchResult;
+    }
+  }
+
+  isFrozen = true; // Mark the cut set as frozen
+}
+
 //===----------------------------------------------------------------------===//
 // CutRewriterPattern
 //===----------------------------------------------------------------------===//
@@ -727,85 +730,40 @@ CutRewriterPatternSet::CutRewriterPatternSet(
 }
 
 //===----------------------------------------------------------------------===//
-// CutRewriter
+// CutEnumerator
 //===----------------------------------------------------------------------===//
 
-LogicalResult CutRewriter::sortOperationsTopologically(Operation *topOp) {
-  // Sort the operations topologically
-  if (topOp
-          ->walk([&](Region *region) {
-            auto regionKindOp =
-                dyn_cast<mlir::RegionKindInterface>(region->getParentOp());
-            if (!regionKindOp ||
-                regionKindOp.hasSSADominance(region->getRegionNumber()))
-              return WalkResult::advance();
+CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
+    : options(options) {}
 
-            // Graph region.
-            for (auto &block : *region) {
-              if (!mlir::sortTopologically(
-                      &block, [&](Value value, Operation *op) -> bool {
-                        // Topologically sort AND-inverters and purely dataflow
-                        // ops. Other operations can be scheduled.
-                        return !(isa<aig::AndInverterOp, comb::ExtractOp,
-                                     comb::ReplicateOp, comb::ConcatOp>(op));
-                      }))
-                return WalkResult::interrupt();
-            }
-            return WalkResult::advance();
-          })
-          .wasInterrupted())
-    return mlir::emitError(topOp->getLoc(),
-                           "failed to sort operations topologically");
-  return success();
+CutSet *CutEnumerator::lookup(Value value) const {
+  const auto *it = cutSets.find(value);
+  if (it != cutSets.end())
+    return it->second.get();
+  return nullptr;
 }
 
-LogicalResult CutRewriter::run(Operation *topOp) {
-  LLVM_DEBUG({
-    llvm::dbgs() << "Starting Cut Rewriter\n";
-    llvm::dbgs() << "Mode: "
-                 << (CutRewriteStrategy::Area == options.strategy ? "area"
-                                                                  : "timing")
-                 << "\n";
-    llvm::dbgs() << "Max input size: " << options.maxCutInputSize << "\n";
-    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
-    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
-  });
-
-  // Currrently we don't support patterns with multiple outputs.
-  // So check that.
-  // TODO: This must be removed when we support multiple outputs.
-  for (auto &pattern : patterns.patterns) {
-    if (pattern->getNumOutputs() > 1) {
-      return mlir::emitError(pattern->getLoc(),
-                             "Cut rewriter does not support patterns with "
-                             "multiple outputs yet");
-    }
-  }
-
-  // First sort the operations topologically to ensure we can process them
-  // in a valid order.
-  if (failed(sortOperationsTopologically(topOp)))
-    return failure();
-
-  // Enumerate cuts for all nodes
-  if (failed(enumerateCuts(topOp)))
-    return failure();
-
-  // Select best cuts and perform mapping
-  if (failed(runBottomUpRewrite(topOp)))
-    return failure();
-
-  return success();
+CutSet *CutEnumerator::createNewCutSet(Value value) {
+  assert(!cutSets.contains(value) && "Cut set already exists for this value");
+  auto cutSet = std::make_unique<CutSet>();
+  auto *cutSetPtr = cutSet.get();
+  cutSets[value] = std::move(cutSet);
+  return cutSetPtr;
 }
 
-LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
-  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
+llvm::MapVector<Value, std::unique_ptr<CutSet>> CutEnumerator::takeVector() {
+  return std::move(cutSets);
+}
 
-  return cutEnumerator.enumerateCuts(
-      topOp, [&](Cut &cut) -> std::optional<MatchedPattern> {
-        // Match the cut against the patterns
-        return matchCutToPattern(cut);
-      });
+void CutEnumerator::clear() { cutSets.clear(); }
+
+LogicalResult CutEnumerator::visit(Operation *op) {
+  // For now, delegate to visitLogicOp for combinational operations
+  if (isa<aig::AndInverterOp>(op))
+    return visitLogicOp(op);
+
+  // Skip non-combinational operations
+  return success();
 }
 
 LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
@@ -917,6 +875,88 @@ const CutSet &CutEnumerator::getCutSet(Value value) {
   }
 
   return *cutSets.find(value)->second;
+}
+
+//===----------------------------------------------------------------------===//
+// CutRewriter
+//===----------------------------------------------------------------------===//
+
+LogicalResult CutRewriter::sortOperationsTopologically(Operation *topOp) {
+  // Sort the operations topologically
+  if (topOp
+          ->walk([&](Region *region) {
+            auto regionKindOp =
+                dyn_cast<mlir::RegionKindInterface>(region->getParentOp());
+            if (!regionKindOp ||
+                regionKindOp.hasSSADominance(region->getRegionNumber()))
+              return WalkResult::advance();
+
+            // Graph region.
+            for (auto &block : *region) {
+              if (!mlir::sortTopologically(
+                      &block, [&](Value value, Operation *op) -> bool {
+                        // Topologically sort AND-inverters and purely dataflow
+                        // ops. Other operations can be scheduled.
+                        return !(isa<aig::AndInverterOp, comb::ExtractOp,
+                                     comb::ReplicateOp, comb::ConcatOp>(op));
+                      }))
+                return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+          })
+          .wasInterrupted())
+    return mlir::emitError(topOp->getLoc(),
+                           "failed to sort operations topologically");
+  return success();
+}
+
+LogicalResult CutRewriter::run(Operation *topOp) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "Starting Cut Rewriter\n";
+    llvm::dbgs() << "Mode: "
+                 << (CutRewriteStrategy::Area == options.strategy ? "area"
+                                                                  : "timing")
+                 << "\n";
+    llvm::dbgs() << "Max input size: " << options.maxCutInputSize << "\n";
+    llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
+    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
+  });
+
+  // Currrently we don't support patterns with multiple outputs.
+  // So check that.
+  // TODO: This must be removed when we support multiple outputs.
+  for (auto &pattern : patterns.patterns) {
+    if (pattern->getNumOutputs() > 1) {
+      return mlir::emitError(pattern->getLoc(),
+                             "Cut rewriter does not support patterns with "
+                             "multiple outputs yet");
+    }
+  }
+
+  // First sort the operations topologically to ensure we can process them
+  // in a valid order.
+  if (failed(sortOperationsTopologically(topOp)))
+    return failure();
+
+  // Enumerate cuts for all nodes
+  if (failed(enumerateCuts(topOp)))
+    return failure();
+
+  // Select best cuts and perform mapping
+  if (failed(runBottomUpRewrite(topOp)))
+    return failure();
+
+  return success();
+}
+
+LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
+  LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
+
+  return cutEnumerator.enumerateCuts(
+      topOp, [&](Cut &cut) -> std::optional<MatchedPattern> {
+        // Match the cut against the patterns
+        return matchCutToPattern(cut);
+      });
 }
 
 ArrayRef<std::pair<NPNClass, CutRewriterPattern *>>
@@ -1080,42 +1120,5 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     }
   }
 
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// CutEnumerator Implementation
-//===----------------------------------------------------------------------===//
-
-CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
-    : options(options) {}
-
-CutSet *CutEnumerator::lookup(Value value) const {
-  const auto *it = cutSets.find(value);
-  if (it != cutSets.end())
-    return it->second.get();
-  return nullptr;
-}
-
-CutSet *CutEnumerator::createNewCutSet(Value value) {
-  assert(!cutSets.contains(value) && "Cut set already exists for this value");
-  auto cutSet = std::make_unique<CutSet>();
-  auto *cutSetPtr = cutSet.get();
-  cutSets[value] = std::move(cutSet);
-  return cutSetPtr;
-}
-
-llvm::MapVector<Value, std::unique_ptr<CutSet>> CutEnumerator::takeVector() {
-  return std::move(cutSets);
-}
-
-void CutEnumerator::clear() { cutSets.clear(); }
-
-LogicalResult CutEnumerator::visit(Operation *op) {
-  // For now, delegate to visitLogicOp for combinational operations
-  if (isa<aig::AndInverterOp>(op))
-    return visitLogicOp(op);
-
-  // Skip non-combinational operations
   return success();
 }
