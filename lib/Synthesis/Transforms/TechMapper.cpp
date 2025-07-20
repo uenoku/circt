@@ -94,8 +94,7 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   // Simulate all operations
   for (auto *op : operations) {
     if (failed(simulateHWOp(op, eval))) {
-      module->emitError("Failed to simulate operation in module");
-      return NPNClass();
+      return module->emitError("Failed to simulate operation in module");
     }
   }
 
@@ -106,10 +105,8 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   for (unsigned i = 0; i < numOutputs; ++i) {
     auto outputValue = outputOp.getOperand(i);
     auto it = eval.find(outputValue);
-    if (it == eval.end()) {
-      module->emitError("Output value not found in evaluation");
-      return NPNClass();
-    }
+    if (it == eval.end())
+      return module->emitError("Output value not found in evaluation");
 
     // Pack output bits into truth table
     for (unsigned j = 0; j < tableSize; ++j) {
