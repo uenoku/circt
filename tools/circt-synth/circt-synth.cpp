@@ -227,7 +227,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       // Lower AIG to generic LUTs with K inputs.
       circt::synthesis::GenericLutMapperOptions lutOptions;
       lutOptions.maxLutSize = lowerToGenericLUTK;
-      lutOptions.maxCutsPerNode =
+      lutOptions.maxCutsPerRoot =
           maxCutSizePerRoot; // Default value, can be adjusted.
       pm.addPass(circt::synthesis::createGenericLutMapper(lutOptions));
     }
@@ -238,7 +238,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // Add technology mapping pass if no LUT mapping is performed.
     // This is no-op if no technology library is provided in the IR.
     circt::synthesis::TechMapperOptions options;
-    options.maxCutsPerNode = maxCutSizePerRoot;
+    options.maxCutsPerRoot = maxCutSizePerRoot;
     pm.addPass(circt::synthesis::createTechMapper());
   }
 

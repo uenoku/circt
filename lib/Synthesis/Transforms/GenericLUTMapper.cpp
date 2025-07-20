@@ -60,14 +60,8 @@ struct GenericLUT : public CutRewriterPattern {
                    << " inputs and " << cut.getCutSize()
                    << " operations to a generic LUT with " << k << " inputs.\n";
       cut.dump(llvm::dbgs());
-      llvm::dbgs() << "Truth table: " << truthTable->table << "\n";
-      for (unsigned i = 0; i < truthTable->table.getBitWidth(); ++i) {
-        for (unsigned j = 0; j < cut.getInputSize(); ++j) {
-          // Print the input values for the truth table
-          llvm::dbgs() << (i & (1u << j) ? "1" : "0");
-        }
-        llvm::dbgs() << " " << (truthTable->table[i] ? "1" : "0") << "\n";
-      }
+      llvm::dbgs() << "Truth table details:\n";
+      truthTable->dump(llvm::dbgs());
     });
 
     SmallVector<bool> lutTable;
@@ -107,7 +101,7 @@ struct GenericLUTMapperPass
     //       difference in using area or timing.
     options.strategy = CutRewriteStrategy::Timing;
     options.maxCutInputSize = maxLutSize;
-    options.maxCutSizePerRoot = maxCutsPerNode;
+    options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = true; // Attach debug timing attributes
     CutRewriter mapper(options, patternSet);
     if (failed(mapper.run(module)))

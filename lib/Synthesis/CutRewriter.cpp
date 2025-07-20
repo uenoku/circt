@@ -341,6 +341,44 @@ bool TruthTable::operator==(const TruthTable &other) const {
          table == other.table;
 }
 
+void TruthTable::dump(llvm::raw_ostream &os) const {
+  os << "TruthTable(" << numInputs << " inputs, " << numOutputs << " outputs, "
+     << "value=";
+  os << table << ")\n";
+
+  // Print header
+  for (unsigned i = 0; i < numInputs; ++i) {
+    os << "i" << i << " ";
+  }
+  for (unsigned i = 0; i < numOutputs; ++i) {
+    os << "o" << i << " ";
+  }
+  os << "\n";
+
+  // Print separator
+  for (unsigned i = 0; i < numInputs + numOutputs; ++i) {
+    os << "---";
+  }
+  os << "\n";
+
+  // Print truth table rows
+  for (unsigned i = 0; i < (1u << numInputs); ++i) {
+    // Print input values
+    for (unsigned j = 0; j < numInputs; ++j) {
+      os << ((i >> j) & 1) << "  ";
+    }
+
+    // Print output values
+    llvm::APInt input(numInputs, i);
+    llvm::APInt output = getOutput(input);
+    os << "|";
+    for (unsigned j = 0; j < numOutputs; ++j) {
+      os << output[j] << "  ";
+    }
+    os << "\n";
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // NPNClass Implementation
 //===----------------------------------------------------------------------===//
@@ -451,6 +489,29 @@ NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   return canonical;
 }
 
+void NPNClass::dump(llvm::raw_ostream &os) const {
+  os << "NPNClass:\n";
+  os << "  Input permutation: [";
+  for (unsigned i = 0; i < inputPermutation.size(); ++i) {
+    if (i > 0)
+      os << ", ";
+    os << inputPermutation[i];
+  }
+  os << "]\n";
+  os << "  Input negation: 0b";
+  for (int i = inputPermutation.size() - 1; i >= 0; --i) {
+    os << ((inputNegation >> i) & 1);
+  }
+  os << "\n";
+  os << "  Output negation: 0b";
+  for (int i = truthTable.numOutputs - 1; i >= 0; --i) {
+    os << ((outputNegation >> i) & 1);
+  }
+  os << "\n";
+  os << "  Canonical truth table:\n";
+  truthTable.dump(os);
+}
+
 //===----------------------------------------------------------------------===//
 // Cut Implementation
 //===----------------------------------------------------------------------===//
@@ -505,14 +566,12 @@ void Cut::dump(llvm::raw_ostream &os) const {
     op->print(os);
     os << "\n";
   }
-  os << "Truth Table: ";
+  os << "Truth Table:\n";
   auto truthTable = getTruthTable();
-  os << truthTable->table << "\n";
-  os << "NPN Class: ";
+  truthTable->dump(os);
+  os << "NPN Class:\n";
   auto &npnClass = getNPNClass();
-  os << npnClass->truthTable.table << "\n";
-  os << npnClass->inputNegation << " (input negation) "
-     << npnClass->outputNegation << " (output negation)\n";
+  npnClass->dump(os);
 
   os << "// === Cut End ===\n";
 }

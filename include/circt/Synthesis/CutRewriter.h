@@ -105,6 +105,9 @@ struct TruthTable {
 
   /// Equality comparison for truth tables.
   bool operator==(const TruthTable &other) const;
+
+  /// Debug dump method for truth tables.
+  void dump(llvm::raw_ostream &os = llvm::errs()) const;
 };
 
 /// Represents the canonical form of a boolean function under NPN equivalence.
@@ -174,6 +177,9 @@ struct NPNClass {
       return inputNegation < other.inputNegation;
     return outputNegation < other.outputNegation;
   }
+
+  /// Debug dump method for NPN classes.
+  void dump(llvm::raw_ostream &os = llvm::errs()) const;
 };
 
 //===----------------------------------------------------------------------===//

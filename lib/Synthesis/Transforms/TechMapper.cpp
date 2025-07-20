@@ -283,7 +283,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
                            ? CutRewriteStrategy::Area
                            : CutRewriteStrategy::Timing;
     options.maxCutInputSize = maxInputSize;
-    options.maxCutSizePerRoot = maxCutsPerNode;
+    options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = true;
     auto result = mlir::failableParallelForEach(
         module.getContext(), nonLibraryModules, [&](hw::HWModuleOp hwModule) {
