@@ -719,11 +719,11 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   return success();
 }
 
-LogicalResult CutRewriter::enumerateCuts(Operation *hwModule) {
+LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
   LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
 
   return cutEnumerator.enumerateCuts(
-      hwModule, [&](Cut &cut) -> std::optional<MatchedPattern> {
+      topOp, [&](Cut &cut) -> std::optional<MatchedPattern> {
         // Match the cut against the patterns
         return matchCutToPattern(cut);
       });
@@ -802,23 +802,23 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
 }
 
 LogicalResult CutEnumerator::enumerateCuts(
-    Operation *hwModule,
+    Operation *topOp,
     llvm::function_ref<std::optional<MatchedPattern>(Cut &)> matchCut) {
   LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: "
-                          << hwModule->getName() << "\n");
+                          << topOp->getName() << "\n");
 
   // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
 
   // Walk through all operations in the module in a topological manner
-  auto result = hwModule->walk([&](Operation *op) {
+  auto result = topOp->walk([&](Operation *op) {
     if (failed(visit(op)))
       return mlir::WalkResult::interrupt();
     return mlir::WalkResult::advance();
   });
 
   if (result.wasInterrupted())
-    return mlir::emitError(hwModule->getLoc(),
+    return mlir::emitError(topOp->getLoc(),
                            "Failed to enumerate cuts for module");
 
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
