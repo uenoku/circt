@@ -839,8 +839,7 @@ LogicalResult CutEnumerator::enumerateCuts(
   });
 
   if (result.wasInterrupted())
-    return mlir::emitError(topOp->getLoc(),
-                           "Failed to enumerate cuts for module");
+    return failure();
 
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
   return success();
@@ -1010,6 +1009,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
     auto matchedPattern = cutSet->getMatchedPattern();
     if (!matchedPattern) {
+      if (options.allowNoMatch)
+        continue; // No matching pattern found, skip this value
       return mlir::emitError(value.getLoc(),
                              "No matching cut found for value: ")
              << value;

@@ -366,6 +366,8 @@ struct CutRewriterPattern {
   /// Virtual destructor for base class.
   virtual ~CutRewriterPattern() = default;
 
+  virtual LogicalResult initialize() { return success(); };
+
   /// Check if a cut matches this pattern.
   ///
   /// This method is called to determine if a cut can be replaced by this
@@ -460,6 +462,9 @@ struct CutRewriterOptions {
   /// The priority cuts algorithm keeps only the most promising cuts
   /// to prevent exponential explosion.
   unsigned maxCutSizePerRoot;
+
+  /// Fail if there is a root operation that has no matching pattern.
+  bool allowNoMatch = false;
 
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;

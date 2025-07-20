@@ -23,8 +23,6 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
   let options = [
     Option<"maxCutsPerNode", "max-cuts-per-node", "int", "12",
            "Maximum number of cuts to maintain per node">,
-    ListOption<"libraryModules", "library-modules", "std::string",
-               "List of hw::HWModuleOp names to use as technology library primitives">,
     Option<"strategy", "strategy", "synthesis::OptimizationStrategy",
            /*default=*/"synthesis::OptimizationStrategyTiming",
            "Optimization strategy (area vs. timing)",

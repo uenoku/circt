@@ -5,6 +5,7 @@
 #include "circt/Synthesis/Transforms/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Threading.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -213,44 +214,30 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
   void runOnOperation() override {
     auto module = getOperation();
 
-    if (libraryModules.empty())
-      return markAllAnalysesPreserved();
-
-    auto &symbolTable = getAnalysis<SymbolTable>();
     SmallVector<std::unique_ptr<CutRewriterPattern>> libraryPatterns;
 
     unsigned maxInputSize = 0;
-    llvm::StringSet<> libraryModuleSet;
-
-    // Find library modules in the top module
-    for (const std::string &moduleName : libraryModules) {
-      libraryModuleSet.insert(moduleName);
-
-      // Find the module in the symbol table
-      auto hwModule = symbolTable.lookup<hw::HWModuleOp>(moduleName);
-      if (!hwModule) {
-        module->emitError("Library module not found: ") << moduleName;
-        signalPassFailure();
-        return;
-      }
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Found library module: " << moduleName << "\n");
-      // Check if the module has the required attributes
+    // Consider modules with the "hw.techlib.info" attribute as library modules.
+    SmallVector<hw::HWModuleOp> nonLibraryModules;
+    for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
       auto techInfo =
           hwModule->getAttrOfType<DictionaryAttr>("hw.techlib.info");
       if (!techInfo) {
-        hwModule->emitError(
-            "Library module must have 'hw.techlib.info' attribute");
-        signalPassFailure();
-        return;
+        // If the module does not have the techlib info, it is not a library
+        // TODO: Run mapping only when the module is under the specific
+        // hierarchy.
+        nonLibraryModules.push_back(hwModule);
+        continue;
       }
 
       // Get area and delay attributes
       auto areaAttr = techInfo.getAs<FloatAttr>("area");
       auto delayAttr = techInfo.getAs<ArrayAttr>("delay");
       if (!areaAttr || !delayAttr) {
-        hwModule->emitError(
-            "Library module must have 'area' and 'delay' attributes");
+        mlir::emitError(hwModule.getLoc())
+            << "Library module " << hwModule.getModuleName()
+            << " must have 'area'(float) and 'delay' (2d array to represent "
+               "input-output pair delay) attributes";
         signalPassFailure();
         return;
       }
@@ -283,6 +270,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       libraryPatterns.push_back(std::move(pattern));
     }
 
+    if (libraryPatterns.empty())
+      return markAllAnalysesPreserved();
+
     CutRewriterPatternSet patternSet(std::move(libraryPatterns));
     CutRewriterOptions options;
     options.strategy =
@@ -292,16 +282,15 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerNode;
     options.attachDebugTiming = true;
-    for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Processing HW module: " << hwModule.getName() << "\n");
-      if (libraryModuleSet.contains(hwModule.getModuleName()))
-        continue; // Skip if this module is a library module
-
-      CutRewriter mapper(options, patternSet);
-      if (failed(mapper.run(hwModule)))
-        signalPassFailure();
-    }
+    auto result = mlir::failableParallelForEach(
+        module.getContext(), nonLibraryModules, [&](hw::HWModuleOp hwModule) {
+          LLVM_DEBUG(llvm::dbgs() << "Processing non-library module: "
+                                  << hwModule.getName() << "\n");
+          CutRewriter rewriter(options, patternSet);
+          return rewriter.run(hwModule);
+        });
+    if (failed(result))
+      signalPassFailure();
   }
 };
 
