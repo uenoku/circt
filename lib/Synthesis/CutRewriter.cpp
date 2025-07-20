@@ -410,7 +410,6 @@ NPNClass::getInputMappingTo(const NPNClass &targetNPN) const {
 
 NPNClass NPNClass::computeNPNCanonicalForm(const TruthTable &tt) {
   NPNClass canonical(tt);
-
   // Initialize permutation with identity
   canonical.inputPermutation = identityPermutation(tt.numInputs);
   assert(tt.numInputs <= 8 && "Too many inputs for input negation mask");
@@ -475,7 +474,10 @@ const mlir::FailureOr<NPNClass> &Cut::getNPNClass() const {
   // Compute the NPN (Negation Permutation Negation) canonical form for this
   // cut
   auto truthTable = getTruthTable();
-  assert(succeeded(truthTable) && "Failed to compute truth table");
+  if (failed(truthTable)) {
+    npnClass = failure();
+    return *npnClass;
+  }
 
   // Compute the NPN canonical form
   auto canonicalForm = NPNClass::computeNPNCanonicalForm(*truthTable);
