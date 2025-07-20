@@ -73,20 +73,23 @@ void CutSet::finalize(
     auto &cut = cuts[i];
     // Create a unique identifier for the cut based on its inputs and root
     auto inputs = cut.inputs.getArrayRef();
-    if (!uniqueCuts.contains({inputs, cut.getRoot()})) {
-      if (i != uniqueCount) {
-        // Move the unique cut to the front of the vector
-        // This maintains the order of cuts while removing duplicates
-        // by swapping with the last unique cut found.
-        cuts[uniqueCount] = std::move(cuts[i]);
-      }
-
-      // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
-      // after this point.
-      uniqueCuts.insert({cuts[uniqueCount].inputs.getArrayRef(),
-                         cuts[uniqueCount].getRoot()});
-      ++uniqueCount;
+    if (uniqueCuts.contains({inputs, cut.getRoot()})) {
+      // This cut is a duplicate, skip it
+      continue;
     }
+
+    if (i != uniqueCount) {
+      // Move the unique cut to the front of the vector
+      // This maintains the order of cuts while removing duplicates
+      // by swapping with the last unique cut found.
+      cuts[uniqueCount] = std::move(cuts[i]);
+    }
+
+    // Beaware of lifetime of ArrayRef. `cuts[uniqueCount]` is always valid
+    // after this point.
+    uniqueCuts.insert(
+        {cuts[uniqueCount].inputs.getArrayRef(), cuts[uniqueCount].getRoot()});
+    ++uniqueCount;
   }
 
   LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
@@ -101,9 +104,9 @@ void CutSet::finalize(
     std::sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
       return a.getCutSize() < b.getCutSize();
     });
-    cuts.resize(options.maxCutSizePerRoot);
     // TODO: Pririty cuts may prune all matching cuts, so we may need to
     //       keep the matching cut before pruning.
+    cuts.resize(options.maxCutSizePerRoot);
   }
 
   // Find the best matching pattern for this cut set
@@ -148,6 +151,7 @@ static Cut getSingletonCut(mlir::Operation *op) {
   }
   return cut;
 }
+
 Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   // Create a new cut that combines this cut and the other cut
   Cut newCut;
