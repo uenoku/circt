@@ -138,27 +138,25 @@ struct NPNClass {
   /// This method exhaustively tries all possible input permutations and
   /// negations to find the lexicographically smallest canonical form.
   ///
-  /// WARNING: This is exponential in the number of inputs and should only
-  /// be used for small truth tables (< 20 inputs).
-  ///
-  /// NOTE: This implementation uses exact canonicalization. For larger
-  /// truth tables, semi-canonical forms should be used instead.
+  /// FIXME: Currently we are using exact canonicalization which doesn't scale
+  /// well. For larger truth tables, semi-canonical forms should be used
+  /// instead.
   static NPNClass computeNPNCanonicalForm(const TruthTable &tt);
-
 
   /// Get input mapping from this NPN class to another equivalent NPN class.
   ///
-  /// When two NPN classes are equivalent (same canonical truth table), they
-  /// may have different input permutations. This function computes a mapping
-  /// that allows transforming input indices from the target NPN class to
-  /// input indices of this NPN class.
+  /// When two NPN classes are equivalent, they may have different input
+  /// permutations. This function computes a mapping that allows transforming
+  /// input indices from the target NPN class to input indices of this NPN
+  /// class.
   ///
   /// Returns a vector where result[i] gives the input index in this NPN class
   /// that corresponds to input i in the target NPN class.
   ///
   /// Example: If this has permutation [2,0,1] and target has [1,2,0],
   /// the mapping allows connecting target inputs to this inputs correctly.
-  llvm::SmallVector<unsigned> getInputMappingTo(const NPNClass &targetNPN) const;
+  llvm::SmallVector<unsigned>
+  getInputMappingTo(const NPNClass &targetNPN) const;
 
   /// Equality comparison for NPN classes.
   bool equivalentOtherThanPermutation(const NPNClass &other) const {
