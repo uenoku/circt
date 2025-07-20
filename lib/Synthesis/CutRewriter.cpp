@@ -665,7 +665,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     llvm::dbgs() << "Starting Cut Rewriter\n";
     llvm::dbgs() << "Mode: "
                  << (OptimizationStrategyArea == options.strategy ? "area"
-                                                                    : "timing")
+                                                                  : "timing")
                  << "\n";
     llvm::dbgs() << "Max input size: " << options.maxCutInputSize << "\n";
     llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";

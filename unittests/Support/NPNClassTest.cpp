@@ -199,9 +199,9 @@ TEST(NPNClassTest, InputMapping) {
 
   // Verify the mapping is correct
   EXPECT_EQ(mapping.size(), 3u);
-  
-  // For each target input position i, mapping[i] should give us the input position
-  // in npn1 that corresponds to the same canonical position
+
+  // For each target input position i, mapping[i] should give us the input
+  // position in npn1 that corresponds to the same canonical position
   for (unsigned i = 0; i < 3; ++i) {
     // Target input i maps to canonical position npn2.inputPermutation[i]
     unsigned targetCanonicalPos = npn2.inputPermutation[i];
@@ -268,4 +268,170 @@ TEST(NPNClassTest, Commutativity) {
 
   // Should have same canonical form
   EXPECT_TRUE(canonical1.equivalentOtherThanPermutation(canonical2));
+}
+
+TEST(BinaryTruthTableTest, MultiBitOutput) {
+  // Test 2-input, 2-output function: f(a,b) = (a&b, a|b)
+  BinaryTruthTable tt(2, 2);
+
+  // Set outputs for each input combination
+  // f(0,0) = (0,0)
+  tt.setOutput(APInt(2, 0), APInt(2, 0));
+  // f(0,1) = (0,1)
+  tt.setOutput(APInt(2, 1), APInt(2, 1));
+  // f(1,0) = (0,1)
+  tt.setOutput(APInt(2, 2), APInt(2, 1));
+  // f(1,1) = (1,1)
+  tt.setOutput(APInt(2, 3), APInt(2, 3));
+
+  // Verify outputs
+  EXPECT_EQ(tt.getOutput(APInt(2, 0)), APInt(2, 0));
+  EXPECT_EQ(tt.getOutput(APInt(2, 1)), APInt(2, 1));
+  EXPECT_EQ(tt.getOutput(APInt(2, 2)), APInt(2, 1));
+  EXPECT_EQ(tt.getOutput(APInt(2, 3)), APInt(2, 3));
+
+  // Test table bit width
+  EXPECT_EQ(tt.table.getBitWidth(), 8u); // 2^2 * 2 = 8 bits
+}
+
+TEST(BinaryTruthTableTest, MultiBitOutputPermutation) {
+  // Create 2-input, 2-output function: f(a,b) = (a&b, a^b)
+  BinaryTruthTable original(2, 2);
+
+  // f(0,0) = (0,0)
+  original.setOutput(APInt(2, 0), APInt(2, 0));
+  // f(0,1) = (0,1)
+  original.setOutput(APInt(2, 1), APInt(2, 1));
+  // f(1,0) = (0,1)
+  original.setOutput(APInt(2, 2), APInt(2, 1));
+  // f(1,1) = (1,0)
+  original.setOutput(APInt(2, 3), APInt(2, 2));
+
+  // Apply permutation [1,0] (swap inputs)
+  SmallVector<unsigned> permutation = {1, 0};
+  BinaryTruthTable permuted = original.applyPermutation(permutation);
+
+  // After swapping inputs, f(b,a) = (b&a, b^a)
+  // f(0,0) = (0,0)
+  EXPECT_EQ(permuted.getOutput(APInt(2, 0)), APInt(2, 0));
+  // f(0,1) = (0,1)
+  EXPECT_EQ(permuted.getOutput(APInt(2, 1)), APInt(2, 1));
+  // f(1,0) = (0,1)
+  EXPECT_EQ(permuted.getOutput(APInt(2, 2)), APInt(2, 1));
+  // f(1,1) = (1,0)
+  EXPECT_EQ(permuted.getOutput(APInt(2, 3)), APInt(2, 2));
+}
+
+TEST(BinaryTruthTableTest, MultiBitOutputNegation) {
+  // Create 2-input, 2-output function
+  BinaryTruthTable original(2, 2);
+
+  // Set some non-trivial outputs
+  original.setOutput(APInt(2, 0), APInt(2, 0)); // 00
+  original.setOutput(APInt(2, 1), APInt(2, 1)); // 01
+  original.setOutput(APInt(2, 2), APInt(2, 2)); // 10
+  original.setOutput(APInt(2, 3), APInt(2, 3)); // 11
+
+  // Apply output negation mask 1 (negate first output bit)
+  BinaryTruthTable negated = original.applyOutputNegation(1);
+
+  // Check that only the first bit of each output is negated
+  EXPECT_EQ(negated.getOutput(APInt(2, 0)), APInt(2, 1)); // 00 -> 10
+  EXPECT_EQ(negated.getOutput(APInt(2, 1)), APInt(2, 0)); // 01 -> 00
+  EXPECT_EQ(negated.getOutput(APInt(2, 2)), APInt(2, 3)); // 10 -> 11
+  EXPECT_EQ(negated.getOutput(APInt(2, 3)), APInt(2, 2)); // 11 -> 01
+
+  // Apply output negation mask 2 (negate second output bit)
+  BinaryTruthTable negated2 = original.applyOutputNegation(2);
+
+  EXPECT_EQ(negated2.getOutput(APInt(2, 0)), APInt(2, 2)); // 00 -> 01
+  EXPECT_EQ(negated2.getOutput(APInt(2, 1)), APInt(2, 3)); // 01 -> 11
+  EXPECT_EQ(negated2.getOutput(APInt(2, 2)), APInt(2, 0)); // 10 -> 00
+  EXPECT_EQ(negated2.getOutput(APInt(2, 3)), APInt(2, 1)); // 11 -> 10
+
+  // Apply output negation mask 3 (negate both output bits)
+  BinaryTruthTable negated3 = original.applyOutputNegation(3);
+
+  EXPECT_EQ(negated3.getOutput(APInt(2, 0)), APInt(2, 3)); // 00 -> 11
+  EXPECT_EQ(negated3.getOutput(APInt(2, 1)), APInt(2, 2)); // 01 -> 10
+  EXPECT_EQ(negated3.getOutput(APInt(2, 2)), APInt(2, 1)); // 10 -> 01
+  EXPECT_EQ(negated3.getOutput(APInt(2, 3)), APInt(2, 0)); // 11 -> 00
+}
+
+TEST(NPNClassTest, MultiBitOutputCanonical) {
+  // Create a 2-input, 2-output function: f(a,b) = (a&b, a|b)
+  BinaryTruthTable tt(2, 2);
+
+  tt.setOutput(APInt(2, 0), APInt(2, 0)); // f(0,0) = (0,0)
+  tt.setOutput(APInt(2, 1), APInt(2, 1)); // f(0,1) = (0,1)
+  tt.setOutput(APInt(2, 2), APInt(2, 1)); // f(1,0) = (0,1)
+  tt.setOutput(APInt(2, 3), APInt(2, 3)); // f(1,1) = (1,1)
+
+  NPNClass canonical = NPNClass::computeNPNCanonicalForm(tt);
+
+  // Should have correct dimensions
+  EXPECT_EQ(canonical.truthTable.numInputs, 2u);
+  EXPECT_EQ(canonical.truthTable.numOutputs, 2u);
+  EXPECT_EQ(canonical.inputPermutation.size(), 2u);
+
+  // The canonical form should be well-defined and reproducible
+  NPNClass canonical2 = NPNClass::computeNPNCanonicalForm(tt);
+  EXPECT_TRUE(canonical.equivalentOtherThanPermutation(canonical2));
+}
+
+TEST(NPNClassTest, MultiBitOutputEquivalence) {
+  // Create two equivalent 2-input, 2-output functions with different input
+  // orderings
+  BinaryTruthTable tt1(2, 2);
+  BinaryTruthTable tt2(2, 2);
+
+  // tt1: f(a,b) = (a&b, a^b)
+  tt1.setOutput(APInt(2, 0), APInt(2, 0)); // f(0,0) = (0,0)
+  tt1.setOutput(APInt(2, 1), APInt(2, 1)); // f(0,1) = (0,1)
+  tt1.setOutput(APInt(2, 2), APInt(2, 1)); // f(1,0) = (0,1)
+  tt1.setOutput(APInt(2, 3), APInt(2, 2)); // f(1,1) = (1,0)
+
+  // tt2: g(a,b) = f(b,a) = (b&a, b^a) - same function with swapped inputs
+  tt2.setOutput(APInt(2, 0), APInt(2, 0)); // g(0,0) = (0,0)
+  tt2.setOutput(APInt(2, 1), APInt(2, 1)); // g(0,1) = (0,1)
+  tt2.setOutput(APInt(2, 2), APInt(2, 1)); // g(1,0) = (0,1)
+  tt2.setOutput(APInt(2, 3), APInt(2, 2)); // g(1,1) = (1,0)
+
+  NPNClass canonical1 = NPNClass::computeNPNCanonicalForm(tt1);
+  NPNClass canonical2 = NPNClass::computeNPNCanonicalForm(tt2);
+
+  // Since the functions are equivalent under permutation, their canonical forms
+  // should be equivalent (though permutations might differ)
+  EXPECT_TRUE(canonical1.equivalentOtherThanPermutation(canonical2));
+}
+
+TEST(NPNClassTest, MultiBitOutputMapping) {
+  // Test input mapping with multi-bit outputs
+  BinaryTruthTable tt(2, 3); // 2 inputs, 3 outputs
+
+  NPNClass npn1(tt, {0, 1}, 0, 0); // Identity permutation
+  NPNClass npn2(tt, {1, 0}, 0, 0); // Swapped permutation
+
+  auto mapping = npn1.getInputMappingTo(npn2);
+  EXPECT_EQ(mapping.size(), 2u);
+
+  // Verify the mapping relationship
+  for (unsigned i = 0; i < 2; ++i) {
+    unsigned targetCanonicalPos = npn2.inputPermutation[i];
+    unsigned npn1CanonicalPos = npn1.inputPermutation[mapping[i]];
+    EXPECT_EQ(targetCanonicalPos, npn1CanonicalPos);
+  }
+}
+
+TEST(NPNClassTest, MultiBitOutputLexicographical) {
+  // Test lexicographical ordering with multi-bit outputs
+  BinaryTruthTable tt1(2, 2, APInt(8, 0x12)); // 00010010
+  BinaryTruthTable tt2(2, 2, APInt(8, 0x34)); // 00110100
+
+  NPNClass npn1(tt1);
+  NPNClass npn2(tt2);
+
+  // 0x12 < 0x34, so npn1 should be lexicographically smaller
+  EXPECT_TRUE(npn1.isLexicographicallySmaller(npn2));
+  EXPECT_FALSE(npn2.isLexicographicallySmaller(npn1));
 }
