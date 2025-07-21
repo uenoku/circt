@@ -26,10 +26,10 @@ typedef struct IgraphInstancePath IgraphInstancePath;
 // InstancePath API
 //===----------------------------------------------------------------------===//
 
+MLIR_CAPI_EXPORTED IgraphInstancePath igraphInstancePathCreate(void *path,
+                                                               size_t size);
 /// Get an instance at the specified index. Returns null operation if index is
 /// out of bounds.
-MLIR_CAPI_EXPORTED IgraphInstancePath igraphInstancePathCreate(void *path,
-                                                           size_t size);
 MLIR_CAPI_EXPORTED MlirOperation igraphInstancePathGet(IgraphInstancePath path,
                                                        size_t index);
 MLIR_CAPI_EXPORTED size_t igraphInstancePathSize(IgraphInstancePath path);
