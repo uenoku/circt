@@ -51,6 +51,19 @@ struct BinaryTruthTable {
            "Truth table size mismatch");
   }
 
+  BinaryTruthTable(unsigned numInputs, unsigned numOutputs,
+                   ArrayRef<APInt> outputValues)
+      : numInputs(numInputs), numOutputs(numOutputs),
+        table((1u << numInputs) * numOutputs, 0) {
+    assert(outputValues.size() == numOutputs && "Output values size mismatch");
+    for (unsigned i = 0; i < (1u << numInputs); ++i) {
+      llvm::APInt output(numOutputs, 0);
+      for (unsigned j = 0; j < numOutputs; ++j)
+        output.setBitVal(j, outputValues[j][i]);
+      setOutput(APInt(numInputs, i), output);
+    }
+  }
+
   /// Constructor for a truth table with given dimensions, initialized to zero.
   BinaryTruthTable(unsigned numInputs, unsigned numOutputs)
       : numInputs(numInputs), numOutputs(numOutputs),
