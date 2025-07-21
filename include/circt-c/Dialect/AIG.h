@@ -9,8 +9,8 @@
 #ifndef CIRCT_C_DIALECT_AIG_H
 #define CIRCT_C_DIALECT_AIG_H
 
-#include "mlir-c/IR.h"
 #include "circt-c/Support/InstancePath.h"
+#include "mlir-c/IR.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,26 +29,20 @@ MLIR_CAPI_EXPORTED void registerAIGPasses(void);
 // LongestPathAnalysis
 //===----------------------------------------------------------------------===//
 
-// Opaque handle to LongestPathDataflowPath
-DEFINE_C_API_STRUCT(AIGLongestPathDataflowPath, void);
+// Opaque handle to LongestPathObject
+DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
 
 // Opaque handle to LongestPathHistory
 DEFINE_C_API_STRUCT(AIGLongestPathHistory, void);
+
+// Opaque handle to LongestPathDataflowPath
+DEFINE_C_API_STRUCT(AIGLongestPathDataflowPath, void);
 
 // Opaque handle to LongestPathAnalysis
 DEFINE_C_API_STRUCT(AIGLongestPathAnalysis, void);
 
 // Opaque handle to LongestPathCollection
 DEFINE_C_API_STRUCT(AIGLongestPathCollection, void);
-
-// Opaque handle to HWInstancePath
-struct HWInstancePath {
-  void *ptr;
-  size_t size;
-};
-
-// Opaque handle to LongestPathObject
-DEFINE_C_API_STRUCT(AIGLongestPathObject, void);
 
 #undef DEFINE_C_API_STRUCT
 
@@ -85,8 +79,9 @@ MLIR_CAPI_EXPORTED MlirStringRef aigLongestPathCollectionGetPath(
     AIGLongestPathCollection collection, int pathIndex);
 
 // Get a specific path from the collection as DataflowPath object
-MLIR_CAPI_EXPORTED AIGLongestPathDataflowPath aigLongestPathCollectionGetDataflowPath(
-    AIGLongestPathCollection collection, size_t pathIndex);
+MLIR_CAPI_EXPORTED AIGLongestPathDataflowPath
+aigLongestPathCollectionGetDataflowPath(AIGLongestPathCollection collection,
+                                        size_t pathIndex);
 
 //===----------------------------------------------------------------------===//
 // DataflowPath API

@@ -285,30 +285,4 @@ StringAttr getNameForValue(Value value);
 } // namespace aig
 } // namespace circt
 
-namespace llvm {
-// Provide DenseMapInfo for Object.
-template <>
-struct DenseMapInfo<circt::aig::Object> {
-  using Info = llvm::DenseMapInfo<
-      std::tuple<circt::igraph::InstancePath, mlir::Value, size_t>>;
-  using Object = circt::aig::Object;
-  static Object getEmptyKey() {
-    auto [path, value, bitPos] = Info::getEmptyKey();
-    return Object(path, value, bitPos);
-  }
-
-  static Object getTombstoneKey() {
-    auto [path, value, bitPos] = Info::getTombstoneKey();
-    return Object(path, value, bitPos);
-  }
-  static llvm::hash_code getHashValue(Object object) {
-    return Info::getHashValue(
-        {object.instancePath, object.value, object.bitPos});
-  }
-  static bool isEqual(const Object &a, const Object &b) {
-    return Info::isEqual({a.instancePath, a.value, a.bitPos},
-                         {b.instancePath, b.value, b.bitPos});
-  }
-};
-} // namespace llvm
 #endif // CIRCT_ANALYSIS_AIG_ANALYSIS_H
