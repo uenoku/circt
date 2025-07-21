@@ -32,6 +32,7 @@ add_circt_public_c_api_library(CIRCTCAPIAIG
 
   LINK_LIBS PUBLIC
   MLIRCAPIIR
+  CIRCTCAPISupport
   CIRCTAIG
   CIRCTAIGAnalysis
   CIRCTAIGTransforms

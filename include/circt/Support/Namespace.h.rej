@@ -1,0 +1,25 @@
+--- include/circt/Support/Namespace.h
++++ include/circt/Support/Namespace.h
+@@ -16,6 +16,7 @@
+ 
+ #include "circt/Support/LLVM.h"
+ #include "circt/Support/SymCache.h"
++#include "mlir/IR/BuiltinOps.h"
+ #include "llvm/ADT/SmallString.h"
+ #include "llvm/ADT/StringSet.h"
+ #include "llvm/ADT/Twine.h"
+@@ -42,6 +43,14 @@ class Namespace {
+     return *this;
+   }
+ 
++  void add(mlir::ModuleOp module) {
++    assert(module->getNumRegions() == 1);
++    for (auto &op : module.getBody(0)->getOperations())
++      if (auto symbol = op.getAttrOfType<mlir::StringAttr>(
++              SymbolTable::getSymbolAttrName()))
++        nextIndex.insert({symbol.getValue(), 0});
++  }
++
+   /// SymbolCache initializer; initialize from every key that is convertible to
+   /// a StringAttr in the SymbolCache.
+   void add(SymbolCache &symCache) {

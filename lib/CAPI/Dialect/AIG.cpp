@@ -7,9 +7,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt-c/Dialect/AIG.h"
+#include "circt-c/Support/InstancePath.h"
+#include "circt/Analysis/DebugInfo.h"
 #include "circt/Dialect/AIG/AIGDialect.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
+#include "circt/Support/InstanceGraph.h"
+#include "circt/Support/InstanceGraphInterface.h"
 #include "mlir-c/BuiltinAttributes.h"
 #include "mlir-c/IR.h"
 #include "mlir-c/Support.h"
@@ -17,7 +21,12 @@
 #include "mlir/CAPI/Registration.h"
 #include "mlir/CAPI/Support.h"
 #include "mlir/Pass/AnalysisManager.h"
+#include "llvm/ADT/ImmutableList.h"
+#include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/PointerUnion.h"
 #include "llvm/Support/JSON.h"
+#include <memory>
+#include <tuple>
 
 using namespace circt;
 using namespace circt::aig;
@@ -34,6 +43,30 @@ struct LongestPathAnalysisWrapper {
 
 DEFINE_C_API_PTR_METHODS(AIGLongestPathAnalysis, LongestPathAnalysisWrapper)
 DEFINE_C_API_PTR_METHODS(AIGLongestPathCollection, LongestPathCollection)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathDataflowPath, DataflowPath)
+DEFINE_C_API_PTR_METHODS(AIGLongestPathHistory,
+                         llvm::ImmutableListImpl<DebugPoint>)
+
+llvm::PointerUnion<Object *, DataflowPath::OutputPort *>
+unwrap(AIGLongestPathObject object) {
+  return llvm::PointerUnion<
+      Object *, DataflowPath::OutputPort *>::getFromOpaqueValue(object.ptr);
+}
+
+AIGLongestPathObject
+wrap(llvm::PointerUnion<Object *, DataflowPath::OutputPort *> object) {
+  return AIGLongestPathObject{object.getOpaqueValue()};
+}
+AIGLongestPathObject wrap(const Object *object) {
+  auto ptr = llvm::PointerUnion<Object *, DataflowPath::OutputPort *>(
+      const_cast<Object *>(object));
+  return wrap(ptr);
+}
+AIGLongestPathObject wrap(const DataflowPath::OutputPort *object) {
+  auto ptr = llvm::PointerUnion<Object *, DataflowPath::OutputPort *>(
+      const_cast<DataflowPath::OutputPort *>(object));
+  return wrap(ptr);
+}
 
 //===----------------------------------------------------------------------===//
 // LongestPathAnalysis C API
@@ -118,4 +151,122 @@ aigLongestPathCollectionGetPath(AIGLongestPathCollection collection,
   MlirAttribute strAttr =
       mlirStringAttrGet(ctx, mlirStringRefCreateFromCString(os.str().c_str()));
   return mlirStringAttrGetValue(strAttr);
+}
+
+// Get a specific path from the collection as DataflowPath object
+AIGLongestPathDataflowPath
+aigLongestPathCollectionGetDataflowPath(AIGLongestPathCollection collection,
+                                        size_t index) {
+  auto *wrapper = unwrap(collection);
+  auto &path = wrapper->paths[index];
+  return wrap(&path);
+}
+
+//===----------------------------------------------------------------------===//
+// DataflowPath API
+//===----------------------------------------------------------------------===//
+
+int64_t aigLongestPathDataflowPathGetDelay(AIGLongestPathDataflowPath path) {
+  auto *wrapper = unwrap(path);
+  return wrapper->getDelay();
+}
+
+AIGLongestPathObject
+aigLongestPathDataflowPathGetFanIn(AIGLongestPathDataflowPath path) {
+  auto *wrapper = unwrap(path);
+  auto &fanIn = wrapper->getFanIn();
+  return wrap(const_cast<Object *>(&fanIn));
+}
+
+AIGLongestPathObject
+aigLongestPathDataflowPathGetFanOut(AIGLongestPathDataflowPath path) {
+  auto *wrapper = unwrap(path);
+  if (auto *object = std::get_if<Object>(&wrapper->getFanOut())) {
+    return wrap(object);
+  }
+  auto *ptr = std::get_if<DataflowPath::OutputPort>(&wrapper->getFanOut());
+  return wrap(ptr);
+}
+
+AIGLongestPathHistory
+aigLongestPathDataflowPathGetHistory(AIGLongestPathDataflowPath path) {
+  auto *wrapper = unwrap(path);
+  return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(
+      wrapper->getHistory().getInternalPointer()));
+}
+
+MlirOperation
+aigLongestPathDataflowPathGetRoot(AIGLongestPathDataflowPath path) {
+  auto *wrapper = unwrap(path);
+  return wrap(wrapper->getRoot());
+}
+
+//===----------------------------------------------------------------------===//
+// History API
+//===----------------------------------------------------------------------===//
+
+bool aigLongestPathHistoryIsEmpty(AIGLongestPathHistory history) {
+  auto *wrapper = unwrap(history);
+  return llvm::ImmutableList<DebugPoint>(wrapper).isEmpty();
+}
+
+void aigLongestPathHistoryGetHead(AIGLongestPathHistory history,
+                                  AIGLongestPathObject *object, int64_t *delay,
+                                  MlirStringRef *comment) {
+  auto *wrapper = unwrap(history);
+  auto list = llvm::ImmutableList<DebugPoint>(wrapper);
+
+  auto &head = list.getHead();
+  *object = wrap(&head.object);
+  *delay = head.delay;
+  *comment = mlirStringRefCreate(head.comment.data(), head.comment.size());
+}
+
+AIGLongestPathHistory
+aigLongestPathHistoryGetTail(AIGLongestPathHistory history) {
+  auto *wrapper = unwrap(history);
+  auto list = llvm::ImmutableList<DebugPoint>(wrapper);
+  auto *tail = list.getTail().getInternalPointer();
+  return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(tail));
+}
+
+//===----------------------------------------------------------------------===//
+// Object API
+//===----------------------------------------------------------------------===//
+
+IgraphInstancePath
+aigLongestPathObjectGetInstancePath(AIGLongestPathObject object) {
+  auto wrapper = unwrap(object);
+  auto *ptr = wrapper.dyn_cast<Object *>();
+  if (ptr)
+    return igraphInstancePathCreate(const_cast<igraph::InstanceOpInterface *>(
+                                        ptr->instancePath.getPath().data()),
+                                    ptr->instancePath.getPath().size());
+
+  return igraphInstancePathCreate(nullptr, 0);
+}
+
+MlirStringRef aigLongestPathObjectName(AIGLongestPathObject object) {
+  auto wrapper = unwrap(object);
+  auto *ptr = wrapper.dyn_cast<Object *>();
+
+  if (ptr) {
+    auto name = getNameForValue(ptr->value);
+    return mlirStringRefCreate(name.data(), name.size());
+  }
+  auto [module, resultNumber, bitPos] =
+      *dyn_cast<DataflowPath::OutputPort *>(wrapper);
+  auto name = module.getOutputName(resultNumber);
+  return mlirStringRefCreate(name.data(), name.size());
+}
+
+size_t aigLongestPathObjectBitPos(AIGLongestPathObject object) {
+  auto wrapper = unwrap(object);
+  auto *ptr = dyn_cast<Object *>(wrapper);
+  if (ptr)
+    return ptr->bitPos;
+
+  auto [module, resultNumber, bitPos] =
+      *wrapper.dyn_cast<DataflowPath::OutputPort *>();
+  return bitPos;
 }

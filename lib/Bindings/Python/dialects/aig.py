@@ -4,7 +4,7 @@
 
 from . import aig
 from ._aig_ops_gen import *
-from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection
+from .._mlir_libs._circt._aig import _LongestPathAnalysis, _LongestPathCollection, _LongestPathDataflowPath, _LongestPathHistory, _LongestPathObject
 
 import json
 from dataclasses import dataclass
@@ -45,14 +45,10 @@ class Object:
     including its location in the instance hierarchy, signal name, and bit position
     for multi-bit signals.
     Attributes:
-        instance_path: Hierarchical path to the module containing this object
-        name: The signal/port name within the module
-        bit_pos: Bit position for multi-bit signals (0 for single-bit)
+        _object: The underlying C++ object
     """
 
-  instance_path: List[InstancePathElement]
-  name: str
-  bit_pos: int
+  _object: _LongestPathObject
 
   # TODO: Associate with an MLIR value/op
 
@@ -65,15 +61,29 @@ class Object:
                     for elem in self.instance_path)
     return f"{path} {self.name}[{self.bit_pos}]"
 
-  @classmethod
-  def from_dict(cls, data: Dict[str, Any]) -> "Object":
-    """Create an Object from a dictionary representation."""
-    instance_path = [
-        InstancePathElement.from_dict(elem) for elem in data["instance_path"]
-    ]
-    return cls(instance_path=instance_path,
-               name=data["name"],
-               bit_pos=data["bit_pos"])
+  def __repr__(self) -> str:
+    return f"Object({self.instance_path}, {self.name}, {self.bit_pos})"
+
+  @property
+  def instance_path(self) -> List[InstancePathElement]:
+    """Get the hierarchical instance path to this object."""
+    operations =  self._object.instance_path
+    def extract(instance):
+      return InstancePathElement(
+          instance_name=str(instance.attributes["instanceName"].value),
+          module_name=str(instance.attributes["moduleName"].value),
+      )
+    return [extract(op) for op in operations]
+
+  @property
+  def name(self) -> str:
+    """Get the name of this signal/port."""
+    return self._object.name
+
+  @property
+  def bit_pos(self) -> int:
+    """Get the bit position for multi-bit signals."""
+    return self._object.bit_pos
 
 
 @dataclass
@@ -139,33 +149,49 @@ class DataflowPath:
     from an output point (fan-out) back to an input point (fan-in), including
     all intermediate debug points and the total delay.
     Attributes:
-        fan_out: The output signal/object where this path ends
-        path: The OpenPath containing the detailed path information
-        root: The root module name for this analysis
+        _path: The underlying C++ dataflow path object
     """
 
-  fan_out: Object  # Output endpoint of the path
-  path: OpenPath  # Detailed path information with history
-  root: str  # Root module name
+  _path: _LongestPathDataflowPath
 
   # ========================================================================
-  # Factory Methods for Object Creation
+  # Properties
   # ========================================================================
 
-  @classmethod
-  def from_dict(cls, data: Dict[str, Any]) -> "DataflowPath":
-    """Create a DataflowPath from a dictionary representation."""
-    return cls(
-        fan_out=Object.from_dict(data["fan_out"]),
-        path=OpenPath.from_dict(data["path"]),
-        root=data["root"],
-    )
+  @property
+  def fan_in(self) -> Object:
+    """Get the source object where the path begins."""
+    return Object(_object=self._path.fan_in)
 
-  @classmethod
-  def from_json_string(cls, json_str: str) -> "DataflowPath":
-    """Create a DataflowPath from a JSON string representation."""
-    data = json.loads(json_str)
-    return cls.from_dict(data)
+  @property
+  def fan_out(self) -> Object:
+    """Get the destination object where the path ends."""
+    return Object(_object=self._path.fan_out)
+
+  @property
+  def delay(self) -> int:
+    """Get the total delay through this path in time units."""
+    return self._path.delay
+
+  @property
+  def history(self) -> List[DebugPoint]:
+    """Get the sequence of debug points along the path."""
+    result = []
+    current = self._path.history
+    while not current.empty:
+      obj, delay, comment = current.head
+      result.append(DebugPoint(
+          object=Object(_object=obj),
+          delay=delay,
+          comment=str(comment)
+      ))
+      current = current.tail
+    return result
+
+  @property
+  def root(self) -> str:
+    """Get the root module name."""
+    return str(self._path.root.attributes["sym_name"].value)
 
   @property
   def delay(self) -> int:
@@ -319,9 +345,9 @@ class LongestPathCollection:
     if self.cache[index] is not None:
       return self.cache[index]
 
-    # Parse JSON and cache the result
-    json_str = self.collection.get_path(index)
-    self.cache[index] = DataflowPath.from_json_string(json_str)
+    # Get path object and cache the result
+    path = self.collection.get_path(index)
+    self.cache[index] = DataflowPath(_path=path)
     return self.cache[index]
 
   # ========================================================================
