@@ -64,6 +64,7 @@ static void registerPasses() {
   registerHandshakePasses();
   registerKanagawaPasses();
   registerPipelinePasses();
+  registerSynthesisPasses();
   registerSynthesisPipeline();
   mlirRegisterCIRCTConversionPasses();
   mlirRegisterCIRCTTransformsPasses();

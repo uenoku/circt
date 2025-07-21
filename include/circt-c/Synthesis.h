@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 MLIR_CAPI_EXPORTED void registerSynthesisPipeline(void);
+MLIR_CAPI_EXPORTED void registerSynthesisPasses(void);
 
 #ifdef __cplusplus
 }
