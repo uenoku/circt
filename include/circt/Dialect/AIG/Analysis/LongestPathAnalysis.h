@@ -20,8 +20,11 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
@@ -191,6 +194,35 @@ public:
   LogicalResult getResults(Value value, size_t bitPos,
                            SmallVectorImpl<DataflowPath> &results) const;
 
+  // Replace the value. This is used to update the analysis when the IR is
+  // modified. NOTE: This does NOT incrementally update the analysis, it
+  // simply replaces the value with the new one so the value look up doesn't
+  // cause UAF.
+
+  class FrozenResults : public mlir::RewriterBase::Listener {
+  public:
+    DenseMap<std::pair<Value, size_t>, int64_t> results;
+
+    void notifyOperationReplaced(Operation *op,
+                                 ValueRange replacement) override {
+      // Update the results for the replaced operation.
+      for (auto [oldValue, newValue] :
+           llvm::zip(op->getResults(), replacement)) {
+        for (size_t bitPos = 0;
+             bitPos < oldValue.getType().getIntOrFloatBitWidth(); ++bitPos) {
+          auto key = std::make_pair(oldValue, bitPos);
+          auto it = results.find(key);
+          if (it != results.end()) {
+            results[std::make_pair(newValue, bitPos)] = it->second;
+            results.erase(key);
+          }
+        }
+      }
+    }
+  };
+
+  std::unique_ptr<FrozenResults> getRewriterListener(StringAttr moduleName) const;
+
   // Return the maximum delay to the given value for all bit positions.
   int64_t getMaxDelay(Value value) const;
 
@@ -267,7 +299,7 @@ public:
 // for computing statistics and CAPI.
 class LongestPathCollection {
 public:
-  LongestPathCollection(MLIRContext *ctx) : ctx(ctx){};
+  LongestPathCollection(MLIRContext *ctx) : ctx(ctx) {};
   const DataflowPath &getPath(unsigned index) const { return paths[index]; }
   MLIRContext *getContext() const { return ctx; }
   llvm::SmallVector<DataflowPath, 64> paths;

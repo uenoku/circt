@@ -41,6 +41,7 @@
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -591,6 +592,8 @@ public:
   llvm::ImmutableListFactory<DebugPoint> *getDebugPointFactory() const {
     return debugPointFactory.get();
   }
+
+  const auto &getCachedResults() const { return cachedResults; }
 
 private:
   void putUnclosedResult(const Object &object, int64_t delay,
@@ -1342,6 +1345,9 @@ struct LongestPathAnalysis::Impl {
 
   llvm::ArrayRef<hw::HWModuleOp> getTopModules() const { return topModules; }
 
+  std::unique_ptr<FrozenResults>
+  getRewriterListener(StringAttr moduleName) const;
+
 private:
   LogicalResult getResultsImpl(
       const Object &originalObject, Value value, size_t bitPos,
@@ -1836,6 +1842,30 @@ LogicalResult Oracle::finalize() {
   // Create the local visitor for this module.
   localVisitor = std::make_unique<LocalVisitor>(module, ctx);
 
-
   return localVisitor->initializeAndRun();
+}
+
+std::unique_ptr<LongestPathAnalysis::FrozenResults>
+LongestPathAnalysis::Impl::getRewriterListener(StringAttr moduleName) const {
+  auto frozenResults = std::make_unique<FrozenResults>();
+  auto it = ctx.localVisitors.find(moduleName);
+  if (it == ctx.localVisitors.end())
+    return nullptr;
+  auto *localVisitor = it->second.get();
+  localVisitor->waitUntilDone();
+  for (const auto &[key, value] : localVisitor->getCachedResults()) {
+    auto [arg, argBitPos] = key;
+    int64_t maxDelay = 0;
+    for (const auto &result : value) {
+      maxDelay = std::max(maxDelay, result.delay);
+    }
+    frozenResults->results[{arg, argBitPos}] = maxDelay;
+  }
+
+  return frozenResults;
+}
+
+std::unique_ptr<LongestPathAnalysis::FrozenResults>
+LongestPathAnalysis::getRewriterListener(StringAttr moduleName) const {
+  return impl->getRewriterListener(moduleName);
 }

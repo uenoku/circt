@@ -10,10 +10,13 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+
+#include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Support/Debug.h"
+#include <cstdint>
 
 #define DEBUG_TYPE "datapath-to-comb"
 
@@ -80,6 +83,8 @@ struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
     // yosys's `alumacc` lowering - a coarse grained timing model would help to
     // sort the inputs according to arrival time.
     auto targetAddends = op.getNumResults();
+    comb::wallaceReduction(rewriter, loc, width, targetAddends, addends);
+
     rewriter.replaceOp(op, comb::wallaceReduction(rewriter, loc, width,
                                                   targetAddends, addends));
     return success();
@@ -92,7 +97,7 @@ struct DatapathPartialProductOpConversion
 
   DatapathPartialProductOpConversion(MLIRContext *context, bool forceBooth)
       : OpConversionPattern<PartialProductOp>(context),
-        forceBooth(forceBooth){};
+        forceBooth(forceBooth) {};
 
   const bool forceBooth;
 
@@ -264,6 +269,7 @@ static void populateDatapathToCombConversionPatterns(
 }
 
 void ConvertDatapathToCombPass::runOnOperation() {
+  auto analysis = getAnalysis<aig::LongestPathAnalysis>();
   ConversionTarget target(getContext());
 
   target.addLegalDialect<comb::CombDialect, hw::HWDialect>();

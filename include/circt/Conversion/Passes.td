@@ -887,6 +887,7 @@ def ConvertDatapathToComb : Pass<"convert-datapath-to-comb"> {
     Option<"forceBooth", "lower-partial-product-to-booth", "bool", "false",
            "Force all partial products to be lowered to Booth arrays.">
   ];
+  let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect"];
 }
 
 #endif // CIRCT_CONVERSION_PASSES_TD
