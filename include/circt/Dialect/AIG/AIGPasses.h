@@ -9,6 +9,11 @@
 #ifndef CIRCT_DIALECT_AIG_AIGPASSES_H
 #define CIRCT_DIALECT_AIG_AIGPASSES_H
 
+#include "circt/Dialect/AIG/AIGDialect.h"
+#include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <optional>
@@ -20,6 +25,7 @@ class Pass;
 #include "circt/Dialect/AIG/AIGPassesEnums.h.inc"
 
 namespace circt {
+
 namespace aig {
 
 #define GEN_PASS_DECL

@@ -25,6 +25,7 @@ target_link_libraries(circt-opt
   CIRCTExportVerilog
   CIRCTLECTransforms
   CIRCTTransforms
+  CIRCTSynthesis
 
   MLIRIR
   MLIRLLVMDialect
