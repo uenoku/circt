@@ -449,7 +449,9 @@ public:
 
   Oracle(Context *ctx, Location loc, StringRef pipelineStr)
       : ctx(ctx), loc(loc), pipelineStr(pipelineStr) {
-    block = std::make_unique<Block>();
+    mlir::OpBuilder builder(ctx->getContext());
+    moduleOp = builder.create<mlir::ModuleOp>(loc);
+    block = moduleOp->getBody();
   }
 
 public:
@@ -472,7 +474,7 @@ public:
   // This is the module created as part of the analysis.
   mlir::OwningOpRef<mlir::ModuleOp> moduleOp;
   hw::HWModuleOp module;
-  std::unique_ptr<Block> block;
+  Block *block;
   SmallVector<Value> outputs;
 
   // A map from operation name, types to longest paths.
@@ -514,10 +516,12 @@ LogicalResult Oracle::add(Operation *add) {
   };
 
   SmallVector<Value> inputs;
+
+  cache[key] = std::make_pair(block->getNumArguments(), outputs.size());
   inputs.reserve(add->getNumOperands());
   // Fix: Use the context directly instead of trying to get it from the block
   auto builder = OpBuilder(ctx->getContext());
-  builder.setInsertionPointToEnd(block.get());
+  builder.setInsertionPointToStart(block);
 
   for (auto input : add->getOperands()) {
     auto type = getType(input.getType());
@@ -532,6 +536,7 @@ LogicalResult Oracle::add(Operation *add) {
   }
 
   auto *clonedOp = builder.clone(*add);
+  clonedOp->setOperands(inputs);
   for (Value result : clonedOp->getResults()) {
     auto type = getType(result.getType());
     if (!type)
@@ -542,6 +547,7 @@ LogicalResult Oracle::add(Operation *add) {
 
     outputs.push_back(result);
   }
+
   return success();
 }
 
@@ -997,17 +1003,31 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
 LogicalResult LocalVisitor::visitDefault(OpResult value, size_t bitPos,
                                          SmallVectorImpl<OpenPath> &results) {
   // Query it to an oracle.
+  LLVM_DEBUG({
+    llvm::dbgs() << "Visiting default: ";
+    llvm::dbgs() << " " << value << "[" << bitPos << "]\n";
+  });
   SmallVector<std::tuple<size_t, size_t, int64_t>> oracleResults;
   auto paths = oracle->getResults(value, bitPos, oracleResults);
-  if (failed(paths))
-    return failure();
+  if (failed(paths)) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Failed to get results for: " << value << "[" << bitPos
+                   << "]\n";
+    });
+    return success();
+  }
   auto *op = value.getDefiningOp();
-  for (auto [inputPortIndex, fanInBitPos, delay] : oracleResults)
+  for (auto [inputPortIndex, fanInBitPos, delay] : oracleResults) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Adding edge: " << value << "[" << bitPos << "] -> "
+                   << op->getOperand(inputPortIndex) << "[" << fanInBitPos
+                   << "] with delay " << delay << "\n";
+    });
     if (failed(addEdge(op->getOperand(inputPortIndex), fanInBitPos, delay,
                        results)))
       return failure();
+  }
 
-  assert(false && "unimplemented");
   return success();
 }
 
@@ -1771,22 +1791,29 @@ LogicalResult Oracle::finalize() {
     ports.push_back(info);
   }
 
-  moduleOp = builder.create<mlir::ModuleOp>(loc);
   builder.setInsertionPointToStart(moduleOp->getBody());
 
   module = hw::HWModuleOp::create(
       builder, loc, builder.getStringAttr("LongestPathOracle"), ports);
+
+  // Store the old arguments before moving operations
+  SmallVector<Value> oldArguments(block->getArguments().begin(),
+                                  block->getArguments().end());
+
   // Move the block into the module.
-  module.getBodyBlock()->getOperations().splice(module.getBodyBlock()->begin(),
-                                                block.get()->getOperations());
+  module.getBodyBlock()->getOperations().splice(
+      module.getBodyBlock()->begin(), block->getOperations(),
+      std::next(block->getOperations().begin()), block->getOperations().end());
   // Replace values.
-  for (auto [blockArg, moduleArg] : llvm::zip(
-           module.getBodyBlock()->getArguments(), block->getArguments())) {
+  for (auto [blockArg, moduleArg] :
+       llvm::zip(module.getBodyBlock()->getArguments(), oldArguments)) {
     moduleArg.replaceAllUsesWith(blockArg);
   }
 
   module.getBodyBlock()->getTerminator()->setOperands(outputs);
-  module->dump();
+  block->eraseArguments([](BlockArgument) { return true; });
+  for (size_t i = 0, e = block->getParent()->getNumArguments(); i < e; ++i)
+    block->getParent()->eraseArgument(0);
 
   // Run lowering pipeline.
   auto pipeline =
@@ -1809,6 +1836,6 @@ LogicalResult Oracle::finalize() {
   // Create the local visitor for this module.
   localVisitor = std::make_unique<LocalVisitor>(module, ctx);
 
-  block.reset();
+
   return localVisitor->initializeAndRun();
 }
