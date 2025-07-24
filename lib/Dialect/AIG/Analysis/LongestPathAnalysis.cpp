@@ -457,7 +457,7 @@ public:
   LogicalResult finalize();
   Location loc;
 
-  hw::HWModuleOp getModuleOp() const { return moduleOp.get(); }
+  hw::HWModuleOp getModuleOp() const { return module; }
   static mlir::FunctionType getFunctionTypeForOp(Operation *op);
 
   // Get the longest paths for the given value and bit position.
@@ -470,7 +470,8 @@ public:
       SmallVectorImpl<std::tuple<size_t, size_t, int64_t>> &results) const;
 
   // This is the module created as part of the analysis.
-  mlir::OwningOpRef<hw::HWModuleOp> moduleOp;
+  mlir::OwningOpRef<mlir::ModuleOp> moduleOp;
+  hw::HWModuleOp module;
   std::unique_ptr<Block> block;
   SmallVector<Value> outputs;
 
@@ -514,7 +515,10 @@ LogicalResult Oracle::add(Operation *add) {
 
   SmallVector<Value> inputs;
   inputs.reserve(add->getNumOperands());
-  auto builder = OpBuilder::atBlockEnd(block.get());
+  // Fix: Use the context directly instead of trying to get it from the block
+  auto builder = OpBuilder(ctx->getContext());
+  builder.setInsertionPointToEnd(block.get());
+
   for (auto input : add->getOperands()) {
     auto type = getType(input.getType());
     if (!type)
@@ -1185,6 +1189,7 @@ LogicalResult LocalVisitor::initializeAndRun() {
   // Initialze the oracle.
   StringRef pipelineStr = "hw.module(synthesis-aig-lowering-pipeline, "
                           "synthesis-aig-optimization-pipeline)";
+
   oracle = std::make_unique<Oracle>(ctx, module->getLoc(), pipelineStr);
   module.walk([&](Operation *op) {
     // Check if "visit" is implemented for the operation.
@@ -1213,7 +1218,8 @@ LogicalResult LocalVisitor::initializeAndRun() {
     return WalkResult::advance();
   });
 
-  oracle->finalize();
+  if (failed(oracle->finalize()))
+    return failure();
 
   // Initialize the results for the block arguments.
   for (auto blockArgument : module.getBodyBlock()->getArguments())
@@ -1744,7 +1750,6 @@ LogicalResult Oracle::finalize() {
     return success();
 
   // Create the owning hw::HWModuleOp with the outputs.
-  auto moduleName = "LongestPathOracle";
   mlir::OpBuilder builder(ctx->getContext());
   SmallVector<hw::PortInfo> ports;
   ports.reserve(outputs.size() + block->getNumArguments());
@@ -1766,25 +1771,32 @@ LogicalResult Oracle::finalize() {
     ports.push_back(info);
   }
 
-  moduleOp = hw::HWModuleOp::create(
+  moduleOp = builder.create<mlir::ModuleOp>(loc);
+  builder.setInsertionPointToStart(moduleOp->getBody());
+
+  module = hw::HWModuleOp::create(
       builder, loc, builder.getStringAttr("LongestPathOracle"), ports);
+  // Move the block into the module.
+  module.getBodyBlock()->getOperations().splice(module.getBodyBlock()->begin(),
+                                                block.get()->getOperations());
   // Replace values.
   for (auto [blockArg, moduleArg] : llvm::zip(
-           moduleOp->getBodyBlock()->getArguments(), block->getArguments())) {
+           module.getBodyBlock()->getArguments(), block->getArguments())) {
     moduleArg.replaceAllUsesWith(blockArg);
   }
-  // Move the block into the module.
-  moduleOp->getBodyBlock()->getOperations().splice(
-      moduleOp->getBodyBlock()->begin(), block.get()->getOperations());
-  block.reset();
 
-  builder.setInsertionPointToEnd(moduleOp->getBodyBlock());
-  builder.create<hw::OutputOp>(loc, outputs);
+  module.getBodyBlock()->getTerminator()->setOperands(outputs);
+  module->dump();
 
   // Run lowering pipeline.
   auto pipeline =
       builder.getStringAttr("hw.module(synthesis-aig-lowering-pipeline, "
                             "synthesis-aig-optimization-pipeline)");
+  auto opm = mlir::parsePassPipeline(pipeline);
+  if (failed(opm))
+    return mlir::emitError(loc)
+           << "Failed to parse lowering pipeline: " << pipeline;
+
   mlir::PassManager pm(ctx->getContext());
   if (failed(parsePassPipeline(pipeline, pm)))
     return mlir::emitError(loc)
@@ -1795,6 +1807,8 @@ LogicalResult Oracle::finalize() {
            << "Failed to run lowering pipeline: " << pipeline;
 
   // Create the local visitor for this module.
-  localVisitor = std::make_unique<LocalVisitor>(moduleOp.get(), ctx);
+  localVisitor = std::make_unique<LocalVisitor>(module, ctx);
+
+  block.reset();
   return localVisitor->initializeAndRun();
 }
