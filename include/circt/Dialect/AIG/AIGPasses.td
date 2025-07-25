@@ -44,7 +44,7 @@ def PrintLongestPathAnalysis : Pass<"aig-print-longest-path-analysis", "mlir::Mo
   
   // This is uncommon for a analysis pass, but in the analysis pass we generate and lower IRs
   // for the purpose of analysis so  
-  let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect"];
+  let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect", "datapath::DatapathDialect"];
 }
 
 class ExternalSolverPass<string name> : Pass<name, "hw::HWModuleOp"> {

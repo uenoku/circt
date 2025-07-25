@@ -281,13 +281,19 @@ public:
   static StringRef getTopModuleNameAttrName() {
     return "aig.longest-path-analysis-top";
   }
+  static StringRef getDisableOracleAttrName() {
+    return "aig.longest-path-analysis-disable-oracle";
+  }
 
   MLIRContext *getContext() const { return ctx; }
 
-private:
+protected:
+  friend class LongestPathAnalysisListener;
+
   struct Impl;
   Impl *impl;
 
+private:
   mlir::MLIRContext *ctx;
 };
 
@@ -300,11 +306,11 @@ public:
 };
 
 // A wrapper class
-class LongestPathAnalysisListner : LongestPathAnalysis,
-                                   mlir::PatternRewriter::Listener {
+class LongestPathAnalysisListener : LongestPathAnalysis,
+                                    public mlir::PatternRewriter::Listener {
 public:
-  std::optional<int64_t> getMaxDelay(Value value, size_t bitPos);
-  LongestPathAnalysisListner(Operation *moduleOp, mlir::AnalysisManager &am)
+  std::optional<int64_t> getDelay(Value value, size_t bitPos);
+  LongestPathAnalysisListener(Operation *moduleOp, mlir::AnalysisManager &am)
       : LongestPathAnalysis(moduleOp, am, {false}) {}
   void notifyOperationReplaced(Operation *op, ValueRange replacement) override;
   void notifyOperationErased(Operation *op) override;

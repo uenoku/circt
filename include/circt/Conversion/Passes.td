@@ -889,7 +889,7 @@ def ConvertDatapathToComb : Pass<"convert-datapath-to-comb", "hw::HWModuleOp"> {
     Option<"disableTimingGuide",  "disable-timing-guide", "bool", 
            "false", "Disable lowering based on timing">
   ];
-  let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect"];
+  let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect", "datapath::DatapathDialect"];
 }
 
 #endif // CIRCT_CONVERSION_PASSES_TD
