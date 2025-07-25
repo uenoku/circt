@@ -16,6 +16,7 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/PriorityQueue.h"
 #include "llvm/Support/FormatVariadic.h"
 
 using namespace circt;
@@ -283,6 +284,72 @@ comb::wallaceReduction(OpBuilder &builder, Location loc, size_t width,
   assert(addends.size() <= targetAddends);
   SmallVector<Value> carrySave;
   for (auto &addend : addends) {
+    // Reverse the order of the bits
+    std::reverse(addend.begin(), addend.end());
+    carrySave.push_back(builder.create<comb::ConcatOp>(loc, addend));
+  }
+
+  // Pad with zeros
+  auto zero = builder.create<hw::ConstantOp>(loc, APInt(width, 0));
+  while (carrySave.size() < targetAddends)
+    carrySave.push_back(zero);
+
+  return carrySave;
+}
+
+SmallVector<Value> comb::wallaceReduction(
+    OpBuilder &builder, Location loc, size_t width, size_t targetAddends,
+    SmallVector<SmallVector<std::pair<int64_t, Value>>> &addends) {
+  auto falseValue = builder.create<hw::ConstantOp>(loc, APInt(1, 0));
+  SmallVector<std::pair<int64_t, Value>> carrys(width);
+  SmallVector<SmallVector<Value>> results;
+  constexpr int64_t sumDelay = 1;
+  constexpr int64_t carryDelay = 1;
+
+  struct Compare {
+    bool operator()(const std::pair<int64_t, Value> &a,
+                    const std::pair<int64_t, Value> &b) const {
+      return a.first > b.first;
+    }
+  };
+  llvm::PriorityQueue<std::pair<int64_t, Value>,
+                      std::vector<std::pair<int64_t, Value>>, Compare>
+      currentColumn;
+  for (size_t i = 0; i < width; ++i) {
+    assert(currentColumn.empty());
+    // Reduce to targetAddends.
+    for (auto &addend : addends) {
+      currentColumn.push(addend[i]);
+    }
+    for (auto &addend : carrys) {
+      currentColumn.push(addend);
+    }
+    carrys.clear();
+    while (currentColumn.size() > targetAddends && currentColumn.size() >= 3) {
+      auto [delay1, a] = currentColumn.top();
+      currentColumn.pop();
+      auto [delay2, b] = currentColumn.top();
+      currentColumn.pop();
+      auto [delay3, c] = currentColumn.top();
+      currentColumn.pop();
+      assert(a && b && c);
+      llvm::dbgs() << delay1 << " " << delay2 << " " << delay3 << "\n";
+      llvm::dbgs() << a << " " << b << " " << c << "\n";
+
+      auto [sum, carry] = comb::fullAdder(builder, loc, a, b, c);
+      currentColumn.push({std::max({delay1, delay2, delay3}) + sumDelay, sum});
+      carrys.push_back(
+          {std::max({delay1, delay2, delay3}) + carryDelay, carry});
+    }
+    assert(currentColumn.size() == targetAddends);
+    while (!currentColumn.empty()) {
+      results[i].push_back(currentColumn.top().second);
+      currentColumn.pop();
+    }
+  }
+
+  SmallVector<Value> carrySave;
+  for (auto &addend : results) {
     // Reverse the order of the bits
     std::reverse(addend.begin(), addend.end());
     carrySave.push_back(builder.create<comb::ConcatOp>(loc, addend));

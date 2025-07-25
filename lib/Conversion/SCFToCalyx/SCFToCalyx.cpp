@@ -373,24 +373,6 @@ public:
       if (extMemData.getAsObject()->empty())
         return success();
 
-      if (auto fileLoc = dyn_cast<mlir::FileLineColLoc>(funcOp->getLoc())) {
-        std::string filename = fileLoc.getFilename().str();
-        std::filesystem::path path(filename);
-        std::string jsonFileName = writeJson.getValue() + ".json";
-        auto outFileName = path.parent_path().append(jsonFileName);
-        std::ofstream outFile(outFileName);
-
-        if (!outFile.is_open()) {
-          llvm::errs() << "Unable to open file: " << outFileName.string()
-                       << " for writing\n";
-          return failure();
-        }
-        llvm::raw_os_ostream llvmOut(outFile);
-        llvm::json::OStream jsonOS(llvmOut, /*IndentSize=*/2);
-        jsonOS.value(extMemData);
-        jsonOS.flush();
-        outFile.close();
-      }
     }
 
     return success(opBuiltSuccessfully);
@@ -1306,8 +1288,7 @@ static LogicalResult buildAllocOp(ComponentLoweringState &componentState,
   bool isFloat = !memtype.getElementType().isInteger();
 
   auto shape = allocOp.getType().getShape();
-  int totalSize =
-      std::reduce(shape.begin(), shape.end(), 1, std::multiplies<int>());
+  int totalSize = 1;
   // The `totalSize <= 1` check is a hack to:
   // https://github.com/llvm/circt/pull/2661, where a multi-dimensional memory
   // whose size in some dimension equals 1, e.g. memref<1x1x1x1xi32>, will be

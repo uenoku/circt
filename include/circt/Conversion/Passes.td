@@ -875,7 +875,7 @@ def ConvertDatapathToSMT : Pass<"convert-datapath-to-smt"> {
 // ConvertDatapathToComb
 //===----------------------------------------------------------------------===//
 
-def ConvertDatapathToComb : Pass<"convert-datapath-to-comb"> {
+def ConvertDatapathToComb : Pass<"convert-datapath-to-comb", "hw::HWModuleOp"> {
   let summary = "Convert Datapath ops to Comb ops";
     let dependentDialects = [
     "circt::comb::CombDialect", "circt::datapath::DatapathDialect",
@@ -885,7 +885,9 @@ def ConvertDatapathToComb : Pass<"convert-datapath-to-comb"> {
     Option<"lowerCompressToAdd", "lower-compress-to-add", "bool", "false",
            "Lower compress operators to variadic add.">,
     Option<"forceBooth", "lower-partial-product-to-booth", "bool", "false",
-           "Force all partial products to be lowered to Booth arrays.">
+           "Force all partial products to be lowered to Booth arrays.">,
+    Option<"disableTimingGuide",  "disable-timing-guide", "bool", 
+           "false", "Disable lowering based on timing">
   ];
   let dependentDialects = ["comb::CombDialect", "hw::HWDialect", "aig::AIGDialect", "seq::SeqDialect", "mlir::ub::UBDialect"];
 }

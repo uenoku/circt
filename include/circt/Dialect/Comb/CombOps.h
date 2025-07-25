@@ -97,6 +97,10 @@ std::pair<Value, Value> fullAdder(OpBuilder &builder, Location loc, Value a,
 SmallVector<Value> wallaceReduction(OpBuilder &builder, Location loc,
                                     size_t width, size_t targetAddends,
                                     SmallVector<SmallVector<Value>> &addends);
+SmallVector<Value>
+wallaceReduction(OpBuilder &builder, Location loc, size_t width,
+                 size_t targetAddends,
+                 SmallVector<SmallVector<std::pair<int64_t, Value>>> &addends);
 
 } // namespace comb
 } // namespace circt

@@ -12,6 +12,8 @@
 
 #include "circt/Synthesis/SynthesisPipeline.h"
 #include "circt/Conversion/CombToAIG.h"
+#include "circt/Conversion/CombToDatapath.h"
+#include "circt/Conversion/DatapathToComb.h"
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -36,7 +38,12 @@ static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
   (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
 }
 
-void circt::synthesis::buildAIGLoweringPipeline(OpPassManager &pm) {
+void circt::synthesis::buildAIGLoweringPipeline(
+    OpPassManager &pm, const AIGLoweringPipelineOptions &options) {
+  if (!options.disableDatapath)
+    pm.addPass(circt::createConvertCombToDatapath());
+  pm.addPass(createCSEPass());
+  pm.addPass(createSimpleCanonicalizerPass());
   {
     // Partially legalize Comb to AIG, run CSE and canonicalization.
     circt::ConvertCombToAIGOptions convOptions;
@@ -51,7 +58,19 @@ void circt::synthesis::buildAIGLoweringPipeline(OpPassManager &pm) {
   pm.addPass(createSimpleCanonicalizerPass());
 
   pm.addPass(circt::hw::createHWAggregateToComb());
+  pm.addPass(createCSEPass());
+  pm.addPass(createSimpleCanonicalizerPass());
+
+  if (!options.disableDatapath) {
+    ConvertDatapathToCombOptions datapathOptions;
+    datapathOptions.disableTimingGuide = options.disableTiming;
+    pm.addPass(circt::createConvertDatapathToComb(datapathOptions));
+  }
+
+  pm.addPass(createCSEPass());
+  pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(circt::createConvertCombToAIG());
+
   pm.addPass(createCSEPass());
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(createCSEPass());
@@ -86,7 +105,7 @@ void circt::synthesis::buildAIGOptimizationPipeline(
 //===----------------------------------------------------------------------===//
 
 void circt::synthesis::registerSynthesisPipeline() {
-  PassPipelineRegistration<EmptyPipelineOptions>(
+  PassPipelineRegistration<AIGLoweringPipelineOptions>(
       "synthesis-aig-lowering-pipeline",
       "The default pipeline for until AIG lowering", buildAIGLoweringPipeline);
   PassPipelineRegistration<AIGOptimizationPipelineOptions>(

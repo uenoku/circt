@@ -160,8 +160,7 @@ SmallVector<SmallVector<Attribute>> sliceSubBlock(ArrayRef<Attribute> allAttrs,
                                                   ArrayRef<int64_t> memShape,
                                                   unsigned bankingDimension,
                                                   unsigned bankingFactor) {
-  size_t numElements = std::reduce(memShape.begin(), memShape.end(), 1,
-                                   std::multiplies<size_t>());
+  size_t numElements = 0;
   // `bankingFactor` number of flattened attributes that store the information
   // in the original globalOp.
   SmallVector<SmallVector<Attribute>> subBlocks;

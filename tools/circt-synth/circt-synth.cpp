@@ -47,6 +47,7 @@
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
+#include <mlir/Dialect/UB/IR/UBOps.h>
 
 namespace cl = llvm::cl;
 
@@ -84,6 +85,10 @@ static cl::opt<bool>
 
 static cl::opt<bool>
     verbosePassExecutions("verbose-pass-executions",
+                          cl::desc("Log executions of toplevel module passes"),
+                          cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool>
+    disableDatapath("disable-datapath",
                           cl::desc("Log executions of toplevel module passes"),
                           cl::init(false), cl::cat(mainCategory));
 
@@ -185,7 +190,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       /*disableInstanceExtraction=*/false, /*disableRegisterExtraction=*/false,
       /*disableModuleInlining=*/false));
   auto pipeline = [](OpPassManager &pm) {
-    circt::synthesis::buildAIGLoweringPipeline(pm);
+    circt::synthesis::AIGLoweringPipelineOptions options1;
+    options1.disableDatapath.setValue(disableDatapath);
+    circt::synthesis::buildAIGLoweringPipeline(pm, options1);
     if (untilReached(UntilAIGLowering))
       return;
 
@@ -313,6 +320,7 @@ int main(int argc, char **argv) {
   registerPassManagerCLOptions();
   registerDefaultTimingManagerCLOptions();
   registerAsmPrinterCLOptions();
+  synthesis::registerSynthesisPipeline();
 
   cl::AddExtraVersionPrinter(
       [](llvm::raw_ostream &os) { os << circt::getCirctVersion() << '\n'; });
@@ -329,7 +337,7 @@ int main(int argc, char **argv) {
   registry.insert<aig::AIGDialect, comb::CombDialect, debug::DebugDialect,
                   emit::EmitDialect, hw::HWDialect, ltl::LTLDialect,
                   om::OMDialect, seq::SeqDialect, sim::SimDialect,
-                  sv::SVDialect, verif::VerifDialect>();
+                  sv::SVDialect, verif::VerifDialect, mlir::ub::UBDialect>();
   MLIRContext context(registry);
   if (allowUnregisteredDialects)
     context.allowUnregisteredDialects();

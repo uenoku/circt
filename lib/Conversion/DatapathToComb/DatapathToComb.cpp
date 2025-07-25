@@ -15,8 +15,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include <cstdint>
+#include <memory>
 
 #define DEBUG_TYPE "datapath-to-comb"
 
@@ -65,6 +67,11 @@ struct DatapathCompressOpAddConversion : OpConversionPattern<CompressOp> {
 // Replace compressor by a wallace tree of full-adders
 struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
   using OpConversionPattern<CompressOp>::OpConversionPattern;
+
+  DatapathCompressOpConversion(MLIRContext *context,
+                               aig::LongestPathAnalysis::FrozenResults *listner)
+      : OpConversionPattern<CompressOp>(context), listner(listner){};
+  aig::LongestPathAnalysis::FrozenResults *listner;
   LogicalResult
   matchAndRewrite(CompressOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -79,11 +86,51 @@ struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
     }
 
     // Wallace tree reduction
+    // Sort targetAddends by arrival time
+    if (listner && getenv("test_sort")) {
+      LLVM_DEBUG({ llvm::dbgs() << "Sorting addends by arrival time\n"; });
+      size_t numAddends = addends.size();
+      SmallVector<SmallVector<std::pair<int64_t, Value>>> sortedAddends(
+          numAddends, SmallVector<std::pair<int64_t, Value>>(width));
+      for (size_t j = 0; j < width; ++j) {
+        SmallVector<std::pair<int64_t, Value>> adds;
+        for (size_t i = 0; i < numAddends; ++i) {
+          LLVM_DEBUG(
+              { llvm::dbgs() << listner->getDelay(addends[i][j], 0) << " "; });
+          sortedAddends[i][j] = {listner->getDelay(addends[i][j], 0),
+                                 addends[i][j]};
+        }
+        // LLVM_DEBUG({ llvm::dbgs() << "\n"; });
+        // std::sort(adds.begin(), adds.end(),
+        //           [](auto &a, auto &b) { return a.first < b.first; });
+
+        // for (size_t i = 0; i < numAddends; ++i) {
+        //   addends[i][j] = adds[i].second;
+        // }
+        // for (size_t i = 0; i < numAddends; ++i) {
+        //   LLVM_DEBUG(
+        //       { llvm::dbgs() << listner->getDelay(addends[i][j], 0) << " ";
+        //       });
+        // }
+        // LLVM_DEBUG({ llvm::dbgs() << "\n"; });
+        // sortedAddends.push_back(std::move(adds));
+      }
+
+      // TODO - implement a more efficient compression algorithm to compete with
+      // yosys's `alumacc` lowering - a coarse grained timing model would help
+      // to sort the inputs according to arrival time.
+      auto targetAddends = op.getNumResults();
+
+      rewriter.replaceOp(op,
+                         comb::wallaceReduction(rewriter, loc, width,
+                                                targetAddends, sortedAddends));
+      return success();
+    }
+
     // TODO - implement a more efficient compression algorithm to compete with
     // yosys's `alumacc` lowering - a coarse grained timing model would help to
     // sort the inputs according to arrival time.
     auto targetAddends = op.getNumResults();
-    comb::wallaceReduction(rewriter, loc, width, targetAddends, addends);
 
     rewriter.replaceOp(op, comb::wallaceReduction(rewriter, loc, width,
                                                   targetAddends, addends));
@@ -97,7 +144,7 @@ struct DatapathPartialProductOpConversion
 
   DatapathPartialProductOpConversion(MLIRContext *context, bool forceBooth)
       : OpConversionPattern<PartialProductOp>(context),
-        forceBooth(forceBooth) {};
+        forceBooth(forceBooth){};
 
   const bool forceBooth;
 
@@ -256,7 +303,8 @@ struct ConvertDatapathToCombPass
 } // namespace
 
 static void populateDatapathToCombConversionPatterns(
-    RewritePatternSet &patterns, bool lowerCompressToAdd, bool forceBooth) {
+    RewritePatternSet &patterns, bool lowerCompressToAdd, bool forceBooth,
+    aig::LongestPathAnalysis::FrozenResults *listner) {
   patterns.add<DatapathPartialProductOpConversion>(patterns.getContext(),
                                                    forceBooth);
 
@@ -265,11 +313,17 @@ static void populateDatapathToCombConversionPatterns(
     patterns.add<DatapathCompressOpAddConversion>(patterns.getContext());
   else
     // Lower compressors to a complete gate-level implementation
-    patterns.add<DatapathCompressOpConversion>(patterns.getContext());
+    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), listner);
 }
 
 void ConvertDatapathToCombPass::runOnOperation() {
-  auto analysis = getAnalysis<aig::LongestPathAnalysis>();
+  std::unique_ptr<aig::LongestPathAnalysis::FrozenResults> listner;
+  if (!disableTimingGuide) {
+    auto &analysis = getAnalysis<aig::LongestPathAnalysis>();
+    listner = analysis.getRewriterListener();
+    assert(listner && "Expected analysis to be available");
+  }
+
   ConversionTarget target(getContext());
 
   target.addLegalDialect<comb::CombDialect, hw::HWDialect>();
@@ -277,9 +331,12 @@ void ConvertDatapathToCombPass::runOnOperation() {
 
   RewritePatternSet patterns(&getContext());
   populateDatapathToCombConversionPatterns(patterns, lowerCompressToAdd,
-                                           forceBooth);
+                                           forceBooth, listner.get());
+
+  mlir::ConversionConfig config;
+  config.listener = listner.get();
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
-                                          std::move(patterns))))
+                                          std::move(patterns), config)))
     return signalPassFailure();
 }

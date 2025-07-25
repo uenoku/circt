@@ -24,6 +24,15 @@
 //===----------------------------------------------------------------------===//
 namespace circt {
 namespace synthesis {
+struct AIGLoweringPipelineOptions
+    : public mlir::PassPipelineOptions<AIGLoweringPipelineOptions> {
+  PassOptions::Option<bool> disableTiming{
+      *this, "disable", llvm::cl::desc("Don't use timing information"),
+      llvm::cl::init(false)};
+  PassOptions::Option<bool> disableDatapath{
+      *this, "disable-datapath", llvm::cl::desc("Don't use timing information"),
+      llvm::cl::init(false)};
+};
 
 /// Options for the aig optimization pipeline.
 struct AIGOptimizationPipelineOptions
@@ -49,7 +58,8 @@ struct AIGOptimizationPipelineOptions
 //===----------------------------------------------------------------------===//
 
 /// Populate the synthesis pipelines.
-void buildAIGLoweringPipeline(mlir::OpPassManager &pm);
+void buildAIGLoweringPipeline(mlir::OpPassManager &pm,
+                              const AIGLoweringPipelineOptions &options);
 void buildAIGOptimizationPipeline(
     mlir::OpPassManager &pm, const AIGOptimizationPipelineOptions &options);
 

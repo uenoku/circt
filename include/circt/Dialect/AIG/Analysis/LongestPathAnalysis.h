@@ -29,6 +29,7 @@
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
+#include <optional>
 #include <variant>
 
 namespace mlir {
@@ -203,6 +204,8 @@ public:
   public:
     DenseMap<std::pair<Value, size_t>, int64_t> results;
 
+    int64_t getDelay(Value value, size_t bitPos) const;
+
     void notifyOperationReplaced(Operation *op,
                                  ValueRange replacement) override {
       // Update the results for the replaced operation.
@@ -221,7 +224,8 @@ public:
     }
   };
 
-  std::unique_ptr<FrozenResults> getRewriterListener(StringAttr moduleName) const;
+  std::unique_ptr<FrozenResults>
+  getRewriterListener(StringAttr moduleName = {}) const;
 
   // Return the maximum delay to the given value for all bit positions.
   int64_t getMaxDelay(Value value) const;
@@ -295,11 +299,22 @@ public:
       : LongestPathAnalysis(moduleOp, am, {true}) {}
 };
 
+// A wrapper class
+class LongestPathAnalysisListner : LongestPathAnalysis,
+                                   mlir::PatternRewriter::Listener {
+public:
+  std::optional<int64_t> getMaxDelay(Value value, size_t bitPos);
+  LongestPathAnalysisListner(Operation *moduleOp, mlir::AnalysisManager &am)
+      : LongestPathAnalysis(moduleOp, am, {false}) {}
+  void notifyOperationReplaced(Operation *op, ValueRange replacement) override;
+  void notifyOperationErased(Operation *op) override;
+};
+
 // A collection of longest paths. The data structure owns the paths, and used
 // for computing statistics and CAPI.
 class LongestPathCollection {
 public:
-  LongestPathCollection(MLIRContext *ctx) : ctx(ctx) {};
+  LongestPathCollection(MLIRContext *ctx) : ctx(ctx){};
   const DataflowPath &getPath(unsigned index) const { return paths[index]; }
   MLIRContext *getContext() const { return ctx; }
   llvm::SmallVector<DataflowPath, 64> paths;
