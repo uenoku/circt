@@ -20,12 +20,16 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
+#include <optional>
 #include <variant>
 
 namespace mlir {
@@ -191,6 +195,38 @@ public:
   LogicalResult getResults(Value value, size_t bitPos,
                            SmallVectorImpl<DataflowPath> &results) const;
 
+  // Replace the value. This is used to update the analysis when the IR is
+  // modified. NOTE: This does NOT incrementally update the analysis, it
+  // simply replaces the value with the new one so the value look up doesn't
+  // cause UAF.
+
+  class FrozenResults : public mlir::RewriterBase::Listener {
+  public:
+    DenseMap<std::pair<Value, size_t>, int64_t> results;
+
+    int64_t getDelay(Value value, size_t bitPos) const;
+
+    void notifyOperationReplaced(Operation *op,
+                                 ValueRange replacement) override {
+      // Update the results for the replaced operation.
+      for (auto [oldValue, newValue] :
+           llvm::zip(op->getResults(), replacement)) {
+        for (size_t bitPos = 0;
+             bitPos < oldValue.getType().getIntOrFloatBitWidth(); ++bitPos) {
+          auto key = std::make_pair(oldValue, bitPos);
+          auto it = results.find(key);
+          if (it != results.end()) {
+            results[std::make_pair(newValue, bitPos)] = it->second;
+            results.erase(key);
+          }
+        }
+      }
+    }
+  };
+
+  std::unique_ptr<FrozenResults>
+  getRewriterListener(StringAttr moduleName = {}) const;
+
   // Return the maximum delay to the given value for all bit positions.
   int64_t getMaxDelay(Value value) const;
 
@@ -245,13 +281,19 @@ public:
   static StringRef getTopModuleNameAttrName() {
     return "aig.longest-path-analysis-top";
   }
+  static StringRef getDisableOracleAttrName() {
+    return "aig.longest-path-analysis-disable-oracle";
+  }
 
   MLIRContext *getContext() const { return ctx; }
 
-private:
+protected:
+  friend class LongestPathAnalysisListener;
+
   struct Impl;
   Impl *impl;
 
+private:
   mlir::MLIRContext *ctx;
 };
 
@@ -261,6 +303,17 @@ class LongestPathAnalysisWithTrace : public LongestPathAnalysis {
 public:
   LongestPathAnalysisWithTrace(Operation *moduleOp, mlir::AnalysisManager &am)
       : LongestPathAnalysis(moduleOp, am, {true}) {}
+};
+
+// A wrapper class
+class LongestPathAnalysisListener : LongestPathAnalysis,
+                                    public mlir::PatternRewriter::Listener {
+public:
+  std::optional<int64_t> getDelay(Value value, size_t bitPos);
+  LongestPathAnalysisListener(Operation *moduleOp, mlir::AnalysisManager &am)
+      : LongestPathAnalysis(moduleOp, am, {false}) {}
+  void notifyOperationReplaced(Operation *op, ValueRange replacement) override;
+  void notifyOperationErased(Operation *op) override;
 };
 
 // A collection of longest paths. The data structure owns the paths, and used

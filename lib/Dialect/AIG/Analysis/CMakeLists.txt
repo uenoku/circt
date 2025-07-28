@@ -8,6 +8,7 @@ add_circt_dialect_library(CIRCTAIGAnalysis
   LINK_LIBS PUBLIC
   MLIRSupport
   CIRCTAIG
+  CIRCTDatapath
   CIRCTComb
   CIRCTHW
   CIRCTSeq

@@ -6,6 +6,8 @@ add_circt_library(CIRCTSynthesis
   CIRCTCombToAIG
   CIRCTHWTransforms
   CIRCTSupport
+  CIRCTCombToDatapath
+  CIRCTDatapathToComb
 
   MLIRIR
   MLIRSupport

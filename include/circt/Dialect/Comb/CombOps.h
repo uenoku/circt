@@ -94,9 +94,14 @@ std::pair<Value, Value> fullAdder(OpBuilder &builder, Location loc, Value a,
 /// See https://en.wikipedia.org/wiki/Wallace_tree
 /// \param targetAddends The number of addends to reduce to (2 for carry-save).
 /// \param inputAddends The rows of bits to be summed.
-SmallVector<Value> wallaceReduction(OpBuilder &builder, Location loc,
-                                    size_t width, size_t targetAddends,
-                                    SmallVector<SmallVector<Value>> &addends);
+/// \param arrivalTime A function that returns the arrival time of a value. The
+/// unit is arbitrary, which a client needs to provide proper delay model for
+/// sumDelay and caryDelay. The default delays are model used for AIG.
+SmallVector<Value> wallaceReduction(
+    OpBuilder &builder, Location loc, size_t width, size_t targetAddends,
+    SmallVector<SmallVector<Value>> &addends,
+    llvm::function_ref<uint64_t(Value)> arrivalTime = [](Value v) { return 0; },
+    uint64_t sumDelay = 2, uint64_t carryDelay = 2);
 
 } // namespace comb
 } // namespace circt

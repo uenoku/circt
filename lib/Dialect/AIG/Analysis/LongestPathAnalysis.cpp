@@ -30,21 +30,35 @@
 
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/AIG/AIGOps.h"
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
+#include "circt/Dialect/Datapath/DatapathDialect.h"
+#include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/HWTypes.h"
+#include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/AnalysisManager.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT//MapVector.h"
@@ -57,6 +71,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/JSON.h"
@@ -381,9 +396,9 @@ class LocalVisitor;
 
 class Context {
 public:
-  Context(igraph::InstanceGraph *instanceGraph,
+  Context(mlir::MLIRContext *context, igraph::InstanceGraph *instanceGraph,
           const LongestPathAnalysisOption &option)
-      : instanceGraph(instanceGraph), option(option) {}
+      : context(context), instanceGraph(instanceGraph), option(option) {}
   void notifyStart(StringAttr name) {
     std::lock_guard<llvm::sys::SmartMutex<true>> lock(mutex);
     running.insert(name);
@@ -405,6 +420,7 @@ public:
 
   // Lookup a local visitor for `name`.
   const LocalVisitor *getLocalVisitor(StringAttr name) const;
+  LocalVisitor *getLocalVisitorMutable(StringAttr name) const;
 
   // Lookup a local visitor for `name`, and wait until it's done.
   const LocalVisitor *getAndWaitLocalVisitor(StringAttr name) const;
@@ -415,12 +431,131 @@ public:
   circt::igraph::InstanceGraph *instanceGraph = nullptr;
 
   bool doTraceDebugPoints() const { return option.traceDebugPoints; }
+  mlir::MLIRContext *getContext() const { return context; }
 
 private:
   llvm::sys::SmartMutex<true> mutex;
   llvm::SetVector<StringAttr> running;
   const LongestPathAnalysisOption &option;
+  mlir::MLIRContext *context;
 };
+
+// -----------------------------------------------------------------------------
+// Oracle
+// -----------------------------------------------------------------------------
+// This class returns longest paths for comb/hw operations remaining in the
+// circuit.
+class Oracle {
+public:
+  Context *ctx;
+  // Initialize the oracle with the module and block.
+  StringRef pipelineStr;
+
+  Oracle(Context *ctx, Location loc, StringRef pipelineStr)
+      : ctx(ctx), loc(loc), pipelineStr(pipelineStr) {
+    mlir::OpBuilder builder(ctx->getContext());
+    moduleOp = builder.create<mlir::ModuleOp>(loc);
+    block = moduleOp->getBody();
+  }
+
+public:
+  llvm::LogicalResult add(Operation *add);
+  LogicalResult finalize();
+  Location loc;
+
+  hw::HWModuleOp getModuleOp() const { return module; }
+  static mlir::FunctionType getFunctionTypeForOp(Operation *op);
+
+  // Get the longest paths for the given value and bit position.
+  // Results are returned as a vector of tuples, where each tuple contains:
+  // - The index of operand
+  // - The bit position of the operand
+  // - The maximum delay to the value
+  LogicalResult getResults(
+      OpResult value, size_t bitPos,
+      SmallVectorImpl<std::tuple<size_t, size_t, int64_t>> &results) const;
+
+  hw::HWModuleOp module;
+  Block *block;
+  SmallVector<Value> outputs;
+
+  // A map from operation name, types to longest paths.
+  llvm::DenseMap<std::pair<mlir::OperationName, mlir::FunctionType>,
+                 std::pair<unsigned, unsigned>>
+      cache;
+  std::unique_ptr<LocalVisitor> localVisitor;
+  // This is the module created as part of the analysis.
+  // Make sure to destroy it last.
+  mlir::OwningOpRef<mlir::ModuleOp> moduleOp;
+};
+
+mlir::FunctionType Oracle::getFunctionTypeForOp(Operation *op) {
+  auto *ctx = op->getContext();
+  SmallVector<mlir::Type> argTypes;
+  SmallVector<mlir::Type> resultTypes;
+
+  for (auto &operand : op->getOpOperands()) {
+    argTypes.push_back(operand.get().getType());
+  }
+  for (auto result : op->getResults()) {
+    resultTypes.push_back(result.getType());
+  }
+
+  return mlir::FunctionType::get(ctx, argTypes, resultTypes);
+}
+
+LogicalResult Oracle::add(Operation *add) {
+  auto opName = add->getName();
+  auto functionType = getFunctionTypeForOp(add);
+  auto key = std::make_pair(opName, functionType);
+  if (cache.count(key))
+    return success(); // Already added.
+
+  auto getType = [&](Type type) -> Type {
+    if (type.isInteger())
+      return type;
+    auto bitWidth = hw::getBitWidth(type);
+    if (bitWidth < 0)
+      return Type();
+    return IntegerType::get(add->getContext(), bitWidth);
+  };
+
+  SmallVector<Value> inputs;
+
+  cache[key] = std::make_pair(block->getNumArguments(), outputs.size());
+  inputs.reserve(add->getNumOperands());
+  // Fix: Use the context directly instead of trying to get it from the block
+  auto builder = OpBuilder(ctx->getContext());
+  builder.setInsertionPointToStart(block);
+
+  for (auto input : add->getOperands()) {
+    auto type = getType(input.getType());
+    if (!type)
+      return failure();
+
+    Value arg = block->addArgument(type, input.getLoc());
+    if (type != input.getType())
+      arg = builder.create<hw::BitcastOp>(input.getLoc(), input.getType(), arg);
+
+    inputs.push_back(arg);
+  }
+
+  auto *clonedOp = builder.clone(*add);
+  clonedOp->setOperands(inputs);
+  for (Value result : clonedOp->getResults()) {
+    auto type = getType(result.getType());
+    if (!type)
+      return failure();
+
+    if (type != result.getType())
+      result = builder.create<hw::BitcastOp>(result.getLoc(), result.getType(),
+                                             result);
+
+    outputs.push_back(result);
+  }
+
+  return success();
+}
 
 // -----------------------------------------------------------------------------
 // LocalVisitor
@@ -462,6 +597,13 @@ public:
   llvm::ImmutableListFactory<DebugPoint> *getDebugPointFactory() const {
     return debugPointFactory.get();
   }
+
+  const auto &getCachedResults() const { return cachedResults; }
+
+protected:
+  friend class LongestPathAnalysisListener;
+  void notifyOperationReplaced(Operation *op, ValueRange replacement);
+  void notifyOperationErased(Operation *op);
 
 private:
   void putUnclosedResult(const Object &object, int64_t delay,
@@ -513,14 +655,14 @@ private:
   // Bit-logical ops.
   LogicalResult visit(aig::AndInverterOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
-  LogicalResult visit(comb::AndOp op, size_t bitPos,
-                      SmallVectorImpl<OpenPath> &results);
-  LogicalResult visit(comb::XorOp op, size_t bitPos,
-                      SmallVectorImpl<OpenPath> &results);
-  LogicalResult visit(comb::OrOp op, size_t bitPos,
-                      SmallVectorImpl<OpenPath> &results);
-  LogicalResult visit(comb::MuxOp op, size_t bitPos,
-                      SmallVectorImpl<OpenPath> &results);
+  // LogicalResult visit(comb::AndOp op, size_t bitPos,
+  //                     SmallVectorImpl<OpenPath> &results);
+  // LogicalResult visit(comb::XorOp op, size_t bitPos,
+  //                     SmallVectorImpl<OpenPath> &results);
+  // LogicalResult visit(comb::OrOp op, size_t bitPos,
+  //                     SmallVectorImpl<OpenPath> &results);
+  // LogicalResult visit(comb::MuxOp op, size_t bitPos,
+  //                     SmallVectorImpl<OpenPath> &results);
   LogicalResult addLogicOp(Operation *op, size_t bitPos,
                            SmallVectorImpl<OpenPath> &results);
 
@@ -551,7 +693,7 @@ private:
     return markFanIn(op, bitPos, results);
   }
 
-  LogicalResult visitDefault(Operation *op, size_t bitPos,
+  LogicalResult visitDefault(OpResult result, size_t bitPos,
                              SmallVectorImpl<OpenPath> &results);
 
   // Helper functions.
@@ -576,6 +718,8 @@ private:
 
   // A map from the object to the longest paths.
   DenseMap<Object, SmallVector<OpenPath>> fanOutResults;
+
+  std::unique_ptr<Oracle> oracle;
 
   // This is set to true when the thread is done.
   std::atomic_bool done;
@@ -702,31 +846,31 @@ LogicalResult LocalVisitor::visit(aig::AndInverterOp op, size_t bitPos,
   return addLogicOp(op, bitPos, results);
 }
 
-LogicalResult LocalVisitor::visit(comb::AndOp op, size_t bitPos,
-                                  SmallVectorImpl<OpenPath> &results) {
-  return addLogicOp(op, bitPos, results);
-}
+// LogicalResult LocalVisitor::visit(comb::AndOp op, size_t bitPos,
+//                                   SmallVectorImpl<OpenPath> &results) {
+//   return addLogicOp(op, bitPos, results);
+// }
+//
+// LogicalResult LocalVisitor::visit(comb::OrOp op, size_t bitPos,
+//                                   SmallVectorImpl<OpenPath> &results) {
+//   return addLogicOp(op, bitPos, results);
+// }
+//
+// LogicalResult LocalVisitor::visit(comb::XorOp op, size_t bitPos,
+//                                   SmallVectorImpl<OpenPath> &results) {
+//   return addLogicOp(op, bitPos, results);
+// }
 
-LogicalResult LocalVisitor::visit(comb::OrOp op, size_t bitPos,
-                                  SmallVectorImpl<OpenPath> &results) {
-  return addLogicOp(op, bitPos, results);
-}
-
-LogicalResult LocalVisitor::visit(comb::XorOp op, size_t bitPos,
-                                  SmallVectorImpl<OpenPath> &results) {
-  return addLogicOp(op, bitPos, results);
-}
-
-LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
-                                  SmallVectorImpl<OpenPath> &results) {
-  // Add a cost of 1 for the mux.
-  if (failed(addEdge(op.getCond(), 0, 1, results)) ||
-      failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
-      failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
-    return failure();
-  deduplicatePaths(results);
-  return success();
-}
+// LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
+//                                   SmallVectorImpl<OpenPath> &results) {
+//   // Add a cost of 1 for the mux.
+//   if (failed(addEdge(op.getCond(), 0, 1, results)) ||
+//       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
+//       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
+//     return failure();
+//   deduplicatePaths(results);
+//   return success();
+// }
 
 LogicalResult LocalVisitor::visit(comb::ExtractOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
@@ -869,8 +1013,34 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
   return success();
 }
 
-LogicalResult LocalVisitor::visitDefault(Operation *op, size_t bitPos,
+LogicalResult LocalVisitor::visitDefault(OpResult value, size_t bitPos,
                                          SmallVectorImpl<OpenPath> &results) {
+  // Query it to an oracle.
+  LLVM_DEBUG({
+    llvm::dbgs() << "Visiting default: ";
+    llvm::dbgs() << " " << value << "[" << bitPos << "]\n";
+  });
+  SmallVector<std::tuple<size_t, size_t, int64_t>> oracleResults;
+  auto paths = oracle->getResults(value, bitPos, oracleResults);
+  if (failed(paths)) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Failed to get results for: " << value << "[" << bitPos
+                   << "]\n";
+    });
+    return success();
+  }
+  auto *op = value.getDefiningOp();
+  for (auto [inputPortIndex, fanInBitPos, delay] : oracleResults) {
+    LLVM_DEBUG({
+      llvm::dbgs() << "Adding edge: " << value << "[" << bitPos << "] -> "
+                   << op->getOperand(inputPortIndex) << "[" << fanInBitPos
+                   << "] with delay " << delay << "\n";
+    });
+    if (failed(addEdge(op->getOperand(inputPortIndex), fanInBitPos, delay,
+                       results)))
+      return failure();
+  }
+
   return success();
 }
 
@@ -909,8 +1079,8 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputeResults(Value value,
   // Unique the results.
   deduplicatePaths(results);
   LLVM_DEBUG({
-    llvm::dbgs() << value << "[" << bitPos << "] "
-                 << "Found " << results.size() << " paths\n";
+    llvm::dbgs() << value << "[" << bitPos << "] " << "Found " << results.size()
+                 << " paths\n";
     llvm::dbgs() << "====Paths:\n";
     for (auto &path : results) {
       path.print(llvm::dbgs());
@@ -939,31 +1109,32 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
   auto result =
       TypeSwitch<Operation *, LogicalResult>(op)
           .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
-                aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::MuxOp,
-                comb::XorOp, seq::FirRegOp, seq::CompRegOp, hw::ConstantOp,
-                seq::FirMemReadOp, seq::FirMemReadWriteOp, hw::WireOp>(
-              [&](auto op) {
-                size_t idx = results.size();
-                auto result = visit(op, bitPos, results);
-                if (ctx->doTraceDebugPoints())
-                  if (auto name = op->template getAttrOfType<StringAttr>(
-                          "sv.namehint")) {
+                aig::AndInverterOp, seq::FirRegOp, seq::CompRegOp,
+                hw::ConstantOp, seq::FirMemReadOp, seq::FirMemReadWriteOp,
+                hw::WireOp>([&](auto op) {
+            size_t idx = results.size();
+            auto result = visit(op, bitPos, results);
+            if (ctx->doTraceDebugPoints())
+              if (auto name =
+                      op->template getAttrOfType<StringAttr>("sv.namehint")) {
 
-                    for (auto i = idx, e = results.size(); i < e; ++i) {
-                      DebugPoint debugPoint({}, value, bitPos, results[i].delay,
-                                            "namehint");
-                      auto newHistory = debugPointFactory->add(
-                          debugPoint, results[i].history);
-                      results[i].history = newHistory;
-                    }
-                  }
-                return result;
-              })
+                for (auto i = idx, e = results.size(); i < e; ++i) {
+                  DebugPoint debugPoint({}, value, bitPos, results[i].delay,
+                                        "namehint");
+                  auto newHistory =
+                      debugPointFactory->add(debugPoint, results[i].history);
+                  results[i].history = newHistory;
+                }
+              }
+            return result;
+          })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
             return visit(op, bitPos, cast<OpResult>(value).getResultNumber(),
                          results);
           })
-          .Default([&](auto op) { return visitDefault(op, bitPos, results); });
+          .Default([&](auto op) {
+            return visitDefault(cast<OpResult>(value), bitPos, results);
+          });
   return result;
 }
 
@@ -1046,6 +1217,56 @@ LogicalResult LocalVisitor::initializeAndRun(hw::OutputOp output) {
 
 LogicalResult LocalVisitor::initializeAndRun() {
   LLVM_DEBUG({ ctx->notifyStart(module.getModuleNameAttr()); });
+
+  // Initialze the oracle.
+  StringRef pipelineStr = "hw.module(synthesis-aig-lowering-pipeline,"
+                          "synthesis-aig-optimization-pipeline)";
+
+  auto disableOracle = module->getAttrOfType<UnitAttr>(
+      LongestPathAnalysis::getDisableOracleAttrName());
+
+  oracle = std::make_unique<Oracle>(ctx, module->getLoc(), pipelineStr);
+  if (!disableOracle) {
+    module.walk([&](Operation *op) {
+      // Check if "visit" is implemented for the operation.
+      if (!op->getDialect())
+        return WalkResult::advance();
+      if (isa<comb::CombDialect>(op->getDialect())) {
+        // If not handle by the visitor.
+        if (isa<hw::ConstantOp, comb::ExtractOp, comb::ReplicateOp,
+                comb::ConcatOp>(op))
+          return WalkResult::advance();
+        auto result = oracle->add(op);
+        (void)result;
+        assert(succeeded(result) && "Failed to add operation to oracle");
+      }
+      if (isa<hw::HWDialect>(op->getDialect())) {
+        // If this is a HWModuleOp, then we need to initialize the local
+        // visitor.
+        if (isa<hw::ArrayGetOp, hw::ArrayCreateOp, hw::ArraySliceOp,
+                hw::ArrayConcatOp>(op)) {
+          // If this is a constant, wire, instance or output, then we can skip
+          // it.
+          auto result = oracle->add(op);
+          (void)result;
+          assert(succeeded(result) && "Failed to add operation to oracle");
+
+          return WalkResult::advance();
+        }
+      }
+
+      if (isa<datapath::DatapathDialect>(op->getDialect())) {
+        auto result = oracle->add(op);
+        (void)result;
+        assert(succeeded(result) && "Failed to add operation to oracle");
+      }
+      return WalkResult::advance();
+    });
+  }
+
+  if (failed(oracle->finalize()))
+    return failure();
+
   // Initialize the results for the block arguments.
   for (auto blockArgument : module.getBodyBlock()->getArguments())
     for (size_t i = 0, e = getBitWidth(blockArgument); i < e; ++i)
@@ -1102,6 +1323,13 @@ LogicalResult LocalVisitor::initializeAndRun() {
 // Context
 //===----------------------------------------------------------------------===//
 
+LocalVisitor *Context::getLocalVisitorMutable(StringAttr name) const {
+  auto *it = localVisitors.find(name);
+  if (it == localVisitors.end())
+    return nullptr;
+  return it->second.get();
+}
+
 const LocalVisitor *Context::getLocalVisitor(StringAttr name) const {
   auto *it = localVisitors.find(name);
   if (it == localVisitors.end())
@@ -1146,6 +1374,13 @@ struct LongestPathAnalysis::Impl {
       StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
 
   llvm::ArrayRef<hw::HWModuleOp> getTopModules() const { return topModules; }
+
+  std::unique_ptr<FrozenResults>
+  getRewriterListener(StringAttr moduleName) const;
+
+protected:
+  friend class LongestPathAnalysisListener;
+  const Context &getContext() const { return ctx; }
 
 private:
   LogicalResult getResultsImpl(
@@ -1304,7 +1539,8 @@ LogicalResult LongestPathAnalysis::Impl::getOpenPathsFromInternalToOutputPorts(
 
 LongestPathAnalysis::Impl::Impl(Operation *moduleOp, mlir::AnalysisManager &am,
                                 const LongestPathAnalysisOption &option)
-    : ctx(isa<mlir::ModuleOp>(moduleOp)
+    : ctx(moduleOp->getContext(),
+          isa<mlir::ModuleOp>(moduleOp)
               ? &am.getAnalysis<igraph::InstanceGraph>()
               : nullptr,
           option) {
@@ -1527,4 +1763,275 @@ void LongestPathCollection::sortAndDropNonCriticalPathsPerFanOut() {
       paths[seen.size() - 1] = std::move(paths[i]);
   }
   paths.resize(seen.size());
+}
+
+LogicalResult Oracle::getResults(
+    OpResult value, size_t bitPos,
+    SmallVectorImpl<std::tuple<size_t, size_t, int64_t>> &results) const {
+  auto *op = value.getDefiningOp();
+  auto mnemonic = op->getName();
+  // Get the inputs and output types as function type.
+  SmallVector<Type> inputTypes, outputTypes;
+  for (auto operand : op->getOperands())
+    inputTypes.push_back(operand.getType());
+  for (auto result : op->getResults())
+    outputTypes.push_back(result.getType());
+  auto functionType =
+      FunctionType::get(op->getContext(), inputTypes, outputTypes);
+  // Query the oracle for the results.
+  auto outputPortIndex = cache.find({mnemonic, functionType});
+  if (outputPortIndex == cache.end()) {
+    // If the output port is not found, return failure.
+    return failure();
+  }
+  auto [inputPortStart, outputPortStart] = outputPortIndex->second;
+
+  auto *idx = localVisitor->getFromOutputPortToFanIn().find(
+      {outputPortStart + value.getResultNumber(), bitPos});
+  assert(idx != localVisitor->getFromOutputPortToFanIn().end() &&
+         "output port not found in the local visitor");
+  for (const auto &[point, delayAndHistory] : idx->second) {
+    auto [instancePath, fanIn, fanInBitPos] = point;
+    auto [delay, history] = delayAndHistory;
+    // If the fanIn is not a block argument, record it directly.
+    BlockArgument blockArg = cast<BlockArgument>(fanIn);
+    assert(blockArg.getArgNumber() >= inputPortStart &&
+           blockArg.getArgNumber() < inputPortStart + inputTypes.size() &&
+           "fanIn is not a block argument in the input ports");
+    auto inputPortIndex = blockArg.getArgNumber() - inputPortStart;
+
+    results.push_back(std::make_tuple(inputPortIndex, fanInBitPos, delay));
+  }
+  return success();
+}
+
+LogicalResult Oracle::finalize() {
+  if (outputs.empty())
+    return success();
+
+  // Create the owning hw::HWModuleOp with the outputs.
+  mlir::OpBuilder builder(ctx->getContext());
+  SmallVector<hw::PortInfo> ports;
+  ports.reserve(outputs.size() + block->getNumArguments());
+  auto emptyString = builder.getStringAttr("");
+  for (auto blockArg : block->getArguments()) {
+    hw::PortInfo info;
+    info.name = emptyString;
+    info.type = blockArg.getType();
+    info.dir = hw::PortInfo::Direction::Input;
+    info.loc = blockArg.getLoc();
+    ports.push_back(info);
+  }
+  for (auto output : outputs) {
+    hw::PortInfo info;
+    info.name = emptyString;
+    info.type = output.getType();
+    info.dir = hw::PortInfo::Direction::Output;
+    info.loc = output.getLoc();
+    ports.push_back(info);
+  }
+
+  builder.setInsertionPointToStart(moduleOp->getBody());
+
+  module = hw::HWModuleOp::create(
+      builder, loc, builder.getStringAttr("LongestPathOracle"), ports);
+  module->setAttr(LongestPathAnalysis::getDisableOracleAttrName(),
+                  builder.getUnitAttr());
+
+  // Store the old arguments before moving operations
+  SmallVector<Value> oldArguments(block->getArguments().begin(),
+                                  block->getArguments().end());
+
+  // Move the block into the module.
+  module.getBodyBlock()->getOperations().splice(
+      module.getBodyBlock()->begin(), block->getOperations(),
+      std::next(block->getOperations().begin()), block->getOperations().end());
+  // Replace values.
+  for (auto [blockArg, moduleArg] :
+       llvm::zip(module.getBodyBlock()->getArguments(), oldArguments)) {
+    moduleArg.replaceAllUsesWith(blockArg);
+  }
+
+  module.getBodyBlock()->getTerminator()->setOperands(outputs);
+  block->eraseArguments([](BlockArgument) { return true; });
+  for (size_t i = 0, e = block->getParent()->getNumArguments(); i < e; ++i)
+    block->getParent()->eraseArgument(0);
+
+  // Run lowering pipeline.
+  auto pipeline =
+      builder.getStringAttr("hw.module(synthesis-aig-lowering-pipeline, "
+                            "synthesis-aig-optimization-pipeline)");
+  auto opm = mlir::parsePassPipeline(pipeline);
+  if (failed(opm))
+    return mlir::emitError(loc)
+           << "Failed to parse lowering pipeline: " << pipeline;
+
+  mlir::PassManager pm(ctx->getContext());
+  if (failed(parsePassPipeline(pipeline, pm)))
+    return mlir::emitError(loc)
+           << "Failed to parse lowering pipeline: " << pipeline;
+  mlir::DialectRegistry dialects;
+  pm.getDependentDialects(dialects);
+
+  auto loaded = builder.getContext()->getLoadedDialects();
+  for (auto dialect : dialects.getDialectNames()) {
+    if (llvm::any_of(loaded,
+                     [&](auto *d) { return d->getNamespace() == dialect; }))
+      continue;
+    return module->emitError()
+           << "Failed to load dialect: " << dialect
+           << "Make sure users of LongestPathAnalysis depends on " << dialect
+           << " dialect.";
+  }
+
+  if (pm.run(moduleOp.get()).failed())
+    return mlir::emitError(loc)
+           << "Failed to run lowering pipeline: " << pipeline;
+  LLVM_DEBUG({
+    llvm::dbgs() << "Lowered oracle:\n";
+    moduleOp->print(llvm::dbgs());
+  });
+
+  // Create the local visitor for this module.
+  localVisitor = std::make_unique<LocalVisitor>(module, ctx);
+
+  return localVisitor->initializeAndRun();
+}
+
+std::unique_ptr<LongestPathAnalysis::FrozenResults>
+LongestPathAnalysis::Impl::getRewriterListener(StringAttr moduleName) const {
+  auto frozenResults = std::make_unique<FrozenResults>();
+  if (!moduleName) {
+    for (auto &module : ctx.localVisitors) {
+      auto *localVisitor = module.second.get();
+      localVisitor->waitUntilDone();
+      for (const auto &[key, value] : localVisitor->getCachedResults()) {
+        auto [arg, argBitPos] = key;
+        int64_t maxDelay = 0;
+        for (const auto &result : value) {
+          maxDelay = std::max(maxDelay, result.delay);
+        }
+        frozenResults->results[{arg, argBitPos}] = maxDelay;
+      }
+    }
+  } else {
+    auto *it = ctx.localVisitors.find(moduleName);
+    if (it == ctx.localVisitors.end())
+      return nullptr;
+    auto *localVisitor = it->second.get();
+    localVisitor->waitUntilDone();
+    for (const auto &[key, value] : localVisitor->getCachedResults()) {
+      auto [arg, argBitPos] = key;
+      int64_t maxDelay = 0;
+      for (const auto &result : value) {
+        maxDelay = std::max(maxDelay, result.delay);
+      }
+      frozenResults->results[{arg, argBitPos}] = maxDelay;
+    }
+  }
+
+  return frozenResults;
+}
+
+std::unique_ptr<LongestPathAnalysis::FrozenResults>
+LongestPathAnalysis::getRewriterListener(StringAttr moduleName) const {
+  return impl->getRewriterListener(moduleName);
+}
+
+int64_t LongestPathAnalysis::FrozenResults::getDelay(Value value,
+                                                     size_t bitPos) const {
+  auto it = results.find({value, bitPos});
+  if (it != results.end())
+    return it->second;
+
+  auto *op = value.getDefiningOp();
+  if (!op)
+    return -1;
+
+  return TypeSwitch<Operation *, int64_t>(op)
+      .Case<comb::ExtractOp>([&](comb::ExtractOp op) {
+        return getDelay(op.getInput(), bitPos + op.getLowBit());
+      })
+      .Case<comb::ReplicateOp>([&](comb::ReplicateOp op) {
+        return getDelay(op.getInput(), bitPos % getBitWidth(op.getInput()));
+      })
+      .Case<comb::ConcatOp>([&](comb::ConcatOp op) -> int64_t {
+        size_t bitPosInOperand = bitPos;
+        for (auto operand : llvm::reverse(op.getInputs())) {
+          auto bitWidth = operand.getType().getIntOrFloatBitWidth();
+          if (bitPosInOperand < bitWidth)
+            return getDelay(operand, bitPosInOperand);
+          bitPosInOperand -= bitWidth;
+        }
+        return -1;
+      })
+      .Default([&](auto op) { return -1; });
+}
+
+LogicalResult
+LongestPathAnalysis::getResults(Value value, size_t bitPos,
+                                SmallVectorImpl<DataflowPath> &results) const {
+  return impl->getResults(value, bitPos, results, nullptr, nullptr);
+}
+
+std::optional<int64_t> LongestPathAnalysisListener::getDelay(Value value,
+                                                             size_t bitPos) {
+  llvm::SmallVector<DataflowPath> results;
+  if (failed(getResults(value, bitPos, results)))
+    return std::nullopt;
+  int64_t maxDelay = 0;
+  for (auto &path : results)
+    maxDelay = std::max(maxDelay, path.getDelay());
+  return maxDelay;
+}
+
+void LongestPathAnalysisListener::notifyOperationReplaced(
+    Operation *op, ValueRange replacement) {
+  auto hwModuleOp = op->getParentOfType<hw::HWModuleOp>();
+  if (!hwModuleOp)
+    return;
+  auto *visitor =
+      impl->getContext().getLocalVisitorMutable(hwModuleOp.getModuleNameAttr());
+  if (!visitor)
+    return;
+  visitor->notifyOperationErased(op);
+}
+
+void LongestPathAnalysisListener::notifyOperationErased(Operation *op) {
+  auto hwModuleOp = op->getParentOfType<hw::HWModuleOp>();
+  if (!hwModuleOp)
+    return;
+  auto *visitor =
+      impl->getContext().getLocalVisitorMutable(hwModuleOp.getModuleNameAttr());
+  if (!visitor)
+    return;
+  visitor->notifyOperationErased(op);
+}
+
+void LocalVisitor::notifyOperationReplaced(Operation *op,
+                                           ValueRange replacement) {
+
+  for (auto [oldValue, newValue] : llvm::zip(op->getResults(), replacement)) {
+    for (size_t bitPos = 0; bitPos < oldValue.getType().getIntOrFloatBitWidth();
+         ++bitPos) {
+      auto key = std::make_pair(oldValue, bitPos);
+      auto it = cachedResults.find(key);
+      if (it != cachedResults.end()) {
+        cachedResults[std::make_pair(newValue, bitPos)] = it->second;
+        cachedResults.erase(it);
+      }
+    }
+  }
+}
+
+void LocalVisitor::notifyOperationErased(Operation *op) {
+  for (auto result : op->getResults()) {
+    for (size_t bitPos = 0; bitPos < result.getType().getIntOrFloatBitWidth();
+         ++bitPos) {
+      auto key = std::make_pair(result, bitPos);
+      auto it = cachedResults.find(key);
+      if (it != cachedResults.end())
+        cachedResults.erase(it);
+    }
+  }
 }

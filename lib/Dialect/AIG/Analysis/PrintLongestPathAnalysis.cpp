@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/AIG/AIGPasses.h"
 #include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Datapath/DatapathDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"

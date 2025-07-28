@@ -86,6 +86,10 @@ static cl::opt<bool>
     verbosePassExecutions("verbose-pass-executions",
                           cl::desc("Log executions of toplevel module passes"),
                           cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool>
+    disableDatapath("disable-datapath",
+                          cl::desc("Log executions of toplevel module passes"),
+                          cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<bool>
     allowUnregisteredDialects("allow-unregistered-dialect",
@@ -185,7 +189,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       /*disableInstanceExtraction=*/false, /*disableRegisterExtraction=*/false,
       /*disableModuleInlining=*/false));
   auto pipeline = [](OpPassManager &pm) {
-    circt::synthesis::buildAIGLoweringPipeline(pm);
+    circt::synthesis::AIGLoweringPipelineOptions options1;
+    options1.disableDatapath.setValue(disableDatapath);
+    circt::synthesis::buildAIGLoweringPipeline(pm, options1);
     if (untilReached(UntilAIGLowering))
       return;
 
@@ -313,6 +319,7 @@ int main(int argc, char **argv) {
   registerPassManagerCLOptions();
   registerDefaultTimingManagerCLOptions();
   registerAsmPrinterCLOptions();
+  synthesis::registerSynthesisPipeline();
 
   cl::AddExtraVersionPrinter(
       [](llvm::raw_ostream &os) { os << circt::getCirctVersion() << '\n'; });

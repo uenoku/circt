@@ -7,13 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/DatapathToComb.h"
+#include "circt/Dialect/AIG/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include <cstdint>
+#include <memory>
 
 #define DEBUG_TYPE "datapath-to-comb"
 
@@ -62,6 +66,11 @@ struct DatapathCompressOpAddConversion : OpConversionPattern<CompressOp> {
 // Replace compressor by a wallace tree of full-adders
 struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
   using OpConversionPattern<CompressOp>::OpConversionPattern;
+
+  DatapathCompressOpConversion(MLIRContext *context,
+                               aig::LongestPathAnalysisListener *listener)
+      : OpConversionPattern<CompressOp>(context), listener(listener) {};
+  aig::LongestPathAnalysisListener *listener;
   LogicalResult
   matchAndRewrite(CompressOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -75,13 +84,20 @@ struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
           extractBits(rewriter, input)); // Extract bits from each input
     }
 
-    // Wallace tree reduction
-    // TODO - implement a more efficient compression algorithm to compete with
-    // yosys's `alumacc` lowering - a coarse grained timing model would help to
-    // sort the inputs according to arrival time.
     auto targetAddends = op.getNumResults();
+
+    // Create timing-aware arrival time function for wallace reduction
+    auto getArrivalTime = [&](Value v) -> uint64_t {
+      if (!listener)
+        return 0;
+      auto delay = listener->getDelay(v, 0);
+      assert(delay && "Expected delay to be available");
+      return *delay;
+    };
+
     rewriter.replaceOp(op, comb::wallaceReduction(rewriter, loc, width,
-                                                  targetAddends, addends));
+                                                  targetAddends, addends,
+                                                  getArrivalTime));
     return success();
   }
 };
@@ -92,7 +108,7 @@ struct DatapathPartialProductOpConversion
 
   DatapathPartialProductOpConversion(MLIRContext *context, bool forceBooth)
       : OpConversionPattern<PartialProductOp>(context),
-        forceBooth(forceBooth){};
+        forceBooth(forceBooth) {};
 
   const bool forceBooth;
 
@@ -255,6 +271,13 @@ struct ConvertDatapathToCombPass
 } // namespace
 
 void ConvertDatapathToCombPass::runOnOperation() {
+  aig::LongestPathAnalysisListener *listener = nullptr;
+  if (!disableTimingGuide) {
+    auto &analysis = getAnalysis<aig::LongestPathAnalysisListener>();
+    listener = &analysis;
+    assert(listener && "Expected analysis to be available");
+  }
+
   ConversionTarget target(getContext());
 
   target.addLegalDialect<comb::CombDialect, hw::HWDialect>();
@@ -270,9 +293,12 @@ void ConvertDatapathToCombPass::runOnOperation() {
     patterns.add<DatapathCompressOpAddConversion>(patterns.getContext());
   else
     // Lower compressors to a complete gate-level implementation
-    patterns.add<DatapathCompressOpConversion>(patterns.getContext());
+    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), listener);
+
+  mlir::ConversionConfig config;
+  config.listener = listener;
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
-                                          std::move(patterns))))
+                                          std::move(patterns), config)))
     return signalPassFailure();
 }

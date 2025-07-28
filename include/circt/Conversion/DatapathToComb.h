@@ -9,7 +9,9 @@
 #ifndef CIRCT_CONVERSION_DATAPATHTOCOMB_H
 #define CIRCT_CONVERSION_DATAPATHTOCOMB_H
 
+#include "circt/Dialect/AIG/AIGDialect.h"
 #include "circt/Support/LLVM.h"
+#include "mlir/Pass/Pass.h"
 
 namespace circt {
 

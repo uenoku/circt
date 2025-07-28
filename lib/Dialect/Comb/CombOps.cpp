@@ -16,6 +16,7 @@
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/PriorityQueue.h"
 #include "llvm/Support/FormatVariadic.h"
 
 using namespace circt;
@@ -237,62 +238,65 @@ std::pair<Value, Value> comb::fullAdder(OpBuilder &builder, Location loc,
 SmallVector<Value>
 comb::wallaceReduction(OpBuilder &builder, Location loc, size_t width,
                        size_t targetAddends,
-                       SmallVector<SmallVector<Value>> &addends) {
-  auto falseValue = hw::ConstantOp::create(builder, loc, APInt(1, 0));
-  SmallVector<SmallVector<Value>> newAddends;
-  newAddends.reserve(addends.size());
-  // Continue reduction until we have only two rows. The length of
-  // `addends` is reduced by 1/3 in each iteration.
-  while (addends.size() > targetAddends) {
-    newAddends.clear();
-    // Take three rows at a time and reduce to two rows(sum and carry).
-    for (unsigned i = 0; i < addends.size(); i += 3) {
-      if (i + 2 < addends.size()) {
-        // We have three rows to reduce
-        auto &row1 = addends[i];
-        auto &row2 = addends[i + 1];
-        auto &row3 = addends[i + 2];
+                       SmallVector<SmallVector<Value>> &addends,
+                       llvm::function_ref<uint64_t(Value)> arrivalTime,
+                       uint64_t sumDelay, uint64_t carryDelay) {
+  auto falseValue = builder.create<hw::ConstantOp>(loc, APInt(1, 0));
+  SmallVector<std::pair<int64_t, Value>> carrys;
+  SmallVector<SmallVector<Value>> results(width);
 
-        assert(row1.size() == width && row2.size() == width &&
-               row3.size() == width);
-
-        SmallVector<Value> sumRow, carryRow;
-        sumRow.reserve(width);
-        carryRow.reserve(width);
-        carryRow.push_back(falseValue);
-
-        // Process each bit position
-        for (unsigned j = 0; j < width; ++j) {
-          // Full adder logic
-          auto [sum, carry] =
-              comb::fullAdder(builder, loc, row1[j], row2[j], row3[j]);
-          sumRow.push_back(sum);
-          if (j + 1 < width)
-            carryRow.push_back(carry);
-        }
-
-        newAddends.push_back(std::move(sumRow));
-        newAddends.push_back(std::move(carryRow));
-      } else {
-        // Add remaining rows as is
-        newAddends.append(addends.begin() + i, addends.end());
-      }
+  struct Compare {
+    bool operator()(const std::pair<int64_t, Value> &a,
+                    const std::pair<int64_t, Value> &b) const {
+      return a.first > b.first;
     }
-    std::swap(newAddends, addends);
+  };
+  llvm::PriorityQueue<std::pair<int64_t, Value>,
+                      std::vector<std::pair<int64_t, Value>>, Compare>
+      currentColumn;
+  for (size_t i = 0; i < width; ++i) {
+    assert(currentColumn.empty());
+    // Reduce to targetAddends.
+    for (auto &addend : addends) {
+      currentColumn.push({arrivalTime(addend[i]), addend[i]});
+    }
+    for (auto &addend : carrys) {
+      currentColumn.push(addend);
+    }
+    carrys.clear();
+    while (currentColumn.size() > targetAddends && currentColumn.size() >= 3) {
+      auto [delay1, a] = currentColumn.top();
+      currentColumn.pop();
+      auto [delay2, b] = currentColumn.top();
+      currentColumn.pop();
+      auto [delay3, c] = currentColumn.top();
+      currentColumn.pop();
+      assert(a && b && c);
+
+      auto [sum, carry] = comb::fullAdder(builder, loc, a, b, c);
+      currentColumn.push({std::max({delay1, delay2, delay3}) + sumDelay, sum});
+      carrys.push_back(
+          {std::max({delay1, delay2, delay3}) + carryDelay, carry});
+    }
+    while (!currentColumn.empty()) {
+      results[i].push_back(currentColumn.top().second);
+      currentColumn.pop();
+    }
   }
 
-  assert(addends.size() <= targetAddends);
   SmallVector<Value> carrySave;
-  for (auto &addend : addends) {
-    // Reverse the order of the bits
-    std::reverse(addend.begin(), addend.end());
-    carrySave.push_back(comb::ConcatOp::create(builder, loc, addend));
+  for (size_t j = 0; j < targetAddends; ++j) {
+    SmallVector<Value> values;
+    for (size_t i = 0; i < width; ++i) {
+      if (results[i].size() <= j) {
+        values.push_back(falseValue);
+        continue;
+      }
+      values.push_back(results[i][j]);
+    }
+    std::reverse(values.begin(), values.end());
+    carrySave.push_back(builder.create<comb::ConcatOp>(loc, values));
   }
-
-  // Pad with zeros
-  auto zero = hw::ConstantOp::create(builder, loc, APInt(width, 0));
-  while (carrySave.size() < targetAddends)
-    carrySave.push_back(zero);
 
   return carrySave;
 }

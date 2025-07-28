@@ -41,6 +41,7 @@
 #include "circt/Dialect/Sim/SimPasses.h"
 #include "circt/Dialect/SystemC/SystemCPasses.h"
 #include "circt/Dialect/Verif/VerifPasses.h"
+#include "circt/Synthesis/SynthesisPipeline.h"
 #include "circt/Tools/circt-bmc/Passes.h"
 #include "circt/Tools/circt-lec/Passes.h"
 #include "circt/Transforms/Passes.h"
@@ -88,6 +89,7 @@ inline void registerAllPasses() {
 
   // Register pass pipelines
   rtg::registerPipelines();
+  synthesis::registerSynthesisPipeline();
 }
 
 } // namespace circt
