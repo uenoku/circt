@@ -1,6 +1,7 @@
 add_circt_library(CIRCTSynthesisTransforms
   SynthesisPipeline.cpp
   TechMapper.cpp
+  TestPriorityCut.cpp
 
   DEPENDS
   CIRCTSynthesisTransformsIncGen

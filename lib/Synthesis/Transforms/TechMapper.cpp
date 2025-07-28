@@ -30,6 +30,7 @@ using namespace circt::synthesis;
 //===----------------------------------------------------------------------===//
 // Tech Mapper Pass
 //===----------------------------------------------------------------------===//
+/*
 
 static LogicalResult simulateOp(Operation *op, DenseMap<Value, APInt> &values) {
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
@@ -287,3 +288,5 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 };
 
 } // namespace
+
+*/

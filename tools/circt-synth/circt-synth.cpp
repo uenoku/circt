@@ -214,13 +214,6 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
-  if (!untilReached(UntilMapping)) {
-    circt::synthesis::TechMapperOptions options;
-    options.maxCutsPerRoot = maxCutSizePerRoot;
-    options.strategy = synthesisStrategy;
-    pm.addPass(circt::synthesis::createTechMapper(options));
-  }
-
   // Run analysis if requested.
   if (!outputLongestPath.empty()) {
     circt::aig::PrintLongestPathAnalysisOptions options;

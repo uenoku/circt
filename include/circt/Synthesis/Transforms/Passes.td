@@ -16,6 +16,7 @@
 
 include "mlir/Pass/PassBase.td"
 
+/*
 def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
   let summary = "Technology mapping using cut rewriting";
   let description = [{
@@ -41,6 +42,15 @@ def TechMapper : Pass<"synthesis-tech-mapper", "mlir::ModuleOp"> {
     Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect"];
+}
+*/
+
+def TestPriorityCuts : Pass<"synthesis-test-priority-cuts", "hw::HWModuleOp"> {
+  let summary = "Test priority cuts for synthesis";
+  let options = [
+    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "8",
+           "Maximum number of cuts to maintain per node">,
+  ];
 }
 
 #endif // CIRCT_TRANSFORMS_PASSES
