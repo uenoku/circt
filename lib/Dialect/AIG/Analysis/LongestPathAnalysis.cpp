@@ -741,7 +741,6 @@ ArrayRef<OpenPath> LocalVisitor::getResults(Value value, size_t bitPos) const {
       return getResults(leader->first, leader->second);
     }
   }
-
   auto it = cachedResults.find(valueAndBitPos);
   // If not found, then consider it to be a constant.
   if (it == cachedResults.end())
@@ -1857,36 +1856,6 @@ LogicalResult Oracle::finalize() {
   return localVisitor->initializeAndRun();
 }
 
-int64_t LongestPathAnalysis::FrozenResults::getDelay(Value value,
-                                                     size_t bitPos) const {
-  auto it = results.find({value, bitPos});
-  if (it != results.end())
-    return it->second;
-
-  auto *op = value.getDefiningOp();
-  if (!op)
-    return -1;
-
-  return TypeSwitch<Operation *, int64_t>(op)
-      .Case<comb::ExtractOp>([&](comb::ExtractOp op) {
-        return getDelay(op.getInput(), bitPos + op.getLowBit());
-      })
-      .Case<comb::ReplicateOp>([&](comb::ReplicateOp op) {
-        return getDelay(op.getInput(), bitPos % getBitWidth(op.getInput()));
-      })
-      .Case<comb::ConcatOp>([&](comb::ConcatOp op) -> int64_t {
-        size_t bitPosInOperand = bitPos;
-        for (auto operand : llvm::reverse(op.getInputs())) {
-          auto bitWidth = operand.getType().getIntOrFloatBitWidth();
-          if (bitPosInOperand < bitWidth)
-            return getDelay(operand, bitPosInOperand);
-          bitPosInOperand -= bitWidth;
-        }
-        return -1;
-      })
-      .Default([&](auto op) { return -1; });
-}
-
 LogicalResult
 LongestPathAnalysis::getResults(Value value, size_t bitPos,
                                 SmallVectorImpl<DataflowPath> &results) const {
@@ -1895,13 +1864,49 @@ LongestPathAnalysis::getResults(Value value, size_t bitPos,
 
 std::optional<int64_t> LongestPathAnalysisListener::getDelay(Value value,
                                                              size_t bitPos) {
-  llvm::SmallVector<DataflowPath> results;
-  if (failed(getResults(value, bitPos, results)))
-    return std::nullopt;
-  int64_t maxDelay = 0;
-  for (auto &path : results)
-    maxDelay = std::max(maxDelay, path.getDelay());
-  return maxDelay;
+  auto func = [&](Value v, size_t bp) -> std::optional<int64_t> {
+    llvm::SmallVector<DataflowPath> results;
+    // Find root of the value.
+
+    // If the value is not in the equivalence class, then it
+    if (failed(LongestPathAnalysis::getResults(v, bitPos, results))) {
+      llvm::errs() << "Failed to get results for " << v << " at bit position "
+                   << bitPos << "\n";
+
+      return std::nullopt;
+    }
+    int64_t maxDelay = 0;
+    for (auto &path : results)
+      maxDelay = std::max(maxDelay, path.getDelay());
+    return maxDelay;
+  };
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    // If the value is a block argument, we can directly query the delay.
+    return func(value, bitPos);
+  }
+  llvm::errs() << "getDelay called on non-block argument value: " << value
+               << "\n";
+  // If the value is an OpResult, we need to find the defining operation.
+  auto op = value.getDefiningOp();
+
+  return TypeSwitch<Operation *, std::optional<int64_t>>(op)
+      .Case<comb::ExtractOp>([&](comb::ExtractOp op) {
+        return getDelay(op.getInput(), bitPos + op.getLowBit());
+      })
+      .Case<comb::ReplicateOp>([&](comb::ReplicateOp op) {
+        return getDelay(op.getInput(), bitPos % getBitWidth(op.getInput()));
+      })
+      .Case<comb::ConcatOp>([&](comb::ConcatOp op) -> std::optional<int64_t> {
+        size_t bitPosInOperand = bitPos;
+        for (auto operand : llvm::reverse(op.getInputs())) {
+          auto bitWidth = operand.getType().getIntOrFloatBitWidth();
+          if (bitPosInOperand < bitWidth)
+            return getDelay(operand, bitPosInOperand);
+          bitPosInOperand -= bitWidth;
+        }
+        return std::nullopt; // Bit position out of range.
+      })
+      .Default([&](auto op) { return func(value, bitPos); });
 }
 
 void LongestPathAnalysisListener::notifyOperationReplaced(
@@ -1933,11 +1938,22 @@ void LocalVisitor::notifyOperationReplaced(Operation *op,
   for (auto [oldValue, newValue] : llvm::zip(op->getResults(), replacement)) {
     for (size_t bitPos = 0; bitPos < oldValue.getType().getIntOrFloatBitWidth();
          ++bitPos) {
-      auto key = std::make_pair(oldValue, bitPos);
+      std::pair<Value, size_t> key = std::make_pair(oldValue, bitPos);
       auto it = cachedResults.find(key);
-      if (it != cachedResults.end()) {
-        cachedResults[std::make_pair(newValue, bitPos)] = it->second;
-        cachedResults.erase(it);
+      auto leader = ec.findLeader(key);
+
+      if (leader != ec.member_end()) {
+        if (*leader != key) {
+          ec.unionSets(key, std::make_pair(newValue, bitPos));
+          ec.erase(key);
+        } else {
+          // If the leader is the same as the key, we can just update the
+          // cached results.
+          cachedResults[*leader] = it->second;
+          cachedResults.erase(it);
+          ec.unionSets(std::make_pair(newValue, bitPos), *leader);
+          ec.erase(std::make_pair(oldValue, bitPos));
+        }
       }
     }
   }

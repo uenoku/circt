@@ -16,6 +16,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstdint>
 #include <memory>
 
@@ -91,6 +92,7 @@ struct DatapathCompressOpConversion : OpConversionPattern<CompressOp> {
       if (!listener)
         return 0;
       auto delay = listener->getDelay(v, 0);
+      llvm::errs() << "Delay for " << v << ": " << *delay << "\n";
       assert(delay && "Expected delay to be available");
       return *delay;
     };
