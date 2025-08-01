@@ -5,11 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// This file defines the Synth dialect.
+//
+//===----------------------------------------------------------------------===//
 
-#include "circt-c/Synthesis.h"
+#ifndef CIRCT_DIALECT_SYNTH_SYNTHDIALECT_H
+#define CIRCT_DIALECT_SYNTH_SYNTHDIALECT_H
 
-#include "circt/Synthesis/SynthesisPipeline.h"
+#include "circt/Support/LLVM.h"
+#include "mlir/IR/Dialect.h"
 
-void registerSynthesisPipeline() {
-  circt::synthesis::registerSynthesisPipeline();
-}
+#include "circt/Dialect/Synth/SynthDialect.h.inc"
+
+#endif // CIRCT_DIALECT_SYNTH_SYNTHDIALECT_H
