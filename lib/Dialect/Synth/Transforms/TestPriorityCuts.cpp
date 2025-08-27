@@ -59,7 +59,7 @@ struct DummyPattern : public CutRewritePattern {
   }
   unsigned getNumInputs() const override { return 0; }
   unsigned getNumOutputs() const override { return 0; }
-  double getArea(const Cut &cut) const override { return 0; }
+  double getArea() const override { return 0; }
   DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
     return 1;
   }

@@ -68,7 +68,6 @@ struct CutRewriterOptions;
 class MatchedPattern {
 private:
   const CutRewritePattern *pattern = nullptr; ///< The matched library pattern
-  const Cut *cut = nullptr;
   SmallVector<DelayType, 1>
       arrivalTimes; ///< Arrival times of outputs from this pattern
 
@@ -77,9 +76,9 @@ public:
   MatchedPattern() = default;
 
   /// Constructor for a valid matched pattern.
-  MatchedPattern(const CutRewritePattern *pattern, const Cut *cut,
+  MatchedPattern(const CutRewritePattern *pattern,
                  SmallVector<DelayType, 2> arrivalTimes)
-      : pattern(pattern), cut(cut), arrivalTimes(std::move(arrivalTimes)) {}
+      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
@@ -369,7 +368,7 @@ struct CutRewritePattern {
                                          Cut &cut) const = 0;
 
   /// Get the area cost of this pattern.
-  virtual double getArea(const Cut &cut) const = 0;
+  virtual double getArea() const = 0;
 
   /// Get the delay between specific input and output.
   /// NOTE: The input index is already permuted according to the pattern's

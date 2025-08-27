@@ -83,7 +83,7 @@ struct GenericLUT : public CutRewritePattern {
     return truthTableOp.getOperation();
   }
 
-  double getArea(const Cut &cut) const override {
+  double getArea() const override {
     // Each LUT has unit area regardless of the function it implements
     return 1.0;
   }

@@ -439,14 +439,9 @@ const CutRewritePattern *MatchedPattern::getPattern() const {
   return pattern;
 }
 
-const Cut *MatchedPattern::getCut() const {
-  assert(cut && "Cut must be set to get the cut");
-  return cut;
-}
-
 double MatchedPattern::getArea() const {
   assert(pattern && "Pattern must be set to get area");
-  return pattern->getArea(*cut);
+  return pattern->getArea();
 }
 
 DelayType MatchedPattern::getDelay(unsigned inputIndex,
@@ -546,33 +541,10 @@ void CutSet::finalize(
   removeDuplicateAndNonMinimalCuts(cuts);
 
   // Maintain size limit by removing worst cuts
-  if (cuts.size() > options.maxCutSizePerRoot) {
-    // Sort by priority using heuristic. Currently we sort by (depth, input
-    // size).
-    // TODO: Make this configurable.
-    // TODO: Implement pruning based on dominance.
-
-    std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
-      if (a.isTrivialCut() || b.isTrivialCut())
-        return a.isTrivialCut();
-      const auto &aMatched = a.getMatchedPattern();
-      const auto &bMatched = b.getMatchedPattern();
-      if (aMatched && bMatched) {
-        auto arrivalA = aMatched->getWorstOutputArrivalTime();
-        auto arrivalB = bMatched->getWorstOutputArrivalTime();
-        if (arrivalA != arrivalB)
-          return arrivalA < arrivalB;
-        return a.getInputSize() < b.getInputSize();
-      }
-      if (aMatched && !bMatched)
-        return true;
-      if (!aMatched && bMatched)
-        return false;
-      return a.getInputSize() < b.getInputSize();
-    });
-
-    cuts.resize(options.maxCutSizePerRoot);
-  }
+  // Sort by priority using heuristic. Currently we sort by (depth, input
+  // size).
+  // TODO: Make this configurable.
+  // TODO: Implement pruning based on dominance.
 
   // Find the best matching pattern for this cut set
   for (auto &cut : cuts) {
@@ -583,6 +555,31 @@ void CutSet::finalize(
     if (!matched)
       continue;
     cut.setMatchedPattern(std::move(*matched));
+  }
+
+  std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
+    if (a.isTrivialCut() || b.isTrivialCut())
+      return a.isTrivialCut();
+    const auto &aMatched = a.getMatchedPattern();
+    const auto &bMatched = b.getMatchedPattern();
+    if (aMatched && bMatched) {
+      auto arrivalA = aMatched->getWorstOutputArrivalTime();
+      auto arrivalB = bMatched->getWorstOutputArrivalTime();
+      if (arrivalA != arrivalB)
+        return arrivalA < arrivalB;
+      return a.getInputSize() < b.getInputSize();
+    }
+    if (aMatched && !bMatched)
+      return true;
+    if (!aMatched && bMatched)
+      return false;
+    return a.getInputSize() < b.getInputSize();
+  });
+
+  if (cuts.size() > options.maxCutSizePerRoot)
+    cuts.resize(options.maxCutSizePerRoot);
+
+  for (auto &cut : cuts) {
     const auto &currentMatch = cut.getMatchedPattern();
 
     if (!bestCut ||
@@ -977,8 +974,8 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
         // Update the arrival time
         if (!bestPattern ||
-            compareDelayAndArea(options.strategy, pattern->getArea(cut),
-                                outputArrivalTimes, bestPattern->getArea(cut),
+            compareDelayAndArea(options.strategy, pattern->getArea(),
+                                outputArrivalTimes, bestPattern->getArea(),
                                 bestArrivalTimes)) {
           LLVM_DEBUG({
             llvm::dbgs() << "== Matched Pattern ==============\n";
@@ -986,7 +983,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
             cut.dump(llvm::dbgs());
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
-            llvm::dbgs() << " with area: " << pattern->getArea(cut);
+            llvm::dbgs() << " with area: " << pattern->getArea();
             llvm::dbgs() << " and input arrival times: ";
             for (unsigned i = 0; i < inputArrivalTimes.size(); ++i) {
               llvm::dbgs() << " " << inputArrivalTimes[i];
@@ -1026,7 +1023,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   if (!bestPattern)
     return {}; // No matching pattern found
 
-  return MatchedPattern(bestPattern, &cut, std::move(bestArrivalTimes));
+  return MatchedPattern(bestPattern, std::move(bestArrivalTimes));
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {

@@ -132,7 +132,7 @@ struct TechLibraryPattern : public CutRewritePattern {
     return instanceOp.getOperation();
   }
 
-  double getArea(const Cut &cut) const override { return area; }
+  double getArea() const override { return area; }
 
   DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
     return delay[inputIndex][outputIndex];
