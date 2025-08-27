@@ -519,7 +519,16 @@ ParseResult AIGERParser::parseLatches() {
 
       latchDefs.push_back({2 * (i + 1 + numInputs), literal, loc});
 
-      // Expect newline after each latch next state
+      auto token = lexer.peekToken();
+      if (token.kind == AIGERTokenKind::Number) {
+        unsigned index;
+        // Expect newline after each latch next state
+        if (parseNumber(index, &loc))
+          return failure();
+        if (index != 2 * (i + 1 + numInputs))
+          return emitError(loc, "latch index does not match expected value");
+      }
+
       if (parseNewLine())
         return failure();
     }

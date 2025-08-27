@@ -228,6 +228,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       circt::synth::GenericLutMapperOptions lutOptions;
       lutOptions.maxLutSize = lowerToKLUTs;
       lutOptions.maxCutsPerRoot = maxCutSizePerRoot;
+      lutOptions.strategy = synthesisStrategy;
+      lutOptions.test = true;
       pm.addPass(circt::synth::createGenericLutMapper(lutOptions));
     }
   };
