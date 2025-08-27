@@ -96,8 +96,6 @@ struct TestPriorityCutsPass
       return;
     }
 
-    llvm::outs() << "Cut enumeration completed successfully\n";
-
     // This is a test pass, so we don't modify the IR
     markAllAnalysesPreserved();
   }

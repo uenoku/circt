@@ -581,6 +581,8 @@ void CutSet::finalize(
 
   for (auto &cut : cuts) {
     const auto &currentMatch = cut.getMatchedPattern();
+    if (!currentMatch)
+      continue;
 
     if (!bestCut ||
         compareDelayAndArea(options.strategy, currentMatch->getArea(),
@@ -881,7 +883,6 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   // If we are just testing the priority cuts, we are done.
   if (options.testPriorityCuts) {
     cutEnumerator.dump();
-    return success();
   }
 
   // Select best cuts and perform mapping

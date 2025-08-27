@@ -60,9 +60,9 @@ hw.module @test(in %a : i4, in %b : i2, out result : i3) {
     // CHECK-NEXT: a3 1 cuts: {a3}@t2d0
     // CHECK-NEXT: b1 1 cuts: {b1}@t2d0
     // ROOT8-NEXT: and2 2 cuts: {and2}@t2d0 {a3, b1}@t8d1
-    // ROOT8-NEXT: out0 3 cuts: {out0}@t2d0 {and0, b0}@t8d1 {a0, a1, b0}@t128d2
-    // ROOT8-NEXT: out1 5 cuts: {out1}@t2d0 {and1, and0}@t2d1 {a0, a1, and1}@t112d2 {a2, b0, and0}@t2d2 {a2, b0, a0, a1}@t546d2
-    // ROOT8-NEXT: out2 3 cuts: {out2}@t2d0 {and2, b1}@t8d1 {a3, b1}@t8d2
+    // ROOT8-NEXT: out0 3 cuts: {out0}@t2d0 {a0, a1, b0}@t128d1 {and0, b0}@t8d2
+    // ROOT8-NEXT: out1 5 cuts: {out1}@t2d0 {a2, b0, a0, a1}@t546d1 {and1, and0}@t2d2 {a0, a1, and1}@t112d2 {a2, b0, and0}@t2d2
+    // ROOT8-NEXT: out2 3 cuts: {out2}@t2d0 {a3, b1}@t8d1 {and2, b1}@t8d2
     // Check that the cuts are correctly limited when max-cuts-per-root is set to 2.
     // Currently (depth, input size) is used as the cut priority.
     // ROOT2:      and2 2 cuts: {and2}@t2d0 {a3, b1}@t8d1
@@ -101,8 +101,8 @@ hw.module @test(in %a : i4, in %b : i2, out result : i3) {
 // CHECK-LABEL: Enumerating cuts for module: Issue8885
 // ROOT8: xor0 3 cuts:
 // ROOT8-SAME: {xor0}
-// ROOT8-SAME: {and0, and1}
 // ROOT8-SAME: {b_0, a_0}
+// ROOT8-SAME: {and0, and1}
 // ROOT2: xor0 2 cuts:
 // ROOT2-SAME: {xor0}
 // ROOT2-SAME: {and0, and1}

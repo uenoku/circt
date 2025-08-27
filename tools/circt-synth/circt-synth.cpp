@@ -173,6 +173,11 @@ static cl::opt<int>
                  cl::desc("Lower to generic a truth table op with K inputs"),
                  cl::init(0), cl::cat(mainCategory));
 
+static cl::opt<bool>
+    testPriorityCuts("test-priority-cuts",
+                     cl::desc("Dump cut enumeration for testing priority cuts"),
+                     cl::init(false), cl::cat(mainCategory));
+
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
 //===----------------------------------------------------------------------===//
