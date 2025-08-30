@@ -86,7 +86,12 @@ bool Converter::operandCallback(OpOperand &op, size_t bitPos,
                                 size_t outputIndex) {
   // Create a unique key for this operand (owner operation + operand number)
   auto operandKey = std::make_pair(op.getOwner(), op.getOperandNumber());
-  assert(op.get().getType().isInteger() && "operand is not an integer");
+  if (!op.get().getType().isInteger()){
+    llvm::errs() << "Operand type: " << op.get().getType() << "\n";
+    llvm::errs() << "Operand: " << op.get() << "\n";
+    llvm::errs() << "Owner: " << *op.getOwner() << "\n";
+  }
+  assert(hw::getBitWidth(op.get().getType()) >= 0 && "operand is not an integer");
 
   // Find or create entry in the operand map
   auto *mapIterator = operandMap.find(operandKey);
@@ -105,7 +110,7 @@ bool Converter::operandCallback(OpOperand &op, size_t bitPos,
 /// Callback invoked during AIGER export for each value bit.
 /// Maps each bit position of a value to its corresponding AIGER input index.
 bool Converter::valueCallback(Value value, size_t bitPos, size_t inputIndex) {
-  assert(value.getType().isInteger() && "value is not an integer");
+  assert(hw::getBitWidth(value.getType()) >= 0 && "value is not an integer");
 
   // Find or create entry in the value map
   auto *mapIterator = valueMap.find(value);

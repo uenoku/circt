@@ -121,11 +121,11 @@ class Cut {
 public:
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
-  llvm::SmallSetVector<mlir::Value, 4> inputs;
+  llvm::SmallSetVector<mlir::Value, 6> inputs;
 
   /// Operations contained within this cut.
   /// Stored in topological order with the root operation at the end.
-  llvm::SmallSetVector<mlir::Operation *, 4> operations;
+  llvm::SmallSetVector<mlir::Operation *, 6> operations;
 
   /// Check if this cut represents a trivial cut.
   /// A trivial cut has no internal operations and exactly one input.

@@ -59,7 +59,7 @@ using namespace circt::synth;
 static bool isSupportedLogicOp(mlir::Operation *op) {
   // Check if the operation is a combinational operation that can be simulated
   // TODO: Extend this to allow comb.and/xor/or as well.
-  return isa<aig::AndInverterOp, hw::ConstantOp>(op);
+  return isa<aig::AndInverterOp>(op);
 }
 
 static void simulateLogicOp(Operation *op, DenseMap<Value, llvm::APInt> &eval) {
@@ -93,6 +93,8 @@ static bool isAlwaysCutInput(Value value) {
   // If the value has no defining operation, it is an input
   if (!op)
     return true;
+  if (isa<hw::ConstantOp>(op))
+    return false;
 
   return !isSupportedLogicOp(op);
 }
@@ -149,7 +151,7 @@ circt::synth::topologicallySortLogicNetwork(mlir::Operation *topOp) {
 template <typename OpRange>
 FailureOr<BinaryTruthTable> static computeTruthTable(
     mlir::ValueRange values, const OpRange &ops,
-    const llvm::SmallSetVector<mlir::Value, 4> &inputArgs) {
+    ArrayRef<mlir::Value> inputArgs) {
   // Create a truth table for the operation
   int64_t numInputs = inputArgs.size();
   int64_t numOutputs = values.size();
@@ -210,7 +212,8 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
   if (inputs.empty())
     return BinaryTruthTable();
 
-  return computeTruthTable(values, llvm::make_pointer_range(*block), inputs);
+  return computeTruthTable(values, llvm::make_pointer_range(*block),
+                           inputs.getArrayRef());
 }
 
 //===----------------------------------------------------------------------===//
@@ -294,7 +297,7 @@ const BinaryTruthTable &Cut::getTruthTable() const {
   }
 
   // Create a truth table with the given number of inputs and outputs
-  truthTable = *computeTruthTable(getRoot()->getResults(), operations, inputs);
+  truthTable = *computeTruthTable(getRoot()->getResults(), operations, inputs.getArrayRef());
 
   return *truthTable;
 }
@@ -333,49 +336,50 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   // Topological sort the operations in the new cut.
   // TODO: Merge-sort `operations` and `other.operations` by operation index
   // (since it's already topo-sorted, we can use a simple merge).
-//   std::function<void(Operation *)> populateOperations = [&](Operation *op) {
-//     // If the operation is already in the cut, skip it
-//     if (newCut.operations.contains(op))
-//       return;
-// 
-//     // Add its operands to the worklist
-//     for (auto value : op->getOperands()) {
-//       if (isAlwaysCutInput(value))
-//         continue;
-// 
-//       // If the value is in *both* cuts inputs, it is an input. So skip
-//       // it.
-//       bool isInput = inputs.contains(value);
-//       bool isOtherInput = other.inputs.contains(value);
-//       // If the value is in this cut inputs, it is an input. So skip it
-//       if (isInput && isOtherInput)
-//         continue;
-// 
-//       auto *defOp = value.getDefiningOp();
-// 
-//       assert(defOp && "Value must have a defining operation since block"
-//                       "arguments are treated as inputs");
-// 
-//       // Otherwise, check if the operation is in the other cut.
-//       if (isInput)
-//         if (!other.operations.contains(defOp)) // op is in the other cut.
-//           continue;
-//       if (isOtherInput)
-//         if (!operations.contains(defOp)) // op is in this cut.
-//           continue;
-//       populateOperations(defOp);
-//     }
-// 
-//     // Add the operation to the cut
-//     newCut.operations.insert(op);
-//   };
-// 
+  //   std::function<void(Operation *)> populateOperations = [&](Operation *op)
+  //   {
+  //     // If the operation is already in the cut, skip it
+  //     if (newCut.operations.contains(op))
+  //       return;
+  //
+  //     // Add its operands to the worklist
+  //     for (auto value : op->getOperands()) {
+  //       if (isAlwaysCutInput(value))
+  //         continue;
+  //
+  //       // If the value is in *both* cuts inputs, it is an input. So skip
+  //       // it.
+  //       bool isInput = inputs.contains(value);
+  //       bool isOtherInput = other.inputs.contains(value);
+  //       // If the value is in this cut inputs, it is an input. So skip it
+  //       if (isInput && isOtherInput)
+  //         continue;
+  //
+  //       auto *defOp = value.getDefiningOp();
+  //
+  //       assert(defOp && "Value must have a defining operation since block"
+  //                       "arguments are treated as inputs");
+  //
+  //       // Otherwise, check if the operation is in the other cut.
+  //       if (isInput)
+  //         if (!other.operations.contains(defOp)) // op is in the other cut.
+  //           continue;
+  //       if (isOtherInput)
+  //         if (!operations.contains(defOp)) // op is in this cut.
+  //           continue;
+  //       populateOperations(defOp);
+  //     }
+  //
+  //     // Add the operation to the cut
+  //     newCut.operations.insert(op);
+  //   };
+  //
   // Fast two-pointer merge of operations in topological order
   // Since operations are already topologically sorted in their parent block
-  SmallVector<Operation*> mergedOps;
+  SmallVector<Operation *> mergedOps;
   auto thisOps = operations.getArrayRef();
   auto otherOps = other.operations.getArrayRef();
-  
+
   unsigned i = 0, j = 0;
   while (i < thisOps.size() && j < otherOps.size()) {
     if (thisOps[i]->isBeforeInBlock(otherOps[j])) {
@@ -388,16 +392,16 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
       j++;
     }
   }
-  
+
   // Flush remaining operations
-  while (i < thisOps.size()) 
+  while (i < thisOps.size())
     mergedOps.push_back(thisOps[i++]);
-  while (j < otherOps.size()) 
+  while (j < otherOps.size())
     mergedOps.push_back(otherOps[j++]);
-  
+
   // Add the root operation
   mergedOps.push_back(root);
-  
+
   // Insert into the new cut's operations set
   for (auto *op : mergedOps)
     newCut.operations.insert(op);
