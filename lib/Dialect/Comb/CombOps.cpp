@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/HWTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Matchers.h"
@@ -475,10 +476,19 @@ bool XorOp::isBinaryNot() {
 // ConcatOp
 //===----------------------------------------------------------------------===//
 
-static unsigned getTotalWidth(ValueRange inputs) {
-  unsigned resultWidth = 0;
+static int64_t getTotalWidth(ValueRange inputs) {
+  int64_t resultWidth = 0;
   for (auto input : inputs) {
-    resultWidth += hw::type_cast<IntegerType>(input.getType()).getWidth();
+    auto intType = hw::type_dyn_cast<IntegerType>(input.getType());
+    if (!intType) {
+      if (auto parent = input.getParentBlock()->getParentOp()) {
+        if (auto module = dyn_cast<hw::HWModuleOp>(parent))
+          llvm::errs() << "In module: " << module.getModuleNameAttr() << "\n";
+      }
+      return -1;
+    }
+
+    resultWidth += intType.getWidth();
   }
   return resultWidth;
 }
@@ -495,7 +505,12 @@ LogicalResult ConcatOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> loc, ValueRange operands,
     DictionaryAttr attrs, mlir::OpaqueProperties properties,
     mlir::RegionRange regions, SmallVectorImpl<Type> &results) {
-  unsigned resultWidth = getTotalWidth(operands);
+  int64_t resultWidth = getTotalWidth(operands);
+  if (resultWidth < 0) {
+    if (loc)
+      return mlir::emitError(*loc) << "concat requires integer operands";
+    return failure();
+  }
   results.push_back(IntegerType::get(context, resultWidth));
   return success();
 }

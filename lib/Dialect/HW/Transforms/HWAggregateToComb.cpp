@@ -9,6 +9,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWPasses.h"
+#include "circt/Dialect/HW/HWTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APInt.h"
@@ -182,6 +183,9 @@ public:
   AggregateTypeConverter() {
     addConversion([](Type type) -> Type { return type; });
     addConversion([](hw::ArrayType t) -> Type {
+      return IntegerType::get(t.getContext(), hw::getBitWidth(t));
+    });
+    addConversion([](hw::StructType t) -> Type {
       return IntegerType::get(t.getContext(), hw::getBitWidth(t));
     });
     addTargetMaterialization([](mlir::OpBuilder &builder, mlir::Type resultType,

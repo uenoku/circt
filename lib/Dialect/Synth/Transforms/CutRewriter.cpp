@@ -59,7 +59,7 @@ using namespace circt::synth;
 static bool isSupportedLogicOp(mlir::Operation *op) {
   // Check if the operation is a combinational operation that can be simulated
   // TODO: Extend this to allow comb.and/xor/or as well.
-  return isa<aig::AndInverterOp>(op);
+  return isa<aig::AndInverterOp, hw::ConstantOp>(op);
 }
 
 static void simulateLogicOp(Operation *op, DenseMap<Value, llvm::APInt> &eval) {
@@ -93,11 +93,6 @@ static bool isAlwaysCutInput(Value value) {
   // If the value has no defining operation, it is an input
   if (!op)
     return true;
-
-  if (op->hasTrait<OpTrait::ConstantLike>()) {
-    // Constant values are never cut inputs.
-    return false;
-  }
 
   return !isSupportedLogicOp(op);
 }
@@ -338,44 +333,74 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
   // Topological sort the operations in the new cut.
   // TODO: Merge-sort `operations` and `other.operations` by operation index
   // (since it's already topo-sorted, we can use a simple merge).
-  std::function<void(Operation *)> populateOperations = [&](Operation *op) {
-    // If the operation is already in the cut, skip it
-    if (newCut.operations.contains(op))
-      return;
-
-    // Add its operands to the worklist
-    for (auto value : op->getOperands()) {
-      if (isAlwaysCutInput(value))
-        continue;
-
-      // If the value is in *both* cuts inputs, it is an input. So skip
-      // it.
-      bool isInput = inputs.contains(value);
-      bool isOtherInput = other.inputs.contains(value);
-      // If the value is in this cut inputs, it is an input. So skip it
-      if (isInput && isOtherInput)
-        continue;
-
-      auto *defOp = value.getDefiningOp();
-
-      assert(defOp && "Value must have a defining operation since block"
-                      "arguments are treated as inputs");
-
-      // Otherwise, check if the operation is in the other cut.
-      if (isInput)
-        if (!other.operations.contains(defOp)) // op is in the other cut.
-          continue;
-      if (isOtherInput)
-        if (!operations.contains(defOp)) // op is in this cut.
-          continue;
-      populateOperations(defOp);
+//   std::function<void(Operation *)> populateOperations = [&](Operation *op) {
+//     // If the operation is already in the cut, skip it
+//     if (newCut.operations.contains(op))
+//       return;
+// 
+//     // Add its operands to the worklist
+//     for (auto value : op->getOperands()) {
+//       if (isAlwaysCutInput(value))
+//         continue;
+// 
+//       // If the value is in *both* cuts inputs, it is an input. So skip
+//       // it.
+//       bool isInput = inputs.contains(value);
+//       bool isOtherInput = other.inputs.contains(value);
+//       // If the value is in this cut inputs, it is an input. So skip it
+//       if (isInput && isOtherInput)
+//         continue;
+// 
+//       auto *defOp = value.getDefiningOp();
+// 
+//       assert(defOp && "Value must have a defining operation since block"
+//                       "arguments are treated as inputs");
+// 
+//       // Otherwise, check if the operation is in the other cut.
+//       if (isInput)
+//         if (!other.operations.contains(defOp)) // op is in the other cut.
+//           continue;
+//       if (isOtherInput)
+//         if (!operations.contains(defOp)) // op is in this cut.
+//           continue;
+//       populateOperations(defOp);
+//     }
+// 
+//     // Add the operation to the cut
+//     newCut.operations.insert(op);
+//   };
+// 
+  // Fast two-pointer merge of operations in topological order
+  // Since operations are already topologically sorted in their parent block
+  SmallVector<Operation*> mergedOps;
+  auto thisOps = operations.getArrayRef();
+  auto otherOps = other.operations.getArrayRef();
+  
+  unsigned i = 0, j = 0;
+  while (i < thisOps.size() && j < otherOps.size()) {
+    if (thisOps[i]->isBeforeInBlock(otherOps[j])) {
+      mergedOps.push_back(thisOps[i++]);
+    } else if (otherOps[j]->isBeforeInBlock(thisOps[i])) {
+      mergedOps.push_back(otherOps[j++]);
+    } else {
+      // Same operation - add only once
+      mergedOps.push_back(thisOps[i++]);
+      j++;
     }
-
-    // Add the operation to the cut
+  }
+  
+  // Flush remaining operations
+  while (i < thisOps.size()) 
+    mergedOps.push_back(thisOps[i++]);
+  while (j < otherOps.size()) 
+    mergedOps.push_back(otherOps[j++]);
+  
+  // Add the root operation
+  mergedOps.push_back(root);
+  
+  // Insert into the new cut's operations set
+  for (auto *op : mergedOps)
     newCut.operations.insert(op);
-  };
-
-  populateOperations(root);
 
   // Construct inputs.
   for (auto *operation : newCut.operations) {
