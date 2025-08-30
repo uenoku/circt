@@ -35,6 +35,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
@@ -46,6 +47,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/raw_ostream.h"
 #include <functional>
 #include <memory>
 #include <optional>
@@ -297,7 +299,8 @@ const BinaryTruthTable &Cut::getTruthTable() const {
   }
 
   // Create a truth table with the given number of inputs and outputs
-  truthTable = *computeTruthTable(getRoot()->getResults(), operations, inputs.getArrayRef());
+  truthTable = *computeTruthTable(getRoot()->getResults(), operations,
+                                  inputs.getArrayRef());
 
   return *truthTable;
 }
@@ -493,6 +496,15 @@ void CutSet::addCut(Cut cut) {
 }
 
 ArrayRef<Cut> CutSet::getCuts() const { return cuts; }
+std::pair<ArrayRef<Cut>, ArrayRef<Cut>>
+CutSet::getCutsSplitByInputSize(unsigned size) const {
+  // Find the first cut with input size greater than `size`
+  auto *it = llvm::find_if(
+      cuts, [size](const Cut &cut) { return cut.getInputSize() >= size; });
+  size_t index = std::distance(cuts.begin(), it);
+  auto cutsArray = ArrayRef<Cut>(cuts);
+  return {cutsArray.take_front(index), cutsArray.drop_front(index)};
+}
 
 // Remove duplicate cuts and non-minimal cuts. A cut is non-minimal if there
 // exists another cut that is a subset of it. We use a bitset to represent the
@@ -789,16 +801,54 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   const auto *rhsCutSet = operandCutSets[1];
 
   // Combine cuts from both inputs to create larger cuts
-  for (const Cut &lhsCut : lhsCutSet->getCuts()) {
-    for (const Cut &rhsCut : rhsCutSet->getCuts()) {
-      Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
-      // Skip cuts that exceed input size limit
-      if (mergedCut.getInputSize() > options.maxCutInputSize)
-        continue;
+  // for (const Cut &lhsCut : lhsCutSet->getCuts()) {
+  //   for (const Cut &rhsCut : rhsCutSet->getCuts()) {
+  //     Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
+  //     // Skip cuts that exceed input size limit
+  //     if (mergedCut.getInputSize() > options.maxCutInputSize)
+  //       continue;
 
-      resultCutSet->addCut(std::move(mergedCut));
+  //     resultCutSet->addCut(std::move(mergedCut));
+  //   }
+  // }
+
+  auto mergeCuts = [&](ArrayRef<Cut> lhsCuts, ArrayRef<Cut> rhsCuts,
+                       bool pruneEarly) {
+    for (const Cut &lhsCut : lhsCuts) {
+      for (const Cut &rhsCut : rhsCuts) {
+        Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
+        // Skip cuts that exceed input size limit
+        if (mergedCut.getInputSize() > options.maxCutInputSize)
+          continue;
+
+        resultCutSet->addCut(std::move(mergedCut));
+        if (resultCutSet->size() >= options.maxCutSizePerRoot && pruneEarly) {
+          // If we've reached the maximum cut size, we can stop early
+          return true;
+        }
+      }
     }
-  }
+    return false;
+  };
+
+  // To avoid combinatorial explosion, we prune the cuts early if we've
+  // already reached the maximum cut size.
+  auto [smallLhsCuts, largeLhsCuts] =
+      lhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
+  auto [smallRhsCuts, largeRhsCuts] =
+      rhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
+  // llvm::errs() << "Merging cuts for operation: " << *logicOp << "\n";
+  // llvm::errs() << "LHS cuts: small=" << smallLhsCuts.size()
+  //              << " large=" << largeLhsCuts.size() << "\n";
+  // llvm::errs() << "RHS cuts: small=" << smallRhsCuts.size()
+  //              << " large=" << largeRhsCuts.size() << "\n";
+  bool merged = mergeCuts(smallLhsCuts, smallRhsCuts, false);
+  assert(!merged && "Should not have reached max cut size yet");
+  removeDuplicateAndNonMinimalCuts(resultCutSet->cuts);
+  if (mergeCuts(smallLhsCuts, largeRhsCuts, true) ||
+      mergeCuts(largeLhsCuts, smallRhsCuts, true) ||
+      mergeCuts(largeLhsCuts, largeRhsCuts, true))
+    return success();
 
   return success();
 }

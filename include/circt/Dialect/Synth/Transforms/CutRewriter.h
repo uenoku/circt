@@ -187,11 +187,12 @@ public:
 /// results.
 class CutSet {
 private:
-  llvm::SmallVector<Cut, 4> cuts; ///< Collection of cuts for this node
   Cut *bestCut = nullptr;
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
+
+  llvm::SmallVector<Cut, 4> cuts; ///< Collection of cuts for this node
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
@@ -219,6 +220,8 @@ public:
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut> getCuts() const;
+  std::pair<ArrayRef<Cut>, ArrayRef<Cut>>
+  getCutsSplitByInputSize(unsigned size) const;
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
