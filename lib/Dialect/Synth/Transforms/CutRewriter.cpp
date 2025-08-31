@@ -845,9 +845,9 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   bool merged = mergeCuts(smallLhsCuts, smallRhsCuts, false);
   assert(!merged && "Should not have reached max cut size yet");
   removeDuplicateAndNonMinimalCuts(resultCutSet->cuts);
-  if (mergeCuts(smallLhsCuts, largeRhsCuts, true) ||
-      mergeCuts(largeLhsCuts, smallRhsCuts, true) ||
-      mergeCuts(largeLhsCuts, largeRhsCuts, true))
+  if (mergeCuts(smallLhsCuts, largeRhsCuts, false) ||
+      mergeCuts(largeLhsCuts, smallRhsCuts, false) ||
+      mergeCuts(largeLhsCuts, largeRhsCuts, false))
     return success();
 
   return success();
