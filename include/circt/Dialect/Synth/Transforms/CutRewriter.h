@@ -54,6 +54,25 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
 
 //===----------------------------------------------------------------------===//
+// Value Numbering
+//===----------------------------------------------------------------------===//
+
+// This class provides a mapping from Values to unique integer IDs.
+// It also implies a topological order since Values are numbered
+// in the order they are first seen. So the numbering can be used
+// to determine the relative order of two values.
+class ValueNumbering {
+public:
+  unsigned getNumber(Value v) {
+    auto [it, _] = valueToNumber.try_emplace(v, valueToNumber.size());
+    return it->second;
+  }
+
+private:
+  DenseMap<Value, unsigned> valueToNumber;
+};
+
+//===----------------------------------------------------------------------===//
 // Cut Data Structures
 //===----------------------------------------------------------------------===//
 
@@ -135,14 +154,12 @@ public:
   llvm::SmallSetVector<mlir::Operation *, 6> operations;
 
   void setInputBitSet(llvm::function_ref<unsigned(Value)> getIndex);
-  void setSignature();
+  void setSignature(ValueNumbering &valueNumbering);
   /// Get the bitset representation of inputs for efficient comparison.
   /// This uses the provided index mapping function to convert values to
   /// indices.
   uint64_t getInputBitset() const { return inputBitset; }
-  uint64_t getSignature() const {
-    return signature;
-  }
+  uint64_t getSignature() const { return signature; }
 
   /// Check if this cut represents a trivial cut.
   /// A trivial cut has no internal operations and exactly one input.
@@ -209,6 +226,7 @@ private:
 
 public:
   llvm::SmallVector<Cut, 4> cuts; ///< Collection of cuts for this node
+  CutSet(ValueNumbering &vn) : valueNumbering(vn) {}
 
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
@@ -263,6 +281,8 @@ public:
     return llvm::make_filter_range(
         cuts, [size](const Cut &cut) { return cut.getInputSize() >= size; });
   }
+
+  ValueNumbering &valueNumbering;
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
@@ -359,6 +379,9 @@ private:
   /// Function to match cuts against available patterns.
   /// Set during enumeration and used when finalizing cut sets.
   llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut;
+
+  /// Value numbering for topological order and unique IDs.
+  ValueNumbering valueNumbering;
 };
 
 /// Base class for cut rewriting patterns used in combinational logic

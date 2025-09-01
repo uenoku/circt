@@ -267,13 +267,9 @@ void Cut::setInputBitSet(llvm::function_ref<unsigned(Value)> getIndex) {
     inputBitset |= (1ULL << getIndex(input));
 }
 
-void Cut::setSignature() {
-  for (auto input : inputs) {
-    // Signature is non-deterministic. It should only be used for a quick
-    // check to skip unlikely merges.
-    unsigned index = llvm::hash_value(input.getAsOpaquePointer()) % 64;
-    signature |= (1ULL << index);
-  }
+void Cut::setSignature(ValueNumbering &valueNumbering) {
+  for (auto input : inputs)
+    signature |= (1ULL << (valueNumbering.getNumber(input) % 64));
 }
 
 void Cut::dump(llvm::raw_ostream &os) const {
@@ -427,6 +423,8 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
     newCut.operations.insert(op);
 
   // Construct inputs.
+  // newCut.inputs = inputs;
+  // newCut.inputs.insert(other.inputs.begin(), other.inputs.end());
   for (auto *operation : newCut.operations) {
     for (auto value : operation->getOperands()) {
       if (isAlwaysCutInput(value)) {
@@ -510,7 +508,7 @@ unsigned CutSet::size() const { return cuts.size(); }
 void CutSet::addCut(Cut cut) {
   cut.setInputBitSet([this](Value value) { return getIndex(value); });
   auto inputBitMask = cut.getInputBitset();
-  cut.setSignature();
+  cut.setSignature(valueNumbering);
   assert(!isFrozen && "Cannot add cuts to a frozen cut set");
   for (size_t i = 0; i < cuts.size(); ++i) {
     const auto &existingCut = cuts[i];
@@ -676,7 +674,7 @@ CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
 
 CutSet *CutEnumerator::createNewCutSet(Value value) {
   auto [cutSetPtr, inserted] =
-      cutSets.try_emplace(value, std::make_unique<CutSet>());
+      cutSets.try_emplace(value, std::make_unique<CutSet>(valueNumbering));
   assert(inserted && "Cut set already exists for this value");
   return cutSetPtr->second.get();
 }
@@ -808,7 +806,7 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
         resultCutSet->addCut(std::move(mergedCut));
         if (resultCutSet->size() >= options.maxCutSizePerRoot && pruneEarly) {
           // If we've reached the maximum cut size, we can stop early
-          return true;
+          return false;
         }
       }
     }
@@ -837,9 +835,9 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   //              << " large=" << largeRhsCuts.size() << "\n";
   bool merged = mergeCuts(smallLhsCuts, smallRhsCuts, false);
   assert(!merged && "Should not have reached max cut size yet");
-  if (mergeCuts(smallLhsCuts, largeRhsCuts, true) ||
-      mergeCuts(largeLhsCuts, smallRhsCuts, true) ||
-      mergeCuts(largeLhsCuts, largeRhsCuts, true))
+  if (mergeCuts(smallLhsCuts, largeRhsCuts, false) ||
+      mergeCuts(largeLhsCuts, smallRhsCuts, false) ||
+      mergeCuts(largeLhsCuts, largeRhsCuts, false))
     return success();
 
   return success();
@@ -876,7 +874,7 @@ const CutSet *CutEnumerator::getCutSet(Value value) {
   auto *it = cutSets.find(value);
   if (it == cutSets.end()) {
     // Create new cut set for an unprocessed value
-    auto cutSet = std::make_unique<CutSet>();
+    auto cutSet = std::make_unique<CutSet>(valueNumbering);
     cutSet->addCut(getAsTrivialCut(value));
     auto [newIt, inserted] = cutSets.insert({value, std::move(cutSet)});
     assert(inserted && "Cut set already exists for this value");
