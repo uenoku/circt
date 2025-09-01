@@ -22,6 +22,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
@@ -242,8 +243,27 @@ public:
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut> getCuts() const;
+
+  /// Return a pair of iterator range that splits cuts based on input size.
+  /// The first group contains cuts with input size less than the given size.
+  /// The second group contains cuts with input size greater than or equal to
+  /// the given size.
   std::pair<ArrayRef<Cut>, ArrayRef<Cut>>
   getCutsSplitByInputSize(unsigned size) const;
+
+  /// Get an iterator range for cuts with input size less than the given size
+  auto cutsWithInputSizeLessThan(unsigned size) const {
+    return llvm::make_filter_range(cuts, [size](const Cut &cut) {
+      return cut.getInputSize() < size;
+    });
+  }
+
+  /// Get an iterator range for cuts with input size greater than or equal to the given size
+  auto cutsWithInputSizeGreaterEqual(unsigned size) const {
+    return llvm::make_filter_range(cuts, [size](const Cut &cut) {
+      return cut.getInputSize() >= size;
+    });
+  }
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
