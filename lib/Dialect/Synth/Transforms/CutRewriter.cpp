@@ -38,14 +38,17 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <functional>
@@ -261,7 +264,16 @@ void Cut::getPermutatedInputs(const NPNClass &patternNPN,
 
 void Cut::setInputBitSet(llvm::function_ref<unsigned(Value)> getIndex) {
   for (auto input : inputs)
-    inputBitset.set(getIndex(input));
+    inputBitset |= (1ULL << getIndex(input));
+}
+
+void Cut::setSignature() {
+  for (auto input : inputs) {
+    // Signature is non-deterministic. It should only be used for a quick
+    // check to skip unlikely merges.
+    unsigned index = llvm::hash_value(input.getAsOpaquePointer()) % 64;
+    signature |= (1ULL << index);
+  }
 }
 
 void Cut::dump(llvm::raw_ostream &os) const {
@@ -496,20 +508,29 @@ Cut *CutSet::getBestMatchedCut() const { return bestCut; }
 unsigned CutSet::size() const { return cuts.size(); }
 
 void CutSet::addCut(Cut cut) {
+  cut.setInputBitSet([this](Value value) { return getIndex(value); });
+  auto inputBitMask = cut.getInputBitset();
+  cut.setSignature();
   assert(!isFrozen && "Cannot add cuts to a frozen cut set");
+  for (size_t i = 0; i < cuts.size(); ++i) {
+    const auto &existingCut = cuts[i];
+    // If the new cut's inputs are a superset of an existing cut's inputs,
+    // it is dominated and can be skipped.
+    if ((existingCut.getInputBitset() & inputBitMask) ==
+        existingCut.getInputBitset())
+      return;
+    // If the existing cut's inputs are a superset of the new cut's inputs,
+    // remove the existing cut since it is dominated.
+    if ((existingCut.getInputBitset() & inputBitMask) == inputBitMask) {
+      cuts[i] = std::move(cut);
+      return;
+    }
+  }
+
   cuts.push_back(std::move(cut));
 }
 
 ArrayRef<Cut> CutSet::getCuts() const { return cuts; }
-std::pair<ArrayRef<Cut>, ArrayRef<Cut>>
-CutSet::getCutsSplitByInputSize(unsigned size) const {
-  // Find the first cut with input size greater than `size`
-  auto *it = llvm::find_if(
-      cuts, [size](const Cut &cut) { return cut.getInputSize() >= size; });
-  size_t index = std::distance(cuts.begin(), it);
-  auto cutsArray = ArrayRef<Cut>(cuts);
-  return {cutsArray.take_front(index), cutsArray.drop_front(index)};
-}
 
 void CutSet::finalize(
     const CutRewriterOptions &options,
@@ -753,10 +774,32 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   //   }
   // }
 
-  auto mergeCuts = [&](ArrayRef<Cut> lhsCuts, ArrayRef<Cut> rhsCuts,
-                       bool pruneEarly) {
+  auto mergeCuts = [&](auto &rhsCuts, auto &lhsCuts, bool pruneEarly) {
     for (const Cut &lhsCut : lhsCuts) {
       for (const Cut &rhsCut : rhsCuts) {
+        uint64_t mergedSignature =
+            lhsCut.getSignature() | rhsCut.getSignature();
+        // Quick signature check.
+        if (pruneEarly && llvm::popcount(mergedSignature) >
+                              static_cast<int>(options.maxCutInputSize)) {
+          llvm::dbgs() << llvm::popcount(mergedSignature) << " "
+                       << options.maxCutInputSize << "\n";
+
+          llvm::dbgs() << "Skipping cut merge due to signature\n";
+          // Dump cuts in bin formmat for easier comparison
+          auto toBinaryString = [](uint64_t sig) -> std::string {
+            SmallString<64> str;
+            llvm::APInt(64, sig).toString(str, 2, /*signed=*/false);
+            return str.str().str();
+          };
+          llvm::dbgs() << "LHS Cut signature: 0b"
+                       << toBinaryString(lhsCut.getSignature()) << "\n";
+          llvm::dbgs() << "RHS Cut signature: 0b"
+                       << toBinaryString(rhsCut.getSignature()) << "\n";
+
+          continue;
+        }
+
         Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
         // Skip cuts that exceed input size limit
         if (mergedCut.getInputSize() > options.maxCutInputSize)
@@ -774,10 +817,19 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
 
   // To avoid combinatorial explosion, we prune the cuts early if we've
   // already reached the maximum cut size.
-  auto [smallLhsCuts, largeLhsCuts] =
-      lhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
-  auto [smallRhsCuts, largeRhsCuts] =
-      rhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
+  auto smallLhsCuts =
+      lhsCutSet->cutsWithInputSizeLessThan(options.maxCutInputSize);
+  auto smallRhsCuts =
+      rhsCutSet->cutsWithInputSizeLessThan(options.maxCutInputSize);
+  auto largeLhsCuts =
+      lhsCutSet->cutsWithInputSizeGreaterEqual(options.maxCutInputSize);
+  auto largeRhsCuts =
+      rhsCutSet->cutsWithInputSizeGreaterEqual(options.maxCutInputSize);
+
+  // auto [smallLhsCuts, largeLhsCuts] =
+  //     lhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
+  // auto [smallRhsCuts, largeRhsCuts] =
+  //     rhsCutSet->getCutsSplitByInputSize(options.maxCutInputSize);
   // llvm::errs() << "Merging cuts for operation: " << *logicOp << "\n";
   // llvm::errs() << "LHS cuts: small=" << smallLhsCuts.size()
   //              << " large=" << largeLhsCuts.size() << "\n";

@@ -22,11 +22,13 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -120,7 +122,8 @@ class Cut {
 
   std::optional<MatchedPattern> matchedPattern;
 
-  llvm::Bitset<64> inputBitset;
+  uint64_t inputBitset;
+  uint64_t signature = 0;
 
 public:
   /// External inputs to this cut (cut boundary).
@@ -132,10 +135,14 @@ public:
   llvm::SmallSetVector<mlir::Operation *, 6> operations;
 
   void setInputBitSet(llvm::function_ref<unsigned(Value)> getIndex);
+  void setSignature();
   /// Get the bitset representation of inputs for efficient comparison.
   /// This uses the provided index mapping function to convert values to
   /// indices.
-  const llvm::Bitset<64> &getInputBitset() const { return inputBitset; }
+  uint64_t getInputBitset() const { return inputBitset; }
+  uint64_t getSignature() const {
+    return signature;
+  }
 
   /// Check if this cut represents a trivial cut.
   /// A trivial cut has no internal operations and exactly one input.
@@ -244,25 +251,17 @@ public:
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut> getCuts() const;
 
-  /// Return a pair of iterator range that splits cuts based on input size.
-  /// The first group contains cuts with input size less than the given size.
-  /// The second group contains cuts with input size greater than or equal to
-  /// the given size.
-  std::pair<ArrayRef<Cut>, ArrayRef<Cut>>
-  getCutsSplitByInputSize(unsigned size) const;
-
   /// Get an iterator range for cuts with input size less than the given size
   auto cutsWithInputSizeLessThan(unsigned size) const {
-    return llvm::make_filter_range(cuts, [size](const Cut &cut) {
-      return cut.getInputSize() < size;
-    });
+    return llvm::make_filter_range(
+        cuts, [size](const Cut &cut) { return cut.getInputSize() < size; });
   }
 
-  /// Get an iterator range for cuts with input size greater than or equal to the given size
+  /// Get an iterator range for cuts with input size greater than or equal to
+  /// the given size
   auto cutsWithInputSizeGreaterEqual(unsigned size) const {
-    return llvm::make_filter_range(cuts, [size](const Cut &cut) {
-      return cut.getInputSize() >= size;
-    });
+    return llvm::make_filter_range(
+        cuts, [size](const Cut &cut) { return cut.getInputSize() >= size; });
   }
 };
 
