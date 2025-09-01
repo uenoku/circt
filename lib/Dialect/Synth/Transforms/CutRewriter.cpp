@@ -772,7 +772,7 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   //   }
   // }
 
-  auto mergeCuts = [&](auto &rhsCuts, auto &lhsCuts, bool pruneEarly) {
+  auto mergeCuts = [&](auto rhsCuts, auto lhsCuts, bool pruneEarly) {
     for (const Cut &lhsCut : lhsCuts) {
       for (const Cut &rhsCut : rhsCuts) {
         uint64_t mergedSignature =
@@ -833,13 +833,14 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   //              << " large=" << largeLhsCuts.size() << "\n";
   // llvm::errs() << "RHS cuts: small=" << smallRhsCuts.size()
   //              << " large=" << largeRhsCuts.size() << "\n";
-  bool merged = mergeCuts(smallLhsCuts, smallRhsCuts, false);
-  assert(!merged && "Should not have reached max cut size yet");
-  if (mergeCuts(smallLhsCuts, largeRhsCuts, false) ||
-      mergeCuts(largeLhsCuts, smallRhsCuts, false) ||
-      mergeCuts(largeLhsCuts, largeRhsCuts, false))
-    return success();
-
+  mergeCuts(lhsCutSet->getCuts(), rhsCutSet->getCuts(), false);
+//  bool merged = mergeCuts(smallLhsCuts, smallRhsCuts, false);
+//  assert(!merged && "Should not have reached max cut size yet");
+//  if (mergeCuts(smallLhsCuts, largeRhsCuts, false) ||
+//      mergeCuts(largeLhsCuts, smallRhsCuts, false) ||
+//      mergeCuts(largeLhsCuts, largeRhsCuts, false))
+//    return success();
+//
   return success();
 }
 
