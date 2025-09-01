@@ -21,6 +21,7 @@
 #include "circt/Support/NPNClass.h"
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
@@ -118,6 +119,8 @@ class Cut {
 
   std::optional<MatchedPattern> matchedPattern;
 
+  llvm::Bitset<64> inputBitset;
+
 public:
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
@@ -126,6 +129,12 @@ public:
   /// Operations contained within this cut.
   /// Stored in topological order with the root operation at the end.
   llvm::SmallSetVector<mlir::Operation *, 6> operations;
+
+  void setInputBitSet(llvm::function_ref<unsigned(Value)> getIndex);
+  /// Get the bitset representation of inputs for efficient comparison.
+  /// This uses the provided index mapping function to convert values to
+  /// indices.
+  const llvm::Bitset<64> &getInputBitset() const { return inputBitset; }
 
   /// Check if this cut represents a trivial cut.
   /// A trivial cut has no internal operations and exactly one input.
@@ -191,8 +200,8 @@ private:
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
-
   llvm::SmallVector<Cut, 4> cuts; ///< Collection of cuts for this node
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
@@ -217,6 +226,19 @@ public:
   /// Add a new cut to this set.
   /// NOTE: The cut set must not be frozen
   void addCut(Cut cut);
+
+  DenseMap<Value, unsigned> valueToIndexMap;
+  unsigned getIndex(Value v) {
+    auto it = valueToIndexMap.find(v);
+    if (it != valueToIndexMap.end())
+      return it->second;
+    unsigned index = valueToIndexMap.size();
+    if (LLVM_UNLIKELY(index >= 64))
+      llvm::report_fatal_error(
+          "Too many unique inputs across cuts. Max 64 supported.");
+    valueToIndexMap[v] = index;
+    return index;
+  }
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut> getCuts() const;

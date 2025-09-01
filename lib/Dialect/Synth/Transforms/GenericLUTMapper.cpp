@@ -115,6 +115,7 @@ struct GenericLUTMapperPass
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = false;
     options.attachDebugTiming = test;
+    options.testPriorityCuts = false;
 
     // Create the pattern for generic K-LUT
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
