@@ -176,10 +176,12 @@ llvm::json::Value toJSON(const circt::aig::DataflowPath &path);
 struct LongestPathAnalysisOption {
   bool traceDebugPoints = false;
   bool incremental = false;
+  bool onlyMaxDelay = false;
 
-  LongestPathAnalysisOption(bool traceDebugPoints, bool incremental)
-      : traceDebugPoints(traceDebugPoints), incremental(incremental) {}
-  LongestPathAnalysisOption() = default;
+  LongestPathAnalysisOption(bool traceDebugPoints = false,
+                            bool incremental = false, bool onlyMaxDelay = false)
+      : traceDebugPoints(traceDebugPoints), incremental(incremental),
+        onlyMaxDelay(onlyMaxDelay) {}
 };
 
 // This analysis finds the longest paths in the dataflow graph across modules.
@@ -273,7 +275,7 @@ class IncrementalLongestPathAnalysis : private LongestPathAnalysis,
 public:
   IncrementalLongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am)
       : LongestPathAnalysis(moduleOp, am,
-                            LongestPathAnalysisOption(false, true)) {}
+                            LongestPathAnalysisOption(false, true, true)) {}
 
   // Compute maximum delay for specified value and bit.
   FailureOr<int64_t> getOrComputeMaxDelay(Value value, size_t bitPos);
@@ -305,7 +307,7 @@ public:
 // for computing statistics and CAPI.
 class LongestPathCollection {
 public:
-  LongestPathCollection(MLIRContext *ctx) : ctx(ctx){};
+  LongestPathCollection(MLIRContext *ctx) : ctx(ctx) {};
   const DataflowPath &getPath(unsigned index) const { return paths[index]; }
   MLIRContext *getContext() const { return ctx; }
   llvm::SmallVector<DataflowPath, 64> paths;
