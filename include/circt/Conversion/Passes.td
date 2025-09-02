@@ -818,11 +818,19 @@ def ConvertCombToAIG: Pass<"convert-comb-to-aig",  "hw::HWModuleOp"> {
   let dependentDialects = [
     "circt::comb::CombDialect",
     "circt::aig::AIGDialect",
+    "circt::synth::SynthDialect"
   ];
 
   let options = [
     ListOption<"additionalLegalOps", "additional-legal-ops", "std::string",
-               "Specify additional legal ops to partially legalize Comb to AIG">,
+               "Specify additional legal ops to partially legalize Comb">,
+    Option<"loweringTarget", "lowering-target", "circt::CombToSynthTarget",
+           /*default=*/"circt::CombToSynthTarget::AIG",
+           "Target IR flavor",
+           [{::llvm::cl::values(
+             clEnumValN(circt::CombToSynthTarget::AIG, "aig", "Lower to AIG"),
+             clEnumValN(circt::CombToSynthTarget::MIG, "mig", "Lower to MIG")
+           )}]>,
     Option<"maxEmulationUnknownBits", "max-emulation-unknown-bits", "uint32_t", "10",
            "Maximum number of unknown bits to emulate in a table lookup">
   ];

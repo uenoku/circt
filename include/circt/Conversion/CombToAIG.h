@@ -16,6 +16,13 @@
 
 namespace circt {
 
+enum CombToSynthTarget {
+  // Lower to And-Inverter
+  AIG,
+  // Lower to Majority-Inverter
+  MIG
+};
+
 #define GEN_PASS_DECL_CONVERTCOMBTOAIG
 #include "circt/Conversion/Passes.h.inc"
 

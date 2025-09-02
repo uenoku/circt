@@ -23,6 +23,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Instructions.h"
 
 using namespace mlir;
 using namespace circt;
@@ -34,12 +35,12 @@ using namespace circt::synth;
 
 /// Helper function to populate additional legal ops for partial legalization.
 template <typename... AllowedOpTy>
-static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
+static void partiallyLegalizeCombToSynth(SmallVectorImpl<std::string> &ops) {
   (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
 }
 
-void circt::synth::buildAIGLoweringPipeline(
-    OpPassManager &pm, const AIGLoweringPipelineOptions &options) {
+void circt::synth::buildCombLoweringPipeline(
+    OpPassManager &pm, const CombLoweringPipelineOptions &options) {
   {
     if (!options.disableDatapath) {
       pm.addPass(createConvertCombToDatapath());
@@ -49,9 +50,9 @@ void circt::synth::buildAIGLoweringPipeline(
       pm.addPass(createConvertDatapathToComb(datapathOptions));
       pm.addPass(createSimpleCanonicalizerPass());
     }
-    // Partially legalize Comb to AIG, run CSE and canonicalization.
+    // Partially legalize Comb, then run CSE and canonicalization.
     circt::ConvertCombToAIGOptions convOptions;
-    partiallyLegalizeCombToAIG<comb::AndOp, comb::OrOp, comb::XorOp,
+    partiallyLegalizeCombToSynth<comb::AndOp, comb::OrOp, comb::XorOp,
                                comb::MuxOp, comb::ICmpOp, hw::ArrayGetOp,
                                hw::ArraySliceOp, hw::ArrayCreateOp,
                                hw::ArrayConcatOp, hw::AggregateConstantOp>(
@@ -62,7 +63,12 @@ void circt::synth::buildAIGLoweringPipeline(
   pm.addPass(createSimpleCanonicalizerPass());
 
   pm.addPass(circt::hw::createHWAggregateToComb());
-  pm.addPass(circt::createConvertCombToAIG());
+  circt::ConvertCombToAIGOptions convOptions;
+  convOptions.loweringTarget =
+      options.targetIR.getValue() == LoweringTarget::AIG
+          ? CombToSynthTarget::AIG
+          : CombToSynthTarget::MIG;
+  pm.addPass(circt::createConvertCombToAIG(convOptions));
   pm.addPass(createCSEPass());
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(createCSEPass());
@@ -97,9 +103,10 @@ void circt::synth::buildAIGOptimizationPipeline(
 //===----------------------------------------------------------------------===//
 
 void circt::synth::registerSynthesisPipeline() {
-  PassPipelineRegistration<AIGLoweringPipelineOptions>(
-      "synth-aig-lowering-pipeline",
-      "The default pipeline for until AIG lowering", buildAIGLoweringPipeline);
+  PassPipelineRegistration<CombLoweringPipelineOptions>(
+      "synth-comb-lowering-pipeline",
+      "The default pipeline for until Comb lowering",
+      buildCombLoweringPipeline);
   PassPipelineRegistration<AIGOptimizationPipelineOptions>(
       "synth-aig-optimization-pipeline",
       "The default pipeline for AIG optimization pipeline",
