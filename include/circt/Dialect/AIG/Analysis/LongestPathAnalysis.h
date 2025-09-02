@@ -172,12 +172,36 @@ private:
 // JSON serialization for DataflowPath
 llvm::json::Value toJSON(const circt::aig::DataflowPath &path);
 
-// Options for the longest path analysis.
+/// Configuration options for the longest path analysis.
+///
+/// This struct controls various aspects of the analysis behavior, including
+/// debugging features, computation modes, and optimization settings. Different
+/// combinations of options are suitable for different use cases.
+///
+/// Example usage:
+///   // For timing-driven optimization with debug info
+///   LongestPathAnalysisOption options(true, true, false);
+///
+///   // For fast critical path identification only
+///   LongestPathAnalysisOption options(false, false, true);
 struct LongestPathAnalysisOption {
+  /// Enable collection of debug points along timing paths.
+  /// When enabled, records intermediate points with delay values and comments
+  /// for debugging, visualization, and understanding delay contributions.
+  /// Moderate performance impact.
   bool traceDebugPoints = false;
+
+  /// Enable incremental analysis mode for on-demand computation.
+  /// Performs delay computations lazily and caches results, tracking IR
+  /// changes. Better for iterative workflows.
   bool incremental = false;
+
+  /// Optimize for maximum delay computation only.
+  /// Focuses on finding maximum delays, skipping detailed path reconstruction.
+  /// Faster when only delay bounds are needed.
   bool onlyMaxDelay = false;
 
+  /// Construct analysis options with the specified settings.
   LongestPathAnalysisOption(bool traceDebugPoints = false,
                             bool incremental = false, bool onlyMaxDelay = false)
       : traceDebugPoints(traceDebugPoints), incremental(incremental),

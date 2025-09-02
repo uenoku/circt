@@ -111,35 +111,43 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
   results.resize(keyToIndex.size() + startIndex);
 }
 
-template <typename T>
-static void takeMaxDelayPaths(SmallVectorImpl<T> &results, size_t startIndex,
-                              llvm::function_ref<int64_t(const T &)> delayFn) {
+template <typename T, bool ignoreBlockArguments>
+static T *takeMaxDelayPaths(SmallVectorImpl<T> &results, size_t startIndex,
+                            llvm::function_ref<int64_t(const T &)> delayFn) {
   // Take only maximum for each path destination.
+  size_t maxDelayIndex = startIndex;
   for (size_t i = startIndex + 1; i < results.size(); ++i) {
     auto &path = results[i];
     auto delay = delayFn(path);
     if (delay > delayFn(results[startIndex]))
       results[startIndex] = std::move(results[i]);
   }
-
-  results.resize(startIndex + 1);
+  assert(maxDelayIt != results.end() && "Expected non-empty results");
+  return *maxDelayIt;
 }
 
-static void deduplicatePaths(SmallVectorImpl<OpenPath> &results,
-                             size_t startIndex = 0,
-                             bool keepOnlyMaxDelay = false) {
-  if (keepOnlyMaxDelay)
-    takeMaxDelayPaths<OpenPath>(results, startIndex,
-                                [](const auto &path) { return path.delay; });
-  else
+static void filterPaths(SmallVectorImpl<OpenPath> &results,
+                        bool keepOnlyMaxDelay = false, bool isLocal = false) {
+  if (results.empty())
+    return;
+  if (keepOnlyMaxDelay) {
+    if (isLocal)
+      takeMaxDelayPaths<OpenPath>(results, 0,
+                                  [](const auto &path) { return path.delay; });
+    else {
+      deduplicatePathsImpl<OpenPath, Object>(
+          results, 0, [](const auto &path) { return path.fanIn; },
+          [](const auto &path) { return path.delay; });
+    }
+
+  } else
     deduplicatePathsImpl<OpenPath, Object>(
-        results, startIndex, [](const auto &path) { return path.fanIn; },
+        results, 0, [](const auto &path) { return path.fanIn; },
         [](const auto &path) { return path.delay; });
 }
 
-static void deduplicatePaths(SmallVectorImpl<DataflowPath> &results,
-                             size_t startIndex = 0,
-                             bool keepOnlyMaxDelay = false) {
+static void filterPaths(SmallVectorImpl<DataflowPath> &results,
+                        bool keepOnlyMaxDelay = false, size_t startIndex = 0) {
   if (keepOnlyMaxDelay)
     takeMaxDelayPaths<DataflowPath>(
         results, startIndex, [](const auto &path) { return path.getDelay(); });
@@ -486,10 +494,6 @@ public:
     mlir::OpBuilder builder(loc->getContext());
     moduleOp = builder.create<mlir::ModuleOp>(loc);
     emptyName = StringAttr::get(loc->getContext(), "");
-  }
-
-  ~OperationAnalyzer() {
-    mlir::emitRemark(loc) << cache.size() << " operations analyzed.";
   }
 
   // Initialize the pass pipeline used to lower operations to AIG.
@@ -856,7 +860,6 @@ LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
     return failure();
-  deduplicatePaths(results, 0, ctx->doKeepOnlyMaxDelayPaths());
   return success();
 }
 
@@ -866,7 +869,6 @@ LogicalResult LocalVisitor::visit(comb::TruthTableOp op, size_t bitPos,
     if (failed(addEdge(input, 0, 1, results)))
       return failure();
   }
-  deduplicatePaths(results, 0, ctx->doKeepOnlyMaxDelayPaths());
   return success();
 }
 
@@ -1007,7 +1009,6 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
     if (failed(addEdge(operand, bitPos, cost, results)))
       return failure();
 
-  deduplicatePaths(results, 0, ctx->doKeepOnlyMaxDelayPaths());
   return success();
 }
 
@@ -1041,7 +1042,6 @@ LogicalResult LocalVisitor::visitDefault(OpResult value, size_t bitPos,
                        results)))
       return failure();
   }
-  deduplicatePaths(results, 0, ctx->doKeepOnlyMaxDelayPaths());
   return success();
 }
 
@@ -1078,7 +1078,7 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputeResults(Value value,
     return {};
 
   // Unique the results.
-  deduplicatePaths(results, 0, ctx->doKeepOnlyMaxDelayPaths());
+  filterPaths(results, ctx->doKeepOnlyMaxDelayPaths());
   LLVM_DEBUG({
     llvm::dbgs() << value << "[" << bitPos << "] "
                  << "Found " << results.size() << " paths\n";
@@ -1420,6 +1420,7 @@ OperationAnalyzer::getOrComputeLocalVisitor(Operation *op) {
   // Cache the result and return
   auto [iterator, inserted] = cache.insert({key, std::move(localVisitor)});
   assert(inserted && "Cache insertion must succeed for new key");
+  llvm::errs() << "Cached analysis for operation: " << opName << "\n";
   return iterator->second.get();
 }
 
@@ -1566,7 +1567,7 @@ LogicalResult LongestPathAnalysis::Impl::getResultsImpl(
     }
   }
 
-  deduplicatePaths(results, oldIndex, ctx.doKeepOnlyMaxDelayPaths());
+  filterPaths(results, ctx.doKeepOnlyMaxDelayPaths(), oldIndex);
   return success();
 }
 
