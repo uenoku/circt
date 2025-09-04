@@ -813,6 +813,7 @@ def LowerSimToSV: Pass<"lower-sim-to-sv",  "mlir::ModuleOp"> {
 // ConvertCombToAIG
 //===----------------------------------------------------------------------===//
 
+// FIXME: Rename to ConvertCombToSynth
 def ConvertCombToAIG: Pass<"convert-comb-to-aig",  "hw::HWModuleOp"> {
   let summary = "Lower Comb ops to AIG ops.";
   let dependentDialects = [
