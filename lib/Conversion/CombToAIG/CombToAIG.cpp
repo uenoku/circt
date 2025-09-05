@@ -1274,12 +1274,6 @@ populateCombToSynthConversionPatterns(RewritePatternSet &patterns,
                                      maxEmulationUnknownBits);
 }
 
-/// Helper function to populate additional legal ops for partial legalization.
-template <typename... AllowedOpTy>
-static void partiallyLegalizeCombToAIG(SmallVectorImpl<std::string> &ops) {
-  (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
-}
-
 void ConvertCombToAIGPass::runOnOperation() {
   ConversionTarget target(getContext());
 
