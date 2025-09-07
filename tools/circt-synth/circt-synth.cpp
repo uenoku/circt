@@ -179,7 +179,7 @@ static cl::opt<int>
                  cl::init(0), cl::cat(mainCategory));
 
 static cl::opt<LoweringTarget> loweringTarget(
-    "flow", cl::desc("Target IR to lower to"),
+    "logic-flavor", cl::desc("Target IR to lower to"),
     cl::values(clEnumValN(LoweringTarget::AIG, "aig", "AIG operation"),
                clEnumValN(LoweringTarget::MIG, "mig", "MIG operation")),
     cl::init(LoweringTarget::AIG), cl::cat(mainCategory));

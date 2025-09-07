@@ -53,9 +53,9 @@ void circt::synth::buildCombLoweringPipeline(
     // Partially legalize Comb, then run CSE and canonicalization.
     circt::ConvertCombToAIGOptions convOptions;
     partiallyLegalizeCombToSynth<comb::AndOp, comb::OrOp, comb::XorOp,
-                               comb::MuxOp, comb::ICmpOp, hw::ArrayGetOp,
-                               hw::ArraySliceOp, hw::ArrayCreateOp,
-                               hw::ArrayConcatOp, hw::AggregateConstantOp>(
+                                 comb::MuxOp, comb::ICmpOp, hw::ArrayGetOp,
+                                 hw::ArraySliceOp, hw::ArrayCreateOp,
+                                 hw::ArrayConcatOp, hw::AggregateConstantOp>(
         convOptions.additionalLegalOps);
     pm.addPass(circt::createConvertCombToAIG(convOptions));
   }
