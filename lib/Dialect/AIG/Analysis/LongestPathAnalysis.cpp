@@ -612,6 +612,8 @@ public:
     return debugPointFactory.get();
   }
 
+  void notifyUsed();
+
 private:
   void putUnclosedResult(const Object &object, int64_t delay,
                          llvm::ImmutableList<DebugPoint> history,
@@ -735,6 +737,8 @@ private:
   std::atomic_bool done;
   mutable std::condition_variable cv;
   mutable std::mutex mutex;
+
+  std::atomic_int usedCount = 0;
 
   // A flag to indicate the module is top-level.
   bool topLevel = false;
@@ -1288,12 +1292,23 @@ LogicalResult LocalVisitor::initializeAndRun() {
     return WalkResult::advance();
   });
 
+  for (auto *node : *(ctx->instanceGraph->lookup(module.getModuleNameAttr()))) {
+    auto *child = node->getTarget();
+    auto *visitor =
+        ctx->getLocalVisitorMutable(child->getModule().getModuleNameAttr());
+    if (!visitor)
+      continue;
+    visitor->notifyUsed();
+  }
+
+  ctx->notifyEnd(module.getModuleNameAttr());
+
   {
     std::lock_guard<std::mutex> lock(mutex);
     done.store(true);
     cv.notify_all();
   }
-  LLVM_DEBUG({ ctx->notifyEnd(module.getModuleNameAttr()); });
+
   return failure(walkResult.wasInterrupted());
 }
 
@@ -2037,4 +2052,22 @@ void LongestPathCollection::sortAndDropNonCriticalPathsPerFanOut() {
 void LongestPathCollection::merge(const LongestPathCollection &other) {
   paths.append(other.paths.begin(), other.paths.end());
   sortInDescendingOrder();
+}
+
+void LocalVisitor::notifyUsed() {
+  int used = ++usedCount;
+  LLVM_DEBUG(llvm::dbgs() << "LocalVisitor " << module.getModuleNameAttr()
+                          << " used " << used << " times\n");
+  if (!ctx->instanceGraph)
+    return;
+  auto *node = ctx->instanceGraph->lookup(module.getModuleNameAttr());
+  if (!node)
+    return;
+  if (std::distance(node->uses().begin(), node->uses().end()) != used)
+    return;
+
+  llvm::dbgs() << "LocalVisitor " << module.getModuleNameAttr()
+               << " is no longer needed, clearing cache\n";
+  // Free the cache.
+  cachedResults.clear();
 }
