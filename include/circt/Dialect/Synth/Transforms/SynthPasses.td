@@ -154,4 +154,23 @@ def ABCRunner : ExternalSolverPass<"synth-abc-runner"> {
   ];
 }
 
+def StructuralHash : Pass<"synth-structural-hash", "hw::HWModuleOp"> {
+  let summary = "Structural hashing (CSE) for Synth operations";
+  let description = [{
+    This pass performs structural hashing (Common Subexpression Elimination)
+    for Synth dialect operations (AIG/MIG). It identifies and eliminates
+    redundant operations that compute the same function.
+
+    The pass includes operand sorting based on occurrence frequency to
+    improve hash table efficiency and enable more aggressive CSE. Operations
+    with higher occurrence counts are prioritized in the operand order.
+
+    Key features:
+    - Structural hashing for AndInverterOp and MajorityInverterOp
+    - Operand sorting by occurrence frequency for better canonicalization
+    - Inversion-aware hashing for AIG operations
+    - Hierarchical processing of nested regions
+  }];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

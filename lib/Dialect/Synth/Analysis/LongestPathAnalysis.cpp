@@ -662,6 +662,8 @@ private:
   // Bit-logical ops.
   LogicalResult visit(aig::AndInverterOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
+  LogicalResult visit(mig::MajorityInverterOp op, size_t bitPos,
+                      SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(comb::AndOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(comb::XorOp op, size_t bitPos,
@@ -860,6 +862,18 @@ LogicalResult LocalVisitor::visit(aig::AndInverterOp op, size_t bitPos,
   return addLogicOp(op, bitPos, results);
 }
 
+LogicalResult LocalVisitor::visit(mig::MajorityInverterOp op, size_t bitPos,
+                                  SmallVectorImpl<OpenPath> &results) {
+  // Use 3-input majority as unit. n-input majority is can be constructed from
+  // n/2 stages elements.
+  size_t depth = op.getInputs().size() / 2;
+  for (auto input : op.getInputs()) {
+    if (failed(addEdge(input, bitPos, depth, results)))
+      return failure();
+  }
+  return success();
+}
+
 LogicalResult LocalVisitor::visit(comb::AndOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
   return addLogicOp(op, bitPos, results);
@@ -935,8 +949,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
   auto *node = ctx->instanceGraph->lookup(moduleName);
   assert(node && "module not found");
 
-  // Otherwise, if the module is not a HWModuleOp, then we should treat it as a
-  // fanIn.
+  // Otherwise, if the module is not a HWModuleOp, then we should treat it as
+  // a fanIn.
   if (!isa<hw::HWModuleOp>(node->getModule()))
     return markFanIn(value, bitPos, results);
 
@@ -1133,26 +1147,27 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
   auto result =
       TypeSwitch<Operation *, LogicalResult>(op)
           .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
-                aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::MuxOp,
-                comb::XorOp, comb::TruthTableOp, seq::FirRegOp, seq::CompRegOp,
-                hw::ConstantOp, seq::FirMemReadOp, seq::FirMemReadWriteOp,
-                hw::WireOp>([&](auto op) {
-            size_t idx = results.size();
-            auto result = visit(op, bitPos, results);
-            if (ctx->doTraceDebugPoints())
-              if (auto name =
-                      op->template getAttrOfType<StringAttr>("sv.namehint")) {
+                aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp,
+                comb::OrOp, comb::MuxOp, comb::XorOp, comb::TruthTableOp,
+                seq::FirRegOp, seq::CompRegOp, hw::ConstantOp,
+                seq::FirMemReadOp, seq::FirMemReadWriteOp, hw::WireOp>(
+              [&](auto op) {
+                size_t idx = results.size();
+                auto result = visit(op, bitPos, results);
+                if (ctx->doTraceDebugPoints())
+                  if (auto name = op->template getAttrOfType<StringAttr>(
+                          "sv.namehint")) {
 
-                for (auto i = idx, e = results.size(); i < e; ++i) {
-                  DebugPoint debugPoint({}, value, bitPos, results[i].delay,
-                                        "namehint");
-                  auto newHistory =
-                      debugPointFactory->add(debugPoint, results[i].history);
-                  results[i].history = newHistory;
-                }
-              }
-            return result;
-          })
+                    for (auto i = idx, e = results.size(); i < e; ++i) {
+                      DebugPoint debugPoint({}, value, bitPos, results[i].delay,
+                                            "namehint");
+                      auto newHistory = debugPointFactory->add(
+                          debugPoint, results[i].history);
+                      results[i].history = newHistory;
+                    }
+                  }
+                return result;
+              })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
             return visit(op, bitPos, cast<OpResult>(value).getResultNumber(),
                          results);
@@ -1619,6 +1634,27 @@ LogicalResult LongestPathAnalysis::Impl::collectClosedPaths(
     if (!isAnalysisAvailable(name))
       return;
     auto *visitor = ctx.getLocalVisitorMutable(name);
+    visitor->getHWModuleOp()->walk([&](Operation *op) {
+      // Ensure all output ops are visited to populate fromOutputPortToFanIn.
+      SmallVector<long> arrivalTimes;
+      bool exist = false;
+      for (auto result : op->getResults()) {
+        if (!result.getType().isInteger()) {
+          arrivalTimes.push_back(-1);
+          continue;
+        }
+        for (size_t i = 0, e = getBitWidth(result); i < e; ++i) {
+          auto maxDelay =
+              getMaxDelayInPaths(*visitor->getOrComputePaths(result, i));
+          arrivalTimes.push_back(maxDelay);
+          exist = true;
+        }
+      }
+      if (exist) {
+        op->setAttr("test.arrival_times", mlir::DenseI64ArrayAttr::get(
+                                              op->getContext(), arrivalTimes));
+      }
+    });
     for (auto &[point, state] : visitor->getFanOutResults()) {
       for (const auto &dataFlow : state) {
         if constexpr (elaborate) {
