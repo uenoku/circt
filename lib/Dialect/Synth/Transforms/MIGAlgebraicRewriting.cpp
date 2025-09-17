@@ -30,6 +30,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/DebugLog.h"
 #include "llvm/Support/LogicalResult.h"
+#include <mlir/IR/Location.h>
 
 #define DEBUG_TYPE "synth-mig-algebraic-rewriting"
 
@@ -86,28 +87,30 @@ bool isSameSignal(Value a, Value b, bool &isInverted) {
   return false;
 }
 
-static Value createMajorityFunction(OpBuilder &rewriter, Location loc, Value a,
-                                    Value b, Value c, bool invertA,
-                                    bool invertB, bool invertC) {
-  std::array<Value, 3> inputs = {a, b, c};
-  std::array<bool, 3> inverts = {invertA, invertB, invertC};
+/// Create a MIG majority operation from InvertibleOperand objects
+static Value createMajorityFromInvertibleOperands(OpBuilder &rewriter,
+                                                  Location loc,
+                                                  InvertibleOperand a,
+                                                  InvertibleOperand b,
+                                                  InvertibleOperand c) {
+  SmallVector<Value, 3> inputs{a.getValue(), b.getValue(), c.getValue()};
+  SmallVector<bool, 3> inverts{a.isInverted(), b.isInverted(), c.isInverted()};
+
   return rewriter.createOrFold<synth::mig::MajorityInverterOp>(loc, inputs,
                                                                inverts);
 }
 
 /// Enhanced associativity rewrite with depth checking and inversion handling
-static Value
-tryAssociativityRewriteWithDepth(synth::mig::MajorityInverterOp topOp,
-                                 const synth::OrderedOperands &topChildren,
-                                 const synth::OrderedOperands &childChildren,
-                                 PatternRewriter &rewriter) {
+static Value tryAssociativityRewriteWithDepth(
+    Location loc, const synth::OrderedOperands &topOperands,
+    const synth::OrderedOperands &nestedOperands, PatternRewriter &rewriter) {
 
   // Look for associativity opportunities: maj(v, w, maj(x, y, z))
-  Value v = topChildren[0].getValue();
-  Value w = topChildren[1].getValue();
-  Value x = childChildren[0].getValue();
-  Value y = childChildren[1].getValue();
-  Value z = childChildren[2].getValue();
+  Value v = topOperands[0].getValue();
+  Value w = topOperands[1].getValue();
+  Value x = nestedOperands[0].getValue();
+  Value y = nestedOperands[1].getValue();
+  Value z = nestedOperands[2].getValue();
   // Helper to create rewrite with proper inversion handling
   auto tryRewrite = [&](Value common, Value other, Value childOther,
                         Value remaining, bool vIsCommon,
@@ -118,22 +121,24 @@ tryAssociativityRewriteWithDepth(synth::mig::MajorityInverterOp topOp,
 
     // Handle inversion flags properly
     SmallVector<bool> innerInversions = {
-        topChildren.isInverted(vIsCommon ? 0 : 1),
-        topChildren.isInverted(vIsCommon ? 1 : 0),
-        static_cast<bool>(childChildren.isInverted(xIsCommon ? 1 : 0) ^
+        topOperands.isInverted(vIsCommon ? 0 : 1),
+        topOperands.isInverted(vIsCommon ? 1 : 0),
+        static_cast<bool>(nestedOperands.isInverted(xIsCommon ? 1 : 0) ^
                           isInverted)};
 
-    auto innerMaj = createMajorityFunction(
-        rewriter, topOp.getLoc(), common, other, childOther, innerInversions[0],
-        innerInversions[1], innerInversions[2]);
+    auto innerMaj = createMajorityFromInvertibleOperands(
+        rewriter, loc, InvertibleOperand(common, innerInversions[0]),
+        InvertibleOperand(other, innerInversions[1]),
+        InvertibleOperand(childOther, innerInversions[2]));
 
     SmallVector<bool> outerInversions = {
-        static_cast<bool>(childChildren.isInverted(2) ^ isInverted), false,
-        topOp.isInverted(vIsCommon ? 0 : 1)};
+        static_cast<bool>(nestedOperands.isInverted(2) ^ isInverted), false,
+        topOperands.isInverted(vIsCommon ? 0 : 1)};
 
-    auto newOp = createMajorityFunction(rewriter, topOp.getLoc(), remaining,
-                                        innerMaj, common, outerInversions[0],
-                                        outerInversions[1], outerInversions[2]);
+    auto newOp = createMajorityFromInvertibleOperands(
+        rewriter, loc, InvertibleOperand(remaining, outerInversions[0]),
+        InvertibleOperand(innerMaj, outerInversions[1]),
+        InvertibleOperand(common, outerInversions[2]));
 
     return newOp;
   };
@@ -164,50 +169,52 @@ struct MIGDepthReductionPattern
 
   LogicalResult matchAndRewrite(synth::mig::MajorityInverterOp op,
                                 PatternRewriter &rewriter) const override {
-    // Only handle 3-input majority operations for now
+    // Only handle 3-input majority operations
     if (op.getNumOperands() != 3)
       return failure();
 
-    // Get current depth of the operation
-    // Get ordered children (sorted by level) with depth analysis
-    auto orderedChildrenFailureOr = OrderedOperands::get(op, depthAnalysis);
-    if (failed(orderedChildrenFailureOr))
-      return rewriter.notifyMatchFailure(op, "Failed to get ordered children");
+    // Get operands ordered by depth level (shallowest to deepest)
+    auto topOperandsFailureOr = OrderedOperands::get(op, depthAnalysis);
+    if (failed(topOperandsFailureOr))
+      return rewriter.notifyMatchFailure(op, "Failed to get ordered operands");
 
-    auto orderedChildren = *orderedChildrenFailureOr;
+    auto topOperands = *topOperandsFailureOr;
 
-    if (orderedChildren[2].depth <= orderedChildren[1].depth + 1)
+    // Skip if depth difference is not significant enough for optimization
+    if (topOperands[2].depth <= topOperands[1].depth + 1)
       return failure();
 
-    // Check if the last child is a majority operation with higher level
-    auto childOp = orderedChildren[2]
-                       .getValue()
-                       .getDefiningOp<synth::mig::MajorityInverterOp>();
-    if (!childOp || childOp.getNumOperands() != 3)
+    // Check if the deepest operand is a 3-input majority operation
+    auto nestedMajOp = topOperands[2]
+                           .getValue()
+                           .getDefiningOp<synth::mig::MajorityInverterOp>();
+    if (!nestedMajOp || nestedMajOp.getNumOperands() != 3)
       return failure();
 
-    // For single fanout constraint (when area increase is not allowed)
-    if (!allowAreaIncrease && !childOp.getResult().hasOneUse())
+    // Respect single fanout constraint when area increase is not allowed
+    if (!allowAreaIncrease && !nestedMajOp.getResult().hasOneUse())
       return failure();
 
-    auto childChildrenFailureOr = OrderedOperands::get(childOp, depthAnalysis);
-    if (failed(childChildrenFailureOr))
-      return rewriter.notifyMatchFailure(op, "Failed to get child depth");
-    auto childChildren = *childChildrenFailureOr;
+    auto nestedOperandsFailureOr =
+        OrderedOperands::get(nestedMajOp, depthAnalysis);
+    if (failed(nestedOperandsFailureOr))
+      return rewriter.notifyMatchFailure(op, "Failed to get nested operands");
+    auto nestedOperands = *nestedOperandsFailureOr;
 
-    if (childChildren[2].depth == childChildren[1].depth)
+    // Skip if nested operation doesn't have significant depth difference
+    if (nestedOperands[2].depth == nestedOperands[1].depth)
       return failure();
 
     LLVM_DEBUG({
-      llvm::errs() << "  Trying: " << op << "\n";
-      orderedChildren.dump(llvm::errs());
-      childChildren.dump(llvm::errs());
+      llvm::errs() << "  Trying rewrite for: " << op << "\n";
+      topOperands.dump(llvm::errs());
+      nestedOperands.dump(llvm::errs());
     });
 
+    // Try associativity rewrite first (preserves area)
     if (auto newOp = tryAssociativityRewriteWithDepth(
-            op, orderedChildren, *childChildrenFailureOr, rewriter)) {
-      // Mark the new operation to prevent infinite loops
-      LDBG() << "  Found associativity rewrite: " << op << " -> " << newOp
+            op.getLoc(), topOperands, nestedOperands, rewriter)) {
+      LDBG() << "  Applied associativity rewrite: " << op << " -> " << newOp
              << "\n";
       rewriter.replaceOp(op, newOp);
       return success();
@@ -217,30 +224,36 @@ struct MIGDepthReductionPattern
     if (!allowAreaIncrease)
       return failure();
 
-    LDBG() << "  Found distributivity rewrite: " << op << "\n";
-    // maj(v, w, maj(x, y, z)) -> maj(maj(v, w, x), maj(v, w, y), z)
-    // Handle inversion flags properly
-    SmallVector<bool> leftInversions = {orderedChildren.isInverted(0),
-                                        orderedChildren.isInverted(1),
-                                        childChildren.isInverted(0)};
-    SmallVector<bool> rightInversions = {orderedChildren.isInverted(0),
-                                         orderedChildren.isInverted(1),
-                                         childChildren.isInverted(1)};
+    return applyDistributivityRewrite(op, topOperands, nestedOperands,
+                                      rewriter);
+  }
 
-    auto leftMaj = createMajorityFunction(
-        rewriter, op.getLoc(), orderedChildren.getValue(0),
-        orderedChildren.getValue(1), childChildren.getValue(0),
-        leftInversions[0], leftInversions[1], leftInversions[2]);
+private:
+  /// Apply distributivity rewrite: maj(v, w, maj(x, y, z)) -> maj(maj(v, w, x),
+  /// maj(v, w, y), z)
+  LogicalResult
+  applyDistributivityRewrite(synth::mig::MajorityInverterOp op,
+                             const synth::OrderedOperands &topOperands,
+                             const synth::OrderedOperands &nestedOperands,
+                             PatternRewriter &rewriter) const {
+    LDBG() << "  Applying distributivity rewrite for: " << op << "\n";
 
-    auto rightMaj = createMajorityFunction(
-        rewriter, op.getLoc(), orderedChildren.getValue(0),
-        orderedChildren.getValue(1), childChildren.getValue(1),
-        rightInversions[0], rightInversions[1], rightInversions[2]);
+    // Create left majority: maj(v, w, x)
+    auto leftMaj = createMajorityFromInvertibleOperands(
+        rewriter, op.getLoc(), topOperands[0], topOperands[1],
+        nestedOperands[0]);
 
-    rewriter.replaceOp(
-        op, createMajorityFunction(rewriter, op.getLoc(), leftMaj, rightMaj,
-                                   childChildren.getValue(2), false, false,
-                                   childChildren.isInverted(2)));
+    // Create right majority: maj(v, w, y)
+    auto rightMaj = createMajorityFromInvertibleOperands(
+        rewriter, op.getLoc(), topOperands[0], topOperands[1],
+        nestedOperands[1]);
+
+    // Create final majority: maj(leftMaj, rightMaj, z)
+    auto result = createMajorityFromInvertibleOperands(
+        rewriter, op.getLoc(), InvertibleOperand(leftMaj),
+        InvertibleOperand(rightMaj, false), nestedOperands[2]);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };

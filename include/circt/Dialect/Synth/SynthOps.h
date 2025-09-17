@@ -26,6 +26,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Rewrite/PatternApplicator.h"
 #include "llvm/IR/Value.h"
+#include <mlir/IR/Value.h>
 
 #define GET_OP_CLASSES
 #include "circt/Dialect/Synth/Synth.h.inc"
@@ -45,6 +46,7 @@ struct AndInverterVariadicOpConversion
 struct InvertibleOperand {
   llvm::PointerIntPair<Value, 1, bool> value;
   InvertibleOperand(Value value, bool inverted) : value({value, inverted}) {}
+  explicit InvertibleOperand(Value value) : value({value, false}) {}
 
   bool isInverted() const { return value.getInt(); }
   Value getValue() const { return value.getPointer(); }
