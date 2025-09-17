@@ -327,3 +327,45 @@ LogicalResult circt::synth::AndInverterVariadicOpConversion::matchAndRewrite(
                              op, op.getOperands(), op.getInverted(), rewriter));
   return success();
 }
+
+// =======================================================================
+// OrderedOperands
+// =======================================================================
+
+FailureOr<synth::OrderedOperands>
+synth::OrderedOperands::get(synth::mig::MajorityInverterOp op,
+                            IncrementalLongestPathAnalysis *analysis) {
+  auto operands = op.getInputs();
+  SmallVector<int64_t, 3> depths;
+  for (size_t i = 0; i < operands.size(); ++i) {
+    auto depth = analysis->getMaxDelay(operands[i]);
+    if (failed(depth))
+      return failure();
+    depths.push_back(*depth);
+  }
+
+  return synth::OrderedOperands(operands, op.getInverted(), depths);
+}
+
+FailureOr<synth::OrderedOperands>
+synth::OrderedOperands::get(synth::aig::AndInverterOp op,
+                            IncrementalLongestPathAnalysis *analysis) {
+  auto operands = op.getInputs();
+  SmallVector<int64_t, 2> depths;
+  for (size_t i = 0; i < operands.size(); ++i) {
+    auto depth = analysis->getMaxDelay(operands[i]);
+    if (failed(depth))
+      return failure();
+    depths.push_back(*depth);
+  }
+
+  return synth::OrderedOperands(operands, op.getInverted(), depths);
+}
+
+synth::OrderedOperands::OrderedOperands(OperandRange operands,
+                                        ArrayRef<bool> inversions,
+                                        ArrayRef<int64_t> depths) {
+  for (size_t i = 0; i < operands.size(); ++i)
+    invertibleOperadns.emplace_back(operands[i], inversions[i], depths[i]);
+  std::stable_sort(invertibleOperadns.begin(), invertibleOperadns.end());
+}
