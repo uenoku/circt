@@ -63,8 +63,34 @@ llvm::APInt MajorityInverterOp::evaluate(ArrayRef<APInt> inputs) {
 }
 
 OpFoldResult MajorityInverterOp::fold(FoldAdaptor adaptor) {
-  // TODO: Implement maj(x, 1, 1) = 1, maj(x, 0, 0) = 0
+  if (getNumOperands() == 3) {
+    // Check if some operands are equal.
+    for (size_t i = 0; i < 2; ++i) {
+      for (size_t j = i + 1; j < 3; ++j) {
+        if (getOperand(i) == getOperand(j)) {
+          if (isInverted(i) == isInverted(j)) {
+            if (isInverted(i)) {
+              // set operand
+              (*this)->setOperands({getOperand(i)});
+              (*this).setInverted({true});
+              return getResult();
+            }
+            return getOperand(i);
+          }
+          size_t k = 3 - (i + j);
+          if (isInverted(k)) {
+            // set operand
+            (*this)->setOperands({getOperand(k)});
+            (*this).setInverted({true});
+            return getResult();
+          }
+          return getOperand(k);
+        }
+      }
+    }
+  }
 
+  // TODO: Implement maj(x, 1, 1) = 1, maj(x, 0, 0) = 0
   SmallVector<APInt, 3> inputValues;
   for (auto input : adaptor.getInputs()) {
     auto attr = llvm::dyn_cast_or_null<IntegerAttr>(input);
@@ -300,4 +326,46 @@ LogicalResult circt::synth::AndInverterVariadicOpConversion::matchAndRewrite(
   rewriter.replaceOp(op, lowerVariadicAndInverterOp(
                              op, op.getOperands(), op.getInverted(), rewriter));
   return success();
+}
+
+// =======================================================================
+// OrderedOperands
+// =======================================================================
+
+FailureOr<synth::OrderedValues>
+synth::OrderedValues::get(synth::mig::MajorityInverterOp op,
+                            IncrementalLongestPathAnalysis *analysis) {
+  auto operands = op.getInputs();
+  SmallVector<int64_t, 3> depths;
+  for (size_t i = 0; i < operands.size(); ++i) {
+    auto depth = analysis->getMaxDelay(operands[i]);
+    if (failed(depth))
+      return failure();
+    depths.push_back(*depth);
+  }
+
+  return synth::OrderedValues(operands, op.getInverted(), depths);
+}
+
+FailureOr<synth::OrderedValues>
+synth::OrderedValues::get(synth::aig::AndInverterOp op,
+                            IncrementalLongestPathAnalysis *analysis) {
+  auto operands = op.getInputs();
+  SmallVector<int64_t, 2> depths;
+  for (size_t i = 0; i < operands.size(); ++i) {
+    auto depth = analysis->getMaxDelay(operands[i]);
+    if (failed(depth))
+      return failure();
+    depths.push_back(*depth);
+  }
+
+  return synth::OrderedValues(operands, op.getInverted(), depths);
+}
+
+synth::OrderedValues::OrderedValues(OperandRange operands,
+                                        ArrayRef<bool> inversions,
+                                        ArrayRef<int64_t> depths) {
+  for (size_t i = 0; i < operands.size(); ++i)
+    invertibleValues.emplace_back(operands[i], inversions[i], depths[i]);
+  std::stable_sort(invertibleValues.begin(), invertibleValues.end());
 }
