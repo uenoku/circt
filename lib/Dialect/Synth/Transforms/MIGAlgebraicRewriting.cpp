@@ -48,9 +48,10 @@ namespace {
 
 /// Helper struct to represent ordered children of a majority operation
 /// Uses PointerIntPair to store both the Value and its inversion flag
+
+using ValueWithInversion = llvm::PointerIntPair<Value, 1, bool>;
 struct OrderedChildren {
   // PointerIntPair stores Value pointer and inversion flag (1 bit)
-  using ValueWithInversion = llvm::PointerIntPair<Value, 1, bool>;
   ValueWithInversion children[3];
   int64_t depths[3];
 
@@ -93,6 +94,14 @@ struct OrderedChildren {
     return children[idx].getPointer();
   }
 
+  void dump(llvm::raw_ostream &os) const {
+    for (size_t i = 0; i < 3; ++i) {
+      os << "  Child " << i << ": " << children[i].getPointer()
+         << " (inverted: " << children[i].getInt() << ", depth: " << depths[i]
+         << ")\n";
+    }
+  }
+
   bool isInverted(size_t idx) const {
     assert(idx < 3);
     return children[idx].getInt();
@@ -113,6 +122,17 @@ bool isSameSignal(Value a, Value b, bool &isInverted) {
   // Direct equality
   if (a == b)
     return true;
+
+  if (auto constA = a.getDefiningOp<hw::ConstantOp>()) {
+    if (auto constB = b.getDefiningOp<hw::ConstantOp>()) {
+      if (constA.getValue() == constB.getValue())
+        return true;
+      if (constA.getValue() == ~constB.getValue()) {
+        isInverted = true;
+        return true;
+      }
+    }
+  }
 
   // Check if one is an inverted version of the other through MIG operations
   auto checkInvertedMIG = [](Value val, Value target) -> bool {
@@ -139,6 +159,28 @@ bool isSameSignal(Value a, Value b) {
   return isSameSignal(a, b, isInverted);
 }
 
+static Value createMajorityFunction(OpBuilder &rewriter, Location loc, Value a,
+                                    Value b, Value c, bool invertA,
+                                    bool invertB, bool invertC) {
+  std::array<Value, 3> inputs = {a, b, c};
+  std::array<bool, 3> inverts = {invertA, invertB, invertC};
+  // for (size_t i = 0; i < 3; ++i) {
+  //   if (inverts[i] && inputs[i].getDefiningOp<hw::ConstantOp>()) {
+  //     inputs[i] = rewriter.create<hw::ConstantOp>(
+  //         loc, ~inputs[i].getDefiningOp<hw::ConstantOp>().getValue());
+  //     inverts[i] = false;
+  //   }
+  // }
+  return rewriter.createOrFold<synth::mig::MajorityInverterOp>(loc, inputs,
+                                                               inverts);
+}
+
+static Value createMajorityFunction(OpBuilder &rewriter, Location loc,
+                                    Value input, bool invert) {
+  return createMajorityFunction(rewriter, loc, input, input, input, invert,
+                                invert, invert);
+}
+
 /// Enhanced associativity rewrite with depth checking and inversion handling
 static FailureOr<Value> tryAssociativityRewriteWithDepth(
     synth::mig::MajorityInverterOp topOp, const OrderedChildren &topChildren,
@@ -148,13 +190,14 @@ static FailureOr<Value> tryAssociativityRewriteWithDepth(
   auto childOp =
       topChildren.getValue(2).getDefiningOp<synth::mig::MajorityInverterOp>();
   LDBG() << "Checking associativity rewrite for " << topOp << "\n";
-  if (!childOp)
+  LDBG() << "  Child: " << childOp << "\n";
+  if (!childOp || topChildren.isInverted(2))
     return Value();
 
   // Get children of the child operation
   auto childChildren = OrderedChildren::get(childOp, depthAnalysis);
   if (failed(childChildren))
-    return failure();
+    return rewriter.notifyMatchFailure(topOp, "Failed to get child depth");
 
   // Look for associativity opportunities: maj(v, w, maj(x, y, z))
   Value v = topChildren.getValue(0);
@@ -163,45 +206,109 @@ static FailureOr<Value> tryAssociativityRewriteWithDepth(
   Value y = childChildren->getValue(1);
   Value z = childChildren->getValue(2);
 
-  // Helper to create rewrite with proper inversion handling
-  auto tryRewrite = [&](Value common, Value other, Value childOther,
-                        Value remaining, bool vIsCommon,
-                        bool xIsCommon) -> Value {
-    bool isInverted = false;
-    if (!isSameSignal(common, xIsCommon ? x : y, isInverted))
-      return nullptr;
+  for (size_t i = 0; i < 2; ++i) {
+    for (size_t j = 0; j < 2; ++j) {
+      auto v = topChildren[i];
+      auto x = (*childChildren)[j];
+      bool invert = false;
+      if (!isSameSignal(v.getPointer(), x.getPointer(), invert))
+        continue;
+      invert ^= v.getInt() ^ x.getInt();
+      LDBG() << "  Found common signal: " << v.getPointer()
+             << " (invert: " << invert << ")\n";
 
-    // Handle inversion flags properly
-    SmallVector<bool> innerInversions = {
-        topOp.isInverted(vIsCommon ? 0 : 1),
-        topOp.isInverted(vIsCommon ? 1 : 0),
-        static_cast<bool>(childOp.isInverted(xIsCommon ? 1 : 0) ^ isInverted)};
+      auto w = topChildren[1 - i];
+      // Ok try swapping w and y or z
+      auto y = (*childChildren)[2 - j];
+      auto z = (*childChildren)[2];
 
-    auto innerMaj = rewriter.create<synth::mig::MajorityInverterOp>(
-        topOp.getLoc(), topOp.getType(), ValueRange{common, other, childOther},
-        rewriter.getDenseBoolArrayAttr(innerInversions));
+      if (invert) {
+        // Completely associativity.
+        // M(v, w, M(v', y, z)) -> M(v, w, M(w, y, z))
+        // Benefits when w == y
+        bool isInverted;
+        if (isSameSignal(w.getPointer(), y.getPointer(), isInverted)) {
+          isInverted ^= w.getInt() ^ y.getInt();
+          LDBG() << "  Found associativity rewrite: " << topOp << "\n";
+          if (isInverted) {
+            // M(v, w, M(w, w', z)) -> M(v, w, z)
+            return createMajorityFunction(
+                rewriter, topOp.getLoc(), v.getPointer(), w.getPointer(),
+                z.getPointer(), v.getInt(), w.getInt(), z.getInt());
+          }
+          // M(v, w, M(w, w, z)) -> M(v, w, w)  -> w
+          if (w.getInt())
+            return createMajorityFunction(rewriter, topOp.getLoc(),
+                                          w.getPointer(), true);
+          return w.getPointer();
+        }
+      } else {
+        // Assoc
+        // M(v, w, M(v, y, z)) = M(z, w, M(v, y, w))
+        int64_t depthZ = childChildren->depths[2];
+        int64_t depthY = childChildren->depths[1];
+        if (depthZ != depthY) {
+          // M(v, y, w)
+          auto newOp = createMajorityFunction(
+              rewriter, topOp.getLoc(), v.getPointer(), y.getPointer(),
+              w.getPointer(), v.getInt(), y.getInt(), w.getInt());
+          // M(v, w, M(v, y, w))
+          auto finalOp = createMajorityFunction(
+              rewriter, topOp.getLoc(), z.getPointer(), w.getPointer(), newOp,
+              z.getInt(), w.getInt(), false);
+          return finalOp;
+        }
+      }
+    }
 
-    SmallVector<bool> outerInversions = {
-        static_cast<bool>(childOp.isInverted(2) ^ isInverted), false,
-        topOp.isInverted(vIsCommon ? 0 : 1)};
+    /*
+    LDBG() << "  Child children:\n";
+    topChildren.dump(llvm::errs());
+    childChildren->dump(llvm::errs());
 
-    auto newOp = rewriter.create<synth::mig::MajorityInverterOp>(
-        topOp.getLoc(), topOp.getType(),
-        ValueRange{remaining, innerMaj.getResult(), common},
-        rewriter.getDenseBoolArrayAttr(outerInversions));
 
-    return newOp.getResult();
-  };
+    // Helper to create rewrite with proper inversion handling
+    auto tryRewrite = [&](Value common, Value other, Value childOther,
+                          Value remaining, bool vIsCommon,
+                          bool xIsCommon) -> Value {
+      bool isInverted = false;
+      if (!isSameSignal(common, xIsCommon ? x : y, isInverted))
+        return nullptr;
 
-  // Try different patterns
-  if (auto result = tryRewrite(v, w, y, z, true, true))
-    return result;
-  if (auto result = tryRewrite(v, w, x, z, true, false))
-    return result;
-  if (auto result = tryRewrite(w, v, y, z, false, true))
-    return result;
-  if (auto result = tryRewrite(w, v, x, z, false, false))
-    return result;
+      // Handle inversion flags properly
+      SmallVector<bool> innerInversions = {
+          topOp.isInverted(vIsCommon ? 0 : 1),
+          topOp.isInverted(vIsCommon ? 1 : 0),
+          static_cast<bool>(childOp.isInverted(xIsCommon ? 1 : 0) ^
+    isInverted)};
+
+      auto innerMaj = createMajorityFunction(
+          rewriter, topOp.getLoc(), common, other, childOther,
+    innerInversions[0], innerInversions[1], innerInversions[2]);
+
+      SmallVector<bool> outerInversions = {
+          static_cast<bool>(childOp.isInverted(2) ^ isInverted), false,
+          topOp.isInverted(vIsCommon ? 0 : 1)};
+
+      auto newOp = createMajorityFunction(rewriter, topOp.getLoc(), remaining,
+                                          innerMaj, common, outerInversions[0],
+                                          outerInversions[1],
+    outerInversions[2]);
+
+      return newOp;
+    };
+
+    // Try different patterns
+    if (auto result = tryRewrite(v, w, y, z, true, true))
+      return result;
+    if (auto result = tryRewrite(v, w, x, z, true, false))
+      return result;
+    if (auto result = tryRewrite(w, v, y, z, false, true))
+      return result;
+    if (auto result = tryRewrite(w, v, x, z, false, false))
+      return result;
+      */
+  }
 
   return Value();
 }
@@ -214,7 +321,8 @@ struct MIGDepthReductionPattern
 
   MIGDepthReductionPattern(MLIRContext *context, bool allowAreaIncrease,
                            IncrementalLongestPathAnalysis *analysis)
-      : OpRewritePattern<synth::mig::MajorityInverterOp>(context),
+      : OpRewritePattern<synth::mig::MajorityInverterOp>(context,
+                                                         /*benefit=*/1),
         allowAreaIncrease(allowAreaIncrease), depthAnalysis(analysis) {}
 
   LogicalResult matchAndRewrite(synth::mig::MajorityInverterOp op,
@@ -231,6 +339,13 @@ struct MIGDepthReductionPattern
 
     if (orderedChildren->depths[2] <= orderedChildren->depths[1] + 1)
       return failure();
+    LDBG() << "Found candidate:\n" << op << "\n";
+    for (auto [child, depth] :
+         llvm::zip(orderedChildren->children, orderedChildren->depths)) {
+      LDBG() << "  Child: " << child.getPointer()
+             << " (inverted: " << child.getInt() << ", depth: " << depth
+             << ")\n";
+    }
 
     // Check if the last child is a majority operation with higher level
     auto childOp = orderedChildren->getValue(2)
@@ -249,6 +364,9 @@ struct MIGDepthReductionPattern
       return rewriter.notifyMatchFailure(op, "Failed associativity rewrite");
 
     if (succeeded(newOp) && *newOp) {
+      // Mark the new operation to prevent infinite loops
+      LDBG() << "  Found associativity rewrite: " << op << " -> " << *newOp
+             << "\n";
       rewriter.replaceOp(op, *newOp);
       return success();
     }
@@ -292,8 +410,6 @@ struct MIGDepthReductionPattern
       rewriter.replaceOp(op, newOp.getResult());
       return success();
     }
-
-    return failure();
   }
 };
 

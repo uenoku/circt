@@ -63,8 +63,34 @@ llvm::APInt MajorityInverterOp::evaluate(ArrayRef<APInt> inputs) {
 }
 
 OpFoldResult MajorityInverterOp::fold(FoldAdaptor adaptor) {
-  // TODO: Implement maj(x, 1, 1) = 1, maj(x, 0, 0) = 0
+  if (getNumOperands() == 3) {
+    // Check if some operands are equal.
+    for (size_t i = 0; i < 2; ++i) {
+      for (size_t j = i + 1; j < 3; ++j) {
+        if (getOperand(i) == getOperand(j)) {
+          if (isInverted(i) == isInverted(j)) {
+            if (isInverted(i)) {
+              // set operand
+              (*this)->setOperands({getOperand(i)});
+              (*this).setInverted({true});
+              return getResult();
+            }
+            return getOperand(i);
+          }
+          size_t k = 3 - (i + j);
+          if (isInverted(k)) {
+            // set operand
+            (*this)->setOperands({getOperand(k)});
+            (*this).setInverted({true});
+            return getResult();
+          }
+          return getOperand(k);
+        }
+      }
+    }
+  }
 
+  // TODO: Implement maj(x, 1, 1) = 1, maj(x, 0, 0) = 0
   SmallVector<APInt, 3> inputValues;
   for (auto input : adaptor.getInputs()) {
     auto attr = llvm::dyn_cast_or_null<IntegerAttr>(input);
