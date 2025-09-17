@@ -48,6 +48,11 @@ struct InvertibleOperand {
   InvertibleOperand(Value value, bool inverted) : value({value, inverted}) {}
   explicit InvertibleOperand(Value value) : value({value, false}) {}
 
+
+  void operator^=(bool invert) {
+    value.setInt(value.getInt() ^ invert);
+  }
+
   bool isInverted() const { return value.getInt(); }
   Value getValue() const { return value.getPointer(); }
 };
