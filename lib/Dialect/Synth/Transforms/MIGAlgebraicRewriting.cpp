@@ -100,6 +100,16 @@ static Value createMajorityFromInvertibleOperands(OpBuilder &rewriter,
                                                                inverts);
 }
 
+/// Convenience wrappers to make call sites more readable.
+static inline InvertibleOperand inv(Value v, bool inverted = false) {
+  return InvertibleOperand(v, inverted);
+}
+static inline Value createMaj(OpBuilder &rewriter, Location loc, Value a,
+                              bool ai, Value b, bool bi, Value c, bool ci) {
+  return createMajorityFromInvertibleOperands(rewriter, loc, inv(a, ai),
+                                              inv(b, bi), inv(c, ci));
+}
+
 /// Enhanced associativity rewrite with depth checking and inversion handling
 static Value tryAssociativityRewriteWithDepth(
     Location loc, const synth::OrderedOperands &topOperands,
@@ -111,36 +121,94 @@ static Value tryAssociativityRewriteWithDepth(
   Value x = nestedOperands[0].getValue();
   Value y = nestedOperands[1].getValue();
   Value z = nestedOperands[2].getValue();
-  // Helper to create rewrite with proper inversion handling
+  for (size_t i = 0; i < 2; ++i) {
+    for (size_t j = 0; j < 2; ++j) {
+      auto v = topChildren[i];
+      auto x = (*childChildren)[j];
+      bool invert = false;
+      if (!isSameSignal(v.getPointer(), x.getPointer(), invert))
+        continue;
+      invert ^= v.getInt() ^ x.getInt();
+      LDBG() << "  Found common signal: " << v.getPointer()
+             << " (invert: " << invert << ")\n";
+
+      auto w = topChildren[1 - i];
+      // Ok try swapping w and y or z
+      auto y = (*childChildren)[2 - j];
+      auto z = (*childChildren)[2];
+
+      if (invert) {
+        // Completely associativity.
+        // M(v, w, M(v', y, z)) -> M(v, w, M(w, y, z))
+        // Benefits when w == y
+        bool isInverted;
+        if (isSameSignal(w.getPointer(), y.getPointer(), isInverted)) {
+          isInverted ^= w.getInt() ^ y.getInt();
+          LDBG() << "  Found associativity rewrite: " << topOp << "\n";
+          if (isInverted) {
+            // M(v, w, M(w, w', z)) -> M(v, w, z)
+            return createMajorityFunction(
+                rewriter, topOp.getLoc(), v.getPointer(), w.getPointer(),
+                z.getPointer(), v.getInt(), w.getInt(), z.getInt());
+          }
+          // M(v, w, M(w, w, z)) -> M(v, w, w)  -> w
+          if (w.getInt())
+            return createMajorityFunction(rewriter, topOp.getLoc(),
+                                          w.getPointer(), true);
+          return w.getPointer();
+        }
+      } else {
+        // Assoc
+        // M(v, w, M(v, y, z)) = M(z, w, M(v, y, w))
+        int64_t depthZ = childChildren->depths[2];
+        int64_t depthY = childChildren->depths[1];
+        if (depthZ != depthY) {
+          // M(v, y, w)
+          auto newOp = createMajorityFunction(
+              rewriter, topOp.getLoc(), v.getPointer(), y.getPointer(),
+              w.getPointer(), v.getInt(), y.getInt(), w.getInt());
+          // M(v, w, M(v, y, w))
+          auto finalOp = createMajorityFunction(
+              rewriter, topOp.getLoc(), z.getPointer(), w.getPointer(), newOp,
+              z.getInt(), w.getInt(), false);
+          return finalOp;
+        }
+      }
+    }
+  // Attempt a specific associativity case.
+  // Mapping:
+  // - common: top operand (v or w) that matches one of {x, y}
+  // - other: the other top operand
+  // - childOther: the other shallow nested input (the one not matched by
+  // 'common')
+  // - remaining: z (deepest nested input)
+  // - vIsCommon: true if common==v (false means common==w)
+  // - xIsCommon: true if common matches x (false means matches y)
   auto tryRewrite = [&](Value common, Value other, Value childOther,
                         Value remaining, bool vIsCommon,
                         bool xIsCommon) -> Value {
-    bool isInverted = false;
-    if (!isSameSignal(common, xIsCommon ? x : y, isInverted))
-      return nullptr;
+    bool complementedMatch = false;
+    if (!isSameSignal(common, xIsCommon ? x : y, complementedMatch))
+      return Value();
 
-    // Handle inversion flags properly
-    SmallVector<bool> innerInversions = {
-        topOperands.isInverted(vIsCommon ? 0 : 1),
-        topOperands.isInverted(vIsCommon ? 1 : 0),
+    // Inner majority: maj(common, other, childOther) with proper inversions.
+    SmallVector<bool, 3> innerInv = {
+        topOperands.isInverted(vIsCommon ? 0 : 1), // inversion for 'common'
+        topOperands.isInverted(vIsCommon ? 1 : 0), // inversion for 'other'
         static_cast<bool>(nestedOperands.isInverted(xIsCommon ? 1 : 0) ^
-                          isInverted)};
+                          complementedMatch)};
 
-    auto innerMaj = createMajorityFromInvertibleOperands(
-        rewriter, loc, InvertibleOperand(common, innerInversions[0]),
-        InvertibleOperand(other, innerInversions[1]),
-        InvertibleOperand(childOther, innerInversions[2]));
+    auto innerMaj = createMaj(rewriter, loc, common, innerInv[0], other,
+                              innerInv[1], childOther, innerInv[2]);
 
-    SmallVector<bool> outerInversions = {
-        static_cast<bool>(nestedOperands.isInverted(2) ^ isInverted), false,
-        topOperands.isInverted(vIsCommon ? 0 : 1)};
+    // Outer majority: maj(remaining=z, innerMaj, common).
+    const bool zInv =
+        static_cast<bool>(nestedOperands.isInverted(2) ^ complementedMatch);
+    const bool innerMajInv = false;
+    const bool commonInv = topOperands.isInverted(vIsCommon ? 0 : 1);
 
-    auto newOp = createMajorityFromInvertibleOperands(
-        rewriter, loc, InvertibleOperand(remaining, outerInversions[0]),
-        InvertibleOperand(innerMaj, outerInversions[1]),
-        InvertibleOperand(common, outerInversions[2]));
-
-    return newOp;
+    return createMaj(rewriter, loc, remaining, zInv, innerMaj, innerMajInv,
+                     common, commonInv);
   };
 
   // Try different patterns
@@ -152,7 +220,7 @@ static Value tryAssociativityRewriteWithDepth(
     return result;
   if (auto result = tryRewrite(w, v, x, z, false, false))
     return result;
-  return Value();
+  return {};
 }
 
 /// Pattern to rewrite MIG operations for depth reduction
@@ -199,14 +267,19 @@ struct MIGDepthReductionPattern
         OrderedOperands::get(nestedMajOp, depthAnalysis);
     if (failed(nestedOperandsFailureOr))
       return rewriter.notifyMatchFailure(op, "Failed to get nested operands");
-    auto nestedOperands = *nestedOperandsFailureOr;
+    const auto &nestedOperands = *nestedOperandsFailureOr;
+    LLVM_DEBUG({
+      llvm::errs() << "  Trying rewrite for: " << op << "\n";
+      topOperands.dump(llvm::errs());
+      nestedOperands.dump(llvm::errs());
+    });
 
     // Skip if nested operation doesn't have significant depth difference
     if (nestedOperands[2].depth == nestedOperands[1].depth)
       return failure();
 
     LLVM_DEBUG({
-      llvm::errs() << "  Trying rewrite for: " << op << "\n";
+      llvm::errs() << "  Ok for: " << op << "\n";
       topOperands.dump(llvm::errs());
       nestedOperands.dump(llvm::errs());
     });
@@ -221,8 +294,8 @@ struct MIGDepthReductionPattern
     }
 
     // Try distributivity rewrite if area increase is allowed
-    if (!allowAreaIncrease)
-      return failure();
+    // if (!allowAreaIncrease)
+    //   return failure();
 
     return applyDistributivityRewrite(op, topOperands, nestedOperands,
                                       rewriter);
@@ -251,7 +324,7 @@ private:
     // Create final majority: maj(leftMaj, rightMaj, z)
     auto result = createMajorityFromInvertibleOperands(
         rewriter, op.getLoc(), InvertibleOperand(leftMaj),
-        InvertibleOperand(rightMaj, false), nestedOperands[2]);
+        InvertibleOperand(rightMaj), nestedOperands[2]);
 
     rewriter.replaceOp(op, result);
     return success();
@@ -270,8 +343,9 @@ struct MIGAlgebraicRewritingPass
     auto module = getOperation();
     mlir::AnalysisManager am = getAnalysisManager();
 
-    for (size_t i = 0; i < 30; ++i) {
+    for (size_t i = 0; i < 100; ++i) {
       // Create longest path  for depth calculation
+      llvm::errs() << "Round " << i << "\n";
       IncrementalLongestPathAnalysis depthAnalysis(module, am);
 
       RewritePatternSet patterns(&getContext());
