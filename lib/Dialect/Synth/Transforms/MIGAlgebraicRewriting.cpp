@@ -120,118 +120,115 @@ static Value tryAssociativityRewriteWithDepth(
     Location loc, const synth::OrderedOperands &topOperands,
     const synth::OrderedOperands &nestedOperands, PatternRewriter &rewriter) {
 
-  for (size_t i = 0; i < 2; ++i) {
-    for (size_t j = 0; j < 2; ++j) {
-      auto v = topOperands[i];
-      auto x = nestedOperands[j];
-      bool invert = false;
-      if (!isSameSignal(v.getValue(), x.getValue(), invert))
-        continue;
-      invert ^= v.isInverted() ^ x.isInverted();
-
-      auto w = topOperands[1 - i];
-      // Ok try swapping w and y or z
-      auto y = nestedOperands[2 - j];
-      auto z = nestedOperands[2];
-
-      if (invert) {
-        // Completely associativity.
-        // M(v, w, M(v', y, z)) -> M(v, w, M(w, y, z))
-        // Benefits when w == y
-        bool isInverted;
-        if (isSameSignal(w.getValue(), y.getValue(), isInverted)) {
-          isInverted ^= w.isInverted() ^ y.isInverted();
-          if (isInverted) {
-            // M(v, w, M(w, w', z)) -> M(v, w, z)
-            return createMajorityFromInvertibleOperands(rewriter, loc, v, w, z);
-          }
-          // M(v, w, M(w, w, z)) -> M(v, w, w)  -> w
-          if (w.isInverted())
-            return createMajorityFunction(rewriter, loc, w.getValue(),
-                                          w.isInverted());
-          return w.getValue();
-        }
-      } else {
-        // Assoc
-        // M(v, w, M(v, y, z)) = M(z, w, M(v, y, w))
-        // M(v, y, w)
-        auto newOp =
-            createMajorityFromInvertibleOperands(rewriter, loc, v, y, w);
-
-        // M(v, w, M(v, y, w))
-        auto finalOp = createMaj(rewriter, loc, z.getValue(), false,
-                                 w.getValue(), w.isInverted(), newOp, false);
-        return finalOp;
-      }
-    }
-  }
-  return Value();
   /*
-    // Attempt a specific associativity case.
-    // Mapping:
-    // - common: top operand (v or w) that matches one of {x, y}
-    // - other: the other top operand
-    // - childOther: the other shallow nested input (the one not matched by
-    // 'common')
-    // - remaining: z (deepest nested input)
-    // - vIsCommon: true if common==v (false means common==w)
-    // - xIsCommon: true if common matches x (false means matches y)
-    auto tryRewrite = [&](InvertibleOperand common, InvertibleOperand other,
-                          InvertibleOperand childOther,
-                          InvertibleOperand remaining, bool vIsCommon,
-                          bool xIsCommon) -> Value {
-      // Get the target nested operand to match against
-      InvertibleOperand targetNested =
-          xIsCommon ? nestedOperands[0] : nestedOperands[1];
+for (size_t i = 0; i < 2; ++i) {
+for (size_t j = 0; j < 2; ++j) {
+  auto v = topOperands[i];
+  auto x = nestedOperands[j];
+  bool invert = false;
+  if (!isSameSignal(v.getValue(), x.getValue(), invert))
+    continue;
+  invert ^= v.isInverted() ^ x.isInverted();
 
-      // Check if common operand matches the target nested operand
-      bool complementedMatch = false;
-      if (!isSameSignal(common.getValue(), targetNested.getValue(),
-                        complementedMatch))
-        return Value();
+  auto w = topOperands[1 - i];
+  // Ok try swapping w and y or z
+  auto y = nestedOperands[2 - j];
+  auto z = nestedOperands[2];
 
-      // Apply complement match if needed
-      InvertibleOperand adjustedChildOther = childOther;
-      InvertibleOperand adjustedRemaining = remaining;
-      if (complementedMatch) {
-        adjustedChildOther ^= true;
-        adjustedRemaining ^= true;
+  if (invert) {
+    // Completely associativity.
+    // M(v, w, M(v', y, z)) -> M(v, w, M(w, y, z))
+    // Benefits when w == y
+    bool isInverted;
+    if (isSameSignal(w.getValue(), y.getValue(), isInverted)) {
+      isInverted ^= w.isInverted() ^ y.isInverted();
+      if (isInverted) {
+        // M(v, w, M(w, w', z)) -> M(v, w, z)
+        return createMajorityFromInvertibleOperands(rewriter, loc, v, w, z);
       }
+      // M(v, w, M(w, w, z)) -> M(v, w, w)  -> w
+      if (w.isInverted())
+        return createMajorityFunction(rewriter, loc, w.getValue(),
+                                      w.isInverted());
+      return w.getValue();
+    }
+  } else {
+    // Assoc
+    // M(v, w, M(v, y, z)) = M(z, w, M(v, y, w))
+    // M(v, y, w)
+    auto newOp =
+        createMajorityFromInvertibleOperands(rewriter, loc, v, y, w);
 
-      // Create inner majority: maj(common, other, childOther)
-      auto innerMaj = createMajorityFromInvertibleOperands(
-          rewriter, loc, common, other, adjustedChildOther);
+    // M(z, w, M(v, y, w))
+    auto finalOp = createMaj(rewriter, loc, z.getValue(), false,
+                             w.getValue(), w.isInverted(), newOp, false);
+    return finalOp;
+  }
+}
+}
+return Value();
+*/
+  // Attempt a specific associativity case.
+  // Mapping:
+  // - common: top operand (v or w) that matches one of {x, y}
+  // - other: the other top operand
+  // - childOther: the other shallow nested input (the one not matched by
+  // 'common')
+  // - remaining: z (deepest nested input)
+  // - vIsCommon: true if common==v (false means common==w)
+  // - xIsCommon: true if common matches x (false means matches y)
+  auto tryRewrite = [&](InvertibleOperand common, InvertibleOperand other,
+                        InvertibleOperand childOther,
+                        InvertibleOperand remaining, bool vIsCommon,
+                        bool xIsCommon) -> Value {
+    // Get the target nested operand to match against
+    InvertibleOperand targetNested =
+        xIsCommon ? nestedOperands[0] : nestedOperands[1];
 
-      // Create outer majority: maj(innerMaj, remaining, common)
-      return createMaj(rewriter, loc, innerMaj, false,
-                       adjustedRemaining.getValue(),
-                       adjustedRemaining.isInverted(), common.getValue(),
-                       common.isInverted());
-    };
+    // Check if common operand matches the target nested operand
+    bool complementedMatch = false;
+    if (!isSameSignal(common.getValue(), targetNested.getValue(),
+                      complementedMatch))
+      return Value();
 
-    // Try different patterns using InvertibleOperand from
-    // topOperands/nestedOperands
-    InvertibleOperand topV = topOperands[0];
-    InvertibleOperand topW = topOperands[1];
-    InvertibleOperand nestedX = nestedOperands[0];
-    InvertibleOperand nestedY = nestedOperands[1];
-    InvertibleOperand nestedZ = nestedOperands[2];
-    if (topOperands[2].isInverted()) {
-      nestedX ^= true;
-      nestedY ^= true;
-      nestedZ ^= true;
+    // Apply complement match if needed
+    if (complementedMatch) {
+      childOther ^= true;
+      remaining ^= true;
     }
 
-    if (auto result = tryRewrite(topV, topW, nestedY, nestedZ, true, true))
-      return result;
-    if (auto result = tryRewrite(topV, topW, nestedX, nestedZ, true, false))
-      return result;
-    if (auto result = tryRewrite(topW, topV, nestedY, nestedZ, false, true))
-      return result;
-    if (auto result = tryRewrite(topW, topV, nestedX, nestedZ, false, false))
-      return result;
-    return {};
-    */
+    // Create inner majority: maj(common, other, childOther)
+    auto innerMaj = createMajorityFromInvertibleOperands(rewriter, loc, common,
+                                                         other, childOther);
+
+    // Create outer majority: maj(innerMaj, remaining, common)
+    return createMaj(rewriter, loc, innerMaj, false, remaining.getValue(),
+                     remaining.isInverted(), common.getValue(),
+                     common.isInverted());
+  };
+
+  // Try different patterns using InvertibleOperand from
+  // topOperands/nestedOperands
+  InvertibleOperand topV = topOperands[0];
+  InvertibleOperand topW = topOperands[1];
+  InvertibleOperand nestedX = nestedOperands[0];
+  InvertibleOperand nestedY = nestedOperands[1];
+  InvertibleOperand nestedZ = nestedOperands[2];
+  if (topOperands[2].isInverted()) {
+    nestedX ^= true;
+    nestedY ^= true;
+    nestedZ ^= true;
+  }
+
+  if (auto result = tryRewrite(topV, topW, nestedY, nestedZ, true, true))
+    return result;
+  if (auto result = tryRewrite(topV, topW, nestedX, nestedZ, true, false))
+    return result;
+  if (auto result = tryRewrite(topW, topV, nestedY, nestedZ, false, true))
+    return result;
+  if (auto result = tryRewrite(topW, topV, nestedX, nestedZ, false, false))
+    return result;
+  return {};
 }
 
 /// Pattern to rewrite MIG operations for depth reduction
@@ -248,6 +245,7 @@ struct MIGDepthReductionPattern
 
   LogicalResult matchAndRewrite(synth::mig::MajorityInverterOp op,
                                 PatternRewriter &rewriter) const override {
+    assert(depthAnalysis->isOperationValidToMutate(op));
     // Only handle 3-input majority operations
     if (op.getNumOperands() != 3)
       return failure();
@@ -281,8 +279,8 @@ struct MIGDepthReductionPattern
     auto &nestedOperands = *nestedOperandsFailureOr;
 
     // Skip if nested operation doesn't have significant depth difference
-    // if (nestedOperands[2].depth == nestedOperands[1].depth)
-    //   return failure();
+     if (nestedOperands[2].depth == nestedOperands[1].depth)
+       return failure();
 
     LLVM_DEBUG({
       llvm::errs() << "  Ok for: " << op << "\n";
@@ -294,6 +292,7 @@ struct MIGDepthReductionPattern
       nestedOperands[0] ^= true;
       nestedOperands[1] ^= true;
       nestedOperands[2] ^= true;
+      topOperands[2] ^= true;
     }
 
     // Try associativity rewrite first (preserves area)
@@ -306,8 +305,8 @@ struct MIGDepthReductionPattern
     }
 
     // Try distributivity rewrite if area increase is allowed
-    // if (!allowAreaIncrease)
-    //   return failure();
+    if (!allowAreaIncrease)
+      return failure();
 
     return applyDistributivityRewrite(op, topOperands, nestedOperands,
                                       rewriter);
@@ -354,25 +353,22 @@ struct MIGAlgebraicRewritingPass
   void runOnOperation() override {
     auto module = getOperation();
     mlir::AnalysisManager am = getAnalysisManager();
+    while (true) {
 
-    for (size_t i = 0; i < 100; ++i) {
-      // Create longest path  for depth calculation
-      llvm::errs() << "Round " << i << "\n";
+      bool changed = false;
+      PatternRewriter rewriter(&getContext());
       IncrementalLongestPathAnalysis depthAnalysis(module, am);
+      MIGDepthReductionPattern pattern(&getContext(), allowAreaIncrease,
+                                       &depthAnalysis);
 
-      RewritePatternSet patterns(&getContext());
-
-      patterns.add<MIGDepthReductionPattern>(&getContext(), allowAreaIncrease,
-                                             &depthAnalysis);
-
-      auto config = GreedyRewriteConfig();
-      config.setListener(&depthAnalysis)
-          .setUseTopDownTraversal(true)
-          .setMaxIterations(1);
-
-      // Apply patterns greedily
-      if (failed(applyPatternsGreedily(module, std::move(patterns), config)))
-        continue;
+      rewriter.setListener(&depthAnalysis);
+      module.walk([&](mig::MajorityInverterOp maj) {
+        rewriter.setInsertionPoint(maj);
+        if (succeeded(pattern.matchAndRewrite(maj, rewriter)))
+          changed = true;
+      });
+      if (!changed)
+        break;
     }
   }
 };
