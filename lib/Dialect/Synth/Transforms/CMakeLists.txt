@@ -47,9 +47,9 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MLIRTransforms
 )
 # 
-# # Conditionally link MockturtleIntegration when enabled
-# if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
-#   target_link_libraries(CIRCTSynthTransforms PRIVATE
-#     CIRCTSynthMockturtleIntegration
-#   )
-# endif()
+ # Conditionally link MockturtleIntegration when enabled
+ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+   target_link_libraries(CIRCTSynthTransforms PRIVATE
+     CIRCTSynthMockturtleIntegration
+   )
+ endif()
