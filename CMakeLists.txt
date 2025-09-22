@@ -634,8 +634,10 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
   message(STATUS "Mockturtle integration is enabled")
   if(CIRCT_MOCKTURTLE_BUILD_FROM_SOURCE)
     # Build mockturtle as part of CIRCT (header-only library)
+    # Note: kitty and parallel_hashmap are included as part of mockturtle
     message(STATUS "Using mockturtle from source")
     include(FetchContent)
+    
     FetchContent_Declare(
       mockturtle
       GIT_REPOSITORY https://github.com/lsils/mockturtle.git
@@ -643,16 +645,20 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
       # Shallow check-out is fine for mockturtle as it's header-only
       GIT_SHALLOW ON
     )
+    
     set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE "NEVER")
 
-    # Mockturtle is a header-only library, so we just need to make it available
+    # Make mockturtle available (includes kitty and parallel_hashmap)
     FetchContent_MakeAvailable(mockturtle)
     
-    # Create an interface target for mockturtle
+    # Create an interface target for mockturtle (includes kitty and parallel_hashmap)
     if(NOT TARGET mockturtle::mockturtle)
       add_library(mockturtle_interface INTERFACE)
       target_include_directories(mockturtle_interface INTERFACE 
-        ${mockturtle_SOURCE_DIR}/include)
+        ${mockturtle_SOURCE_DIR}/include
+        ${mockturtle_SOURCE_DIR}/lib/kitty
+        ${mockturtle_SOURCE_DIR}/lib/parallel_hashmap
+      )
       # Mockturtle requires C++17
       target_compile_features(mockturtle_interface INTERFACE cxx_std_17)
       add_library(mockturtle::mockturtle ALIAS mockturtle_interface)
@@ -660,6 +666,8 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
       # Since this is an internal dependency, we don't need to export it
       # It will be statically linked into the consuming libraries
     endif()
+
+  
   else()
     # Look for an installed mockturtle package
     find_package(mockturtle REQUIRED)

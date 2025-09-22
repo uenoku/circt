@@ -27,6 +27,8 @@
 #include <mockturtle/algorithms/reconv_cut.hpp>
 #include <mockturtle/networks/aig.hpp>
 #include <mockturtle/networks/mig.hpp>
+// Kitty is included as part of mockturtle
+#include <mockturtle/utils/truth_table_cache.hpp>
 #endif
 
 namespace circt {
@@ -158,11 +160,6 @@ public:
 
   /// Get all logic operations in the module
   void foreach_logic_node(std::function<void(node)> fn) const {
-    module.walk([&](mlir::Operation *op) {
-      if (is_logic_op(op)) {
-        fn(op);
-      }
-    });
   }
 
   /// Convert mockturtle result back to CIRCT Cut structure

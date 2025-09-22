@@ -33,7 +33,7 @@ target_link_libraries(CIRCTSynthMockturtleIntegration PUBLIC
   MLIRIR
 )
 
-# Link against mockturtle
+# Link against mockturtle (includes kitty) and kitty interface for clean separation
 target_link_libraries(CIRCTSynthMockturtleIntegration PRIVATE 
   mockturtle::mockturtle
   LLVMSupport
