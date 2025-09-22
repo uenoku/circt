@@ -19,7 +19,8 @@
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "mlir/IR/Operation.h"
 
-// Forward declare comparison operators for mlir::Value before mockturtle includes
+// Forward declare comparison operators for mlir::Value before mockturtle
+// includes
 namespace mlir {
 class Value;
 
@@ -45,6 +46,7 @@ inline bool operator>=(const Value &lhs, const Value &rhs) {
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <mockturtle/algorithms/reconv_cut.hpp>
 #include <mockturtle/networks/aig.hpp>
@@ -77,14 +79,14 @@ public:
   using base_type = CIRCTNetworkAdapter; // Required for is_network_type trait
 
   // Required constants for network type trait
-  static constexpr uint32_t max_fanin_size = 32;
-  static constexpr uint32_t min_fanin_size = 0;
+  static constexpr uint32_t max_fanin_size = 2;
+  static constexpr uint32_t min_fanin_size = 2;
 
   // Node and signal indexing for mockturtle compatibility
   using node_type = mlir::Value;
   using signal_type = llvm::PointerIntPair<mlir::Value, 1, bool>;
 
-    // Signal creation utilities
+  // Signal creation utilities
 
 private:
   // Traversal state for mockturtle algorithms
@@ -110,7 +112,7 @@ private:
     auto moduleCopy = module;
     moduleCopy->walk([&](mlir::Operation *op) {
       // Add all results of logic operations as nodes
-      if (isa<comb::AndOp, comb::OrOp, comb::XorOp>(op)) {
+      if (isa<aig::AndInverterOp>(op)) {
         for (auto result : op->getResults()) {
           allNodes.push_back(result);
         }
@@ -469,12 +471,18 @@ public:
     if (!op)
       return false;
 
-    if (isa<comb::AndOp>(op)) {
+    if (isa<aig::AndInverterOp>(op)) {
+      auto andOp = cast<aig::AndInverterOp>(op);
+      auto inverted = andOp.getInverted();
+
       auto v1 = *begin++;
-      if (begin == end)
-        return v1;
       auto v2 = *begin;
-      return v1 && v2;
+
+      bool lhsInv = inverted[0];
+      bool rhsInv = inverted[1];
+
+      bool result = (v1 ^ lhsInv) && (v2 ^ rhsInv);
+      return result;
     }
 
     // Default to false for other ops
@@ -490,20 +498,21 @@ public:
       return result; // Default to single bit
     }
 
-    if (isa<comb::AndOp>(n.getDefiningOp())) {
+    if (isa<aig::AndInverterOp>(n.getDefiningOp())) {
+      auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
+      auto inverted = andOp.getInverted();
+
       auto tt1 = *begin++;
-      if (begin == end)
-        return tt1;
       auto tt2 = *begin;
-      return tt1 & tt2;
+
+      bool lhsInv = inverted[0];
+      bool rhsInv = inverted[1];
+
+      return (lhsInv ? ~tt1 : tt1) & (rhsInv ? ~tt2 : tt2);
     }
 
     // Default fallback
-    auto result = *begin;
-    for (auto it = begin + 1; it != end; ++it) {
-      result = result & (*it);
-    }
-    return result;
+    llvm::report_fatal_error("Unsupported operation in compute");
   }
 
   template <typename Iterator>
@@ -518,22 +527,28 @@ public:
       return; // No-op for non-logic ops
     }
 
-    if (isa<comb::AndOp>(n.getDefiningOp())) {
+    if (isa<aig::AndInverterOp>(n.getDefiningOp())) {
+      auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
+      auto inverted = andOp.getInverted();
+
       auto tt1 = *begin++;
-      if (begin == end) {
-        result = tt1;
-        return;
-      }
       auto tt2 = *begin;
+
+      bool lhsInv = inverted[0];
+      bool rhsInv = inverted[1];
 
       assert(tt1.num_bits() > 0 && "truth tables must not be empty");
       assert(tt1.num_bits() == tt2.num_bits());
       assert(tt1.num_bits() >= result.num_bits());
 
       result.resize(tt1.num_bits());
-      result._bits.back() = tt1._bits.back() & tt2._bits.back();
+      result._bits.back() = (lhsInv ? ~(tt1._bits.back()) : tt1._bits.back()) &
+                            (rhsInv ? ~(tt2._bits.back()) : tt2._bits.back());
       result.mask_bits();
     }
+
+    // Default fallback
+    llvm::report_fatal_error("Unsupported operation in compute");
   }
 
   // Revive node method (required for fanout_view)
@@ -576,12 +591,8 @@ public:
       return 0;
 
     // Simple function mapping for basic gates
-    if (llvm::isa_and_nonnull<comb::AndOp>(n.getDefiningOp()))
+    if (llvm::isa_and_nonnull<aig::AndInverterOp>(n.getDefiningOp()))
       return 0x8; // AND function
-    if (llvm::isa_and_nonnull<comb::OrOp>(n.getDefiningOp()))
-      return 0xE; // OR function
-    if (llvm::isa_and_nonnull<comb::XorOp>(n.getDefiningOp()))
-      return 0x6; // XOR function
     return 0;     // Unknown function
   }
 
@@ -610,7 +621,7 @@ public:
     auto *defOp = n.getDefiningOp();
     if (!defOp)
       return false;
-    return isa<comb::AndOp, comb::OrOp, comb::XorOp>(defOp);
+    return isa<aig::AndInverterOp>(defOp);
   }
 
   /// Get all logic operations in the module
@@ -990,7 +1001,7 @@ namespace std {
 template <>
 struct hash<mlir::Value> {
   size_t operator()(const mlir::Value &v) const {
-    return std::hash<void*>{}(v.getAsOpaquePointer());
+    return std::hash<void *>{}(v.getAsOpaquePointer());
   }
 };
 

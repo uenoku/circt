@@ -648,20 +648,27 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
     
     set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE "NEVER")
 
+    # Configure mockturtle build options to disable problematic components
+    set(MOCKTURTLE_BUILD_TESTS OFF CACHE BOOL "Disable mockturtle tests" FORCE)
+    set(MOCKTURTLE_BUILD_EXAMPLES OFF CACHE BOOL "Disable mockturtle examples" FORCE)
+    # Try to disable ABC if the option exists
+    set(MOCKTURTLE_ABC OFF CACHE BOOL "Disable ABC in mockturtle" FORCE)
+    set(MOCKTURTLE_BUILD_ABC OFF CACHE BOOL "Disable ABC build" FORCE)
+
     # Make mockturtle available (includes kitty and parallel_hashmap)
     FetchContent_MakeAvailable(mockturtle)
     
     # Create an interface target for mockturtle (includes kitty and parallel_hashmap)
     if(NOT TARGET mockturtle::mockturtle)
-      add_library(mockturtle_interface INTERFACE)
-      target_include_directories(mockturtle_interface INTERFACE 
-        ${mockturtle_SOURCE_DIR}/include
-        ${mockturtle_SOURCE_DIR}/lib/kitty
-        ${mockturtle_SOURCE_DIR}/lib/parallel_hashmap
-        ${mockturtle_SOURCE_DIR}/lib/fmt
-        ${mockturtle_SOURCE_DIR}/lib/bill
-        ${mockturtle_SOURCE_DIR}/lib/percy
-      )
+      # add_library(mockturtle_interface INTERFACE)
+      # target_include_directories(mockturtle_interface INTERFACE 
+      #   ${mockturtle_SOURCE_DIR}/include
+      #   ${mockturtle_SOURCE_DIR}/lib/kitty
+      #   ${mockturtle_SOURCE_DIR}/lib/parallel_hashmap
+      #   ${mockturtle_SOURCE_DIR}/lib/fmt
+      #   ${mockturtle_SOURCE_DIR}/lib/bill
+      #   ${mockturtle_SOURCE_DIR}/lib/percy
+      # )
       # # Mockturtle requires C++17
       # target_compile_features(mockturtle_interface INTERFACE cxx_std_17)
       # add_library(mockturtle::mockturtle ALIAS mockturtle_interface)
