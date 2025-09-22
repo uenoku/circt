@@ -43,10 +43,10 @@ struct MockturtleRefactorPass
     LLVM_DEBUG(llvm::dbgs() << "Running Mockturtle Refactor pass on module: "
                             << module.getModuleName() << "\n");
 
+    Block deadValuePoolBlock;
     // Create mockturtle adapter for CIRCT IR
     circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(
-        
-        module.getBodyBlock());
+        module.getBodyBlock(), &deadValuePoolBlock);
 
     // For now, just create the adapter and verify basic functionality
     // Full refactoring integration would require implementing many more

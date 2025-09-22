@@ -13,6 +13,7 @@
 #ifndef LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H
 #define LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H
 
+#include "llvm/ADT/STLExtras.h"
 #define DEBUG_TYPE "mockturtle-adapter"
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -81,7 +82,10 @@ public:
   // This matches mockturtle's signal semantics where signals can be
   // complemented
   using signal = llvm::PointerIntPair<mlir::Value, 1, bool>;
-  using storage = void; // Dummy storage type for mockturtle compatibility
+  // Dummy storage type for mockturtle compatibility
+
+  using storage =
+      void; // Dummy storage type. Should cause a compile error if used.
   using base_type = CIRCTNetworkAdapter; // Required for is_network_type trait
 
   // Required constants for network type trait
@@ -101,6 +105,10 @@ private:
     return !defOp || !isa<aig::AndInverterOp>(defOp);
   }
 
+  bool isGate(Operation *defOp) const {
+    return llvm::isa_and_nonnull<aig::AndInverterOp>(defOp) &&
+           defOp->getNumOperands() == 2;
+  }
   bool isGate(node n) const {
     assert(n);
     auto *defOp = n.getDefiningOp();
@@ -144,7 +152,8 @@ private:
   }
 
 public:
-  explicit CIRCTNetworkAdapter(Block *block) : block(block) {
+  explicit CIRCTNetworkAdapter(Block *block, Block *deadValuePool)
+      : block(block), deadValuePool(deadValuePool) {
     LLVM_DEBUG(llvm::dbgs()
                << "CIRCTNetworkAdapter constructor called with block: " << block
                << "\n");
@@ -179,31 +188,21 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Get the size of the network (number of nodes)
-  uint32_t size() const {
-    LLVM_DEBUG(llvm::dbgs() << "size() called, returning " << nodeIndexMap.size() << "\n");
-    return nodeIndexMap.size();
-  }
+  uint32_t size() const { return nodeIndexMap.size(); }
 
   /// Get number of gates (logic nodes)
-  uint32_t num_gates() const {
-    LLVM_DEBUG(llvm::dbgs() << "num_gates() called, returning " << numGate << "\n");
-    return numGate;
-  }
+  uint32_t num_gates() const { return numGate; }
 
   /// Check if a node represents a constant
   bool is_constant(node value) const {
     assert(value);
-    bool result = isa<hw::ConstantOp>(value.getDefiningOp());
-    LLVM_DEBUG(llvm::dbgs() << "is_constant(" << value << ") = " << result << "\n");
-    return result;
+    return isa<hw::ConstantOp>(value.getDefiningOp());
   }
 
   /// Check if a node is a combinational input (primary input or block argument)
   bool is_ci(node value) const {
     auto *defOp = value.getDefiningOp();
-    bool result = !defOp || !isa<aig::AndInverterOp>(defOp);
-    LLVM_DEBUG(llvm::dbgs() << "is_ci(" << value << ") = " << result << "\n");
-    return result;
+    return !defOp || !isa<aig::AndInverterOp>(defOp);
   }
 
   /// Get the number of fanins for a node
@@ -213,18 +212,14 @@ public:
     auto *defOp = n.getDefiningOp();
     if (!defOp)
       return 0; // Block arguments have no fanins
-    uint32_t result = defOp->getNumOperands();
-    LLVM_DEBUG(llvm::dbgs() << "fanin_size(" << n << ") = " << result << "\n");
-    return result;
+    return defOp->getNumOperands();
   }
 
   /// Get fanout size (expensive operation, cached if needed)
   uint32_t fanout_size(node n) const {
     if (!n)
       return 0;
-    uint32_t result = n.getNumUses();
-    LLVM_DEBUG(llvm::dbgs() << "fanout_size(" << n << ") = " << result << "\n");
-    return result;
+    return n.getNumUses();
   }
 
   /// Execute function for each fanin
@@ -301,13 +296,13 @@ public:
   /// Make a signal from a node
   signal make_signal(node n) const {
     assert(n && "Cannot create signal from null node");
-    signal result = signal(n, false); // Return signal with no complement
-    LLVM_DEBUG(llvm::dbgs() << "make_signal(" << n << ") = (" << result.getPointer() << ", " << result.getInt() << ")\n");
-    return result;
+    return signal(n, false); // Return signal with no complement
   }
 
   /// Substitute one node with another
   void substitute_node(node old_node, signal new_signal) {
+    LDBG() << "Substituting node: " << old_node
+           << " with signal: " << new_signal.getPointer();
 
     assert(old_node && "Old node must be valid");
     auto value = new_signal.getPointer();
@@ -321,7 +316,6 @@ public:
     }
 
     // Replace all uses of the old node with the new signal's value
-    LLVM_DEBUG(llvm::dbgs() << "substitute_node: replacing " << old_node << " with " << value << "\n");
     old_node.replaceAllUsesWith(value);
     take_out_node(old_node);
   }
@@ -343,7 +337,6 @@ public:
 
     auto it = levelCache.find(n);
     if (it != levelCache.end()) {
-      LLVM_DEBUG(llvm::dbgs() << "level(" << n << ") = " << it->second << " (cached)\n");
       return it->second;
     }
 
@@ -361,7 +354,6 @@ public:
 
     uint32_t nodeLevel = maxLevel + 1;
     levelCache[n] = nodeLevel;
-    LLVM_DEBUG(llvm::dbgs() << "level(" << n << ") = " << nodeLevel << " (computed)\n");
     return nodeLevel;
   }
 
@@ -370,36 +362,22 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Increment traversal ID (starts a new traversal)
-  void incr_trav_id() const { 
-    ++currentTravId; 
-    LLVM_DEBUG(llvm::dbgs() << "incr_trav_id: new trav_id = " << currentTravId << "\n");
-  }
+  void incr_trav_id() const { ++currentTravId; }
 
   /// Get current traversal ID
-  uint64_t trav_id() const { 
-    LLVM_DEBUG(llvm::dbgs() << "trav_id() = " << currentTravId << "\n");
-    return currentTravId; 
-  }
+  uint64_t trav_id() const { return currentTravId; }
 
   /// Check if node was visited in current traversal
   uint64_t visited(node n) const {
     auto it = visitedMap.find(n);
-    uint64_t result = it != visitedMap.end() ? it->second : 0;
-    LLVM_DEBUG(llvm::dbgs() << "visited(" << n << ") = " << result << "\n");
-    return result;
+    return it != visitedMap.end() ? it->second : 0;
   }
 
   /// Mark node as visited with current traversal ID
-  void set_visited(node n, uint64_t travId) const { 
-    visitedMap[n] = travId; 
-    LLVM_DEBUG(llvm::dbgs() << "set_visited(" << n << ", " << travId << ")\n");
-  }
+  void set_visited(node n, uint64_t travId) const { visitedMap[n] = travId; }
 
   /// Clear visited flags
-  void clear_visited() const { 
-    visitedMap.clear(); 
-    LLVM_DEBUG(llvm::dbgs() << "clear_visited: cleared visitedMap\n");
-  }
+  void clear_visited() const { visitedMap.clear(); }
 
   /// Get value for a node
   uint64_t value(node n) const {
@@ -414,6 +392,7 @@ public:
   void clear_values() const { valueMap.clear(); }
 
   llvm::PointerIntPair<Value, 1, bool> strip(Value value) const {
+    LDBG() << "Stripping value: " << value << "\n";
     if (isInput(value))
       return llvm::PointerIntPair<Value, 1, bool>(value, false);
     auto defOp = value.getDefiningOp<aig::AndInverterOp>();
@@ -505,17 +484,52 @@ public:
   replace_in_node(node const &n, node const &old_node, signal new_signal) {
     // Replace old_node with new_signal in node n
     // This is a placeholder implementation for our read-only adapter
-    (void)n;
-    (void)old_node;
-    (void)new_signal;
+    auto op = n.getDefiningOp<aig::AndInverterOp>();
+    if (auto op = n.getDefiningOp<aig::AndInverterOp>()) {
+      size_t numOperands = op->getNumOperands();
+      for (size_t i = 0; i < numOperands; ++i) {
+        auto &operand = op->getOpOperand(i);
+        auto [stripped, isInverted] = strip(operand.get());
+        if (stripped == old_node) {
+          // Found the old_node in operands, replace it
+          operand.set(new_signal.getPointer());
+          if (isInverted != op.isInverted(i)) {
+            SmallVector<bool, 2> newInverted(op.getInverted());
+            newInverted[i] = isInverted ^ new_signal.getInt();
+            op.setInverted(newInverted);
+          }
+        }
+      }
+
+      return std::make_pair(n, new_signal);
+    }
+
     return std::nullopt; // No replacement in our read-only adapter
   }
 
   void replace_in_outputs(node const &old_node, signal const &new_signal) {
-    // Replace old_node with new_signal in outputs
-    // This is a placeholder implementation for our read-only adapter
-    (void)old_node;
-    (void)new_signal;
+    if (is_dead(old_node))
+      return;
+
+    for (auto *user : old_node.getUsers()) {
+      if (isGate(user))
+        continue; // Skip gates, handled in replace_in_node
+      for (auto &operand : user->getOpOperands()) {
+        auto [stripped, isInverted] = strip(operand.get());
+        if (stripped == old_node) {
+          isInverted ^= new_signal.getInt();
+          if (isInverted) {
+            OpBuilder builder(user->getContext());
+            builder.setInsertionPointAfter(user);
+            auto notOp = builder.createOrFold<synth::aig::AndInverterOp>(
+                user->getLoc(), new_signal.getPointer(), true);
+            operand.set(notOp);
+          } else {
+            operand.set(new_signal.getPointer());
+          }
+        }
+      }
+    }
   }
 
   /// Check if network has node-to-index mapping capability
@@ -527,6 +541,7 @@ public:
     template <typename Fn>
     std::shared_ptr<std::function<void(node const &)>>
     register_add_event(Fn &&fn) {
+      llvm::report_fatal_error("events are not supported");
       return std::make_shared<std::function<void(node const &)>>(
           [fn = std::forward<Fn>(fn)](node const &n) { fn(n); });
     }
@@ -536,6 +551,7 @@ public:
     std::shared_ptr<
         std::function<void(node const &, std::vector<signal> const &)>>
     register_modified_event(Fn &&fn) {
+      llvm::report_fatal_error("events are not supported");
       return std::make_shared<
           std::function<void(node const &, std::vector<signal> const &)>>(
           [fn = std::forward<Fn>(fn)](
@@ -546,6 +562,8 @@ public:
     template <typename Fn>
     std::shared_ptr<std::function<void(node const &)>>
     register_delete_event(Fn &&fn) {
+llvm::report_fatal_error("events are not supported");
+
       return std::make_shared<std::function<void(node const &)>>(
           [fn = std::forward<Fn>(fn)](node const &n) { fn(n); });
     }
@@ -676,7 +694,10 @@ public:
       return;
     assert(n.use_empty());
     andOp->dropAllReferences();
+    andOp->moveBefore(deadValuePool, deadValuePool->begin());
   }
+
+  Block *deadValuePool;
 
   /// Check if a node is a primary input
   bool is_pi(node n) const {
