@@ -6,6 +6,9 @@
 ##
 ##===----------------------------------------------------------------------===//
 
+# Add MockturtleIntegration subdirectory
+add_subdirectory(MockturtleIntegration)
+
 add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
   CutRewriter.cpp
