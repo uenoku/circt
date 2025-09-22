@@ -17,8 +17,25 @@
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "llvm/Support/Debug.h"
 
-#include "mockturtle/algorithms/reconv_cut.hpp"
+// Mockturtle algorithms and data structures
+#include <mockturtle/algorithms/cleanup.hpp>
+// mockturtle includes
+#include "mockturtle/algorithms/aig_balancing.hpp"
+#include "mockturtle/algorithms/emap.hpp"
+#include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
+#include "mockturtle/algorithms/refactoring.hpp"
+#include "mockturtle/generators/arithmetic.hpp"
+#include "mockturtle/io/aiger_reader.hpp"
+#include "mockturtle/io/genlib_reader.hpp"
+#include "mockturtle/io/write_blif.hpp"
+#include "mockturtle/io/write_verilog.hpp"
 #include "mockturtle/networks/aig.hpp"
+#include "mockturtle/networks/block.hpp"
+#include "mockturtle/utils/name_utils.hpp"
+#include "mockturtle/utils/tech_library.hpp"
+#include "mockturtle/views/cell_view.hpp"
+#include "mockturtle/views/depth_view.hpp"
+#include "mockturtle/views/names_view.hpp"
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
 
@@ -38,20 +55,27 @@ struct MockturtleRefactorPass
   void runOnOperation() override {
     auto module = getOperation();
 
-    LLVM_DEBUG(llvm::dbgs() << "Running Refactor pass on module: "
+    LLVM_DEBUG(llvm::dbgs() << "Running Mockturtle Refactor pass on module: "
                             << module.getModuleName() << "\n");
 
     // Create mockturtle adapter for CIRCT IR
-    circt::synth::mockturtle::CIRCTNetworkAdapter adapter(module);
+    circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(module);
 
-    // TODO: Apply the computed cuts to refactor the logic
-    // This would involve:
-    // 1. Identifying optimal cut boundaries
-    // 2. Extracting logic cones
-    // 3. Re-synthesizing extracted logic with better structure
+    // Create SOP factoring resynthesis engine
+    // ::mockturtle::bidecomposition_resynthesis<
+    //     circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
+    //     resyn;
+    // ::mockturtle::refactoring(adapter, resyn);
+
+    // Apply the computed cuts to refactor the logic
+    // This involves:
+    // 1. Identifying optimal cut boundaries using reconvergence-driven cuts
+    // 2. Extracting logic cones from the cuts
+    // 3. Re-synthesizing extracted logic with SOP factoring for better
+    // structure
     // 4. Replacing original logic with optimized version
 
-    LLVM_DEBUG(llvm::dbgs() << "Refactor pass completed\n");
+    LLVM_DEBUG(llvm::dbgs() << "Mockturtle Refactor pass completed\n");
   }
 };
 

@@ -31,7 +31,7 @@
 
 namespace circt {
 namespace synth {
-namespace mockturtle {
+namespace mockturtle_integration {
 
 /// A mockturtle-compatible network adapter for CIRCT IR.
 /// This class provides the interface mockturtle expects while operating
