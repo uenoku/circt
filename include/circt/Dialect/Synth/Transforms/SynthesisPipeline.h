@@ -79,6 +79,22 @@ struct SynthOptimizationPipelineOptions
       llvm::cl::init(false)};
 };
 
+/// Options for the synth optimization pipeline.
+struct MockturtleOptimizationPipelineOptions
+    : public mlir::PassPipelineOptions<MockturtleOptimizationPipelineOptions> {
+  PassOptions::Option<OptimizationStrategy> synthesisStrategy{
+      *this, "synthesis-strategy", llvm::cl::desc("Synthesis strategy to use"),
+      llvm::cl::values(
+          clEnumValN(OptimizationStrategyArea, "area", "Optimize for area"),
+          clEnumValN(OptimizationStrategyTiming, "timing",
+                     "Optimize for timing")),
+      llvm::cl::init(OptimizationStrategyTiming)};
+
+  PassOptions::Option<bool> enableFunctionalReduction{
+      *this, "enable-functional-reduction",
+      llvm::cl::desc("Enable functional reduction"), llvm::cl::init(false)};
+};
+
 //===----------------------------------------------------------------------===//
 // Pipeline Functions
 //===----------------------------------------------------------------------===//
@@ -88,6 +104,10 @@ void buildCombLoweringPipeline(mlir::OpPassManager &pm,
                                const CombLoweringPipelineOptions &options);
 void buildSynthOptimizationPipeline(
     mlir::OpPassManager &pm, const SynthOptimizationPipelineOptions &options);
+
+void buildMockturtleOptimizationPipeline(
+    mlir::OpPassManager &pm,
+    const MockturtleOptimizationPipelineOptions &options);
 
 /// Register the synthesis pipelines.
 void registerSynthesisPipeline();

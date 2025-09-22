@@ -6,6 +6,8 @@
 ##
 ##===----------------------------------------------------------------------===//
 
+# Add MockturtleIntegration subdirectory
+
 add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
   CutRewriter.cpp
@@ -46,3 +48,10 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MLIRPass
   MLIRTransforms
 )
+# Conditionally link MockturtleIntegration when enabled
+if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+add_subdirectory(MockturtleIntegration)
+target_link_libraries(CIRCTSynthTransforms PRIVATE
+  CIRCTSynthMockturtleIntegration
+) 
+endif()
