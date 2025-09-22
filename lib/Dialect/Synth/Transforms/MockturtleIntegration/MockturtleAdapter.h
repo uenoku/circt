@@ -18,6 +18,8 @@
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/MapVector.h"
 
 // Forward declare comparison operators for mlir::Value before mockturtle
 // includes
@@ -89,6 +91,19 @@ public:
   // Signal creation utilities
 
 private:
+  bool isInput(node n) const {
+    assert(n);
+    auto *defOp = n.getDefiningOp();
+    return !defOp || !isa<aig::AndInverterOp>(defOp);
+  }
+
+  bool isGate(node n) const {
+    assert(n);
+    auto *defOp = n.getDefiningOp();
+    return llvm::isa_and_nonnull<aig::AndInverterOp>(defOp) &&
+           defOp->getNumOperands() == 2;
+  }
+
   // Traversal state for mockturtle algorithms
   mutable llvm::DenseMap<mlir::Value, uint64_t> visitedMap;
   mutable llvm::DenseMap<mlir::Value, uint64_t> valueMap;
@@ -98,59 +113,71 @@ private:
   mutable llvm::DenseMap<mlir::Value, unsigned> levelCache;
 
   // The root module we're operating on
-  hw::HWModuleOp module;
+  Block *block;
 
-  // Cache of all nodes for iteration
-  mutable std::vector<node> allNodes;
-  mutable bool nodesCacheValid = false;
+  // Node numbering system
+  mutable llvm::MapVector<mlir::Value, uint32_t> nodeIndexMap;
+  mutable uint32_t nextNodeIndex = 0;
+  mutable size_t numGate = 0;
 
-  void updateNodesCache() const {
-    if (nodesCacheValid)
-      return;
+  /// Get or assign an index to a node
+  uint32_t getOrAssignNodeIndex(node n) const {
+    auto it = nodeIndexMap.find(n);
+    if (it != nodeIndexMap.end()) {
+      return it->second;
+    }
 
-    allNodes.clear();
-    auto moduleCopy = module;
-    moduleCopy->walk([&](mlir::Operation *op) {
-      // Add all results of logic operations as nodes
-      if (isa<aig::AndInverterOp>(op)) {
-        for (auto result : op->getResults()) {
-          allNodes.push_back(result);
-        }
+    if (auto definingOp = n.getDefiningOp<aig::AndInverterOp>()) {
+      if (definingOp->getNumOperands() == 1) {
+        return getOrAssignNodeIndex(definingOp->getOperand(0));
       }
-    });
-    nodesCacheValid = true;
+      numGate++;
+    }
+
+    uint32_t index = nextNodeIndex++;
+    nodeIndexMap[n] = index;
+    return index;
   }
 
 public:
-  explicit CIRCTNetworkAdapter(hw::HWModuleOp mod) : module(mod) {}
+  explicit CIRCTNetworkAdapter(Block *block) : block(block) { collectBits(); }
+  bool isI1Value(mlir::Value v) const { return v.getType().isInteger(1); }
+
+  // Collect all bits (Values) in the block to ensure they are indexed.
+  void collectBits() {
+    for (auto &arg : block->getArguments()) {
+      if (isI1Value(arg))
+        getOrAssignNodeIndex(arg);
+    }
+    for (auto &op : *block) {
+      for (auto result : op.getResults()) {
+        if (isI1Value(result))
+          getOrAssignNodeIndex(result);
+      }
+    }
+  }
 
   //===--------------------------------------------------------------------===//
   // Mockturtle Network Interface
   //===--------------------------------------------------------------------===//
 
   /// Get the size of the network (number of nodes)
-  uint32_t size() const {
-    updateNodesCache();
-    return allNodes.size();
-  }
+  uint32_t size() const { return nodeIndexMap.size(); }
 
   /// Get number of gates (logic nodes)
-  uint32_t num_gates() const {
-    updateNodesCache();
-    return allNodes.size();
-  }
+  uint32_t num_gates() const { return numGate; }
 
   /// Check if a node represents a constant
-  bool is_constant(node n) const {
-    if (!n)
-      return false;
-    return isa<hw::ConstantOp>(n.getDefiningOp());
+  bool is_constant(node value) const {
+    assert(value);
+    return isa<hw::ConstantOp>(value.getDefiningOp());
   }
 
   /// Check if a node is a combinational input (primary input or block argument)
-  bool is_ci(node n) const {
+  bool is_ci(node value) const {
     // Primary inputs are represented as block arguments in CIRCT
-    return n && isa<mlir::BlockArgument>(n);
+    auto *op = value.getDefiningOp();
+    return !op || !isa<aig::AndInverterOp>(op);
   }
 
   /// Get the number of fanins for a node
@@ -196,21 +223,19 @@ public:
   /// Execute function for each node
   template <typename Fn>
   void foreach_node(Fn &&fn) const {
-    updateNodesCache();
-
     // Check if the function expects two parameters (node and index)
     if constexpr (std::is_invocable_v<Fn, node const &>) {
-      for (const auto &nodePtr : allNodes) {
-        fn(nodePtr);
+      for (const auto &pair : nodeIndexMap) {
+        fn(pair.first);
       }
     } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
-      for (size_t i = 0; i < allNodes.size(); ++i) {
-        fn(allNodes[i], i);
+      for (const auto &pair : nodeIndexMap) {
+        fn(pair.first, pair.second);
       }
     } else {
       // Fallback: try without const reference
-      for (size_t i = 0; i < allNodes.size(); ++i) {
-        fn(allNodes[i], i);
+      for (const auto &pair : nodeIndexMap) {
+        fn(pair.first, pair.second);
       }
     }
   }
@@ -218,42 +243,45 @@ public:
   /// Execute function for each gate (logic node)
   template <typename Fn>
   void foreach_gate(Fn &&fn) const {
-    updateNodesCache();
-
     // Try to call with both node and index first
-    for (size_t i = 0; i < allNodes.size(); ++i) {
+    for (const auto &pair : nodeIndexMap) {
       if constexpr (std::is_invocable_v<Fn, node, size_t>) {
-        fn(allNodes[i], i);
+        fn(pair.first, pair.second);
       } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
-        fn(allNodes[i], i);
+        fn(pair.first, pair.second);
       } else if constexpr (std::is_invocable_v<Fn, node>) {
-        fn(allNodes[i]);
+        fn(pair.first);
       } else if constexpr (std::is_invocable_v<Fn, node const &>) {
-        fn(allNodes[i]);
+        fn(pair.first);
       } else {
         // Fallback: try without const reference
-        fn(allNodes[i], i);
+        fn(pair.first, pair.second);
       }
     }
   }
 
   /// Make a signal from a node
   signal make_signal(node n) const {
-    if (!n)
-      return signal(mlir::Value(),
-                    false);  // Return empty signal with no complement
+    assert(n && "Cannot create signal from null node");
     return signal(n, false); // Return signal with no complement
   }
 
   /// Substitute one node with another
   void substitute_node(node old_node, signal new_signal) {
-    if (!old_node)
-      return;
+    assert(old_node && "Old node must be valid");
+    auto value = new_signal.getPointer();
+    assert(value && "New signal must be valid");
+
+    if (new_signal.getInt()) {
+      OpBuilder builder(old_node.getContext());
+      builder.setInsertionPointAfterValue(value);
+      value = builder.createOrFold<synth::aig::AndInverterOp>(
+          value.getLoc(), new_signal.getPointer());
+    }
 
     // Replace all uses of the old node with the new signal's value
-    // Note: We lose complement information in this simple implementation
-    old_node.replaceAllUsesWith(new_signal.getPointer());
-    nodesCacheValid = false; // Invalidate cache
+    old_node.replaceAllUsesWith(value);
+    take_out_node(old_node);
   }
 
   /// Substitute for pairs (for fanout_view compatibility)
@@ -264,8 +292,12 @@ public:
 
   /// Get the level of a node (for timing-aware algorithms)
   uint32_t level(node n) const {
-    if (!n)
+    if (isInput(n))
       return 0;
+
+    auto *op = n.getDefiningOp();
+    if (op->getNumOperands() == 1)
+      return level(op->getOperand(0));
 
     auto it = levelCache.find(n);
     if (it != levelCache.end()) {
@@ -323,6 +355,18 @@ public:
   /// Clear all values
   void clear_values() const { valueMap.clear(); }
 
+  llvm::PointerIntPair<Value, 1, bool> strip(Value value) const {
+    if (isInput(value))
+      return llvm::PointerIntPair<Value, 1, bool>(value, false);
+    auto defOp = value.getDefiningOp<aig::AndInverterOp>();
+    if (defOp.getNumOperands() == 1) {
+      auto stripped = strip(defOp->getOperand(0));
+      return llvm::PointerIntPair<Value, 1, bool>(
+          stripped.getPointer(), stripped.getInt() ^ defOp.isInverted(0));
+    }
+    return llvm::PointerIntPair<Value, 1, bool>(value, false);
+  }
+
   //===--------------------------------------------------------------------===//
   // Additional Mockturtle Network Requirements
   //===--------------------------------------------------------------------===//
@@ -330,7 +374,8 @@ public:
   /// Get node index for mockturtle algorithms that require indexing
   uint64_t node_to_index(node n) const {
     // Convert Value to index using its internal pointer representation
-    return reinterpret_cast<uint64_t>(n.getAsOpaquePointer());
+    auto stripped = strip(n);
+    return getOrAssignNodeIndex(stripped.getPointer());
   }
 
   /// Get index of a node (alternative name for compatibility)
@@ -555,13 +600,20 @@ public:
   void revive_node(node const &n) {
     // In our adapter, this is a no-op since we don't track dead nodes
     // In a full implementation, this would mark the node as alive again
-    (void)n;
+    llvm::report_fatal_error("revive_node is not supported in this adapter");
   }
 
   /// Take out node (placeholder for mockturtle view compatibility)
   void take_out_node(node n) {
-    // This is a no-op for our read-only adapter
-    (void)n;
+    // Mockturtle expects this method to remove a node from the network.
+    // However in mockturtle detached nodes could be referred or even revived
+    // later. Revive won't be handled in this adapter but we cannot delete
+    // nodes either. So currently it detaches the node from the network.
+    auto andOp = n.getDefiningOp<aig::AndInverterOp>();
+    if (!andOp)
+      return;
+    assert(n.use_empty());
+    andOp->dropAllReferences();
   }
 
   /// Check if a node is a primary input
@@ -571,10 +623,17 @@ public:
   }
 
   /// Get constant signal (false)
+
+  mutable Value constants[2];
   signal get_constant(bool value) const {
-    // For now, return an empty signal - would need to create actual constant
-    // ops The complement bit represents the constant value
-    return signal(mlir::Value(), value);
+    if (constants[value])
+      return signal(constants[value], false);
+    OpBuilder rewriter(block->getParentOp()->getContext());
+    rewriter.setInsertionPointToStart(block);
+    auto constOp = rewriter.createOrFold<hw::ConstantOp>(
+        block->getParentOp()->getLoc(),
+        rewriter.getIntegerAttr(rewriter.getI1Type(), value));
+    constants[value] = constOp;
   }
 
   /// Get the value of a constant node
@@ -626,9 +685,8 @@ public:
 
   /// Get all logic operations in the module
   void foreach_logic_node(const std::function<void(node)> &fn) const {
-    updateNodesCache();
-    for (auto n : allNodes) {
-      fn(n);
+    for (const auto &pair : nodeIndexMap) {
+      fn(pair.first);
     }
   }
 };

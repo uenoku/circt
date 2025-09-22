@@ -18,9 +18,9 @@
 #include "llvm/Support/Debug.h"
 
 // Include mockturtle algorithm headers
-#include <mockturtle/algorithms/refactoring.hpp>
 #include "mlir/IR/PatternMatch.h"
 #include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
+#include <mockturtle/algorithms/refactoring.hpp>
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
 
@@ -44,7 +44,9 @@ struct MockturtleRefactorPass
                             << module.getModuleName() << "\n");
 
     // Create mockturtle adapter for CIRCT IR
-    circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(module);
+    circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(
+        
+        module.getBodyBlock());
 
     // For now, just create the adapter and verify basic functionality
     // Full refactoring integration would require implementing many more
@@ -74,7 +76,9 @@ struct MockturtleRefactorPass
 
     // Perform bidec.
 
-    ::mockturtle::bidecomposition_resynthesis<mockturtle_integration::CIRCTNetworkAdapter> resyn;
+    ::mockturtle::bidecomposition_resynthesis<
+        mockturtle_integration::CIRCTNetworkAdapter>
+        resyn;
 
     ::mockturtle::refactoring(adapter, resyn);
 
