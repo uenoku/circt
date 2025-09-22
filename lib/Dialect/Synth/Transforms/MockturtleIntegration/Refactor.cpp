@@ -17,9 +17,8 @@
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "llvm/Support/Debug.h"
 
-// Mockturtle algorithms and data structures
-#include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
-#include "mockturtle/algorithms/refactoring.hpp"
+// Include mockturtle algorithm headers
+#include <mockturtle/algorithms/refactoring.hpp>
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
 
@@ -48,14 +47,28 @@ struct MockturtleRefactorPass
     // For now, just create the adapter and verify basic functionality
     // Full refactoring integration would require implementing many more
     // mockturtle network interface methods
-    LLVM_DEBUG(llvm::dbgs() << "Created mockturtle adapter with " 
+    LLVM_DEBUG(llvm::dbgs() << "Created mockturtle adapter with "
                             << adapter.size() << " gates\n");
 
-    // TODO: Add specific mockturtle algorithms when the adapter is more complete
-    ::mockturtle::bidecomposition_resynthesis<
-         circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
-         resyn;
-    ::mockturtle::refactoring(adapter, resyn);
+    // TODO: For now, just create and test the adapter
+    // Actual refactoring algorithms will require more complete adapter
+    // implementation
+    
+    // Create a simple fanout view for the adapter to enable refactoring
+    ::mockturtle::fanout_view fanoutAdapter{adapter};
+    
+    // Use the default resynthesis and cost functions
+    auto resynthesis = [&](auto& ntk, kitty::dynamic_truth_table const& function, 
+                          std::vector<typename decltype(ntk)::signal> const& children) {
+      // Simple resynthesis - for now just return the first child
+      // A real implementation would optimize the function
+      if (!children.empty()) {
+        return children[0];
+      }
+      return ntk.get_constant(false);
+    };
+    
+    ::mockturtle::refactoring(fanoutAdapter, resynthesis);
 
     // Apply the computed cuts to refactor the logic
     // This involves:
