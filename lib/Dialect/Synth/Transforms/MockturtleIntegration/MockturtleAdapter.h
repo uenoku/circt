@@ -320,16 +320,16 @@ public:
       value = builder.createOrFold<synth::aig::AndInverterOp>(
           value.getLoc(), new_signal.getPointer());
       // Trigger add event for the new NOT operation
-      events_.trigger_add(value);
+      // events_.trigger_add(value);
     }
 
     // Replace all uses of the old node with the new signal's value
     old_node.replaceAllUsesWith(value);
 
-    // Trigger modified event after replacement
-    if (!prev_fanins.empty()) {
-      events_.trigger_modified(old_node, prev_fanins);
-    }
+    // // Trigger modified event after replacement
+    // if (!prev_fanins.empty()) {
+    //   _events.trigger_modified(old_node, prev_fanins);
+    // }
 
     take_out_node(old_node);
   }
@@ -445,47 +445,31 @@ public:
     // For NOT, we can simply flip the complement bit
     return signal(a.getPointer(), !a.getInt());
   }
+  auto &events() const { return *_events; }
 
   signal create_and(signal const &a, signal const &b) {
     // Create an AND gate in CIRCT
-    auto *op = a.getPointer().getDefiningOp();
-    if (!op)
-      return signal(mlir::Value(), false);
+    auto builder = mlir::OpBuilder::atBlockBegin(block);
+    auto andOp = builder.createOrFold<synth::aig::AndInverterOp>(
+        a.getPointer().getLoc(), a.getPointer(), b.getPointer(), a.getInt(),
+        b.getInt());
 
-    auto builder = mlir::OpBuilder(op->getContext());
-    builder.setInsertionPointAfter(op);
+    auto striped = strip(andOp);
+    auto newNode = nodeIndexMap.find(striped.getPointer());
+    if (newNode != nodeIndexMap.end())
+      return striped;
 
-    // This is a placeholder - actual implementation would create AND
-    // operation
-    return signal(a.getPointer(), false); // Return the first input for now
+    numGate++;
+    uint32_t id = getOrAssignNodeIndex(andOp);
+    for (auto const &fn : _events->on_add) {
+      (*fn)(id);
+    }
+    return signal(andOp, false);
   }
 
-  signal create_or(signal const &a, signal const &b) {
-    // Create an OR gate in CIRCT
-    auto *op = a.getPointer().getDefiningOp();
-    if (!op)
-      return signal(mlir::Value(), false);
+  signal create_or(signal const &a, signal const &b);
 
-    auto builder = mlir::OpBuilder(op->getContext());
-    builder.setInsertionPointAfter(op);
-
-    // This is a placeholder - actual implementation would create OR operation
-    return signal(a.getPointer(), false); // Return the first input for now
-  }
-
-  signal create_xor(signal const &a, signal const &b) {
-    // Create an XOR gate in CIRCT
-    auto *op = a.getPointer().getDefiningOp();
-    if (!op)
-      return signal(mlir::Value(), false);
-
-    auto builder = mlir::OpBuilder(op->getContext());
-    builder.setInsertionPointAfter(op);
-
-    // This is a placeholder - actual implementation would create XOR
-    // operation
-    return signal(a.getPointer(), false); // Return the first input for now
-  }
+  signal create_xor(signal const &a, signal const &b);
 
   // Node status methods
   bool is_dead(node const &n) const {
@@ -638,9 +622,6 @@ public:
     }
   };
 
-  /// Get events system
-  events_type &events() { return events_; }
-
   // Compute method for simulation support (required for mockturtle
   // algorithms) Compute methods for simulation support - matching mockturtle
   // signatures exactly
@@ -746,7 +727,9 @@ public:
   /// Take out node (placeholder for mockturtle view compatibility)
   void take_out_node(node n) {
     // Trigger delete event before detaching
-    events_.trigger_delete(n);
+    for (auto const &fn : _events->on_delete) {
+      (*fn)(n);
+    }
     // Mockturtle expects this method to remove a node from the network.
     // However in mockturtle detached nodes could be referred or even revived
     // later. Revive won't be handled in this adapter but we cannot delete
@@ -765,15 +748,12 @@ public:
   Block *deadValuePool;
 
   /// Check if a node is a primary input
-  bool is_pi(node n) const {
-    // In CIRCT, primary inputs are represented as block arguments
-    return n == nullptr; // Block arguments don't have defining ops
-  }
+  bool is_pi(node n) const { return isInput(n); }
 
   /// Get constant signal (false)
 
   mutable Value constants[2];
-  events_type events_;
+  std::shared_ptr<mockturtle::network_events<base_type>> _events;
 
   signal get_constant(bool value) const {
     if (constants[value])
@@ -810,16 +790,18 @@ public:
     auto defOp = n.getDefiningOp<aig::AndInverterOp>();
     kitty::dynamic_truth_table _and(2);
     auto inverted = defOp.getInverted();
+
     // Construct truth table for AND with possible inversions
+    // Truth table bit ordering: 00, 01, 10, 11 (LSB first)
     for (uint32_t i = 0; i < 4; ++i) {
-      bool a = (i & 0x1) != 0;
-      bool b = (i & 0x2) != 0;
+      bool a = (i & 0x1) != 0; // LSB: first input
+      bool b = (i & 0x2) != 0; // MSB: second input
+      // Apply inversions using XOR: a ^ inverted[0] inverts a if inverted[0] is
+      // true
       bool res = (a ^ inverted[0]) && (b ^ inverted[1]);
       if (res)
         _and._bits[0] |= (1 << i);
     }
-    // 1000
-    // _and._bits[0] = 0x8;
     return _and;
   }
 
@@ -830,7 +812,7 @@ public:
   }
   uint32_t decr_fanout_size(node n) {
     (void)n;
-    return 0;
+    return n.getNumUses();
   }
 
   /// Increment/decrement value (placeholder for reference counting)
@@ -1245,5 +1227,22 @@ struct less<mlir::Value> {
   }
 };
 } // namespace std
+
+//===----------------------------------------------------------------------===//
+// CIRCTNetworkAdapter Method Definitions
+//===----------------------------------------------------------------------===//
+circt::synth::mockturtle_integration::CIRCTNetworkAdapter::signal
+circt::synth::mockturtle_integration::CIRCTNetworkAdapter::create_or(
+    signal const &a, signal const &b) {
+  return !create_and(!a, !b);
+}
+circt::synth::mockturtle_integration::CIRCTNetworkAdapter::signal
+circt::synth::mockturtle_integration::CIRCTNetworkAdapter::create_xor(
+    signal const &a, signal const &b) {
+  const auto fcompl = a.getInt() ^ b.getInt();
+  const auto c1 = create_and(+a, -b);
+  const auto c2 = create_and(+b, -a);
+  return create_and(!c1, !c2) ^ !fcompl;
+}
 
 #endif // LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H
