@@ -308,15 +308,29 @@ public:
     auto value = new_signal.getPointer();
     assert(value && "New signal must be valid");
 
+    // Capture previous fanins for modified event
+    std::vector<signal> prev_fanins;
+    if (isGate(old_node)) {
+      foreach_fanin(old_node, [&](signal s) { prev_fanins.push_back(s); });
+    }
+
     if (new_signal.getInt()) {
       OpBuilder builder(old_node.getContext());
       builder.setInsertionPointAfterValue(value);
       value = builder.createOrFold<synth::aig::AndInverterOp>(
           value.getLoc(), new_signal.getPointer());
+      // Trigger add event for the new NOT operation
+      events_.trigger_add(value);
     }
 
     // Replace all uses of the old node with the new signal's value
     old_node.replaceAllUsesWith(value);
+
+    // Trigger modified event after replacement
+    if (!prev_fanins.empty()) {
+      events_.trigger_modified(old_node, prev_fanins);
+    }
+
     take_out_node(old_node);
   }
 
@@ -535,49 +549,97 @@ public:
   /// Check if network has node-to-index mapping capability
   static constexpr bool has_node_to_index_v = true;
 
-  /// Events placeholder for mockturtle compatibility (not implemented)
-  struct events_placeholder {
-    // For add events - takes a node parameter
+  /// Events system for mockturtle compatibility (now functional)
+  struct events_type {
+    // Storage for registered event handlers
+    std::vector<std::shared_ptr<std::function<void(node const &)>>> add_events;
+    std::vector<std::shared_ptr<
+        std::function<void(node const &, std::vector<signal> const &)>>>
+        modified_events;
+    std::vector<std::shared_ptr<std::function<void(node const &)>>>
+        delete_events;
+
+    // Register add event (takes a node parameter)
     template <typename Fn>
     std::shared_ptr<std::function<void(node const &)>>
     register_add_event(Fn &&fn) {
-      llvm::report_fatal_error("events are not supported");
-      return std::make_shared<std::function<void(node const &)>>(
-          [fn = std::forward<Fn>(fn)](node const &n) { fn(n); });
+      auto handler = std::make_shared<std::function<void(node const &)>>(
+          std::forward<Fn>(fn));
+      add_events.push_back(handler);
+      return handler;
     }
 
-    // For modified events - takes node and previous fanins parameter
+    // Register modified event (takes node and previous fanins)
     template <typename Fn>
     std::shared_ptr<
         std::function<void(node const &, std::vector<signal> const &)>>
     register_modified_event(Fn &&fn) {
-      llvm::report_fatal_error("events are not supported");
-      return std::make_shared<
+      auto handler = std::make_shared<
           std::function<void(node const &, std::vector<signal> const &)>>(
-          [fn = std::forward<Fn>(fn)](
-              node const &n, std::vector<signal> const &prev) { fn(n, prev); });
+          std::forward<Fn>(fn));
+      modified_events.push_back(handler);
+      return handler;
     }
 
-    // For delete events - takes a node parameter
+    // Register delete event (takes a node parameter)
     template <typename Fn>
     std::shared_ptr<std::function<void(node const &)>>
     register_delete_event(Fn &&fn) {
-llvm::report_fatal_error("events are not supported");
-
-      return std::make_shared<std::function<void(node const &)>>(
-          [fn = std::forward<Fn>(fn)](node const &n) { fn(n); });
+      auto handler = std::make_shared<std::function<void(node const &)>>(
+          std::forward<Fn>(fn));
+      delete_events.push_back(handler);
+      return handler;
     }
 
+    // Release event handlers
     template <typename T>
-    void release_add_event(const std::shared_ptr<T> &) {}
+    void release_add_event(const std::shared_ptr<T> &handler) {
+      add_events.erase(
+          std::remove(add_events.begin(), add_events.end(), handler),
+          add_events.end());
+    }
     template <typename T>
-    void release_modified_event(const std::shared_ptr<T> &) {}
+    void release_modified_event(const std::shared_ptr<T> &handler) {
+      modified_events.erase(
+          std::remove(modified_events.begin(), modified_events.end(), handler),
+          modified_events.end());
+    }
     template <typename T>
-    void release_delete_event(const std::shared_ptr<T> &) {}
+    void release_delete_event(const std::shared_ptr<T> &handler) {
+      delete_events.erase(
+          std::remove(delete_events.begin(), delete_events.end(), handler),
+          delete_events.end());
+    }
+
+    // Trigger add event (call after creating a new node/op)
+    void trigger_add(node const &n) {
+      for (auto &handler : add_events) {
+        if (handler)
+          (*handler)(n);
+      }
+    }
+
+    // Trigger modified event (call after modifying a node, with previous
+    // fanins)
+    void trigger_modified(node const &n,
+                          std::vector<signal> const &prev_fanins) {
+      for (auto &handler : modified_events) {
+        if (handler)
+          (*handler)(n, prev_fanins);
+      }
+    }
+
+    // Trigger delete event (call before/after removing a node)
+    void trigger_delete(node const &n) {
+      for (auto &handler : delete_events) {
+        if (handler)
+          (*handler)(n);
+      }
+    }
   };
 
-  /// Get events system (placeholder)
-  static events_placeholder events() { return {}; }
+  /// Get events system
+  events_type &events() { return events_; }
 
   // Compute method for simulation support (required for mockturtle
   // algorithms) Compute methods for simulation support - matching mockturtle
@@ -683,6 +745,8 @@ llvm::report_fatal_error("events are not supported");
 
   /// Take out node (placeholder for mockturtle view compatibility)
   void take_out_node(node n) {
+    // Trigger delete event before detaching
+    events_.trigger_delete(n);
     // Mockturtle expects this method to remove a node from the network.
     // However in mockturtle detached nodes could be referred or even revived
     // later. Revive won't be handled in this adapter but we cannot delete
@@ -693,6 +757,7 @@ llvm::report_fatal_error("events are not supported");
     if (!andOp)
       return;
     assert(n.use_empty());
+
     andOp->dropAllReferences();
     andOp->moveBefore(deadValuePool, deadValuePool->begin());
   }
@@ -708,6 +773,8 @@ llvm::report_fatal_error("events are not supported");
   /// Get constant signal (false)
 
   mutable Value constants[2];
+  events_type events_;
+
   signal get_constant(bool value) const {
     if (constants[value])
       return signal(constants[value], false);
@@ -729,20 +796,37 @@ llvm::report_fatal_error("events are not supported");
   }
 
   /// Get node function (for simulation)
-  uint32_t node_function(node n) const {
-    if (!n)
-      return 0;
+  // uint32_t node_function(node n) const {
+  //   if (!n)
+  //     return 0;
 
-    // Simple function mapping for basic gates
-    if (llvm::isa_and_nonnull<aig::AndInverterOp>(n.getDefiningOp()))
-      return 0x8; // AND function
-    return 0;     // Unknown function
+  //   // Simple function mapping for basic gates
+  //   if (llvm::isa_and_nonnull<aig::AndInverterOp>(n.getDefiningOp()))
+  //     return 0x8; // AND function
+  //   return 0;     // Unknown function
+  // }
+  kitty::dynamic_truth_table node_function(const node &n) const {
+    assert(isGate(n) && "Node is not an AND gate");
+    auto defOp = n.getDefiningOp<aig::AndInverterOp>();
+    kitty::dynamic_truth_table _and(2);
+    auto inverted = defOp.getInverted();
+    // Construct truth table for AND with possible inversions
+    for (uint32_t i = 0; i < 4; ++i) {
+      bool a = (i & 0x1) != 0;
+      bool b = (i & 0x2) != 0;
+      bool res = (a ^ inverted[0]) && (b ^ inverted[1]);
+      if (res)
+        _and._bits[0] |= (1 << i);
+    }
+    // 1000
+    // _and._bits[0] = 0x8;
+    return _and;
   }
 
   /// Increment/decrement fanout size (placeholder for view compatibility)
   uint32_t incr_fanout_size(node n) {
     (void)n;
-    return 1;
+    return n.getNumUses();
   }
   uint32_t decr_fanout_size(node n) {
     (void)n;
