@@ -679,6 +679,18 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
   # Define preprocessor macro for conditional compilation
   add_compile_definitions(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
   add_compile_definitions("LIN64" ABC_NAMESPACE=pabc "ABC_NO_USE_READLINE" "DISABLE_NAUTY" "FMT_HEADER_ONLY")
+  
+  # Override LLVM's default flags to enable exceptions and RTTI for mockturtle
+  if (MSVC)
+    # For MSVC, enable exceptions and RTTI
+    string(REPLACE "/EHs-c-" "/EHsc" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REPLACE "/GR-" "/GR" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  else()
+    # For GCC/Clang, enable exceptions and RTTI
+    string(REPLACE "-fno-exceptions" "-fexceptions" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+    string(REPLACE "-fno-rtti" "-frtti" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  endif()
+  
   message(STATUS "Mockturtle integration configured successfully")
 endif()
 

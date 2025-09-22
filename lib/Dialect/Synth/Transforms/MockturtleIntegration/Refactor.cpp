@@ -62,10 +62,10 @@ struct MockturtleRefactorPass
     circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(module);
 
     // Create SOP factoring resynthesis engine
-    // ::mockturtle::bidecomposition_resynthesis<
-    //     circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
-    //     resyn;
-    // ::mockturtle::refactoring(adapter, resyn);
+    ::mockturtle::bidecomposition_resynthesis<
+        circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
+        resyn;
+    ::mockturtle::refactoring(adapter, resyn);
 
     // Apply the computed cuts to refactor the logic
     // This involves:
