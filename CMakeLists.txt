@@ -658,10 +658,13 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
         ${mockturtle_SOURCE_DIR}/include
         ${mockturtle_SOURCE_DIR}/lib/kitty
         ${mockturtle_SOURCE_DIR}/lib/parallel_hashmap
+        ${mockturtle_SOURCE_DIR}/lib/fmt
+        ${mockturtle_SOURCE_DIR}/lib/bill
+        ${mockturtle_SOURCE_DIR}/lib/percy
       )
-      # Mockturtle requires C++17
-      target_compile_features(mockturtle_interface INTERFACE cxx_std_17)
-      add_library(mockturtle::mockturtle ALIAS mockturtle_interface)
+      # # Mockturtle requires C++17
+      # target_compile_features(mockturtle_interface INTERFACE cxx_std_17)
+      # add_library(mockturtle::mockturtle ALIAS mockturtle_interface)
       
       # Since this is an internal dependency, we don't export it
       # It will be statically linked into the consuming libraries
