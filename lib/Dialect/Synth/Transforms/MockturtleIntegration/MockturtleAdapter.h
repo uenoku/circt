@@ -13,6 +13,8 @@
 #ifndef LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H
 #define LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H
 
+#define DEBUG_TYPE "mockturtle-adapter"
+
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
@@ -48,6 +50,8 @@ inline bool operator>=(const Value &lhs, const Value &rhs) {
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugLog.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <mockturtle/algorithms/reconv_cut.hpp>
@@ -140,21 +144,34 @@ private:
   }
 
 public:
-  explicit CIRCTNetworkAdapter(Block *block) : block(block) { collectBits(); }
+  explicit CIRCTNetworkAdapter(Block *block) : block(block) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "CIRCTNetworkAdapter constructor called with block: " << block
+               << "\n");
+    collectBits();
+  }
   bool isI1Value(mlir::Value v) const { return v.getType().isInteger(1); }
 
   // Collect all bits (Values) in the block to ensure they are indexed.
   void collectBits() {
+    LLVM_DEBUG(llvm::dbgs() << "collectBits called\n");
     for (auto &arg : block->getArguments()) {
-      if (isI1Value(arg))
+      if (isI1Value(arg)) {
+        LLVM_DEBUG(llvm::dbgs() << "Indexing block argument: " << arg << "\n");
         getOrAssignNodeIndex(arg);
+      }
     }
     for (auto &op : *block) {
       for (auto result : op.getResults()) {
-        if (isI1Value(result))
+        if (isI1Value(result)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Indexing operation result: " << result << "\n");
           getOrAssignNodeIndex(result);
+        }
       }
     }
+    LLVM_DEBUG(llvm::dbgs() << "collectBits finished, total nodes: "
+                            << nodeIndexMap.size() << "\n");
   }
 
   //===--------------------------------------------------------------------===//
@@ -175,9 +192,8 @@ public:
 
   /// Check if a node is a combinational input (primary input or block argument)
   bool is_ci(node value) const {
-    // Primary inputs are represented as block arguments in CIRCT
-    auto *op = value.getDefiningOp();
-    return !op || !isa<aig::AndInverterOp>(op);
+    auto *defOp = value.getDefiningOp();
+    return !defOp || !isa<aig::AndInverterOp>(defOp);
   }
 
   /// Get the number of fanins for a node
@@ -200,22 +216,30 @@ public:
   /// Execute function for each fanin
   template <typename Fn>
   void foreach_fanin(node n, Fn &&fn) const {
-    if (!n)
+    assert(n);
+    if (isInput(n))
       return;
 
-    auto *defOp = n.getDefiningOp();
-    if (!defOp)
-      return; // Block arguments have no fanins
+    auto andInv = n.getDefiningOp<aig::AndInverterOp>();
+    assert(andInv && andInv->getNumOperands() == 2 &&
+           "Node is not a valid AND gate with 2 operands");
+    auto inverted = andInv.getInverted();
 
     // Check if the function expects two parameters (signal and index)
     if constexpr (std::is_invocable_v<Fn, signal, size_t>) {
-      for (size_t i = 0; i < defOp->getNumOperands(); ++i) {
-        fn(signal(defOp->getOperand(i), false), i);
+      for (size_t i = 0; i < andInv.getNumOperands(); ++i) {
+        auto operand = andInv.getOperand(i);
+        auto striped = strip(operand);
+        striped.setInt(inverted[i] ^ striped.getInt());
+        fn(striped, i);
       }
     } else {
       // Function expects only one parameter (signal)
-      for (auto operand : defOp->getOperands()) {
-        fn(signal(operand, false));
+      for (size_t i = 0; i < andInv.getNumOperands(); ++i) {
+        auto operand = andInv.getOperand(i);
+        auto striped = strip(operand);
+        striped.setInt(inverted[i] ^ striped.getInt());
+        fn(striped);
       }
     }
   }
@@ -404,7 +428,8 @@ public:
     auto builder = mlir::OpBuilder(op->getContext());
     builder.setInsertionPointAfter(op);
 
-    // This is a placeholder - actual implementation would create AND operation
+    // This is a placeholder - actual implementation would create AND
+    // operation
     return signal(a.getPointer(), false); // Return the first input for now
   }
 
@@ -430,7 +455,8 @@ public:
     auto builder = mlir::OpBuilder(op->getContext());
     builder.setInsertionPointAfter(op);
 
-    // This is a placeholder - actual implementation would create XOR operation
+    // This is a placeholder - actual implementation would create XOR
+    // operation
     return signal(a.getPointer(), false); // Return the first input for now
   }
 
@@ -501,9 +527,9 @@ public:
   /// Get events system (placeholder)
   static events_placeholder events() { return {}; }
 
-  // Compute method for simulation support (required for mockturtle algorithms)
-  // Compute methods for simulation support - matching mockturtle signatures
-  // exactly
+  // Compute method for simulation support (required for mockturtle
+  // algorithms) Compute methods for simulation support - matching mockturtle
+  // signatures exactly
   template <typename Iterator>
   mockturtle::iterates_over_t<Iterator, bool>
   compute(node const &n, Iterator begin, Iterator end) const {
@@ -634,6 +660,7 @@ public:
         block->getParentOp()->getLoc(),
         rewriter.getIntegerAttr(rewriter.getI1Type(), value));
     constants[value] = constOp;
+    return signal(constOp, false);
   }
 
   /// Get the value of a constant node
@@ -641,7 +668,7 @@ public:
     if (auto constOp = dyn_cast_or_null<hw::ConstantOp>(n.getDefiningOp())) {
       return constOp.getValue().getBoolValue();
     }
-    return false; // Default to false for non-constants
+    assert(false && "Node is not a constant");
   }
 
   /// Get node function (for simulation)
