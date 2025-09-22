@@ -17,4 +17,3 @@
 
 using namespace circt;
 using namespace circt::synth;
-using namespace circt::synth::mockturtle;

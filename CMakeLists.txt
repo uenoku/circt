@@ -678,6 +678,7 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
   
   # Define preprocessor macro for conditional compilation
   add_compile_definitions(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+  add_compile_definitions("LIN64" ABC_NAMESPACE=pabc "ABC_NO_USE_READLINE" "DISABLE_NAUTY" "FMT_HEADER_ONLY")
   message(STATUS "Mockturtle integration configured successfully")
 endif()
 
