@@ -19,6 +19,8 @@
 
 // Include mockturtle algorithm headers
 #include <mockturtle/algorithms/refactoring.hpp>
+#include "mlir/IR/PatternMatch.h"
+#include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
 
@@ -53,22 +55,28 @@ struct MockturtleRefactorPass
     // TODO: For now, just create and test the adapter
     // Actual refactoring algorithms will require more complete adapter
     // implementation
-    
+
     // Create a simple fanout view for the adapter to enable refactoring
-    ::mockturtle::fanout_view fanoutAdapter{adapter};
-    
-    // Use the default resynthesis and cost functions
-    auto resynthesis = [&](auto& ntk, kitty::dynamic_truth_table const& function, 
-                          std::vector<typename decltype(ntk)::signal> const& children) {
-      // Simple resynthesis - for now just return the first child
-      // A real implementation would optimize the function
-      if (!children.empty()) {
-        return children[0];
-      }
-      return ntk.get_constant(false);
-    };
-    
-    ::mockturtle::refactoring(fanoutAdapter, resynthesis);
+    // ::mockturtle::fanout_view fanoutAdapter{adapter};
+
+    // // Use the default resynthesis and cost functions
+    // auto resynthesis = [&](auto &ntk,
+    //                        kitty::dynamic_truth_table const &function,
+    //                        auto begin, auto end, auto &&callback) {
+    //   // Simple resynthesis - for now just return the first leaf
+    //   // A real implementation would optimize the function
+    //   if (begin != end) {
+    //     callback(*begin); // Call the callback with the first leaf
+    //     return true;      // Indicate success
+    //   }
+    //   return false; // Indicate failure
+    // };
+
+    // Perform bidec.
+
+    ::mockturtle::bidecomposition_resynthesis<mockturtle_integration::CIRCTNetworkAdapter> resyn;
+
+    ::mockturtle::refactoring(adapter, resyn);
 
     // Apply the computed cuts to refactor the logic
     // This involves:

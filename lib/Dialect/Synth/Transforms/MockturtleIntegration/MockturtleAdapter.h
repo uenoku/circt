@@ -22,24 +22,26 @@
 // Forward declare comparison operators for mlir::Value before mockturtle includes
 namespace mlir {
 class Value;
-}
 
-// Global comparison operators for mlir::Value to support STL algorithms
-inline bool operator<(const mlir::Value &lhs, const mlir::Value &rhs) {
+/// Comparison operators for mlir::Value
+inline bool operator<(const Value &lhs, const Value &rhs) {
   return lhs.getAsOpaquePointer() < rhs.getAsOpaquePointer();
 }
 
-inline bool operator>(const mlir::Value &lhs, const mlir::Value &rhs) {
+inline bool operator>(const Value &lhs, const Value &rhs) {
   return lhs.getAsOpaquePointer() > rhs.getAsOpaquePointer();
 }
 
-inline bool operator<=(const mlir::Value &lhs, const mlir::Value &rhs) {
+inline bool operator<=(const Value &lhs, const Value &rhs) {
   return lhs.getAsOpaquePointer() <= rhs.getAsOpaquePointer();
 }
 
-inline bool operator>=(const mlir::Value &lhs, const mlir::Value &rhs) {
+inline bool operator>=(const Value &lhs, const Value &rhs) {
   return lhs.getAsOpaquePointer() >= rhs.getAsOpaquePointer();
 }
+
+} // namespace mlir
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/Support/Casting.h"
@@ -216,18 +218,18 @@ public:
   void foreach_gate(Fn &&fn) const {
     updateNodesCache();
 
-    // Check if the function expects two parameters (node and index)
-    if constexpr (std::is_invocable_v<Fn, node, size_t>) {
-      for (size_t i = 0; i < allNodes.size(); ++i) {
+    // Try to call with both node and index first
+    for (size_t i = 0; i < allNodes.size(); ++i) {
+      if constexpr (std::is_invocable_v<Fn, node, size_t>) {
         fn(allNodes[i], i);
-      }
-    } else if constexpr (std::is_invocable_v<Fn, node>) {
-      for (const auto &nodePtr : allNodes) {
-        fn(nodePtr);
-      }
-    } else {
-      // Fallback: try node with index
-      for (size_t i = 0; i < allNodes.size(); ++i) {
+      } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
+        fn(allNodes[i], i);
+      } else if constexpr (std::is_invocable_v<Fn, node>) {
+        fn(allNodes[i]);
+      } else if constexpr (std::is_invocable_v<Fn, node const &>) {
+        fn(allNodes[i]);
+      } else {
+        // Fallback: try without const reference
         fn(allNodes[i], i);
       }
     }
