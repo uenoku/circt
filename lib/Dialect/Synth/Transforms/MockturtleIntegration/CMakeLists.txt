@@ -10,7 +10,6 @@
 if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
 
 add_circt_library(CIRCTSynthMockturtleIntegration
-  MockturtleAdapter.cpp
   Refactor.cpp
 
   LINK_COMPONENTS
