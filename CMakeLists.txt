@@ -663,7 +663,7 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
       target_compile_features(mockturtle_interface INTERFACE cxx_std_17)
       add_library(mockturtle::mockturtle ALIAS mockturtle_interface)
       
-      # Since this is an internal dependency, we don't need to export it
+      # Since this is an internal dependency, we don't export it
       # It will be statically linked into the consuming libraries
     endif()
 

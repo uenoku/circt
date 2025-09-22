@@ -23,19 +23,15 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
 
-#ifdef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
 #include <mockturtle/algorithms/reconv_cut.hpp>
 #include <mockturtle/networks/aig.hpp>
 #include <mockturtle/networks/mig.hpp>
 // Kitty is included as part of mockturtle
 #include <mockturtle/utils/truth_table_cache.hpp>
-#endif
 
 namespace circt {
 namespace synth {
-namespace mockturtle_integration {
-
-#ifdef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
+namespace mockturtle {
 
 /// A mockturtle-compatible network adapter for CIRCT IR.
 /// This class provides the interface mockturtle expects while operating
@@ -88,9 +84,8 @@ public:
     if (!n)
       return 0;
     uint32_t count = 0;
-    for (auto result : n->getResults()) {
-      count += std::distance(result.use_begin(), result.use_end());
-    }
+    for (auto result : n->getResults())
+      count += result.getNumUses();
     return count;
   }
 
@@ -159,63 +154,10 @@ public:
   }
 
   /// Get all logic operations in the module
-  void foreach_logic_node(std::function<void(node)> fn) const {
-  }
-
-  /// Convert mockturtle result back to CIRCT Cut structure
-  Cut createCutFromMockturtle(node root, const std::vector<node> &leaves,
-                              const std::vector<node> &nodes) const {
-    Cut cut;
-
-    // Add operations to cut (nodes in the cone)
-    for (auto op : nodes) {
-      if (op && is_logic_op(op)) {
-        cut.operations.insert(op);
-      }
-    }
-
-    // Add inputs to cut (leaves/boundary)
-    for (auto leafOp : leaves) {
-      if (leafOp) {
-        // Add all results of leaf operations as cut inputs
-        for (auto result : leafOp->getResults()) {
-          cut.inputs.insert(result);
-        }
-      } else {
-        // Handle block arguments (primary inputs)
-        // This needs to be handled based on the specific traversal context
-      }
-    }
-
-    return cut;
-  }
+  void foreach_logic_node(std::function<void(node)> fn) const {}
 };
 
-/// Compute reconvergence-driven cuts using mockturtle algorithms
-std::optional<Cut> computeReconvergenceDrivenCut(hw::HWModuleOp module, 
-                                                 mlir::Operation *root);
-
-#else // !CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
-
-/// Stub implementation when mockturtle integration is disabled
-class CIRCTNetworkAdapter {
-public:
-  explicit CIRCTNetworkAdapter(hw::HWModuleOp mod) {
-    (void)mod; // Suppress unused parameter warning
-  }
-};
-
-/// Fallback implementation that returns empty result
-inline std::optional<Cut> computeReconvergenceDrivenCut(hw::HWModuleOp module, 
-                                                        mlir::Operation *root) {
-  (void)module; (void)root; // Suppress unused parameter warnings
-  return std::nullopt;
-}
-
-#endif // CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
-
-} // namespace mockturtle_integration
+} // namespace mockturtle
 } // namespace synth
 } // namespace circt
-
 #endif // LIB_DIALECT_SYNTH_TRANSFORMS_MOCKTURTLEINTEGRATION_ADAPTER_H

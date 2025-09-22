@@ -9,34 +9,25 @@
 # MockturtleIntegration library - only built when integration is enabled
 if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
 
-# Create an object library to avoid export issues
-add_library(CIRCTSynthMockturtleIntegration OBJECT
+add_circt_library(CIRCTSynthMockturtleIntegration
   MockturtleAdapter.cpp
-)
+  Refactor.cpp
 
-# Set properties
-set_target_properties(CIRCTSynthMockturtleIntegration PROPERTIES
-  FOLDER "circt libraries"
-)
+  LINK_COMPONENTS
+  Support
 
-# Set up include directories
-target_include_directories(CIRCTSynthMockturtleIntegration PRIVATE
-  ${CIRCT_MAIN_INCLUDE_DIR}
-  ${CIRCT_INCLUDE_DIR}
-)
-
-# Link against dependencies
-target_link_libraries(CIRCTSynthMockturtleIntegration PUBLIC
+  LINK_LIBS PUBLIC
   CIRCTHW
   CIRCTSynthAnalysis
   CIRCTSupport
   MLIRIR
 )
 
-# Link against mockturtle (includes kitty) and kitty interface for clean separation
-target_link_libraries(CIRCTSynthMockturtleIntegration PRIVATE 
-  mockturtle::mockturtle
-  LLVMSupport
+# Add mockturtle include directories directly (header-only library)
+target_include_directories(CIRCTSynthMockturtleIntegration PRIVATE
+  ${mockturtle_SOURCE_DIR}/include
+  ${mockturtle_SOURCE_DIR}/lib/kitty
+  ${mockturtle_SOURCE_DIR}/lib/parallel_hashmap
 )
 
 endif() # CIRCT_MOCKTURTLE_INTEGRATION_ENABLED

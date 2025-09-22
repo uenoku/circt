@@ -17,7 +17,4 @@
 
 using namespace circt;
 using namespace circt::synth;
-using namespace circt::synth::mockturtle_integration;
-
-#ifdef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
-#endif // CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
+using namespace circt::synth::mockturtle;
