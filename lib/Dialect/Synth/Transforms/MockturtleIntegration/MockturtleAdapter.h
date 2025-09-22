@@ -179,21 +179,31 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Get the size of the network (number of nodes)
-  uint32_t size() const { return nodeIndexMap.size(); }
+  uint32_t size() const {
+    LLVM_DEBUG(llvm::dbgs() << "size() called, returning " << nodeIndexMap.size() << "\n");
+    return nodeIndexMap.size();
+  }
 
   /// Get number of gates (logic nodes)
-  uint32_t num_gates() const { return numGate; }
+  uint32_t num_gates() const {
+    LLVM_DEBUG(llvm::dbgs() << "num_gates() called, returning " << numGate << "\n");
+    return numGate;
+  }
 
   /// Check if a node represents a constant
   bool is_constant(node value) const {
     assert(value);
-    return isa<hw::ConstantOp>(value.getDefiningOp());
+    bool result = isa<hw::ConstantOp>(value.getDefiningOp());
+    LLVM_DEBUG(llvm::dbgs() << "is_constant(" << value << ") = " << result << "\n");
+    return result;
   }
 
   /// Check if a node is a combinational input (primary input or block argument)
   bool is_ci(node value) const {
     auto *defOp = value.getDefiningOp();
-    return !defOp || !isa<aig::AndInverterOp>(defOp);
+    bool result = !defOp || !isa<aig::AndInverterOp>(defOp);
+    LLVM_DEBUG(llvm::dbgs() << "is_ci(" << value << ") = " << result << "\n");
+    return result;
   }
 
   /// Get the number of fanins for a node
@@ -203,14 +213,18 @@ public:
     auto *defOp = n.getDefiningOp();
     if (!defOp)
       return 0; // Block arguments have no fanins
-    return defOp->getNumOperands();
+    uint32_t result = defOp->getNumOperands();
+    LLVM_DEBUG(llvm::dbgs() << "fanin_size(" << n << ") = " << result << "\n");
+    return result;
   }
 
   /// Get fanout size (expensive operation, cached if needed)
   uint32_t fanout_size(node n) const {
     if (!n)
       return 0;
-    return n.getNumUses();
+    uint32_t result = n.getNumUses();
+    LLVM_DEBUG(llvm::dbgs() << "fanout_size(" << n << ") = " << result << "\n");
+    return result;
   }
 
   /// Execute function for each fanin
@@ -287,11 +301,14 @@ public:
   /// Make a signal from a node
   signal make_signal(node n) const {
     assert(n && "Cannot create signal from null node");
-    return signal(n, false); // Return signal with no complement
+    signal result = signal(n, false); // Return signal with no complement
+    LLVM_DEBUG(llvm::dbgs() << "make_signal(" << n << ") = (" << result.getPointer() << ", " << result.getInt() << ")\n");
+    return result;
   }
 
   /// Substitute one node with another
   void substitute_node(node old_node, signal new_signal) {
+
     assert(old_node && "Old node must be valid");
     auto value = new_signal.getPointer();
     assert(value && "New signal must be valid");
@@ -304,6 +321,7 @@ public:
     }
 
     // Replace all uses of the old node with the new signal's value
+    LLVM_DEBUG(llvm::dbgs() << "substitute_node: replacing " << old_node << " with " << value << "\n");
     old_node.replaceAllUsesWith(value);
     take_out_node(old_node);
   }
@@ -325,6 +343,7 @@ public:
 
     auto it = levelCache.find(n);
     if (it != levelCache.end()) {
+      LLVM_DEBUG(llvm::dbgs() << "level(" << n << ") = " << it->second << " (cached)\n");
       return it->second;
     }
 
@@ -342,6 +361,7 @@ public:
 
     uint32_t nodeLevel = maxLevel + 1;
     levelCache[n] = nodeLevel;
+    LLVM_DEBUG(llvm::dbgs() << "level(" << n << ") = " << nodeLevel << " (computed)\n");
     return nodeLevel;
   }
 
@@ -350,22 +370,36 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Increment traversal ID (starts a new traversal)
-  void incr_trav_id() const { ++currentTravId; }
+  void incr_trav_id() const { 
+    ++currentTravId; 
+    LLVM_DEBUG(llvm::dbgs() << "incr_trav_id: new trav_id = " << currentTravId << "\n");
+  }
 
   /// Get current traversal ID
-  uint64_t trav_id() const { return currentTravId; }
+  uint64_t trav_id() const { 
+    LLVM_DEBUG(llvm::dbgs() << "trav_id() = " << currentTravId << "\n");
+    return currentTravId; 
+  }
 
   /// Check if node was visited in current traversal
   uint64_t visited(node n) const {
     auto it = visitedMap.find(n);
-    return it != visitedMap.end() ? it->second : 0;
+    uint64_t result = it != visitedMap.end() ? it->second : 0;
+    LLVM_DEBUG(llvm::dbgs() << "visited(" << n << ") = " << result << "\n");
+    return result;
   }
 
   /// Mark node as visited with current traversal ID
-  void set_visited(node n, uint64_t travId) const { visitedMap[n] = travId; }
+  void set_visited(node n, uint64_t travId) const { 
+    visitedMap[n] = travId; 
+    LLVM_DEBUG(llvm::dbgs() << "set_visited(" << n << ", " << travId << ")\n");
+  }
 
   /// Clear visited flags
-  void clear_visited() const { visitedMap.clear(); }
+  void clear_visited() const { 
+    visitedMap.clear(); 
+    LLVM_DEBUG(llvm::dbgs() << "clear_visited: cleared visitedMap\n");
+  }
 
   /// Get value for a node
   uint64_t value(node n) const {
@@ -635,6 +669,8 @@ public:
     // However in mockturtle detached nodes could be referred or even revived
     // later. Revive won't be handled in this adapter but we cannot delete
     // nodes either. So currently it detaches the node from the network.
+    LDBG() << "take_out_node: detaching node " << n << "\n";
+    block->dump();
     auto andOp = n.getDefiningOp<aig::AndInverterOp>();
     if (!andOp)
       return;
