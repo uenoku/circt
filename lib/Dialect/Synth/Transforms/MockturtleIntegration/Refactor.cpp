@@ -18,24 +18,8 @@
 #include "llvm/Support/Debug.h"
 
 // Mockturtle algorithms and data structures
-#include <mockturtle/algorithms/cleanup.hpp>
-// mockturtle includes
-#include "mockturtle/algorithms/aig_balancing.hpp"
-#include "mockturtle/algorithms/emap.hpp"
 #include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
 #include "mockturtle/algorithms/refactoring.hpp"
-#include "mockturtle/generators/arithmetic.hpp"
-#include "mockturtle/io/aiger_reader.hpp"
-#include "mockturtle/io/genlib_reader.hpp"
-#include "mockturtle/io/write_blif.hpp"
-#include "mockturtle/io/write_verilog.hpp"
-#include "mockturtle/networks/aig.hpp"
-#include "mockturtle/networks/block.hpp"
-#include "mockturtle/utils/name_utils.hpp"
-#include "mockturtle/utils/tech_library.hpp"
-#include "mockturtle/views/cell_view.hpp"
-#include "mockturtle/views/depth_view.hpp"
-#include "mockturtle/views/names_view.hpp"
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
 
@@ -61,10 +45,16 @@ struct MockturtleRefactorPass
     // Create mockturtle adapter for CIRCT IR
     circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(module);
 
-    // Create SOP factoring resynthesis engine
+    // For now, just create the adapter and verify basic functionality
+    // Full refactoring integration would require implementing many more
+    // mockturtle network interface methods
+    LLVM_DEBUG(llvm::dbgs() << "Created mockturtle adapter with " 
+                            << adapter.size() << " gates\n");
+
+    // TODO: Add specific mockturtle algorithms when the adapter is more complete
     ::mockturtle::bidecomposition_resynthesis<
-        circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
-        resyn;
+         circt::synth::mockturtle_integration::CIRCTNetworkAdapter>
+         resyn;
     ::mockturtle::refactoring(adapter, resyn);
 
     // Apply the computed cuts to refactor the logic
