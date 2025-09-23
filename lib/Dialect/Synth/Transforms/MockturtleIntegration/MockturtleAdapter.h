@@ -484,11 +484,22 @@ public:
   auto &events() const { return *_events; }
 
   signal create_and(signal const &a, signal const &b) {
+    // Order inputs like mockturtle does
+    signal a_ordered = a;
+    signal b_ordered = b;
+    bool inv_a = a.getInt();
+    bool inv_b = b.getInt();
+    if (node_to_index(a_ordered.getPointer()) >
+        node_to_index(b_ordered.getPointer())) {
+      std::swap(a_ordered, b_ordered);
+      std::swap(inv_a, inv_b);
+    }
+
     // Create an AND gate in CIRCT
     auto builder = mlir::OpBuilder::atBlockBegin(block);
     auto andOp = builder.createOrFold<synth::aig::AndInverterOp>(
-        a.getPointer().getLoc(), a.getPointer(), b.getPointer(), a.getInt(),
-        b.getInt());
+        a_ordered.getPointer().getLoc(), a_ordered.getPointer(),
+        b_ordered.getPointer(), inv_a, inv_b);
 
     auto striped = strip(andOp);
     auto newNode = sharedState->nodeIndexMap.find(striped.getPointer());
@@ -565,18 +576,38 @@ public:
     for (auto *user : old_node.getUsers()) {
       if (isGate(user))
         continue; // Skip gates, handled in replace_in_node
-      for (auto &operand : user->getOpOperands()) {
-        auto [stripped, isInverted] = strip(operand.get());
-        if (stripped == old_node) {
-          isInverted ^= new_signal.getInt();
-          if (isInverted) {
-            OpBuilder builder(user->getContext());
-            builder.setInsertionPointAfter(user);
-            auto notOp = builder.createOrFold<synth::aig::AndInverterOp>(
-                user->getLoc(), new_signal.getPointer(), true);
-            operand.set(notOp);
-          } else {
+      if (isa<aig::AndInverterOp>(user)) {
+        // In this case we need to handle the AND gate users as well.
+        for (auto &operand : user->getOpOperands()) {
+          auto [stripped, isInverted] = strip(operand.get());
+          if (stripped == old_node) {
+            isInverted ^= new_signal.getInt();
             operand.set(new_signal.getPointer());
+            if (isInverted) {
+              OpBuilder builder(user->getContext());
+              builder.setInsertionPointAfter(user);
+              auto notOp = builder.createOrFold<synth::aig::AndInverterOp>(
+                  user->getLoc(), new_signal.getPointer(), true);
+              operand.set(notOp);
+            } else {
+              operand.set(new_signal.getPointer());
+            }
+          }
+        }
+      } else {
+        for (auto &operand : user->getOpOperands()) {
+          auto [stripped, isInverted] = strip(operand.get());
+          if (stripped == old_node) {
+            isInverted ^= new_signal.getInt();
+            if (isInverted) {
+              OpBuilder builder(user->getContext());
+              builder.setInsertionPointAfter(user);
+              auto notOp = builder.createOrFold<synth::aig::AndInverterOp>(
+                  user->getLoc(), new_signal.getPointer(), true);
+              operand.set(notOp);
+            } else {
+              operand.set(new_signal.getPointer());
+            }
           }
         }
       }
@@ -593,56 +624,35 @@ public:
   mockturtle::iterates_over_t<Iterator, bool>
   compute(node const &n, Iterator begin, Iterator end) const {
     (void)end;
-    if (!is_logic_op(n)) {
-      return false; // Default for non-logic ops
-    }
+    assert(isGate(n));
+    auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
+    auto inverted = andOp.getInverted();
 
-    auto *op = n.getDefiningOp();
-    if (!op)
-      return false;
+    auto v1 = *begin++;
+    auto v2 = *begin;
 
-    if (isa<aig::AndInverterOp>(op)) {
-      auto andOp = cast<aig::AndInverterOp>(op);
-      auto inverted = andOp.getInverted();
+    bool lhsInv = inverted[0];
+    bool rhsInv = inverted[1];
 
-      auto v1 = *begin++;
-      auto v2 = *begin;
-
-      bool lhsInv = inverted[0];
-      bool rhsInv = inverted[1];
-
-      bool result = (v1 ^ lhsInv) && (v2 ^ rhsInv);
-      return result;
-    }
-
-    // Default to false for other ops
-    return false;
+    bool result = (v1 ^ lhsInv) && (v2 ^ rhsInv);
+    return result;
   }
 
   template <typename Iterator>
   mockturtle::iterates_over_truth_table_t<Iterator>
   compute(node const &n, Iterator begin, Iterator end) const {
     (void)end;
-    if (!is_logic_op(n) || begin == end) {
-      kitty::dynamic_truth_table result(1);
-      return result; // Default to single bit
-    }
+    assert(isGate(n));
+    auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
+    auto inverted = andOp.getInverted();
 
-    if (isa<aig::AndInverterOp>(n.getDefiningOp())) {
-      auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
-      auto inverted = andOp.getInverted();
+    auto tt1 = *begin++;
+    auto tt2 = *begin++;
 
-      auto tt1 = *begin++;
-      auto tt2 = *begin;
+    bool lhsInv = inverted[0];
+    bool rhsInv = inverted[1];
 
-      bool lhsInv = inverted[0];
-      bool rhsInv = inverted[1];
-
-      return (lhsInv ? ~tt1 : tt1) & (rhsInv ? ~tt2 : tt2);
-    }
-
-    // Default fallback
-    llvm::report_fatal_error("Unsupported operation in compute");
+    return (lhsInv ? ~tt1 : tt1) & (rhsInv ? ~tt2 : tt2);
   }
 
   template <typename Iterator>
@@ -751,6 +761,7 @@ public:
     auto defOp = n.getDefiningOp<aig::AndInverterOp>();
     kitty::dynamic_truth_table _and(2);
     auto inverted = defOp.getInverted();
+    assert(false);
 
     // Construct truth table for AND with possible inversions
     // Truth table bit ordering: 00, 01, 10, 11 (LSB first)
