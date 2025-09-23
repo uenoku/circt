@@ -662,11 +662,7 @@ public:
         mockturtle::iterates_over_v<Iterator, kitty::partial_truth_table>,
         "begin and end have to iterate over partial_truth_tables");
 
-    (void)end;
-    if (!is_logic_op(n) || begin == end) {
-      return; // No-op for non-logic ops
-    }
-
+    assert(isGate(n));
     if (isa<aig::AndInverterOp>(n.getDefiningOp())) {
       auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
       auto inverted = andOp.getInverted();
