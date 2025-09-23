@@ -153,7 +153,8 @@ private:
 
 public:
   explicit CIRCTNetworkAdapter(Block *block, Block *deadValuePool)
-      : block(block), deadValuePool(deadValuePool) {
+      : block(block), deadValuePool(deadValuePool),
+        _events(std::make_shared<decltype(_events)::element_type>()) {
     LLVM_DEBUG(llvm::dbgs()
                << "CIRCTNetworkAdapter constructor called with block: " << block
                << "\n");
@@ -459,10 +460,9 @@ public:
     if (newNode != nodeIndexMap.end())
       return striped;
 
-    numGate++;
     uint32_t id = getOrAssignNodeIndex(andOp);
     for (auto const &fn : _events->on_add) {
-      (*fn)(id);
+      (*fn)(andOp);
     }
     return signal(andOp, false);
   }
@@ -485,10 +485,15 @@ public:
     auto op = n.getDefiningOp<aig::AndInverterOp>();
     if (auto op = n.getDefiningOp<aig::AndInverterOp>()) {
       size_t numOperands = op->getNumOperands();
+      SmallVector<signal, 2> old_children;
+      bool modified = false;
       for (size_t i = 0; i < numOperands; ++i) {
         auto &operand = op->getOpOperand(i);
         auto [stripped, isInverted] = strip(operand.get());
+        old_children.push_back(
+            signal{stripped, bool(isInverted ^ op.isInverted(i))});
         if (stripped == old_node) {
+          modified = true;
           // Found the old_node in operands, replace it
           operand.set(new_signal.getPointer());
           if (isInverted != op.isInverted(i)) {
@@ -497,6 +502,12 @@ public:
             op.setInverted(newInverted);
           }
         }
+      }
+      if(!modified)
+        return std::nullopt; // No modification made
+
+      for (auto const &fn : _events->on_modified) {
+        (*fn)(n, {old_children[0], old_children[1]});
       }
 
       return std::make_pair(n, new_signal);
