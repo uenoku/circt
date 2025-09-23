@@ -540,11 +540,9 @@ public:
           modified = true;
           // Found the old_node in operands, replace it
           operand.set(new_signal.getPointer());
-          if (isInverted != op.isInverted(i)) {
-            SmallVector<bool, 2> newInverted(op.getInverted());
-            newInverted[i] = isInverted ^ new_signal.getInt();
-            op.setInverted(newInverted);
-          }
+          SmallVector<bool, 2> newInverted(op.getInverted());
+          newInverted[i] = isInverted ^ new_signal.getInt() ^ op.isInverted(i);
+          op.setInverted(newInverted);
         }
       }
       if (!modified)
