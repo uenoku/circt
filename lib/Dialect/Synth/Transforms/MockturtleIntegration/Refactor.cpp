@@ -17,6 +17,8 @@
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "llvm/Support/Debug.h"
 
+#include <mockturtle/io/write_dot.hpp>
+
 // Include mockturtle algorithm headers
 #include "mlir/IR/PatternMatch.h"
 #include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
@@ -78,6 +80,9 @@ struct MockturtleRefactorPass
 
     // Perform bidec.
 
+    // Show dot.
+    ::mockturtle::write_dot(adapter, "before.dot");
+
     ::mockturtle::sop_factoring<mockturtle_integration::CIRCTNetworkAdapter>
         resynSop;
 
@@ -93,7 +98,11 @@ struct MockturtleRefactorPass
     // 101
     // 111
 
-    ::mockturtle::refactoring(adapter, resyn, params);
+    //
+
+    ::mockturtle::refactoring(adapter, resynSop, params);
+
+    ::mockturtle::write_dot(adapter, "after.dot");
 
     // Apply the computed cuts to refactor the logic
     // This involves:

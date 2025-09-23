@@ -224,7 +224,7 @@ public:
   /// Check if a node represents a constant
   bool is_constant(node value) const {
     assert(value);
-    return isa<hw::ConstantOp>(value.getDefiningOp());
+    return isa_and_nonnull<hw::ConstantOp>(value.getDefiningOp());
   }
 
   /// Check if a node is a combinational input (primary input or block argument)
@@ -250,6 +250,51 @@ public:
     return n.getNumUses();
   }
 
+  /// for each po
+  template <typename Fn>
+  void foreach_po(Fn &&fn) const {
+    // Check if the function expects two parameters (signal and index)
+    auto it = sharedState->nodeIndexMap.begin();
+
+    if constexpr (std::is_invocable_v<Fn, signal, size_t>) {
+      while (it != sharedState->nodeIndexMap.end()) {
+        if (!is_dead(it->first)) {
+          if (is_po({it->first, true}))
+            fn(signal(it->first, true), it->second);
+          if (!is_dead(it->first))
+            if (is_po({it->first, false}))
+              fn(signal(it->first, false), it->second);
+        }
+        ++it;
+      }
+    } else if constexpr (std::is_invocable_v<Fn, signal>) {
+
+      while (it != sharedState->nodeIndexMap.end()) {
+        if (!is_dead(it->first)) {
+          if (is_po({it->first, true}))
+            fn(signal(it->first, true));
+
+          if (!is_dead(it->first))
+            if (is_po({it->first, false}))
+              fn(signal(it->first, false));
+        }
+        ++it;
+      }
+    } else {
+
+      while (it != sharedState->nodeIndexMap.end()) {
+        if (!is_dead(it->first)) {
+          if (is_po({it->first, true}))
+            fn(signal(it->first, true), it->second);
+          if (!is_dead(it->first))
+            if (is_po({it->first, false}))
+              fn(signal(it->first, false), it->second);
+        }
+        ++it;
+      }
+    }
+  }
+
   /// Execute function for each fanin
   template <typename Fn>
   void foreach_fanin(node n, Fn &&fn) const {
@@ -266,6 +311,8 @@ public:
     if constexpr (std::is_invocable_v<Fn, signal, size_t>) {
       for (size_t i = 0; i < andInv.getNumOperands(); ++i) {
         auto operand = andInv.getOperand(i);
+        if (is_dead(operand))
+          continue;
         auto striped = strip(operand);
         striped.setInt(inverted[i] ^ striped.getInt());
         fn(striped, i);
@@ -274,6 +321,8 @@ public:
       // Function expects only one parameter (signal)
       for (size_t i = 0; i < andInv.getNumOperands(); ++i) {
         auto operand = andInv.getOperand(i);
+        if (is_dead(operand))
+          continue;
         auto striped = strip(operand);
         striped.setInt(inverted[i] ^ striped.getInt());
         fn(striped);
@@ -310,19 +359,28 @@ public:
   template <typename Fn>
   void foreach_gate(Fn &&fn) const {
     // Try to call with both node and index first
-    for (const auto &pair : sharedState->nodeIndexMap) {
+    auto it = sharedState->nodeIndexMap.begin();
+    size_t index = 0;
+    while (it != sharedState->nodeIndexMap.end()) {
+      auto pair = *it;
+      if (is_dead(pair.first)) {
+        ++index;
+        ++it;
+        continue;
+      }
       if constexpr (std::is_invocable_v<Fn, node, size_t>) {
-        fn(pair.first, pair.second);
+        fn(pair.first, index);
       } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
-        fn(pair.first, pair.second);
+        fn(pair.first, index);
       } else if constexpr (std::is_invocable_v<Fn, node>) {
         fn(pair.first);
       } else if constexpr (std::is_invocable_v<Fn, node const &>) {
         fn(pair.first);
       } else {
         // Fallback: try without const reference
-        fn(pair.first, pair.second);
+        fn(pair.first, index);
       }
+      ++it;
     }
   }
 
@@ -351,7 +409,7 @@ public:
       OpBuilder builder(old_node.getContext());
       builder.setInsertionPointAfterValue(value);
       value = builder.createOrFold<synth::aig::AndInverterOp>(
-          value.getLoc(), new_signal.getPointer());
+          value.getLoc(), new_signal.getPointer(), true);
       // Trigger add event for the new NOT operation
       // events_.trigger_add(value);
     }
@@ -485,21 +543,21 @@ public:
 
   signal create_and(signal const &a, signal const &b) {
     // Order inputs like mockturtle does
-    signal a_ordered = a;
-    signal b_ordered = b;
-    bool inv_a = a.getInt();
-    bool inv_b = b.getInt();
-    if (node_to_index(a_ordered.getPointer()) >
-        node_to_index(b_ordered.getPointer())) {
-      std::swap(a_ordered, b_ordered);
-      std::swap(inv_a, inv_b);
-    }
+    // signal a_ordered = a;
+    // signal b_ordered = b;
+    // bool inv_a = a.getInt();
+    // bool inv_b = b.getInt();
+    // if (node_to_index(a_ordered.getPointer()) >
+    //     node_to_index(b_ordered.getPointer())) {
+    //   std::swap(a_ordered, b_ordered);
+    //   std::swap(inv_a, inv_b);
+    // }
 
     // Create an AND gate in CIRCT
     auto builder = mlir::OpBuilder::atBlockBegin(block);
     auto andOp = builder.createOrFold<synth::aig::AndInverterOp>(
-        a_ordered.getPointer().getLoc(), a_ordered.getPointer(),
-        b_ordered.getPointer(), inv_a, inv_b);
+        a.getPointer().getLoc(), a.getPointer(), b.getPointer(), a.getInt(),
+        b.getInt());
 
     auto striped = strip(andOp);
     auto newNode = sharedState->nodeIndexMap.find(striped.getPointer());
@@ -515,7 +573,7 @@ public:
       (*fn)(andOp);
     }
     LDBG() << "Triggered add events for node: " << andOp << "\n";
-    block->dump();
+    // block->dump();
     return signal(andOp, false);
   }
 
@@ -525,10 +583,17 @@ public:
 
   // Node status methods
   bool is_dead(node const &n) const {
+    if (!n)
+      return true;
+    if (!n.getDefiningOp())
+      return false;
+    if (sharedState->nodeIndexMap.find(n) == sharedState->nodeIndexMap.end())
+      return true;
     // CCheck if node is detached.
     if (isGate(n))
       return false;
     auto op = n.getDefiningOp();
+    assert(op);
     return op->getBlock() == deadValuePool;
   }
 
@@ -544,6 +609,8 @@ public:
       bool modified = false;
       for (size_t i = 0; i < numOperands; ++i) {
         auto &operand = op->getOpOperand(i);
+        if (is_dead(operand.get()))
+          continue;
         auto [stripped, isInverted] = strip(operand.get());
         old_children.push_back(
             signal{stripped, bool(isInverted ^ op.isInverted(i))});
@@ -663,28 +730,23 @@ public:
         "begin and end have to iterate over partial_truth_tables");
 
     assert(isGate(n));
-    if (isa<aig::AndInverterOp>(n.getDefiningOp())) {
-      auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
-      auto inverted = andOp.getInverted();
+    auto andOp = cast<aig::AndInverterOp>(n.getDefiningOp());
+    auto inverted = andOp.getInverted();
 
-      auto tt1 = *begin++;
-      auto tt2 = *begin;
+    auto tt1 = *begin++;
+    auto tt2 = *begin++;
 
-      bool lhsInv = inverted[0];
-      bool rhsInv = inverted[1];
+    bool lhsInv = inverted[0];
+    bool rhsInv = inverted[1];
 
-      assert(tt1.num_bits() > 0 && "truth tables must not be empty");
-      assert(tt1.num_bits() == tt2.num_bits());
-      assert(tt1.num_bits() >= result.num_bits());
+    assert(tt1.num_bits() > 0 && "truth tables must not be empty");
+    assert(tt1.num_bits() == tt2.num_bits());
+    assert(tt1.num_bits() >= result.num_bits());
 
-      result.resize(tt1.num_bits());
-      result._bits.back() = (lhsInv ? ~(tt1._bits.back()) : tt1._bits.back()) &
-                            (rhsInv ? ~(tt2._bits.back()) : tt2._bits.back());
-      result.mask_bits();
-    }
-
-    // Default fallback
-    llvm::report_fatal_error("Unsupported operation in compute");
+    result.resize(tt1.num_bits());
+    result._bits.back() = (lhsInv ? ~(tt1._bits.back()) : tt1._bits.back()) &
+                          (rhsInv ? ~(tt2._bits.back()) : tt2._bits.back());
+    result.mask_bits();
   }
 
   // Revive node method (required for fanout_view)
@@ -696,27 +758,58 @@ public:
 
   /// Take out node (placeholder for mockturtle view compatibility)
   void take_out_node(node n) {
-    // Trigger delete event before detaching
-    for (auto const &fn : _events->on_delete) {
-      (*fn)(n);
-    }
+
     // Mockturtle expects this method to remove a node from the network.
     // However in mockturtle detached nodes could be referred or even revived
     // later. Revive won't be handled in this adapter but we cannot delete
     // nodes either. So currently it detaches the node from the network.
     LDBG() << "take_out_node: detaching node " << n << "\n";
-    block->dump();
     auto andOp = n.getDefiningOp<aig::AndInverterOp>();
     if (!andOp)
       return;
-    assert(n.use_empty());
 
+    // andOp->dropAllReferences();
+    // Trigger delete event before detaching
+    for (auto const &fn : _events->on_delete) {
+      (*fn)(n);
+    }
+
+    sharedState->nodeIndexMap.erase(n);
+    for (auto user : andOp->getResult(0).getUsers()) {
+      if (isGate(user))
+        assert(false);
+      user->dropAllUses();
+    }
     andOp->dropAllReferences();
     andOp->moveBefore(deadValuePool, deadValuePool->begin());
+
+    // andOp->erase();
   }
 
   /// Check if a node is a primary input
   bool is_pi(node n) const { return isInput(n); }
+
+  bool is_po(signal n) const {
+    if (!isGate(n.getPointer()))
+      return false;
+
+    SmallVector<Operation *> alias{n.getPointer().getDefiningOp()};
+    while (!alias.empty()) {
+      auto current = alias.pop_back_val();
+      for (auto *user : current->getResult(0).getUsers()) {
+        if (isGate(user))
+          continue;
+        if (!isa<aig::AndInverterOp>(user)) {
+          if (strip(current->getResult(0)) == n)
+            return true;
+          continue;
+        }
+        alias.push_back(user);
+      }
+    }
+
+    return false;
+  }
 
   /// Get constant signal (false)
 
@@ -753,19 +846,19 @@ public:
   //   return 0;     // Unknown function
   // }
   kitty::dynamic_truth_table node_function(const node &n) const {
+    llvm::report_fatal_error("node_function is not supported in this adapter");
     assert(isGate(n) && "Node is not an AND gate");
     auto defOp = n.getDefiningOp<aig::AndInverterOp>();
     kitty::dynamic_truth_table _and(2);
     auto inverted = defOp.getInverted();
-    assert(false);
 
     // Construct truth table for AND with possible inversions
     // Truth table bit ordering: 00, 01, 10, 11 (LSB first)
     for (uint32_t i = 0; i < 4; ++i) {
       bool a = (i & 0x1) != 0; // LSB: first input
       bool b = (i & 0x2) != 0; // MSB: second input
-      // Apply inversions using XOR: a ^ inverted[0] inverts a if inverted[0] is
-      // true
+      // Apply inversions using XOR: a ^ inverted[0] inverts a if inverted[0]
+      // is true
       bool res = (a ^ inverted[0]) && (b ^ inverted[1]);
       if (res)
         _and._bits[0] |= (1 << i);
@@ -784,22 +877,15 @@ public:
   }
 
   /// Increment/decrement value (placeholder for reference counting)
-  void incr_value(node n) const { (void)n; }
-  void decr_value(node n) const { (void)n; }
+  void incr_value(node n) const { sharedState->valueMap[n]++; }
+  void decr_value(node n) const { sharedState->valueMap[n]--; }
 
   //===--------------------------------------------------------------------===//
   // CIRCT-specific Helper Methods
   //===--------------------------------------------------------------------===//
 
   /// Check if an operation is a supported logic operation for refactoring
-  bool is_logic_op(node n) const {
-    if (!n)
-      return false;
-    auto *defOp = n.getDefiningOp();
-    if (!defOp)
-      return false;
-    return isa<aig::AndInverterOp>(defOp);
-  }
+  bool is_logic_op(node n) const { return isGate(n); }
 
   /// Get all logic operations in the module
   void foreach_logic_node(const std::function<void(node)> &fn) const {
@@ -1170,7 +1256,8 @@ inline auto
 satisfiability_dont_cares(Ntk const &ntk,
                           std::vector<typename Ntk::node> const &pivots,
                           uint32_t max_tfi_inputs = 8u) {
-  // Return empty don't care set for now
+  llvm::report_fatal_error(
+      "satisfiability_dont_cares is not supported in this adapter");
   return kitty::dynamic_truth_table(0);
 }
 
