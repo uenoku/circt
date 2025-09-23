@@ -71,6 +71,18 @@ namespace circt {
 namespace synth {
 namespace mockturtle_integration {
 
+// Shared state that needs to be consistent across network copies
+struct SharedNetworkState {
+  mutable llvm::MapVector<mlir::Value, uint32_t> nodeIndexMap;
+  mutable uint32_t nextNodeIndex = 0;
+  mutable size_t numGate = 0;
+  mutable llvm::DenseMap<mlir::Value, uint64_t> visitedMap;
+  mutable llvm::DenseMap<mlir::Value, uint64_t> valueMap;
+  mutable uint64_t currentTravId = 1;
+  mutable llvm::DenseMap<mlir::Value, unsigned> levelCache;
+  mutable Value constants[2];
+};
+
 /// A mockturtle-compatible network adapter for CIRCT IR.
 /// This class provides the interface mockturtle expects while operating
 /// on CIRCT's MLIR operations.
@@ -96,8 +108,6 @@ public:
   using node_type = mlir::Value;
   using signal_type = llvm::PointerIntPair<mlir::Value, 1, bool>;
 
-  // Signal creation utilities
-
 private:
   bool isInput(node n) const {
     assert(n);
@@ -116,26 +126,18 @@ private:
            defOp->getNumOperands() == 2;
   }
 
-  // Traversal state for mockturtle algorithms
-  mutable llvm::DenseMap<mlir::Value, uint64_t> visitedMap;
-  mutable llvm::DenseMap<mlir::Value, uint64_t> valueMap;
-  mutable uint64_t currentTravId = 1;
-
-  // Level cache for timing-aware algorithms
-  mutable llvm::DenseMap<mlir::Value, unsigned> levelCache;
-
   // The root module we're operating on
   Block *block;
+  Block *deadValuePool;
 
-  // Node numbering system
-  mutable llvm::MapVector<mlir::Value, uint32_t> nodeIndexMap;
-  mutable uint32_t nextNodeIndex = 0;
-  mutable size_t numGate = 0;
+  // Shared state across all network instances
+  SharedNetworkState *sharedState;
 
   /// Get or assign an index to a node
   uint32_t getOrAssignNodeIndex(node n) const {
-    auto it = nodeIndexMap.find(n);
-    if (it != nodeIndexMap.end()) {
+    auto it = sharedState->nodeIndexMap.find(n);
+    if (it != sharedState->nodeIndexMap.end()) {
+      LDBG() << "Returning " << it->second << " to node " << n << "\n";
       return it->second;
     }
 
@@ -143,22 +145,43 @@ private:
       if (definingOp->getNumOperands() == 1) {
         return getOrAssignNodeIndex(definingOp->getOperand(0));
       }
-      numGate++;
+      sharedState->numGate++;
     }
+    LDBG() << "Assigning index " << sharedState->nextNodeIndex << " to node "
+           << n << "\n";
 
-    uint32_t index = nextNodeIndex++;
-    nodeIndexMap[n] = index;
+    uint32_t index = sharedState->nextNodeIndex++;
+    sharedState->nodeIndexMap[n] = index;
     return index;
   }
 
+  std::shared_ptr<mockturtle::network_events<base_type>> _events;
+
 public:
-  explicit CIRCTNetworkAdapter(Block *block, Block *deadValuePool)
-      : block(block), deadValuePool(deadValuePool),
+  CIRCTNetworkAdapter() = delete;
+
+  // Copy constructor - copies non-shared state and shares the indexing state
+  CIRCTNetworkAdapter(const CIRCTNetworkAdapter &other)
+      : block(other.block), deadValuePool(other.deadValuePool),
+        sharedState(other.sharedState),
+        _events(std::make_shared<decltype(_events)::element_type>()) {
+    LLVM_DEBUG(llvm::dbgs() << "CIRCTNetworkAdapter copy constructor called, "
+                            << "copying from " << &other << " to " << this
+                            << " with shared nextNodeIndex="
+                            << sharedState->nextNodeIndex << "\n");
+  }
+
+  explicit CIRCTNetworkAdapter(Block *block, Block *deadValuePool,
+                               SharedNetworkState *sharedState)
+      : block(block), deadValuePool(deadValuePool), sharedState(sharedState),
         _events(std::make_shared<decltype(_events)::element_type>()) {
     LLVM_DEBUG(llvm::dbgs()
                << "CIRCTNetworkAdapter constructor called with block: " << block
-               << "\n");
+               << " this=" << this << "\n");
     collectBits();
+    LLVM_DEBUG(llvm::dbgs()
+               << "CIRCTNetworkAdapter constructor finished, size: " << size()
+               << " this=" << this << "\n");
   }
   bool isI1Value(mlir::Value v) const { return v.getType().isInteger(1); }
 
@@ -181,7 +204,7 @@ public:
       }
     }
     LLVM_DEBUG(llvm::dbgs() << "collectBits finished, total nodes: "
-                            << nodeIndexMap.size() << "\n");
+                            << sharedState->nodeIndexMap.size() << "\n");
   }
 
   //===--------------------------------------------------------------------===//
@@ -189,10 +212,14 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Get the size of the network (number of nodes)
-  uint32_t size() const { return nodeIndexMap.size(); }
+  uint32_t size() const {
+    LLVM_DEBUG(llvm::dbgs() << "size() called on " << this << ", returning: "
+                            << sharedState->nextNodeIndex << "\n");
+    return sharedState->nextNodeIndex;
+  }
 
   /// Get number of gates (logic nodes)
-  uint32_t num_gates() const { return numGate; }
+  uint32_t num_gates() const { return sharedState->numGate; }
 
   /// Check if a node represents a constant
   bool is_constant(node value) const {
@@ -259,17 +286,22 @@ public:
   void foreach_node(Fn &&fn) const {
     // Check if the function expects two parameters (node and index)
     if constexpr (std::is_invocable_v<Fn, node const &>) {
-      for (const auto &pair : nodeIndexMap) {
-        fn(pair.first);
+      auto it = sharedState->nodeIndexMap.begin();
+      while (it != sharedState->nodeIndexMap.end()) {
+        fn(it->first);
+        ++it;
       }
     } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
-      for (const auto &pair : nodeIndexMap) {
-        fn(pair.first, pair.second);
+      auto it = sharedState->nodeIndexMap.begin();
+      while (it != sharedState->nodeIndexMap.end()) {
+        fn(it->first, it->second);
+        ++it;
       }
     } else {
-      // Fallback: try without const reference
-      for (const auto &pair : nodeIndexMap) {
-        fn(pair.first, pair.second);
+      auto it = sharedState->nodeIndexMap.begin();
+      while (it != sharedState->nodeIndexMap.end()) {
+        fn(it->first, it->second);
+        ++it;
       }
     }
   }
@@ -278,7 +310,7 @@ public:
   template <typename Fn>
   void foreach_gate(Fn &&fn) const {
     // Try to call with both node and index first
-    for (const auto &pair : nodeIndexMap) {
+    for (const auto &pair : sharedState->nodeIndexMap) {
       if constexpr (std::is_invocable_v<Fn, node, size_t>) {
         fn(pair.first, pair.second);
       } else if constexpr (std::is_invocable_v<Fn, node const &, size_t>) {
@@ -350,13 +382,13 @@ public:
     if (op->getNumOperands() == 1)
       return level(op->getOperand(0));
 
-    auto it = levelCache.find(n);
-    if (it != levelCache.end()) {
+    auto it = sharedState->levelCache.find(n);
+    if (it != sharedState->levelCache.end()) {
       return it->second;
     }
 
     // Prevent infinite recursion by setting a temporary value
-    levelCache[n] = 0;
+    sharedState->levelCache[n] = 0;
 
     // Compute level recursively
     uint32_t maxLevel = 0;
@@ -368,7 +400,7 @@ public:
     }
 
     uint32_t nodeLevel = maxLevel + 1;
-    levelCache[n] = nodeLevel;
+    sharedState->levelCache[n] = nodeLevel;
     return nodeLevel;
   }
 
@@ -377,34 +409,36 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// Increment traversal ID (starts a new traversal)
-  void incr_trav_id() const { ++currentTravId; }
+  void incr_trav_id() const { ++sharedState->currentTravId; }
 
   /// Get current traversal ID
-  uint64_t trav_id() const { return currentTravId; }
+  uint64_t trav_id() const { return sharedState->currentTravId; }
 
   /// Check if node was visited in current traversal
   uint64_t visited(node n) const {
-    auto it = visitedMap.find(n);
-    return it != visitedMap.end() ? it->second : 0;
+    auto it = sharedState->visitedMap.find(n);
+    return it != sharedState->visitedMap.end() ? it->second : 0;
   }
 
   /// Mark node as visited with current traversal ID
-  void set_visited(node n, uint64_t travId) const { visitedMap[n] = travId; }
+  void set_visited(node n, uint64_t travId) const {
+    sharedState->visitedMap[n] = travId;
+  }
 
   /// Clear visited flags
-  void clear_visited() const { visitedMap.clear(); }
+  void clear_visited() const { sharedState->visitedMap.clear(); }
 
   /// Get value for a node
   uint64_t value(node n) const {
-    auto it = valueMap.find(n);
-    return it != valueMap.end() ? it->second : 0;
+    auto it = sharedState->valueMap.find(n);
+    return it != sharedState->valueMap.end() ? it->second : 0;
   }
 
   /// Set value for a node
-  void set_value(node n, uint64_t val) const { valueMap[n] = val; }
+  void set_value(node n, uint64_t val) const { sharedState->valueMap[n] = val; }
 
   /// Clear all values
-  void clear_values() const { valueMap.clear(); }
+  void clear_values() const { sharedState->valueMap.clear(); }
 
   llvm::PointerIntPair<Value, 1, bool> strip(Value value) const {
     LDBG() << "Stripping value: " << value << "\n";
@@ -427,6 +461,7 @@ public:
   uint64_t node_to_index(node n) const {
     // Convert Value to index using its internal pointer representation
     auto stripped = strip(n);
+    // During normal operation, assign new index
     return getOrAssignNodeIndex(stripped.getPointer());
   }
 
@@ -456,14 +491,20 @@ public:
         b.getInt());
 
     auto striped = strip(andOp);
-    auto newNode = nodeIndexMap.find(striped.getPointer());
-    if (newNode != nodeIndexMap.end())
+    auto newNode = sharedState->nodeIndexMap.find(striped.getPointer());
+    if (newNode != sharedState->nodeIndexMap.end())
       return striped;
 
     uint32_t id = getOrAssignNodeIndex(andOp);
+    LDBG() << "Created AND gate: " << andOp << " with index: " << id
+           << " network size: " << size() << "\n";
     for (auto const &fn : _events->on_add) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Triggering add event for node: " << andOp << "\n");
       (*fn)(andOp);
     }
+    LDBG() << "Triggered add events for node: " << andOp << "\n";
+    block->dump();
     return signal(andOp, false);
   }
 
@@ -473,8 +514,11 @@ public:
 
   // Node status methods
   bool is_dead(node const &n) const {
-    // Check if node is dead (has no fanout)
-    return n.use_empty();
+    // CCheck if node is detached.
+    if (isGate(n))
+      return false;
+    auto op = n.getDefiningOp();
+    return op->getBlock() == deadValuePool;
   }
 
   // Node replacement methods - matching aig.hpp signature
@@ -503,7 +547,7 @@ public:
           }
         }
       }
-      if(!modified)
+      if (!modified)
         return std::nullopt; // No modification made
 
       for (auto const &fn : _events->on_modified) {
@@ -667,15 +711,12 @@ public:
     andOp->moveBefore(deadValuePool, deadValuePool->begin());
   }
 
-  Block *deadValuePool;
-
   /// Check if a node is a primary input
   bool is_pi(node n) const { return isInput(n); }
 
   /// Get constant signal (false)
 
   mutable Value constants[2];
-  std::shared_ptr<mockturtle::network_events<base_type>> _events;
 
   signal get_constant(bool value) const {
     if (constants[value])
@@ -757,8 +798,12 @@ public:
 
   /// Get all logic operations in the module
   void foreach_logic_node(const std::function<void(node)> &fn) const {
-    for (const auto &pair : nodeIndexMap) {
-      fn(pair.first);
+    auto it = sharedState->nodeIndexMap.begin();
+    while (it != sharedState->nodeIndexMap.end()) {
+      if (is_logic_op(it->first)) {
+        fn(it->first);
+      }
+      ++it;
     }
   }
 };

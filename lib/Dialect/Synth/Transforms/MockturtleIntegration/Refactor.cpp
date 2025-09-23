@@ -20,6 +20,7 @@
 // Include mockturtle algorithm headers
 #include "mlir/IR/PatternMatch.h"
 #include "mockturtle/algorithms/node_resynthesis/bidecomposition.hpp"
+#include "mockturtle/algorithms/node_resynthesis/sop_factoring.hpp"
 #include <mockturtle/algorithms/refactoring.hpp>
 
 #define DEBUG_TYPE "synth-mockturtle-refactor"
@@ -44,9 +45,10 @@ struct MockturtleRefactorPass
                             << module.getModuleName() << "\n");
 
     Block deadValuePoolBlock;
+    mockturtle_integration::SharedNetworkState sharedState;
     // Create mockturtle adapter for CIRCT IR
     circt::synth::mockturtle_integration::CIRCTNetworkAdapter adapter(
-        module.getBodyBlock(), &deadValuePoolBlock);
+        module.getBodyBlock(), &deadValuePoolBlock, &sharedState);
 
     // For now, just create the adapter and verify basic functionality
     // Full refactoring integration would require implementing many more
@@ -76,11 +78,22 @@ struct MockturtleRefactorPass
 
     // Perform bidec.
 
+    ::mockturtle::sop_factoring<mockturtle_integration::CIRCTNetworkAdapter>
+        resynSop;
+
     ::mockturtle::bidecomposition_resynthesis<
         mockturtle_integration::CIRCTNetworkAdapter>
         resyn;
+    ::mockturtle::refactoring_params params;
+    params.max_pis = 6; // Limit to 6 PIs for manageable cuts
+    params.verbose = true;
+    params.allow_zero_gain = true;
+    // 001
+    // 011
+    // 101
+    // 111
 
-    ::mockturtle::refactoring(adapter, resyn);
+    ::mockturtle::refactoring(adapter, resyn, params);
 
     // Apply the computed cuts to refactor the logic
     // This involves:
