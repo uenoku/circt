@@ -48,10 +48,9 @@ using namespace mlir;
 namespace {
 
 /// Enhanced associativity rewrite with depth checking and inversion handling
-static bool tryAssociativityRewriteWithDepth(
+static Value tryAssociativityRewriteWithDepth(
     Location loc, const synth::OrderedValues &topOperands,
-    const synth::OrderedValues &nestedOperands,
-    PatternRewriter *rewriter = nullptr, Value *value = nullptr) {
+    const synth::OrderedValues &nestedOperands, PatternRewriter &rewriter) {
 
   // Attempt a specific associativity case.
   // Mapping:
@@ -82,15 +81,12 @@ static bool tryAssociativityRewriteWithDepth(
 
     // Create inner majority: maj(common, other, childOther)
 
-    if (rewriter) {
-      auto innerMaj = rewriter->createOrFold<synth::mig::MajorityInverterOp>(
-          loc, common, other, childOther);
+    auto innerMaj = rewriter.createOrFold<synth::mig::MajorityInverterOp>(
+        loc, common, other, childOther);
 
-      // Create outer majority: maj(innerMaj, remaining, common)
-      *value = rewriter->createOrFold<synth::mig::MajorityInverterOp>(
-          loc, InvertibleValue(innerMaj, false), remaining, common);
-    }
-    return true;
+    // Create outer majority: maj(innerMaj, remaining, common)
+    return rewriter.createOrFold<synth::mig::MajorityInverterOp>(
+        loc, InvertibleValue(innerMaj, false), remaining, common);
   };
 
   // Try different patterns using InvertibleOperand from
@@ -106,62 +102,14 @@ static bool tryAssociativityRewriteWithDepth(
          "Deepest operand should have no inversion");
 
   if (auto result = tryRewrite(topV, topW, nestedY, nestedZ, true, true))
-    return true;
+    return result;
   if (auto result = tryRewrite(topV, topW, nestedX, nestedZ, true, false))
-    return true;
+    return result;
   if (auto result = tryRewrite(topW, topV, nestedY, nestedZ, false, true))
-    return true;
+    return result;
   if (auto result = tryRewrite(topW, topV, nestedX, nestedZ, false, false))
-    return true;
-  return false;
-}
-
-// Check if we can reduce the depth of the given operands.
-bool canReduceDepth(bool areaIncrease, IncrementalLongestPathAnalysis *analysis,
-                    circt::synth::OrderedValues values, int depth = 3,
-                    PatternRewriter *rewriter = nullptr,
-                    Value *value = nullptr) {
-  if (depth == 0)
-    return false;
-
-  if (values[2].depth <= values[1].depth + 1)
-    return false;
-
-  auto nestedMajOp =
-      values[2].getValue().getDefiningOp<synth::mig::MajorityInverterOp>();
-  if (!nestedMajOp || nestedMajOp.getNumOperands() != 3)
-    return false;
-
-  if (!areaIncrease && !nestedMajOp.getResult().hasOneUse())
-    return false;
-
-  auto nestedOperandsFailureOr = OrderedValues::get(nestedMajOp, analysis);
-  if (failed(nestedOperandsFailureOr))
-    return false;
-
-  auto nestedOperands = *nestedOperandsFailureOr;
-  if (nestedOperands[2].depth == nestedOperands[1].depth) {
-    // Check if the nested operation can be reduced as well.
-    // Precondition:
-    //  (u:d0, v:d1, (x: d2, y: d3, z:d3)) where d3 + 1 > d1
-    //  distribute z:
-    //  (M(u, v, x), M(u, v, y), z) --> depth reduce if M(u:d0, v:d1, y: d3)
-    //  reduces depth as well.
-    OrderedValues newValues(values[0], values[1], nestedOperands[1]);
-    Value newResult;
-    if (canReduceDepth(areaIncrease, analysis, newValues, depth - 1, rewriter,
-                       &newResult)) {
-      if (rewriter) {
-        *value = rewriter->create<synth::mig::MajorityInverterOp>(
-            nestedMajOp->getLoc(), newResult, nestedOperands[1],
-            nestedOperands[2]);
-      }
-      return true;
-    }
-  }
-
-  // Check if we can apply associativity rewrite.
-  return false;
+    return result;
+  return {};
 }
 
 /// Pattern to rewrite MIG operations for depth reduction
@@ -224,25 +172,10 @@ struct MIGDepthReductionPattern
     // Skip if nested operation doesn't have significant depth difference
     if (nestedOperands[2].depth == nestedOperands[1].depth) {
       LDBG() << "  Skipping: " << op << " (nested depth are same)\n";
-      LDBG() << "    " << nestedOperands[0].depth << " "
-             << nestedOperands[1].depth << " " << nestedOperands[2].depth
-             << "\n";
-      // Check if we can reduce the depth still.
-      // Precondition:
-      //  (u:d0, v:d1, (x: d2, y: d3, z:d3)) where d3 + 1 > d1
-      //  distribute z:
-      //  (M(u, v, x), M(u, v, y), z) --> depth reduce if M(u:d0, v:d1, y: d3)
-      //  reduces depth as well.
-      //
       return failure();
     }
 
-    LLVM_DEBUG({
-      llvm::errs() << "  Ok for: " << op << "\n";
-      topOperands.dump(llvm::errs());
-      nestedOperands.dump(llvm::errs());
-    });
-
+    // Propagate inversion from top operand to nested operands.
     if (topOperands[2].isInverted()) {
       nestedOperands[0] ^= true;
       nestedOperands[1] ^= true;
