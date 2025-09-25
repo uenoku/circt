@@ -53,10 +53,10 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 static LogicalResult replaceWithBalancedTree(
     IncrementalLongestPathAnalysis *analysis, mlir::IRRewriter &rewriter,
     Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
-    llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
+    llvm::function_ref<Value(TimedInvertibleValue, TimedInvertibleValue)>
         createBinaryOp) {
   // Collect all operands with their arrival times and inversion flags
-  SmallVector<ValueWithArrivalTime> operands;
+  SmallVector<TimedInvertibleValue> operands;
   size_t valueNumber = 0;
 
   for (size_t i = 0, e = op->getNumOperands(); i < e; ++i) {
@@ -69,16 +69,16 @@ static LogicalResult replaceWithBalancedTree(
         return failure();
       delay = *result;
     }
-    operands.push_back(ValueWithArrivalTime(op->getOperand(i), delay,
+    operands.push_back(TimedInvertibleValue(op->getOperand(i),
                                             isInverted(op->getOpOperand(i)),
-                                            valueNumber++));
+                                            delay, valueNumber++));
   }
 
   // Use shared tree building utility
-  auto result = buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
+  auto result = buildBalancedTreeWithArrivalTimes<TimedInvertibleValue>(
       operands,
       // Combine: create binary operation and compute new arrival time
-      [&](const ValueWithArrivalTime &lhs, const ValueWithArrivalTime &rhs) {
+      [&](const TimedInvertibleValue &lhs, const TimedInvertibleValue &rhs) {
         Value combined = createBinaryOp(lhs, rhs);
         int64_t newDelay = 0;
         if (analysis) {
@@ -86,7 +86,7 @@ static LogicalResult replaceWithBalancedTree(
           if (succeeded(delayResult))
             newDelay = *delayResult;
         }
-        return ValueWithArrivalTime(combined, newDelay, false, valueNumber++);
+        return TimedInvertibleValue(combined, false, newDelay, valueNumber++);
       });
 
   rewriter.replaceOp(op, result.getValue());
@@ -151,7 +151,7 @@ void LowerVariadicPass::runOnOperation() {
             return andInverterOp.isInverted(operand.getOperandNumber());
           },
           // Create binary AndInverterOp with inversion flags.
-          [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
+          [&](TimedInvertibleValue lhs, TimedInvertibleValue rhs) {
             return aig::AndInverterOp::create(
                 rewriter, op->getLoc(), lhs.getValue(), rhs.getValue(),
                 lhs.isInverted(), rhs.isInverted());
@@ -170,7 +170,7 @@ void LowerVariadicPass::runOnOperation() {
           // No inversion flags for standard commutative operations.
           [](OpOperand &) { return false; },
           // Create binary operation with the same operation type.
-          [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
+          [&](TimedInvertibleValue lhs, TimedInvertibleValue rhs) {
             OperationState state(op->getLoc(), op->getName());
             state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
             state.addTypes(op->getResult(0).getType());
