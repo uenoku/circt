@@ -371,21 +371,6 @@ synth::OrderedValues::get(synth::mig::MajorityInverterOp op,
   return synth::OrderedValues(operands, op.getInverted(), depths);
 }
 
-FailureOr<synth::OrderedValues>
-synth::OrderedValues::get(synth::aig::AndInverterOp op,
-                          IncrementalLongestPathAnalysis *analysis) {
-  auto operands = op.getInputs();
-  SmallVector<int64_t, 2> depths;
-  for (size_t i = 0; i < operands.size(); ++i) {
-    auto depth = analysis->getMaxDelay(operands[i]);
-    if (failed(depth))
-      return failure();
-    depths.push_back(*depth);
-  }
-
-  return synth::OrderedValues(operands, op.getInverted(), depths);
-}
-
 synth::OrderedValues::OrderedValues(OperandRange operands,
                                     ArrayRef<bool> inversions,
                                     ArrayRef<int64_t> depths) {

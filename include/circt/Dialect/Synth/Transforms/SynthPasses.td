@@ -196,6 +196,13 @@ def MIGAlgebraicRewriting : Pass<"synth-mig-algebraic-rewriting", "hw::HWModuleO
     Option<"allowAreaIncrease", "allow-area-increase", "bool", "true",
            "Allow area increase while optimizing depth">
   ];
+
+  let statistics = [
+    Statistic<"numAssociativity", "num-associativity",
+              "Number of total rewrites performed">,
+    Statistic<"numDistributivity", "num-distributivity",
+              "Number of total rewrites performed">,
+  ];
 }
 
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

@@ -47,119 +47,12 @@ using namespace mlir;
 
 namespace {
 
-/// Check if two values represent the same signal (considering inversions)
-/// Returns true if they are the same signal, false otherwise
-/// Also sets isInverted to true if one is the inversion of the other
-// bool isSameSignal(Value a, Value b, bool &isInverted) {
-//   isInverted = false;
-//
-//   // Direct equality
-//   if (a == b)
-//     return true;
-//
-//   if (auto constA = a.getDefiningOp<hw::ConstantOp>()) {
-//     if (auto constB = b.getDefiningOp<hw::ConstantOp>()) {
-//       if (constA.getValue() == constB.getValue())
-//         return true;
-//       if (constA.getValue() == ~constB.getValue()) {
-//         isInverted = true;
-//         return true;
-//       }
-//     }
-//   }
-//
-//   // Check if one is an inverted version of the other through MIG operations
-//   auto checkInvertedMIG = [](Value val, Value target) -> bool {
-//     if (auto migOp = val.getDefiningOp<synth::mig::MajorityInverterOp>()) {
-//       // Check for single-input inverted MIG (acts as NOT gate)
-//       if (migOp.getNumOperands() == 1 && migOp.isInverted(0) &&
-//           migOp.getOperand(0) == target)
-//         return true;
-//     }
-//     return false;
-//   };
-//
-//   if (checkInvertedMIG(a, b) || checkInvertedMIG(b, a)) {
-//     isInverted = true;
-//     return true;
-//   }
-//
-//   return false;
-// }
-
-/// Create a MIG majority operation from InvertibleOperand objects
-static Value createMajorityFromInvertibleOperands(OpBuilder &rewriter,
-                                                  Location loc,
-                                                  InvertibleValue a,
-                                                  InvertibleValue b,
-                                                  InvertibleValue c) {
-  return rewriter.createOrFold<synth::mig::MajorityInverterOp>(
-      loc, ArrayRef<InvertibleValue>{a, b, c});
-}
-
-/// Convenience wrappers to make call sites more readable.
-static inline InvertibleValue inv(Value v, bool inverted = false) {
-  return InvertibleValue(v, inverted);
-}
-static inline Value createMaj(OpBuilder &rewriter, Location loc, Value a,
-                              bool ai, Value b, bool bi, Value c, bool ci) {
-  return createMajorityFromInvertibleOperands(rewriter, loc, inv(a, ai),
-                                              inv(b, bi), inv(c, ci));
-}
-
 /// Enhanced associativity rewrite with depth checking and inversion handling
-static Value tryAssociativityRewriteWithDepth(
+static bool tryAssociativityRewriteWithDepth(
     Location loc, const synth::OrderedValues &topOperands,
-    const synth::OrderedValues &nestedOperands, PatternRewriter &rewriter) {
+    const synth::OrderedValues &nestedOperands,
+    PatternRewriter *rewriter = nullptr, Value *value = nullptr) {
 
-  /*
-for (size_t i = 0; i < 2; ++i) {
-for (size_t j = 0; j < 2; ++j) {
-  auto v = topOperands[i];
-  auto x = nestedOperands[j];
-  bool invert = false;
-  if (!isSameSignal(v.getValue(), x.getValue(), invert))
-    continue;
-  invert ^= v.isInverted() ^ x.isInverted();
-
-  auto w = topOperands[1 - i];
-  // Ok try swapping w and y or z
-  auto y = nestedOperands[2 - j];
-  auto z = nestedOperands[2];
-
-  if (invert) {
-    // Completely associativity.
-    // M(v, w, M(v', y, z)) -> M(v, w, M(w, y, z))
-    // Benefits when w == y
-    bool isInverted;
-    if (isSameSignal(w.getValue(), y.getValue(), isInverted)) {
-      isInverted ^= w.isInverted() ^ y.isInverted();
-      if (isInverted) {
-        // M(v, w, M(w, w', z)) -> M(v, w, z)
-        return createMajorityFromInvertibleOperands(rewriter, loc, v, w, z);
-      }
-      // M(v, w, M(w, w, z)) -> M(v, w, w)  -> w
-      if (w.isInverted())
-        return createMajorityFunction(rewriter, loc, w.getValue(),
-                                      w.isInverted());
-      return w.getValue();
-    }
-  } else {
-    // Assoc
-    // M(v, w, M(v, y, z)) = M(z, w, M(v, y, w))
-    // M(v, y, w)
-    auto newOp =
-        createMajorityFromInvertibleOperands(rewriter, loc, v, y, w);
-
-    // M(z, w, M(v, y, w))
-    auto finalOp = createMaj(rewriter, loc, z.getValue(), false,
-                             w.getValue(), w.isInverted(), newOp, false);
-    return finalOp;
-  }
-}
-}
-return Value();
-*/
   // Attempt a specific associativity case.
   // Mapping:
   // - common: top operand (v or w) that matches one of {x, y}
@@ -188,13 +81,16 @@ return Value();
     }
 
     // Create inner majority: maj(common, other, childOther)
-    auto innerMaj = createMajorityFromInvertibleOperands(rewriter, loc, common,
-                                                         other, childOther);
 
-    // Create outer majority: maj(innerMaj, remaining, common)
-    return createMaj(rewriter, loc, innerMaj, false, remaining.getValue(),
-                     remaining.isInverted(), common.getValue(),
-                     common.isInverted());
+    if (rewriter) {
+      auto innerMaj = rewriter->createOrFold<synth::mig::MajorityInverterOp>(
+          loc, common, other, childOther);
+
+      // Create outer majority: maj(innerMaj, remaining, common)
+      *value = rewriter->createOrFold<synth::mig::MajorityInverterOp>(
+          loc, InvertibleValue(innerMaj, false), remaining, common);
+    }
+    return true;
   };
 
   // Try different patterns using InvertibleOperand from
@@ -204,21 +100,68 @@ return Value();
   InvertibleValue nestedX = nestedOperands[0];
   InvertibleValue nestedY = nestedOperands[1];
   InvertibleValue nestedZ = nestedOperands[2];
-  if (topOperands[2].isInverted()) {
-    nestedX ^= true;
-    nestedY ^= true;
-    nestedZ ^= true;
-  }
+
+  // Inversion propagation.
+  assert(!topOperands[2].isInverted() &&
+         "Deepest operand should have no inversion");
 
   if (auto result = tryRewrite(topV, topW, nestedY, nestedZ, true, true))
-    return result;
+    return true;
   if (auto result = tryRewrite(topV, topW, nestedX, nestedZ, true, false))
-    return result;
+    return true;
   if (auto result = tryRewrite(topW, topV, nestedY, nestedZ, false, true))
-    return result;
+    return true;
   if (auto result = tryRewrite(topW, topV, nestedX, nestedZ, false, false))
-    return result;
-  return {};
+    return true;
+  return false;
+}
+
+// Check if we can reduce the depth of the given operands.
+bool canReduceDepth(bool areaIncrease, IncrementalLongestPathAnalysis *analysis,
+                    circt::synth::OrderedValues values, int depth = 3,
+                    PatternRewriter *rewriter = nullptr,
+                    Value *value = nullptr) {
+  if (depth == 0)
+    return false;
+
+  if (values[2].depth <= values[1].depth + 1)
+    return false;
+
+  auto nestedMajOp =
+      values[2].getValue().getDefiningOp<synth::mig::MajorityInverterOp>();
+  if (!nestedMajOp || nestedMajOp.getNumOperands() != 3)
+    return false;
+
+  if (!areaIncrease && !nestedMajOp.getResult().hasOneUse())
+    return false;
+
+  auto nestedOperandsFailureOr = OrderedValues::get(nestedMajOp, analysis);
+  if (failed(nestedOperandsFailureOr))
+    return false;
+
+  auto nestedOperands = *nestedOperandsFailureOr;
+  if (nestedOperands[2].depth == nestedOperands[1].depth) {
+    // Check if the nested operation can be reduced as well.
+    // Precondition:
+    //  (u:d0, v:d1, (x: d2, y: d3, z:d3)) where d3 + 1 > d1
+    //  distribute z:
+    //  (M(u, v, x), M(u, v, y), z) --> depth reduce if M(u:d0, v:d1, y: d3)
+    //  reduces depth as well.
+    OrderedValues newValues(values[0], values[1], nestedOperands[1]);
+    Value newResult;
+    if (canReduceDepth(areaIncrease, analysis, newValues, depth - 1, rewriter,
+                       &newResult)) {
+      if (rewriter) {
+        *value = rewriter->create<synth::mig::MajorityInverterOp>(
+            nestedMajOp->getLoc(), newResult, nestedOperands[1],
+            nestedOperands[2]);
+      }
+      return true;
+    }
+  }
+
+  // Check if we can apply associativity rewrite.
+  return false;
 }
 
 /// Pattern to rewrite MIG operations for depth reduction
@@ -226,6 +169,9 @@ struct MIGDepthReductionPattern
     : public OpRewritePattern<synth::mig::MajorityInverterOp> {
   bool allowAreaIncrease;
   IncrementalLongestPathAnalysis *depthAnalysis;
+
+  unsigned numAssociativity = 0;
+  unsigned numDistributivity = 0;
 
   MIGDepthReductionPattern(MLIRContext *context, bool allowAreaIncrease,
                            IncrementalLongestPathAnalysis *analysis)
@@ -239,17 +185,24 @@ struct MIGDepthReductionPattern
     // Only handle 3-input majority operations
     if (op.getNumOperands() != 3)
       return failure();
+    LDBG() << "  Trying: " << op << "\n";
 
     // Get operands ordered by depth level (shallowest to deepest)
     auto topOperandsFailureOr = OrderedValues::get(op, depthAnalysis);
-    if (failed(topOperandsFailureOr))
+    if (failed(topOperandsFailureOr)) {
+      LDBG() << "  Skipping: " << op << " (failed to get ordered operands)\n";
       return rewriter.notifyMatchFailure(op, "Failed to get ordered operands");
+    }
 
     auto topOperands = *topOperandsFailureOr;
 
     // Skip if depth difference is not significant enough for optimization
-    if (topOperands[2].depth <= topOperands[1].depth + 1)
+    if (topOperands[2].depth <= topOperands[1].depth + 1) {
+      LDBG() << "  Skipping: " << op << " (depth difference too small)\n";
+      LDBG() << "    " << topOperands[0].depth << " " << topOperands[1].depth
+             << " " << topOperands[2].depth << "\n";
       return failure();
+    }
 
     // Check if the deepest operand is a 3-input majority operation
     auto nestedMajOp = topOperands[2]
@@ -269,8 +222,20 @@ struct MIGDepthReductionPattern
     auto &nestedOperands = *nestedOperandsFailureOr;
 
     // Skip if nested operation doesn't have significant depth difference
-    if (nestedOperands[2].depth == nestedOperands[1].depth)
+    if (nestedOperands[2].depth == nestedOperands[1].depth) {
+      LDBG() << "  Skipping: " << op << " (nested depth are same)\n";
+      LDBG() << "    " << nestedOperands[0].depth << " "
+             << nestedOperands[1].depth << " " << nestedOperands[2].depth
+             << "\n";
+      // Check if we can reduce the depth still.
+      // Precondition:
+      //  (u:d0, v:d1, (x: d2, y: d3, z:d3)) where d3 + 1 > d1
+      //  distribute z:
+      //  (M(u, v, x), M(u, v, y), z) --> depth reduce if M(u:d0, v:d1, y: d3)
+      //  reduces depth as well.
+      //
       return failure();
+    }
 
     LLVM_DEBUG({
       llvm::errs() << "  Ok for: " << op << "\n";
@@ -283,6 +248,7 @@ struct MIGDepthReductionPattern
       nestedOperands[1] ^= true;
       nestedOperands[2] ^= true;
       topOperands[2] ^= true;
+      assert(!topOperands[2].isInverted());
     }
 
     // Try associativity rewrite first (preserves area)
@@ -290,6 +256,7 @@ struct MIGDepthReductionPattern
             op.getLoc(), topOperands, nestedOperands, rewriter)) {
       LDBG() << "  Applied associativity rewrite: " << op << " -> " << newOp
              << "\n";
+
       rewriter.replaceOp(op, newOp);
       return success();
     }
@@ -297,6 +264,8 @@ struct MIGDepthReductionPattern
     // Try distributivity rewrite if area increase is allowed
     if (!allowAreaIncrease)
       return failure();
+
+    LDBG() << "  Applying distributivity rewrite for: " << op << "\n";
 
     return applyDistributivityRewrite(op, topOperands, nestedOperands,
                                       rewriter);
@@ -313,19 +282,17 @@ private:
     LDBG() << "  Applying distributivity rewrite for: " << op << "\n";
 
     // Create left majority: maj(v, w, x)
-    auto leftMaj = createMajorityFromInvertibleOperands(
-        rewriter, op.getLoc(), topOperands[0], topOperands[1],
-        nestedOperands[0]);
+    auto leftMaj = rewriter.createOrFold<synth::mig::MajorityInverterOp>(
+        op.getLoc(), topOperands[0], topOperands[1], nestedOperands[0]);
 
     // Create right majority: maj(v, w, y)
-    auto rightMaj = createMajorityFromInvertibleOperands(
-        rewriter, op.getLoc(), topOperands[0], topOperands[1],
-        nestedOperands[1]);
+    auto rightMaj = rewriter.createOrFold<synth::mig::MajorityInverterOp>(
+        op.getLoc(), topOperands[0], topOperands[1], nestedOperands[1]);
 
     // Create final majority: maj(leftMaj, rightMaj, z)
-    auto result = createMajorityFromInvertibleOperands(
-        rewriter, op.getLoc(), InvertibleValue(leftMaj),
-        InvertibleValue(rightMaj), nestedOperands[2]);
+    auto result = rewriter.createOrFold<synth::mig::MajorityInverterOp>(
+        op.getLoc(), InvertibleValue(leftMaj), InvertibleValue(rightMaj),
+        nestedOperands[2]);
 
     rewriter.replaceOp(op, result);
     return success();
@@ -343,10 +310,9 @@ struct MIGAlgebraicRewritingPass
   void runOnOperation() override {
     auto module = getOperation();
     mlir::AnalysisManager am = getAnalysisManager();
+    PatternRewriter rewriter(&getContext());
     while (true) {
-
       bool changed = false;
-      PatternRewriter rewriter(&getContext());
       IncrementalLongestPathAnalysis depthAnalysis(module, am);
       MIGDepthReductionPattern pattern(&getContext(), allowAreaIncrease,
                                        &depthAnalysis);

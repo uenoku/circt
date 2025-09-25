@@ -57,8 +57,7 @@ def MajorityInverterOp : SynthOp<"mig.maj_inv",
                                        attr-dict)
   }];
   let builders = [
-    OpBuilder<(ins CArg<"ArrayRef<::circt::synth::InvertibleValue>", "{}">:$inputs), 
-    [{
+    OpBuilder<(ins CArg<"ArrayRef<::circt::synth::InvertibleValue>">:$inputs), [{
       SmallVector<bool> inverted;
       SmallVector<Value> values;
       for (auto &iv : inputs) {
@@ -66,6 +65,11 @@ def MajorityInverterOp : SynthOp<"mig.maj_inv",
         values.push_back(iv.getValue());
       }
       return build($_builder, $_state, values, inverted);
+    }]>,
+    OpBuilder<(ins CArg<"::circt::synth::InvertibleValue">:$a,
+                       CArg<"::circt::synth::InvertibleValue" >:$b,
+                       CArg<"::circt::synth::InvertibleValue">:$c), [{
+      return build($_builder, $_state, ArrayRef<::circt::synth::InvertibleValue>{a, b, c});
     }]>
   ];
   let cppNamespace = "::circt::synth::mig";

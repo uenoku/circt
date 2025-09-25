@@ -58,8 +58,8 @@ LogicalResult topologicallySortGraphRegionBlocks(
 /// Helper struct to represent a value that may be inverted.
 struct InvertibleValue {
   llvm::PointerIntPair<Value, 1, bool> value;
-  InvertibleValue(Value value, bool inverted) : value({value, inverted}) {}
-  explicit InvertibleValue(Value value) : value({value, false}) {}
+  InvertibleValue(Value value, bool inverted = false)
+      : value({value, inverted}) {}
 
   void operator^=(bool invert) { value.setInt(value.getInt() ^ invert); }
   InvertibleValue operator^(bool invert) const {
@@ -113,8 +113,6 @@ struct OrderedValues {
 
   static FailureOr<OrderedValues> get(mig::MajorityInverterOp op,
                                       IncrementalLongestPathAnalysis *analysis);
-  static FailureOr<OrderedValues> get(aig::AndInverterOp op,
-                                      IncrementalLongestPathAnalysis *analysis);
 
   void dump(llvm::raw_ostream &os) const {
     for (size_t i = 0; i < invertibleValues.size(); ++i) {
@@ -130,6 +128,7 @@ struct OrderedValues {
   }
   int64_t getDepth(size_t idx) const { return invertibleValues[idx].depth; }
 
+  auto &operator[](size_t idx) { return invertibleValues[idx]; }
   auto operator[](size_t idx) const { return invertibleValues[idx]; }
 };
 } // namespace synth
