@@ -2169,7 +2169,8 @@ public:
     // Wrap to this column.
     ps.scopedBox(PP::ibox0, [&]() {
       emitSubExpr(exp, parenthesizeIfLooserThan,
-                  /*signRequirement*/ NoRequirement,
+                  /*signRequirement*/
+                  isAssignmentLikeContext ? RequireUnsigned : NoRequirement,
                   /*isSelfDeterminedUnsignedValue*/ false,
                   isAssignmentLikeContext);
     });
