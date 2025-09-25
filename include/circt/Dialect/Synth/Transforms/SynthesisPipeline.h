@@ -72,6 +72,10 @@ struct SynthOptimizationPipelineOptions
   PassOptions::Option<bool> disableWordToBits{
       *this, "disable-word-to-bits",
       llvm::cl::desc("Disable LowerWordToBits pass"), llvm::cl::init(false)};
+
+  PassOptions::Option<TargetIR> targetIR{
+      *this, "lowering-target", llvm::cl::desc("Target IR to lower to"),
+      llvm::cl::init(TargetIR::AIG)};
 };
 
 //===----------------------------------------------------------------------===//

@@ -177,4 +177,25 @@ def StructuralHash : Pass<"synth-structural-hash", "hw::HWModuleOp"> {
   }];
 }
 
+def MIGAlgebraicRewriting : Pass<"synth-mig-algebraic-rewriting", "hw::HWModuleOp"> {
+  let summary = "MIG algebraic depth rewriting";
+  let description = [{
+    This pass performs algebraic rewriting on Majority-Inverter Graphs (MIGs) for
+    depth optimization using associativity and distributivity rules in majority-of-3
+    logic. The pass applies transformations to reduce the critical path delay by
+    restructuring majority operations.
+
+    The transformations are based on the algebraic properties of majority functions:
+    - Associativity: maj(a, b, maj(c, d, e)) can be rewritten under certain conditions
+    - Distributivity: maj(a, b, maj(c, d, e)) = maj(maj(a, b, c), maj(a, b, d), e)
+
+    This implementation uses a DFS strategy that applies depth rewriting once to all
+    output cones whose drivers have maximum levels.
+  }];
+  let options = [
+    Option<"allowAreaIncrease", "allow-area-increase", "bool", "true",
+           "Allow area increase while optimizing depth">
+  ];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

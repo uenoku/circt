@@ -227,6 +227,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.abcPath.setValue(abcPath);
     optimizationOptions.ignoreAbcFailures.setValue(ignoreAbcFailures);
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
+    optimizationOptions.targetIR = targetIR;
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
     if (untilReached(UntilMapping))

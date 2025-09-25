@@ -94,6 +94,10 @@ void circt::synth::buildSynthOptimizationPipeline(
   pm.addPass(createStructuralHash());
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(createStructuralHash());
+  if (options.targetIR.getValue() == TargetIR::MIG)
+    pm.addPass(synth::createMIGAlgebraicRewriting());
+  pm.addPass(createStructuralHash());
+  pm.addPass(createSimpleCanonicalizerPass());
 
   if (!options.abcCommands.empty()) {
     synth::ABCRunnerOptions abcOptions;
