@@ -13,8 +13,10 @@
 #ifndef CIRCT_DIALECT_SYNTH_SYNTHOPS_H
 #define CIRCT_DIALECT_SYNTH_SYNTHOPS_H
 
+#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Support/LLVM.h"
+#include "circt/Support/Namespace.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -24,14 +26,20 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Rewrite/PatternApplicator.h"
-
-#define GET_OP_CLASSES
-#include "circt/Dialect/Synth/Synth.h.inc"
+#include "llvm/IR/Value.h"
+#include <mlir/IR/Value.h>
 
 #include "llvm/ADT/PriorityQueue.h"
 
 namespace circt {
 namespace synth {
+namespace aig {
+class AndInverterOp;
+} // namespace aig
+namespace mig {
+class MajorityInverterOp;
+} // namespace mig
+
 struct AndInverterVariadicOpConversion
     : mlir::OpRewritePattern<aig::AndInverterOp> {
   using OpRewritePattern<aig::AndInverterOp>::OpRewritePattern;
@@ -53,42 +61,86 @@ LogicalResult topologicallySortGraphRegionBlocks(
 // Delay-Aware Tree Building Utilities
 //===----------------------------------------------------------------------===//
 
-/// Helper class for delay-aware tree building.
-/// Stores a value along with its arrival time and inversion flag.
-class ValueWithArrivalTime {
-  /// The value and an optional inversion flag packed together.
-  /// The inversion flag is used for AndInverterOp lowering.
+/// Helper struct to represent a value that may be inverted.
+struct InvertibleValue {
   llvm::PointerIntPair<mlir::Value, 1, bool> value;
+  InvertibleValue(mlir::Value value, bool inverted = false)
+      : value({value, inverted}) {}
 
-  /// The arrival time (delay) of this value in the circuit.
-  int64_t arrivalTime;
+  void operator^=(bool invert) { value.setInt(value.getInt() ^ invert); }
+  InvertibleValue operator^(bool invert) const {
+    return InvertibleValue(value.getPointer(), value.getInt() ^ invert);
+  }
+  bool operator==(const InvertibleValue &other) const {
+    return value == other.value;
+  }
+  InvertibleValue operator!() const {
+    return InvertibleValue(value.getPointer(), !value.getInt());
+  }
+
+  /// Returns true if the value is the same as the other value and inverted.
+  bool isComplementary(mlir::Value other) const {
+    return value.getPointer() == other && value.getInt();
+  }
+
+  bool isComplementary(const InvertibleValue &other) const {
+    return value.getPointer() == other.value.getPointer() &&
+           value.getInt() != other.value.getInt();
+  }
+
+  /// Returns true if the value is the same as the other value and not inverted.
+  bool isEquivalent(mlir::Value other) const {
+    return value.getPointer() == other && !value.getInt();
+  }
+
+  bool isEquivalent(const InvertibleValue &other) const {
+    return value == other.value;
+  }
+
+  InvertibleValue &flipInversion() {
+    value.setInt(!value.getInt());
+    return *this;
+  }
+
+  bool isInverted() const { return value.getInt(); }
+  mlir::Value getValue() const { return value.getPointer(); }
+};
+
+/// Helper struct to represent a value that may be inverted and has timing info.
+/// Used for delay-aware tree building. Stores a value along with its arrival
+/// time (depth) and an optional value numbering for deterministic ordering.
+struct TimedInvertibleValue : public InvertibleValue {
+  /// The arrival time (delay/depth) of this value in the circuit.
+  int64_t depth;
 
   /// Value numbering for deterministic ordering when arrival times are equal.
   /// This ensures consistent results across runs when multiple values have
   /// the same delay.
   size_t valueNumbering = 0;
 
-public:
-  ValueWithArrivalTime(mlir::Value value, int64_t arrivalTime, bool invert,
+  TimedInvertibleValue(mlir::Value value, bool inverted, int64_t depth,
                        size_t valueNumbering = 0)
-      : value(value, invert), arrivalTime(arrivalTime),
+      : InvertibleValue(value, inverted), depth(depth),
         valueNumbering(valueNumbering) {}
 
-  mlir::Value getValue() const { return value.getPointer(); }
-  bool isInverted() const { return value.getInt(); }
-  int64_t getArrivalTime() const { return arrivalTime; }
+  int64_t getArrivalTime() const { return depth; }
+  int64_t getDepth() const { return depth; }
 
-  ValueWithArrivalTime &flipInversion() {
-    value.setInt(!value.getInt());
+  TimedInvertibleValue &flipInversion() {
+    InvertibleValue::flipInversion();
     return *this;
   }
 
-  /// Comparison operator for priority queue. Values with earlier arrival times
-  /// have higher priority. When arrival times are equal, use value numbering
-  /// for determinism.
-  bool operator>(const ValueWithArrivalTime &other) const {
-    return std::tie(arrivalTime, valueNumbering) >
-           std::tie(other.arrivalTime, other.valueNumbering);
+  /// Comparison operators for sorting and priority queue usage.
+  bool operator<(const TimedInvertibleValue &other) const {
+    return depth < other.depth;
+  }
+
+  /// Values with earlier arrival times have higher priority.
+  /// When arrival times are equal, use value numbering for determinism.
+  bool operator>(const TimedInvertibleValue &other) const {
+    return std::tie(depth, valueNumbering) >
+           std::tie(other.depth, other.valueNumbering);
   }
 };
 
@@ -130,7 +182,37 @@ T buildBalancedTreeWithArrivalTimes(llvm::ArrayRef<T> elements,
   return pq.top();
 }
 
+/// Helper struct to represent values that may be inverted and have a depth.
+struct OrderedValues {
+  SmallVector<TimedInvertibleValue, 3> invertibleValues;
+
+  OrderedValues(OperandRange operands, ArrayRef<bool> inversions,
+                ArrayRef<int64_t> depths);
+
+  static FailureOr<OrderedValues> get(mig::MajorityInverterOp op,
+                                      IncrementalLongestPathAnalysis *analysis);
+
+  void dump(llvm::raw_ostream &os) const {
+    for (size_t i = 0; i < invertibleValues.size(); ++i) {
+      os << "  Child " << i << ": " << invertibleValues[i].value.getPointer()
+         << " (inverted: " << invertibleValues[i].value.getInt()
+         << ", depth: " << invertibleValues[i].depth << ")\n";
+    }
+  }
+
+  Value getValue(size_t idx) const { return invertibleValues[idx].getValue(); }
+  bool isInverted(size_t idx) const {
+    return invertibleValues[idx].isInverted();
+  }
+  int64_t getDepth(size_t idx) const { return invertibleValues[idx].depth; }
+
+  auto &operator[](size_t idx) { return invertibleValues[idx]; }
+  auto operator[](size_t idx) const { return invertibleValues[idx]; }
+};
 } // namespace synth
 } // namespace circt
+
+#define GET_OP_CLASSES
+#include "circt/Dialect/Synth/Synth.h.inc"
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHOPS_H
