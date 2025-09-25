@@ -56,6 +56,22 @@ def MajorityInverterOp : SynthOp<"mig.maj_inv",
     custom<VariadicInvertibleOperands>($inputs, type($result), $inverted,
                                        attr-dict)
   }];
+  let builders = [
+    OpBuilder<(ins CArg<"ArrayRef<::circt::synth::InvertibleValue>">:$inputs), [{
+      SmallVector<bool> inverted;
+      SmallVector<Value> values;
+      for (auto &iv : inputs) {
+        inverted.push_back(iv.isInverted());
+        values.push_back(iv.getValue());
+      }
+      return build($_builder, $_state, values, inverted);
+    }]>,
+    OpBuilder<(ins CArg<"::circt::synth::InvertibleValue">:$a,
+                       CArg<"::circt::synth::InvertibleValue" >:$b,
+                       CArg<"::circt::synth::InvertibleValue">:$c), [{
+      return build($_builder, $_state, ArrayRef<::circt::synth::InvertibleValue>{a, b, c});
+    }]>
+  ];
   let cppNamespace = "::circt::synth::mig";
   let extraClassDeclaration = [{
     // Evaluate the operation with the given input values.

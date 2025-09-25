@@ -81,22 +81,22 @@ static DelayType simulateBalancedTree(ArrayRef<DelayType> arrivalTimes) {
 }
 
 /// Build balanced AND tree.
-ValueWithArrivalTime
+TimedInvertibleValue
 buildBalancedAndTree(OpBuilder &builder, Location loc,
-                     SmallVectorImpl<ValueWithArrivalTime> &nodes) {
+                     SmallVectorImpl<TimedInvertibleValue> &nodes) {
   assert(!nodes.empty());
 
   if (nodes.size() == 1)
     return nodes[0];
 
   size_t num = nodes.size();
-  auto result = buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
+  auto result = buildBalancedTreeWithArrivalTimes<TimedInvertibleValue>(
       nodes, [&](const auto &n1, const auto &n2) {
         Value v = aig::AndInverterOp::create(builder, loc, n1.getValue(),
                                              n2.getValue(), n1.isInverted(),
                                              n2.isInverted());
-        return ValueWithArrivalTime(
-            v, std::max(n1.getArrivalTime(), n2.getArrivalTime()) + 1, false,
+        return TimedInvertibleValue(
+            v, false, std::max(n1.getArrivalTime(), n2.getArrivalTime()) + 1,
             num++);
       });
   return result;
@@ -106,14 +106,14 @@ buildBalancedAndTree(OpBuilder &builder, Location loc,
 Value buildBalancedSOP(OpBuilder &builder, Location loc, const SOPForm &sop,
                        ArrayRef<Value> inputs,
                        ArrayRef<DelayType> inputArrivalTimes) {
-  SmallVector<ValueWithArrivalTime, expectedISOPInputs> productTerms, literals;
+  SmallVector<TimedInvertibleValue, expectedISOPInputs> productTerms, literals;
 
   size_t num = 0;
   for (const auto &cube : sop.cubes) {
     for (unsigned i = 0; i < sop.numVars; ++i) {
       if (cube.hasLiteral(i))
-        literals.push_back(ValueWithArrivalTime(
-            inputs[i], inputArrivalTimes[i], cube.isLiteralInverted(i), num++));
+        literals.push_back(TimedInvertibleValue(
+            inputs[i], cube.isLiteralInverted(i), inputArrivalTimes[i], num++));
     }
 
     if (literals.empty())

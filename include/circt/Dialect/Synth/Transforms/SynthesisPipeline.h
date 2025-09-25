@@ -81,6 +81,10 @@ struct SynthOptimizationPipelineOptions
       *this, "timing-aware",
       llvm::cl::desc("Lower operators in a timing-aware fashion"),
       llvm::cl::init(false)};
+
+  PassOptions::Option<TargetIR> targetIR{
+      *this, "lowering-target", llvm::cl::desc("Target IR to lower to"),
+      llvm::cl::init(TargetIR::AIG)};
 };
 
 /// Options for the synth optimization pipeline.

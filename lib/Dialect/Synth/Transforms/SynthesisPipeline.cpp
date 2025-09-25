@@ -115,6 +115,10 @@ void circt::synth::buildSynthOptimizationPipeline(
   pm.addPass(synth::createMaximumAndCover());
   pm.addPass(createLowerVariadicPass(options.timingAware));
   pm.addPass(createStructuralHash());
+  if (options.targetIR.getValue() == TargetIR::MIG)
+    pm.addPass(synth::createMIGAlgebraicRewriting());
+  pm.addPass(createStructuralHash());
+  pm.addPass(createSimpleCanonicalizerPass());
 
   // SOP balancing.
   if (!options.disableSOPBalancing) {

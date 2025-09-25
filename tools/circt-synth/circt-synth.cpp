@@ -286,6 +286,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
+    optimizationOptions.targetIR = targetIR;
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
 

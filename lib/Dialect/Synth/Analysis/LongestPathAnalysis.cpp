@@ -1936,11 +1936,16 @@ bool LongestPathAnalysis::isAnalysisAvailable(StringAttr moduleName) const {
 }
 
 FailureOr<int64_t> LongestPathAnalysis::getAverageMaxDelay(Value value) {
+  if (!isAnalysisValid)
+    return failure();
   return impl->getAverageMaxDelay(value);
 }
 
 FailureOr<int64_t> LongestPathAnalysis::getMaxDelay(Value value,
                                                     int64_t bitPos) {
+  if (!isAnalysisValid)
+    return failure();
+
   return impl->getMaxDelay(value, bitPos);
 }
 
