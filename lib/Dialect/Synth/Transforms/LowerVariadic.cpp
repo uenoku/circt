@@ -11,10 +11,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/PriorityQueue.h"
+#include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/Operation.h>
+#include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/PatternMatch.h>
 
 #define DEBUG_TYPE "synth-lower-variadic"
 
@@ -33,10 +41,9 @@ using namespace synth;
 //===----------------------------------------------------------------------===//
 
 namespace {
-static Value lowerVariadicAndInverterOp(aig::AndInverterOp op,
-                                        OperandRange operands,
-                                        ArrayRef<bool> inverts,
-                                        PatternRewriter &rewriter) {
+Value lowerVariadicAndInverterOp(aig::AndInverterOp op, OperandRange operands,
+                                 ArrayRef<bool> inverts,
+                                 mlir::IRRewriter &rewriter) {
   switch (operands.size()) {
   case 0:
     assert(0 && "cannot be called with empty operand range");
@@ -64,28 +71,7 @@ static Value lowerVariadicAndInverterOp(aig::AndInverterOp op,
   return Value();
 }
 
-struct VariadicOpConversion : OpRewritePattern<aig::AndInverterOp> {
-  using OpRewritePattern<aig::AndInverterOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(aig::AndInverterOp op,
-                                PatternRewriter &rewriter) const override {
-    if (op.getInputs().size() <= 2)
-      return failure();
-
-    // TODO: This is a naive implementation that creates a balanced binary tree.
-    //       We can improve by analyzing the dataflow and creating a tree that
-    //       improves the critical path or area.
-    rewriter.replaceOp(op,
-                       lowerVariadicAndInverterOp(op, op.getOperands(),
-                                                  op.getInverted(), rewriter));
-    return success();
-  }
-};
-
 } // namespace
-
-static void populateLowerVariadicPatterns(RewritePatternSet &patterns) {
-  patterns.add<VariadicOpConversion>(patterns.getContext());
-}
 
 //===----------------------------------------------------------------------===//
 // Lower Variadic pass
@@ -93,15 +79,99 @@ static void populateLowerVariadicPatterns(RewritePatternSet &patterns) {
 
 namespace {
 struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
+  using LowerVariadicBase::LowerVariadicBase;
   void runOnOperation() override;
 };
 } // namespace
 
-void LowerVariadicPass::runOnOperation() {
-  RewritePatternSet patterns(&getContext());
-  populateLowerVariadicPatterns(patterns);
-  mlir::FrozenRewritePatternSet frozen(std::move(patterns));
+struct ValueWithArrivalTime {
+  Value value;
+  DelayType arrivalTime;
+  ValueWithArrivalTime(Value value, DelayType arrivalTime)
+      : value(value), arrivalTime(arrivalTime) {}
 
-  if (failed(mlir::applyPatternsGreedily(getOperation(), frozen)))
+  bool operator<(const ValueWithArrivalTime &other) const {
+    return arrivalTime < other.arrivalTime;
+  }
+  bool operator>(const ValueWithArrivalTime &other) const {
+    return arrivalTime > other.arrivalTime;
+  }
+};
+
+void LowerVariadicPass::runOnOperation() {
+  auto topo = synth::topologicallySortGraphRegionBlocks(
+      getOperation(), [](Value value, mlir::Operation *op) -> bool {
+        return !isa_and_nonnull<comb::CombDialect, synth::SynthDialect>(
+            op->getDialect());
+      });
+
+  if (failed(topo))
+    return signalPassFailure();
+
+  synth::IncrementalLongestPathAnalysis *analysis =
+      &getAnalysis<synth::IncrementalLongestPathAnalysis>();
+  auto op = getOperation();
+  SmallVector<mlir::OperationName> names;
+  for (auto name : opNames)
+    names.push_back(mlir::OperationName(name, &getContext()));
+  auto shouldLower = [&](Operation *op) {
+    if (names.empty())
+      return true;
+    return llvm::find(names, op->getName()) != names.end();
+  };
+  mlir::IRRewriter rewriter(&getContext());
+  rewriter.setListener(analysis);
+  auto result = op->walk([&](Operation *op) {
+    if (shouldLower(op)) {
+      rewriter.setInsertionPoint(op);
+      if (op->getNumOperands() <= 2)
+        return WalkResult::advance();
+      if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
+        auto newOp = lowerVariadicAndInverterOp(
+            andInverterOp, andInverterOp->getOperands(),
+            andInverterOp.getInverted(), rewriter);
+        rewriter.replaceOp(op, newOp);
+        return WalkResult::advance();
+      }
+      // and, or, xor, mul, add etc.
+      if (op->hasTrait<mlir::OpTrait::IsCommutative>()) {
+        // Check if the operation has more than 2 operands.
+        llvm::PriorityQueue<ValueWithArrivalTime,
+                            std::vector<ValueWithArrivalTime>,
+                            std::greater<ValueWithArrivalTime>>
+            queue;
+        auto enqueue = [&](Value value) -> LogicalResult {
+          auto delay = analysis->getMaxDelay(value);
+          if (failed(delay))
+            return failure();
+          queue.push(ValueWithArrivalTime(value, *delay));
+          return success();
+        };
+        for (auto operand : op->getOperands())
+          if (failed(enqueue(operand)))
+            return WalkResult::interrupt();
+
+        // Lower the operation.
+        rewriter.setInsertionPoint(op);
+        while (queue.size() >= 2) {
+          auto lhs = queue.top();
+          queue.pop();
+          auto rhs = queue.top();
+          queue.pop();
+          OperationState state(op->getLoc(), op->getName());
+          state.addOperands(ValueRange{lhs.value, rhs.value});
+          state.addTypes(op->getResult(0).getType());
+          auto *newOp = Operation::create(state);
+          rewriter.insert(newOp);
+          if (failed(enqueue(newOp->getResult(0))))
+            return WalkResult::interrupt();
+        }
+        rewriter.replaceOp(op, queue.top().value);
+        return WalkResult::advance();
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
     return signalPassFailure();
 }

@@ -79,6 +79,9 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
 
 def LowerVariadic : Pass<"synth-lower-variadic", "hw::HWModuleOp"> {
   let summary = "Lower variadic AndInverter operations to binary AndInverter";
+  let options = [
+    ListOption<"opNames", "op-names", "std::string", "Specify operation names to lower">
+  ];
 }
 
 def LowerWordToBits : Pass<"synth-lower-word-to-bits", "hw::HWModuleOp"> {

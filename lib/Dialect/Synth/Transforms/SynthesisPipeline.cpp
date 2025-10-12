@@ -36,7 +36,7 @@ using namespace circt::synth;
 
 /// Helper function to populate additional legal ops for partial legalization.
 template <typename... AllowedOpTy>
-static void partiallyLegalizeCombToSynth(SmallVectorImpl<std::string> &ops) {
+static void addOpName(SmallVectorImpl<std::string> &ops) {
   (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
 }
 
@@ -44,6 +44,10 @@ void circt::synth::buildCombLoweringPipeline(
     OpPassManager &pm, const CombLoweringPipelineOptions &options) {
   {
     if (!options.disableDatapath) {
+      // Lower variadic Mul.
+      LowerVariadicOptions lowerVariadicOptions;
+      addOpName<comb::MulOp>(lowerVariadicOptions.opNames);
+      pm.addPass(createLowerVariadic(lowerVariadicOptions));
       pm.addPass(createConvertCombToDatapath());
       pm.addPass(createSimpleCanonicalizerPass());
       if (options.synthesisStrategy == OptimizationStrategyTiming)
@@ -55,10 +59,9 @@ void circt::synth::buildCombLoweringPipeline(
     }
     // Partially legalize Comb, then run CSE and canonicalization.
     circt::ConvertCombToSynthOptions convOptions;
-    partiallyLegalizeCombToSynth<comb::AndOp, comb::OrOp, comb::XorOp,
-                                 comb::MuxOp, comb::ICmpOp, hw::ArrayGetOp,
-                                 hw::ArraySliceOp, hw::ArrayCreateOp,
-                                 hw::ArrayConcatOp, hw::AggregateConstantOp>(
+    addOpName<comb::AndOp, comb::OrOp, comb::XorOp, comb::MuxOp, comb::ICmpOp,
+              hw::ArrayGetOp, hw::ArraySliceOp, hw::ArrayCreateOp,
+              hw::ArrayConcatOp, hw::AggregateConstantOp>(
         convOptions.additionalLegalOps);
     pm.addPass(circt::createConvertCombToSynth(convOptions));
   }
@@ -68,6 +71,19 @@ void circt::synth::buildCombLoweringPipeline(
   // unless they are very deep.
   comb::BalanceMuxOptions balanceOptions{OptimizationStrategyTiming ? 16 : 64};
   pm.addPass(comb::createBalanceMux(balanceOptions));
+
+  if (options.targetIR.getValue() == TargetIR::AIG) {
+
+    // For AIG, lower variadic XoR.
+    LowerVariadicOptions lowerVariadicOptions;
+    addOpName<comb::XorOp>(lowerVariadicOptions.opNames);
+    pm.addPass(synth::createLowerVariadic(lowerVariadicOptions));
+  } else if (options.targetIR.getValue() == TargetIR::MIG) {
+    LowerVariadicOptions lowerVariadicOptions;
+    addOpName<comb::AndOp, comb::OrOp, comb::XorOp>(
+        lowerVariadicOptions.opNames);
+    pm.addPass(synth::createLowerVariadic(lowerVariadicOptions));
+  }
 
   pm.addPass(circt::hw::createHWAggregateToComb());
   circt::ConvertCombToSynthOptions convOptions;
