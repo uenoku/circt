@@ -39,15 +39,18 @@ template <typename... AllowedOpTy>
 static void addOpName(SmallVectorImpl<std::string> &ops) {
   (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
 }
-
+template <typename... OpToLowerTy>
+static std::unique_ptr<Pass> createLowerVariadicPass() {
+  LowerVariadicOptions options;
+  addOpName<OpToLowerTy...>(options.opNames);
+  return createLowerVariadic(options);
+}
 void circt::synth::buildCombLoweringPipeline(
     OpPassManager &pm, const CombLoweringPipelineOptions &options) {
   {
     if (!options.disableDatapath) {
       // Lower variadic Mul.
-      LowerVariadicOptions lowerVariadicOptions;
-      addOpName<comb::MulOp>(lowerVariadicOptions.opNames);
-      pm.addPass(createLowerVariadic(lowerVariadicOptions));
+      pm.addPass(createLowerVariadicPass<comb::MulOp>());
       pm.addPass(createConvertCombToDatapath());
       pm.addPass(createSimpleCanonicalizerPass());
       if (options.synthesisStrategy == OptimizationStrategyTiming)
@@ -73,16 +76,11 @@ void circt::synth::buildCombLoweringPipeline(
   pm.addPass(comb::createBalanceMux(balanceOptions));
 
   if (options.targetIR.getValue() == TargetIR::AIG) {
-
-    // For AIG, lower variadic XoR.
-    LowerVariadicOptions lowerVariadicOptions;
-    addOpName<comb::XorOp>(lowerVariadicOptions.opNames);
-    pm.addPass(synth::createLowerVariadic(lowerVariadicOptions));
+    // For AIG, lower variadic XoR. Since we are lowering to AIG, we don't need
+    // to lower variadic ANDs, ORs.
+    pm.addPass(createLowerVariadicPass<comb::XorOp>());
   } else if (options.targetIR.getValue() == TargetIR::MIG) {
-    LowerVariadicOptions lowerVariadicOptions;
-    addOpName<comb::AndOp, comb::OrOp, comb::XorOp>(
-        lowerVariadicOptions.opNames);
-    pm.addPass(synth::createLowerVariadic(lowerVariadicOptions));
+    pm.addPass(createLowerVariadicPass<comb::AndOp, comb::OrOp, comb::XorOp>());
   }
 
   pm.addPass(circt::hw::createHWAggregateToComb());
