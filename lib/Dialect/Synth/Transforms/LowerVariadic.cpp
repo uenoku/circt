@@ -87,8 +87,9 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 /// delay-aware algorithm. This function builds the tree by repeatedly combining
 /// the two values with the earliest arrival times, which minimizes the critical
 /// path delay.
-static FailureOr<Value> constructBalancedTree(
-    Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
+static LogicalResult replaceWithBalancedTree(
+    mlir::IRRewriter &rewriter, Operation *op,
+    llvm::function_ref<bool(OpOperand &)> isInverted,
     llvm::function_ref<FailureOr<ValueWithArrivalTime>(Value value,
                                                        bool invert)>
         enqueue,
@@ -128,7 +129,9 @@ static FailureOr<Value> constructBalancedTree(
       return failure();
   }
 
-  return queue.top().getValue();
+  auto result = queue.top().getValue();
+  rewriter.replaceOp(op, result);
+  return success();
 }
 
 void LowerVariadicPass::runOnOperation() {
@@ -181,8 +184,8 @@ void LowerVariadicPass::runOnOperation() {
 
     // Handle AndInverterOp specially to preserve inversion flags.
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
-      auto result = constructBalancedTree(
-          op,
+      auto result = replaceWithBalancedTree(
+          rewriter, op,
           // Check if each operand is inverted.
           [&](OpOperand &operand) {
             return andInverterOp.isInverted(operand.getOperandNumber());
@@ -194,18 +197,16 @@ void LowerVariadicPass::runOnOperation() {
                 op->getLoc(), lhs.getValue(), rhs.getValue(), lhs.isInverted(),
                 rhs.isInverted());
           });
-      if (failed(result))
-        return WalkResult::interrupt();
-      rewriter.replaceOp(op, *result);
-      return WalkResult::advance();
+      return result.succeeded() ? WalkResult::advance()
+                                : WalkResult::interrupt();
     }
 
     // Handle commutative operations (and, or, xor, mul, add, etc.) using
     // delay-aware lowering to minimize critical path.
     if (isa_and_nonnull<comb::CombDialect>(op->getDialect()) &&
         op->hasTrait<OpTrait::IsCommutative>()) {
-      auto result = constructBalancedTree(
-          op,
+      auto result = replaceWithBalancedTree(
+          rewriter, op,
           // No inversion flags for standard commutative operations.
           [&](OpOperand &) { return false; }, enqueue,
           // Create binary operation with the same operation type.
@@ -217,10 +218,8 @@ void LowerVariadicPass::runOnOperation() {
             rewriter.insert(newOp);
             return newOp->getResult(0);
           });
-      if (failed(result))
-        return WalkResult::interrupt();
-      rewriter.replaceOp(op, *result);
-      return WalkResult::advance();
+      return result.succeeded() ? WalkResult::advance()
+                                : WalkResult::interrupt();
     }
 
     return WalkResult::advance();
