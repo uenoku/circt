@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
@@ -36,60 +37,38 @@ using namespace circt;
 using namespace synth;
 
 //===----------------------------------------------------------------------===//
-// Rewrite patterns
-//===----------------------------------------------------------------------===//
-
-namespace {
-Value lowerVariadicAndInverterOp(aig::AndInverterOp op, OperandRange operands,
-                                 ArrayRef<bool> inverts,
-                                 mlir::IRRewriter &rewriter) {
-  switch (operands.size()) {
-  case 0:
-    assert(0 && "cannot be called with empty operand range");
-    break;
-  case 1:
-    if (inverts[0])
-      return aig::AndInverterOp::create(rewriter, op.getLoc(), operands[0],
-                                        true);
-    else
-      return operands[0];
-  case 2:
-    return aig::AndInverterOp::create(rewriter, op.getLoc(), operands[0],
-                                      operands[1], inverts[0], inverts[1]);
-  default:
-    auto firstHalf = operands.size() / 2;
-    auto lhs =
-        lowerVariadicAndInverterOp(op, operands.take_front(firstHalf),
-                                   inverts.take_front(firstHalf), rewriter);
-    auto rhs =
-        lowerVariadicAndInverterOp(op, operands.drop_front(firstHalf),
-                                   inverts.drop_front(firstHalf), rewriter);
-    return aig::AndInverterOp::create(rewriter, op.getLoc(), lhs, rhs);
-  }
-
-  return Value();
-}
-
-} // namespace
-
-//===----------------------------------------------------------------------===//
 // Lower Variadic pass
 //===----------------------------------------------------------------------===//
 
 namespace {
 
+/// Helper structure for delay-aware variadic operation lowering.
+/// Stores a value along with its arrival time for priority queue ordering.
 struct ValueWithArrivalTime {
+  /// The value and an optional inversion flag packed together.
+  /// The inversion flag is used for AndInverterOp lowering.
   llvm::PointerIntPair<Value, 1, bool> value;
+
+  /// The arrival time (delay) of this value in the circuit.
   int64_t arrivalTime;
+
+  /// Value numbering for deterministic ordering when arrival times are equal.
+  /// This ensures consistent results across runs when multiple values have
+  /// the same delay.
   size_t valueNumbering = 0;
+
   ValueWithArrivalTime(Value value, int64_t arrivalTime)
       : value(value), arrivalTime(arrivalTime) {}
   ValueWithArrivalTime(Value value, int64_t arrivalTime, bool invert)
       : value(value, invert), arrivalTime(arrivalTime) {}
+
   Value getValue() const { return value.getPointer(); }
   bool isInverted() const { return value.getInt(); }
   void setValueNumbering(size_t numbering) { valueNumbering = numbering; }
 
+  /// Comparison operator for priority queue (min-heap based on arrival time).
+  /// Values with earlier arrival times have higher priority (lower in the
+  /// heap). When arrival times are equal, use value numbering for determinism.
   bool operator>(const ValueWithArrivalTime &other) const {
     return arrivalTime > other.arrivalTime ||
            (arrivalTime == other.arrivalTime &&
@@ -104,18 +83,26 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 
 } // namespace
 
-FailureOr<Value> constructBalancedTree(
+/// Construct a balanced binary tree from a variadic operation using a
+/// delay-aware algorithm. This function builds the tree by repeatedly combining
+/// the two values with the earliest arrival times, which minimizes the critical
+/// path delay.
+static FailureOr<Value> constructBalancedTree(
     Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
     llvm::function_ref<FailureOr<ValueWithArrivalTime>(Value value,
                                                        bool invert)>
         enqueue,
     llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
         create) {
-  // Priority queue.
+  // Min-heap priority queue ordered by arrival time.
+  // Values with earlier arrival times are processed first.
   llvm::PriorityQueue<ValueWithArrivalTime, std::vector<ValueWithArrivalTime>,
                       std::greater<ValueWithArrivalTime>>
       queue;
+
+  // Counter for deterministic ordering when arrival times are equal.
   size_t valueNumber = 0;
+
   auto push = [&](Value value, bool invert) {
     auto result = enqueue(value, invert);
     if (failed(result))
@@ -125,10 +112,13 @@ FailureOr<Value> constructBalancedTree(
     return success();
   };
 
+  // Enqueue all operands with their arrival times and inversion flags.
   for (size_t i = 0; i < op->getNumOperands(); ++i)
     if (failed(push(op->getOperand(i), isInverted(op->getOpOperand(i)))))
       return failure();
 
+  // Build balanced tree by repeatedly combining the two earliest values.
+  // This greedy approach minimizes the maximum depth of late-arriving signals.
   while (queue.size() >= 2) {
     auto lhs = queue.top();
     queue.pop();
@@ -168,6 +158,8 @@ void LowerVariadicPass::runOnOperation() {
 
   mlir::IRRewriter rewriter(&getContext());
   rewriter.setListener(analysis);
+
+  // Callback to compute arrival time for a value.
   auto enqueue = [&](Value value,
                      bool invert) -> FailureOr<ValueWithArrivalTime> {
     int64_t delay = 0;
@@ -177,24 +169,26 @@ void LowerVariadicPass::runOnOperation() {
         return failure();
       delay = *result;
     }
-
     return ValueWithArrivalTime(value, delay, invert);
   };
 
   auto result = moduleOp->walk([&](Operation *op) {
+    // Skip operations that don't need lowering or are already binary.
     if (!shouldLower(op) || op->getNumOperands() <= 2)
       return WalkResult::advance();
 
     rewriter.setInsertionPoint(op);
 
-    // Handle AndInverterOp specially due to inversion flags.
+    // Handle AndInverterOp specially to preserve inversion flags.
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
       auto result = constructBalancedTree(
           op,
+          // Check if each operand is inverted.
           [&](OpOperand &operand) {
             return andInverterOp.isInverted(operand.getOperandNumber());
           },
           enqueue,
+          // Create binary AndInverterOp with inversion flags.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             return rewriter.create<aig::AndInverterOp>(
                 op->getLoc(), lhs.getValue(), rhs.getValue(), lhs.isInverted(),
@@ -208,9 +202,13 @@ void LowerVariadicPass::runOnOperation() {
 
     // Handle commutative operations (and, or, xor, mul, add, etc.) using
     // delay-aware lowering to minimize critical path.
-    if (op->hasTrait<OpTrait::IsCommutative>()) {
+    if (isa_and_nonnull<comb::CombDialect>(op->getDialect()) &&
+        op->hasTrait<OpTrait::IsCommutative>()) {
       auto result = constructBalancedTree(
-          op, [&](OpOperand &operand) { return false; }, enqueue,
+          op,
+          // No inversion flags for standard commutative operations.
+          [&](OpOperand &) { return false; }, enqueue,
+          // Create binary operation with the same operation type.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             OperationState state(op->getLoc(), op->getName());
             state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
