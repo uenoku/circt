@@ -23,6 +23,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/PriorityQueue.h"
+#include <cstdint>
 
 #define DEBUG_TYPE "synth-lower-variadic"
 

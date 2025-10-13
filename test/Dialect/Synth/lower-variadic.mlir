@@ -22,8 +22,9 @@ hw.module @AddMul(in %x: i4, in %y: i4, in %z: i4, out out: i4) {
   // NO-TIMING-NEXT: %[[MUL:.+]] = comb.mul %c5_i4, %[[ADD]] : i4
   // NO-TIMING-NEXT: %[[RES:.+]] = comb.mul %z, %[[MUL]] : i4
   // NO-TIMING-NEXT: hw.output %[[RES]] : i4
-  %c_i5 = hw.constant 5 : i4
-  %add = comb.add %x, %y : i4
   %0 = comb.mul %c_i5, %add, %z : i4
+  %c_i5 = hw.constant 5 : i4
+  // Check topological sort as well.
+  %add = comb.add %x, %y : i4
   hw.output %0 : i4
 }
