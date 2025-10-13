@@ -20,6 +20,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/PriorityQueue.h"
 
 #define DEBUG_TYPE "synth-lower-variadic"
@@ -78,10 +79,14 @@ Value lowerVariadicAndInverterOp(aig::AndInverterOp op, OperandRange operands,
 namespace {
 
 struct ValueWithArrivalTime {
-  Value value;
+  llvm::PointerIntPair<Value, 1, bool> value;
   int64_t arrivalTime;
   ValueWithArrivalTime(Value value, int64_t arrivalTime)
       : value(value), arrivalTime(arrivalTime) {}
+  ValueWithArrivalTime(Value value, int64_t arrivalTime, bool invert)
+      : value(value, invert), arrivalTime(arrivalTime) {}
+  Value getValue() const { return value.getPointer(); }
+  bool isInverted() const { return value.getInt(); }
 
   bool operator>(const ValueWithArrivalTime &other) const {
     return arrivalTime > other.arrivalTime;
@@ -94,6 +99,39 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 };
 
 } // namespace
+
+FailureOr<Value> constructBalancedTree(
+    Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
+    llvm::function_ref<FailureOr<ValueWithArrivalTime>(Value value,
+                                                       bool invert)>
+        enqueue,
+    llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
+        create) {
+  // Priority queue.
+  llvm::PriorityQueue<ValueWithArrivalTime, std::vector<ValueWithArrivalTime>,
+                      std::greater<ValueWithArrivalTime>>
+      queue;
+  for (size_t i = 0; i < op->getNumOperands(); ++i) {
+    auto inverted = isInverted(op->getOpOperand(i));
+    auto result = enqueue(op->getOperand(i), inverted);
+    if (failed(result))
+      return failure();
+    queue.push(*result);
+  }
+
+  while (queue.size() >= 2) {
+    auto lhs = queue.top();
+    queue.pop();
+    auto rhs = queue.top();
+    queue.pop();
+    auto result = enqueue(create(lhs, rhs), /*inverted=*/false);
+    if (failed(result))
+      return failure();
+    queue.push(*result);
+  }
+
+  return queue.top().getValue();
+}
 
 void LowerVariadicPass::runOnOperation() {
   // Topologically sort operations in graph regions to ensure operands are
@@ -113,6 +151,7 @@ void LowerVariadicPass::runOnOperation() {
   for (const auto &name : opNames)
     names.push_back(OperationName(name, &getContext()));
 
+  // Return true if the operation should be lowered.
   auto shouldLower = [&](Operation *op) {
     if (names.empty())
       return true;
@@ -164,9 +203,11 @@ void LowerVariadicPass::runOnOperation() {
         queue.pop();
         auto rhs = queue.top();
         queue.pop();
+        assert(!lhs.isInverted() && !rhs.isInverted() &&
+               "expected no inversion flags");
 
         OperationState state(op->getLoc(), op->getName());
-        state.addOperands(ValueRange{lhs.value, rhs.value});
+        state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
         state.addTypes(op->getResult(0).getType());
         auto *newOp = Operation::create(state);
         rewriter.insert(newOp);
@@ -175,7 +216,7 @@ void LowerVariadicPass::runOnOperation() {
           return WalkResult::interrupt();
       }
 
-      rewriter.replaceOp(op, queue.top().value);
+      rewriter.replaceOp(op, queue.top().getValue());
       return WalkResult::advance();
     }
 
