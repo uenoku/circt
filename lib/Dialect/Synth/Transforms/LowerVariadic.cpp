@@ -169,54 +169,51 @@ void LowerVariadicPass::runOnOperation() {
 
     // Handle AndInverterOp specially due to inversion flags.
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
-      auto newOp = lowerVariadicAndInverterOp(
-          andInverterOp, andInverterOp->getOperands(),
-          andInverterOp.getInverted(), rewriter);
-      rewriter.replaceOp(op, newOp);
+      auto result = constructBalancedTree(
+          op,
+          [&](OpOperand &operand) {
+            return andInverterOp.isInverted(operand.getOperandNumber());
+          },
+          [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
+            auto delay = analysis->getMaxDelay(value);
+            if (failed(delay))
+              return failure();
+
+            llvm::errs() << value << " " << *delay << "\n";
+            return ValueWithArrivalTime(value, *delay, invert);
+          },
+          [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
+            return rewriter.create<aig::AndInverterOp>(
+                op->getLoc(), lhs.getValue(), rhs.getValue(), lhs.isInverted(),
+                rhs.isInverted());
+          });
+      if (failed(result))
+        return WalkResult::interrupt();
+      rewriter.replaceOp(op, *result);
       return WalkResult::advance();
     }
 
     // Handle commutative operations (and, or, xor, mul, add, etc.) using
     // delay-aware lowering to minimize critical path.
     if (op->hasTrait<OpTrait::IsCommutative>()) {
-      llvm::PriorityQueue<ValueWithArrivalTime,
-                          std::vector<ValueWithArrivalTime>,
-                          std::greater<ValueWithArrivalTime>>
-          queue;
-
-      auto enqueue = [&](Value value) -> LogicalResult {
-        auto delay = analysis->getMaxDelay(value);
-        if (failed(delay))
-          return failure();
-        queue.push(ValueWithArrivalTime(value, *delay));
-        return success();
-      };
-
-      // Enqueue all operands with their arrival times.
-      for (auto operand : op->getOperands())
-        if (failed(enqueue(operand)))
-          return WalkResult::interrupt();
-
-      // Build balanced tree by combining values with earliest arrival times.
-      while (queue.size() >= 2) {
-        auto lhs = queue.top();
-        queue.pop();
-        auto rhs = queue.top();
-        queue.pop();
-        assert(!lhs.isInverted() && !rhs.isInverted() &&
-               "expected no inversion flags");
-
-        OperationState state(op->getLoc(), op->getName());
-        state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
-        state.addTypes(op->getResult(0).getType());
-        auto *newOp = Operation::create(state);
-        rewriter.insert(newOp);
-
-        if (failed(enqueue(newOp->getResult(0))))
-          return WalkResult::interrupt();
-      }
-
-      rewriter.replaceOp(op, queue.top().getValue());
+      auto result = constructBalancedTree(
+          op, [&](OpOperand &operand) { return false; },
+          [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
+            auto delay = analysis->getMaxDelay(value);
+            if (failed(delay))
+              return failure();
+            return ValueWithArrivalTime(value, *delay);
+          },
+          [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
+            OperationState state(op->getLoc(), op->getName());
+            state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
+            state.addTypes(op->getResult(0).getType());
+            auto *newOp = Operation::create(state);
+            rewriter.insert(newOp);
+            return newOp->getResult(0);
+          });
+      if (failed(result))
+        return WalkResult::interrupt();
       return WalkResult::advance();
     }
 
