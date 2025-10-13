@@ -81,15 +81,19 @@ namespace {
 struct ValueWithArrivalTime {
   llvm::PointerIntPair<Value, 1, bool> value;
   int64_t arrivalTime;
+  size_t valueNumbering = 0;
   ValueWithArrivalTime(Value value, int64_t arrivalTime)
       : value(value), arrivalTime(arrivalTime) {}
   ValueWithArrivalTime(Value value, int64_t arrivalTime, bool invert)
       : value(value, invert), arrivalTime(arrivalTime) {}
   Value getValue() const { return value.getPointer(); }
   bool isInverted() const { return value.getInt(); }
+  void setValueNumbering(size_t numbering) { valueNumbering = numbering; }
 
   bool operator>(const ValueWithArrivalTime &other) const {
-    return arrivalTime > other.arrivalTime;
+    return arrivalTime > other.arrivalTime ||
+           (arrivalTime == other.arrivalTime &&
+            valueNumbering > other.valueNumbering);
   }
 };
 
@@ -111,23 +115,27 @@ FailureOr<Value> constructBalancedTree(
   llvm::PriorityQueue<ValueWithArrivalTime, std::vector<ValueWithArrivalTime>,
                       std::greater<ValueWithArrivalTime>>
       queue;
-  for (size_t i = 0; i < op->getNumOperands(); ++i) {
-    auto inverted = isInverted(op->getOpOperand(i));
-    auto result = enqueue(op->getOperand(i), inverted);
+  size_t valueNumber = 0;
+  auto push = [&](Value value, bool invert) {
+    auto result = enqueue(value, invert);
     if (failed(result))
       return failure();
+    (*result).setValueNumbering(valueNumber++);
     queue.push(*result);
-  }
+    return success();
+  };
+
+  for (size_t i = 0; i < op->getNumOperands(); ++i)
+    if (failed(push(op->getOperand(i), isInverted(op->getOpOperand(i)))))
+      return failure();
 
   while (queue.size() >= 2) {
     auto lhs = queue.top();
     queue.pop();
     auto rhs = queue.top();
     queue.pop();
-    auto result = enqueue(create(lhs, rhs), /*inverted=*/false);
-    if (failed(result))
+    if (failed(push(create(lhs, rhs), /*inverted=*/false)))
       return failure();
-    queue.push(*result);
   }
 
   return queue.top().getValue();
@@ -160,6 +168,18 @@ void LowerVariadicPass::runOnOperation() {
 
   mlir::IRRewriter rewriter(&getContext());
   rewriter.setListener(analysis);
+  auto enqueue = [&](Value value,
+                     bool invert) -> FailureOr<ValueWithArrivalTime> {
+    int64_t delay = 0;
+    if (analysis) {
+      auto result = analysis->getMaxDelay(value);
+      if (failed(result))
+        return failure();
+      delay = *result;
+    }
+
+    return ValueWithArrivalTime(value, delay, invert);
+  };
 
   auto result = moduleOp->walk([&](Operation *op) {
     if (!shouldLower(op) || op->getNumOperands() <= 2)
@@ -174,14 +194,7 @@ void LowerVariadicPass::runOnOperation() {
           [&](OpOperand &operand) {
             return andInverterOp.isInverted(operand.getOperandNumber());
           },
-          [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
-            auto delay = analysis->getMaxDelay(value);
-            if (failed(delay))
-              return failure();
-
-            llvm::errs() << value << " " << *delay << "\n";
-            return ValueWithArrivalTime(value, *delay, invert);
-          },
+          enqueue,
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             return rewriter.create<aig::AndInverterOp>(
                 op->getLoc(), lhs.getValue(), rhs.getValue(), lhs.isInverted(),
@@ -197,13 +210,7 @@ void LowerVariadicPass::runOnOperation() {
     // delay-aware lowering to minimize critical path.
     if (op->hasTrait<OpTrait::IsCommutative>()) {
       auto result = constructBalancedTree(
-          op, [&](OpOperand &operand) { return false; },
-          [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
-            auto delay = analysis->getMaxDelay(value);
-            if (failed(delay))
-              return failure();
-            return ValueWithArrivalTime(value, *delay);
-          },
+          op, [&](OpOperand &operand) { return false; }, enqueue,
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             OperationState state(op->getLoc(), op->getName());
             state.addOperands(ValueRange{lhs.getValue(), rhs.getValue()});
@@ -214,6 +221,7 @@ void LowerVariadicPass::runOnOperation() {
           });
       if (failed(result))
         return WalkResult::interrupt();
+      rewriter.replaceOp(op, *result);
       return WalkResult::advance();
     }
 
