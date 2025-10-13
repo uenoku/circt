@@ -87,7 +87,9 @@ def LowerVariadic : Pass<"synth-lower-variadic", "hw::HWModuleOp"> {
   }];
   let options = [
     ListOption<"opNames", "op-names", "std::string",
-               "Specify operation names to lower (empty means all)">
+               "Specify operation names to lower (empty means all)">,
+    Option<"timingAware", "timing-aware", "bool", "true",
+           "Lower operators with timing information">
   ];
 }
 

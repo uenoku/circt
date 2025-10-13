@@ -92,7 +92,7 @@ static LogicalResult replaceWithBalancedTree(
     llvm::function_ref<bool(OpOperand &)> isInverted,
     llvm::function_ref<FailureOr<ValueWithArrivalTime>(Value value,
                                                        bool invert)>
-        enqueue,
+        computeArrivalTime,
     llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
         create) {
   // Min-heap priority queue ordered by arrival time.
@@ -105,7 +105,7 @@ static LogicalResult replaceWithBalancedTree(
   size_t valueNumber = 0;
 
   auto push = [&](Value value, bool invert) {
-    auto result = enqueue(value, invert);
+    auto result = computeArrivalTime(value, invert);
     if (failed(result))
       return failure();
     (*result).setValueNumbering(valueNumber++);
@@ -144,7 +144,10 @@ void LowerVariadicPass::runOnOperation() {
           })))
     return signalPassFailure();
 
-  auto *analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
+  synth::IncrementalLongestPathAnalysis *analysis = nullptr;
+  if (timingAware.getValue())
+    analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
+
   auto moduleOp = getOperation();
 
   // Build set of operation names to lower if specified.
@@ -163,8 +166,8 @@ void LowerVariadicPass::runOnOperation() {
   rewriter.setListener(analysis);
 
   // Callback to compute arrival time for a value.
-  auto enqueue = [&](Value value,
-                     bool invert) -> FailureOr<ValueWithArrivalTime> {
+  auto computeArrivalTime =
+      [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
     int64_t delay = 0;
     if (analysis) {
       auto result = analysis->getMaxDelay(value);
@@ -190,7 +193,7 @@ void LowerVariadicPass::runOnOperation() {
           [&](OpOperand &operand) {
             return andInverterOp.isInverted(operand.getOperandNumber());
           },
-          enqueue,
+          computeArrivalTime,
           // Create binary AndInverterOp with inversion flags.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             return rewriter.create<aig::AndInverterOp>(
@@ -208,7 +211,7 @@ void LowerVariadicPass::runOnOperation() {
       auto result = replaceWithBalancedTree(
           rewriter, op,
           // No inversion flags for standard commutative operations.
-          [&](OpOperand &) { return false; }, enqueue,
+          [&](OpOperand &) { return false; }, computeArrivalTime,
           // Create binary operation with the same operation type.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             OperationState state(op->getLoc(), op->getName());
