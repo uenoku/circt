@@ -24,6 +24,8 @@
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Rewrite/PatternApplicator.h"
+#include "mlir/Support/WalkResult.h"
+#include "llvm/Support/LogicalResult.h"
 
 #define GET_OP_CLASSES
 #include "circt/Dialect/Synth/Synth.h.inc"
@@ -46,6 +48,12 @@ struct AndInverterVariadicOpConversion
 LogicalResult topologicallySortGraphRegionBlocks(
     mlir::Operation *op,
     llvm::function_ref<bool(mlir::Value, mlir::Operation *)> isOperandReady);
+
+/// Walk operations in topological order, invoking the callback for each
+/// operations.
+LogicalResult walkOperationsInTopologicalOrder(
+    mlir::Operation *op,
+    llvm::function_ref<mlir::WalkResult(mlir::Operation *)> callback);
 
 } // namespace synth
 } // namespace circt
