@@ -40,9 +40,10 @@ static void addOpName(SmallVectorImpl<std::string> &ops) {
   (ops.push_back(AllowedOpTy::getOperationName().str()), ...);
 }
 template <typename... OpToLowerTy>
-static std::unique_ptr<Pass> createLowerVariadicPass() {
+static std::unique_ptr<Pass> createLowerVariadicPass(bool timingAware) {
   LowerVariadicOptions options;
   addOpName<OpToLowerTy...>(options.opNames);
+  options.timingAware = timingAware;
   return createLowerVariadic(options);
 }
 void circt::synth::buildCombLoweringPipeline(
@@ -50,7 +51,7 @@ void circt::synth::buildCombLoweringPipeline(
   {
     if (!options.disableDatapath) {
       // Lower variadic Mul.
-      pm.addPass(createLowerVariadicPass<comb::MulOp>());
+      pm.addPass(createLowerVariadicPass<comb::MulOp>(options.timingAware));
       pm.addPass(createConvertCombToDatapath());
       pm.addPass(createSimpleCanonicalizerPass());
       if (options.synthesisStrategy == OptimizationStrategyTiming)
@@ -78,9 +79,10 @@ void circt::synth::buildCombLoweringPipeline(
   if (options.targetIR.getValue() == TargetIR::AIG) {
     // For AIG, lower variadic XoR. Since we are lowering to AIG, we don't need
     // to lower variadic ANDs, ORs.
-    pm.addPass(createLowerVariadicPass<comb::XorOp>());
+    pm.addPass(createLowerVariadicPass<comb::XorOp>(options.timingAware));
   } else if (options.targetIR.getValue() == TargetIR::MIG) {
-    pm.addPass(createLowerVariadicPass<comb::AndOp, comb::OrOp, comb::XorOp>());
+    pm.addPass(createLowerVariadicPass<comb::AndOp, comb::OrOp, comb::XorOp>(
+        options.timingAware));
   }
 
   pm.addPass(circt::hw::createHWAggregateToComb());
@@ -97,7 +99,7 @@ void circt::synth::buildCombLoweringPipeline(
 void circt::synth::buildSynthOptimizationPipeline(
     OpPassManager &pm, const SynthOptimizationPipelineOptions &options) {
 
-  pm.addPass(synth::createLowerVariadic());
+  pm.addPass(createLowerVariadicPass(options.timingAware));
 
   // LowerWordToBits may not be scalable for large designs so conditionally
   // disable it. It's also worth considering keeping word-level representation

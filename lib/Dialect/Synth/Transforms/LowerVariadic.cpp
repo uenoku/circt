@@ -57,14 +57,13 @@ struct ValueWithArrivalTime {
   /// the same delay.
   size_t valueNumbering = 0;
 
-  ValueWithArrivalTime(Value value, int64_t arrivalTime)
-      : value(value), arrivalTime(arrivalTime) {}
-  ValueWithArrivalTime(Value value, int64_t arrivalTime, bool invert)
-      : value(value, invert), arrivalTime(arrivalTime) {}
+  ValueWithArrivalTime(Value value, int64_t arrivalTime, bool invert,
+                       size_t valueNumbering)
+      : value(value, invert), arrivalTime(arrivalTime),
+        valueNumbering(valueNumbering) {}
 
   Value getValue() const { return value.getPointer(); }
   bool isInverted() const { return value.getInt(); }
-  void setValueNumbering(size_t numbering) { valueNumbering = numbering; }
 
   /// Comparison operator for priority queue (min-heap based on arrival time).
   /// Values with earlier arrival times have higher priority (lower in the
@@ -88,11 +87,8 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 /// the two values with the earliest arrival times, which minimizes the critical
 /// path delay.
 static LogicalResult replaceWithBalancedTree(
-    mlir::IRRewriter &rewriter, Operation *op,
-    llvm::function_ref<bool(OpOperand &)> isInverted,
-    llvm::function_ref<FailureOr<ValueWithArrivalTime>(Value value,
-                                                       bool invert)>
-        computeArrivalTime,
+    IncrementalLongestPathAnalysis *analysis, mlir::IRRewriter &rewriter,
+    Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
     llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
         create) {
   // Min-heap priority queue ordered by arrival time.
@@ -105,11 +101,17 @@ static LogicalResult replaceWithBalancedTree(
   size_t valueNumber = 0;
 
   auto push = [&](Value value, bool invert) {
-    auto result = computeArrivalTime(value, invert);
-    if (failed(result))
-      return failure();
-    (*result).setValueNumbering(valueNumber++);
-    queue.push(*result);
+    int64_t delay = 0;
+    // If analysis is available, use it to compute the delay.
+    // If not available use
+    if (analysis) {
+      auto result = analysis->getMaxDelay(value);
+      if (failed(result))
+        return failure();
+      delay = *result;
+    }
+    ValueWithArrivalTime entry(value, delay, invert, valueNumber++);
+    queue.push(entry);
     return success();
   };
 
@@ -125,6 +127,7 @@ static LogicalResult replaceWithBalancedTree(
     queue.pop();
     auto rhs = queue.top();
     queue.pop();
+    // Create and enqueue .
     if (failed(push(create(lhs, rhs), /*inverted=*/false)))
       return failure();
   }
@@ -165,19 +168,6 @@ void LowerVariadicPass::runOnOperation() {
   mlir::IRRewriter rewriter(&getContext());
   rewriter.setListener(analysis);
 
-  // Callback to compute arrival time for a value.
-  auto computeArrivalTime =
-      [&](Value value, bool invert) -> FailureOr<ValueWithArrivalTime> {
-    int64_t delay = 0;
-    if (analysis) {
-      auto result = analysis->getMaxDelay(value);
-      if (failed(result))
-        return failure();
-      delay = *result;
-    }
-    return ValueWithArrivalTime(value, delay, invert);
-  };
-
   auto result = moduleOp->walk([&](Operation *op) {
     // Skip operations that don't need lowering or are already binary.
     if (!shouldLower(op) || op->getNumOperands() <= 2)
@@ -188,12 +178,11 @@ void LowerVariadicPass::runOnOperation() {
     // Handle AndInverterOp specially to preserve inversion flags.
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
       auto result = replaceWithBalancedTree(
-          rewriter, op,
+          analysis, rewriter, op,
           // Check if each operand is inverted.
           [&](OpOperand &operand) {
             return andInverterOp.isInverted(operand.getOperandNumber());
           },
-          computeArrivalTime,
           // Create binary AndInverterOp with inversion flags.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             return rewriter.create<aig::AndInverterOp>(
@@ -209,9 +198,9 @@ void LowerVariadicPass::runOnOperation() {
     if (isa_and_nonnull<comb::CombDialect>(op->getDialect()) &&
         op->hasTrait<OpTrait::IsCommutative>()) {
       auto result = replaceWithBalancedTree(
-          rewriter, op,
+          analysis, rewriter, op,
           // No inversion flags for standard commutative operations.
-          [&](OpOperand &) { return false; }, computeArrivalTime,
+          [&](OpOperand &) { return false; },
           // Create binary operation with the same operation type.
           [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
             OperationState state(op->getLoc(), op->getName());
