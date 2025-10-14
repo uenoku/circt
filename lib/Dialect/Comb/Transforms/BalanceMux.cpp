@@ -199,7 +199,7 @@ BalancedPriorityMuxBuilder::computeOptimalDelayAndSplit(size_t start,
     return it->second;
 
   // Base case: single element [i, i+1)
-  if (end == start) {
+  if (end == start + 1) {
     PriorityMuxInfo result{resultsArrivalTimes[start],
                            conditionsArrivalTimes[start], start + 1};
     memo[key] = result;
@@ -283,7 +283,7 @@ Value BalancedPriorityMuxBuilder::buildBalancedPriorityMux(size_t start,
 
   // Build left and right subtrees. Use results[mid] as the default for the
   // left subtree to ensure correct priority encoding.
-  Value leftTree = buildBalancedPriorityMux(start, start + mid);
+  Value leftTree = buildBalancedPriorityMux(start, start + mid - 1);
 
   Value rightTree = buildBalancedPriorityMux(start + mid, end);
 
