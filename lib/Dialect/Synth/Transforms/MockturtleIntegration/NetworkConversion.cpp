@@ -328,7 +328,7 @@ using MIGNetworkConverter =
                              synth::mig::MajorityInverterOp, 3>;
 
 //===----------------------------------------------------------------------===//
-// Cell View Converter (for technology mapping)
+// Cell View Converter
 //===----------------------------------------------------------------------===//
 
 /// Importer for cell-view networks (technology mapped circuits).
