@@ -416,7 +416,7 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
 }
 
 LogicalResult validateOptions() {
-#ifndef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
+#ifndef CIRCT_MOCKTURTLE_ENABLED
   if (enableMockturtle || enableMockturtleFunctionalReduction) {
     llvm::errs() << "Error: Mockturtle optimizations are not available in this "
                     "build.\nRemove the -enable-mockturtle option.\n";

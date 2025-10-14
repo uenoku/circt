@@ -49,7 +49,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MLIRTransforms
 )
 
-if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+if(CIRCT_MOCKTURTLE_ENABLED)
 add_subdirectory(MockturtleIntegration)
 target_link_libraries(CIRCTSynthTransforms PRIVATE
   CIRCTSynthMockturtleIntegration

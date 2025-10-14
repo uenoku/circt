@@ -619,10 +619,10 @@ endif()
 # Mockturtle Integration
 #-------------------------------------------------------------------------------
 
-option(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED "Enables mockturtle integration." OFF)
-llvm_canonicalize_cmake_booleans(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+option(CIRCT_MOCKTURTLE_ENABLED "Enables mockturtle integration." OFF)
+llvm_canonicalize_cmake_booleans(CIRCT_MOCKTURTLE_ENABLED)
 
-if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+if(CIRCT_MOCKTURTLE_ENABLED)
   message(STATUS "Mockturtle integration is enabled")
   include(FetchContent)
     
@@ -637,7 +637,7 @@ if(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
   set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE "NEVER")
   # Define necessary compile definitions for mockturtle and ABC
   add_definitions(-DFMT_HEADER_ONLY -DDISABLE_NAUTY -DLIN64 -DABC_NAMESPACE=pabc -DABC_NO_USE_READLINE)
-  add_compile_definitions(CIRCT_MOCKTURTLE_INTEGRATION_ENABLED)
+  add_compile_definitions(CIRCT_MOCKTURTLE_ENABLED)
     
   FetchContent_MakeAvailable(mockturtle)
   add_library(mockturtle_interface INTERFACE)

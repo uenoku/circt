@@ -197,7 +197,7 @@ def MaximumAndCover : Pass<"synth-maximum-and-cover", "hw::HWModuleOp"> {
   }];
 }
 
-#ifdef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED 
+#ifdef CIRCT_MOCKTURTLE_ENABLED 
 include "SynthMockturtlePasses.td"
 #endif
 

@@ -129,7 +129,7 @@ void circt::synth::buildSynthOptimizationPipeline(
 
 void circt::synth::buildMockturtleOptimizationPipeline(
     OpPassManager &pm, const MockturtleOptimizationPipelineOptions &options) {
-#ifdef CIRCT_MOCKTURTLE_INTEGRATION_ENABLED
+#ifdef CIRCT_MOCKTURTLE_ENABLED
   // Refactor for area improvement.
   if (options.synthesisStrategy == OptimizationStrategyArea)
     pm.addPass(synth::createMockturtleRefactor());
