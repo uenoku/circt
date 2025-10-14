@@ -196,12 +196,11 @@ public:
   /// Import the network back to MLIR and replace original values
   void run() {
     SmallVector<Value> outputs;
-    ntk.foreach_po(
-        [&](auto const &f, auto i) { outputs.push_back(lowerSignal(f)); });
+    outputs.reserve(state.outputToValue.size());
+    ntk.foreach_po([&](auto const &f) { outputs.push_back(lowerSignal(f)); });
 
-    for (auto [idx, value] : state.outputToValue) {
+    for (auto [idx, value] : state.outputToValue)
       value.replaceAllUsesWith(outputs[idx]);
-    }
 
     // Run DCE
     mlir::PatternRewriter rewriter(builder.getContext());
@@ -295,6 +294,8 @@ protected:
   Operation *lowerGate(node n) override {
     auto children = this->getOperands(n);
     SmallVector<bool> isComplement(children.size(), false);
+    // TODO: Reuse exisiting operations if the same gate already exists (can be
+    // used for best-effort location preservation).
     return this->builder.template create<Op>(this->builder.getUnknownLoc(),
                                              children, isComplement);
   }
@@ -303,6 +304,7 @@ protected:
   Value lowerComplement(Value v, bool isComplement) override {
     if (!isComplement)
       return v;
+    // TODO: Consider lazily creating the complemented operation.
     return this->builder.template create<Op>(v.getLoc(), v, true);
   }
 
@@ -316,6 +318,7 @@ protected:
       return this->lowerComplement(val, s.complement);
 
     auto *op = cast<Operation *>(v);
+    assert(isa<Op>(op) && "Expected an gate operation");
     return this->lowerComplement(op->getResult(0), s.complement);
   }
 };
@@ -419,9 +422,6 @@ circt::synth::mockturtle_integration::runAIGNetworkToCellView(
     return failure();
 
   auto &cv = *result;
-  LLVM_DEBUG(llvm::dbgs() << "Converted network has " << cv.num_gates()
-                          << " gates, " << cv.num_pos() << " POs, and "
-                          << cv.num_pis() << " PIs.\n");
 
   OpBuilder builder = OpBuilder::atBlockBegin(block);
   CellViewConverter converter(state, cv, builder, symbolTable);
@@ -441,19 +441,8 @@ circt::synth::mockturtle_integration::runAIGNetworkTransforms(
   mockturtle::aig_network ntk;
   AIGExporter exporter(block, ntk, state);
 
-  if (failed(exporter.run()))
+  if (failed(exporter.run()) || failed(transform(ntk)))
     return failure();
-
-  LLVM_DEBUG(llvm::dbgs() << "Exported AIG network has " << ntk.num_gates()
-                          << " AND gates, " << ntk.num_pos() << " POs, and "
-                          << ntk.num_pis() << " PIs.\n");
-
-  if (failed(transform(ntk)))
-    return failure();
-
-  LLVM_DEBUG(llvm::dbgs() << "Transformed AIG network has " << ntk.num_gates()
-                          << " AND gates, " << ntk.num_pos() << " POs, and "
-                          << ntk.num_pis() << " PIs.\n");
 
   OpBuilder builder = OpBuilder::atBlockBegin(block);
   AIGNetworkConverter converter(state, ntk, builder);
@@ -473,19 +462,8 @@ circt::synth::mockturtle_integration::runMIGNetworkTransforms(
   mockturtle::mig_network ntk;
   MIGExporter exporter(block, ntk, state);
 
-  if (failed(exporter.run()))
+  if (failed(exporter.run()) || failed(transform(ntk)))
     return failure();
-
-  LLVM_DEBUG(llvm::dbgs() << "Exported MIG network has " << ntk.num_gates()
-                          << " gates, " << ntk.num_pos() << " POs, and "
-                          << ntk.num_pis() << " PIs.\n");
-
-  if (failed(transform(ntk)))
-    return failure();
-
-  LLVM_DEBUG(llvm::dbgs() << "Transformed MIG network has " << ntk.num_gates()
-                          << " gates, " << ntk.num_pos() << " POs, and "
-                          << ntk.num_pis() << " PIs.\n");
 
   OpBuilder builder = OpBuilder::atBlockBegin(block);
   MIGNetworkConverter converter(state, ntk, builder);
@@ -500,6 +478,7 @@ llvm::LogicalResult circt::synth::mockturtle_integration::runNetworkTransforms(
     mlir::Block *block,
     llvm::function_ref<llvm::LogicalResult(Ntk &)> transform) {
   bool existMig = false, existAig = false;
+  // Check for existence of MIG and AIG operations.
   for (auto &op : block->getOperations()) {
     if (isa<synth::mig::MajorityInverterOp>(op))
       existMig = true;
@@ -514,6 +493,7 @@ llvm::LogicalResult circt::synth::mockturtle_integration::runNetworkTransforms(
     return transform(ntkVariant);
   };
 
+  // Apply transformations to each network type if it exists.
   if (existMig && failed(runMIGNetworkTransforms(block, fn)))
     return failure();
 
