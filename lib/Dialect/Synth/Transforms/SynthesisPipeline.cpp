@@ -143,7 +143,7 @@ void circt::synth::buildMockturtleOptimizationPipeline(
     pm.addPass(synth::createMockturtleFunctionalReduction());
 
   pm.addPass(synth::createMockturtleSOPBalancing());
-  pm.addPass(createCSEPass());
+  pm.addPass(createStructuralHash());
 #endif
 }
 
