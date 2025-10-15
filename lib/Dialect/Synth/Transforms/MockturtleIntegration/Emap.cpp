@@ -18,6 +18,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "lorina/genlib.hpp"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Threading.h"
@@ -29,7 +30,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 #include <fstream>
-#include <lorina/genlib.hpp>
 #include <memory>
 
 #define DEBUG_TYPE "synth-mockturtle-emap"

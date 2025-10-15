@@ -129,13 +129,19 @@ void circt::synth::buildSynthOptimizationPipeline(
 
 void circt::synth::buildMockturtleOptimizationPipeline(
     OpPassManager &pm, const MockturtleOptimizationPipelineOptions &options) {
+  // This pipeline requires mockturtle integration.
+  // If mockturtle integration is not enabled, do nothing.
+  // circt-synth will report an error if this pipeline is selected
+  // without mockturtle integration.
 #ifdef CIRCT_MOCKTURTLE_ENABLED
   // Refactor for area improvement.
   if (options.synthesisStrategy == OptimizationStrategyArea)
     pm.addPass(synth::createMockturtleRefactor());
 
+  // SAT-based functional reduction to remove redundant nodes.
   if (options.enableFunctionalReduction)
     pm.addPass(synth::createMockturtleFunctionalReduction());
+
   pm.addPass(synth::createMockturtleSOPBalancing());
   pm.addPass(createCSEPass());
 #endif

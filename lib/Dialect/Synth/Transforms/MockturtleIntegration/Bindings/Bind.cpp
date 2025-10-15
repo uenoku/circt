@@ -73,10 +73,12 @@ circt::synth::mockturtle_integration::runMIGAlgebraicRewriteDepth(
 
 llvm::LogicalResult
 circt::synth::mockturtle_integration::runSOPBalancing(Ntk ntk) {
-  mockturtle::lut_map_params ps;
   return catchException([&]() {
-    std::visit([&](auto network) { mockturtle::sop_balancing(*network, ps); },
-               ntk);
+    std::visit(
+        [&](auto network) {
+          *network = std::move(mockturtle::sop_balancing(*network));
+        },
+        ntk);
     return llvm::success();
   });
 }
