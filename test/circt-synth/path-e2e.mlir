@@ -1,7 +1,7 @@
 // RUN: circt-synth %s -output-longest-path=- -top counter | FileCheck %s --check-prefixes COMMON,AIG
 // RUN: circt-synth %s -output-longest-path=- -top counter --target-ir mig | FileCheck %s --check-prefixes COMMON,MIG
 // RUN: circt-synth %s -output-longest-path=- -top counter -lower-to-k-lut 6 | FileCheck %s --check-prefixes COMMON,LUT6
-// RUN: circt-synth %s -output-longest-path=- -top counter -output-longest-path-json | FileCheck %s --check-prefix JSON
+// RUN: circt-synth %s -output-longest-path=- -top counter -analysis-output-format=json | FileCheck %s --check-prefix JSON
 
 // COMMON-LABEL: # Longest Path Analysis result for "counter"
 // COMMON-NEXT: Found 168 paths

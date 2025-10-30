@@ -140,6 +140,29 @@ def PrintLongestPathAnalysis
                            "circt::synth::SynthDialect"];
 }
 
+def PrintResourceUsageAnalysis
+    : Pass<"synth-print-resource-usage-analysis", "mlir::ModuleOp"> {
+  let summary = "Print resource usage analysis results";
+  let description = [{
+    This pass performs resource usage analysis on Synth circuits and outputs
+    resource utilization information including:
+    - Number of and-inverter gates
+    - Number of DFF bits
+    - Number of LUTs
+
+    The analysis computes both local and total resource usage across module
+    hierarchies.
+  }];
+  let options = [Option<"outputFile", "output-file", "std::string", "\"-\"",
+                        "Output file for analysis results (use '-' for stdout)">,
+                 Option<"emitJSON", "emit-json", "bool", "false",
+                        "Output analysis results in JSON format">,
+                 Option<"topModuleName", "top-module-name", "std::string", "",
+                        "Name of the top module to analyze">];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                           "circt::seq::SeqDialect", "circt::synth::SynthDialect"];
+}
+
 class ExternalSolverPass<string name> : Pass<name, "hw::HWModuleOp"> {
   list<Option> baseOptions = [Option<"continueOnFailure", "continue-on-failure",
                                      "bool", "false",
