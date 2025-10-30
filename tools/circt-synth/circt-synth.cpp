@@ -27,6 +27,7 @@
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Synth/Analysis/ResourceUsageAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Dialect/Synth/Transforms/SynthesisPipeline.h"
@@ -128,17 +129,33 @@ static cl::opt<bool>
                   cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<std::string>
+    outputResourceUsage("output-resource-usage",
+                        cl::desc("Output file for resource usage analysis "
+                                 "results. The analysis is only run "
+                                 "if file name is specified"),
+                        cl::init(""), cl::cat(mainCategory));
+
+static cl::opt<std::string>
     outputLongestPath("output-longest-path",
                       cl::desc("Output file for longest path analysis "
                                "results. The analysis is only run "
                                "if file name is specified"),
                       cl::init(""), cl::cat(mainCategory));
 
-static cl::opt<bool>
-    outputLongestPathJSON("output-longest-path-json",
-                          cl::desc("Output longest path analysis results in "
-                                   "JSON format"),
-                          cl::init(false), cl::cat(mainCategory));
+enum AnalysisOutputFormat {
+  AnalysisOutputFormatText,
+  AnalysisOutputFormatJSON
+};
+
+static cl::opt<AnalysisOutputFormat>
+    analysisOutputFormat("analysis-output-format",
+                         cl::desc("Output format for analysis results"),
+                         cl::init(AnalysisOutputFormatText),
+                         cl::values(clEnumValN(AnalysisOutputFormatText, "text",
+                                               "Text output format"),
+                                    clEnumValN(AnalysisOutputFormatJSON, "json",
+                                               "JSON output format")),
+                         cl::cat(mainCategory));
 static cl::opt<int>
     outputLongestPathTopKPercent("output-longest-path-top-k-percent",
                                  cl::desc("Output top K percent of longest "
@@ -288,9 +305,17 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     circt::synth::PrintLongestPathAnalysisOptions options;
     options.outputFile = outputLongestPath;
     options.showTopKPercent = outputLongestPathTopKPercent;
-    options.emitJSON = outputLongestPathJSON;
+    options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
     options.topModuleName = topName;
     pm.addPass(circt::synth::createPrintLongestPathAnalysis(options));
+  }
+
+  if (!outputResourceUsage.empty()) {
+    circt::synth::PrintResourceUsageAnalysisOptions options;
+    options.outputFile = outputResourceUsage;
+    options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
+    options.topModuleName = topName;
+    pm.addPass(circt::synth::createPrintResourceUsageAnalysis(options));
   }
 
   if (convertToComb)
