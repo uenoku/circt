@@ -203,7 +203,6 @@ LogicalResult PrintResourceUsageAnalysisPass::printAnalysisResult(
 
 void PrintResourceUsageAnalysisPass::runOnOperation() {
   auto mod = getOperation();
-
   if (topModuleName.getValue().empty()) {
     mod.emitError() << "'top-module-name' option is required for "
                        "PrintResourceUsageAnalysis";
