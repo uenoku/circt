@@ -203,22 +203,40 @@ LogicalResult PrintResourceUsageAnalysisPass::printAnalysisResult(
 
 void PrintResourceUsageAnalysisPass::runOnOperation() {
   auto mod = getOperation();
+
+  auto &resourceUsage = getAnalysis<ResourceUsageAnalysis>();
+  auto *instanceGraph = resourceUsage.instanceGraph;
+
+  SmallVector<hw::HWModuleOp> tops;
   if (topModuleName.getValue().empty()) {
-    mod.emitError() << "'top-module-name' option is required for "
-                       "PrintResourceUsageAnalysis";
-    return signalPassFailure();
-  }
+    // Automatically infer top modules from instance graph
+    auto topLevelNodes = instanceGraph->getInferredTopLevelNodes();
+    if (failed(topLevelNodes)) {
+      mod.emitError()
+          << "failed to infer top-level modules from instance graph";
+      return signalPassFailure();
+    }
 
-  auto &symTbl = getAnalysis<mlir::SymbolTable>();
-  auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName.getValue());
-  if (!top) {
-    mod.emitError() << "top module '" << topModuleName.getValue()
-                    << "' not found";
-    return signalPassFailure();
-  }
+    for (auto *node : *topLevelNodes) {
+      if (auto hwMod = dyn_cast<hw::HWModuleOp>(node->getModule()))
+        tops.push_back(hwMod);
+    }
 
-  auto am = getAnalysisManager();
-  ResourceUsageAnalysis analysis(mod, am);
+    if (tops.empty()) {
+      mod.emitError() << "no top-level HWModuleOp found in instance graph";
+      return signalPassFailure();
+    }
+  } else {
+    // Use specified top module name
+    auto &symTbl = getAnalysis<mlir::SymbolTable>();
+    auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName.getValue());
+    if (!top) {
+      mod.emitError() << "top module '" << topModuleName.getValue()
+                      << "' not found";
+      return signalPassFailure();
+    }
+    tops.push_back(top);
+  }
 
   std::string error;
   auto file = mlir::openOutputFile(outputFile.getValue(), &error);
@@ -239,9 +257,11 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
       jsonOS->arrayEnd();
   });
 
-  if (failed(printAnalysisResult(analysis, top, jsonOS ? nullptr : &os,
-                                 jsonOS.get())))
-    return signalPassFailure();
+  for (auto top : tops) {
+    if (failed(printAnalysisResult(resourceUsage, top, jsonOS ? nullptr : &os,
+                                   jsonOS.get())))
+      return signalPassFailure();
+  }
 
   file->keep();
   return markAllAnalysesPreserved();
