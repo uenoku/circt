@@ -54,13 +54,17 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(StringAttr moduleName) {
     return it->second.get();
 
   auto *node = instanceGraph->lookup(moduleName);
-  if (!node || !node->getModule() || !isa<hw::HWModuleOp>(node->getModule()))
+  if (!node || !node->getModule())
     return nullptr;
-  return getResourceUsage(node->getModule<hw::HWModuleOp>());
+  auto module = dyn_cast<igraph::ModuleOpInterface>(node->getModule());
+  if (!module)
+    return nullptr;
+  return getResourceUsage(module);
 }
 
 ResourceUsageAnalysis::ModuleResourceUsage *
-circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
+circt::synth::ResourceUsageAnalysis::getResourceUsage(
+    igraph::ModuleOpInterface module) {
   {
     auto it = designUsageCache.find(module.getModuleNameAttr());
     if (it != designUsageCache.end())
@@ -68,7 +72,7 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
   }
   auto *node = instanceGraph->lookup(module.getModuleNameAttr());
   llvm::StringMap<uint64_t> counts;
-  module.walk([&](Operation *op) {
+  module->walk([&](Operation *op) {
     TypeSwitch<Operation *>(op)
         // Variadic.
         .Case<synth::aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp>(
@@ -107,7 +111,9 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
 
   for (auto *child : *node) {
     auto *targetMod = child->getTarget();
-    if (!isa_and_nonnull<hw::HWModuleOp>(targetMod->getModule()))
+    auto childModule =
+        dyn_cast_or_null<igraph::ModuleOpInterface>(targetMod->getModule());
+    if (!childModule)
       continue;
 
     auto *instance = child->getInstance().getOperation();
@@ -115,7 +121,6 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
         instance->hasAttrOfType<UnitAttr>("doNotPrint"))
       continue;
 
-    auto childModule = targetMod->getModule<hw::HWModuleOp>();
     auto *childUsage = getResourceUsage(childModule);
     moduleUsage->total += childUsage->total;
     moduleUsage->instances.emplace_back(
@@ -172,14 +177,15 @@ struct PrintResourceUsageAnalysisPass
 
   void runOnOperation() override;
   LogicalResult printAnalysisResult(ResourceUsageAnalysis &analysis,
-                                    hw::HWModuleOp top, llvm::raw_ostream *os,
+                                    igraph::ModuleOpInterface top,
+                                    llvm::raw_ostream *os,
                                     llvm::json::OStream *jsonOS);
 };
 } // namespace
 
 LogicalResult PrintResourceUsageAnalysisPass::printAnalysisResult(
-    ResourceUsageAnalysis &analysis, hw::HWModuleOp top, llvm::raw_ostream *os,
-    llvm::json::OStream *jsonOS) {
+    ResourceUsageAnalysis &analysis, igraph::ModuleOpInterface top,
+    llvm::raw_ostream *os, llvm::json::OStream *jsonOS) {
   auto *usage = analysis.getResourceUsage(top);
   if (!usage)
     return failure();
@@ -193,8 +199,16 @@ LogicalResult PrintResourceUsageAnalysisPass::printAnalysisResult(
            << usage->moduleName.getValue() << "\n";
     stream << "========================================\n";
     stream << "Total:\n";
+    // Sort.
+    SmallVector<std::pair<StringRef, uint64_t>> sortedCounts;
     for (const auto &count : usage->getTotal().getCounts())
-      stream << "  " << count.getKey() << ": " << count.second << "\n";
+      sortedCounts.emplace_back(count.getKey(), count.second);
+    llvm::sort(sortedCounts, [](const auto &a, const auto &b) {
+      return a.first.compare(b.first) <= 0;
+    });
+    for (const auto &[name, count] : sortedCounts)
+      stream << "  " << name << ": " << count << "\n";
+
     stream << "\n";
   }
 
@@ -207,7 +221,7 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
   auto &resourceUsage = getAnalysis<ResourceUsageAnalysis>();
   auto *instanceGraph = resourceUsage.instanceGraph;
 
-  SmallVector<hw::HWModuleOp> tops;
+  SmallVector<igraph::ModuleOpInterface> tops;
   if (topModuleName.getValue().empty()) {
     // Automatically infer top modules from instance graph
     auto topLevelNodes = instanceGraph->getInferredTopLevelNodes();
@@ -218,21 +232,27 @@ void PrintResourceUsageAnalysisPass::runOnOperation() {
     }
 
     for (auto *node : *topLevelNodes) {
-      if (auto hwMod = dyn_cast<hw::HWModuleOp>(node->getModule()))
-        tops.push_back(hwMod);
+      if (auto module = dyn_cast<igraph::ModuleOpInterface>(node->getModule()))
+        tops.push_back(module);
     }
 
     if (tops.empty()) {
-      mod.emitError() << "no top-level HWModuleOp found in instance graph";
+      mod.emitError() << "no top-level modules found in instance graph";
       return signalPassFailure();
     }
   } else {
     // Use specified top module name
-    auto &symTbl = getAnalysis<mlir::SymbolTable>();
-    auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName.getValue());
-    if (!top) {
+    auto *node = instanceGraph->lookup(
+        mlir::StringAttr::get(mod.getContext(), topModuleName.getValue()));
+    if (!node || !node->getModule()) {
       mod.emitError() << "top module '" << topModuleName.getValue()
                       << "' not found";
+      return signalPassFailure();
+    }
+    auto top = dyn_cast<igraph::ModuleOpInterface>(node->getModule());
+    if (!top) {
+      mod.emitError() << "module '" << topModuleName.getValue()
+                      << "' is not a ModuleOpInterface";
       return signalPassFailure();
     }
     tops.push_back(top);

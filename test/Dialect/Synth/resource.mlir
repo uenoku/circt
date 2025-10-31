@@ -1,4 +1,5 @@
 // RUN: circt-opt --synth-print-resource-usage-analysis='top-module-name=top output-file="-"' %s | FileCheck %s
+// RUN: circt-opt --synth-print-resource-usage-analysis='top-module-name=top output-file="-" emit-json=true' %s | FileCheck %s --check-prefix=JSON
 // CHECK:      Resource Usage Analysis for module: top
 // CHECK-NEXT: ========================================
 // CHECK-NEXT: Total:
@@ -6,6 +7,7 @@
 // CHECK-NEXT:   comb.xor: 2
 // CHECK-NEXT:   comb.or: 3
 // CHECK-NEXT:   synth.aig.and_inv: 2
+// JSON: {"local": {"comb.and": 0, "comb.xor": 0, "comb.or": 0, "synth.aig.and_inv": 0}, "total": {"comb.and": 2, "comb.xor": 2, "comb.or": 3, "synth.aig.and_inv": 2}, "moduleName": "top", "instances": [{"instanceName": "inst1", "moduleName": "basic", "
 
 hw.module private @basic(in %a : i1, in %b : i1, out x : i1) {
   %p = synth.aig.and_inv not %a, %b : i1

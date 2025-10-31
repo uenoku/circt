@@ -73,7 +73,7 @@ public:
     void emitJSON(raw_ostream &os) const;
   };
 
-  ModuleResourceUsage *getResourceUsage(hw::HWModuleOp top);
+  ModuleResourceUsage *getResourceUsage(igraph::ModuleOpInterface module);
   ModuleResourceUsage *getResourceUsage(StringAttr moduleName);
 
   // A map from the top-level module to the resource usage of the design.
