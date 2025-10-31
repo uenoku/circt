@@ -33,6 +33,12 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include <mlir/IR/OperationSupport.h>
+namespace circt {
+namespace synth {
+#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
+} // namespace synth
+} // namespace circt
 
 using namespace circt;
 using namespace synth;
@@ -60,7 +66,7 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
     if (it != designUsageCache.end())
       return it->second.get();
   }
-  auto *topNode = instanceGraph->lookup(module.getModuleNameAttr());
+  auto *node = instanceGraph->lookup(module.getModuleNameAttr());
   llvm::StringMap<uint64_t> counts;
   module.walk([&](Operation *op) {
     TypeSwitch<Operation *>(op)
@@ -99,7 +105,7 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
   auto moduleUsage = std::make_unique<ModuleResourceUsage>(
       module.getModuleNameAttr(), local, local);
 
-  for (auto *child : *topNode) {
+  for (auto *child : *node) {
     auto *targetMod = child->getTarget();
     if (!isa_and_nonnull<hw::HWModuleOp>(targetMod->getModule()))
       continue;
@@ -121,13 +127,6 @@ circt::synth::ResourceUsageAnalysis::getResourceUsage(hw::HWModuleOp module) {
   auto [it, success] = designUsageCache.try_emplace(module.getModuleNameAttr(),
                                                     std::move(moduleUsage));
   assert(success && "module already exists in cache");
-
-  // Now populate instance pointers after insertion (safe from rehashing)
-  // for (const auto &[childModuleName, instanceName] : childInfo) {
-  //   auto *childUsage = designUsageCache[childModuleName].get();
-  //   it->second->instances.emplace_back(childModuleName, instanceName,
-  //                                      childUsage);
-  // }
 
   return it->second.get();
 }
@@ -156,7 +155,7 @@ static llvm::json::Object getModuleResourceUsageJSON(
     child["usage"] = getModuleResourceUsageJSON(*instance.usage);
     instances.push_back(std::move(child));
   }
-  obj["instances"] = llvm::json::Array(std::move(instances));
+  obj["instances"] = llvm::json::Array(instances);
   return obj;
 }
 
@@ -164,79 +163,6 @@ void ResourceUsageAnalysis::ModuleResourceUsage::emitJSON(
     raw_ostream &os) const {
   os << getModuleResourceUsageJSON(*this);
 }
-
-/*
-namespace circt {
-namespace aig {
-#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
-#include "circt/Dialect/AIG/AIGPasses.h.inc"
-} // namespace aig
-} // namespace circt
-
-using namespace circt;
-using namespace aig;
-
-
-namespace {
-struct PrintResourceUsageAnalysisPass
-    : public impl::PrintResourceUsageAnalysisBase<
-          PrintResourceUsageAnalysisPass> {
-  using PrintResourceUsageAnalysisBase::PrintResourceUsageAnalysisBase;
-
-  using PrintResourceUsageAnalysisBase::outputJSONFile;
-  using PrintResourceUsageAnalysisBase::printSummary;
-  using PrintResourceUsageAnalysisBase::topModuleName;
-  void runOnOperation() override;
-};
-} // namespace
-
-void PrintResourceUsageAnalysisPass::runOnOperation() {
-  auto mod = getOperation();
-  if (topModuleName.empty()) {
-    mod.emitError()
-        << "'top-name' option is required for PrintResourceUsageAnalysis";
-    return signalPassFailure();
-  }
-  auto &symTbl = getAnalysis<mlir::SymbolTable>();
-  auto top = symTbl.lookup<hw::HWModuleOp>(topModuleName);
-  if (!top) {
-    mod.emitError() << "top module '" << topModuleName << "' not found";
-    return signalPassFailure();
-  }
-  auto &resourceUsageAnalysis = getAnalysis<ResourceUsageAnalysis>();
-  auto usage = resourceUsageAnalysis.getResourceUsage(top);
-
-  if (printSummary) {
-    llvm::errs() << "// ------ ResourceUsageAnalysis Summary -----\n";
-    llvm::errs() << "Top module: " << topModuleName << "\n";
-    llvm::errs() << "Total number of and-inverter gates: "
-                 << usage->getTotal().getNumAndInverterGates() << "\n";
-    llvm::errs() << "Total number of DFF bits: "
-                 << usage->getTotal().getNumDFFBits() << "\n";
-  }
-  if (!outputJSONFile.empty()) {
-    std::error_code ec;
-    llvm::raw_fd_ostream os(outputJSONFile, ec);
-    if (ec) {
-      emitError(UnknownLoc::get(&getContext()))
-          << "failed to open output JSON file '" << outputJSONFile
-          << "': " << ec.message();
-      return signalPassFailure();
-    }
-    usage->emitJSON(os);
-  }
-}
-  */
-
-namespace circt {
-namespace synth {
-#define GEN_PASS_DEF_PRINTRESOURCEUSAGEANALYSIS
-#include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
-} // namespace synth
-} // namespace circt
-
-using namespace circt;
-using namespace synth;
 
 namespace {
 struct PrintResourceUsageAnalysisPass
