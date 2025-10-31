@@ -4,10 +4,23 @@
 // CHECK-NEXT: ========================================
 // CHECK-NEXT: Total:
 // CHECK-NEXT:   comb.and: 2
-// CHECK-NEXT:   comb.xor: 2
 // CHECK-NEXT:   comb.or: 3
+// CHECK-NEXT:   comb.xor: 2
 // CHECK-NEXT:   synth.aig.and_inv: 2
-// JSON: {"local": {"comb.and": 0, "comb.xor": 0, "comb.or": 0, "synth.aig.and_inv": 0}, "total": {"comb.and": 2, "comb.xor": 2, "comb.or": 3, "synth.aig.and_inv": 2}, "moduleName": "top", "instances": [{"instanceName": "inst1", "moduleName": "basic", "
+// JSON: [{"instances":[{
+// JSON:    "instanceName":"inst1",
+// JSON:    "moduleName":"basic",
+// JSON:    "usage":{
+// JSON:      "instances":[],
+// JSON:      "local":{
+// JSON:        "comb.and":1,
+// JSON:        "comb.or":1,
+// JSON:        "comb.xor":1,
+// JSON:        "synth.aig.and_inv":1
+// JSON:      }
+// JSON:    }
+// JSON:    "instanceName":"inst2",
+// JSON:    "moduleName":"basic",
 
 hw.module private @basic(in %a : i1, in %b : i1, out x : i1) {
   %p = synth.aig.and_inv not %a, %b : i1

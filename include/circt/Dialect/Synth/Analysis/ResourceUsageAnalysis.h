@@ -1,4 +1,4 @@
-//===----------------------------------------------------------------------===//
+//===- ResourceUsageAnalysis.h - Resource Usage Analysis --------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -15,19 +15,12 @@
 #ifndef CIRCT_DIALECT_SYNTH_ANALYSIS_RESOURCEUSAGEANALYSIS_H
 #define CIRCT_DIALECT_SYNTH_ANALYSIS_RESOURCEUSAGEANALYSIS_H
 
-#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/MLIRContext.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMapInfo.h"
-#include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/JSON.h"
 #include <memory>
-#include <mlir/IR/Attributes.h>
-#include <variant>
 
 namespace mlir {
 class AnalysisManager;
@@ -35,32 +28,48 @@ class AnalysisManager;
 
 namespace circt {
 namespace synth {
+
+/// Analysis that computes resource usage for Synth dialect operations.
+/// This analysis walks module hierarchies and counts resources such as:
+/// - And-inverter gates (AIG)
+/// - Majority-inverter gates (MIG)
+/// - Truth tables (LUTs)
+/// - Sequential elements (DFFs)
 class ResourceUsageAnalysis {
 public:
   ResourceUsageAnalysis(mlir::Operation *moduleOp, mlir::AnalysisManager &am);
 
+  /// Resource usage counts for a set of operations.
   struct ResourceUsage {
     ResourceUsage(llvm::StringMap<uint64_t> counts)
         : counts(std::move(counts)) {}
     ResourceUsage() = default;
+
+    /// Accumulate resource counts from another ResourceUsage.
     ResourceUsage &operator+=(const ResourceUsage &other) {
       for (const auto &count : other.counts)
         counts[count.getKey()] += count.second;
       return *this;
     }
+
     const auto &getCounts() const { return counts; }
 
   private:
     llvm::StringMap<uint64_t> counts;
   };
 
+  /// Resource usage for a single module, including local and total counts.
   struct ModuleResourceUsage {
     ModuleResourceUsage(StringAttr moduleName, ResourceUsage local,
                         ResourceUsage total)
         : moduleName(moduleName), local(std::move(local)),
           total(std::move(total)) {}
+
     StringAttr moduleName;
-    ResourceUsage local, total;
+    ResourceUsage local;  ///< Resources used directly in this module.
+    ResourceUsage total;  ///< Resources including all child instances.
+
+    /// Information about a child module instance.
     struct InstanceResource {
       StringAttr moduleName, instanceName;
       ModuleResourceUsage *usage;
@@ -68,18 +77,23 @@ public:
                        ModuleResourceUsage *usage)
           : moduleName(moduleName), instanceName(instanceName), usage(usage) {}
     };
+
     SmallVector<InstanceResource> instances;
-    const ResourceUsage& getTotal() const { return total; }
+    const ResourceUsage &getTotal() const { return total; }
     void emitJSON(raw_ostream &os) const;
   };
 
+  /// Get resource usage for a module.
   ModuleResourceUsage *getResourceUsage(igraph::ModuleOpInterface module);
   ModuleResourceUsage *getResourceUsage(StringAttr moduleName);
 
-  // A map from the top-level module to the resource usage of the design.
+  /// Cache of computed resource usage per module.
   DenseMap<StringAttr, std::unique_ptr<ModuleResourceUsage>> designUsageCache;
+
+  /// Instance graph for module hierarchy traversal.
   igraph::InstanceGraph *instanceGraph;
 };
+
 } // namespace synth
 } // namespace circt
 
