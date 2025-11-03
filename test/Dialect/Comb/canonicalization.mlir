@@ -1240,6 +1240,74 @@ hw.module @moduloZeroDividend(in %arg0 : i32, out o1: i32, out o2: i32) {
   hw.output %0, %1 : i32, i32
 }
 
+// CHECK-LABEL: hw.module @divuPowerOfTwo
+hw.module @divuPowerOfTwo(in %arg0 : i8, out o1: i8, out o2: i8, out o3: i8, out o4: i8) {
+  // divu(x, 1) -> x (handled by fold)
+  // divu(x, 2) -> concat(0, extract(x, 1, 7))
+  // CHECK-DAG: %c0_i4 = hw.constant 0 : i4
+  // CHECK-DAG: %c0_i2 = hw.constant 0 : i2
+  // CHECK-DAG: %false = hw.constant false
+  // CHECK-DAG: %c3_i8 = hw.constant 3 : i8
+  // CHECK: [[EXT1:%.+]] = comb.extract %arg0 from 1 : (i8) -> i7
+  // CHECK: [[RES1:%.+]] = comb.concat %false, [[EXT1]] : i1, i7
+  %c2 = hw.constant 2 : i8
+  %0 = comb.divu %arg0, %c2 : i8
+
+  // divu(x, 4) -> concat(00, extract(x, 2, 6))
+  // CHECK: [[EXT2:%.+]] = comb.extract %arg0 from 2 : (i8) -> i6
+  // CHECK: [[RES2:%.+]] = comb.concat %c0_i2, [[EXT2]] : i2, i6
+  %c4 = hw.constant 4 : i8
+  %1 = comb.divu %arg0, %c4 : i8
+
+  // divu(x, 16) -> concat(0000, extract(x, 4, 4))
+  // CHECK: [[EXT4:%.+]] = comb.extract %arg0 from 4 : (i8) -> i4
+  // CHECK: [[RES4:%.+]] = comb.concat %c0_i4, [[EXT4]] : i4, i4
+  %c16 = hw.constant 16 : i8
+  %2 = comb.divu %arg0, %c16 : i8
+
+  // divu(x, 3) -> not canonicalized (not power of two)
+  // CHECK: [[RES3:%.+]] = comb.divu %arg0, %c3_i8 : i8
+  %c3 = hw.constant 3 : i8
+  %3 = comb.divu %arg0, %c3 : i8
+
+  // CHECK: hw.output [[RES1]], [[RES2]], [[RES4]], [[RES3]]
+  hw.output %0, %1, %2, %3 : i8, i8, i8, i8
+}
+
+// CHECK-LABEL: hw.module @moduPowerOfTwo
+hw.module @moduPowerOfTwo(in %arg0 : i8, out o1: i8, out o2: i8, out o3: i8, out o4: i8) {
+  // modu(x, 1) -> 0 (handled by fold)
+  // modu(x, 2) -> concat(0000000, extract(x, 0, 1))
+  // CHECK-DAG: %c0_i4 = hw.constant 0 : i4
+  // CHECK-DAG: %c0_i6 = hw.constant 0 : i6
+  // CHECK-DAG: %c0_i7 = hw.constant 0 : i7
+  // CHECK-DAG: %c3_i8 = hw.constant 3 : i8
+  // CHECK: [[EXT1:%.+]] = comb.extract %arg0 from 0 : (i8) -> i1
+  // CHECK: [[RES1:%.+]] = comb.concat %c0_i7, [[EXT1]] : i7, i1
+  %c2 = hw.constant 2 : i8
+  %0 = comb.modu %arg0, %c2 : i8
+
+  // modu(x, 4) -> concat(000000, extract(x, 0, 2))
+  // CHECK: [[EXT2:%.+]] = comb.extract %arg0 from 0 : (i8) -> i2
+  // CHECK: [[RES2:%.+]] = comb.concat %c0_i6, [[EXT2]] : i6, i2
+  %c4 = hw.constant 4 : i8
+  %1 = comb.modu %arg0, %c4 : i8
+
+  // modu(x, 16) -> concat(0000, extract(x, 0, 4))
+  // CHECK: [[EXT4:%.+]] = comb.extract %arg0 from 0 : (i8) -> i4
+  // CHECK: [[RES4:%.+]] = comb.concat %c0_i4, [[EXT4]] : i4, i4
+  %c16 = hw.constant 16 : i8
+  %2 = comb.modu %arg0, %c16 : i8
+
+  // modu(x, 3) -> not canonicalized (not power of two)
+  // CHECK: [[RES3:%.+]] = comb.modu %arg0, %c3_i8 : i8
+  %c3 = hw.constant 3 : i8
+  %3 = comb.modu %arg0, %c3 : i8
+
+  // CHECK: hw.output [[RES1]], [[RES2]], [[RES4]], [[RES3]]
+  hw.output %0, %1, %2, %3 : i8, i8, i8, i8
+}
+
 // CHECK-LABEL: hw.module @orWithNegation
 hw.module @orWithNegation(in %arg0 : i32, out o1: i32) {
   // CHECK: [[ALLONES:%.*]] = hw.constant -1 : i32
