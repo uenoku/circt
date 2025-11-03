@@ -73,6 +73,10 @@ llvm::LogicalResult runAIGNetworkToCellView(
 llvm::LogicalResult
 runNetworkTransforms(mlir::Block *block,
                      llvm::function_ref<llvm::LogicalResult(Ntk &)> transform);
+/// Apply a generic transformation to a network (auto-detects network type)
+llvm::LogicalResult
+runNetworkTransforms(mlir::Operation *op,
+                     llvm::function_ref<llvm::LogicalResult(Ntk &)> transform);
 
 //===----------------------------------------------------------------------===//
 // Algorithm Bindings

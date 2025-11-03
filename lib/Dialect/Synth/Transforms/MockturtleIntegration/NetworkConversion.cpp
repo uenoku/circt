@@ -17,12 +17,14 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Support/WalkResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "mockturtle/networks/aig.hpp"
 #include "mockturtle/networks/block.hpp"
 #include "mockturtle/networks/mig.hpp"
 #include "mockturtle/views/cell_view.hpp"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 
 #define DEBUG_TYPE "mockturtle-network-conversion"
 
@@ -501,4 +503,15 @@ llvm::LogicalResult circt::synth::mockturtle_integration::runNetworkTransforms(
     return failure();
 
   return success();
+}
+
+LogicalResult circt::synth::mockturtle_integration::runNetworkTransforms(
+    mlir::Operation *op,
+    llvm::function_ref<llvm::LogicalResult(Ntk &)> transform) {
+  auto result = op->walk([&](Block *block) {
+    if (failed(runNetworkTransforms(block, transform)))
+      return mlir::WalkResult::interrupt();
+    return mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted() ? failure() : success();
 }
