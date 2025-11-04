@@ -114,7 +114,18 @@ void circt::synth::buildSynthOptimizationPipeline(
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(synth::createMaximumAndCover());
   pm.addPass(createLowerVariadicPass(options.timingAware));
+  pm.addPass(createCSEPass());
   pm.addPass(createStructuralHash());
+
+  // SOP balancing.
+  if (!options.disableSOPBalancing) {
+    SOPBalancingOptions sopOptions;
+    // FIXME: The following is very small compared to the default value of ABC
+    // (6/8) and mockturtle(4/25) due to inefficient implementation of
+    // CutRewriter.
+    pm.addPass(synth::createSOPBalancing(sopOptions));
+    pm.addPass(createStructuralHash());
+  }
 
   if (!options.abcCommands.empty()) {
     synth::ABCRunnerOptions abcOptions;

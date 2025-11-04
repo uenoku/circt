@@ -92,13 +92,27 @@ struct TechLibraryPattern : public CutRewritePattern {
       : CutRewritePattern(module->getContext()), area(area),
         delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
 
+    // Pre-compute flattened delays for efficient matching
+    unsigned numInputs = static_cast<hw::HWModuleOp>(module).getNumInputPorts();
+    unsigned numOutputs =
+        static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
+    cachedDelays.resize(numInputs * numOutputs);
+    for (unsigned outputIdx = 0; outputIdx < numOutputs; ++outputIdx) {
+      for (unsigned inputIdx = 0; inputIdx < numInputs; ++inputIdx) {
+        cachedDelays[outputIdx * numInputs + inputIdx] =
+            this->delay[inputIdx][outputIdx];
+      }
+    }
+
     LLVM_DEBUG({
       llvm::dbgs() << "Created Tech Library Pattern for module: "
                    << module.getModuleName() << "\n"
-                   << "NPN Class: " << npnClass.truthTable.table << "\n"
-                   << "Inputs: " << npnClass.inputPermutation.size() << "\n"
-                   << "Input Negation: " << npnClass.inputNegation << "\n"
-                   << "Output Negation: " << npnClass.outputNegation << "\n";
+                   << "NPN Class: " << this->npnClass.truthTable.table << "\n"
+                   << "Inputs: " << this->npnClass.inputPermutation.size()
+                   << "\n"
+                   << "Input Negation: " << this->npnClass.inputNegation << "\n"
+                   << "Output Negation: " << this->npnClass.outputNegation
+                   << "\n";
     });
   }
 
@@ -108,8 +122,14 @@ struct TechLibraryPattern : public CutRewritePattern {
   }
 
   /// Match the cut set against this library primitive
-  bool match(const Cut &cut) const override {
-    return cut.getNPNClass().equivalentOtherThanPermutation(npnClass);
+  std::optional<MatchResult> match(const Cut &cut,
+                                   CutEnumerator &enumerator) const override {
+    if (!cut.getNPNClass().equivalentOtherThanPermutation(npnClass))
+      return std::nullopt;
+
+    // Create match result with zero-cost reference to cached delays
+    MatchResult result(area, cachedDelays);
+    return result;
   }
 
   /// Enable truth table matching for this pattern
@@ -121,6 +141,7 @@ struct TechLibraryPattern : public CutRewritePattern {
 
   /// Rewrite the cut set using this library primitive
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
+                                       CutEnumerator &enumerator,
                                        Cut &cut) const override {
     // Create a new instance of the module
     SmallVector<Value> inputs;
@@ -131,12 +152,6 @@ struct TechLibraryPattern : public CutRewritePattern {
         hw::InstanceOp::create(builder, cut.getRoot()->getLoc(), module,
                                "mapped", ArrayRef<Value>(inputs));
     return instanceOp.getOperation();
-  }
-
-  double getArea() const override { return area; }
-
-  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
-    return delay[inputIndex][outputIndex];
   }
 
   unsigned getNumInputs() const {
@@ -155,6 +170,8 @@ struct TechLibraryPattern : public CutRewritePattern {
 private:
   const double area;
   const SmallVector<SmallVector<DelayType, 2>, 4> delay;
+  SmallVector<DelayType>
+      cachedDelays; // Flattened delay array for efficient access
   hw::HWModuleOp module;
   NPNClass npnClass;
 };

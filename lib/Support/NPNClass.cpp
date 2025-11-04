@@ -15,6 +15,7 @@
 #include "circt/Support/NPNClass.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include <algorithm>
 #include <cassert>
 
@@ -106,7 +107,9 @@ bool BinaryTruthTable::operator==(const BinaryTruthTable &other) const {
 void BinaryTruthTable::dump(llvm::raw_ostream &os) const {
   os << "TruthTable(" << numInputs << " inputs, " << numOutputs << " outputs, "
      << "value=";
-  os << table << ")\n";
+  llvm::SmallString<16> str;
+  table.toString(str, 10, false);
+  os << str << ")\n";
 
   // Print header
   for (unsigned i = 0; i < numInputs; ++i) {
