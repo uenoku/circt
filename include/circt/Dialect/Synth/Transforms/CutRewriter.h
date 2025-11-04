@@ -59,6 +59,41 @@ class CutRewriter;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 
+/// Result of matching a cut against a pattern.
+///
+/// This structure contains the area and per-input delay information
+/// computed during pattern matching. Unlike the old API where getArea()
+/// and getDelay() were separate virtual methods, this allows patterns
+/// to compute delays based on the actual structure they will create.
+///
+/// The delays field is a non-owning view (ArrayRef) to avoid unnecessary
+/// copies. Patterns with static delays can point to cached storage, while
+/// patterns with dynamic delays should maintain temporary storage.
+struct MatchResult {
+  /// Area cost of implementing this cut with the pattern.
+  double area = 0.0;
+
+  /// Delay from each input to each output.
+  /// delays[outputIndex * numInputs + inputIndex] gives the delay
+  /// from input inputIndex to output outputIndex.
+  /// This is a non-owning view - the pattern must ensure the underlying
+  /// storage remains valid.
+  ArrayRef<DelayType> delays;
+
+  /// Default constructor.
+  MatchResult() = default;
+
+  /// Constructor with area and delays.
+  MatchResult(double area, ArrayRef<DelayType> delays)
+      : area(area), delays(delays) {}
+
+  /// Get delay from a specific input to a specific output.
+  DelayType getDelay(unsigned inputIndex, unsigned outputIndex,
+                     unsigned numInputs) const {
+    return delays[outputIndex * numInputs + inputIndex];
+  }
+};
+
 /// Represents a cut that has been successfully matched to a rewriting pattern.
 ///
 /// This class encapsulates the result of matching a cut against a rewriting
@@ -68,7 +103,8 @@ class MatchedPattern {
 private:
   const CutRewritePattern *pattern = nullptr; ///< The matched library pattern
   SmallVector<DelayType, 1>
-      arrivalTimes; ///< Arrival times of outputs from this pattern
+      arrivalTimes;  ///< Arrival times of outputs from this pattern
+  double area = 0.0; ///< Area cost of this pattern
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -76,8 +112,8 @@ public:
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
-                 SmallVector<DelayType, 1> arrivalTimes)
-      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)) {}
+                 SmallVector<DelayType, 1> arrivalTimes, double area)
+      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
@@ -89,9 +125,6 @@ public:
 
   /// Get the area cost of using this pattern.
   double getArea() const;
-
-  /// Get the delay between specific input and output pins.
-  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const;
 };
 
 /// Represents a cut in the combinational logic network.
@@ -323,9 +356,8 @@ private:
 /// A CutRewritePattern represents a library component or optimization pattern
 /// that can replace cuts in the combinational logic network. Each pattern
 /// defines:
-/// - How to recognize matching cuts
+/// - How to recognize matching cuts and compute area/delay metrics
 /// - How to transform/replace the matched cuts
-/// - Area and timing characteristics
 ///
 /// Patterns can use truth table matching for efficient recognition or
 /// implement custom matching logic for more complex cases.
@@ -334,12 +366,19 @@ struct CutRewritePattern {
   /// Virtual destructor for base class.
   virtual ~CutRewritePattern() = default;
 
-  /// Check if a cut matches this pattern.
+  /// Check if a cut matches this pattern and compute area/delay metrics.
   ///
   /// This method is called to determine if a cut can be replaced by this
-  /// pattern. If useTruthTableMatcher() returns true, this method is only
+  /// pattern. If the cut matches, it should fill in the MatchResult with
+  /// the area and per-input delays for this specific cut.
+  ///
+  /// If useTruthTableMatcher() returns true, this method is only
   /// called for cuts with matching truth tables.
-  virtual bool match(const Cut &cut) const = 0;
+  ///
+  /// \param cut The cut to match against this pattern.
+  /// \param result Output parameter to store area and delay information.
+  /// \return true if the cut matches this pattern, false otherwise.
+  virtual bool match(const Cut &cut, MatchResult &result) const = 0;
 
   /// Specify truth tables that this pattern can match.
   ///
@@ -362,15 +401,6 @@ struct CutRewritePattern {
   /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          Cut &cut) const = 0;
-
-  /// Get the area cost of this pattern.
-  virtual double getArea() const = 0;
-
-  /// Get the delay between specific input and output.
-  /// NOTE: The input index is already permuted according to the pattern's
-  /// input permutation, so it's not necessary to account for it here.
-  virtual DelayType getDelay(unsigned inputIndex,
-                             unsigned outputIndex) const = 0;
 
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;

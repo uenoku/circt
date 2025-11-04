@@ -42,13 +42,24 @@ namespace synth {
 /// with up to K inputs using a lookup table.
 struct GenericLUT : public CutRewritePattern {
   unsigned k; // Maximum number of inputs for this LUT
+  SmallVector<DelayType, 8> cachedDelays; // Pre-computed unit delays
 
   GenericLUT(mlir::MLIRContext *context, unsigned k)
-      : CutRewritePattern(context), k(k) {}
+      : CutRewritePattern(context), k(k), cachedDelays(k, 1) {}
 
-  bool match(const Cut &cut) const override {
+  bool match(const Cut &cut, MatchResult &result) const override {
     // This pattern can implement any cut with at most k inputs
-    return cut.getInputSize() <= k && cut.getOutputSize() == 1;
+    if (cut.getInputSize() > k || cut.getOutputSize() != 1)
+      return false;
+
+    // Fill in the match result
+    result.area = 1.0; // Each LUT has unit area
+
+    // All LUTs have unit delay from any input to the output
+    // Use ArrayRef to avoid copying - just point to cached delays
+    result.delays = ArrayRef<DelayType>(cachedDelays).take_front(cut.getInputSize());
+
+    return true;
   }
 
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &rewriter,
@@ -81,16 +92,6 @@ struct GenericLUT : public CutRewritePattern {
 
     // Replace the root operation with the truth table operation
     return truthTableOp.getOperation();
-  }
-
-  double getArea() const override {
-    // Each LUT has unit area regardless of the function it implements
-    return 1.0;
-  }
-
-  DelayType getDelay(unsigned inputIndex, unsigned outputIndex) const override {
-    // All LUTs have unit delay from any input to any output
-    return 1;
   }
 
   unsigned getNumOutputs() const override { return 1; }
