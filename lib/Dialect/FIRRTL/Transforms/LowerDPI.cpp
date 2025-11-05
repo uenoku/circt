@@ -203,8 +203,10 @@ LogicalResult LowerDPI::lower() {
         // Create an initial block if it does not exist.
         auto seqInitial = seq::InitialOp::create(builder, outputTypes, [&]() {
           auto *block = builder.getBlock();
-          auto enableArgument =
-              block->addArgument(enable.getType(), dpiOp.getLoc());
+          Value enableArgument;
+          if (enable)
+            enableArgument =
+                block->addArgument(enable.getType(), dpiOp.getLoc());
           SmallVector<Value> arguments;
           for (auto input : inputs)
             arguments.push_back(

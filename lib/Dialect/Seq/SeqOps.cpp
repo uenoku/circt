@@ -1220,10 +1220,12 @@ FailureOr<seq::InitialOp> circt::seq::mergeInitialOps(Block *block) {
         blockArg.replaceAllUsesWith(resultToYieldOperand.lookup(operand));
       } else {
         // Otherwise add the operand to the current block.
-        initialOp.getBodyBlock()->addArgument(
+        auto arg = initialOp.getBodyBlock()->addArgument(
             cast<seq::ImmutableType>(operand.getType()).getInnerType(),
             operand.getLoc());
         initialOp.getInputsMutable().append(operand);
+        // Replace all uses of the operand with the new block argument.
+        blockArg.replaceAllUsesWith(arg);
       }
     }
 

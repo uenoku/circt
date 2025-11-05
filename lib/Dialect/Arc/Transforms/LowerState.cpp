@@ -116,6 +116,7 @@ struct OpLowering {
   Value lowerValue(MemoryReadPortOp op, OpResult result, Phase phase);
   Value lowerValue(seq::InitialOp op, OpResult result, Phase phase);
   Value lowerValue(seq::FromImmutableOp op, OpResult result, Phase phase);
+  Value lowerValue(seq::ToImmutableOp op, OpResult result, Phase phase);
 
   void addPending(Value value, Phase phase);
   void addPending(Operation *op, Phase phase);
@@ -516,7 +517,7 @@ LogicalResult OpLowering::lower(StateOp op) {
 /// compute the `New` value.
 LogicalResult OpLowering::lower(sim::DPICallOp op) {
   // Handle unclocked DPI calls.
-  if (!op.getClock()) {
+  if (!op.getClock() || phase == Phase::Initial) {
     // Make sure that all operands have been lowered.
     SmallVector<Value> inputs;
     for (auto operand : op.getInputs())
@@ -525,8 +526,6 @@ LogicalResult OpLowering::lower(sim::DPICallOp op) {
       return success();
     if (llvm::is_contained(inputs, Value{}))
       return failure();
-    if (op.getEnable())
-      return op.emitOpError() << "without clock cannot have an enable";
 
     // Lower the op to a regular function call.
     auto callOp =
@@ -1022,6 +1021,8 @@ Value OpLowering::lowerValue(Value value, Phase phase) {
     return lowerValue(initialOp, result, phase);
   if (auto castOp = dyn_cast<seq::FromImmutableOp>(op))
     return lowerValue(castOp, result, phase);
+  if (auto castOp = dyn_cast<seq::ToImmutableOp>(op))
+    return lowerValue(castOp, result, phase);
 
   // Otherwise we mark the defining operation as to be lowered first. This will
   // cause the lookup in `loweredValues` above to return a value the next time
@@ -1161,6 +1162,12 @@ Value OpLowering::lowerValue(seq::InitialOp op, OpResult result, Phase phase) {
 
 /// The `seq.from_immutable` cast is just a passthrough.
 Value OpLowering::lowerValue(seq::FromImmutableOp op, OpResult result,
+                             Phase phase) {
+  return lowerValue(op.getInput(), phase);
+}
+
+/// The `seq.to_immutable` cast is just a passthrough.
+Value OpLowering::lowerValue(seq::ToImmutableOp op, OpResult result,
                              Phase phase) {
   return lowerValue(op.getInput(), phase);
 }

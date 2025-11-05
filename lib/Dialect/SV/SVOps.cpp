@@ -15,6 +15,7 @@
 #include "circt/Dialect/Emit/EmitOps.h"
 #include "circt/Dialect/HW/CustomDirectiveImpl.h"
 #include "circt/Dialect/HW/HWAttributes.h"
+#include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWSymCache.h"
 #include "circt/Dialect/HW/HWTypes.h"
@@ -56,14 +57,18 @@ bool sv::isExpression(Operation *op) {
 }
 
 LogicalResult sv::verifyInProceduralRegion(Operation *op) {
-  if (op->getParentOp()->hasTrait<sv::ProceduralRegion>())
+  if (!isa_and_nonnull<sv::SVDialect, hw::HWDialect>(
+          op->getParentOp()->getDialect()) ||
+      op->getParentOp()->hasTrait<sv::ProceduralRegion>())
     return success();
   op->emitError() << op->getName() << " should be in a procedural region";
   return failure();
 }
 
 LogicalResult sv::verifyInNonProceduralRegion(Operation *op) {
-  if (!op->getParentOp()->hasTrait<sv::ProceduralRegion>())
+  if (!isa_and_nonnull<sv::SVDialect, hw::HWDialect>(
+          op->getParentOp()->getDialect()) ||
+      !op->getParentOp()->hasTrait<sv::ProceduralRegion>())
     return success();
   op->emitError() << op->getName() << " should be in a non-procedural region";
   return failure();

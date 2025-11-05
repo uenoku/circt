@@ -34,8 +34,8 @@ static bool isArcBreakingOp(Operation *op) {
     return false;
   return op->hasTrait<OpTrait::ConstantLike>() ||
          isa<hw::InstanceOp, seq::CompRegOp, MemoryOp, MemoryReadPortOp,
-             ClockedOpInterface, seq::InitialOp, seq::ClockGateOp,
-             sim::DPICallOp>(op) ||
+             ClockedOpInterface, seq::InitialOp, seq::FromImmutableOp,
+             seq::ClockGateOp, sim::DPICallOp>(op) ||
          op->getNumResults() > 1 || op->getNumRegions() > 0 ||
          !mlir::isMemoryEffectFree(op);
 }
@@ -109,7 +109,7 @@ LogicalResult Converter::runOnModule(HWModuleOp module) {
   arcBreakers.clear();
   arcBreakerIndices.clear();
   for (Operation &op : *module.getBodyBlock()) {
-    if (isa<seq::InitialOp>(&op))
+    if (isa<seq::InitialOp, seq::FromImmutableOp>(&op))
       continue;
     if (!isArcBreakingOp(&op) && !isa<hw::OutputOp>(&op))
       continue;

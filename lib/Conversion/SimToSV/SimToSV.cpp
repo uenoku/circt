@@ -203,11 +203,11 @@ public:
     bool isClockedCall = !!op.getClock();
     bool hasEnable = !!op.getEnable();
 
-    SmallVector<sv::RegOp> temporaries;
+    SmallVector<sv::LogicOp> temporaries;
     SmallVector<Value> reads;
     for (auto [type, result] :
          llvm::zip(op.getResultTypes(), op.getResults())) {
-      temporaries.push_back(sv::RegOp::create(rewriter, op.getLoc(), type));
+      temporaries.push_back(sv::LogicOp::create(rewriter, op.getLoc(), type));
       reads.push_back(
           sv::ReadInOutOp::create(rewriter, op.getLoc(), temporaries.back()));
     }
@@ -258,7 +258,7 @@ public:
                          assignXToResults);
       };
       if (procedural) {
-        sv::InitialOp::create(rewriter, loc, bodyConstructor);
+        bodyConstructor();
       } else {
         sv::AlwaysCombOp::create(rewriter, loc, bodyConstructor);
       }

@@ -104,8 +104,16 @@ ModuleLoweringState::ImmutableValueLowering::lower(seq::InitialOp initialOp) {
   if (!svInitialOp)
     svInitialOp = sv::InitialOp::create(builder, initialOp->getLoc());
   // Initial ops are merged to single one and must not have operands.
-  assert(initialOp.getNumOperands() == 0 &&
-         "initial op should have no operands");
+  for (auto &operand : initialOp->getOpOperands()) {
+    auto immut = operand.get().getDefiningOp<seq::ToImmutableOp>();
+    assert(immut && "expected to_immutable op");
+    // Replace the block argument with the operand.
+    auto realValue = immut.getInput();
+
+    initialOp.getBodyBlock()
+        ->getArgument(operand.getOperandNumber())
+        .replaceAllUsesWith(realValue);
+  }
 
   auto loc = initialOp.getLoc();
   llvm::SmallVector<Value> results;
@@ -291,6 +299,25 @@ public:
 
 private:
   const MapVector<StringAttr, ModuleLoweringState> &moduleLoweringStates;
+};
+
+/// Lower FromImmutable to `sv.reg` and `sv.initial`.
+class ToImmutableLowering : public OpConversionPattern<ToImmutableOp> {
+public:
+  ToImmutableLowering(TypeConverter &typeConverter, MLIRContext *context)
+      : OpConversionPattern<ToImmutableOp>(typeConverter, context) {}
+
+  using OpAdaptor = typename OpConversionPattern<ToImmutableOp>::OpAdaptor;
+
+  LogicalResult
+  matchAndRewrite(ToImmutableOp fromImmutableOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (fromImmutableOp->use_empty()) {
+      rewriter.eraseOp(fromImmutableOp);
+      return success();
+    }
+    return failure();
+  }
 };
 // Lower seq.clock_gate to a fairly standard clock gate implementation.
 //
@@ -703,6 +730,7 @@ void SeqToSVPass::runOnOperation() {
       typeConverter, context, lowerToAlwaysFF, moduleLoweringStates);
   patterns.add<FromImmutableLowering>(typeConverter, context,
                                       moduleLoweringStates);
+  patterns.add<ToImmutableLowering>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::FromClockOp>>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::ToClockOp>>(typeConverter, context);
   patterns.add<ClockGateLowering>(typeConverter, context);
@@ -782,8 +810,7 @@ void SeqToSVPass::runOnOperation() {
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, []() {}, body);
+    sv::IfDefOp::create(b, guard, []() {}, body);
   };
 
   emit::FragmentOp::create(b, randomInitFragmentName.getAttr(), [&] {
