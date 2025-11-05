@@ -110,7 +110,9 @@ def DPICallOp : SimOp<"func.dpi.call",
   let arguments = (ins FlatSymbolRefAttr:$callee,
                       Optional<ClockType>:$clock,
                       Optional<I1>:$enable,
-                      Variadic<AnyType>:$inputs);
+                      Variadic<AnyType>:$inputs,
+                      DefaultValuedAttr<BoolAttr, "false">:$onInitial
+                      );
   let results = (outs Variadic<AnyType>);
 
   let assemblyFormat = [{

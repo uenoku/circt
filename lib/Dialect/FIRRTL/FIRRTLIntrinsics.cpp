@@ -667,14 +667,19 @@ class CirctDPICallConverter : public IntrinsicConverter {
     return !gi.getParamValue<IntegerAttr>("isClocked").getValue().isZero();
   }
 
+  static bool getOnInitial(GenericIntrinsic gi) {
+    return !gi.getParamValue<IntegerAttr>("onInitial").getValue().isZero();
+  }
+
 public:
   using IntrinsicConverter::IntrinsicConverter;
 
   bool check(GenericIntrinsic gi) override {
-    if (gi.hasNParam(2, 2) || gi.namedIntParam("isClocked") ||
+    if (gi.hasNParam(2, 3) || gi.namedIntParam("isClocked") ||
         gi.namedParam("functionName") ||
         gi.namedParam("inputNames", /*optional=*/true) ||
-        gi.namedParam("outputName", /*optional=*/true))
+        gi.namedParam("outputName", /*optional=*/true) ||
+        gi.namedIntParam("onInitial", /*optional=*/true))
       return true;
     auto isClocked = getIsClocked(gi);
     // If clocked, the first operand must be a clock.

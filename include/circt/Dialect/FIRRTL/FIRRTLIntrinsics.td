@@ -222,7 +222,9 @@ def DPICallIntrinsicOp : FIRRTLOp<"int.dpi.call",
                        OptionalAttr<StrAttr>:$outputName,
                        Optional<NonConstClockType>:$clock,
                        Optional<NonConstUInt1Type>:$enable,
-                       Variadic<PassiveType>:$inputs);
+                       Variadic<PassiveType>:$inputs,
+                       DefaultValuedAttr<BoolAttr, "false">:$onInitial
+                       );
   let results = (outs Optional<PassiveType>:$result);
   let assemblyFormat = [{
     $functionName `(` $inputs `)` (`clock` $clock^)? (`enable` $enable^)?

@@ -235,23 +235,34 @@ public:
             sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(),
                              emitCall);
           });
+      assert(!op.getOnInitial());
     } else {
-      // Unclocked call is lowered into always_comb.
-      // TODO: If there is a return value and no output argument, use an
-      // unclocked call op.
-      sv::AlwaysCombOp::create(rewriter, loc, [&]() {
-        if (!hasEnable)
-          return emitCall();
-        auto assignXToResults = [&] {
-          for (auto lhs : temporaries) {
-            auto xValue = sv::ConstantXOp::create(
-                rewriter, op.getLoc(), lhs.getType().getElementType());
-            sv::BPAssignOp::create(rewriter, op.getLoc(), lhs, xValue);
-          }
-        };
-        sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
-                         assignXToResults);
-      });
+      auto assignXToResults = [&] {
+        for (auto lhs : temporaries) {
+          auto xValue = sv::ConstantXOp::create(rewriter, op.getLoc(),
+                                                lhs.getType().getElementType());
+          sv::BPAssignOp::create(rewriter, op.getLoc(), lhs, xValue);
+        }
+      };
+      if (op.getOnInitial()) {
+        sv::InitialOp::create(rewriter, loc, [&]() {
+          if (!hasEnable)
+            return emitCall();
+
+          sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
+                           assignXToResults);
+        });
+      } else {
+        // Unclocked call is lowered into always_comb.
+        // TODO: If there is a return value and no output argument, use an
+        // unclocked call op.
+        sv::AlwaysCombOp::create(rewriter, loc, [&]() {
+          if (!hasEnable)
+            return emitCall();
+          sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
+                           assignXToResults);
+        });
+      }
     }
 
     rewriter.replaceOp(op, reads);
