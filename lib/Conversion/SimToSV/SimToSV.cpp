@@ -258,7 +258,7 @@ public:
                          assignXToResults);
       };
       if (procedural) {
-        bodyConstructor();
+        sv::InitialOp::create(rewriter, loc, bodyConstructor);
       } else {
         sv::AlwaysCombOp::create(rewriter, loc, bodyConstructor);
       }

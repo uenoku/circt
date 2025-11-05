@@ -16,12 +16,14 @@
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "circt/Dialect/SV/SVOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
+#include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Dialect/Sim/SimOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/MapVector.h"
+#include <mlir/IR/ValueRange.h>
 
 namespace circt {
 namespace firrtl {
@@ -188,14 +190,32 @@ LogicalResult LowerDPI::lower() {
 
       Value result;
       if (isInitial) {
+        assert(!clock);
+        SmallVector<Value> immutCast;
+        if (enable) {
+          immutCast.push_back(seq::ToImmutableOp::create(
+              builder, seq::ImmutableType::get(enable.getType()), enable));
+        }
+        for (auto input : inputs) {
+          immutCast.push_back(seq::ToImmutableOp::create(
+              builder, seq::ImmutableType::get(input.getType()), input));
+        }
         // Create an initial block if it does not exist.
         auto seqInitial = seq::InitialOp::create(builder, outputTypes, [&]() {
-          auto call = sim::DPICallOp::create(builder, outputTypes,
-                                             firstDPIDecl.getSymNameAttr(),
-                                             clock, enable, inputs);
+          auto *block = builder.getBlock();
+          auto enableArgument =
+              block->addArgument(enable.getType(), dpiOp.getLoc());
+          SmallVector<Value> arguments;
+          for (auto input : inputs)
+            arguments.push_back(
+                block->addArgument(input.getType(), dpiOp.getLoc()));
+          auto call = sim::DPICallOp::create(
+              builder, outputTypes, firstDPIDecl.getSymNameAttr(), Value(),
+              enableArgument, arguments);
           // Yield.
           seq::YieldOp::create(builder, call->getResults());
         });
+        seqInitial->setOperands(immutCast);
 
         // Unwrap and cast.
         if (!outputTypes.empty())

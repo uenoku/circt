@@ -167,6 +167,11 @@ firrtl.circuit "Foo" {
     firrtl.int.generic "circt_dpi_call" <isClocked: ui32 = 1, functionName: none = "clocked_void"> %clock, %enable, %in1, %in2 : (!firrtl.clock, !firrtl.uint<1>, !firrtl.uint<8>, !firrtl.uint<8>) -> ()
     // CHECK-NEXT:  %1 = firrtl.int.dpi.call "unclocked_result"(%in1, %in2) enable %enable : (!firrtl.uint<8>, !firrtl.uint<8>) -> !firrtl.uint<8>
     %1 = firrtl.int.generic "circt_dpi_call" <isClocked: ui32 = 0, functionName: none = "unclocked_result"> %enable, %in1, %in2 : (!firrtl.uint<1>, !firrtl.uint<8>, !firrtl.uint<8>) -> !firrtl.uint<8>
+
+    // CHECK-NEXT: firrtl.int.dpi.call "clocked_void"(%in1, %in2) enable %enable {onInitial = true} : (!firrtl.uint<8>, !firrtl.uint<8>) -> ()
+    firrtl.int.generic "circt_dpi_call" <isClocked: ui32 = 0, functionName: none = "clocked_void", onInitial: ui32 = 1> %enable, %in1, %in2 : (!firrtl.uint<1>, !firrtl.uint<8>, !firrtl.uint<8>) -> ()
+    // CHECK-NEXT:  %2 = firrtl.int.dpi.call "unclocked_result"(%in1, %in2) enable %enable {onInitial = true} : (!firrtl.uint<8>, !firrtl.uint<8>) -> !firrtl.uint<8>
+    %2 = firrtl.int.generic "circt_dpi_call" <isClocked: ui32 = 0, functionName: none = "unclocked_result", onInitial: ui32 = 1> %enable, %in1, %in2 : (!firrtl.uint<1>, !firrtl.uint<8>, !firrtl.uint<8>) -> !firrtl.uint<8>
   }
 
   // CHECK-LABEL: firrtl.module private @ViewIntrinsicTest

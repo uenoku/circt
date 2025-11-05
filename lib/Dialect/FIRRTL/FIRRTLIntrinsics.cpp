@@ -668,7 +668,9 @@ class CirctDPICallConverter : public IntrinsicConverter {
   }
 
   static bool getOnInitial(GenericIntrinsic gi) {
-    return !gi.getParamValue<IntegerAttr>("onInitial").getValue().isZero();
+    if (auto attr = gi.getParamValue<IntegerAttr>("onInitial"))
+      return !attr.getValue().isZero();
+    return false;
   }
 
 public:
@@ -713,7 +715,7 @@ public:
 
     rewriter.replaceOpWithNewOp<DPICallIntrinsicOp>(
         gi.op, gi.op.getResultTypes(), functionName, inputNamesStrArray,
-        outputStr, clock, enable, inputs);
+        outputStr, clock, enable, inputs, getOnInitial(gi));
   }
 };
 
