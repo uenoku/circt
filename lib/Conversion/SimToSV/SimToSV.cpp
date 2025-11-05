@@ -244,24 +244,23 @@ public:
           sv::BPAssignOp::create(rewriter, op.getLoc(), lhs, xValue);
         }
       };
-      if (op.getOnInitial()) {
-        sv::InitialOp::create(rewriter, loc, [&]() {
-          if (!hasEnable)
-            return emitCall();
-
-          sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
-                           assignXToResults);
-        });
+      auto *parent = op->getParentOp();
+      bool procedural = parent->hasTrait<sv::ProceduralRegion>() ||
+                        isa<seq::InitialOp>(parent);
+      // Unclocked call is lowered into always_comb if it is in a procedural
+      // region.
+      // TODO: If there is a return value and no output argument, use an
+      // unclocked call op.
+      auto bodyConstructor = [&]() {
+        if (!hasEnable)
+          return emitCall();
+        sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
+                         assignXToResults);
+      };
+      if (procedural) {
+        bodyConstructor();
       } else {
-        // Unclocked call is lowered into always_comb.
-        // TODO: If there is a return value and no output argument, use an
-        // unclocked call op.
-        sv::AlwaysCombOp::create(rewriter, loc, [&]() {
-          if (!hasEnable)
-            return emitCall();
-          sv::IfOp::create(rewriter, op.getLoc(), adaptor.getEnable(), emitCall,
-                           assignXToResults);
-        });
+        sv::AlwaysCombOp::create(rewriter, loc, bodyConstructor);
       }
     }
 

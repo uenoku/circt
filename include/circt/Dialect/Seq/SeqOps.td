@@ -767,3 +767,12 @@ def FromImmutableOp : SeqOp<"from_immutable", [Pure]> {
 
   let assemblyFormat = "$input attr-dict `:` functional-type(operands, results)";
 }
+
+def ToImmutableOp : SeqOp<"to_immutable", [Pure]> {
+  let summary = "Cast from an immutable type to a wire type";
+
+  let arguments = (ins AnyType:$input);
+  let results = (outs ImmutableType:$output);
+
+  let assemblyFormat = "$input attr-dict `:` functional-type(operands, results)";
+}

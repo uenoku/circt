@@ -15,6 +15,7 @@
 #include "circt/Dialect/FIRRTL/Namespace.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "circt/Dialect/SV/SVOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Sim/SimOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Threading.h"
@@ -171,6 +172,7 @@ LogicalResult LowerDPI::lower() {
       builder.setInsertionPoint(dpiOp);
       auto clock = getLowered(builder, dpiOp.getClock());
       auto enable = getLowered(builder, dpiOp.getEnable());
+      bool isInitial = dpiOp.getOnInitial();
       SmallVector<Value, 4> inputs;
       inputs.reserve(dpiOp.getInputs().size());
       for (auto input : dpiOp.getInputs()) {
@@ -184,16 +186,35 @@ LogicalResult LowerDPI::lower() {
         outputTypes.push_back(
             lowerDPIArgumentType(dpiOp.getResult().getType()));
 
-      auto call = sim::DPICallOp::create(builder, outputTypes,
+      Value result;
+      if (isInitial) {
+        // Create an initial block if it does not exist.
+        auto seqInitial = seq::InitialOp::create(builder, outputTypes, [&]() {
+          auto call = sim::DPICallOp::create(builder, outputTypes,
+                                             firstDPIDecl.getSymNameAttr(),
+                                             clock, enable, inputs);
+          // Yield.
+          seq::YieldOp::create(builder, call->getResults());
+        });
+
+        // Unwrap and cast.
+        if (!outputTypes.empty())
+          result = seq::FromImmutableOp::create(builder, outputTypes.front(),
+                                                seqInitial->getResult(0));
+      } else {
+        auto op = sim::DPICallOp::create(builder, outputTypes,
                                          firstDPIDecl.getSymNameAttr(), clock,
                                          enable, inputs);
-      if (!call.getResults().empty()) {
+        if (!outputTypes.empty())
+          result = op->getResult(0);
+      }
+
+      if (result) {
         // Insert unrealized conversion cast HW type to FIRRTL type.
-        auto result =
-            mlir::UnrealizedConversionCastOp::create(
-                builder, dpiOp.getResult().getType(), call.getResult(0))
-                ->getResult(0);
-        dpiOp.getResult().replaceAllUsesWith(result);
+        auto newResult = mlir::UnrealizedConversionCastOp::create(
+                             builder, dpiOp.getResult().getType(), result)
+                             ->getResult(0);
+        dpiOp.getResult().replaceAllUsesWith(newResult);
       }
       return success();
     };
