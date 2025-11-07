@@ -110,19 +110,16 @@ static void isopRecursive(const APInt &on, unsigned numVars, unsigned varIndex,
     return;
   }
 
-  if (varIndex == numVars) {
-    // No more variables, shouldn't happen if algorithm is correct
-    return;
-  }
+  assert(varIndex != numVars && "Ran out of variables");
 
   // Compute positive and negative cofactors
   APInt on1 = computeCofactor(on, numVars, varIndex, true);
   APInt on0 = computeCofactor(on, numVars, varIndex, false);
 
-  // Compute the intersection (where both cofactors are true)
+  // Compute the intersection where both cofactors are true
   APInt onAnd = on1 & on0;
 
-  // Recurse on the common part (variable doesn't matter)
+  // Recurse on the common part
   isopRecursive(onAnd, numVars, varIndex + 1, cube, result);
 
   // Compute the differences
