@@ -162,6 +162,7 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
 }
 
 /// Build an AND operation from a list of values using variadic and_inv.
+/// TODO: This is also needs to be based on arrival time.
 static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
                       ArrayRef<bool> inverted) {
   assert(values.size() == inverted.size() && "Size mismatch");
@@ -186,7 +187,6 @@ static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values) {
   if (values.size() == 1)
     return values[0];
 
-  // Use De Morgan's law: a OR b OR c = NOT(NOT a AND NOT b AND NOT c)
   SmallVector<bool> inverted(values.size(), true);
   auto andOp = aig::AndInverterOp::create(builder, loc, values, inverted);
   // Invert the result
