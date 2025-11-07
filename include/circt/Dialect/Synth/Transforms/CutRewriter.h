@@ -448,9 +448,9 @@ private:
            SmallVector<std::pair<NPNClass, const CutRewritePattern *>>>
       npnToPatternMap;
 
-  /// Patterns that use custom matching logic instead of truth tables.
+  /// Patterns that use custom matching logic instead of NPN lookup.
   /// These patterns are checked against every cut.
-  SmallVector<const CutRewritePattern *, 4> nonTruthTablePatterns;
+  SmallVector<const CutRewritePattern *, 4> nonNPNPatterns;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
