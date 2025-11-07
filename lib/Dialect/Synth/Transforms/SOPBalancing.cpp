@@ -95,8 +95,9 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
   return result;
 }
 
-/// Minato-Morreale ISOP algorithm.
-/// The implementation is heavily inspired by the implementation in mockturtle.
+/// Minato-Morreale ISOP algorithm (See "Finding All Simple Disjunctive
+/// Decompositions Using Irredundant Sum-of-Products Forms"Sec 3.2). The
+/// implementation is heavily inspired by the implementation in mockturtle.
 static void isopRecursive(const APInt &on, unsigned numVars, unsigned varIndex,
                           const Cube &cube, SOPForm &result) {
   // Terminal case: nothing to cover
