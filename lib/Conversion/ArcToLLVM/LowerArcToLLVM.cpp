@@ -14,6 +14,7 @@
 #include "circt/Dialect/Arc/ModelInfo.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
+#include "circt/Dialect/Sim/SimOps.h"
 #include "circt/Support/ConversionPatternSet.h"
 #include "circt/Support/Namespace.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -515,6 +516,63 @@ struct SimStepOpLowering : public ModelAwarePattern<arc::SimStepOp> {
   }
 };
 
+// /// Lowers sim.func.dpi.call to func.call when inside a function (e.g., arc.initial).
+// /// This handles DPI calls that have been moved into initial blocks.
+// struct SimDPICallOpLowering : public OpConversionPattern<sim::DPICallOp> {
+//   using OpConversionPattern::OpConversionPattern;
+// 
+//   LogicalResult
+//   matchAndRewrite(sim::DPICallOp op, OpAdaptor adaptor,
+//                   ConversionPatternRewriter &rewriter) const final {
+//     // Only convert if we're inside a function (not inside hw.module).
+//     // DPI calls inside hw.module are handled by other passes.
+//     if (op->getParentOfType<hw::HWModuleOp>())
+//       return failure();
+// 
+//     // For DPI calls inside functions (like arc.initial), convert to func.call.
+//     // We ignore clock (should be null in initial blocks) and handle enable
+//     // by wrapping the call in an scf.if.
+//     if (op.getClock())
+//       return op.emitError("DPI call inside initial block should not have clock");
+// 
+//     SmallVector<Type> resultTypes;
+//     if (failed(typeConverter->convertTypes(op.getResultTypes(), resultTypes)))
+//       return failure();
+// 
+//     if (op.getEnable()) {
+//       // Wrap the call in an scf.if when enable is present.
+//       auto ifOp = rewriter.create<scf::IfOp>(
+//           op.getLoc(), resultTypes, adaptor.getEnable(),
+//           /*withElseRegion=*/resultTypes.empty() ? false : true);
+// 
+//       rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+//       auto callOp = rewriter.create<func::CallOp>(
+//           op.getLoc(), resultTypes, op.getCalleeAttr(), adaptor.getInputs());
+//       if (!resultTypes.empty())
+//         rewriter.create<scf::YieldOp>(op.getLoc(), callOp.getResults());
+// 
+//       if (!resultTypes.empty()) {
+//         rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
+//         // For the else branch, yield undefined values.
+//         SmallVector<Value> undefValues;
+//         for (auto type : resultTypes) {
+//           auto undef = rewriter.create<LLVM::UndefOp>(op.getLoc(), type);
+//           undefValues.push_back(undef);
+//         }
+//         rewriter.create<scf::YieldOp>(op.getLoc(), undefValues);
+//       }
+// 
+//       rewriter.replaceOp(op, ifOp.getResults());
+//     } else {
+//       // No enable, just a direct call.
+//       rewriter.replaceOpWithNewOp<func::CallOp>(
+//           op, resultTypes, op.getCalleeAttr(), adaptor.getInputs());
+//     }
+// 
+//     return success();
+//   }
+// };
+
 /// Lowers SimEmitValueOp to a printf call. The integer will be printed in its
 /// entirety if it is of size up to size_t, and explicitly truncated otherwise.
 /// This pattern will mutate the global module.
@@ -782,6 +840,7 @@ void LowerArcToLLVMPass::runOnOperation() {
     ReplaceOpWithInputPattern<seq::ToClockOp>,
     ReplaceOpWithInputPattern<seq::FromClockOp>,
     SeqConstClockLowering,
+    // SimDPICallOpLowering,
     SimEmitValueOpLowering,
     StateReadOpLowering,
     StateWriteOpLowering,

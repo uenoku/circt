@@ -268,15 +268,13 @@ ParseResult parseFIFOAEThreshold(OpAsmParser &parser, IntegerAttr &threshold,
 void printFIFOAFThreshold(OpAsmPrinter &p, Operation *op, IntegerAttr threshold,
                           Type outputFlagType) {
   if (threshold)
-    p << "almost_full"
-      << " " << threshold.getInt();
+    p << "almost_full" << " " << threshold.getInt();
 }
 
 void printFIFOAEThreshold(OpAsmPrinter &p, Operation *op, IntegerAttr threshold,
                           Type outputFlagType) {
   if (threshold)
-    p << "almost_empty"
-      << " " << threshold.getInt();
+    p << "almost_empty" << " " << threshold.getInt();
 }
 
 void FIFOOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
@@ -1115,8 +1113,18 @@ FirMemory::FirMemory(hw::HWModuleGeneratedOp op) {
 }
 
 LogicalResult InitialOp::verify() {
+  // Check that the body is not empty if there are results or operands.
+  auto &bodyBlock = this->getBody().front();
+  if (bodyBlock.empty()) {
+    if (getNumResults() != 0)
+      return emitError() << "expects a non-empty block when there are results";
+    if (getNumOperands() != 0)
+      return emitError() << "expects a non-empty block when there are operands";
+    return success();
+  }
+
   // Check outputs.
-  auto *terminator = this->getBody().front().getTerminator();
+  auto *terminator = bodyBlock.getTerminator();
   if (terminator->getOperands().size() != getNumResults())
     return emitError() << "result type doesn't match with the terminator";
   for (auto [lhs, rhs] :
@@ -1126,7 +1134,7 @@ LogicalResult InitialOp::verify() {
                          << " is expected but got " << lhs;
   }
 
-  auto blockArgs = this->getBody().front().getArguments();
+  auto blockArgs = bodyBlock.getArguments();
 
   if (blockArgs.size() != getNumOperands())
     return emitError() << "operand type doesn't match with the block arg";
@@ -1191,8 +1199,8 @@ FailureOr<seq::InitialOp> circt::seq::mergeInitialOps(Block *block) {
       initialOps.push_back(&op);
 
   if (!mlir::computeTopologicalSorting(initialOps, {}))
-    return block->getParentOp()->emitError() << "initial ops cannot be "
-                                             << "topologically sorted";
+    return block->getParentOp()->emitError()
+           << "initial ops cannot be " << "topologically sorted";
 
   // No need to merge if there is only one initial op.
   if (initialOps.size() <= 1)
@@ -1273,10 +1281,16 @@ FailureOr<seq::InitialOp> circt::seq::mergeInitialOps(Block *block) {
 
   newInitial.getBodyBlock()->getOperations().splice(
       newInitial.end(), initialOp.getBodyBlock()->getOperations());
+  block->dump();
 
   // Clean up.
-  while (!initialOps.empty())
-    initialOps.pop_back_val()->erase();
+  while (!initialOps.empty()) {
+    auto op = initialOps.pop_back_val();
+    op->dump();
+    llvm::errs() << "Erasing " << *op << "\n";
+    llvm::errs() << "Users: " << op->use_empty() << "\n";
+    op->erase();
+  }
 
   return newInitial;
 }

@@ -627,7 +627,7 @@ CutRewritePatternSet::CutRewritePatternSet(
     } else {
       // If the pattern does not provide NPN classes, we use a special key
       // to indicate that it should be considered for all cuts.
-      nonTruthTablePatterns.push_back(pattern.get());
+      nonNPNPatterns.push_back(pattern.get());
     }
   }
 }
@@ -1029,7 +1029,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
                                   [&](unsigned i) { return inputMapping[i]; });
   }
 
-  for (const CutRewritePattern *pattern : patterns.nonTruthTablePatterns)
+  for (const CutRewritePattern *pattern : patterns.nonNPNPatterns)
     if (pattern->match(cut))
       computeArrivalTimeAndPickBest(pattern, [&](unsigned i) { return i; });
 

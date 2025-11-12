@@ -522,7 +522,7 @@ LogicalResult OpLowering::lower(sim::DPICallOp op) {
     SmallVector<Value> inputs;
     for (auto operand : op.getInputs())
       inputs.push_back(lowerValue(operand, phase));
-    if (initial)
+    if (initial && !op->getParentOfType<seq::InitialOp>())
       return success();
     if (llvm::is_contained(inputs, Value{}))
       return failure();
@@ -887,9 +887,18 @@ LogicalResult OpLowering::lower(seq::InitialOp op) {
     // Clone the operation.
     auto *clonedOp = module.initialBuilder.clone(bodyOp);
     auto result = clonedOp->walk([&](Operation *nestedClonedOp) {
+      // for (auto& operand : nestedClonedOp->getOpOperands()) {
+      //   if (op->isAncestor(operand.get().getParentBlock()->getParentOp()))
+      //     continue;
+      //   auto lowered = lowerValue(operand.get(), phase);
+      //   if (!lowered)
+      //     return WalkResult::interrupt();
+      //   operand.set(lowered);
+      // }
       for (auto &operand : nestedClonedOp->getOpOperands()) {
         if (clonedOp->isAncestor(operand.get().getParentBlock()->getParentOp()))
           continue;
+
         auto value = module.requireLoweredValue(operand.get(), Phase::Initial,
                                                 nestedClonedOp->getLoc());
         if (!value)
