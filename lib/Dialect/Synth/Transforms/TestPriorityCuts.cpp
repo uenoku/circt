@@ -44,7 +44,8 @@ struct DummyPattern : public CutRewritePattern {
   DummyPattern(mlir::MLIRContext *ctx)
       : CutRewritePattern(ctx), cachedDelays(kMaxInputs, 1) {}
 
-  bool match(const Cut &cut, MatchResult &result) const override {
+  bool match(const Cut &cut, CutEnumerator &enumerator,
+             MatchResult &result) const override {
     result.area = 1.0;
     // Unit delay from all inputs to the single output
     result.delays = ArrayRef<DelayType>(cachedDelays).take_front(cut.getInputSize());

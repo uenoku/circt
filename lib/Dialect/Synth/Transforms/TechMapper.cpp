@@ -119,7 +119,8 @@ struct TechLibraryPattern : public CutRewritePattern {
   }
 
   /// Match the cut set against this library primitive
-  bool match(const Cut &cut, MatchResult &result) const override {
+  bool match(const Cut &cut, CutEnumerator &enumerator,
+             MatchResult &result) const override {
     if (!cut.getNPNClass().equivalentOtherThanPermutation(npnClass))
       return false;
 

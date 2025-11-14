@@ -245,6 +245,40 @@ void Cut::getPermutatedInputs(const NPNClass &patternNPN,
   }
 }
 
+SmallVector<DelayType>
+Cut::getInputArrivalTimes(CutEnumerator &enumerator) const {
+  SmallVector<DelayType> inputArrivalTimes;
+  inputArrivalTimes.reserve(getInputSize());
+
+  // Compute arrival times for each input.
+  for (auto input : inputs) {
+    if (isAlwaysCutInput(input)) {
+      // If the input is a primary input, it has no delay.
+      inputArrivalTimes.push_back(0);
+      continue;
+    }
+    auto *cutSet = enumerator.getCutSet(input);
+    assert(cutSet && "Input must have a valid cut set");
+
+    // If there is no matching pattern, it means it's not possible to use the
+    // input in the cut rewriting. Return empty vector to indicate failure.
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut) {
+      inputArrivalTimes.clear();
+      return inputArrivalTimes;
+    }
+
+    const auto &matchedPattern = *bestCut->getMatchedPattern();
+
+    // Otherwise, the cut input is an op result. Get the arrival time
+    // from the matched pattern.
+    inputArrivalTimes.push_back(matchedPattern.getArrivalTime(
+        cast<mlir::OpResult>(input).getResultNumber()));
+  }
+
+  return inputArrivalTimes;
+}
+
 void Cut::dump(llvm::raw_ostream &os) const {
   os << "// === Cut Dump ===\n";
   os << "Cut with " << getInputSize() << " inputs and " << operations.size()
@@ -834,8 +868,8 @@ void CutEnumerator::dump() const {
         llvm::outs() << getTestVariableName(input, opCounter);
       });
       auto &pattern = cut.getMatchedPattern();
-      llvm::outs() << "}"
-                   << "@t" << cut.getTruthTable().table.getZExtValue() << "d";
+      llvm::outs() << "}" << "@t" << cut.getTruthTable().table.getZExtValue()
+                   << "d";
       if (pattern) {
         llvm::outs() << *std::max_element(pattern->getArrivalTimes().begin(),
                                           pattern->getArrivalTimes().end());
@@ -971,11 +1005,11 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
                inputIndex < inputSize; ++inputIndex) {
             // Map pattern input i to cut input through NPN transformations
             unsigned cutOriginalInput = mapIndex(inputIndex);
-            outputArrivalTime = std::max(
-                outputArrivalTime,
-                matchResult.getDelay(cutOriginalInput, outputIndex,
-                                     cut.getInputSize()) +
-                    inputArrivalTimes[cutOriginalInput]);
+            outputArrivalTime =
+                std::max(outputArrivalTime,
+                         matchResult.getDelay(cutOriginalInput, outputIndex,
+                                              cut.getInputSize()) +
+                             inputArrivalTimes[cutOriginalInput]);
           }
 
           outputArrivalTimes.push_back(outputArrivalTime);
@@ -1016,7 +1050,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     assert(patternNPN.truthTable.numInputs == cut.getInputSize() &&
            "Pattern input size must match cut input size");
     MatchResult matchResult;
-    if (!pattern->match(cut, matchResult))
+    if (!pattern->match(cut, cutEnumerator, matchResult))
       continue;
     auto &cutNPN = cut.getNPNClass();
 
@@ -1029,7 +1063,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
     MatchResult matchResult;
-    if (pattern->match(cut, matchResult))
+    if (pattern->match(cut, cutEnumerator, matchResult))
       computeArrivalTimeAndPickBest(pattern, matchResult,
                                     [&](unsigned i) { return i; });
   }
