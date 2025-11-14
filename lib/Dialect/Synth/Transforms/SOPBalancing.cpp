@@ -269,7 +269,8 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
   SOPBalancingPattern(MLIRContext *context) : CutRewritePattern(context) {}
 
-  bool match(const Cut &cut, MatchResult &result) const override {
+  bool match(const Cut &cut, CutEnumerator &enumerator,
+             MatchResult &result) const override {
     // Match any non-trivial cut with a single output
     if (cut.isTrivialCut() || cut.getOutputSize() != 1)
       return false;

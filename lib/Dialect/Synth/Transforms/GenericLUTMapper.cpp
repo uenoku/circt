@@ -47,7 +47,8 @@ struct GenericLUT : public CutRewritePattern {
   GenericLUT(mlir::MLIRContext *context, unsigned k)
       : CutRewritePattern(context), k(k), cachedDelays(k, 1) {}
 
-  bool match(const Cut &cut, MatchResult &result) const override {
+  bool match(const Cut &cut, CutEnumerator &enumerator,
+             MatchResult &result) const override {
     // This pattern can implement any cut with at most k inputs
     if (cut.getInputSize() > k || cut.getOutputSize() != 1)
       return false;

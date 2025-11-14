@@ -56,6 +56,7 @@ FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
 // Forward declarations
 class CutRewritePatternSet;
 class CutRewriter;
+class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 
@@ -205,6 +206,12 @@ public:
   const std::optional<MatchedPattern> &getMatchedPattern() const {
     return matchedPattern;
   }
+
+  /// Get arrival times for each input of this cut.
+  /// This requires the cut enumerator to have computed arrival times for
+  /// all inputs. Returns a vector where each element corresponds to the
+  /// arrival time of the input at the same index in the inputs vector.
+  SmallVector<DelayType> getInputArrivalTimes(CutEnumerator &enumerator) const;
 };
 
 /// Manages a collection of cuts for a single logic node using priority cuts
@@ -376,9 +383,11 @@ struct CutRewritePattern {
   /// called for cuts with matching truth tables.
   ///
   /// \param cut The cut to match against this pattern.
+  /// \param enumerator The cut enumerator for accessing cut information.
   /// \param result Output parameter to store area and delay information.
   /// \return true if the cut matches this pattern, false otherwise.
-  virtual bool match(const Cut &cut, MatchResult &result) const = 0;
+  virtual bool match(const Cut &cut, CutEnumerator &enumerator,
+                     MatchResult &result) const = 0;
 
   /// Specify truth tables that this pattern can match.
   ///
