@@ -63,23 +63,15 @@ InstanceGraphNode *InstanceGraph::getOrAddNode(StringAttr name) {
   return node;
 }
 
-void InstanceGraph::populateModuleParents(
-    llvm::function_ref<void(ModuleOpInterface)> recordModule) {
-  // Accumulate modules inside the parent op.
-  for (auto module :
-       parent->getRegion(0).front().getOps<igraph::ModuleOpInterface>())
-    recordModule(module);
-}
-
 InstanceGraph::InstanceGraph(Operation *parent) : parent(parent) {
   assert(parent->hasTrait<mlir::OpTrait::SingleBlock>() &&
          "top-level operation must have a single block");
-
   SmallVector<std::pair<ModuleOpInterface, SmallVector<InstanceOpInterface>>>
       moduleToInstances;
-  populateModuleParents([&](ModuleOpInterface module) {
+  // First accumulate modules inside the parent op.
+  for (auto module :
+       parent->getRegion(0).front().getOps<igraph::ModuleOpInterface>())
     moduleToInstances.push_back({module, {}});
-  });
 
   // Populate instances in the module parallelly.
   mlir::parallelFor(parent->getContext(), 0, moduleToInstances.size(),
