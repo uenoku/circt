@@ -211,7 +211,8 @@ public:
   /// This requires the cut enumerator to have computed arrival times for
   /// all inputs. Returns a vector where each element corresponds to the
   /// arrival time of the input at the same index in the inputs vector.
-  SmallVector<DelayType> getInputArrivalTimes(CutEnumerator &enumerator) const;
+  LogicalResult getInputArrivalTimes(CutEnumerator &enumerator,
+                                     SmallVectorImpl<DelayType> &results) const;
 };
 
 /// Manages a collection of cuts for a single logic node using priority cuts
@@ -328,6 +329,8 @@ public:
   /// In that case return a trivial cut set.
   const CutSet *getCutSet(Value value);
 
+  DelayType getArrivalTime(Value value) const;
+
   /// Move ownership of all cut sets to caller.
   /// After calling this, the enumerator is left in an empty state.
   llvm::MapVector<Value, std::unique_ptr<CutSet>> takeVector();
@@ -408,7 +411,12 @@ struct CutRewritePattern {
   /// because the cut enumerator maintains references to operations throughout
   /// the circuit, making it safe to only replace the root operation of each
   /// cut while preserving all other operations unchanged.
+  ///
+  /// \param builder The OpBuilder to use for creating new operations.
+  /// \param enumerator The cut enumerator for accessing cut information.
+  /// \param cut The cut to rewrite.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
+                                         CutEnumerator &enumerator,
                                          Cut &cut) const = 0;
 
   /// Get the number of outputs this pattern produces.

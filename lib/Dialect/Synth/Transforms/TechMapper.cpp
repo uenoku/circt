@@ -142,6 +142,7 @@ struct TechLibraryPattern : public CutRewritePattern {
 
   /// Rewrite the cut set using this library primitive
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
+                                       CutEnumerator &enumerator,
                                        Cut &cut) const override {
     // Create a new instance of the module
     SmallVector<Value> inputs;

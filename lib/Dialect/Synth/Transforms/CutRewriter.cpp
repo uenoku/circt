@@ -245,16 +245,16 @@ void Cut::getPermutatedInputs(const NPNClass &patternNPN,
   }
 }
 
-SmallVector<DelayType>
-Cut::getInputArrivalTimes(CutEnumerator &enumerator) const {
-  SmallVector<DelayType> inputArrivalTimes;
-  inputArrivalTimes.reserve(getInputSize());
+LogicalResult
+Cut::getInputArrivalTimes(CutEnumerator &enumerator,
+                          SmallVectorImpl<DelayType> &results) const {
+  results.reserve(getInputSize());
 
   // Compute arrival times for each input.
   for (auto input : inputs) {
     if (isAlwaysCutInput(input)) {
       // If the input is a primary input, it has no delay.
-      inputArrivalTimes.push_back(0);
+      results.push_back(0);
       continue;
     }
     auto *cutSet = enumerator.getCutSet(input);
@@ -263,20 +263,18 @@ Cut::getInputArrivalTimes(CutEnumerator &enumerator) const {
     // If there is no matching pattern, it means it's not possible to use the
     // input in the cut rewriting. Return empty vector to indicate failure.
     auto *bestCut = cutSet->getBestMatchedCut();
-    if (!bestCut) {
-      inputArrivalTimes.clear();
-      return inputArrivalTimes;
-    }
+    if (!bestCut)
+      return failure();
 
     const auto &matchedPattern = *bestCut->getMatchedPattern();
 
     // Otherwise, the cut input is an op result. Get the arrival time
     // from the matched pattern.
-    inputArrivalTimes.push_back(matchedPattern.getArrivalTime(
+    results.push_back(matchedPattern.getArrivalTime(
         cast<mlir::OpResult>(input).getResultNumber()));
   }
 
-  return inputArrivalTimes;
+  return success();
 }
 
 void Cut::dump(llvm::raw_ostream &os) const {
@@ -1077,7 +1075,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
   auto cutVector = cutEnumerator.takeVector();
-  cutEnumerator.clear();
+  // Note: Don't clear cutEnumerator yet - we need it during rewrite
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());
   for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
@@ -1104,7 +1102,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
 
     rewriter.setInsertionPoint(bestCut->getRoot());
     const auto &matchedPattern = bestCut->getMatchedPattern();
-    auto result = matchedPattern->getPattern()->rewrite(rewriter, *bestCut);
+    auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
+                                                        *bestCut);
     if (failed(result))
       return failure();
 
@@ -1116,5 +1115,7 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     }
   }
 
+  // Clear the enumerator after rewriting is complete
+  cutEnumerator.clear();
   return success();
 }

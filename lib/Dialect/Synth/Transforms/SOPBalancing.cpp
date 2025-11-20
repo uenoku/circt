@@ -159,10 +159,13 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
 }
 
 /// Build an AND operation from a list of values using variadic and_inv.
-/// TODO: This is also needs to be based on arrival time.
+/// Builds a balanced tree based on arrival times to minimize delay.
 static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
-                      ArrayRef<bool> inverted) {
+                      ArrayRef<bool> inverted,
+                      ArrayRef<DelayType> arrivalTimes = {}) {
   assert(values.size() == inverted.size() && "Size mismatch");
+  assert(arrivalTimes.empty() ||
+         values.size() == arrivalTimes.size() && "Arrival times size mismatch");
 
   if (values.empty())
     return {};
@@ -170,56 +173,133 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
   if (values.size() == 1)
     return aig::AndInverterOp::create(builder, loc, values[0], inverted[0]);
 
-  // Use variadic and_inv
-  return aig::AndInverterOp::create(builder, loc, values, inverted);
+  // If no arrival times provided, use variadic and_inv
+  if (arrivalTimes.empty())
+    return aig::AndInverterOp::create(builder, loc, values, inverted);
+
+  // Build balanced tree based on arrival times
+  // Strategy: pair inputs with similar arrival times to minimize critical path
+  SmallVector<std::tuple<Value, bool, DelayType>> items;
+  for (unsigned i = 0; i < values.size(); ++i)
+    items.push_back({values[i], inverted[i], arrivalTimes[i]});
+
+  // Sort by arrival time (descending) so we process late-arriving signals first
+  llvm::sort(items, [](const auto &a, const auto &b) {
+    return std::get<2>(a) > std::get<2>(b);
+  });
+
+  // Build balanced binary tree
+  while (items.size() > 1) {
+    SmallVector<std::tuple<Value, bool, DelayType>> nextLevel;
+
+    for (unsigned i = 0; i + 1 < items.size(); i += 2) {
+      auto [val1, inv1, time1] = items[i];
+      auto [val2, inv2, time2] = items[i + 1];
+
+      // Create AND of the two values
+      SmallVector<Value, 2> andInputs = {val1, val2};
+      SmallVector<bool, 2> andInverted = {inv1, inv2};
+      Value andResult =
+          aig::AndInverterOp::create(builder, loc, andInputs, andInverted);
+
+      // New arrival time is max of inputs + 1 gate delay
+      DelayType newTime = std::max(time1, time2) + 1;
+      nextLevel.push_back({andResult, false, newTime});
+    }
+
+    // Handle odd element
+    if (items.size() % 2 == 1)
+      nextLevel.push_back(items.back());
+
+    items = std::move(nextLevel);
+  }
+
+  auto [finalVal, finalInv, finalTime] = items[0];
+  if (finalInv)
+    return aig::AndInverterOp::create(builder, loc, finalVal, true);
+  return finalVal;
 }
 
 /// Build an OR operation from a list of values.
 /// In AIG, OR is implemented as NOT(AND(NOT a, NOT b, ...))
-/// TODO: Generalize to MIG etc.
-static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values) {
+/// Builds a balanced tree based on arrival times to minimize delay.
+static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
+                     ArrayRef<DelayType> arrivalTimes = {}) {
   if (values.empty())
     return {};
 
   if (values.size() == 1)
     return values[0];
 
+  // OR(a, b, ...) = NOT(AND(NOT a, NOT b, ...))
+  // Build the AND with all inputs inverted, then invert the result
   SmallVector<bool> inverted(values.size(), true);
-  auto andOp = aig::AndInverterOp::create(builder, loc, values, inverted);
+
+  if (arrivalTimes.empty()) {
+    auto andOp = aig::AndInverterOp::create(builder, loc, values, inverted);
+    return aig::AndInverterOp::create(builder, loc, andOp, true);
+  }
+
+  // Build balanced AND tree with arrival times
+  auto andOp = buildAnd(builder, loc, values, inverted, arrivalTimes);
   // Invert the result
   return aig::AndInverterOp::create(builder, loc, andOp, true);
 }
 
 /// Build a balanced SOP structure from the SOP form.
+/// Uses input arrival times to build a delay-optimized structure.
 static Value buildBalancedSOP(OpBuilder &builder, Location loc,
-                              const SOPForm &sop, ArrayRef<Value> inputs) {
+                              const SOPForm &sop, ArrayRef<Value> inputs,
+                              ArrayRef<DelayType> inputArrivalTimes = {}) {
+  assert(inputArrivalTimes.empty() ||
+         inputs.size() == inputArrivalTimes.size() &&
+             "Input arrival times size mismatch");
+
   SmallVector<Value> productTerms;
+  SmallVector<DelayType> productArrivalTimes;
 
   // Build each product term (cube)
   for (const auto &cube : sop.cubes) {
     SmallVector<Value> literals;
     SmallVector<bool> literalInverted;
+    SmallVector<DelayType> literalArrivalTimes;
 
     for (unsigned i = 0; i < sop.numVars; ++i) {
       if (cube.mask[i]) {
         literals.push_back(inputs[i]);
         literalInverted.push_back(cube.inverted[i]);
+        if (!inputArrivalTimes.empty())
+          literalArrivalTimes.push_back(inputArrivalTimes[i]);
       }
     }
 
     if (literals.empty())
       continue;
 
-    // Build AND for this product term
-    Value product = buildAnd(builder, loc, literals, literalInverted);
-    if (product)
+    // Build AND for this product term with arrival time awareness
+    Value product =
+        buildAnd(builder, loc, literals, literalInverted, literalArrivalTimes);
+    if (product) {
       productTerms.push_back(product);
+
+      // Compute arrival time for this product term
+      if (!inputArrivalTimes.empty()) {
+        DelayType maxInputTime = 0;
+        for (auto time : literalArrivalTimes)
+          maxInputTime = std::max(maxInputTime, time);
+
+        // Add delay for the AND tree
+        DelayType andDepth =
+            literals.size() > 1 ? llvm::Log2_32_Ceil(literals.size()) : 0;
+        productArrivalTimes.push_back(maxInputTime + andDepth);
+      }
+    }
   }
 
   assert(!productTerms.empty() && "No product terms");
 
-  // Build OR of all product terms
-  return buildOr(builder, loc, productTerms);
+  // Build OR of all product terms with arrival time awareness
+  return buildOr(builder, loc, productTerms, productArrivalTimes);
 }
 
 //===----------------------------------------------------------------------===//
@@ -228,12 +308,15 @@ static Value buildBalancedSOP(OpBuilder &builder, Location loc,
 
 /// Compute the delay from each input to the output in a SOP structure.
 /// Uses balanced tree depth model (ceil(log2(n))) for accurate delay
-/// estimation.
-static void computeSOPDelays(const SOPForm &sop, unsigned numInputs,
-                             SmallVectorImpl<DelayType> &delays) {
+/// estimation. Takes input arrival times into account.
+static DelayType computeSOPDelays(const SOPForm &sop, unsigned numInputs,
+                                  ArrayRef<DelayType> inputArrivalTimes,
+                                  SmallVectorImpl<DelayType> &delays) {
   delays.resize(numInputs, 0);
 
-  // For each input, find the maximum depth it appears at in the SOP structure
+  DelayType maxOutputArrivalTime = 0;
+
+  // For each input, compute the delay contribution to the output
   for (unsigned inputIdx = 0; inputIdx < numInputs; ++inputIdx) {
     DelayType maxDelay = 0;
 
@@ -259,7 +342,13 @@ static void computeSOPDelays(const SOPForm &sop, unsigned numInputs,
     }
 
     delays[inputIdx] = maxDelay;
+
+    // Compute actual output arrival time for this input path
+    DelayType outputArrivalTime = inputArrivalTimes[inputIdx] + maxDelay;
+    maxOutputArrivalTime = std::max(maxOutputArrivalTime, outputArrivalTime);
   }
+
+  return maxOutputArrivalTime;
 }
 
 /// Pattern that performs SOP balancing on cuts.
@@ -301,23 +390,43 @@ struct SOPBalancingPattern : public CutRewritePattern {
     result.area = static_cast<double>(totalGates);
 
     // Compute delays from each input to the output.
-    // TODO: Pass arrival times of inputs.
-    computeSOPDelays(sop, cut.getInputSize(), tempDelays);
+    SmallVector<DelayType, 6> arrivalTimes;
+    if (failed(cut.getInputArrivalTimes(enumerator, arrivalTimes)))
+      return false;
+
+    // Compute delays using input arrival times
+    computeSOPDelays(sop, cut.getInputSize(), arrivalTimes, tempDelays);
     result.delays = tempDelays; // ArrayRef points to tempDelays
 
     return true;
   }
 
-  FailureOr<Operation *> rewrite(OpBuilder &builder, Cut &cut) const override {
+  FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
+                                 Cut &cut) const override {
     // Get the truth table for the cut
     const auto &tt = cut.getTruthTable();
 
     // Extract SOP form from truth table
     SOPForm sop = extractSOPFromTruthTable(tt);
 
-    // Build balanced SOP structure
+    // Get input arrival times for delay-optimized balancing
+    SmallVector<DelayType, 6> arrivalTimes;
+    if (failed(cut.getInputArrivalTimes(enumerator, arrivalTimes))) {
+      // Fall back to building without arrival time information
+      Value result = buildBalancedSOP(builder, cut.getRoot()->getLoc(), sop,
+                                      cut.inputs.getArrayRef());
+      auto *op = result.getDefiningOp();
+      if (!op) {
+        op =
+            aig::AndInverterOp::create(builder, cut.getRoot()->getLoc(), result,
+                                       /*invert=*/false);
+      }
+      return op;
+    }
+
+    // Build balanced SOP structure with arrival time awareness
     Value result = buildBalancedSOP(builder, cut.getRoot()->getLoc(), sop,
-                                    cut.inputs.getArrayRef());
+                                    cut.inputs.getArrayRef(), arrivalTimes);
 
     auto *op = result.getDefiningOp();
     if (!op) {
