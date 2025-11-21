@@ -30,7 +30,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
-#include <queue>
 
 #define DEBUG_TYPE "synth-sop-balancing"
 
@@ -72,6 +71,19 @@ struct SOPForm {
   unsigned numVars;
 
   SOPForm(unsigned numVars) : numVars(numVars) {}
+  void dump(llvm::raw_ostream &os) const {
+    os << "SOPForm: " << numVars << " vars, " << cubes.size() << " cubes\n";
+    for (const auto &cube : cubes) {
+      os << "  (";
+      for (unsigned i = 0; i < numVars; ++i) {
+        if (cube.mask[i]) {
+          os << (cube.inverted[i] ? "!" : "");
+          os << "x" << i << " ";
+        }
+      }
+      os << ")\n";
+    }
+  }
 };
 
 /// Compute cofactor: f_xi (positive) or f_!xi (negative).
@@ -176,44 +188,32 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
 
   // Build balanced tree based on arrival times using priority queue
   // Strategy: greedily pair nodes with earliest arrival times to minimize delay
-  struct Node {
-    Value value;
-    bool inv;
-    DelayType arrivalTime;
-
-    bool operator>(const Node &other) const {
-      return arrivalTime > other.arrivalTime;
-    }
-  };
-
-  std::priority_queue<Node, SmallVector<Node>, std::greater<Node>> pq;
-
-  // Initialize priority queue with all inputs
+  SmallVector<ValueWithArrivalTime> nodes;
+  size_t valueNumber = 0;
   for (unsigned i = 0; i < values.size(); ++i)
-    pq.push({values[i], inverted[i], arrivalTimes[i]});
+    nodes.push_back(ValueWithArrivalTime(values[i], arrivalTimes[i],
+                                         inverted[i], valueNumber++));
 
-  // Greedily pair the two earliest-arriving nodes
-  while (pq.size() > 1) {
-    Node node1 = pq.top();
-    pq.pop();
-    Node node2 = pq.top();
-    pq.pop();
+  ValueWithArrivalTime result =
+      buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
+          nodes,
+          // Combine two nodes
+          [&](const ValueWithArrivalTime &node1,
+              const ValueWithArrivalTime &node2) {
+            Value andResult = aig::AndInverterOp::create(
+                builder, loc, node1.getValue(), node2.getValue(),
+                node1.isInverted(), node2.isInverted());
 
-    // Create AND of the two values
-    SmallVector<Value, 2> andInputs = {node1.value, node2.value};
-    SmallVector<bool, 2> andInverted = {node1.inv, node2.inv};
-    Value andResult =
-        aig::AndInverterOp::create(builder, loc, andInputs, andInverted);
+            // New arrival time is max of inputs + 1 gate delay
+            DelayType newTime =
+                std::max(node1.getArrivalTime(), node2.getArrivalTime()) + 1;
+            return ValueWithArrivalTime(andResult, newTime, false,
+                                        valueNumber++);
+          });
 
-    // New arrival time is max of inputs + 1 gate delay
-    DelayType newTime = std::max(node1.arrivalTime, node2.arrivalTime) + 1;
-    pq.push({andResult, false, newTime});
-  }
-
-  Node finalNode = pq.top();
-  if (finalNode.inv)
-    return aig::AndInverterOp::create(builder, loc, finalNode.value, true);
-  return finalNode.value;
+  if (result.isInverted())
+    return aig::AndInverterOp::create(builder, loc, result.getValue(), true);
+  return result.getValue();
 }
 
 /// Build an OR operation from a list of values.
@@ -241,31 +241,10 @@ static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
 static DelayType simulateAndTree(ArrayRef<DelayType> inputArrivalTimes) {
   if (inputArrivalTimes.empty())
     return 0;
-  if (inputArrivalTimes.size() == 1)
-    return inputArrivalTimes[0];
-
-  // Use a min-heap priority queue to greedily pair earliest-arriving nodes
-  std::priority_queue<DelayType, SmallVector<DelayType>,
-                      std::greater<DelayType>>
-      pq;
-
-  // Initialize with all input arrival times
-  for (auto time : inputArrivalTimes)
-    pq.push(time);
-
-  // Greedily pair the two earliest-arriving nodes
-  while (pq.size() > 1) {
-    DelayType time1 = pq.top();
-    pq.pop();
-    DelayType time2 = pq.top();
-    pq.pop();
-
-    // The output of AND gate arrives at max(time1, time2) + 1
-    DelayType newTime = std::max(time1, time2) + 1;
-    pq.push(newTime);
-  }
-
-  return pq.top();
+  return buildBalancedTreeWithArrivalTimes<DelayType>(
+      inputArrivalTimes,
+      // Combine: max of two delays + 1 gate delay
+      [&](auto node1, auto node2) { return std::max(node1, node2) + 1; });
 }
 
 /// Build a balanced SOP structure from the SOP form.
@@ -389,6 +368,10 @@ struct SOPBalancingPattern : public CutRewritePattern {
     // "resynthesis" engine. Consider taking similar approach if we want to do
     // more than SOP.
     SOPForm sop = extractSOPFromTruthTable(tt);
+    LLVM_DEBUG({
+      llvm::dbgs() << "Matching SOP form:\n";
+      sop.dump(llvm::dbgs());
+    });
 
     // If SOP is empty, don't match
     if (sop.cubes.empty())
@@ -425,6 +408,10 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
     // Extract SOP form from truth table
     SOPForm sop = extractSOPFromTruthTable(tt);
+    LLVM_DEBUG({
+      llvm::dbgs() << "Rewriting SOP form:\n";
+      sop.dump(llvm::dbgs());
+    });
 
     // Get input arrival times for delay-optimized balancing
     SmallVector<DelayType, 6> arrivalTimes;
