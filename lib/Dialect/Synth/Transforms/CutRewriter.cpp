@@ -1074,7 +1074,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
-  auto cutVector = cutEnumerator.takeVector();
+  const auto &cutVector = cutEnumerator.getCutSets();
   // Note: Don't clear cutEnumerator yet - we need it during rewrite
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());

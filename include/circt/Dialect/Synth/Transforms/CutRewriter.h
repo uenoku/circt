@@ -339,6 +339,9 @@ public:
   void clear();
 
   void dump() const;
+  const llvm::MapVector<Value, std::unique_ptr<CutSet>> &getCutSets() const {
+    return cutSets;
+  }
 
 private:
   /// Visit a single operation and generate cuts for it.

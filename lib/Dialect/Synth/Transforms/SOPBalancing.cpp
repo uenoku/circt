@@ -30,6 +30,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include <queue>
 
 #define DEBUG_TYPE "synth-sop-balancing"
 
@@ -160,12 +161,12 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
 
 /// Build an AND operation from a list of values using variadic and_inv.
 /// Builds a balanced tree based on arrival times to minimize delay.
+/// Uses a priority queue to greedily pair nodes with earliest arrival times.
 static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
                       ArrayRef<bool> inverted,
-                      ArrayRef<DelayType> arrivalTimes = {}) {
+                      ArrayRef<DelayType> arrivalTimes) {
   assert(values.size() == inverted.size() && "Size mismatch");
-  assert(arrivalTimes.empty() ||
-         values.size() == arrivalTimes.size() && "Arrival times size mismatch");
+  assert(values.size() == arrivalTimes.size() && "Arrival times size mismatch");
 
   if (values.empty())
     return {};
@@ -173,58 +174,53 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
   if (values.size() == 1)
     return aig::AndInverterOp::create(builder, loc, values[0], inverted[0]);
 
-  // If no arrival times provided, use variadic and_inv
-  if (arrivalTimes.empty())
-    return aig::AndInverterOp::create(builder, loc, values, inverted);
+  // Build balanced tree based on arrival times using priority queue
+  // Strategy: greedily pair nodes with earliest arrival times to minimize delay
+  struct Node {
+    Value value;
+    bool inv;
+    DelayType arrivalTime;
 
-  // Build balanced tree based on arrival times
-  // Strategy: pair inputs with similar arrival times to minimize critical path
-  SmallVector<std::tuple<Value, bool, DelayType>> items;
-  for (unsigned i = 0; i < values.size(); ++i)
-    items.push_back({values[i], inverted[i], arrivalTimes[i]});
-
-  // Sort by arrival time (descending) so we process late-arriving signals first
-  llvm::sort(items, [](const auto &a, const auto &b) {
-    return std::get<2>(a) > std::get<2>(b);
-  });
-
-  // Build balanced binary tree
-  while (items.size() > 1) {
-    SmallVector<std::tuple<Value, bool, DelayType>> nextLevel;
-
-    for (unsigned i = 0; i + 1 < items.size(); i += 2) {
-      auto [val1, inv1, time1] = items[i];
-      auto [val2, inv2, time2] = items[i + 1];
-
-      // Create AND of the two values
-      SmallVector<Value, 2> andInputs = {val1, val2};
-      SmallVector<bool, 2> andInverted = {inv1, inv2};
-      Value andResult =
-          aig::AndInverterOp::create(builder, loc, andInputs, andInverted);
-
-      // New arrival time is max of inputs + 1 gate delay
-      DelayType newTime = std::max(time1, time2) + 1;
-      nextLevel.push_back({andResult, false, newTime});
+    bool operator>(const Node &other) const {
+      return arrivalTime > other.arrivalTime;
     }
+  };
 
-    // Handle odd element
-    if (items.size() % 2 == 1)
-      nextLevel.push_back(items.back());
+  std::priority_queue<Node, SmallVector<Node>, std::greater<Node>> pq;
 
-    items = std::move(nextLevel);
+  // Initialize priority queue with all inputs
+  for (unsigned i = 0; i < values.size(); ++i)
+    pq.push({values[i], inverted[i], arrivalTimes[i]});
+
+  // Greedily pair the two earliest-arriving nodes
+  while (pq.size() > 1) {
+    Node node1 = pq.top();
+    pq.pop();
+    Node node2 = pq.top();
+    pq.pop();
+
+    // Create AND of the two values
+    SmallVector<Value, 2> andInputs = {node1.value, node2.value};
+    SmallVector<bool, 2> andInverted = {node1.inv, node2.inv};
+    Value andResult =
+        aig::AndInverterOp::create(builder, loc, andInputs, andInverted);
+
+    // New arrival time is max of inputs + 1 gate delay
+    DelayType newTime = std::max(node1.arrivalTime, node2.arrivalTime) + 1;
+    pq.push({andResult, false, newTime});
   }
 
-  auto [finalVal, finalInv, finalTime] = items[0];
-  if (finalInv)
-    return aig::AndInverterOp::create(builder, loc, finalVal, true);
-  return finalVal;
+  Node finalNode = pq.top();
+  if (finalNode.inv)
+    return aig::AndInverterOp::create(builder, loc, finalNode.value, true);
+  return finalNode.value;
 }
 
 /// Build an OR operation from a list of values.
 /// In AIG, OR is implemented as NOT(AND(NOT a, NOT b, ...))
 /// Builds a balanced tree based on arrival times to minimize delay.
 static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
-                     ArrayRef<DelayType> arrivalTimes = {}) {
+                     ArrayRef<DelayType> arrivalTimes) {
   if (values.empty())
     return {};
 
@@ -234,26 +230,51 @@ static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
   // OR(a, b, ...) = NOT(AND(NOT a, NOT b, ...))
   // Build the AND with all inputs inverted, then invert the result
   SmallVector<bool> inverted(values.size(), true);
-
-  if (arrivalTimes.empty()) {
-    auto andOp = aig::AndInverterOp::create(builder, loc, values, inverted);
-    return aig::AndInverterOp::create(builder, loc, andOp, true);
-  }
-
-  // Build balanced AND tree with arrival times
   auto andOp = buildAnd(builder, loc, values, inverted, arrivalTimes);
   // Invert the result
   return aig::AndInverterOp::create(builder, loc, andOp, true);
+}
+
+/// Simulate building a balanced AND tree and return the output arrival time.
+/// This matches the logic in buildAnd() but only computes timing.
+/// Uses a priority queue to greedily pair nodes with earliest arrival times.
+static DelayType simulateAndTree(ArrayRef<DelayType> inputArrivalTimes) {
+  if (inputArrivalTimes.empty())
+    return 0;
+  if (inputArrivalTimes.size() == 1)
+    return inputArrivalTimes[0];
+
+  // Use a min-heap priority queue to greedily pair earliest-arriving nodes
+  std::priority_queue<DelayType, SmallVector<DelayType>,
+                      std::greater<DelayType>>
+      pq;
+
+  // Initialize with all input arrival times
+  for (auto time : inputArrivalTimes)
+    pq.push(time);
+
+  // Greedily pair the two earliest-arriving nodes
+  while (pq.size() > 1) {
+    DelayType time1 = pq.top();
+    pq.pop();
+    DelayType time2 = pq.top();
+    pq.pop();
+
+    // The output of AND gate arrives at max(time1, time2) + 1
+    DelayType newTime = std::max(time1, time2) + 1;
+    pq.push(newTime);
+  }
+
+  return pq.top();
 }
 
 /// Build a balanced SOP structure from the SOP form.
 /// Uses input arrival times to build a delay-optimized structure.
 static Value buildBalancedSOP(OpBuilder &builder, Location loc,
                               const SOPForm &sop, ArrayRef<Value> inputs,
-                              ArrayRef<DelayType> inputArrivalTimes = {}) {
-  assert(inputArrivalTimes.empty() ||
-         inputs.size() == inputArrivalTimes.size() &&
-             "Input arrival times size mismatch");
+                              ArrayRef<DelayType> inputArrivalTimes) {
+  assert(inputs.size() == inputArrivalTimes.size() &&
+         "Input arrival times size mismatch");
 
   SmallVector<Value> productTerms;
   SmallVector<DelayType> productArrivalTimes;
@@ -268,8 +289,7 @@ static Value buildBalancedSOP(OpBuilder &builder, Location loc,
       if (cube.mask[i]) {
         literals.push_back(inputs[i]);
         literalInverted.push_back(cube.inverted[i]);
-        if (!inputArrivalTimes.empty())
-          literalArrivalTimes.push_back(inputArrivalTimes[i]);
+        literalArrivalTimes.push_back(inputArrivalTimes[i]);
       }
     }
 
@@ -279,24 +299,22 @@ static Value buildBalancedSOP(OpBuilder &builder, Location loc,
     // Build AND for this product term with arrival time awareness
     Value product =
         buildAnd(builder, loc, literals, literalInverted, literalArrivalTimes);
-    if (product) {
+    if (product)
       productTerms.push_back(product);
-
-      // Compute arrival time for this product term
-      if (!inputArrivalTimes.empty()) {
-        DelayType maxInputTime = 0;
-        for (auto time : literalArrivalTimes)
-          maxInputTime = std::max(maxInputTime, time);
-
-        // Add delay for the AND tree
-        DelayType andDepth =
-            literals.size() > 1 ? llvm::Log2_32_Ceil(literals.size()) : 0;
-        productArrivalTimes.push_back(maxInputTime + andDepth);
-      }
-    }
   }
 
   assert(!productTerms.empty() && "No product terms");
+
+  // Compute arrival times for product terms
+  for (const auto &cube : sop.cubes) {
+    SmallVector<DelayType> literalArrivalTimes;
+    for (unsigned i = 0; i < sop.numVars; ++i)
+      if (cube.mask[i])
+        literalArrivalTimes.push_back(inputArrivalTimes[i]);
+
+    if (!literalArrivalTimes.empty())
+      productArrivalTimes.push_back(simulateAndTree(literalArrivalTimes));
+  }
 
   // Build OR of all product terms with arrival time awareness
   return buildOr(builder, loc, productTerms, productArrivalTimes);
@@ -307,48 +325,47 @@ static Value buildBalancedSOP(OpBuilder &builder, Location loc,
 //===----------------------------------------------------------------------===//
 
 /// Compute the delay from each input to the output in a SOP structure.
-/// Uses balanced tree depth model (ceil(log2(n))) for accurate delay
-/// estimation. Takes input arrival times into account.
+/// Simulates the actual tree construction to accurately predict delays.
+/// Takes input arrival times into account.
 static DelayType computeSOPDelays(const SOPForm &sop, unsigned numInputs,
                                   ArrayRef<DelayType> inputArrivalTimes,
                                   SmallVectorImpl<DelayType> &delays) {
   delays.resize(numInputs, 0);
 
-  DelayType maxOutputArrivalTime = 0;
+  // Compute arrival time for each product term
+  SmallVector<DelayType> productArrivalTimes;
+  productArrivalTimes.reserve(sop.cubes.size());
 
-  // For each input, compute the delay contribution to the output
+  for (const auto &cube : sop.cubes) {
+    SmallVector<DelayType> cubeInputTimes;
+    for (unsigned i = 0; i < numInputs; ++i)
+      if (cube.mask[i])
+        cubeInputTimes.push_back(inputArrivalTimes[i]);
+
+    DelayType productTime = simulateAndTree(cubeInputTimes);
+    productArrivalTimes.push_back(productTime);
+  }
+
+  // Compute output arrival time through OR tree
+  DelayType outputArrivalTime = simulateAndTree(productArrivalTimes);
+
+  // For each input, compute its delay contribution
   for (unsigned inputIdx = 0; inputIdx < numInputs; ++inputIdx) {
+    // Find the critical path through this input
     DelayType maxDelay = 0;
 
-    // Check each product term (cube) that uses this input
     for (const auto &cube : sop.cubes) {
       if (!cube.mask[inputIdx])
-        continue; // This cube doesn't use this input
+        continue;
 
-      // Compute the depth of the AND tree for this cube
-      // Balanced binary tree depth is ceil(log2(size))
-      unsigned cubeSize = cube.size();
-      DelayType andDepth = cubeSize > 1 ? llvm::Log2_32_Ceil(cubeSize) : 0;
-
-      // Add depth for the OR gate at the top (if there are multiple cubes)
-      DelayType totalDelay = andDepth;
-      if (sop.cubes.size() > 1) {
-        // Compute OR tree depth
-        DelayType orDepth = llvm::Log2_32_Ceil(sop.cubes.size());
-        totalDelay += orDepth;
-      }
-
-      maxDelay = std::max(maxDelay, totalDelay);
+      maxDelay =
+          std::max(maxDelay, outputArrivalTime - inputArrivalTimes[inputIdx]);
     }
 
     delays[inputIdx] = maxDelay;
-
-    // Compute actual output arrival time for this input path
-    DelayType outputArrivalTime = inputArrivalTimes[inputIdx] + maxDelay;
-    maxOutputArrivalTime = std::max(maxOutputArrivalTime, outputArrivalTime);
   }
 
-  return maxOutputArrivalTime;
+  return outputArrivalTime;
 }
 
 /// Pattern that performs SOP balancing on cuts.
@@ -411,18 +428,9 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
     // Get input arrival times for delay-optimized balancing
     SmallVector<DelayType, 6> arrivalTimes;
-    if (failed(cut.getInputArrivalTimes(enumerator, arrivalTimes))) {
-      // Fall back to building without arrival time information
-      Value result = buildBalancedSOP(builder, cut.getRoot()->getLoc(), sop,
-                                      cut.inputs.getArrayRef());
-      auto *op = result.getDefiningOp();
-      if (!op) {
-        op =
-            aig::AndInverterOp::create(builder, cut.getRoot()->getLoc(), result,
-                                       /*invert=*/false);
-      }
-      return op;
-    }
+    auto r = cut.getInputArrivalTimes(enumerator, arrivalTimes);
+    (void)r;
+    assert(succeeded(r) && "Failed to get input arrival times");
 
     // Build balanced SOP structure with arrival time awareness
     Value result = buildBalancedSOP(builder, cut.getRoot()->getLoc(), sop,
