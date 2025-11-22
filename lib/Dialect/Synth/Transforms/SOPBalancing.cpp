@@ -213,105 +213,57 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
 
   return result;
 }
-// Represents a single product term (Cube)
-// bit_value: 1 if the variable is required to be 1, 0 if required to be 0
-// bit_care:  1 if the variable matters, 0 if it is a Don't Care
-struct Cube2 {
-  unsigned num_vars;
-  APInt value;
-  APInt care;
+/// The Recursive Minato-Morreale ISOP Algorithm.
+/// func: The truth table as a bit vector (size must be power of 2)
+/// currentVars: The number of variables currently in scope
+/// cube: The current cube being built (accumulates literals from parent calls)
+/// result: The SOPForm to append cubes to
+static void minatoIsop(const APInt &func, unsigned currentVars,
+                       const Cube &cube, SOPForm &result) {
+  // Base case: If function is 0 (False), no cubes cover it
+  if (func.isZero())
+    return;
 
-  Cube2(unsigned n) : num_vars(n), value(n, 0), care(n, 0) {}
-
-  // Add a literal to this cube at a specific variable index
-  // polarity: true for Variable, false for Variable' (NOT Variable)
-  void addLiteral(int var_idx, bool polarity) {
-    care.setBit(var_idx);
-    if (polarity) {
-      value.setBit(var_idx);
-    } else {
-      value.clearBit(var_idx);
-    }
-  }
-
-  // Helper to print the cube (e.g., "A !B -")
-  // Assumes var index N-1 is printed first (leftmost)
-  void print() const {
-    for (int i = num_vars - 1; i >= 0; --i) {
-      if (!care[i]) {
-        std::cout << "-";
-      } else {
-        std::cout << (value[i] ? "1" : "0");
-      }
-    }
-    std::cout << std::endl;
-  }
-};
-
-// The Recursive Minato-Morreale ISOP Algorithm
-// func: The truth table as a bit vector (size must be power of 2)
-// num_vars: The number of variables currently in scope
-// total_vars: The total number of variables in the original function (for Cube2
-// sizing)
-std::vector<Cube2> minato_isop(const APInt &func, int current_vars,
-                               int total_vars) {
-
-  // --- Base Cases ---
-
-  // If function is effectively 0 (False), no cubes cover it.
-  if (func.isZero()) {
-    return {};
-  }
-
-  // If function is effectively 1 (True), it is covered by the "Universe" (Don't
-  // Cares) We return a single empty cube (all don't cares) for this sub-space.
+  // Base case: If function is all 1s (True), add the current cube
   if (func.isAllOnes()) {
-    return {Cube2(total_vars)};
+    result.cubes.push_back(cube);
+    return;
   }
 
-  // --- Recursive Step ---
+  // Recursive step: split on the highest variable in current scope
+  unsigned splitVarIdx = currentVars - 1;
+  unsigned halfSize = func.getBitWidth() / 2;
 
-  // The variable we are splitting on is the highest index in the current scope
-  int split_var_idx = current_vars - 1;
-  unsigned half_size = func.getBitWidth() / 2;
+  // Split truth table into two halves:
+  // Lower half corresponds to splitVar = 0
+  // Upper half corresponds to splitVar = 1
+  APInt f0 = func.trunc(halfSize);
+  APInt f1 = func.lshr(halfSize).trunc(halfSize);
 
-  // Split Truth Table:
-  // Lower half corresponds to split_var = 0
-  // Upper half corresponds to split_var = 1
-  APInt f0 = func.trunc(half_size);
-  APInt f1 = func.lshr(half_size).trunc(half_size);
+  // Minato-Morreale decomposition into three disjoint parts:
+  // 1. Shared part (f0 & f1) -> independent of splitVar
+  APInt fShared = f0 & f1;
 
-  // Calculate Co-factors for Minato-Morreale Decomposition:
-  // 1. Shared part (f0 AND f1) -> Independent of split_var
-  APInt f_shared = f0 & f1;
+  // 2. Unique to 0 (f0 & ~f1) -> requires splitVar = 0
+  APInt fUnique0 = f0 & ~f1;
 
-  // 2. Unique to 0 (f0 AND NOT f1) -> Requires split_var = 0
-  APInt f_unique0 = f0 & ~f1;
+  // 3. Unique to 1 (f1 & ~f0) -> requires splitVar = 1
+  APInt fUnique1 = f1 & ~f0;
 
-  // 3. Unique to 1 (f1 AND NOT f0) -> Requires split_var = 1
-  APInt f_unique1 = f1 & ~f0;
+  // Recursion 1: Shared terms (do NOT add literal for splitVar)
+  minatoIsop(fShared, currentVars - 1, cube, result);
 
-  std::vector<Cube2> results;
+  // Recursion 2: Unique 0 terms (add negative literal !splitVar)
+  Cube cube0 = cube;
+  cube0.mask.setBit(splitVarIdx);
+  cube0.inverted.setBit(splitVarIdx);
+  minatoIsop(fUnique0, currentVars - 1, cube0, result);
 
-  // Recursion 1: Shared terms (Do NOT add literal for split_var)
-  auto res_shared = minato_isop(f_shared, current_vars - 1, total_vars);
-  results.insert(results.end(), res_shared.begin(), res_shared.end());
-
-  // Recursion 2: Unique 0 terms (Add literal !split_var)
-  auto res_0 = minato_isop(f_unique0, current_vars - 1, total_vars);
-  for (auto &cube : res_0) {
-    cube.addLiteral(split_var_idx, false); // Add 0
-    results.push_back(cube);
-  }
-
-  // Recursion 3: Unique 1 terms (Add literal split_var)
-  auto res_1 = minato_isop(f_unique1, current_vars - 1, total_vars);
-  for (auto &cube : res_1) {
-    cube.addLiteral(split_var_idx, true); // Add 1
-    results.push_back(cube);
-  }
-
-  return results;
+  // Recursion 3: Unique 1 terms (add positive literal splitVar)
+  Cube cube1 = cube;
+  cube1.mask.setBit(splitVarIdx);
+  // inverted bit remains 0 for positive literal
+  minatoIsop(fUnique1, currentVars - 1, cube1, result);
 }
 
 /// Minato-Morreale ISOP algorithm with don't-cares.
@@ -442,11 +394,9 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
   if (tt.numInputs == 0 || tt.table.isZero())
     return sop;
 
-  (void)isopRecursiveWithDC(tt.table, tt.table, tt.numInputs, 0, sop);
-
-  // // Start recursive ISOP extraction
-  // Cube emptyCube(tt.numInputs);
-  // isopRecursive(tt.table, tt.numInputs, 0, emptyCube, sop);
+  // Use the cleaner minatoIsop implementation
+  Cube emptyCube(tt.numInputs);
+  minatoIsop(tt.table, tt.numInputs, emptyCube, sop);
 
   return sop;
 }
