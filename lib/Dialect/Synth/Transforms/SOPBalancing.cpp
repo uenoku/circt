@@ -87,25 +87,303 @@ struct SOPForm {
 };
 
 /// Compute cofactor: f_xi (positive) or f_!xi (negative).
+/// Uses bit manipulation for efficient computation.
 static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
                              bool positive) {
   uint32_t numBits = 1u << numVars;
   APInt result(numBits, 0);
 
-  uint32_t shift = 1u << var;
-  for (uint32_t i = 0; i < numBits; ++i) {
+  // Use bit manipulation to compute cofactor efficiently.
+  // The cofactor operation selects and compacts bits based on variable value.
+
+  uint32_t blockSize = 1u << var; // Size of each block to process
+  uint32_t numBlocks = numBits / (blockSize * 2); // Number of block pairs
+
+  // Process each block pair
+  for (uint32_t block = 0; block < numBlocks; ++block) {
+    uint32_t srcOffset = block * blockSize * 2;
+    uint32_t dstOffset = block * blockSize;
+
     if (positive) {
-      // Positive cofactor: set bit i if bit (i | shift) is set in f
-      if (f[i | shift])
-        result.setBit(i);
+      // Positive cofactor: copy upper half of each block pair
+      // Use extractBits for efficient bulk copy when blockSize is large
+      if (blockSize >= 64) {
+        APInt extracted = f.extractBits(blockSize, srcOffset + blockSize);
+        result.insertBits(extracted, dstOffset);
+      } else {
+        for (uint32_t i = 0; i < blockSize; ++i)
+          if (f[srcOffset + blockSize + i])
+            result.setBit(dstOffset + i);
+      }
     } else {
-      // Negative cofactor: set bit i if bit (i & ~shift) is set in f
-      if (f[i & ~shift])
-        result.setBit(i);
+      // Negative cofactor: copy lower half of each block pair
+      // Use extractBits for efficient bulk copy when blockSize is large
+      if (blockSize >= 64) {
+        APInt extracted = f.extractBits(blockSize, srcOffset);
+        result.insertBits(extracted, dstOffset);
+      } else {
+        for (uint32_t i = 0; i < blockSize; ++i)
+          if (f[srcOffset + i])
+            result.setBit(dstOffset + i);
+      }
     }
   }
 
   return result;
+}
+
+struct TruthTableWithDC {
+  APInt tt;
+  APInt dc;
+};
+
+/// Create a mask for a variable in the truth table.
+/// For positive=true: mask has 1s where var=1 in the truth table encoding
+/// For positive=false: mask has 1s where var=0 in the truth table encoding
+static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
+  uint32_t numBits = 1u << numVars;
+  APInt mask(numBits, 0);
+
+  for (uint32_t i = 0; i < numBits; ++i) {
+    // Check if bit i has variable 'var' set to the desired value
+    bool varValue = (i & (1u << var)) != 0;
+    if (varValue == positive)
+      mask.setBit(i);
+  }
+
+  return mask;
+}
+
+static TruthTableWithDC computeCofactor(const TruthTableWithDC &f,
+                                        unsigned numVars, unsigned var,
+                                        bool positive) {
+  TruthTableWithDC result;
+  result.tt = computeCofactor(f.tt, numVars, var, positive);
+  result.dc = computeCofactor(f.dc, numVars, var, positive);
+  return result;
+}
+
+template <bool positive>
+static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
+  uint32_t numBits = 1u << numVars;
+  APInt result(numBits, 0);
+
+  // Use bit manipulation to compute cofactor efficiently.
+  // The cofactor operation can be viewed as selecting and compacting bits.
+  // For positive cofactor f_x: select bits where var=1, compact to lower half
+  // For negative cofactor f_!x: select bits where var=0, compact to lower half
+
+  // Optimization: For var >= 6 (blockSize >= 64), we can use word-level
+  // operations by directly accessing APInt's internal representation via
+  // getRawData(). For smaller var, the overhead of bit-by-bit operations is
+  // acceptable.
+
+  uint32_t blockSize = 1u << var; // Size of each block to process
+  uint32_t numBlocks = numBits / (blockSize * 2); // Number of block pairs
+
+  // Process each block pair
+  for (uint32_t block = 0; block < numBlocks; ++block) {
+    uint32_t srcOffset = block * blockSize * 2;
+    uint32_t dstOffset = block * blockSize;
+
+    if constexpr (positive) {
+      // Positive cofactor: copy upper half of each block pair
+      // Use extractBits for efficient bulk copy when blockSize is large
+      if (blockSize >= 64) {
+        APInt extracted = f.extractBits(blockSize, srcOffset + blockSize);
+        result.insertBits(extracted, dstOffset);
+      } else {
+        for (uint32_t i = 0; i < blockSize; ++i)
+          if (f[srcOffset + blockSize + i])
+            result.setBit(dstOffset + i);
+      }
+    } else {
+      // Negative cofactor: copy lower half of each block pair
+      // Use extractBits for efficient bulk copy when blockSize is large
+      if (blockSize >= 64) {
+        APInt extracted = f.extractBits(blockSize, srcOffset);
+        result.insertBits(extracted, dstOffset);
+      } else {
+        for (uint32_t i = 0; i < blockSize; ++i)
+          if (f[srcOffset + i])
+            result.setBit(dstOffset + i);
+      }
+    }
+  }
+
+  return result;
+}
+// Represents a single product term (Cube)
+// bit_value: 1 if the variable is required to be 1, 0 if required to be 0
+// bit_care:  1 if the variable matters, 0 if it is a Don't Care
+struct Cube2 {
+  unsigned num_vars;
+  APInt value;
+  APInt care;
+
+  Cube2(unsigned n) : num_vars(n), value(n, 0), care(n, 0) {}
+
+  // Add a literal to this cube at a specific variable index
+  // polarity: true for Variable, false for Variable' (NOT Variable)
+  void addLiteral(int var_idx, bool polarity) {
+    care.setBit(var_idx);
+    if (polarity) {
+      value.setBit(var_idx);
+    } else {
+      value.clearBit(var_idx);
+    }
+  }
+
+  // Helper to print the cube (e.g., "A !B -")
+  // Assumes var index N-1 is printed first (leftmost)
+  void print() const {
+    for (int i = num_vars - 1; i >= 0; --i) {
+      if (!care[i]) {
+        std::cout << "-";
+      } else {
+        std::cout << (value[i] ? "1" : "0");
+      }
+    }
+    std::cout << std::endl;
+  }
+};
+
+// The Recursive Minato-Morreale ISOP Algorithm
+// func: The truth table as a bit vector (size must be power of 2)
+// num_vars: The number of variables currently in scope
+// total_vars: The total number of variables in the original function (for Cube2
+// sizing)
+std::vector<Cube2> minato_isop(const APInt &func, int current_vars,
+                               int total_vars) {
+
+  // --- Base Cases ---
+
+  // If function is effectively 0 (False), no cubes cover it.
+  if (func.isZero()) {
+    return {};
+  }
+
+  // If function is effectively 1 (True), it is covered by the "Universe" (Don't
+  // Cares) We return a single empty cube (all don't cares) for this sub-space.
+  if (func.isAllOnes()) {
+    return {Cube2(total_vars)};
+  }
+
+  // --- Recursive Step ---
+
+  // The variable we are splitting on is the highest index in the current scope
+  int split_var_idx = current_vars - 1;
+  unsigned half_size = func.getBitWidth() / 2;
+
+  // Split Truth Table:
+  // Lower half corresponds to split_var = 0
+  // Upper half corresponds to split_var = 1
+  APInt f0 = func.trunc(half_size);
+  APInt f1 = func.lshr(half_size).trunc(half_size);
+
+  // Calculate Co-factors for Minato-Morreale Decomposition:
+  // 1. Shared part (f0 AND f1) -> Independent of split_var
+  APInt f_shared = f0 & f1;
+
+  // 2. Unique to 0 (f0 AND NOT f1) -> Requires split_var = 0
+  APInt f_unique0 = f0 & ~f1;
+
+  // 3. Unique to 1 (f1 AND NOT f0) -> Requires split_var = 1
+  APInt f_unique1 = f1 & ~f0;
+
+  std::vector<Cube2> results;
+
+  // Recursion 1: Shared terms (Do NOT add literal for split_var)
+  auto res_shared = minato_isop(f_shared, current_vars - 1, total_vars);
+  results.insert(results.end(), res_shared.begin(), res_shared.end());
+
+  // Recursion 2: Unique 0 terms (Add literal !split_var)
+  auto res_0 = minato_isop(f_unique0, current_vars - 1, total_vars);
+  for (auto &cube : res_0) {
+    cube.addLiteral(split_var_idx, false); // Add 0
+    results.push_back(cube);
+  }
+
+  // Recursion 3: Unique 1 terms (Add literal split_var)
+  auto res_1 = minato_isop(f_unique1, current_vars - 1, total_vars);
+  for (auto &cube : res_1) {
+    cube.addLiteral(split_var_idx, true); // Add 1
+    results.push_back(cube);
+  }
+
+  return results;
+}
+
+/// Minato-Morreale ISOP algorithm with don't-cares.
+/// Recursively computes an irredundant sum-of-products form.
+/// Returns the care set covered by the generated cubes.
+static APInt isopRecursiveWithDC(const APInt &tt, const APInt &dc,
+                                 unsigned numVars, unsigned varIndex,
+                                 SOPForm &sop) {
+  // Base case: nothing to cover
+  if (tt.isZero())
+    return tt;
+
+  // Base case: all don't-cares, add empty cube (constant 1)
+  if (dc.isAllOnes()) {
+    sop.cubes.emplace_back(numVars);
+    return dc;
+  }
+
+  // Base case: ran out of variables
+  if (varIndex >= numVars) {
+    // If we still have minterms to cover, add them as cubes
+    if (!tt.isZero())
+      sop.cubes.emplace_back(numVars);
+    return tt | dc;
+  }
+
+  // Compute cofactors for current variable
+  auto negativeTT = computeCofactor<false>(tt, numVars, varIndex);
+  auto negativeDC = computeCofactor<false>(dc, numVars, varIndex);
+  auto positiveTT = computeCofactor<true>(tt, numVars, varIndex);
+  auto positiveDC = computeCofactor<true>(dc, numVars, varIndex);
+
+  // Track cube indices for adding literals later
+  const auto beg0 = sop.cubes.size();
+
+  // Recurse on negative cofactor (var = 0)
+  // Cover minterms that are only in negative cofactor
+  const auto res0 = isopRecursiveWithDC(negativeTT & ~positiveDC, negativeDC,
+                                        numVars, varIndex + 1, sop);
+  const auto end0 = sop.cubes.size();
+
+  // Recurse on positive cofactor (var = 1)
+  // Cover minterms that are only in positive cofactor
+  const auto res1 = isopRecursiveWithDC(positiveTT & ~negativeDC, positiveDC,
+                                        numVars, varIndex + 1, sop);
+  const auto end1 = sop.cubes.size();
+
+  // Recurse on common part (minterms in both cofactors)
+  // Cover remaining minterms that weren't covered by res0 or res1
+  auto res2 =
+      isopRecursiveWithDC((negativeTT & ~res0) | (positiveTT & ~res1),
+                          negativeDC & positiveDC, numVars, varIndex + 1, sop);
+
+  // Expand results back to original variable space
+  // res0 corresponds to var=0, res1 to var=1, res2 to both
+  APInt var0Mask = createVarMask(numVars, varIndex, false);
+  APInt var1Mask = createVarMask(numVars, varIndex, true);
+  res2 |= (res0 & var0Mask) | (res1 & var1Mask);
+
+  // Add literals to cubes generated in negative cofactor
+  for (auto c = beg0; c < end0; ++c) {
+    sop.cubes[c].mask.setBit(varIndex);
+    sop.cubes[c].inverted.setBit(varIndex); // Negative literal
+  }
+
+  // Add literals to cubes generated in positive cofactor
+  for (auto c = end0; c < end1; ++c) {
+    sop.cubes[c].mask.setBit(varIndex);
+    // inverted bit remains 0 for positive literal
+  }
+
+  return res2;
 }
 
 /// Minato-Morreale ISOP algorithm (See "Finding All Simple Disjunctive
@@ -164,9 +442,11 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
   if (tt.numInputs == 0 || tt.table.isZero())
     return sop;
 
-  // Start recursive ISOP extraction
-  Cube emptyCube(tt.numInputs);
-  isopRecursive(tt.table, tt.numInputs, 0, emptyCube, sop);
+  (void)isopRecursiveWithDC(tt.table, tt.table, tt.numInputs, 0, sop);
+
+  // // Start recursive ISOP extraction
+  // Cube emptyCube(tt.numInputs);
+  // isopRecursive(tt.table, tt.numInputs, 0, emptyCube, sop);
 
   return sop;
 }
@@ -369,6 +649,7 @@ struct SOPBalancingPattern : public CutRewritePattern {
     // more than SOP.
     SOPForm sop = extractSOPFromTruthTable(tt);
     LLVM_DEBUG({
+      tt.dump(llvm::dbgs());
       llvm::dbgs() << "Matching SOP form:\n";
       sop.dump(llvm::dbgs());
     });
