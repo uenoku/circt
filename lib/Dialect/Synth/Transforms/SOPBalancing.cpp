@@ -136,44 +136,39 @@ struct SOPForm {
 };
 
 /// Compute cofactor: f_xi (positive) or f_!xi (negative).
-/// Uses bit manipulation for efficient computation.
+/// Follows mockturtle/kitty semantics: duplicates the selected bits to fill
+/// the entire truth table.
+/// For cofactor0 (var=0): takes bits where var=0 and duplicates them
+/// For cofactor1 (var=1): takes bits where var=1 and duplicates them
 static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
                              bool positive) {
   uint32_t numBits = 1u << numVars;
   APInt result(numBits, 0);
 
-  // Use bit manipulation to compute cofactor efficiently.
-  // The cofactor operation selects and compacts bits based on variable value.
+  uint32_t blockSize = 1u << var;
+  uint32_t numBlocks = numBits / (blockSize * 2);
 
-  uint32_t blockSize = 1u << var; // Size of each block to process
-  uint32_t numBlocks = numBits / (blockSize * 2); // Number of block pairs
-
-  // Process each block pair
+  // Duplicate the selected bits to fill the entire truth table
   for (uint32_t block = 0; block < numBlocks; ++block) {
-    uint32_t srcOffset = block * blockSize * 2;
-    uint32_t dstOffset = block * blockSize;
+    uint32_t offset = block * blockSize * 2;
 
     if (positive) {
-      // Positive cofactor: copy upper half of each block pair
-      // Use extractBits for efficient bulk copy when blockSize is large
-      if (blockSize >= 64) {
-        APInt extracted = f.extractBits(blockSize, srcOffset + blockSize);
-        result.insertBits(extracted, dstOffset);
-      } else {
-        for (uint32_t i = 0; i < blockSize; ++i)
-          if (f[srcOffset + blockSize + i])
-            result.setBit(dstOffset + i);
+      // Positive cofactor: take var=1 bits (upper half) and duplicate
+      for (uint32_t i = 0; i < blockSize; ++i) {
+        bool bit = f[offset + blockSize + i];
+        if (bit) {
+          result.setBit(offset + i);              // Copy to lower half
+          result.setBit(offset + blockSize + i);  // Copy to upper half
+        }
       }
     } else {
-      // Negative cofactor: copy lower half of each block pair
-      // Use extractBits for efficient bulk copy when blockSize is large
-      if (blockSize >= 64) {
-        APInt extracted = f.extractBits(blockSize, srcOffset);
-        result.insertBits(extracted, dstOffset);
-      } else {
-        for (uint32_t i = 0; i < blockSize; ++i)
-          if (f[srcOffset + i])
-            result.setBit(dstOffset + i);
+      // Negative cofactor: take var=0 bits (lower half) and duplicate
+      for (uint32_t i = 0; i < blockSize; ++i) {
+        bool bit = f[offset + i];
+        if (bit) {
+          result.setBit(offset + i);              // Copy to lower half
+          result.setBit(offset + blockSize + i);  // Copy to upper half
+        }
       }
     }
   }
@@ -245,57 +240,99 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
 
   return result;
 }
-/// The Recursive Minato-Morreale ISOP Algorithm.
-/// func: The truth table as a bit vector (size must be power of 2)
-/// currentVars: The number of variables currently in scope
-/// cube: The current cube being built (accumulates literals from parent calls)
-/// result: The SOPForm to append cubes to
-static void minatoIsop(const APInt &func, unsigned currentVars,
-                       const Cube &cube, SOPForm &result) {
-  // Base case: If function is 0 (False), no cubes cover it
-  if (func.isZero())
-    return;
+/// Check if a variable actually affects the function by comparing cofactors.
+static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
+  APInt f0 = computeCofactor(f, numVars, var, false);
+  APInt f1 = computeCofactor(f, numVars, var, true);
+  return f0 != f1;
+}
 
-  // Base case: If function is all 1s (True), add the current cube
-  if (func.isAllOnes()) {
-    result.cubes.push_back(cube);
-    return;
+/// Minato-Morreale ISOP algorithm (direct port from mockturtle/kitty).
+/// This recursively computes an irredundant sum-of-products form.
+///
+/// Parameters:
+///   tt: The ON-set (truth table to cover)
+///   dc: The don't-care set (can be used to cover ON-set)
+///   numVars: Total number of variables
+///   varIndex: Current variable index (counts down from numVars to 0)
+///   cubes: Output vector of cubes
+///
+/// Returns: The actual care set covered by the generated cubes
+static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
+                     unsigned varIndex, SOPForm &result) {
+  // Invariant: tt must be a subset of dc (all ON-set bits are in care set)
+  assert((tt & ~dc).isZero() && "tt must be subset of dc");
+
+  // Base case: nothing to cover
+  if (tt.isZero())
+    return tt;
+
+  // Base case: all don't-cares, add empty cube
+  if ((~dc).isZero()) {
+    result.cubes.emplace_back(numVars);
+    return dc;
   }
 
-  // Recursive step: split on the highest variable in current scope
-  unsigned splitVarIdx = currentVars - 1;
-  unsigned halfSize = func.getBitWidth() / 2;
+  // Base case: no more variables to process
+  if (varIndex == 0) {
+    // If we still have minterms to cover, add an empty cube
+    if (!tt.isZero()) {
+      result.cubes.emplace_back(numVars);
+    }
+    return tt;
+  }
 
-  // Split truth table into two halves:
-  // Lower half corresponds to splitVar = 0
-  // Upper half corresponds to splitVar = 1
-  APInt f0 = func.trunc(halfSize);
-  APInt f1 = func.lshr(halfSize).trunc(halfSize);
+  // Find the highest variable that actually appears in tt or dc
+  int var = varIndex - 1;
+  for (; var >= 0; --var) {
+    if (hasVar(tt, numVars, var) || hasVar(dc, numVars, var))
+      break;
+  }
 
-  // Minato-Morreale decomposition into three disjoint parts:
-  // 1. Shared part (f0 & f1) -> independent of splitVar
-  APInt fShared = f0 & f1;
+  // If no variable found, add empty cube if needed
+  assert(var >= 0 && "No variable found in tt or dc");
 
-  // 2. Unique to 0 (f0 & ~f1) -> requires splitVar = 0
-  APInt fUnique0 = f0 & ~f1;
+  // Compute cofactors
+  APInt tt0 = computeCofactor(tt, numVars, var, false);
+  APInt tt1 = computeCofactor(tt, numVars, var, true);
+  APInt dc0 = computeCofactor(dc, numVars, var, false);
+  APInt dc1 = computeCofactor(dc, numVars, var, true);
 
-  // 3. Unique to 1 (f1 & ~f0) -> requires splitVar = 1
-  APInt fUnique1 = f1 & ~f0;
+  // Track cube indices for adding literals later
+  size_t beg0 = result.cubes.size();
+  APInt res0 = isopRec(tt0 & ~dc1, dc0, numVars, var, result);
+  size_t end0 = result.cubes.size();
 
-  // Recursion 1: Shared terms (do NOT add literal for splitVar)
-  minatoIsop(fShared, currentVars - 1, cube, result);
+  APInt res1 = isopRec(tt1 & ~dc0, dc1, numVars, var, result);
+  size_t end1 = result.cubes.size();
 
-  // Recursion 2: Unique 0 terms (add negative literal !splitVar)
-  Cube cube0 = cube;
-  cube0.mask.setBit(splitVarIdx);
-  cube0.inverted.setBit(splitVarIdx);
-  minatoIsop(fUnique0, currentVars - 1, cube0, result);
+  APInt res2 =
+      isopRec((tt0 & ~res0) | (tt1 & ~res1), dc0 & dc1, numVars, var, result);
 
-  // Recursion 3: Unique 1 terms (add positive literal splitVar)
-  Cube cube1 = cube;
-  cube1.mask.setBit(splitVarIdx);
-  // inverted bit remains 0 for positive literal
-  minatoIsop(fUnique1, currentVars - 1, cube1, result);
+  // Create masks for the variable
+  APInt var0Mask = createVarMask(numVars, var, false); // Minterms where var=0
+  APInt var1Mask = createVarMask(numVars, var, true);  // Minterms where var=1
+
+  // Combine results: res0 is restricted to var=0, res1 to var=1
+  res2 |= (res0 & var0Mask) | (res1 & var1Mask);
+
+  // Add literals to cubes generated in the first recursion (var=0)
+  for (size_t c = beg0; c < end0; ++c) {
+    result.cubes[c].mask.setBit(var);
+    result.cubes[c].inverted.setBit(var); // Negative literal
+  }
+
+  // Add literals to cubes generated in the second recursion (var=1)
+  for (size_t c = end0; c < end1; ++c) {
+    result.cubes[c].mask.setBit(var);
+    // inverted bit remains 0 for positive literal
+  }
+
+  // Verify invariants
+  assert((tt & ~res2).isZero() && "result must cover tt");
+  assert((res2 & ~dc).isZero() && "result must be subset of dc");
+
+  return res2;
 }
 
 /// Minato-Morreale ISOP algorithm with don't-cares.
@@ -426,9 +463,20 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
   if (tt.numInputs == 0 || tt.table.isZero())
     return sop;
 
-  // Use the cleaner minatoIsop implementation
-  Cube emptyCube(tt.numInputs);
-  minatoIsop(tt.table, tt.numInputs, emptyCube, sop);
+  // Call the mockturtle-style ISOP algorithm
+  // dc = tt means all ON-set bits are also don't-cares (no OFF-set constraints)
+  (void)isopRec(tt.table, tt.table, tt.numInputs, tt.numInputs, sop);
+
+  // Verify the result is correct
+  APInt result = sop.computeTruthTable();
+  if (result != tt.table) {
+    llvm::errs() << "ISOP does not match original truth table!\n";
+    llvm::errs() << "Original: " << tt.table << "\n";
+    llvm::errs() << "ISOP: " << result << "\n";
+    sop.dump(llvm::errs());
+    tt.dump(llvm::errs());
+  }
+  assert(result == tt.table && "ISOP does not match original truth table!");
 
   return sop;
 }
