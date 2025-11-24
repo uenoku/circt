@@ -143,37 +143,30 @@ struct SOPForm {
 static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
                              bool positive) {
   uint32_t numBits = 1u << numVars;
-  APInt result(numBits, 0);
+  uint32_t shift = 1u << var;
 
-  uint32_t blockSize = 1u << var;
-  uint32_t numBlocks = numBits / (blockSize * 2);
+  // Create a mask that selects the bits we want to keep
+  // Pattern: for each 2*shift block, select either lower or upper shift bits
+  // For var=0: pattern is shift 1s, shift 0s (repeating 0x0...01...1)
+  // For var=1: pattern is shift 0s, shift 1s (repeating 0x1...10...0)
+  APInt pattern(2 * shift, 0);
+  if (positive)
+    pattern.setBitsFrom(shift); // Upper half: bits [shift, 2*shift)
+  else
+    pattern.setLowBits(shift); // Lower half: bits [0, shift)
 
-  // Duplicate the selected bits to fill the entire truth table
-  for (uint32_t block = 0; block < numBlocks; ++block) {
-    uint32_t offset = block * blockSize * 2;
+  APInt mask = APInt::getSplat(numBits, pattern);
 
-    if (positive) {
-      // Positive cofactor: take var=1 bits (upper half) and duplicate
-      for (uint32_t i = 0; i < blockSize; ++i) {
-        bool bit = f[offset + blockSize + i];
-        if (bit) {
-          result.setBit(offset + i);             // Copy to lower half
-          result.setBit(offset + blockSize + i); // Copy to upper half
-        }
-      }
-    } else {
-      // Negative cofactor: take var=0 bits (lower half) and duplicate
-      for (uint32_t i = 0; i < blockSize; ++i) {
-        bool bit = f[offset + i];
-        if (bit) {
-          result.setBit(offset + i);             // Copy to lower half
-          result.setBit(offset + blockSize + i); // Copy to upper half
-        }
-      }
-    }
-  }
+  // Extract the selected bits
+  APInt selected = f & mask;
 
-  return result;
+  // Duplicate: shift and OR to fill both halves
+  if (positive)
+    // Shift right to copy upper half to lower half
+    return selected | selected.lshr(shift);
+
+  // Shift left to copy lower half to upper half
+  return selected | selected.shl(shift);
 }
 
 /// Check if a variable actually affects the function by comparing cofactors.
