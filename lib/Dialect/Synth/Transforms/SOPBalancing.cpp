@@ -157,8 +157,8 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
       for (uint32_t i = 0; i < blockSize; ++i) {
         bool bit = f[offset + blockSize + i];
         if (bit) {
-          result.setBit(offset + i);              // Copy to lower half
-          result.setBit(offset + blockSize + i);  // Copy to upper half
+          result.setBit(offset + i);             // Copy to lower half
+          result.setBit(offset + blockSize + i); // Copy to upper half
         }
       }
     } else {
@@ -166,8 +166,8 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
       for (uint32_t i = 0; i < blockSize; ++i) {
         bool bit = f[offset + i];
         if (bit) {
-          result.setBit(offset + i);              // Copy to lower half
-          result.setBit(offset + blockSize + i);  // Copy to upper half
+          result.setBit(offset + i);             // Copy to lower half
+          result.setBit(offset + blockSize + i); // Copy to upper half
         }
       }
     }
@@ -176,70 +176,6 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
   return result;
 }
 
-struct TruthTableWithDC {
-  APInt tt;
-  APInt dc;
-};
-
-static TruthTableWithDC computeCofactor(const TruthTableWithDC &f,
-                                        unsigned numVars, unsigned var,
-                                        bool positive) {
-  TruthTableWithDC result;
-  result.tt = computeCofactor(f.tt, numVars, var, positive);
-  result.dc = computeCofactor(f.dc, numVars, var, positive);
-  return result;
-}
-
-template <bool positive>
-static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
-  uint32_t numBits = 1u << numVars;
-  APInt result(numBits, 0);
-
-  // Use bit manipulation to compute cofactor efficiently.
-  // The cofactor operation can be viewed as selecting and compacting bits.
-  // For positive cofactor f_x: select bits where var=1, compact to lower half
-  // For negative cofactor f_!x: select bits where var=0, compact to lower half
-
-  // Optimization: For var >= 6 (blockSize >= 64), we can use word-level
-  // operations by directly accessing APInt's internal representation via
-  // getRawData(). For smaller var, the overhead of bit-by-bit operations is
-  // acceptable.
-
-  uint32_t blockSize = 1u << var; // Size of each block to process
-  uint32_t numBlocks = numBits / (blockSize * 2); // Number of block pairs
-
-  // Process each block pair
-  for (uint32_t block = 0; block < numBlocks; ++block) {
-    uint32_t srcOffset = block * blockSize * 2;
-    uint32_t dstOffset = block * blockSize;
-
-    if constexpr (positive) {
-      // Positive cofactor: copy upper half of each block pair
-      // Use extractBits for efficient bulk copy when blockSize is large
-      if (blockSize >= 64) {
-        APInt extracted = f.extractBits(blockSize, srcOffset + blockSize);
-        result.insertBits(extracted, dstOffset);
-      } else {
-        for (uint32_t i = 0; i < blockSize; ++i)
-          if (f[srcOffset + blockSize + i])
-            result.setBit(dstOffset + i);
-      }
-    } else {
-      // Negative cofactor: copy lower half of each block pair
-      // Use extractBits for efficient bulk copy when blockSize is large
-      if (blockSize >= 64) {
-        APInt extracted = f.extractBits(blockSize, srcOffset);
-        result.insertBits(extracted, dstOffset);
-      } else {
-        for (uint32_t i = 0; i < blockSize; ++i)
-          if (f[srcOffset + i])
-            result.setBit(dstOffset + i);
-      }
-    }
-  }
-
-  return result;
-}
 /// Check if a variable actually affects the function by comparing cofactors.
 static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
   APInt f0 = computeCofactor(f, numVars, var, false);
@@ -333,126 +269,6 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
   assert((res2 & ~dc).isZero() && "result must be subset of dc");
 
   return res2;
-}
-
-/// Minato-Morreale ISOP algorithm with don't-cares.
-/// Recursively computes an irredundant sum-of-products form.
-/// Returns the care set covered by the generated cubes.
-static APInt isopRecursiveWithDC(const APInt &tt, const APInt &dc,
-                                 unsigned numVars, unsigned varIndex,
-                                 SOPForm &sop) {
-  // Base case: nothing to cover
-  if (tt.isZero())
-    return tt;
-
-  // Base case: all don't-cares, add empty cube (constant 1)
-  if (dc.isAllOnes()) {
-    sop.cubes.emplace_back(numVars);
-    return dc;
-  }
-
-  // Base case: ran out of variables
-  if (varIndex >= numVars) {
-    // If we still have minterms to cover, add them as cubes
-    if (!tt.isZero())
-      sop.cubes.emplace_back(numVars);
-    return tt | dc;
-  }
-
-  // Compute cofactors for current variable
-  auto negativeTT = computeCofactor<false>(tt, numVars, varIndex);
-  auto negativeDC = computeCofactor<false>(dc, numVars, varIndex);
-  auto positiveTT = computeCofactor<true>(tt, numVars, varIndex);
-  auto positiveDC = computeCofactor<true>(dc, numVars, varIndex);
-
-  // Track cube indices for adding literals later
-  const auto beg0 = sop.cubes.size();
-
-  // Recurse on negative cofactor (var = 0)
-  // Cover minterms that are only in negative cofactor
-  const auto res0 = isopRecursiveWithDC(negativeTT & ~positiveDC, negativeDC,
-                                        numVars, varIndex + 1, sop);
-  const auto end0 = sop.cubes.size();
-
-  // Recurse on positive cofactor (var = 1)
-  // Cover minterms that are only in positive cofactor
-  const auto res1 = isopRecursiveWithDC(positiveTT & ~negativeDC, positiveDC,
-                                        numVars, varIndex + 1, sop);
-  const auto end1 = sop.cubes.size();
-
-  // Recurse on common part (minterms in both cofactors)
-  // Cover remaining minterms that weren't covered by res0 or res1
-  auto res2 =
-      isopRecursiveWithDC((negativeTT & ~res0) | (positiveTT & ~res1),
-                          negativeDC & positiveDC, numVars, varIndex + 1, sop);
-
-  // Expand results back to original variable space
-  // res0 corresponds to var=0, res1 to var=1, res2 to both
-  APInt var0Mask = createVarMask(numVars, varIndex, false);
-  APInt var1Mask = createVarMask(numVars, varIndex, true);
-  res2 |= (res0 & var0Mask) | (res1 & var1Mask);
-
-  // Add literals to cubes generated in negative cofactor
-  for (auto c = beg0; c < end0; ++c) {
-    sop.cubes[c].mask.setBit(varIndex);
-    sop.cubes[c].inverted.setBit(varIndex); // Negative literal
-  }
-
-  // Add literals to cubes generated in positive cofactor
-  for (auto c = end0; c < end1; ++c) {
-    sop.cubes[c].mask.setBit(varIndex);
-    // inverted bit remains 0 for positive literal
-  }
-
-  return res2;
-}
-
-/// Minato-Morreale ISOP algorithm (See "Finding All Simple Disjunctive
-/// Decompositions Using Irredundant Sum-of-Products Forms"Sec 3.2). The
-/// implementation is heavily inspired by the implementation in mockturtle.
-static void isopRecursive(const APInt &on, unsigned numVars, unsigned varIndex,
-                          const Cube &cube, SOPForm &result) {
-  // Terminal case: nothing to cover
-  if (on.isZero())
-    return;
-
-  // Terminal case: all bits set, add the cube
-  if (on.isAllOnes()) {
-    result.cubes.push_back(cube);
-    return;
-  }
-
-  assert(varIndex != numVars && "Ran out of variables");
-
-  // Compute positive and negative cofactors
-  APInt on1 = computeCofactor(on, numVars, varIndex, true);
-  APInt on0 = computeCofactor(on, numVars, varIndex, false);
-
-  // Compute the intersection where both cofactors are true
-  APInt onAnd = on1 & on0;
-
-  // Recurse on the common part
-  isopRecursive(onAnd, numVars, varIndex + 1, cube, result);
-
-  // Compute the differences
-  APInt onDiff1 = on1 & ~onAnd;
-  APInt onDiff0 = on0 & ~onAnd;
-
-  // Recurse with variable = 1 (positive literal)
-  if (!onDiff1.isZero()) {
-    Cube cube1 = cube;
-    cube1.mask.setBit(varIndex);
-    // Not inverted (positive literal)
-    isopRecursive(onDiff1, numVars, varIndex + 1, cube1, result);
-  }
-
-  // Recurse with variable = 0 (negative literal)
-  if (!onDiff0.isZero()) {
-    Cube cube0 = cube;
-    cube0.mask.setBit(varIndex);
-    cube0.inverted.setBit(varIndex); // Inverted (negative literal)
-    isopRecursive(onDiff0, numVars, varIndex + 1, cube0, result);
-  }
 }
 
 /// Extract ISOP (Irredundant Sum-of-Products) from truth table.
