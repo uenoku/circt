@@ -65,15 +65,16 @@ struct Cube {
   unsigned size() const { return mask.popcount(); }
 };
 
-/// Precomputed masks for variables in truth tables up to 5 variables.
+/// Precomputed masks for variables in truth tables up to 6 variables (64 bits).
 /// Masks[var][0] = mask where var=0 (negative literal)
 /// Masks[var][1] = mask where var=1 (positive literal)
-static constexpr uint32_t kVarMasks[5][2] = {
-    {0x55555555, 0xAAAAAAAA}, // var 0: alternating bits
-    {0x33333333, 0xCCCCCCCC}, // var 1: pairs of bits
-    {0x0F0F0F0F, 0xF0F0F0F0}, // var 2: nibbles
-    {0x00FF00FF, 0xFF00FF00}, // var 3: bytes
-    {0x0000FFFF, 0xFFFF0000}, // var 4: half-words
+static constexpr uint64_t kVarMasks[6][2] = {
+    {0x5555555555555555ULL, 0xAAAAAAAAAAAAAAAAULL}, // var 0: alternating bits
+    {0x3333333333333333ULL, 0xCCCCCCCCCCCCCCCCULL}, // var 1: pairs of bits
+    {0x0F0F0F0F0F0F0F0FULL, 0xF0F0F0F0F0F0F0F0ULL}, // var 2: nibbles
+    {0x00FF00FF00FF00FFULL, 0xFF00FF00FF00FF00ULL}, // var 3: bytes
+    {0x0000FFFF0000FFFFULL, 0xFFFF0000FFFF0000ULL}, // var 4: half-words
+    {0x00000000FFFFFFFFULL, 0xFFFFFFFF00000000ULL}, // var 5: words
 };
 
 /// Create a mask for a variable in the truth table.
@@ -82,12 +83,12 @@ static constexpr uint32_t kVarMasks[5][2] = {
 static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
   uint32_t numBits = 1u << numVars;
 
-  // Use precomputed table for small cases (up to 5 variables = 32 bits)
-  if (numVars <= 5) {
-    assert(var < 5);
+  // Use precomputed table for small cases (up to 6 variables = 64 bits)
+  if (numVars <= 6) {
+    assert(var < 6);
     uint64_t maskValue = kVarMasks[var][positive ? 1 : 0];
     // Mask off bits beyond numBits
-    if (numBits < 32)
+    if (numBits < 64)
       maskValue &= (1ULL << numBits) - 1;
     return APInt(numBits, maskValue);
   }

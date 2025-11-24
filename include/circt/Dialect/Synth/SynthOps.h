@@ -105,6 +105,8 @@ T buildBalancedTreeWithArrivalTimes(llvm::ArrayRef<T> elements,
 
   if (elements.size() == 1)
     return elements[0];
+  if (elements.size() == 2)
+    return combine(elements[0], elements[1]);
 
   // Min-heap priority queue ordered by operator>
   llvm::PriorityQueue<T, std::vector<T>, std::greater<T>> pq;
