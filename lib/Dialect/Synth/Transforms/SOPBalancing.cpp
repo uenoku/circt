@@ -209,14 +209,7 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
     return dc;
   }
 
-  // Base case: no more variables to process
-  if (varIndex == 0) {
-    // If we still have minterms to cover, add an empty cube
-    if (!tt.isZero()) {
-      result.cubes.emplace_back(numVars);
-    }
-    return tt;
-  }
+  assert(varIndex > 0 && "No more variables to process");
 
   // Find the highest variable that actually appears in tt or dc
   int var = varIndex - 1;
