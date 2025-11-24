@@ -135,9 +135,24 @@ struct SOPForm {
   }
 };
 
-/// Compute cofactor: f_xi (positive) or f_!xi (negative).
-/// Follows mockturtle/kitty semantics: duplicates the selected bits to fill
-/// the entire truth table.
+/// Compute cofactor of a Boolean function.
+///
+/// The cofactor of a function f with respect to variable x is the function
+/// obtained by fixing x to a constant value:
+///   - Positive cofactor f_x  (or f|x=1): f with variable x set to 1
+///   - Negative cofactor f_!x (or f|x=0): f with variable x set to 0
+///
+/// Example: f(x,y,z) = xy + !xz
+///   - f_x  = f(1,y,z) = y       (when x=1, xy becomes y, !xz becomes 0)
+///   - f_!x = f(0,y,z) = z       (when x=0, xy becomes 0, !xz becomes z)
+///
+/// In truth table representation (where bit i represents minterm i):
+///   - For a 3-variable function, bits are indexed as: [xyz]
+///     Bit 0: 000, Bit 1: 001, Bit 2: 010, Bit 3: 011,
+///     Bit 4: 100, Bit 5: 101, Bit 6: 110, Bit 7: 111
+///   - Negative cofactor (x=0): extract bits where x=0 (bits 0,1,2,3)
+///   - Positive cofactor (x=1): extract bits where x=1 (bits 4,5,6,7)
+///
 /// For cofactor0 (var=0): takes bits where var=0 and duplicates them
 /// For cofactor1 (var=1): takes bits where var=1 and duplicates them
 template <bool positive>
@@ -176,17 +191,22 @@ static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
   return f0 != f1;
 }
 
-/// Minato-Morreale ISOP algorithm (direct port from mockturtle/kitty).
-/// This recursively computes an irredundant sum-of-products form.
+/// Minato-Morreale ISOP algorithm.
+///
+/// Computes an Irredundant Sum-of-Products (ISOP) cover for a Boolean function.
+/// An ISOP is a sum-of-products where:
+///   1. No cube can be removed without changing the function
+///   2. The cubes are pairwise disjoint (no minterm is covered by multiple
+///   cubes)
 ///
 /// Parameters:
-///   tt: The ON-set (truth table to cover)
-///   dc: The don't-care set (can be used to cover ON-set)
-///   numVars: Total number of variables
+///   tt: The ON-set (minterms that must be covered)
+///   dc: The don't-care set (minterms that can optionally be covered)
+///       Invariant: tt ⊆ dc (all ON-set minterms are in the care set)
+///   numVars: Total number of variables in the function
 ///   varIndex: Current variable index (counts down from numVars to 0)
-///   cubes: Output vector of cubes
+///   result: Output SOP form (cubes are accumulated here)
 ///
-/// Returns: The actual care set covered by the generated cubes
 static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
                      unsigned varIndex, SOPForm &result) {
   // Invariant: tt must be a subset of dc (all ON-set bits are in care set)
