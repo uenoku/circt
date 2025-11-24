@@ -249,7 +249,7 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
     return tt;
 
   // Base case: all don't-cares, add empty cube
-  if ((~dc).isZero()) {
+  if (dc.isAllOnes()) {
     result.cubes.emplace_back(numVars);
     return dc;
   }
@@ -258,11 +258,10 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
 
   // Find the highest variable that actually appears in tt or dc
   int var = varIndex - 1;
-  for (; var >= 0; --var) {
+  for (; var >= 0; --var)
     if (variableInSupport(tt, numVars, var) ||
         variableInSupport(dc, numVars, var))
       break;
-  }
 
   // If no variable found, add empty cube if needed
   assert(var >= 0 && "No variable found in tt or dc");
@@ -299,14 +298,15 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
                      (positiveCover & positiveMask);
 
   // Add negative literal to cubes from first recursion
-  for (size_t c = negativeBegin; c < negativeEnd; ++c) {
-    result.cubes[c].mask.setBit(var);
-    result.cubes[c].inverted.setBit(var); // Negative literal !var
+  APInt mask(numVars, 1 << var);
+  for (size_t i = negativeBegin; i < negativeEnd; ++i) {
+    result.cubes[i].mask |= mask;
+    result.cubes[i].inverted |= mask;
   }
 
   // Add positive literal to cubes from second recursion
-  for (size_t c = negativeEnd; c < positiveEnd; ++c) {
-    result.cubes[c].mask.setBit(var);
+  for (size_t i = negativeEnd; i < positiveEnd; ++i) {
+    result.cubes[i].mask |= mask;
     // inverted bit remains 0 for positive literal var
   }
 
@@ -325,20 +325,16 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
   if (tt.numInputs == 0 || tt.table.isZero())
     return sop;
 
-  // Call the mockturtle-style ISOP algorithm
+  // Call the ISOP algorithm
   // dc = tt means all ON-set bits are also don't-cares (no OFF-set constraints)
   (void)isopRec(tt.table, tt.table, tt.numInputs, tt.numInputs, sop);
 
-  // Verify the result is correct
+// Verify the result is correct
+#ifdef DEBUG
   APInt result = sop.computeTruthTable();
-  if (result != tt.table) {
-    llvm::errs() << "ISOP does not match original truth table!\n";
-    llvm::errs() << "Original: " << tt.table << "\n";
-    llvm::errs() << "ISOP: " << result << "\n";
-    sop.dump(llvm::errs());
-    tt.dump(llvm::errs());
-  }
+  (void)result;
   assert(result == tt.table && "ISOP does not match original truth table!");
+#endif
 
   return sop;
 }
