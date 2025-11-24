@@ -214,8 +214,11 @@ computeCofactors(const APInt &f, unsigned numVars, unsigned var) {
   return {cof0, cof1};
 }
 
-/// Check if a variable actually affects the function by comparing cofactors.
-static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
+/// Check if a variable is in the support of the function.
+/// A variable is in the support if it actually affects the function output.
+/// This is determined by comparing the two cofactors - if they differ, the
+/// variable is in the support.
+static bool variableInSupport(const APInt &f, unsigned numVars, unsigned var) {
   auto [f0, f1] = computeCofactors(f, numVars, var);
   return f0 != f1;
 }
@@ -256,52 +259,62 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
   // Find the highest variable that actually appears in tt or dc
   int var = varIndex - 1;
   for (; var >= 0; --var) {
-    if (hasVar(tt, numVars, var) || hasVar(dc, numVars, var))
+    if (variableInSupport(tt, numVars, var) ||
+        variableInSupport(dc, numVars, var))
       break;
   }
 
   // If no variable found, add empty cube if needed
   assert(var >= 0 && "No variable found in tt or dc");
 
-  // Compute cofactors
-  auto [tt0, tt1] = computeCofactors(tt, numVars, var);
-  auto [dc0, dc1] = computeCofactors(dc, numVars, var);
+  // Compute cofactors with respect to the splitting variable
+  auto [negativeCofactor, positiveCofactor] =
+      computeCofactors(tt, numVars, var);
+  auto [negativeDC, positiveDC] = computeCofactors(dc, numVars, var);
 
-  // Track cube indices for adding literals later
-  size_t beg0 = result.cubes.size();
-  APInt res0 = isopRec(tt0 & ~dc1, dc0, numVars, var, result);
-  size_t end0 = result.cubes.size();
+  // Recurse on minterms unique to negative cofactor (will get !var literal)
+  size_t negativeBegin = result.cubes.size();
+  APInt negativeCover =
+      isopRec(negativeCofactor & ~positiveDC, negativeDC, numVars, var, result);
+  size_t negativeEnd = result.cubes.size();
 
-  APInt res1 = isopRec(tt1 & ~dc0, dc1, numVars, var, result);
-  size_t end1 = result.cubes.size();
+  // Recurse on minterms unique to positive cofactor (will get var literal)
+  APInt positiveCover =
+      isopRec(positiveCofactor & ~negativeDC, positiveDC, numVars, var, result);
+  size_t positiveEnd = result.cubes.size();
 
-  APInt res2 =
-      isopRec((tt0 & ~res0) | (tt1 & ~res1), dc0 & dc1, numVars, var, result);
+  // Recurse on shared minterms (will get no literal for this variable)
+  APInt sharedCover = isopRec((negativeCofactor & ~negativeCover) |
+                                  (positiveCofactor & ~positiveCover),
+                              negativeDC & positiveDC, numVars, var, result);
 
-  // Create masks for the variable
-  APInt var0Mask = createVarMask(numVars, var, false); // Minterms where var=0
-  APInt var1Mask = createVarMask(numVars, var, true);  // Minterms where var=1
+  // Create masks for the variable to restrict covers to their domains
+  APInt negativeMask =
+      createVarMask(numVars, var, false); // Minterms where var=0
+  APInt positiveMask =
+      createVarMask(numVars, var, true); // Minterms where var=1
 
-  // Combine results: res0 is restricted to var=0, res1 to var=1
-  res2 |= (res0 & var0Mask) | (res1 & var1Mask);
+  // Combine results: restrict each cover to its domain
+  APInt totalCover = sharedCover | (negativeCover & negativeMask) |
+                     (positiveCover & positiveMask);
 
-  // Add literals to cubes generated in the first recursion (var=0)
-  for (size_t c = beg0; c < end0; ++c) {
+  // Add negative literal to cubes from first recursion
+  for (size_t c = negativeBegin; c < negativeEnd; ++c) {
     result.cubes[c].mask.setBit(var);
-    result.cubes[c].inverted.setBit(var); // Negative literal
+    result.cubes[c].inverted.setBit(var); // Negative literal !var
   }
 
-  // Add literals to cubes generated in the second recursion (var=1)
-  for (size_t c = end0; c < end1; ++c) {
+  // Add positive literal to cubes from second recursion
+  for (size_t c = negativeEnd; c < positiveEnd; ++c) {
     result.cubes[c].mask.setBit(var);
-    // inverted bit remains 0 for positive literal
+    // inverted bit remains 0 for positive literal var
   }
 
   // Verify invariants
-  assert((tt & ~res2).isZero() && "result must cover tt");
-  assert((res2 & ~dc).isZero() && "result must be subset of dc");
+  assert((tt & ~totalCover).isZero() && "result must cover tt");
+  assert((totalCover & ~dc).isZero() && "result must be subset of dc");
 
-  return res2;
+  return totalCover;
 }
 
 /// Extract ISOP (Irredundant Sum-of-Products) from truth table.
