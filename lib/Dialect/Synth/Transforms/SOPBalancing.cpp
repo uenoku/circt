@@ -380,6 +380,8 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
 /// Builds a balanced tree based on arrival times to minimize delay.
 static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
                      ArrayRef<DelayType> arrivalTimes) {
+  assert(values.size() == arrivalTimes.size() && "Arrival times size mismatch");
+
   if (values.empty())
     return {};
 
@@ -387,11 +389,35 @@ static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
     return values[0];
 
   // OR(a, b, ...) = NOT(AND(NOT a, NOT b, ...))
-  // Build the AND with all inputs inverted, then invert the result
-  SmallVector<bool> inverted(values.size(), true);
-  auto andOp = buildAnd(builder, loc, values, inverted, arrivalTimes);
-  // Invert the result
-  return aig::AndInverterOp::create(builder, loc, andOp, true);
+  // Build a balanced tree using arrival times
+  static unsigned valueNumber = 0;
+  SmallVector<ValueWithArrivalTime> nodes;
+  for (auto [value, arrivalTime] : llvm::zip(values, arrivalTimes))
+    nodes.emplace_back(value, arrivalTime, true, valueNumber++);
+
+  ValueWithArrivalTime result =
+      buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
+          nodes,
+          // Combine two nodes: OR(a, b) = NOT(AND(NOT a, NOT b))
+          [&](const ValueWithArrivalTime &node1,
+              const ValueWithArrivalTime &node2) {
+            // Both inputs are already inverted, so we just AND them
+            Value andResult = aig::AndInverterOp::create(
+                builder, loc, node1.getValue(), node2.getValue(),
+                node1.isInverted(), node2.isInverted());
+
+            // New arrival time is max of inputs + 1 gate delay
+            DelayType newTime =
+                std::max(node1.getArrivalTime(), node2.getArrivalTime()) + 1;
+            // Result is still inverted (De Morgan's law)
+            return ValueWithArrivalTime(andResult, newTime, true,
+                                        valueNumber++);
+          });
+
+  // The result is inverted, so we need to invert it back
+  if (result.isInverted())
+    return aig::AndInverterOp::create(builder, loc, result.getValue(), true);
+  return result.getValue();
 }
 
 /// Simulate building a balanced AND tree and return the output arrival time.
