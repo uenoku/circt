@@ -65,21 +65,38 @@ struct Cube {
   unsigned size() const { return mask.popcount(); }
 };
 
+/// Precomputed masks for variables in truth tables up to 5 variables.
+/// Masks[var][0] = mask where var=0 (negative literal)
+/// Masks[var][1] = mask where var=1 (positive literal)
+static constexpr uint32_t kVarMasks[5][2] = {
+    {0x55555555, 0xAAAAAAAA}, // var 0: alternating bits
+    {0x33333333, 0xCCCCCCCC}, // var 1: pairs of bits
+    {0x0F0F0F0F, 0xF0F0F0F0}, // var 2: nibbles
+    {0x00FF00FF, 0xFF00FF00}, // var 3: bytes
+    {0x0000FFFF, 0xFFFF0000}, // var 4: half-words
+};
+
 /// Create a mask for a variable in the truth table.
 /// For positive=true: mask has 1s where var=1 in the truth table encoding
 /// For positive=false: mask has 1s where var=0 in the truth table encoding
 static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
   uint32_t numBits = 1u << numVars;
-  APInt mask(numBits, 0);
 
-  for (uint32_t i = 0; i < numBits; ++i) {
-    // Check if bit i has variable 'var' set to the desired value
-    bool varValue = (i & (1u << var)) != 0;
-    if (varValue == positive)
-      mask.setBit(i);
+  // Use precomputed table for small cases
+  if (numVars <= 5) {
+    assert(var < 5);
+    return APInt(numBits, kVarMasks[var][positive ? 1 : 0]);
   }
 
-  return mask;
+  // For larger cases, use getSplat to create repeating pattern
+  uint32_t patternSize = 2u << var;
+  APInt pattern(patternSize, 0);
+  if (positive)
+    pattern.setBitsFrom(1u << var); // Upper half
+  else
+    pattern.setLowBits(1u << var); // Lower half
+
+  return APInt::getSplat(numBits, pattern);
 }
 
 /// Represents a sum-of-products expression.
