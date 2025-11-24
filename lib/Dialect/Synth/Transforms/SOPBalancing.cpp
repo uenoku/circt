@@ -82,21 +82,33 @@ static constexpr uint32_t kVarMasks[5][2] = {
 static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
   uint32_t numBits = 1u << numVars;
 
-  // Use precomputed table for small cases
+  // Use precomputed table for small cases (up to 5 variables = 32 bits)
   if (numVars <= 5) {
     assert(var < 5);
-    return APInt(numBits, kVarMasks[var][positive ? 1 : 0]);
+    uint64_t maskValue = kVarMasks[var][positive ? 1 : 0];
+    // Mask off bits beyond numBits
+    if (numBits < 32)
+      maskValue &= (1ULL << numBits) - 1;
+    return APInt(numBits, maskValue);
   }
 
-  // For larger cases, use getSplat to create repeating pattern
-  uint32_t patternSize = 2u << var;
-  APInt pattern(patternSize, 0);
-  if (positive)
-    pattern.setBitsFrom(1u << var); // Upper half
-  else
-    pattern.setLowBits(1u << var); // Lower half
+  // For larger cases, build mask by setting bits in blocks
+  APInt mask(numBits, 0);
+  uint32_t shift = 1u << var;
 
-  return APInt::getSplat(numBits, pattern);
+  for (uint32_t i = 0; i < numBits; i += 2 * shift) {
+    if (positive) {
+      // Set upper half of each block
+      for (uint32_t j = 0; j < shift && (i + shift + j) < numBits; ++j)
+        mask.setBit(i + shift + j);
+    } else {
+      // Set lower half of each block
+      for (uint32_t j = 0; j < shift && (i + j) < numBits; ++j)
+        mask.setBit(i + j);
+    }
+  }
+
+  return mask;
 }
 
 /// Represents a sum-of-products expression.
@@ -170,41 +182,41 @@ struct SOPForm {
 ///   - Negative cofactor (x=0): extract bits where x=0 (bits 0,1,2,3)
 ///   - Positive cofactor (x=1): extract bits where x=1 (bits 4,5,6,7)
 ///
-/// For cofactor0 (var=0): takes bits where var=0 and duplicates them
-/// For cofactor1 (var=1): takes bits where var=1 and duplicates them
-template <bool positive>
-static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
+/// Returns pair of (negative cofactor, positive cofactor).
+static std::pair<APInt, APInt>
+computeCofactors(const APInt &f, unsigned numVars, unsigned var) {
   uint32_t numBits = 1u << numVars;
   uint32_t shift = 1u << var;
 
-  // Create a mask that selects the bits we want to keep
-  // Pattern: for each 2*shift block, select either lower or upper shift bits
-  // For var=0: pattern is shift 1s, shift 0s (repeating 0x0...01...1)
-  // For var=1: pattern is shift 0s, shift 1s (repeating 0x1...10...0)
-  APInt pattern(2 * shift, 0);
-  if (positive)
-    pattern.setBitsFrom(shift); // Upper half: bits [shift, 2*shift)
-  else
-    pattern.setLowBits(shift); // Lower half: bits [0, shift)
+  // Create mask that selects bits for each cofactor
+  // For each 2*shift block: lower shift bits go to cof0, upper shift bits to
+  // cof1
+  APInt mask(numBits, 0);
+  APInt blockMask = APInt::getLowBitsSet(numBits, shift);
 
-  APInt mask = APInt::getSplat(numBits, pattern);
+  // Build masks for both cofactors in one pass
+  APInt mask0(numBits, 0); // Selects bits where var=0
+  APInt mask1(numBits, 0); // Selects bits where var=1
 
-  // Extract the selected bits
-  APInt selected = f & mask;
+  for (uint32_t i = 0; i < numBits; i += 2 * shift) {
+    mask0 |= blockMask.shl(i);         // Lower half of each block
+    mask1 |= blockMask.shl(i + shift); // Upper half of each block
+  }
 
-  // Duplicate: shift and OR to fill both halves
-  if (positive)
-    // Shift right to copy upper half to lower half
-    return selected | selected.lshr(shift);
+  // Extract bits for each cofactor
+  APInt selected0 = f & mask0;
+  APInt selected1 = f & mask1;
 
-  // Shift left to copy lower half to upper half
-  return selected | selected.shl(shift);
+  // Duplicate to fill entire truth table
+  APInt cof0 = selected0 | selected0.shl(shift);  // Copy lower to upper
+  APInt cof1 = selected1 | selected1.lshr(shift); // Copy upper to lower
+
+  return {cof0, cof1};
 }
 
 /// Check if a variable actually affects the function by comparing cofactors.
 static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
-  APInt f0 = computeCofactor<false>(f, numVars, var);
-  APInt f1 = computeCofactor<true>(f, numVars, var);
+  auto [f0, f1] = computeCofactors(f, numVars, var);
   return f0 != f1;
 }
 
@@ -252,10 +264,8 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
   assert(var >= 0 && "No variable found in tt or dc");
 
   // Compute cofactors
-  APInt tt0 = computeCofactor<false>(tt, numVars, var);
-  APInt tt1 = computeCofactor<true>(tt, numVars, var);
-  APInt dc0 = computeCofactor<false>(dc, numVars, var);
-  APInt dc1 = computeCofactor<true>(dc, numVars, var);
+  auto [tt0, tt1] = computeCofactors(tt, numVars, var);
+  auto [dc0, dc1] = computeCofactors(dc, numVars, var);
 
   // Track cube indices for adding literals later
   size_t beg0 = result.cubes.size();
