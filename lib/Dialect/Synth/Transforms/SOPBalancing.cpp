@@ -140,8 +140,8 @@ struct SOPForm {
 /// the entire truth table.
 /// For cofactor0 (var=0): takes bits where var=0 and duplicates them
 /// For cofactor1 (var=1): takes bits where var=1 and duplicates them
-static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
-                             bool positive) {
+template <bool positive>
+static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var) {
   uint32_t numBits = 1u << numVars;
   uint32_t shift = 1u << var;
 
@@ -171,8 +171,8 @@ static APInt computeCofactor(const APInt &f, unsigned numVars, unsigned var,
 
 /// Check if a variable actually affects the function by comparing cofactors.
 static bool hasVar(const APInt &f, unsigned numVars, unsigned var) {
-  APInt f0 = computeCofactor(f, numVars, var, false);
-  APInt f1 = computeCofactor(f, numVars, var, true);
+  APInt f0 = computeCofactor<false>(f, numVars, var);
+  APInt f1 = computeCofactor<true>(f, numVars, var);
   return f0 != f1;
 }
 
@@ -215,10 +215,10 @@ static APInt isopRec(const APInt &tt, const APInt &dc, unsigned numVars,
   assert(var >= 0 && "No variable found in tt or dc");
 
   // Compute cofactors
-  APInt tt0 = computeCofactor(tt, numVars, var, false);
-  APInt tt1 = computeCofactor(tt, numVars, var, true);
-  APInt dc0 = computeCofactor(dc, numVars, var, false);
-  APInt dc1 = computeCofactor(dc, numVars, var, true);
+  APInt tt0 = computeCofactor<false>(tt, numVars, var);
+  APInt tt1 = computeCofactor<true>(tt, numVars, var);
+  APInt dc0 = computeCofactor<false>(dc, numVars, var);
+  APInt dc1 = computeCofactor<true>(dc, numVars, var);
 
   // Track cube indices for adding literals later
   size_t beg0 = result.cubes.size();
