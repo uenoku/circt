@@ -114,6 +114,7 @@ void circt::synth::buildSynthOptimizationPipeline(
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(synth::createMaximumAndCover());
   pm.addPass(createLowerVariadicPass(options.timingAware));
+  pm.addPass(createCSEPass());
   pm.addPass(createStructuralHash());
 
   // SOP balancing.
