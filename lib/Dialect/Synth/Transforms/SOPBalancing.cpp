@@ -65,6 +65,23 @@ struct Cube {
   unsigned size() const { return mask.popcount(); }
 };
 
+/// Create a mask for a variable in the truth table.
+/// For positive=true: mask has 1s where var=1 in the truth table encoding
+/// For positive=false: mask has 1s where var=0 in the truth table encoding
+static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
+  uint32_t numBits = 1u << numVars;
+  APInt mask(numBits, 0);
+
+  for (uint32_t i = 0; i < numBits; ++i) {
+    // Check if bit i has variable 'var' set to the desired value
+    bool varValue = (i & (1u << var)) != 0;
+    if (varValue == positive)
+      mask.setBit(i);
+  }
+
+  return mask;
+}
+
 /// Represents a sum-of-products expression.
 struct SOPForm {
   SmallVector<Cube> cubes;
@@ -83,6 +100,38 @@ struct SOPForm {
       }
       os << ")\n";
     }
+  }
+  APInt computeTruthTable() const {
+    APInt tt(1 << numVars, 0);
+    for (const auto &cube : cubes) {
+      APInt cubeTT = ~APInt(1 << numVars, 0);
+      for (unsigned i = 0; i < numVars; ++i) {
+        if (cube.mask[i]) {
+          cubeTT &= createVarMask(numVars, i, !cube.inverted[i]);
+        }
+      }
+      tt |= cubeTT;
+    }
+    return tt;
+  }
+
+  bool isIrredundant() {
+    APInt tt = computeTruthTable();
+    for (auto &cube : cubes) {
+      auto temporary = cube;
+      // Remove one literal from the cube
+      for (unsigned i = 0; i < numVars; ++i) {
+        if (temporary.mask[i]) {
+          cube.mask.setBitVal(i, 0);
+          cube.inverted.setBitVal(i, 0);
+          if (tt == computeTruthTable())
+            return false;
+          cube = temporary;
+        }
+      }
+    }
+
+    return true;
   }
 };
 
@@ -136,23 +185,6 @@ struct TruthTableWithDC {
   APInt tt;
   APInt dc;
 };
-
-/// Create a mask for a variable in the truth table.
-/// For positive=true: mask has 1s where var=1 in the truth table encoding
-/// For positive=false: mask has 1s where var=0 in the truth table encoding
-static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
-  uint32_t numBits = 1u << numVars;
-  APInt mask(numBits, 0);
-
-  for (uint32_t i = 0; i < numBits; ++i) {
-    // Check if bit i has variable 'var' set to the desired value
-    bool varValue = (i & (1u << var)) != 0;
-    if (varValue == positive)
-      mask.setBit(i);
-  }
-
-  return mask;
-}
 
 static TruthTableWithDC computeCofactor(const TruthTableWithDC &f,
                                         unsigned numVars, unsigned var,
@@ -602,6 +634,7 @@ struct SOPBalancingPattern : public CutRewritePattern {
       tt.dump(llvm::dbgs());
       llvm::dbgs() << "Matching SOP form:\n";
       sop.dump(llvm::dbgs());
+      llvm::dbgs() << "Is irredundant: " << sop.isIrredundant() << "\n";
     });
 
     // If SOP is empty, don't match
