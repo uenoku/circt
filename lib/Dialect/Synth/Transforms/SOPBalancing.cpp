@@ -340,12 +340,16 @@ static SOPForm extractSOPFromTruthTable(const BinaryTruthTable &tt) {
   return sop;
 }
 
-/// Build an AND operation from a list of values using variadic and_inv.
+/// Build a balanced AND/OR tree from a list of values.
 /// Builds a balanced tree based on arrival times to minimize delay.
 /// Uses a priority queue to greedily pair nodes with earliest arrival times.
-static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
-                      ArrayRef<bool> inverted,
-                      ArrayRef<DelayType> arrivalTimes) {
+///
+/// For AND: combines values with specified inversions
+/// For OR: uses De Morgan's law: OR(a,b,...) = NOT(AND(NOT a, NOT b, ...))
+template <bool isOr>
+static Value buildBalancedTree(OpBuilder &builder, Location loc,
+                               ArrayRef<Value> values, ArrayRef<bool> inverted,
+                               ArrayRef<DelayType> arrivalTimes) {
   assert(values.size() == inverted.size() && "Size mismatch");
   assert(values.size() == arrivalTimes.size() && "Arrival times size mismatch");
 
@@ -355,13 +359,15 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
   if (values.size() == 1)
     return aig::AndInverterOp::create(builder, loc, values[0], inverted[0]);
 
-  // Build balanced tree based on arrival times using priority queue
-  // Strategy: greedily pair nodes with earliest arrival times to minimize delay
+  // Build balanced tree based on arrival times
   SmallVector<ValueWithArrivalTime> nodes;
   size_t valueNumber = 0;
-  for (unsigned i = 0; i < values.size(); ++i)
-    nodes.push_back(ValueWithArrivalTime(values[i], arrivalTimes[i],
-                                         inverted[i], valueNumber++));
+  for (unsigned i = 0; i < values.size(); ++i) {
+    // For OR, invert all inputs (De Morgan's law)
+    bool inv = isOr ? !inverted[i] : inverted[i];
+    nodes.push_back(
+        ValueWithArrivalTime(values[i], arrivalTimes[i], inv, valueNumber++));
+  }
 
   ValueWithArrivalTime result =
       buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
@@ -376,58 +382,29 @@ static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
             // New arrival time is max of inputs + 1 gate delay
             DelayType newTime =
                 std::max(node1.getArrivalTime(), node2.getArrivalTime()) + 1;
-            return ValueWithArrivalTime(andResult, newTime, false,
+            // For OR, result stays inverted (De Morgan's law)
+            return ValueWithArrivalTime(andResult, newTime, isOr,
                                         valueNumber++);
           });
 
+  // Apply final inversion if needed
   if (result.isInverted())
     return aig::AndInverterOp::create(builder, loc, result.getValue(), true);
   return result.getValue();
 }
 
+/// Build an AND operation from a list of values.
+static Value buildAnd(OpBuilder &builder, Location loc, ArrayRef<Value> values,
+                      ArrayRef<bool> inverted,
+                      ArrayRef<DelayType> arrivalTimes) {
+  return buildBalancedTree<false>(builder, loc, values, inverted, arrivalTimes);
+}
+
 /// Build an OR operation from a list of values.
-/// In AIG, OR is implemented as NOT(AND(NOT a, NOT b, ...))
-/// Builds a balanced tree based on arrival times to minimize delay.
 static Value buildOr(OpBuilder &builder, Location loc, ArrayRef<Value> values,
                      ArrayRef<DelayType> arrivalTimes) {
-  assert(values.size() == arrivalTimes.size() && "Arrival times size mismatch");
-
-  if (values.empty())
-    return {};
-
-  if (values.size() == 1)
-    return values[0];
-
-  // OR(a, b, ...) = NOT(AND(NOT a, NOT b, ...))
-  // Build a balanced tree using arrival times
-  static unsigned valueNumber = 0;
-  SmallVector<ValueWithArrivalTime> nodes;
-  for (auto [value, arrivalTime] : llvm::zip(values, arrivalTimes))
-    nodes.emplace_back(value, arrivalTime, true, valueNumber++);
-
-  ValueWithArrivalTime result =
-      buildBalancedTreeWithArrivalTimes<ValueWithArrivalTime>(
-          nodes,
-          // Combine two nodes: OR(a, b) = NOT(AND(NOT a, NOT b))
-          [&](const ValueWithArrivalTime &node1,
-              const ValueWithArrivalTime &node2) {
-            // Both inputs are already inverted, so we just AND them
-            Value andResult = aig::AndInverterOp::create(
-                builder, loc, node1.getValue(), node2.getValue(),
-                node1.isInverted(), node2.isInverted());
-
-            // New arrival time is max of inputs + 1 gate delay
-            DelayType newTime =
-                std::max(node1.getArrivalTime(), node2.getArrivalTime()) + 1;
-            // Result is still inverted (De Morgan's law)
-            return ValueWithArrivalTime(andResult, newTime, true,
-                                        valueNumber++);
-          });
-
-  // The result is inverted, so we need to invert it back
-  if (result.isInverted())
-    return aig::AndInverterOp::create(builder, loc, result.getValue(), true);
-  return result.getValue();
+  SmallVector<bool> inverted(values.size(), false);
+  return buildBalancedTree<true>(builder, loc, values, inverted, arrivalTimes);
 }
 
 /// Simulate building a balanced AND tree and return the output arrival time.
