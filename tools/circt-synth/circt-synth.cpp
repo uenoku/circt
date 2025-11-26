@@ -20,7 +20,6 @@
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/HW/HWPasses.h"
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/SV/SVDialect.h"
@@ -228,7 +227,6 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   pm.addPass(sv::createSVExtractTestCodePass(
       /*disableInstanceExtraction=*/false, /*disableRegisterExtraction=*/false,
       /*disableModuleInlining=*/false));
-  pm.addPass(hw::createHWParameterizeConstantPorts());
   auto pipeline = [](OpPassManager &pm) {
     circt::synth::CombLoweringPipelineOptions loweringOptions;
     loweringOptions.disableDatapath = disableDatapath;
