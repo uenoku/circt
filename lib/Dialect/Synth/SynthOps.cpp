@@ -155,7 +155,7 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
     return getOperand(0);
 
   auto inputs = adaptor.getInputs();
-  if (inputs.size() == 2 && inputs[1]) {
+  if (inputs.size() == 2 && isa_and_nonnull<IntegerAttr>(inputs[1])) {
     auto value = cast<IntegerAttr>(inputs[1]).getValue();
     if (isInverted(1))
       value = ~value;

@@ -1109,9 +1109,9 @@ LogicalResult LocalVisitor::visit(mlir::BlockArgument arg, size_t bitPos,
 
 FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputePaths(Value value,
                                                               size_t bitPos) {
-
-  if (value.getDefiningOp<hw::ConstantOp>())
-    return ArrayRef<OpenPath>{};
+  if (auto *op = value.getDefiningOp())
+    if (op->hasTrait<OpTrait::ConstantLike>())
+      return ArrayRef<OpenPath>{};
 
   if (ec.contains({value, bitPos})) {
     auto leader = ec.findLeader({value, bitPos});
@@ -1132,8 +1132,8 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputePaths(Value value,
   // Unique the results.
   filterPaths(*results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
   LLVM_DEBUG({
-    llvm::dbgs() << value << "[" << bitPos << "] "
-                 << "Found " << results->size() << " paths\n";
+    llvm::dbgs() << value << "[" << bitPos << "] " << "Found "
+                 << results->size() << " paths\n";
     llvm::dbgs() << "====Paths:\n";
     for (auto &path : *results) {
       path.print(llvm::dbgs());
@@ -1158,31 +1158,34 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
   if (auto blockArg = dyn_cast<mlir::BlockArgument>(value))
     return visit(blockArg, bitPos, results);
 
+  if (auto *op = value.getDefiningOp())
+    if (op->hasTrait<OpTrait::ConstantLike>())
+      return success();
+
   auto *op = value.getDefiningOp();
   auto result =
       TypeSwitch<Operation *, LogicalResult>(op)
           .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
                 aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp,
                 comb::OrOp, comb::MuxOp, comb::XorOp, comb::TruthTableOp,
-                seq::FirRegOp, seq::CompRegOp, hw::ConstantOp,
-                seq::FirMemReadOp, seq::FirMemReadWriteOp, hw::WireOp>(
-              [&](auto op) {
-                size_t idx = results.size();
-                auto result = visit(op, bitPos, results);
-                if (ctx->doTraceDebugPoints())
-                  if (auto name = op->template getAttrOfType<StringAttr>(
-                          "sv.namehint")) {
+                seq::FirRegOp, seq::CompRegOp, seq::FirMemReadOp,
+                seq::FirMemReadWriteOp, hw::WireOp>([&](auto op) {
+            size_t idx = results.size();
+            auto result = visit(op, bitPos, results);
+            if (ctx->doTraceDebugPoints())
+              if (auto name =
+                      op->template getAttrOfType<StringAttr>("sv.namehint")) {
 
-                    for (auto i = idx, e = results.size(); i < e; ++i) {
-                      DebugPoint debugPoint({}, value, bitPos, results[i].delay,
-                                            "namehint");
-                      auto newHistory = debugPointFactory->add(
-                          debugPoint, results[i].history);
-                      results[i].history = newHistory;
-                    }
-                  }
-                return result;
-              })
+                for (auto i = idx, e = results.size(); i < e; ++i) {
+                  DebugPoint debugPoint({}, value, bitPos, results[i].delay,
+                                        "namehint");
+                  auto newHistory =
+                      debugPointFactory->add(debugPoint, results[i].history);
+                  results[i].history = newHistory;
+                }
+              }
+            return result;
+          })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
             return visit(op, bitPos, cast<OpResult>(value).getResultNumber(),
                          results);

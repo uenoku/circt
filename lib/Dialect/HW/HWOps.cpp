@@ -386,8 +386,8 @@ LogicalResult WireOp::canonicalize(WireOp wire, PatternRewriter &rewriter) {
     return failure();
 
   // If the wire has a symbol, then we can't delete it.
-  if (wire.getInnerSymAttr())
-    return failure();
+  // if (wire.getInnerSymAttr())
+  //   return failure();
 
   // If the wire has a name or an `sv.namehint` attribute, propagate it as an
   // `sv.namehint` to the expression.
@@ -395,6 +395,15 @@ LogicalResult WireOp::canonicalize(WireOp wire, PatternRewriter &rewriter) {
     if (auto name = chooseName(wire, inputOp))
       rewriter.modifyOpInPlace(inputOp,
                                [&] { inputOp->setAttr("sv.namehint", name); });
+
+  if (wire.getInnerSymAttr()) {
+    if (wire.use_empty())
+      return failure();
+    rewriter.modifyOpInPlace(wire, [&] {
+      wire->replaceAllUsesWith(ArrayRef<Value>{wire.getInput()});
+    });
+    return success();
+  }
 
   rewriter.replaceOp(wire, wire.getInput());
   return success();

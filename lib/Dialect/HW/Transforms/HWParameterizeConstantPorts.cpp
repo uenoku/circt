@@ -12,7 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWPasses.h"
@@ -128,8 +127,8 @@ void HWParameterizeConstantPortsPass::processModule(
     BlockArgument arg = module.getBodyBlock()->getArgument(portIdx);
 
     // Create a parameter name based on the port name
-    auto paramNameAttr =
-        builder.getStringAttr(paramNamespace.newName(port.name.str()));
+    auto paramNameAttr = builder.getStringAttr(
+        paramNamespace.newName(port.name.str()) + "_PARAM");
     portToParamName[portIdx] = paramNameAttr;
 
     // Create parameter declaration without default value
