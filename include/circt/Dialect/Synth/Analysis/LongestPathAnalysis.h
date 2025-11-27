@@ -54,7 +54,7 @@ struct Object {
            bitPos == other.bitPos;
   }
 
-  void print(llvm::raw_ostream &os) const;
+  void print(llvm::raw_ostream &os, bool useCommonFormat = false) const;
   Object &prependPaths(circt::igraph::InstancePathCache &cache,
                        circt::igraph::InstancePath path);
 

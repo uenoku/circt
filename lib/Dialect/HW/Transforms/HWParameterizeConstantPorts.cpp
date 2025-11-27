@@ -92,7 +92,7 @@ void HWParameterizeConstantPortsPass::processModule(
 
   for (auto [idx, port] : llvm::enumerate(inputPorts)) {
     // Skip non-input ports and ports with symbols (could be forced)
-    if (port.dir != ModulePort::Direction::Input || port.getSym())
+    if (port.dir != ModulePort::Direction::Input)
       continue;
 
     if (allInstancesHaveConstantForPort(node, idx))
@@ -140,6 +140,10 @@ void HWParameterizeConstantPortsPass::processModule(
     auto paramValueOp =
         ParamValueOp::create(builder, module.getLoc(), port.type, paramRef);
     arg.replaceAllUsesWith(paramValueOp);
+
+    if (port.getSym())
+      hw::WireOp::create(builder, module.getLoc(), paramValueOp, port.name,
+                         port.getSym());
   }
 
   // Update module parameters

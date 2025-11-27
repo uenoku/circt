@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
@@ -69,6 +70,32 @@ private:
 
 } // namespace
 
+static void printList(LongestPathCollection &collection, llvm::raw_ostream *os,
+                      StringRef tag) {
+  std::unique_ptr<hw::ModulePortInfo> info;
+  for (auto &path : collection.paths) {
+    auto start = path.getPath().getStartPoint();
+    start.print(*os, true);
+    *os << ", ";
+    auto end = path.getEndPoint();
+    if (std::holds_alternative<Object>(end)) {
+      auto obj = std::get<Object>(end);
+      obj.print(*os, true);
+    } else {
+      auto [module, resultNumber, bitPos] =
+          std::get<DataflowPath::OutputPort>(end);
+      if (!info) {
+        info = std::make_unique<hw::ModulePortInfo>(module.getPortList());
+      }
+      auto &i = info->atOutput(resultNumber);
+      *os << i.name.getValue();
+      if (hw::getBitWidth(i.type) != 1)
+        *os << "[" << bitPos << "]";
+    }
+    *os << ", " << path.getDelay() << ", " << tag << "\n";
+  }
+}
+
 /// Main method to print comprehensive longest path analysis results.
 LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
     const LongestPathAnalysis &analysis, igraph::InstancePathCache &pathCache,
@@ -76,6 +103,30 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
   auto moduleName = top.getModuleNameAttr();
 
   LongestPathCollection collection(top.getContext());
+
+  {
+    LongestPathCollection collection1(top.getContext());
+
+    if (failed(analysis.getOpenPathsFromInputPortsToInternal(
+            moduleName, collection1.paths)))
+      return failure();
+
+    collection1.sortInDescendingOrder();
+    collection1.dropNonCriticalPaths(false);
+    printList(collection1, os, "in");
+  }
+
+  {
+    LongestPathCollection collection2(top.getContext());
+    if (failed(analysis.getOpenPathsFromInternalToOutputPorts(
+            moduleName, collection2.paths)))
+      return failure();
+    collection2.sortInDescendingOrder();
+    collection2.dropNonCriticalPaths(true);
+    *os << "=== Internal to output:\n";
+    printList(collection2, os, "out");
+    return success();
+  }
 
   // Get all timing paths with full hierarchical elaboration
   if (failed(analysis.getAllPaths(moduleName, collection.paths, true)))

@@ -32,6 +32,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/HW/HWTypes.h"
 #include "circt/Dialect/HW/PortImplementation.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
@@ -250,6 +251,19 @@ static StringAttr getNameImpl(Value value) {
       });
 }
 
+static void printCommon(llvm::raw_ostream &os, const Object &object) {
+  for (auto inst : object.instancePath)
+    os << inst.getInstanceName() << "/";
+  os << object.getName().getValue();
+  auto value = object.value;
+  // Check if the value is port or reg.
+  if (auto op = value.getDefiningOp())
+    if (isa<seq::CompRegOp, seq::FirRegOp>(op))
+      os << "_reg";
+  if (hw::getBitWidth(value.getType()) != 1)
+    os << "[" << object.bitPos << "]";
+}
+
 static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
@@ -294,7 +308,13 @@ void DebugPoint::print(llvm::raw_ostream &os) const {
   printObjectImpl(os, object, delay, {}, comment);
 }
 
-void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
+void Object::print(llvm::raw_ostream &os, bool useCommonFormat) const {
+  if (useCommonFormat) {
+    printCommon(os, *this);
+    return;
+  }
+  printObjectImpl(os, *this);
+}
 
 StringAttr Object::getName() const { return getNameImpl(value); }
 

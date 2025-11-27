@@ -1842,7 +1842,9 @@ LogicalResult ArrayCreateOp::verify() {
 }
 
 OpFoldResult ArrayCreateOp::fold(FoldAdaptor adaptor) {
-  if (llvm::any_of(adaptor.getInputs(), [](Attribute attr) { return !attr; }))
+  if (llvm::any_of(adaptor.getInputs(), [](Attribute attr) {
+        return !isa_and_nonnull<IntegerAttr>(attr);
+      }))
     return {};
   return ArrayAttr::get(getContext(), adaptor.getInputs());
 }
