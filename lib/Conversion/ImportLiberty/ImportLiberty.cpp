@@ -932,11 +932,10 @@ LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
         lexer.nextToken(); // (
         SmallVector<Attribute> args;
         while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
-          auto arg = lexer.nextToken();
-          StringRef argStr = arg.spelling;
-          if (arg.kind == LibertyTokenKind::String)
-            argStr = argStr.drop_front().drop_back();
-          args.push_back(builder.getStringAttr(argStr));
+          Attribute arg;
+          if (parseAttribute(arg))
+            return failure();
+          args.push_back(arg);
           if (lexer.peekToken().kind == LibertyTokenKind::Comma)
             lexer.nextToken();
         }
