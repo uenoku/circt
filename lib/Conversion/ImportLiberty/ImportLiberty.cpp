@@ -121,21 +121,22 @@ class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
                 ModuleOp module)
-      : lexer(sourceMgr, context), context(context), module(module),
-        builder(context) {}
+      : lexer(sourceMgr, context), module(module), builder(context) {}
 
   ParseResult parse();
 
 private:
   LibertyLexer lexer;
-  MLIRContext *context;
   ModuleOp module;
   OpBuilder builder;
+  // Map of template name -> vector of variable names (1-based index -> name)
+  llvm::StringMap<SmallVector<std::string>> templates;
 
   ParseResult parseGroup();
 
   // Specific group parsers
   ParseResult parseLibrary();
+  ParseResult parseTemplateDefinition();
   ParseResult parseCell();
   ParseResult parsePin(SmallVectorImpl<PinDef> &pins);
   ParseResult parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes);
@@ -381,6 +382,12 @@ ParseResult LibertyParser::parseLibrary() {
         token.spelling == "cell") {
       if (parseCell())
         return failure();
+    } else if (token.kind == LibertyTokenKind::Identifier &&
+               (token.spelling == "lu_table_template" ||
+                token.spelling == "power_lut_template" ||
+                token.spelling == "lu_table_template")) {
+      if (parseTemplateDefinition())
+        return failure();
     } else {
       // Skip other library attributes/groups
       (void)lexer.nextToken(); // identifier
@@ -421,6 +428,97 @@ ParseResult LibertyParser::parseLibrary() {
   }
 
   return consume(LibertyTokenKind::RBrace, "expected '}'");
+}
+
+// Parse a template like: lu_table_template (delay_template_6x6) { variable_1: total_output_net_capacitance; variable_2: input_net_transition; }
+ParseResult LibertyParser::parseTemplateDefinition() {
+  // We are at the identifier token for the template name (not consumed yet).
+  lexer.nextToken(); // consume template-kind identifier (e.g., 'lu_table_template')
+  // Expect (template_name)
+  if (consume(LibertyTokenKind::LParen, "expected '('") )
+    return failure();
+  auto templTok = lexer.nextToken();
+  StringRef templName = templTok.spelling;
+  if (templTok.kind == LibertyTokenKind::String)
+    templName = templName.drop_front().drop_back();
+  if (consume(LibertyTokenKind::RParen, "expected ')'") )
+    return failure();
+  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+    return failure();
+
+  // We'll collect variable_N names. Use a sparse vector sized by index.
+  SmallVector<std::string> varNames;
+
+  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
+         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+    auto tok = lexer.nextToken();
+    if (tok.kind != LibertyTokenKind::Identifier)
+      continue;
+    StringRef id = tok.spelling; // e.g., variable_1
+    if (id.starts_with("variable_")) {
+      if (consume(LibertyTokenKind::Colon, "expected ':'"))
+        return failure();
+      auto valTok = lexer.nextToken();
+      if (valTok.kind == LibertyTokenKind::Identifier ||
+          valTok.kind == LibertyTokenKind::String) {
+        StringRef varName = valTok.spelling;
+        if (valTok.kind == LibertyTokenKind::String)
+          varName = varName.drop_front().drop_back();
+        StringRef idxStr = id.substr(strlen("variable_"));
+        unsigned idx = 0;
+        if (!idxStr.getAsInteger(10, idx)) {
+          if (idx >= varNames.size())
+            varNames.resize(idx + 1);
+          varNames[idx] = varName.str();
+        }
+      }
+      // skip to semicolon
+      while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
+             lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
+        lexer.nextToken();
+      if (lexer.peekToken().kind == LibertyTokenKind::Semi)
+        lexer.nextToken();
+      continue;
+    }
+
+    // Skip other items inside template body (index_*, etc.)
+    if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+      lexer.nextToken();
+      while (lexer.peekToken().kind != LibertyTokenKind::RParen &&
+             lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+        lexer.nextToken();
+        if (lexer.peekToken().kind == LibertyTokenKind::Comma)
+          lexer.nextToken();
+      }
+      if (lexer.peekToken().kind == LibertyTokenKind::RParen)
+        lexer.nextToken();
+    }
+    if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
+      lexer.nextToken();
+      int bal = 1;
+      while (bal > 0 && lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+        auto t = lexer.nextToken();
+        if (t.kind == LibertyTokenKind::LBrace)
+          bal++;
+        if (t.kind == LibertyTokenKind::RBrace)
+          bal--;
+      }
+    }
+  }
+
+  if (!templName.empty())
+    templates[templName] = std::move(varNames);
+    // Also attach a module attribute for debugging/visibility so downstream
+    // inspection can see what templates were recorded.
+    SmallVector<Attribute> varAttrs;
+    for (auto &s : templates[templName])
+      varAttrs.push_back(builder.getStringAttr(s));
+    module->setAttr(("liberty.template." + templName).str(),
+                    builder.getArrayAttr(varAttrs));
+
+  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+    return failure();
+  return success();
 }
 
 ParseResult LibertyParser::parseCell() {
@@ -776,6 +874,55 @@ LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
 
           if (consume(LibertyTokenKind::RBrace, "expected '}'"))
             return failure();
+
+          // If args referenced a template we recorded earlier, inline it by
+          // remapping index_N -> variable_N names. Prefer extracting the
+          // template name from the nestedAttrs 'args' entry to avoid
+          // dependence on the outer 'args' vector.
+          StringRef templName;
+          bool haveTemplate = false;
+          for (auto &na : nestedAttrs) {
+            if (na.getName().getValue() == "args") {
+              if (auto arr = dyn_cast<ArrayAttr>(na.getValue())) {
+                if (!arr.getValue().empty()) {
+                  if (auto s = dyn_cast<StringAttr>(arr.getValue()[0])) {
+                    templName = s.getValue();
+                    haveTemplate = true;
+                  }
+                }
+              }
+              break;
+            }
+          }
+          if (haveTemplate) {
+            auto it = templates.find(templName);
+            if (it != templates.end()) {
+              SmallVector<NamedAttribute> remapped;
+              for (auto &na : nestedAttrs) {
+                StringRef n = na.getName().getValue();
+                if (n == "args")
+                  continue; // drop the args member
+                // remap index_N
+                if (n.starts_with("index_")) {
+                  StringRef idxStr = n.substr(strlen("index_"));
+                  unsigned idx = 0;
+                  if (!idxStr.getAsInteger(10, idx)) {
+                    // templates vector uses 0-based with idx == N
+                    if (idx < it->second.size() && !it->second[idx].empty()) {
+                      remapped.push_back(
+                          builder.getNamedAttr(it->second[idx], na.getValue()));
+                      continue;
+                    }
+                  }
+                }
+                // default: keep original
+                remapped.push_back(na);
+              }
+              attrs.push_back(builder.getNamedAttr(
+                  attrName, builder.getDictionaryAttr(remapped)));
+              continue;
+            }
+          }
 
           attrs.push_back(builder.getNamedAttr(
               attrName, builder.getDictionaryAttr(nestedAttrs)));
