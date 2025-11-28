@@ -25,6 +25,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
 
 #define DEBUG_TYPE "import-liberty"
@@ -63,6 +64,48 @@ enum class LibertyTokenKind {
   Error
 };
 
+StringRef stringifyTokenKind(LibertyTokenKind kind) {
+  switch (kind) {
+  case LibertyTokenKind::Identifier:
+    return "identifier";
+  case LibertyTokenKind::String:
+    return "string";
+  case LibertyTokenKind::Number:
+    return "number";
+  case LibertyTokenKind::LBrace:
+    return "'{'";
+  case LibertyTokenKind::RBrace:
+    return "'}'";
+  case LibertyTokenKind::LParen:
+    return "'('";
+  case LibertyTokenKind::RParen:
+    return "')'";
+  case LibertyTokenKind::Colon:
+    return "':'";
+  case LibertyTokenKind::Semi:
+    return "';'";
+  case LibertyTokenKind::Comma:
+    return "','";
+  case LibertyTokenKind::Plus:
+    return "'+'";
+  case LibertyTokenKind::Minus:
+    return "'-'";
+  case LibertyTokenKind::Star:
+    return "'*'";
+  case LibertyTokenKind::Slash:
+    return "'/'";
+  case LibertyTokenKind::Exclaim:
+    return "'!'";
+  case LibertyTokenKind::Apostrophe:
+    return "'''";
+  case LibertyTokenKind::EndOfFile:
+    return "end of file";
+  case LibertyTokenKind::Error:
+    return "error";
+  }
+  return "unknown";
+}
+
 struct LibertyToken {
   LibertyTokenKind kind;
   StringRef spelling;
@@ -70,6 +113,8 @@ struct LibertyToken {
 
   LibertyToken(LibertyTokenKind kind, StringRef spelling, SMLoc location)
       : kind(kind), spelling(spelling), location(location) {}
+  
+  bool is(LibertyTokenKind k) const { return kind == k; }
 };
 
 class LibertyLexer {
@@ -151,8 +196,16 @@ private:
   }
 
   ParseResult consume(LibertyTokenKind kind, const Twine &msg) {
-    if (lexer.nextToken().kind != kind)
-      return emitError(lexer.getCurrentLoc(), msg);
+    if (lexer.nextToken().is(kind))
+      return success();
+    return emitError(lexer.getCurrentLoc(), msg);
+  }
+
+  ParseResult expect(LibertyTokenKind kind) {
+    if (!lexer.peekToken().is(kind))
+      return emitError(lexer.getCurrentLoc(),
+                       " expected " + stringifyTokenKind(kind));
+
     return success();
   }
 };
@@ -430,18 +483,20 @@ ParseResult LibertyParser::parseLibrary() {
   return consume(LibertyTokenKind::RBrace, "expected '}'");
 }
 
-// Parse a template like: lu_table_template (delay_template_6x6) { variable_1: total_output_net_capacitance; variable_2: input_net_transition; }
+// Parse a template like: lu_table_template (delay_template_6x6) { variable_1:
+// total_output_net_capacitance; variable_2: input_net_transition; }
 ParseResult LibertyParser::parseTemplateDefinition() {
   // We are at the identifier token for the template name (not consumed yet).
-  lexer.nextToken(); // consume template-kind identifier (e.g., 'lu_table_template')
+  lexer.nextToken(); // consume template-kind identifier (e.g.,
+                     // 'lu_table_template')
   // Expect (template_name)
-  if (consume(LibertyTokenKind::LParen, "expected '('") )
+  if (consume(LibertyTokenKind::LParen, "expected '('"))
     return failure();
   auto templTok = lexer.nextToken();
   StringRef templName = templTok.spelling;
   if (templTok.kind == LibertyTokenKind::String)
     templName = templName.drop_front().drop_back();
-  if (consume(LibertyTokenKind::RParen, "expected ')'") )
+  if (consume(LibertyTokenKind::RParen, "expected ')'"))
     return failure();
   if (consume(LibertyTokenKind::LBrace, "expected '{'"))
     return failure();
@@ -508,13 +563,13 @@ ParseResult LibertyParser::parseTemplateDefinition() {
 
   if (!templName.empty())
     templates[templName] = std::move(varNames);
-    // Also attach a module attribute for debugging/visibility so downstream
-    // inspection can see what templates were recorded.
-    SmallVector<Attribute> varAttrs;
-    for (auto &s : templates[templName])
-      varAttrs.push_back(builder.getStringAttr(s));
-    module->setAttr(("liberty.template." + templName).str(),
-                    builder.getArrayAttr(varAttrs));
+  // Also attach a module attribute for debugging/visibility so downstream
+  // inspection can see what templates were recorded.
+  SmallVector<Attribute> varAttrs;
+  for (auto &s : templates[templName])
+    varAttrs.push_back(builder.getStringAttr(s));
+  module->setAttr(("liberty.template." + templName).str(),
+                  builder.getArrayAttr(varAttrs));
 
   if (consume(LibertyTokenKind::RBrace, "expected '}'"))
     return failure();
@@ -625,9 +680,9 @@ ParseResult LibertyParser::parseCell() {
         for (const auto &s : scope.second) {
           scopeAttrs.push_back(builder.getDictionaryAttr(s));
         }
-        pinAttrs.push_back(builder.getNamedAttr(
-            ("liberty." + scope.first()).str(),
-            builder.getArrayAttr(scopeAttrs)));
+        pinAttrs.push_back(
+            builder.getNamedAttr(("liberty." + scope.first()).str(),
+                                 builder.getArrayAttr(scopeAttrs)));
       }
 
       if (!pinAttrs.empty()) {
@@ -803,7 +858,8 @@ ParseResult LibertyParser::parsePin(SmallVectorImpl<PinDef> &pins) {
   return success();
 }
 
-ParseResult LibertyParser::parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes) {
+ParseResult LibertyParser::parseScope(
+    SmallVectorImpl<SmallVector<NamedAttribute>> &scopes) {
   if (consume(LibertyTokenKind::LParen, "expected '('"))
     return failure();
   // timing() usually has no args, but let's handle potential args or empty
