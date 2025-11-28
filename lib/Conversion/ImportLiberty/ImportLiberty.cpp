@@ -113,6 +113,8 @@ struct PinDef {
   bool isInput = false;
   bool isOutput = false;
   std::string function;
+  SmallVector<NamedAttribute> attrs;
+  llvm::StringMap<SmallVector<SmallVector<NamedAttribute>>> scopes;
 };
 
 class LibertyParser {
@@ -136,6 +138,8 @@ private:
   ParseResult parseLibrary();
   ParseResult parseCell();
   ParseResult parsePin(SmallVectorImpl<PinDef> &pins);
+  ParseResult parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes);
+  ParseResult parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs);
 
   // Expression parsing
   Value parseExpression(StringRef expr,
@@ -301,6 +305,12 @@ LibertyToken LibertyLexer::peekToken() {
 
 ParseResult LibertyParser::parse() {
   while (lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+    auto token = lexer.peekToken();
+    // Skip any stray tokens that aren't valid group starts
+    if (token.kind != LibertyTokenKind::Identifier) {
+      lexer.nextToken(); // consume and skip
+      continue;
+    }
     if (parseGroup())
       return failure();
   }
@@ -445,27 +455,9 @@ ParseResult LibertyParser::parseCell() {
       if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
         lexer.nextToken(); // :
         auto valueToken = lexer.peekToken();
-        if (valueToken.kind == LibertyTokenKind::Number) {
-          lexer.nextToken();
-          // Parse as integer or float
-          double value = 0.0;
-          if (valueToken.spelling.contains('.')) {
-            valueToken.spelling.getAsDouble(value);
-            cellAttrs.push_back(
-                builder.getNamedAttr(attrName, builder.getF64FloatAttr(value)));
-          } else {
-            int64_t intValue = 0;
-            valueToken.spelling.getAsInteger(10, intValue);
-            cellAttrs.push_back(builder.getNamedAttr(
-                attrName, builder.getI64IntegerAttr(intValue)));
-          }
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-          if (consume(LibertyTokenKind::Semi, "expected ';'"))
-            return failure();
-          continue;
-        } else if (valueToken.kind == LibertyTokenKind::String ||
-                   valueToken.kind == LibertyTokenKind::Identifier) {
+        if (valueToken.kind == LibertyTokenKind::Number ||
+            valueToken.kind == LibertyTokenKind::String ||
+            valueToken.kind == LibertyTokenKind::Identifier) {
           lexer.nextToken();
           StringRef strValue = valueToken.spelling;
           if (valueToken.kind == LibertyTokenKind::String)
@@ -505,11 +497,13 @@ ParseResult LibertyParser::parseCell() {
             balance--;
         }
       } else {
-        while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
-               lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
-          lexer.nextToken();
-        if (lexer.peekToken().kind == LibertyTokenKind::Semi)
-          lexer.nextToken();
+        if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
+          lexer.nextToken(); // :
+          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+            lexer.nextToken();
+        }
+        if (consume(LibertyTokenKind::Semi, "expected ';'"))
+          return failure();
       }
     }
   }
@@ -526,6 +520,21 @@ ParseResult LibertyParser::parseCell() {
       port.type = builder.getI1Type(); // Assume 1-bit
       port.dir = pin.isInput ? ModulePort::Direction::Input
                              : ModulePort::Direction::Output;
+      // Set pin attributes
+      SmallVector<NamedAttribute> pinAttrs = pin.attrs;
+      for (const auto &scope : pin.scopes) {
+        SmallVector<Attribute> scopeAttrs;
+        for (const auto &s : scope.second) {
+          scopeAttrs.push_back(builder.getDictionaryAttr(s));
+        }
+        pinAttrs.push_back(builder.getNamedAttr(
+            ("liberty." + scope.first()).str(),
+            builder.getArrayAttr(scopeAttrs)));
+      }
+
+      if (!pinAttrs.empty()) {
+        port.attrs = builder.getDictionaryAttr(pinAttrs);
+      }
       ports.push_back(port);
     }
   }
@@ -624,14 +633,37 @@ ParseResult LibertyParser::parsePin(SmallVectorImpl<PinDef> &pins) {
       }
       if (consume(LibertyTokenKind::Semi, "expected ';'"))
         return failure();
+    } else if (token.kind == LibertyTokenKind::Identifier &&
+               token.spelling == "timing") {
+      if (parseScope(pin.scopes["timing"]))
+        return failure();
     } else {
-      // Skip attribute value
+      // Capture other pin attributes
+      StringRef attrName = token.spelling;
+
+      // Check for simple attributes (name : value ;)
       if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
         lexer.nextToken(); // :
-        while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+        auto valueToken = lexer.peekToken();
+        if (valueToken.kind == LibertyTokenKind::Number ||
+            valueToken.kind == LibertyTokenKind::String ||
+            valueToken.kind == LibertyTokenKind::Identifier) {
           lexer.nextToken();
-      } else if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
-        // Skip complex attribute/group
+          StringRef strValue = valueToken.spelling;
+          if (valueToken.kind == LibertyTokenKind::String)
+            strValue = strValue.drop_front().drop_back();
+          pin.attrs.push_back(
+              builder.getNamedAttr(attrName, builder.getStringAttr(strValue)));
+          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+            lexer.nextToken();
+          if (consume(LibertyTokenKind::Semi, "expected ';'"))
+            return failure();
+          continue;
+        }
+      }
+
+      // Skip complex attributes/groups
+      if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
         lexer.nextToken(); // (
         while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
           lexer.nextToken();
@@ -652,6 +684,12 @@ ParseResult LibertyParser::parsePin(SmallVectorImpl<PinDef> &pins) {
           }
         }
       }
+
+      // Skip remaining tokens until semicolon
+      while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
+             lexer.peekToken().kind != LibertyTokenKind::RBrace &&
+             lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
+        lexer.nextToken();
       if (lexer.peekToken().kind == LibertyTokenKind::Semi)
         lexer.nextToken();
     }
@@ -664,6 +702,97 @@ ParseResult LibertyParser::parsePin(SmallVectorImpl<PinDef> &pins) {
     pins.push_back(pin);
   }
 
+  return success();
+}
+
+ParseResult LibertyParser::parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes) {
+  if (consume(LibertyTokenKind::LParen, "expected '('"))
+    return failure();
+  // timing() usually has no args, but let's handle potential args or empty
+  while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
+    lexer.nextToken(); // consume arg
+    if (lexer.peekToken().kind == LibertyTokenKind::Comma)
+      lexer.nextToken();
+  }
+  if (consume(LibertyTokenKind::RParen, "expected ')'"))
+    return failure();
+  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+    return failure();
+
+  SmallVector<NamedAttribute> scope;
+  if (parseGenericGroup(scope))
+    return failure();
+
+  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+    return failure();
+
+  scopes.push_back(scope);
+  return success();
+}
+
+ParseResult
+LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
+  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
+         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+    auto token = lexer.nextToken();
+    if (token.kind == LibertyTokenKind::Identifier) {
+      StringRef attrName = token.spelling;
+      if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
+        lexer.nextToken(); // :
+        auto val = lexer.nextToken();
+        StringRef valStr = val.spelling;
+        if (val.kind == LibertyTokenKind::String)
+          valStr = valStr.drop_front().drop_back();
+        attrs.push_back(
+            builder.getNamedAttr(attrName, builder.getStringAttr(valStr)));
+        if (consume(LibertyTokenKind::Semi, "expected ';'"))
+          return failure();
+      } else if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+        // group
+        lexer.nextToken(); // (
+        SmallVector<Attribute> args;
+        while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
+          auto arg = lexer.nextToken();
+          StringRef argStr = arg.spelling;
+          if (arg.kind == LibertyTokenKind::String)
+            argStr = argStr.drop_front().drop_back();
+          args.push_back(builder.getStringAttr(argStr));
+          if (lexer.peekToken().kind == LibertyTokenKind::Comma)
+            lexer.nextToken();
+        }
+        if (consume(LibertyTokenKind::RParen, "expected ')'"))
+          return failure();
+
+        // Parse body if present
+        if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
+          lexer.nextToken(); // {
+          SmallVector<NamedAttribute> nestedAttrs;
+          if (!args.empty())
+            nestedAttrs.push_back(
+                builder.getNamedAttr("args", builder.getArrayAttr(args)));
+
+          if (parseGenericGroup(nestedAttrs))
+            return failure();
+
+          if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+            return failure();
+
+          attrs.push_back(builder.getNamedAttr(
+              attrName, builder.getDictionaryAttr(nestedAttrs)));
+        } else {
+          // No body?
+          // If args is empty, it's just name(); which is weird but possible?
+          // If args is not empty, it's name(args);
+          // We can store it as name = [args]
+          attrs.push_back(
+              builder.getNamedAttr(attrName, builder.getArrayAttr(args)));
+          // Consume optional semicolon for attributes like index_1(...);
+          if (lexer.peekToken().kind == LibertyTokenKind::Semi)
+            lexer.nextToken();
+        }
+      }
+    }
+  }
   return success();
 }
 
@@ -742,17 +871,17 @@ Value LibertyParser::parseExpression(StringRef expr,
   auto next = [&]() { return tokens[pos++]; };
 
   std::function<Value()> parseExpr;
+  std::function<Value()> parseXorExpr;
   std::function<Value()> parseTerm;
-  std::function<Value()> parseFactor;
   std::function<Value()> parseAtom;
 
   parseExpr = [&]() -> Value {
-    Value lhs = parseTerm();
+    Value lhs = parseXorExpr();
     if (!lhs)
       return nullptr;
     while (peek().kind == ExprToken::OR) {
       next();
-      Value rhs = parseTerm();
+      Value rhs = parseXorExpr();
       if (!rhs)
         return nullptr;
       lhs = builder.create<OrOp>(builder.getUnknownLoc(), lhs, rhs);
@@ -760,30 +889,30 @@ Value LibertyParser::parseExpression(StringRef expr,
     return lhs;
   };
 
-  parseTerm = [&]() -> Value {
-    Value lhs = parseFactor();
-    if (!lhs)
-      return nullptr;
-    while (peek().kind == ExprToken::AND) {
-      next();
-      Value rhs = parseFactor();
-      if (!rhs)
-        return nullptr;
-      lhs = builder.create<AndOp>(builder.getUnknownLoc(), lhs, rhs);
-    }
-    return lhs;
-  };
-
-  parseFactor = [&]() -> Value {
-    Value lhs = parseAtom();
+  parseXorExpr = [&]() -> Value {
+    Value lhs = parseTerm();
     if (!lhs)
       return nullptr;
     while (peek().kind == ExprToken::XOR) {
       next();
-      Value rhs = parseAtom();
+      Value rhs = parseTerm();
       if (!rhs)
         return nullptr;
       lhs = builder.create<XorOp>(builder.getUnknownLoc(), lhs, rhs);
+    }
+    return lhs;
+  };
+
+  parseTerm = [&]() -> Value {
+    Value lhs = parseAtom();
+    if (!lhs)
+      return nullptr;
+    while (peek().kind == ExprToken::AND) {
+      next();
+      Value rhs = parseAtom();
+      if (!rhs)
+        return nullptr;
+      lhs = builder.create<AndOp>(builder.getUnknownLoc(), lhs, rhs);
     }
     return lhs;
   };
