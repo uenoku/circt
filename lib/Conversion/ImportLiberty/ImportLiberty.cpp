@@ -164,6 +164,178 @@ struct PinDef {
   llvm::StringMap<SmallVector<SmallVector<NamedAttribute>>> scopes;
 };
 
+// Helper class to parse boolean expressions from Liberty function attributes
+class ExpressionParser {
+public:
+  ExpressionParser(OpBuilder &builder, StringRef expr,
+                   const DenseMap<StringRef, Value> &values)
+      : builder(builder), values(values) {
+    tokenize(expr);
+  }
+
+  Value parse() { return parseOrExpr(); }
+
+private:
+  enum class TokenKind { ID, AND, OR, XOR, NOT, LPAREN, RPAREN, END };
+
+  struct Token {
+    TokenKind kind;
+    StringRef spelling;
+  };
+
+  OpBuilder &builder;
+  const DenseMap<StringRef, Value> &values;
+  SmallVector<Token> tokens;
+  size_t pos = 0;
+
+  void tokenize(StringRef expr) {
+    const char *ptr = expr.begin();
+    const char *end = expr.end();
+
+    while (ptr < end) {
+      // Skip whitespace
+      if (isspace(*ptr)) {
+        ++ptr;
+        continue;
+      }
+
+      // Identifier
+      if (isalnum(*ptr) || *ptr == '_') {
+        const char *start = ptr;
+        while (ptr < end && (isalnum(*ptr) || *ptr == '_'))
+          ++ptr;
+        tokens.push_back({TokenKind::ID, StringRef(start, ptr - start)});
+        continue;
+      }
+
+      // Operators and punctuation
+      switch (*ptr) {
+      case '*':
+      case '&':
+        tokens.push_back({TokenKind::AND, StringRef(ptr, 1)});
+        break;
+      case '+':
+      case '|':
+        tokens.push_back({TokenKind::OR, StringRef(ptr, 1)});
+        break;
+      case '^':
+        tokens.push_back({TokenKind::XOR, StringRef(ptr, 1)});
+        break;
+      case '!':
+      case '\'':
+        tokens.push_back({TokenKind::NOT, StringRef(ptr, 1)});
+        break;
+      case '(':
+        tokens.push_back({TokenKind::LPAREN, StringRef(ptr, 1)});
+        break;
+      case ')':
+        tokens.push_back({TokenKind::RPAREN, StringRef(ptr, 1)});
+        break;
+      }
+      ++ptr;
+    }
+
+    tokens.push_back({TokenKind::END, ""});
+  }
+
+  Token peek() const { return tokens[pos]; }
+  Token consume() { return tokens[pos++]; }
+
+  Value createNot(Value val) {
+    Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
+                                               builder.getI1Type(), 1);
+    return builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
+  }
+
+  // Parse: OrExpr -> XorExpr { ('+'|'|') XorExpr }
+  Value parseOrExpr() {
+    Value lhs = parseXorExpr();
+    if (!lhs)
+      return nullptr;
+    while (peek().kind == TokenKind::OR) {
+      consume();
+      Value rhs = parseXorExpr();
+      if (!rhs)
+        return nullptr;
+      lhs = builder.create<OrOp>(builder.getUnknownLoc(), lhs, rhs);
+    }
+    return lhs;
+  }
+
+  // Parse: XorExpr -> AndExpr { '^' AndExpr }
+  Value parseXorExpr() {
+    Value lhs = parseAndExpr();
+    if (!lhs)
+      return nullptr;
+    while (peek().kind == TokenKind::XOR) {
+      consume();
+      Value rhs = parseAndExpr();
+      if (!rhs)
+        return nullptr;
+      lhs = builder.create<XorOp>(builder.getUnknownLoc(), lhs, rhs);
+    }
+    return lhs;
+  }
+
+  // Parse: AndExpr -> UnaryExpr { ('*'|'&') UnaryExpr }
+  Value parseAndExpr() {
+    Value lhs = parseUnaryExpr();
+    if (!lhs)
+      return nullptr;
+    while (peek().kind == TokenKind::AND) {
+      consume();
+      Value rhs = parseUnaryExpr();
+      if (!rhs)
+        return nullptr;
+      lhs = builder.create<AndOp>(builder.getUnknownLoc(), lhs, rhs);
+    }
+    return lhs;
+  }
+
+  // Parse: UnaryExpr -> ('!'|'\'') UnaryExpr | '(' OrExpr ')' ['\''] | ID
+  // ['\'']
+  Value parseUnaryExpr() {
+    // Prefix NOT
+    if (peek().kind == TokenKind::NOT) {
+      consume();
+      Value val = parseUnaryExpr();
+      return val ? createNot(val) : nullptr;
+    }
+
+    // Parenthesized expression
+    if (peek().kind == TokenKind::LPAREN) {
+      consume();
+      Value val = parseOrExpr();
+      if (!val || peek().kind != TokenKind::RPAREN)
+        return nullptr;
+      consume();
+      // Postfix NOT
+      if (peek().kind == TokenKind::NOT) {
+        consume();
+        val = createNot(val);
+      }
+      return val;
+    }
+
+    // Identifier
+    if (peek().kind == TokenKind::ID) {
+      StringRef name = consume().spelling;
+      auto it = values.find(name);
+      if (it == values.end())
+        return nullptr; // Variable not found
+      Value val = it->second;
+      // Postfix NOT
+      if (peek().kind == TokenKind::NOT) {
+        consume();
+        val = createNot(val);
+      }
+      return val;
+    }
+
+    return nullptr;
+  }
+};
+
 class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
@@ -896,19 +1068,17 @@ ParseResult LibertyParser::parseScope(
     if (lexer.peekToken().kind == LibertyTokenKind::Comma)
       lexer.nextToken();
   }
-  if (consume(LibertyTokenKind::RParen, "expected ')'"))
-    return failure();
-  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
   SmallVector<NamedAttribute> scope;
   if (parseGenericGroup(scope))
     return failure();
 
-  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+  if (consume(LibertyTokenKind::RBrace))
     return failure();
 
-  scopes.push_back(scope);
+  scopes.push_back(std::move(scope));
   return success();
 }
 
@@ -1031,18 +1201,18 @@ LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
 // - A list: "val1, val2, val3" (comma-separated values)
 ParseResult LibertyParser::parseAttribute(Attribute &result) {
   auto token = lexer.peekToken();
-  
+
   // Check for quoted string with comma-separated values (array)
   if (token.is(LibertyTokenKind::String)) {
     lexer.nextToken();
     StringRef str = token.spelling.drop_front().drop_back();
-    
+
     // Check if it contains commas (array of values)
     if (str.contains(',')) {
       SmallVector<Attribute> elements;
       SmallVector<StringRef> parts;
       str.split(parts, ',');
-      
+
       for (StringRef part : parts) {
         part = part.trim();
         // Try to parse as float
@@ -1057,7 +1227,7 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
       result = builder.getArrayAttr(elements);
       return success();
     }
-    
+
     // Single string value - try to parse as number first
     double val;
     if (!str.getAsDouble(val)) {
@@ -1067,7 +1237,7 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
     result = builder.getStringAttr(str);
     return success();
   }
-  
+
   // Number token
   if (token.is(LibertyTokenKind::Number)) {
     lexer.nextToken();
@@ -1081,188 +1251,23 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
     result = builder.getStringAttr(numStr);
     return success();
   }
-  
+
   // Identifier token
   if (token.is(LibertyTokenKind::Identifier)) {
     lexer.nextToken();
     result = builder.getStringAttr(token.spelling);
     return success();
   }
-  
+
   return emitError(token.location, "expected attribute value");
 }
 
-// Simple expression parser
+// Parse boolean expressions from Liberty function attributes
 // Supports: *, +, ^, !, (), and identifiers
 Value LibertyParser::parseExpression(StringRef expr,
                                      const DenseMap<StringRef, Value> &values) {
-  // This is a very simple recursive descent parser for boolean expressions
-  // Grammar:
-  // Expr -> Term { '+' Term }   (OR)
-  // Term -> Factor { '*' Factor } (AND)
-  // Factor -> Atom { '^' Atom } (XOR)
-  // Atom -> '!' Atom | '(' Expr ')' | Identifier
-
-  // Tokenizer for expression
-  struct ExprToken {
-    enum Kind { ID, AND, OR, XOR, NOT, LPAREN, RPAREN, END, ERR };
-    Kind kind;
-    StringRef spelling;
-  };
-
-  SmallVector<ExprToken> tokens;
-  const char *ptr = expr.begin();
-  const char *end = expr.end();
-
-  while (ptr < end) {
-    if (isspace(*ptr)) {
-      ++ptr;
-      continue;
-    }
-    if (isalnum(*ptr) || *ptr == '_') {
-      const char *start = ptr;
-      while (ptr < end && (isalnum(*ptr) || *ptr == '_'))
-        ++ptr;
-      tokens.push_back({ExprToken::ID, StringRef(start, ptr - start)});
-    } else {
-      switch (*ptr) {
-      case '*':
-        tokens.push_back({ExprToken::AND, "*"});
-        break;
-      case '&':
-        tokens.push_back({ExprToken::AND, "&"});
-        break; // Support & as AND too
-      case '+':
-        tokens.push_back({ExprToken::OR, "+"});
-        break;
-      case '|':
-        tokens.push_back({ExprToken::OR, "|"});
-        break; // Support | as OR too
-      case '^':
-        tokens.push_back({ExprToken::XOR, "^"});
-        break;
-      case '!':
-        tokens.push_back({ExprToken::NOT, "!"});
-        break;
-      case '\'':
-        tokens.push_back({ExprToken::NOT, "'"});
-        break; // Postfix NOT not fully supported in this simple parser,
-               // treating as prefix error or ignore?
-      case '(':
-        tokens.push_back({ExprToken::LPAREN, "("});
-        break;
-      case ')':
-        tokens.push_back({ExprToken::RPAREN, ")"});
-        break;
-      default:
-        break; // Ignore unknown chars
-      }
-      ++ptr;
-    }
-  }
-  tokens.push_back({ExprToken::END, ""});
-
-  int pos = 0;
-  auto peek = [&]() { return tokens[pos]; };
-  auto next = [&]() { return tokens[pos++]; };
-
-  std::function<Value()> parseExpr;
-  std::function<Value()> parseXorExpr;
-  std::function<Value()> parseTerm;
-  std::function<Value()> parseAtom;
-
-  parseExpr = [&]() -> Value {
-    Value lhs = parseXorExpr();
-    if (!lhs)
-      return nullptr;
-    while (peek().kind == ExprToken::OR) {
-      next();
-      Value rhs = parseXorExpr();
-      if (!rhs)
-        return nullptr;
-      lhs = builder.create<OrOp>(builder.getUnknownLoc(), lhs, rhs);
-    }
-    return lhs;
-  };
-
-  parseXorExpr = [&]() -> Value {
-    Value lhs = parseTerm();
-    if (!lhs)
-      return nullptr;
-    while (peek().kind == ExprToken::XOR) {
-      next();
-      Value rhs = parseTerm();
-      if (!rhs)
-        return nullptr;
-      lhs = builder.create<XorOp>(builder.getUnknownLoc(), lhs, rhs);
-    }
-    return lhs;
-  };
-
-  parseTerm = [&]() -> Value {
-    Value lhs = parseAtom();
-    if (!lhs)
-      return nullptr;
-    while (peek().kind == ExprToken::AND) {
-      next();
-      Value rhs = parseAtom();
-      if (!rhs)
-        return nullptr;
-      lhs = builder.create<AndOp>(builder.getUnknownLoc(), lhs, rhs);
-    }
-    return lhs;
-  };
-
-  parseAtom = [&]() -> Value {
-    // Prefix NOT
-    if (peek().kind == ExprToken::NOT) {
-      next();
-      Value val = parseAtom();
-      if (!val)
-        return nullptr;
-      // create constant -1 (all ones) for XOR
-      Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
-                                                 builder.getI1Type(), 1);
-      return builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
-    }
-
-    // Parenthesized expression
-    if (peek().kind == ExprToken::LPAREN) {
-      next();
-      Value val = parseExpr();
-      if (peek().kind != ExprToken::RPAREN)
-        return nullptr;
-      next();
-      // Check for postfix NOT
-      if (peek().kind == ExprToken::NOT) {
-        next();
-        Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
-                                                   builder.getI1Type(), 1);
-        val = builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
-      }
-      return val;
-    }
-
-    // Identifier
-    if (peek().kind == ExprToken::ID) {
-      StringRef name = next().spelling;
-      auto it = values.find(name);
-      if (it == values.end())
-        return nullptr; // Variable not found
-      Value val = it->second;
-      // Check for postfix NOT
-      if (peek().kind == ExprToken::NOT) {
-        next();
-        Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
-                                                   builder.getI1Type(), 1);
-        val = builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
-      }
-      return val;
-    }
-    return nullptr;
-  };
-
-  return parseExpr();
+  ExpressionParser parser(builder, expr, values);
+  return parser.parse();
 }
 
 namespace circt {
