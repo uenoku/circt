@@ -779,9 +779,17 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
     }
 
     SmallVector<NamedAttribute> subAttrs;
-    if (!isTemplate && !sub->args.empty())
+    if (isTemplate) {
+      subAttrs.push_back(builder.getNamedAttr("template_name", sub->args[0]));
+      SmallVector<Attribute> schema;
+      for (const auto &var : templateVars)
+        schema.push_back(builder.getStringAttr(var));
+      subAttrs.push_back(builder.getNamedAttr("template_schema",
+                                              builder.getArrayAttr(schema)));
+    } else if (!sub->args.empty()) {
       subAttrs.push_back(
           builder.getNamedAttr("args", builder.getArrayAttr(sub->args)));
+    }
 
     for (const auto &attr : sub->attrs) {
       StringRef attrName = attr.first;
@@ -795,10 +803,8 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
       subAttrs.push_back(builder.getNamedAttr(attrName, attr.second));
     }
 
-    llvm::StringMap<SmallVector<Attribute>> childSubGroups;
     for (const auto &child : sub->subGroups) {
       StringRef childName = child->name;
-      bool shouldUnwrap = childName.starts_with("index_") || childName == "values";
 
       if (childName.starts_with("index_")) {
         unsigned index;
@@ -808,20 +814,29 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
         }
       }
 
+      bool shouldUnwrap = false;
+      if (childName == "values" || childName.starts_with("index_")) {
+        shouldUnwrap = true;
+      } else {
+        for (const auto &var : templateVars) {
+          if (childName == var) {
+            shouldUnwrap = true;
+            break;
+          }
+        }
+      }
+
+      Attribute childAttr;
       if (shouldUnwrap && child->attrs.empty() && child->subGroups.empty() &&
           !child->args.empty()) {
         if (child->args.size() == 1)
-          childSubGroups[childName].push_back(child->args[0]);
+          childAttr = child->args[0];
         else
-          childSubGroups[childName].push_back(
-              builder.getArrayAttr(child->args));
+          childAttr = builder.getArrayAttr(child->args);
       } else {
-        childSubGroups[childName].push_back(convertGroupToAttr(*child));
+        childAttr = convertGroupToAttr(*child);
       }
-    }
-    for (auto &it : childSubGroups) {
-      subAttrs.push_back(builder.getNamedAttr(
-          it.getKey(), builder.getArrayAttr(it.getValue())));
+      subAttrs.push_back(builder.getNamedAttr(childName, childAttr));
     }
 
     subGroups[sub->name].push_back(builder.getDictionaryAttr(subAttrs));
