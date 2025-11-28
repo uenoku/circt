@@ -980,7 +980,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
     }
   }
 
-  auto* block = moduleOp.getBodyBlock();
+  auto *block = moduleOp.getBodyBlock();
   block->getTerminator()->setOperands(outputs);
   return success();
 }
