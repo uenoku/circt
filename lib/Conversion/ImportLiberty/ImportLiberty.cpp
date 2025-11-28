@@ -189,6 +189,9 @@ private:
   ParseResult parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes);
   ParseResult parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs);
 
+  // Attribute parsing
+  ParseResult parseAttribute(Attribute &result);
+
   // Expression parsing
   Value parseExpression(StringRef expr,
                         const DenseMap<StringRef, Value> &values);
@@ -918,12 +921,10 @@ LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
       StringRef attrName = token.spelling;
       if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
         lexer.nextToken(); // :
-        auto val = lexer.nextToken();
-        StringRef valStr = val.spelling;
-        if (val.kind == LibertyTokenKind::String)
-          valStr = valStr.drop_front().drop_back();
-        attrs.push_back(
-            builder.getNamedAttr(attrName, builder.getStringAttr(valStr)));
+        Attribute attrValue;
+        if (parseAttribute(attrValue))
+          return failure();
+        attrs.push_back(builder.getNamedAttr(attrName, attrValue));
         if (consume(LibertyTokenKind::Semi, "expected ';'"))
           return failure();
       } else if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
@@ -1022,6 +1023,74 @@ LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
     }
   }
   return success();
+}
+
+// Parse an attribute value, which can be:
+// - A string: "value"
+// - A number: 1.23
+// - An identifier: value
+// - A list: "val1, val2, val3" (comma-separated values)
+ParseResult LibertyParser::parseAttribute(Attribute &result) {
+  auto token = lexer.peekToken();
+  
+  // Check for quoted string with comma-separated values (array)
+  if (token.is(LibertyTokenKind::String)) {
+    lexer.nextToken();
+    StringRef str = token.spelling.drop_front().drop_back();
+    
+    // Check if it contains commas (array of values)
+    if (str.contains(',')) {
+      SmallVector<Attribute> elements;
+      SmallVector<StringRef> parts;
+      str.split(parts, ',');
+      
+      for (StringRef part : parts) {
+        part = part.trim();
+        // Try to parse as float
+        double val;
+        if (!part.getAsDouble(val)) {
+          elements.push_back(builder.getF64FloatAttr(val));
+        } else {
+          // Keep as string if not a valid number
+          elements.push_back(builder.getStringAttr(part));
+        }
+      }
+      result = builder.getArrayAttr(elements);
+      return success();
+    }
+    
+    // Single string value - try to parse as number first
+    double val;
+    if (!str.getAsDouble(val)) {
+      result = builder.getF64FloatAttr(val);
+      return success();
+    }
+    result = builder.getStringAttr(str);
+    return success();
+  }
+  
+  // Number token
+  if (token.is(LibertyTokenKind::Number)) {
+    lexer.nextToken();
+    StringRef numStr = token.spelling;
+    double val;
+    if (!numStr.getAsDouble(val)) {
+      result = builder.getF64FloatAttr(val);
+      return success();
+    }
+    // Fallback to string if parsing fails
+    result = builder.getStringAttr(numStr);
+    return success();
+  }
+  
+  // Identifier token
+  if (token.is(LibertyTokenKind::Identifier)) {
+    lexer.nextToken();
+    result = builder.getStringAttr(token.spelling);
+    return success();
+  }
+  
+  return emitError(token.location, "expected attribute value");
 }
 
 // Simple expression parser
