@@ -428,6 +428,7 @@ ParseResult LibertyParser::parseCell() {
     return failure();
 
   SmallVector<PinDef> pins;
+  SmallVector<NamedAttribute> cellAttrs;
 
   while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
          lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
@@ -436,8 +437,50 @@ ParseResult LibertyParser::parseCell() {
       if (parsePin(pins))
         return failure();
     } else {
-      // Skip other cell attributes
-      (void)lexer.nextToken(); // identifier
+      // Capture cell attributes like area
+      auto attrToken = lexer.nextToken(); // identifier
+      StringRef attrName = attrToken.spelling;
+
+      // Check if it's a simple attribute (name : value ;)
+      if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
+        lexer.nextToken(); // :
+        auto valueToken = lexer.peekToken();
+        if (valueToken.kind == LibertyTokenKind::Number) {
+          lexer.nextToken();
+          // Parse as integer or float
+          double value = 0.0;
+          if (valueToken.spelling.contains('.')) {
+            valueToken.spelling.getAsDouble(value);
+            cellAttrs.push_back(
+                builder.getNamedAttr(attrName, builder.getF64FloatAttr(value)));
+          } else {
+            int64_t intValue = 0;
+            valueToken.spelling.getAsInteger(10, intValue);
+            cellAttrs.push_back(builder.getNamedAttr(
+                attrName, builder.getI64IntegerAttr(intValue)));
+          }
+          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+            lexer.nextToken();
+          if (consume(LibertyTokenKind::Semi, "expected ';'"))
+            return failure();
+          continue;
+        } else if (valueToken.kind == LibertyTokenKind::String ||
+                   valueToken.kind == LibertyTokenKind::Identifier) {
+          lexer.nextToken();
+          StringRef strValue = valueToken.spelling;
+          if (valueToken.kind == LibertyTokenKind::String)
+            strValue = strValue.drop_front().drop_back();
+          cellAttrs.push_back(
+              builder.getNamedAttr(attrName, builder.getStringAttr(strValue)));
+          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+            lexer.nextToken();
+          if (consume(LibertyTokenKind::Semi, "expected ';'"))
+            return failure();
+          continue;
+        }
+      }
+
+      // Skip complex attributes/groups
 
       if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
         lexer.nextToken(); // (
@@ -462,13 +505,11 @@ ParseResult LibertyParser::parseCell() {
             balance--;
         }
       } else {
-        if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-          lexer.nextToken(); // :
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-        }
-        if (consume(LibertyTokenKind::Semi, "expected ';'"))
-          return failure();
+        while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
+               lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
+          lexer.nextToken();
+        if (lexer.peekToken().kind == LibertyTokenKind::Semi)
+          lexer.nextToken();
       }
     }
   }
@@ -489,12 +530,12 @@ ParseResult LibertyParser::parseCell() {
     }
   }
 
-  // Create HWModule
+  // Create HWModule with cell attributes
   builder.setInsertionPointToStart(module.getBody());
   auto hwMod = HWModuleOp::create(
       builder, builder.getUnknownLoc(), builder.getStringAttr(cellName), ports,
-      ArrayAttr{},                             // parameters
-      ArrayRef<NamedAttribute>{}, StringAttr{} // comment
+      ArrayAttr{},            // parameters
+      cellAttrs, StringAttr{} // cell attributes as module attributes
   );
 
   // HWModuleOp creates a block with ports.
@@ -748,6 +789,7 @@ Value LibertyParser::parseExpression(StringRef expr,
   };
 
   parseAtom = [&]() -> Value {
+    // Prefix NOT
     if (peek().kind == ExprToken::NOT) {
       next();
       Value val = parseAtom();
@@ -758,20 +800,39 @@ Value LibertyParser::parseExpression(StringRef expr,
                                                  builder.getI1Type(), 1);
       return builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
     }
+
+    // Parenthesized expression
     if (peek().kind == ExprToken::LPAREN) {
       next();
       Value val = parseExpr();
       if (peek().kind != ExprToken::RPAREN)
         return nullptr;
       next();
+      // Check for postfix NOT
+      if (peek().kind == ExprToken::NOT) {
+        next();
+        Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
+                                                   builder.getI1Type(), 1);
+        val = builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
+      }
       return val;
     }
+
+    // Identifier
     if (peek().kind == ExprToken::ID) {
       StringRef name = next().spelling;
       auto it = values.find(name);
-      if (it != values.end())
-        return it->second;
-      return nullptr; // Variable not found
+      if (it == values.end())
+        return nullptr; // Variable not found
+      Value val = it->second;
+      // Check for postfix NOT
+      if (peek().kind == ExprToken::NOT) {
+        next();
+        Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
+                                                   builder.getI1Type(), 1);
+        val = builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
+      }
+      return val;
     }
     return nullptr;
   };
