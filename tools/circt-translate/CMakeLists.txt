@@ -21,6 +21,9 @@ target_link_libraries(circt-translate
   ${translation_libs}
   MLIRExportSMTLIB
   MLIRIR
+  CIRCTImportAIGER
+  CIRCTImportLiberty
+  CIRCTImportVerilog
   MLIRSupport
   MLIRTranslateLib
 )
