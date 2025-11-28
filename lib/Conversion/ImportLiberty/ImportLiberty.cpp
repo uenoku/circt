@@ -883,7 +883,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
 
       llvm::StringMap<SmallVector<Attribute>> subGroups;
       for (const auto &child : sub->subGroups) {
-        if (child->name == "timing")
+        if (child->name == "timing" || child->name == "internal_power")
           subGroups[child->name].push_back(lowerTimingGroup(*child));
         else
           subGroups[child->name].push_back(convertGroupToAttr(*child));
