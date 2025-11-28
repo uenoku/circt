@@ -765,21 +765,23 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
 
   llvm::StringMap<SmallVector<Attribute>> subGroups;
   for (const auto &sub : group.subGroups) {
-    SmallVector<NamedAttribute> subAttrs;
-    if (!sub->args.empty())
-      subAttrs.push_back(
-          builder.getNamedAttr("args", builder.getArrayAttr(sub->args)));
-
     // Template resolution
     SmallVector<std::string> templateVars;
+    bool isTemplate = false;
     if (!sub->args.empty()) {
       if (auto templateName = dyn_cast<StringAttr>(sub->args[0])) {
         auto it = templates.find(templateName.getValue());
         if (it != templates.end()) {
           templateVars = it->second;
+          isTemplate = true;
         }
       }
     }
+
+    SmallVector<NamedAttribute> subAttrs;
+    if (!isTemplate && !sub->args.empty())
+      subAttrs.push_back(
+          builder.getNamedAttr("args", builder.getArrayAttr(sub->args)));
 
     for (const auto &attr : sub->attrs) {
       StringRef attrName = attr.first;
@@ -796,6 +798,8 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
     llvm::StringMap<SmallVector<Attribute>> childSubGroups;
     for (const auto &child : sub->subGroups) {
       StringRef childName = child->name;
+      bool shouldUnwrap = childName.starts_with("index_") || childName == "values";
+
       if (childName.starts_with("index_")) {
         unsigned index;
         if (!childName.drop_front(6).getAsInteger(10, index) && index > 0 &&
@@ -803,7 +807,17 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
           childName = templateVars[index - 1];
         }
       }
-      childSubGroups[childName].push_back(convertGroupToAttr(*child));
+
+      if (shouldUnwrap && child->attrs.empty() && child->subGroups.empty() &&
+          !child->args.empty()) {
+        if (child->args.size() == 1)
+          childSubGroups[childName].push_back(child->args[0]);
+        else
+          childSubGroups[childName].push_back(
+              builder.getArrayAttr(child->args));
+      } else {
+        childSubGroups[childName].push_back(convertGroupToAttr(*child));
+      }
     }
     for (auto &it : childSubGroups) {
       subAttrs.push_back(builder.getNamedAttr(
