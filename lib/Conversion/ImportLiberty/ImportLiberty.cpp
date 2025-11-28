@@ -113,7 +113,7 @@ struct LibertyToken {
 
   LibertyToken(LibertyTokenKind kind, StringRef spelling, SMLoc location)
       : kind(kind), spelling(spelling), location(location) {}
-  
+
   bool is(LibertyTokenKind k) const { return kind == k; }
 };
 
@@ -199,6 +199,13 @@ private:
     if (lexer.nextToken().is(kind))
       return success();
     return emitError(lexer.getCurrentLoc(), msg);
+  }
+
+  ParseResult consume(LibertyTokenKind kind) {
+    if (lexer.nextToken().is(kind))
+      return success();
+    return emitError(lexer.getCurrentLoc(),
+                     " expected " + stringifyTokenKind(kind));
   }
 
   ParseResult expect(LibertyTokenKind kind) {
@@ -388,7 +395,7 @@ ParseResult LibertyParser::parseGroup() {
       if (lexer.peekToken().kind == LibertyTokenKind::Comma)
         lexer.nextToken();
     }
-    if (consume(LibertyTokenKind::RParen, "expected ')'"))
+    if (consume(LibertyTokenKind::RParen))
       return failure();
   }
 
@@ -416,16 +423,18 @@ ParseResult LibertyParser::parseGroup() {
       lexer.nextToken();
   }
 
-  return consume(LibertyTokenKind::Semi, "expected ';'");
+  return consume(LibertyTokenKind::Semi);
 }
 
 ParseResult LibertyParser::parseLibrary() {
-  if (consume(LibertyTokenKind::LParen, "expected '(' after library"))
+  if (consume(LibertyTokenKind::LParen))
     return failure();
-  (void)lexer.nextToken(); // Library name
-  if (consume(LibertyTokenKind::RParen, "expected ')'"))
-    return failure();
-  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+  auto libName = lexer.nextToken(); // Library name
+  if (libName.kind != LibertyTokenKind::Identifier)
+    return emitError(libName.location, "expected library name");
+  StringRef libNameStr = libName.spelling;
+  module->setAttr("liberty.name", builder.getStringAttr(libNameStr));
+  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
   while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
