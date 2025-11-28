@@ -14,6 +14,7 @@
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/SynthDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -153,15 +154,6 @@ private:
   LibertyToken lexString();
   LibertyToken lexNumber();
   LibertyToken makeToken(LibertyTokenKind kind, const char *start);
-};
-
-struct PinDef {
-  StringRef name;
-  bool isInput = false;
-  bool isOutput = false;
-  std::string function;
-  SmallVector<NamedAttribute> attrs;
-  llvm::StringMap<SmallVector<SmallVector<NamedAttribute>>> scopes;
 };
 
 // Helper class to parse boolean expressions from Liberty function attributes
@@ -336,11 +328,27 @@ private:
   }
 };
 
+struct LibertyGroup {
+  StringRef name;
+  SmallVector<Attribute> args;
+  SmallVector<std::pair<StringRef, Attribute>> attrs;
+  SmallVector<std::unique_ptr<LibertyGroup>> subGroups;
+
+  // Helper to find a subgroup by name
+  const LibertyGroup *findGroup(StringRef name) const {
+    for (const auto &g : subGroups)
+      if (g->name == name)
+        return g.get();
+    return nullptr;
+  }
+};
+
 class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
                 ModuleOp module)
-      : lexer(sourceMgr, context), module(module), builder(context) {}
+      : lexer(sourceMgr, context), module(module),
+        builder(module.getBodyRegion()) {}
 
   ParseResult parse();
 
@@ -355,11 +363,15 @@ private:
 
   // Specific group parsers
   ParseResult parseLibrary();
-  ParseResult parseTemplateDefinition();
-  ParseResult parseCell();
-  ParseResult parsePin(SmallVectorImpl<PinDef> &pins);
-  ParseResult parseScope(SmallVectorImpl<SmallVector<NamedAttribute>> &scopes);
-  ParseResult parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs);
+  ParseResult parseGroupBody(LibertyGroup &group);
+  ParseResult parseStatement(LibertyGroup &parent);
+
+  // Lowering methods
+  ParseResult lowerCell(const LibertyGroup &group);
+  ParseResult lowerTemplate(const LibertyGroup &group);
+  Attribute lowerTimingGroup(const LibertyGroup &group);
+
+  Attribute convertGroupToAttr(const LibertyGroup &group);
 
   // Attribute parsing
   ParseResult parseAttribute(Attribute &result);
@@ -439,8 +451,6 @@ private:
     return str;
   }
 };
-
-} // namespace
 
 //===----------------------------------------------------------------------===//
 // LibertyLexer Implementation
@@ -644,492 +654,367 @@ ParseResult LibertyParser::parseLibrary() {
   if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
+  SmallVector<NamedAttribute> libraryAttrs;
+
   while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
          lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
     auto token = lexer.peekToken();
-    if (token.kind == LibertyTokenKind::Identifier &&
-        token.spelling == "cell") {
-      if (parseCell())
-        return failure();
-    } else if (token.kind == LibertyTokenKind::Identifier &&
-               (token.spelling == "lu_table_template" ||
-                token.spelling == "power_lut_template")) {
-      if (parseTemplateDefinition())
-        return failure();
-    } else {
-      // Skip other library attributes/groups
-      auto groupName = lexer.nextToken(); // identifier
-      if (groupName.kind != LibertyTokenKind::Identifier)
-        return emitError(groupName.location, "expected attribute name");
-
-      // Handle arguments like group(arg)
-      if (lexer.peekToken().is(LibertyTokenKind::LParen)) {
-        if (skipArguments())
+    if (token.kind == LibertyTokenKind::Identifier) {
+      if (token.spelling == "cell") {
+        lexer.nextToken(); // consume 'cell'
+        LibertyGroup cellGroup;
+        cellGroup.name = "cell";
+        if (parseGroupBody(cellGroup))
           return failure();
+        if (lowerCell(cellGroup))
+          return failure();
+        continue;
       }
-
-      if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
-        skipBlock();
-      } else if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-        lexer.nextToken(); // :
-        while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-          lexer.nextToken();
-        if (expect(LibertyTokenKind::Semi))
+      if (token.spelling == "lu_table_template" ||
+          token.spelling == "power_lut_template") {
+        StringRef name = token.spelling;
+        lexer.nextToken(); // consume template kind
+        LibertyGroup templGroup;
+        templGroup.name = name;
+        if (parseGroupBody(templGroup))
           return failure();
-        lexer.nextToken(); // ;
-      } else if (lexer.peekToken().kind == LibertyTokenKind::Semi) {
-        lexer.nextToken(); // ;
+        if (lowerTemplate(templGroup))
+          return failure();
+        continue;
       }
     }
+
+    // Generic statement (attribute or other group)
+    LibertyGroup dummyParent;
+    if (parseStatement(dummyParent))
+      return failure();
+
+    // Add attributes to module
+    for (auto &attr : dummyParent.attrs) {
+      libraryAttrs.push_back(builder.getNamedAttr(attr.first, attr.second));
+    }
+    // Add subgroups to module? Usually library level groups are ignored or
+    // handled specifically.
+    // For now, we can ignore other groups or add them as attributes if needed.
   }
+
+  if (!libraryAttrs.empty())
+    module->setAttr("synth.liberty.library",
+                    builder.getDictionaryAttr(libraryAttrs));
 
   return consume(LibertyTokenKind::RBrace, "expected '}'");
 }
 
 // Parse a template like: lu_table_template (delay_template_6x6) { variable_1:
 // total_output_net_capacitance; variable_2: input_net_transition; }
-ParseResult LibertyParser::parseTemplateDefinition() {
-  // We are at the identifier token for the template name (not consumed yet).
-  lexer.nextToken(); // consume template-kind identifier (e.g.,
-                     // 'lu_table_template')
-  // Expect (template_name)
-  if (consume(LibertyTokenKind::LParen))
-    return failure();
-  auto templTok = lexer.nextToken();
-  StringRef templName = getTokenSpelling(templTok);
-  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
-    return failure();
+Attribute LibertyParser::convertGroupToAttr(const LibertyGroup &group) {
+  SmallVector<NamedAttribute> attrs;
+  if (!group.args.empty())
+    attrs.push_back(
+        builder.getNamedAttr("args", builder.getArrayAttr(group.args)));
 
-  // We'll collect variable_N names. Use a sparse vector sized by index.
-  SmallVector<std::string> varNames;
+  for (const auto &attr : group.attrs)
+    attrs.push_back(builder.getNamedAttr(attr.first, attr.second));
 
-  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
-         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
-    auto tok = lexer.nextToken();
-    if (tok.kind != LibertyTokenKind::Identifier)
-      continue;
-    StringRef id = tok.spelling; // e.g., variable_1
-    if (id.starts_with("variable_")) {
-      if (consume(LibertyTokenKind::Colon))
-        return failure();
-      auto valTok = lexer.nextToken();
-      if (valTok.kind == LibertyTokenKind::Identifier ||
-          valTok.kind == LibertyTokenKind::String) {
-        StringRef varName = getTokenSpelling(valTok);
-        StringRef idxStr = id.substr(strlen("variable_"));
-        unsigned idx = 0;
-        if (!idxStr.getAsInteger(10, idx)) {
-          if (idx >= varNames.size())
-            varNames.resize(idx + 1);
-          varNames[idx] = varName.str();
-        }
-      }
-      // skip to semicolon
-      while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
-             lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
-        lexer.nextToken();
-      if (lexer.peekToken().kind == LibertyTokenKind::Semi)
-        lexer.nextToken();
-      continue;
-    }
-
-    // Skip other items inside template body (index_*, etc.)
-    if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
-      if (skipArguments())
-        return failure();
-    }
-    if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
-      skipBlock();
-    }
+  llvm::StringMap<SmallVector<Attribute>> subGroups;
+  for (const auto &sub : group.subGroups) {
+    subGroups[sub->name].push_back(convertGroupToAttr(*sub));
   }
 
-  if (!templName.empty())
-    templates[templName] = std::move(varNames);
-  // Also attach a module attribute for debugging/visibility so downstream
-  // inspection can see what templates were recorded.
-  SmallVector<Attribute> varAttrs;
-  for (auto &s : templates[templName])
-    varAttrs.push_back(builder.getStringAttr(s));
-  module->setAttr(("liberty.template." + templName).str(),
-                  builder.getArrayAttr(varAttrs));
+  for (auto &it : subGroups) {
+    attrs.push_back(
+        builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
+  }
 
-  if (consume(LibertyTokenKind::RBrace))
-    return failure();
+  return builder.getDictionaryAttr(attrs);
+}
+
+ParseResult LibertyParser::lowerTemplate(const LibertyGroup &group) {
+  if (group.args.empty())
+    return success();
+
+  StringRef templateName;
+  if (auto strAttr = dyn_cast<StringAttr>(group.args[0]))
+    templateName = strAttr.getValue();
+  else
+    return success();
+
+  // Simple implementation: extract variable names
+  SmallVector<std::string> vars;
+  for (const auto &attr : group.attrs) {
+    if (attr.first.starts_with("variable_")) {
+      unsigned index;
+      if (attr.first.drop_front(9).getAsInteger(10, index))
+        continue;
+      if (index == 0)
+        continue;
+      if (vars.size() < index)
+        vars.resize(index);
+      if (auto strAttr = dyn_cast<StringAttr>(attr.second))
+        vars[index - 1] = strAttr.getValue().str();
+    }
+  }
+  templates[templateName.str()] = vars;
   return success();
 }
 
-ParseResult LibertyParser::parseCell() {
-  lexer.nextToken(); // consume 'cell'
-  if (consume(LibertyTokenKind::LParen))
-    return failure();
-  auto nameToken = lexer.nextToken();
-  StringRef cellName = getTokenSpelling(nameToken);
+Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
+  SmallVector<NamedAttribute> attrs;
+  for (const auto &attr : group.attrs)
+    attrs.push_back(builder.getNamedAttr(attr.first, attr.second));
 
-  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
-    return failure();
+  llvm::StringMap<SmallVector<Attribute>> subGroups;
+  for (const auto &sub : group.subGroups) {
+    SmallVector<NamedAttribute> subAttrs;
+    if (!sub->args.empty())
+      subAttrs.push_back(
+          builder.getNamedAttr("args", builder.getArrayAttr(sub->args)));
 
-  SmallVector<PinDef> pins;
-  SmallVector<NamedAttribute> cellAttrs;
+    // Template resolution
+    SmallVector<std::string> templateVars;
+    if (!sub->args.empty()) {
+      if (auto templateName = dyn_cast<StringAttr>(sub->args[0])) {
+        auto it = templates.find(templateName.getValue());
+        if (it != templates.end()) {
+          templateVars = it->second;
+        }
+      }
+    }
 
-  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
-         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
-    auto token = lexer.peekToken();
-    if (token.kind == LibertyTokenKind::Identifier && token.spelling == "pin") {
-      if (parsePin(pins))
-        return failure();
-    } else {
-      // Capture cell attributes like area
-      auto attrToken = lexer.nextToken(); // identifier
-      StringRef attrName = attrToken.spelling;
+    for (const auto &attr : sub->attrs) {
+      StringRef attrName = attr.first;
+      if (attrName.starts_with("index_")) {
+        unsigned index;
+        if (!attrName.drop_front(6).getAsInteger(10, index) && index > 0 &&
+            index <= templateVars.size()) {
+          attrName = templateVars[index - 1];
+        }
+      }
+      subAttrs.push_back(builder.getNamedAttr(attrName, attr.second));
+    }
 
-      // Check if it's a simple attribute (name : value ;)
-      if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-        lexer.nextToken(); // :
-        auto valueToken = lexer.peekToken();
-        if (valueToken.kind == LibertyTokenKind::Number ||
-            valueToken.kind == LibertyTokenKind::String ||
-            valueToken.kind == LibertyTokenKind::Identifier) {
-          lexer.nextToken();
-          StringRef strValue = getTokenSpelling(valueToken);
-          cellAttrs.push_back(
-              builder.getNamedAttr(attrName, builder.getStringAttr(strValue)));
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-          if (consume(LibertyTokenKind::Semi))
-            return failure();
+    llvm::StringMap<SmallVector<Attribute>> childSubGroups;
+    for (const auto &child : sub->subGroups) {
+      StringRef childName = child->name;
+      if (childName.starts_with("index_")) {
+        unsigned index;
+        if (!childName.drop_front(6).getAsInteger(10, index) && index > 0 &&
+            index <= templateVars.size()) {
+          childName = templateVars[index - 1];
+        }
+      }
+      childSubGroups[childName].push_back(convertGroupToAttr(*child));
+    }
+    for (auto &it : childSubGroups) {
+      subAttrs.push_back(builder.getNamedAttr(
+          it.getKey(), builder.getArrayAttr(it.getValue())));
+    }
+
+    subGroups[sub->name].push_back(builder.getDictionaryAttr(subAttrs));
+  }
+
+  for (auto &it : subGroups) {
+    attrs.push_back(
+        builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
+  }
+
+  return builder.getDictionaryAttr(attrs);
+}
+
+ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
+  if (group.args.empty())
+    return emitError(lexer.getCurrentLoc(), "cell missing name");
+
+  StringRef cellName;
+  if (auto strAttr = dyn_cast<StringAttr>(group.args[0]))
+    cellName = strAttr.getValue();
+  else
+    return emitError(lexer.getCurrentLoc(), "cell name must be a string");
+
+  SmallVector<hw::PortInfo> ports;
+  SmallVector<const LibertyGroup *> pinGroups;
+
+  // First pass: gather ports
+  for (const auto &sub : group.subGroups) {
+    if (sub->name == "pin") {
+      pinGroups.push_back(sub.get());
+      if (sub->args.empty())
+        return emitError(lexer.getCurrentLoc(), "pin missing name");
+
+      StringRef pinName;
+      if (auto strAttr = dyn_cast<StringAttr>(sub->args[0]))
+        pinName = strAttr.getValue();
+      else
+        return emitError(lexer.getCurrentLoc(), "pin name must be a string");
+
+      bool isInput = false;
+      bool isOutput = false;
+      SmallVector<NamedAttribute> pinAttrs;
+      for (const auto &attr : sub->attrs) {
+        if (attr.first == "direction") {
+          if (auto val = dyn_cast<StringAttr>(attr.second)) {
+            if (val.getValue() == "input")
+              isInput = true;
+            else if (val.getValue() == "output")
+              isOutput = true;
+            else if (val.getValue() == "inout") {
+              isInput = true;
+              isOutput = true;
+            }
+          }
           continue;
         }
+        pinAttrs.push_back(builder.getNamedAttr(attr.first, attr.second));
       }
 
-      // Skip complex attributes/groups
-
-      if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
-        if (skipArguments())
-          return failure();
+      llvm::StringMap<SmallVector<Attribute>> subGroups;
+      for (const auto &child : sub->subGroups) {
+        if (child->name == "timing")
+          subGroups[child->name].push_back(lowerTimingGroup(*child));
+        else
+          subGroups[child->name].push_back(convertGroupToAttr(*child));
+      }
+      for (auto &it : subGroups) {
+        pinAttrs.push_back(builder.getNamedAttr(
+            it.getKey(), builder.getArrayAttr(it.getValue())));
       }
 
-      if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
-        skipBlock();
-      } else {
-        if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-          lexer.nextToken(); // :
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-        }
-        if (consume(LibertyTokenKind::Semi, "expected ';'"))
-          return failure();
+      auto attrs = builder.getDictionaryAttr(pinAttrs);
+
+      if (isInput) {
+        hw::PortInfo port;
+        port.name = builder.getStringAttr(pinName);
+        port.type = builder.getI1Type();
+        port.dir = hw::ModulePort::Direction::Input;
+        port.attrs = attrs;
+        ports.push_back(port);
+      }
+      if (isOutput) {
+        hw::PortInfo port;
+        port.name = builder.getStringAttr(pinName);
+        port.type = builder.getI1Type();
+        port.dir = hw::ModulePort::Direction::Output;
+        port.attrs = attrs;
+        ports.push_back(port);
       }
     }
   }
 
-  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
-    return failure();
+  // Fix up argNum for inputs
+  int inputIdx = 0;
+  for (auto &p : ports) {
+    if (p.dir == hw::ModulePort::Direction::Input)
+      p.argNum = inputIdx++;
+    else
+      p.argNum = 0;
+  }
 
-  // Convert PinDefs to PortInfos
-  SmallVector<PortInfo> ports;
-  for (const auto &pin : pins) {
-    if (pin.isInput || pin.isOutput) {
-      PortInfo port;
-      port.name = builder.getStringAttr(pin.name);
-      port.type = builder.getI1Type(); // Assume 1-bit
-      port.dir = pin.isInput ? ModulePort::Direction::Input
-                             : ModulePort::Direction::Output;
-      // Set pin attributes
-      SmallVector<NamedAttribute> pinAttrs = pin.attrs;
-      for (const auto &scope : pin.scopes) {
-        SmallVector<Attribute> scopeAttrs;
-        for (const auto &s : scope.second) {
-          scopeAttrs.push_back(builder.getDictionaryAttr(s));
+  auto loc = builder.getUnknownLoc();
+  auto moduleOp = builder.create<hw::HWModuleOp>(
+      loc, builder.getStringAttr(cellName), ports);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(moduleOp.getBodyBlock());
+
+  DenseMap<StringRef, Value> portValues;
+  for (size_t i = 0; i < ports.size(); ++i) {
+    if (ports[i].dir == hw::ModulePort::Direction::Input)
+      portValues[ports[i].name.getValue()] =
+          moduleOp.getBodyBlock()->getArgument(ports[i].argNum);
+  }
+
+  SmallVector<Value> outputs;
+  for (const auto &port : ports) {
+    if (port.dir == hw::ModulePort::Direction::Output) {
+      const LibertyGroup *pg = nullptr;
+      for (auto *g : pinGroups) {
+        if (cast<StringAttr>(g->args[0]).getValue() == port.name.getValue()) {
+          pg = g;
+          break;
         }
-        pinAttrs.push_back(
-            builder.getNamedAttr(("liberty." + scope.first()).str(),
-                                 builder.getArrayAttr(scopeAttrs)));
       }
 
-      if (!pinAttrs.empty()) {
-        port.attrs = builder.getDictionaryAttr(pinAttrs);
+      Value val = nullptr;
+      if (pg) {
+        for (const auto &attr : pg->attrs) {
+          if (attr.first == "function") {
+            val = parseExpression(cast<StringAttr>(attr.second).getValue(),
+                                  portValues);
+            break;
+          }
+        }
       }
-      ports.push_back(port);
+
+      if (!val)
+        val = builder.create<hw::ConstantOp>(loc, builder.getI1Type(), 0);
+      outputs.push_back(val);
     }
   }
 
-  // Create HWModule with cell attributes
-  builder.setInsertionPointToStart(module.getBody());
-  auto hwMod = HWModuleOp::create(
-      builder, builder.getUnknownLoc(), builder.getStringAttr(cellName), ports,
-      ArrayAttr{},            // parameters
-      cellAttrs, StringAttr{} // cell attributes as module attributes
-  );
+  auto* block = moduleOp.getBodyBlock();
+  block->getTerminator()->setOperands(outputs);
+  return success();
+}
 
-  // HWModuleOp creates a block with ports.
-  if (hwMod.getBody().empty()) {
-    auto *block = builder.createBlock(&hwMod.getBody());
-    builder.setInsertionPointToStart(block);
+ParseResult LibertyParser::parseGroupBody(LibertyGroup &group) {
+  // Parse args: ( arg1, arg2 )
+  if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+    lexer.nextToken(); // (
+    while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
+      Attribute arg;
+      if (parseAttribute(arg))
+        return failure();
+      group.args.push_back(arg);
+      if (lexer.peekToken().kind == LibertyTokenKind::Comma)
+        lexer.nextToken();
+    }
+    if (consume(LibertyTokenKind::RParen, "expected ')'"))
+      return failure();
+  }
+
+  // Parse body: { ... }
+  if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
+    lexer.nextToken(); // {
+    while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
+           lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
+      if (parseStatement(group))
+        return failure();
+    }
+    if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+      return failure();
   } else {
-    builder.setInsertionPointToStart(&hwMod.getBody().front());
+    // Optional semicolon if no body
+    if (lexer.peekToken().kind == LibertyTokenKind::Semi)
+      lexer.nextToken();
   }
-
-  // Map inputs to values
-  DenseMap<StringRef, Value> values;
-  int argIndex = 0;
-  for (const auto &pin : pins) {
-    if (pin.isInput) {
-      values[pin.name] = hwMod.getBody().front().getArgument(argIndex++);
-    }
-  }
-
-  // Generate outputs
-  SmallVector<Value> outputValues;
-  for (const auto &pin : pins) {
-    if (pin.isOutput) {
-      if (!pin.function.empty()) {
-        Value val = parseExpression(pin.function, values);
-        if (val) {
-          outputValues.push_back(val);
-        } else {
-          // Fallback to unknown/constant 0 if parsing fails
-          outputValues.push_back(builder.create<ConstantOp>(
-              builder.getUnknownLoc(), builder.getI1Type(), 0));
-        }
-      } else {
-        // No function, just output 0
-        outputValues.push_back(builder.create<ConstantOp>(
-            builder.getUnknownLoc(), builder.getI1Type(), 0));
-      }
-    }
-  }
-  auto *outputOp = hwMod.getBodyBlock()->getTerminator();
-  outputOp->setOperands(outputValues);
-
   return success();
 }
 
-ParseResult LibertyParser::parsePin(SmallVectorImpl<PinDef> &pins) {
-  lexer.nextToken(); // consume 'pin'
-  if (consume(LibertyTokenKind::LParen))
-    return failure();
-  auto nameToken = lexer.nextToken();
-  StringRef pinName = getTokenSpelling(nameToken);
-  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
-    return failure();
+ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
+  auto nameTok = lexer.nextToken();
+  if (nameTok.kind != LibertyTokenKind::Identifier)
+    return emitError(nameTok.location, "expected identifier");
+  StringRef name = nameTok.spelling;
 
-  PinDef pin;
-  pin.name = pinName;
-
-  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
-         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
-    auto token = lexer.nextToken();
-    if (token.kind == LibertyTokenKind::Identifier &&
-        token.spelling == "direction") {
-      if (consume(LibertyTokenKind::Colon, "expected ':'"))
-        return failure();
-      auto dirToken = lexer.nextToken();
-      if (dirToken.spelling == "input")
-        pin.isInput = true;
-      else if (dirToken.spelling == "output")
-        pin.isOutput = true;
-      if (consume(LibertyTokenKind::Semi, "expected ';'"))
-        return failure();
-    } else if (token.kind == LibertyTokenKind::Identifier &&
-               token.spelling == "function") {
-      if (consume(LibertyTokenKind::Colon, "expected ':'"))
-        return failure();
-      auto funcToken = lexer.nextToken();
-      if (funcToken.kind == LibertyTokenKind::String) {
-        pin.function = funcToken.spelling.drop_front().drop_back().str();
-      } else {
-        // Handle unquoted function?
-        pin.function = funcToken.spelling.str();
-      }
-      if (consume(LibertyTokenKind::Semi, "expected ';'"))
-        return failure();
-    } else if (token.kind == LibertyTokenKind::Identifier &&
-               token.spelling == "timing") {
-      if (parseScope(pin.scopes["timing"]))
-        return failure();
-    } else {
-      // Capture other pin attributes
-      StringRef attrName = token.spelling;
-
-      // Check for simple attributes (name : value ;)
-      if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-        lexer.nextToken(); // :
-        auto valueToken = lexer.peekToken();
-        if (valueToken.kind == LibertyTokenKind::Number ||
-            valueToken.kind == LibertyTokenKind::String ||
-            valueToken.kind == LibertyTokenKind::Identifier) {
-          lexer.nextToken();
-          StringRef strValue = getTokenSpelling(valueToken);
-          pin.attrs.push_back(
-              builder.getNamedAttr(attrName, builder.getStringAttr(strValue)));
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-          if (consume(LibertyTokenKind::Semi, "expected ';'"))
-            return failure();
-          continue;
-        }
-      }
-
-      // Skip complex attributes/groups
-      if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
-        if (skipArguments())
-          return failure();
-        if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
-          skipBlock();
-        }
-      }
-
-      // Skip remaining tokens until semicolon
-      while (lexer.peekToken().kind != LibertyTokenKind::Semi &&
-             lexer.peekToken().kind != LibertyTokenKind::RBrace &&
-             lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
-        lexer.nextToken();
-      if (lexer.peekToken().kind == LibertyTokenKind::Semi)
-        lexer.nextToken();
-    }
+  if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
+    lexer.nextToken(); // :
+    Attribute val;
+    if (parseAttribute(val))
+      return failure();
+    parent.attrs.emplace_back(name, val);
+    return consume(LibertyTokenKind::Semi, "expected ';'");
   }
 
-  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
-    return failure();
-
-  if (pin.isInput || pin.isOutput) {
-    pins.push_back(pin);
+  if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+    auto subGroup = std::make_unique<LibertyGroup>();
+    subGroup->name = name;
+    if (parseGroupBody(*subGroup))
+      return failure();
+    parent.subGroups.push_back(std::move(subGroup));
+    return success();
   }
 
-  return success();
-}
-
-ParseResult LibertyParser::parseScope(
-    SmallVectorImpl<SmallVector<NamedAttribute>> &scopes) {
-  if (lexer.peekToken().kind != LibertyTokenKind::LParen)
-    return emitError(lexer.getCurrentLoc(), "expected '('");
-  if (skipArguments())
-    return failure();
-
-  if (consume(LibertyTokenKind::LBrace))
-    return failure();
-
-  SmallVector<NamedAttribute> scope;
-  if (parseGenericGroup(scope))
-    return failure();
-
-  if (consume(LibertyTokenKind::RBrace))
-    return failure();
-
-  scopes.push_back(std::move(scope));
-  return success();
-}
-
-ParseResult
-LibertyParser::parseGenericGroup(SmallVectorImpl<NamedAttribute> &attrs) {
-  while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
-         lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
-    auto token = lexer.nextToken();
-    if (token.kind == LibertyTokenKind::Identifier) {
-      StringRef attrName = token.spelling;
-      if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-        lexer.nextToken(); // :
-        Attribute attrValue;
-        if (parseAttribute(attrValue))
-          return failure();
-        attrs.push_back(builder.getNamedAttr(attrName, attrValue));
-        if (consume(LibertyTokenKind::Semi, "expected ';'"))
-          return failure();
-      } else if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
-        // group
-        lexer.nextToken(); // (
-        SmallVector<Attribute> args;
-        while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
-          Attribute arg;
-          if (parseAttribute(arg))
-            return failure();
-          args.push_back(arg);
-          if (lexer.peekToken().kind == LibertyTokenKind::Comma)
-            lexer.nextToken();
-        }
-        if (consume(LibertyTokenKind::RParen, "expected ')'"))
-          return failure();
-
-        // Parse body if present
-        if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
-          lexer.nextToken(); // {
-          SmallVector<NamedAttribute> nestedAttrs;
-          if (!args.empty())
-            nestedAttrs.push_back(
-                builder.getNamedAttr("args", builder.getArrayAttr(args)));
-
-          if (parseGenericGroup(nestedAttrs))
-            return failure();
-
-          if (consume(LibertyTokenKind::RBrace, "expected '}'"))
-            return failure();
-
-          // If args referenced a template we recorded earlier, inline it by
-          // remapping index_N -> variable_N names. Prefer extracting the
-          // template name from the nestedAttrs 'args' entry to avoid
-          // dependence on the outer 'args' vector.
-          StringRef templName;
-          bool haveTemplate = false;
-          for (auto &na : nestedAttrs) {
-            if (na.getName().getValue() == "args") {
-              if (auto arr = dyn_cast<ArrayAttr>(na.getValue())) {
-                if (!arr.getValue().empty()) {
-                  if (auto s = dyn_cast<StringAttr>(arr.getValue()[0])) {
-                    templName = s.getValue();
-                    haveTemplate = true;
-                  }
-                }
-              }
-              break;
-            }
-          }
-          if (haveTemplate) {
-            auto it = templates.find(templName);
-            if (it != templates.end()) {
-              SmallVector<NamedAttribute> remapped;
-              for (auto &na : nestedAttrs) {
-                StringRef n = na.getName().getValue();
-                if (n == "args")
-                  continue; // drop the args member
-                // remap index_N
-                if (n.starts_with("index_")) {
-                  StringRef idxStr = n.substr(strlen("index_"));
-                  unsigned idx = 0;
-                  if (!idxStr.getAsInteger(10, idx)) {
-                    // templates vector uses 0-based with idx == N
-                    if (idx < it->second.size() && !it->second[idx].empty()) {
-                      remapped.push_back(
-                          builder.getNamedAttr(it->second[idx], na.getValue()));
-                      continue;
-                    }
-                  }
-                }
-                // default: keep original
-                remapped.push_back(na);
-              }
-              attrs.push_back(builder.getNamedAttr(
-                  attrName, builder.getDictionaryAttr(remapped)));
-              continue;
-            }
-          }
-
-          attrs.push_back(builder.getNamedAttr(
-              attrName, builder.getDictionaryAttr(nestedAttrs)));
-        } else {
-          // No body?
-          // If args is empty, it's just name(); which is weird but possible?
-          // If args is not empty, it's name(args);
-          // We can store it as name = [args]
-          attrs.push_back(
-              builder.getNamedAttr(attrName, builder.getArrayAttr(args)));
-          // Consume optional semicolon for attributes like index_1(...);
-          if (lexer.peekToken().kind == LibertyTokenKind::Semi)
-            lexer.nextToken();
-        }
-      }
-    }
-  }
-  return success();
+  return emitError(nameTok.location, "expected ':' or '('");
 }
 
 // Parse an attribute value, which can be:
@@ -1208,6 +1093,8 @@ Value LibertyParser::parseExpression(StringRef expr,
   return parser.parse();
 }
 
+} // namespace
+
 namespace circt {
 void registerImportLibertyTranslation() {
   TranslateToMLIRRegistration reg(
@@ -1218,6 +1105,7 @@ void registerImportLibertyTranslation() {
         // Load required dialects
         context->loadDialect<hw::HWDialect>();
         context->loadDialect<comb::CombDialect>();
+        context->loadDialect<synth::SynthDialect>();
         if (failed(parser.parse()))
           return OwningOpRef<ModuleOp>();
         return OwningOpRef<ModuleOp>(module);
@@ -1225,6 +1113,7 @@ void registerImportLibertyTranslation() {
       [](DialectRegistry &registry) {
         registry.insert<HWDialect>();
         registry.insert<comb::CombDialect>();
+        registry.insert<synth::SynthDialect>();
       });
 }
 } // namespace circt
