@@ -140,6 +140,8 @@ public:
         lineAndColumn.first, lineAndColumn.second);
   }
 
+  bool isAtEnd() const { return curPtr >= curBuffer.end(); }
+
 private:
   const llvm::SourceMgr &sourceMgr;
   MLIRContext *context;
@@ -194,11 +196,21 @@ private:
   InFlightDiagnostic emitError(llvm::SMLoc loc, const Twine &message) {
     return mlir::emitError(lexer.translateLocation(loc), message);
   }
+  InFlightDiagnostic emitWarning(llvm::SMLoc loc, const Twine &message) {
+    return mlir::emitWarning(lexer.translateLocation(loc), message);
+  }
 
   ParseResult consume(LibertyTokenKind kind, const Twine &msg) {
     if (lexer.nextToken().is(kind))
       return success();
     return emitError(lexer.getCurrentLoc(), msg);
+  }
+
+  ParseResult consumeUntil(LibertyTokenKind kind) {
+    while (!lexer.peekToken().is(kind) &&
+           lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
+      lexer.nextToken();
+    return success();
   }
 
   ParseResult consume(LibertyTokenKind kind) {
@@ -433,7 +445,7 @@ ParseResult LibertyParser::parseLibrary() {
   if (libName.kind != LibertyTokenKind::Identifier)
     return emitError(libName.location, "expected library name");
   StringRef libNameStr = libName.spelling;
-  module->setAttr("liberty.name", builder.getStringAttr(libNameStr));
+  module->setAttr("liberty.library.name", builder.getStringAttr(libNameStr));
   if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
@@ -452,15 +464,20 @@ ParseResult LibertyParser::parseLibrary() {
         return failure();
     } else {
       // Skip other library attributes/groups
-      (void)lexer.nextToken(); // identifier
+      auto groupName = lexer.nextToken(); // identifier
+      if (groupName.kind != LibertyTokenKind::Identifier)
+        return emitError(groupName.location, "expected attribute name");
 
       // Handle arguments like group(arg)
-      if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+      if (lexer.peekToken().is(LibertyTokenKind::LParen)) {
+        (void)emitWarning(groupName.location,
+                          "skipping unhandled library attribute/group: " +
+                              groupName.spelling);
         lexer.nextToken(); // (
-        while (lexer.peekToken().kind != LibertyTokenKind::RParen) {
-          lexer.nextToken();
-          if (lexer.peekToken().kind == LibertyTokenKind::Comma)
+        while (lexer) {
+          if (lexer.peekToken().is(LibertyTokenKind::RParen)) {
             lexer.nextToken();
+          }
         }
         if (consume(LibertyTokenKind::RParen, "expected ')'"))
           return failure();
