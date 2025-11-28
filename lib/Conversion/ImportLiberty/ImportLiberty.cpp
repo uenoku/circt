@@ -210,7 +210,10 @@ private:
     while (!lexer.peekToken().is(kind) &&
            lexer.peekToken().kind != LibertyTokenKind::EndOfFile)
       lexer.nextToken();
-    return success();
+    if (lexer.peekToken().is(kind))
+      return success();
+    return emitError(lexer.getCurrentLoc(),
+                     " expected " + stringifyTokenKind(kind));
   }
 
   ParseResult consume(LibertyTokenKind kind) {
@@ -470,17 +473,16 @@ ParseResult LibertyParser::parseLibrary() {
 
       // Handle arguments like group(arg)
       if (lexer.peekToken().is(LibertyTokenKind::LParen)) {
-        (void)emitWarning(groupName.location,
-                          "skipping unhandled library attribute/group: " +
-                              groupName.spelling);
         lexer.nextToken(); // (
-        while (lexer) {
-          if (lexer.peekToken().is(LibertyTokenKind::RParen)) {
+        while (!lexer.peekToken().is(LibertyTokenKind::RParen) &&
+               !lexer.peekToken().is(LibertyTokenKind::EndOfFile)) {
+          lexer.nextToken();
+          if (lexer.peekToken().is(LibertyTokenKind::Comma))
             lexer.nextToken();
-          }
         }
-        if (consume(LibertyTokenKind::RParen, "expected ')'"))
+        if (expect(LibertyTokenKind::RParen))
           return failure();
+        lexer.nextToken(); // )
       }
 
       if (lexer.peekToken().kind == LibertyTokenKind::LBrace) {
@@ -494,14 +496,15 @@ ParseResult LibertyParser::parseLibrary() {
           if (t.kind == LibertyTokenKind::RBrace)
             balance--;
         }
-      } else {
-        if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
-          lexer.nextToken(); // :
-          while (lexer.peekToken().kind != LibertyTokenKind::Semi)
-            lexer.nextToken();
-        }
-        if (consume(LibertyTokenKind::Semi, "expected ';'"))
+      } else if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
+        lexer.nextToken(); // :
+        while (lexer.peekToken().kind != LibertyTokenKind::Semi)
+          lexer.nextToken();
+        if (expect(LibertyTokenKind::Semi))
           return failure();
+        lexer.nextToken(); // ;
+      } else if (lexer.peekToken().kind == LibertyTokenKind::Semi) {
+        lexer.nextToken(); // ;
       }
     }
   }
@@ -516,15 +519,13 @@ ParseResult LibertyParser::parseTemplateDefinition() {
   lexer.nextToken(); // consume template-kind identifier (e.g.,
                      // 'lu_table_template')
   // Expect (template_name)
-  if (consume(LibertyTokenKind::LParen, "expected '('"))
+  if (consume(LibertyTokenKind::LParen))
     return failure();
   auto templTok = lexer.nextToken();
   StringRef templName = templTok.spelling;
   if (templTok.kind == LibertyTokenKind::String)
     templName = templName.drop_front().drop_back();
-  if (consume(LibertyTokenKind::RParen, "expected ')'"))
-    return failure();
-  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
   // We'll collect variable_N names. Use a sparse vector sized by index.
@@ -537,7 +538,7 @@ ParseResult LibertyParser::parseTemplateDefinition() {
       continue;
     StringRef id = tok.spelling; // e.g., variable_1
     if (id.starts_with("variable_")) {
-      if (consume(LibertyTokenKind::Colon, "expected ':'"))
+      if (consume(LibertyTokenKind::Colon))
         return failure();
       auto valTok = lexer.nextToken();
       if (valTok.kind == LibertyTokenKind::Identifier ||
@@ -597,23 +598,21 @@ ParseResult LibertyParser::parseTemplateDefinition() {
   module->setAttr(("liberty.template." + templName).str(),
                   builder.getArrayAttr(varAttrs));
 
-  if (consume(LibertyTokenKind::RBrace, "expected '}'"))
+  if (consume(LibertyTokenKind::RBrace))
     return failure();
   return success();
 }
 
 ParseResult LibertyParser::parseCell() {
   lexer.nextToken(); // consume 'cell'
-  if (consume(LibertyTokenKind::LParen, "expected '('"))
+  if (consume(LibertyTokenKind::LParen))
     return failure();
   auto nameToken = lexer.nextToken();
   StringRef cellName = nameToken.spelling;
   if (nameToken.kind == LibertyTokenKind::String)
     cellName = cellName.drop_front().drop_back();
 
-  if (consume(LibertyTokenKind::RParen, "expected ')'"))
-    return failure();
-  if (consume(LibertyTokenKind::LBrace, "expected '{'"))
+  if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
   SmallVector<PinDef> pins;
@@ -645,7 +644,7 @@ ParseResult LibertyParser::parseCell() {
               builder.getNamedAttr(attrName, builder.getStringAttr(strValue)));
           while (lexer.peekToken().kind != LibertyTokenKind::Semi)
             lexer.nextToken();
-          if (consume(LibertyTokenKind::Semi, "expected ';'"))
+          if (consume(LibertyTokenKind::Semi))
             return failure();
           continue;
         }
