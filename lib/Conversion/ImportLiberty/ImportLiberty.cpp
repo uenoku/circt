@@ -468,7 +468,7 @@ void LibertyLexer::skipWhitespaceAndComments() {
       if (*(curPtr + 1) == '*') { // /* ... */
         curPtr += 2;
         while (curPtr + 1 < curBuffer.end() &&
-               !(*curPtr == '*' && *(curPtr + 1) == '/'))
+               (*curPtr != '*' || *(curPtr + 1) != '/'))
           ++curPtr;
         if (curPtr + 1 < curBuffer.end())
           curPtr += 2;
@@ -650,11 +650,12 @@ ParseResult LibertyParser::parseLibrary() {
   if (libName.kind != LibertyTokenKind::Identifier)
     return emitError(libName.location, "expected library name");
   StringRef libNameStr = libName.spelling;
-  module->setAttr("liberty.library.name", builder.getStringAttr(libNameStr));
   if (consume(LibertyTokenKind::RParen) || consume(LibertyTokenKind::LBrace))
     return failure();
 
   SmallVector<NamedAttribute> libraryAttrs;
+  libraryAttrs.push_back(
+      builder.getNamedAttr("name", builder.getStringAttr(libNameStr)));
 
   while (lexer.peekToken().kind != LibertyTokenKind::RBrace &&
          lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
@@ -698,9 +699,18 @@ ParseResult LibertyParser::parseLibrary() {
     // For now, we can ignore other groups or add them as attributes if needed.
   }
 
-  if (!libraryAttrs.empty())
+  if (!libraryAttrs.empty()) {
+    // Check duplicate.
+    llvm::DenseSet<StringAttr> seenNames;
+    for (auto &attr : libraryAttrs) {
+      if (!seenNames.insert(attr.getName()).second) {
+        return emitError(libName.location, "duplicate library attribute: ")
+               << attr.getName();
+      }
+    }
     module->setAttr("synth.liberty.library",
                     builder.getDictionaryAttr(libraryAttrs));
+  }
 
   return consume(LibertyTokenKind::RBrace, "expected '}'");
 }
@@ -778,7 +788,12 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
       }
     }
 
+    // Re-implement subAttrs collection using a map to handle duplicates (like 'vector')
+    llvm::StringMap<SmallVector<Attribute>> subAttrMap;
+    // Add regular attributes
     SmallVector<NamedAttribute> subAttrs;
+    llvm::StringMap<SmallVector<Attribute>> accumulatedVectorGroups;
+
     if (isTemplate) {
       subAttrs.push_back(builder.getNamedAttr("template_name", sub->args[0]));
       SmallVector<Attribute> schema;
@@ -793,7 +808,7 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
 
     for (const auto &attr : sub->attrs) {
       StringRef attrName = attr.first;
-      if (attrName.starts_with("index_")) {
+      if (attrName.starts_with("output_current_riseindex_")) {
         unsigned index;
         if (!attrName.drop_front(6).getAsInteger(10, index) && index > 0 &&
             index <= templateVars.size()) {
@@ -805,6 +820,86 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
 
     for (const auto &child : sub->subGroups) {
       StringRef childName = child->name;
+
+      if (childName == "vector") {
+        SmallVector<std::string> vectorTemplateVars = templateVars;
+        bool vectorIsTemplate = isTemplate;
+
+        if (!vectorIsTemplate && !child->args.empty()) {
+          if (auto templateName = dyn_cast<StringAttr>(child->args[0])) {
+            auto it = templates.find(templateName.getValue());
+            if (it != templates.end()) {
+              vectorTemplateVars = it->second;
+              vectorIsTemplate = true;
+            }
+          }
+        }
+
+        SmallVector<NamedAttribute> vectorAttrs;
+        if (vectorIsTemplate) {
+          if (!isTemplate && !child->args.empty()) {
+            vectorAttrs.push_back(
+                builder.getNamedAttr("template_name", child->args[0]));
+            SmallVector<Attribute> schema;
+            for (const auto &var : vectorTemplateVars)
+              schema.push_back(builder.getStringAttr(var));
+            vectorAttrs.push_back(builder.getNamedAttr(
+                "template_schema", builder.getArrayAttr(schema)));
+          }
+        } else if (!child->args.empty()) {
+          vectorAttrs.push_back(
+              builder.getNamedAttr("args", builder.getArrayAttr(child->args)));
+        }
+
+        for (const auto &attr : child->attrs) {
+          StringRef attrName = attr.first;
+          if (attrName.starts_with("index_")) {
+            unsigned index;
+            if (!attrName.drop_front(6).getAsInteger(10, index) && index > 0 &&
+                index <= vectorTemplateVars.size()) {
+              attrName = vectorTemplateVars[index - 1];
+            }
+          }
+          vectorAttrs.push_back(builder.getNamedAttr(attrName, attr.second));
+        }
+
+        for (const auto &grandChild : child->subGroups) {
+          StringRef gcName = grandChild->name;
+          if (gcName.starts_with("index_")) {
+            unsigned index;
+            if (!gcName.drop_front(6).getAsInteger(10, index) && index > 0 &&
+                index <= vectorTemplateVars.size()) {
+              gcName = vectorTemplateVars[index - 1];
+            }
+          }
+
+          bool shouldUnwrap = false;
+          if (gcName == "values" || gcName.starts_with("index_")) {
+            shouldUnwrap = true;
+          } else {
+            for (const auto &var : vectorTemplateVars) {
+              if (gcName == var) {
+                shouldUnwrap = true;
+                break;
+              }
+            }
+          }
+
+          Attribute gcAttr;
+          if (shouldUnwrap && grandChild->attrs.empty() &&
+              grandChild->subGroups.empty() && !grandChild->args.empty()) {
+            if (grandChild->args.size() == 1)
+              gcAttr = grandChild->args[0];
+            else
+              gcAttr = builder.getArrayAttr(grandChild->args);
+          } else {
+            gcAttr = convertGroupToAttr(*grandChild);
+          }
+          vectorAttrs.push_back(builder.getNamedAttr(gcName, gcAttr));
+        }
+        accumulatedVectorGroups["vector"].push_back(builder.getDictionaryAttr(vectorAttrs));
+        continue;
+      }
 
       if (childName.starts_with("index_")) {
         unsigned index;
@@ -839,12 +934,33 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
       subAttrs.push_back(builder.getNamedAttr(childName, childAttr));
     }
 
+    for (auto &it : accumulatedVectorGroups) {
+      subAttrs.push_back(builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
+    }
+
+    llvm::DenseSet<StringAttr> seenSubAttrNames;
+    for (auto &attr : subAttrs) {
+      if (!seenSubAttrNames.insert(attr.getName()).second) {
+        emitWarning(lexer.getCurrentLoc(),
+                    "duplicate timing subgroup attribute: ")
+            << attr.getName();
+      }
+    }
+
     subGroups[sub->name].push_back(builder.getDictionaryAttr(subAttrs));
   }
 
   for (auto &it : subGroups) {
     attrs.push_back(
         builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
+  }
+
+  llvm::DenseSet<StringAttr> seenNames;
+  for (auto &attr : attrs) {
+    if (!seenNames.insert(attr.getName()).second) {
+      emitWarning(lexer.getCurrentLoc(), "duplicate timing group attribute: ")
+          << attr.getName();
+    }
   }
 
   return builder.getDictionaryAttr(attrs);
@@ -898,7 +1014,10 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
 
       llvm::StringMap<SmallVector<Attribute>> subGroups;
       for (const auto &child : sub->subGroups) {
-        if (child->name == "timing" || child->name == "internal_power")
+        if (child->name == "timing" || child->name == "internal_power" ||
+            child->name == "output_current_rise" ||
+            child->name == "output_current_fall" ||
+            child->name == "receiver_capacitance")
           subGroups[child->name].push_back(lowerTimingGroup(*child));
         else
           subGroups[child->name].push_back(convertGroupToAttr(*child));
