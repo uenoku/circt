@@ -908,7 +908,9 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
             it.getKey(), builder.getArrayAttr(it.getValue())));
       }
 
-      auto attrs = builder.getDictionaryAttr(pinAttrs);
+      auto libertyAttrs = builder.getDictionaryAttr(pinAttrs);
+      auto attrs = builder.getDictionaryAttr(
+          builder.getNamedAttr("synth.liberty.pin", libertyAttrs));
 
       if (isInput) {
         hw::PortInfo port;
