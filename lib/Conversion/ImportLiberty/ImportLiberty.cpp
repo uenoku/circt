@@ -330,6 +330,7 @@ private:
 
 struct LibertyGroup {
   StringRef name;
+  SMLoc loc;
   SmallVector<Attribute> args;
   SmallVector<std::pair<StringRef, Attribute>> attrs;
   SmallVector<std::unique_ptr<LibertyGroup>> subGroups;
@@ -665,6 +666,7 @@ ParseResult LibertyParser::parseLibrary() {
         lexer.nextToken(); // consume 'cell'
         LibertyGroup cellGroup;
         cellGroup.name = "cell";
+        cellGroup.loc = token.location;
         if (parseGroupBody(cellGroup))
           return failure();
         if (lowerCell(cellGroup))
@@ -672,11 +674,13 @@ ParseResult LibertyParser::parseLibrary() {
         continue;
       }
       if (token.spelling == "lu_table_template" ||
-          token.spelling == "power_lut_template") {
+          token.spelling == "power_lut_template" ||
+          token.spelling == "output_current_template") {
         StringRef name = token.spelling;
         lexer.nextToken(); // consume template kind
         LibertyGroup templGroup;
         templGroup.name = name;
+        templGroup.loc = token.location;
         if (parseGroupBody(templGroup))
           return failure();
         if (lowerTemplate(templGroup))
@@ -820,6 +824,24 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
 
     for (const auto &child : sub->subGroups) {
       StringRef childName = child->name;
+
+      bool isKnown = false;
+      if (childName == "vector" || childName == "values" ||
+          childName.starts_with("index_")) {
+        isKnown = true;
+      } else {
+        for (const auto &var : templateVars) {
+          if (childName == var) {
+            isKnown = true;
+            break;
+          }
+        }
+      }
+
+      if (!isKnown && !child->args.empty()) {
+        emitWarning(child->loc, "unknown timing subgroup with arguments: ")
+            << childName;
+      }
 
       if (childName == "vector") {
         SmallVector<std::string> vectorTemplateVars = templateVars;
@@ -1158,6 +1180,7 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
   if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
     auto subGroup = std::make_unique<LibertyGroup>();
     subGroup->name = name;
+    subGroup->loc = nameTok.location;
     if (parseGroupBody(*subGroup))
       return failure();
     parent.subGroups.push_back(std::move(subGroup));
