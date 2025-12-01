@@ -25,6 +25,7 @@
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
@@ -364,7 +365,10 @@ private:
 
   // Specific group parsers
   ParseResult parseLibrary();
+  ParseResult parseGroup(StringRef name, Location loc, LibertyGroup &group);
   ParseResult parseGroupBody(LibertyGroup &group);
+  ParseResult parseComplexAttribute(LibertyGroup &parent);
+  ParseResult parseGroup(LibertyGroup &parent);
   ParseResult parseStatement(LibertyGroup &parent);
 
   // Lowering methods
@@ -792,7 +796,8 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
       }
     }
 
-    // Re-implement subAttrs collection using a map to handle duplicates (like 'vector')
+    // Re-implement subAttrs collection using a map to handle duplicates (like
+    // 'vector')
     llvm::StringMap<SmallVector<Attribute>> subAttrMap;
     // Add regular attributes
     SmallVector<NamedAttribute> subAttrs;
@@ -919,7 +924,8 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
           }
           vectorAttrs.push_back(builder.getNamedAttr(gcName, gcAttr));
         }
-        accumulatedVectorGroups["vector"].push_back(builder.getDictionaryAttr(vectorAttrs));
+        accumulatedVectorGroups["vector"].push_back(
+            builder.getDictionaryAttr(vectorAttrs));
         continue;
       }
 
@@ -957,7 +963,8 @@ Attribute LibertyParser::lowerTimingGroup(const LibertyGroup &group) {
     }
 
     for (auto &it : accumulatedVectorGroups) {
-      subAttrs.push_back(builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
+      subAttrs.push_back(builder.getNamedAttr(
+          it.getKey(), builder.getArrayAttr(it.getValue())));
     }
 
     llvm::DenseSet<StringAttr> seenSubAttrNames;
