@@ -1,0 +1,11 @@
+library(demo) {
+  cell(PRECEDENCE) {
+    pin(A) { direction: input; }
+    pin(B) { direction: input; }
+    pin(C) { direction: input; }
+    pin(Z) {
+      direction: output;
+      function: "A * B ^ C";
+    }
+  }
+}

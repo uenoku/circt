@@ -1,0 +1,22 @@
+library(demo) {
+  cell(XNOR2X1) {
+    pin(A) {
+      direction: input;
+    }
+    pin(B) {
+      direction: input;
+    }
+    pin(Y) {
+      direction: output;
+      function: "!(B&!A|!B&A)";
+      timing() {
+        related_pin: "B";
+        timing_sense: non_unate;
+        cell_rise(delay_template_6x6) {
+          index_1("0.1, 0.5");
+          values("0.2, 0.3");
+        }
+      }
+    }
+  }
+}
