@@ -677,9 +677,7 @@ ParseResult LibertyParser::parseLibrary() {
           return failure();
         continue;
       }
-      if (token.spelling == "lu_table_template" ||
-          token.spelling == "power_lut_template" ||
-          token.spelling == "output_current_template") {
+      if (token.spelling.ends_with("_template")) {
         StringRef name = token.spelling;
         lexer.nextToken(); // consume template kind
         LibertyGroup templGroup;
@@ -735,14 +733,12 @@ Attribute LibertyParser::convertGroupToAttr(const LibertyGroup &group) {
     attrs.push_back(builder.getNamedAttr(attr.first, attr.second));
 
   llvm::StringMap<SmallVector<Attribute>> subGroups;
-  for (const auto &sub : group.subGroups) {
+  for (const auto &sub : group.subGroups)
     subGroups[sub->name].push_back(convertGroupToAttr(*sub));
-  }
 
-  for (auto &it : subGroups) {
+  for (auto &it : subGroups)
     attrs.push_back(
         builder.getNamedAttr(it.getKey(), builder.getArrayAttr(it.getValue())));
-  }
 
   return builder.getDictionaryAttr(attrs);
 }
@@ -760,12 +756,14 @@ ParseResult LibertyParser::lowerTemplate(const LibertyGroup &group) {
   // Simple implementation: extract variable names
   SmallVector<std::string> vars;
   for (const auto &attr : group.attrs) {
-    if (attr.first.starts_with("variable_")) {
+    // Prefix 'variable_'
+    const StringRef varName = "variable_";
+    if (attr.first.starts_with(varName)) {
       unsigned index;
-      if (attr.first.drop_front(9).getAsInteger(10, index))
-        continue;
+      if (attr.first.drop_front(varName.size()).getAsInteger(10, index))
+        return emitError(group.loc, "invalid variable index in template");
       if (index == 0)
-        continue;
+        return emitError(group.loc, "variable index must be > 0");
       if (vars.size() < index)
         vars.resize(index);
       if (auto strAttr = dyn_cast<StringAttr>(attr.second))
@@ -1169,12 +1167,14 @@ ParseResult LibertyParser::parseGroupBody(LibertyGroup &group) {
   return success();
 }
 
+// Parse group, attribute, or define statements
 ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
   auto nameTok = lexer.nextToken();
   if (nameTok.kind != LibertyTokenKind::Identifier)
     return emitError(nameTok.location, "expected identifier");
   StringRef name = nameTok.spelling;
 
+  // Attribute statement.
   if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
     lexer.nextToken(); // :
     Attribute val;
@@ -1184,6 +1184,7 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
     return consume(LibertyTokenKind::Semi, "expected ';'");
   }
 
+  // Group statement.
   if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
     auto subGroup = std::make_unique<LibertyGroup>();
     subGroup->name = name;
@@ -1193,6 +1194,8 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
     parent.subGroups.push_back(std::move(subGroup));
     return success();
   }
+
+  // TODO: Support define.
 
   return emitError(nameTok.location, "expected ':' or '('");
 }
