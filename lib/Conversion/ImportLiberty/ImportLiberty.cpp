@@ -329,6 +329,7 @@ private:
   }
 };
 
+// Parsed result of a Liberty group
 struct LibertyGroup {
   StringRef name;
   SMLoc loc;
@@ -374,7 +375,21 @@ private:
   // Lowering methods
   ParseResult lowerCell(const LibertyGroup &group);
   ParseResult lowerTemplate(const LibertyGroup &group);
+
+  //===--------------------------------------------------------------------===//
+  // Parser for Subgroup of "cell" group.
+  //===--------------------------------------------------------------------===//
+
+  // Parse "timing".
   Attribute lowerTimingGroup(const LibertyGroup &group);
+  // Parse "internal_power"
+  Attribute lowerInternalPowerGroup(const LibertyGroup &group);
+  // Parse "output_current_rise"
+  Attribute lowerOutputCurrentRiseGroup(const LibertyGroup &group);
+  // Parse "output_current_fall"
+  Attribute lowerOutputCurrentFallGroup(const LibertyGroup &group);
+  // Parse "receiver_capacitance"
+  Attribute lowerReceiverCapacitanceGroup(const LibertyGroup &group);
 
   Attribute convertGroupToAttr(const LibertyGroup &group);
 
@@ -1041,6 +1056,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
 
       llvm::StringMap<SmallVector<Attribute>> subGroups;
       for (const auto &child : sub->subGroups) {
+        // Known timing subgroups.
         if (child->name == "timing" || child->name == "internal_power" ||
             child->name == "output_current_rise" ||
             child->name == "output_current_fall" ||
@@ -1049,6 +1065,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group) {
         else
           subGroups[child->name].push_back(convertGroupToAttr(*child));
       }
+
       for (auto &it : subGroups) {
         pinAttrs.push_back(builder.getNamedAttr(
             it.getKey(), builder.getArrayAttr(it.getValue())));
@@ -1288,7 +1305,6 @@ void registerImportLibertyTranslation() {
         // Load required dialects
         context->loadDialect<hw::HWDialect>();
         context->loadDialect<comb::CombDialect>();
-        context->loadDialect<synth::SynthDialect>();
         if (failed(parser.parse()))
           return OwningOpRef<ModuleOp>();
         return OwningOpRef<ModuleOp>(module);
@@ -1296,7 +1312,6 @@ void registerImportLibertyTranslation() {
       [](DialectRegistry &registry) {
         registry.insert<HWDialect>();
         registry.insert<comb::CombDialect>();
-        registry.insert<synth::SynthDialect>();
       });
 }
 } // namespace circt

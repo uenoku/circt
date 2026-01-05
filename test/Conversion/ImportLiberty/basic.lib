@@ -1,27 +1,46 @@
-/* Basic Liberty Test */
-library(demo) {
-  cell(AND2) {
+// RUN: circt-translate --import-liberty %s | FileCheck %s
+// CHECK: module attributes {synth.liberty.library = {
+// CHECK-DAG:   name = "test"
+// CHECK-DAG:   current_unit = "1uA"
+// CHECK-SAME: }
+// CHECK-NEXT: hw.module @Basic(
+// CHECK-SAME: in %A : i1 {synth.liberty.pin =
+// CHECK-SAME: capacitance = 1.0
+// CHECK-SAME: fall_capacitance = 1.5
+// CHECK-SAME: in %B : i1 {synth.liberty.pin = {}}
+// CHECK-SAME: in %C : i1 {synth.liberty.pin = {}}
+// CHECK-SAME: out Z : i1 {synth.liberty.pin = {function = "A * !B + C"}}
+// CHECK-SAME: out PRECEDENCE : i1 {synth.liberty.pin = {function = "A * B ^ C"}})
+// CHECK-NEXT: %true = hw.constant true
+// CHECK-NEXT: %[[NOT_B:.+]] = comb.xor %B, %true : i1
+// CHECK-NEXT: %[[AND_0:.+]] = comb.and %A, %[[NOT_B]] : i1
+// CHECK-NEXT: %[[OR_0:.+]] = comb.or %[[AND_0]], %C : i1
+// CHECK-NEXT: %[[AND_1:.+]] = comb.and %A, %B : i1
+// CHECK-NEXT: %[[XOR_0:.+]] = comb.xor %[[AND_1]], %C : i1
+// CHECK-NEXT: hw.output %[[OR_0]], %[[XOR_0]] : i1, i1
+// CHECK-NEXT: }
+library(test) {
+  current_unit: "1uA";
+  cell(Basic) {
     pin(A) {
       direction: input;
+      capacitance: 0.1;
+      fall_capacitance: 0.15;
     }
     pin(B) {
       direction: input;
     }
+    pin(C) {
+      direction: input;
+    }
     pin(Z) {
       direction: output;
-      function: "A * B";
+      function: "A * !B + C";
     }
-  }
-  
-  cell(DFF) {
-    pin(D) {
-      direction: input;
-    }
-    pin(CK) {
-      direction: input;
-    }
-    pin(Q) {
+    // Check precedence parsing
+    pin(PRECEDENCE) {
       direction: output;
+      function: "A * B ^ C";
     }
   }
 }
