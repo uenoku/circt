@@ -1,4 +1,5 @@
 add_circt_unittest(CIRCTSynthTests
+  ISOPTest.cpp
   LongestPathTest.cpp
 )
 
