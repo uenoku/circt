@@ -234,10 +234,13 @@ private:
   Token peek() const { return tokens[pos]; }
   Token consume() { return tokens[pos++]; }
 
+  Value trueVal = nullptr;
+
   Value createNot(Value val) {
-    Value allOnes = builder.create<ConstantOp>(builder.getUnknownLoc(),
-                                               builder.getI1Type(), 1);
-    return builder.create<XorOp>(builder.getUnknownLoc(), val, allOnes);
+    if (!trueVal)
+      trueVal = builder.create<ConstantOp>(builder.getUnknownLoc(),
+                                           builder.getI1Type(), 1);
+    return builder.create<XorOp>(builder.getUnknownLoc(), val, trueVal);
   }
 
   // Parse: OrExpr -> XorExpr { ('+'|'|') XorExpr }
@@ -395,6 +398,8 @@ private:
 
   // Attribute parsing
   ParseResult parseAttribute(Attribute &result);
+  static ParseResult parseAttribute(Attribute &result, OpBuilder &builder,
+                                    StringRef attr);
 
   // Expression parsing
   Value parseExpression(StringRef expr,
@@ -1217,6 +1222,17 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
   return emitError(nameTok.location, "expected ':' or '('");
 }
 
+ParseResult LibertyParser::parseAttribute(Attribute &result, OpBuilder &builder,
+                                          StringRef attr) {
+  double val;
+  if (!attr.getAsDouble(val)) {
+    result = builder.getF64FloatAttr(val);
+  } else {
+    // Keep as string if not a valid number
+    result = builder.getStringAttr(attr);
+  }
+  return success();
+}
 // Parse an attribute value, which can be:
 // - A string: "value"
 // - A number: 1.23
@@ -1239,25 +1255,16 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
       for (StringRef part : parts) {
         part = part.trim();
         // Try to parse as float
-        double val;
-        if (!part.getAsDouble(val)) {
-          elements.push_back(builder.getF64FloatAttr(val));
-        } else {
-          // Keep as string if not a valid number
-          elements.push_back(builder.getStringAttr(part));
-        }
+        if (parseAttribute(result, builder, part))
+          return failure();
+        elements.push_back(result);
       }
       result = builder.getArrayAttr(elements);
       return success();
     }
 
-    // Single string value - try to parse as number first
-    double val;
-    if (!str.getAsDouble(val)) {
-      result = builder.getF64FloatAttr(val);
-      return success();
-    }
-    result = builder.getStringAttr(str);
+    if (parseAttribute(result, builder, str))
+      return failure();
     return success();
   }
 
@@ -1270,9 +1277,7 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
       result = builder.getF64FloatAttr(val);
       return success();
     }
-    // Fallback to string if parsing fails
-    result = builder.getStringAttr(numStr);
-    return success();
+    return emitError(token.location, "expected number value");
   }
 
   // Identifier token
