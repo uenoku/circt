@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/SynthUtils.h"
-#include "circt/Support/NPNClass.h"
 #include "llvm/ADT/APInt.h"
 #include "gtest/gtest.h"
 
@@ -25,15 +24,13 @@ namespace {
 TEST(ISOPTest, SimpleAND) {
   // AND function: f(a,b) = a * b
   // Truth table: 0001 (only true when both inputs are 1)
-  BinaryTruthTable tt;
-  tt.numInputs = 2;
-  tt.table = llvm::APInt(4, 0b0001);
+  llvm::APInt truthTable(4, 0b0001);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
   // Verify correctness: computed truth table matches original
   llvm::APInt computed = sop.computeTruthTable();
-  EXPECT_EQ(computed, tt.table) << "ISOP truth table doesn't match original";
+  EXPECT_EQ(computed, truthTable) << "ISOP truth table doesn't match original";
 
   // Verify irredundancy: no cube can be removed
   EXPECT_TRUE(sop.isIrredundant()) << "ISOP is not irredundant";
@@ -46,13 +43,11 @@ TEST(ISOPTest, SimpleAND) {
 TEST(ISOPTest, SimpleOR) {
   // OR function: f(a,b) = a + b
   // Truth table: 0111 (true when at least one input is 1)
-  BinaryTruthTable tt;
-  tt.numInputs = 2;
-  tt.table = llvm::APInt(4, 0b0111);
+  llvm::APInt truthTable(4, 0b0111);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 
   // OR should produce two cubes: (a) + (b)
@@ -62,13 +57,11 @@ TEST(ISOPTest, SimpleOR) {
 TEST(ISOPTest, SimpleXOR) {
   // XOR function: f(a,b) = a ^ b
   // Truth table: 0110 (true when inputs differ)
-  BinaryTruthTable tt;
-  tt.numInputs = 2;
-  tt.table = llvm::APInt(4, 0b0110);
+  llvm::APInt truthTable(4, 0b0110);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 
   // XOR should produce two cubes: (a * !b) + (!a * b)
@@ -81,13 +74,11 @@ TEST(ISOPTest, SimpleXOR) {
 TEST(ISOPTest, Majority3) {
   // MAJ3 function: f(a,b,c) = (a*b) + (a*c) + (b*c)
   // Truth table: 00010111 (true when at least 2 inputs are 1)
-  BinaryTruthTable tt;
-  tt.numInputs = 3;
-  tt.table = llvm::APInt(8, 0b11101000); // Note: LSB is minterm 000
+  llvm::APInt truthTable(8, 0b11101000); // Note: LSB is minterm 000
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 
   // MAJ3 should produce three cubes: (a*b) + (a*c) + (b*c)
@@ -99,13 +90,11 @@ TEST(ISOPTest, Majority3) {
 
 TEST(ISOPTest, ConstantZero) {
   // Constant 0 function
-  BinaryTruthTable tt;
-  tt.numInputs = 2;
-  tt.table = llvm::APInt(4, 0);
+  llvm::APInt truthTable(4, 0);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 
   // Constant 0 should produce no cubes
@@ -114,13 +103,11 @@ TEST(ISOPTest, ConstantZero) {
 
 TEST(ISOPTest, ConstantOne) {
   // Constant 1 function
-  BinaryTruthTable tt;
-  tt.numInputs = 2;
-  tt.table = llvm::APInt(4, 0b1111);
+  llvm::APInt truthTable(4, 0b1111);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 
   // Constant 1 should produce one empty cube
@@ -131,35 +118,30 @@ TEST(ISOPTest, ConstantOne) {
 TEST(ISOPTest, ComplexFunction) {
   // Complex 3-input function: f(a,b,c) = a*b + !a*c
   // Truth table: 10111100
-  BinaryTruthTable tt;
-  tt.numInputs = 3;
-  tt.table = llvm::APInt(8, 0b00111101);
+  llvm::APInt truthTable(8, 0b00111101);
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 }
 
 TEST(ISOPTest, FourInputFunction) {
   // 4-input function to test scalability
   // f(a,b,c,d) = a*b*c + c*d
-  BinaryTruthTable tt;
-  tt.numInputs = 4;
-  // Construct truth table for a*b*c + c*d
-  tt.table = llvm::APInt(16, 0);
+  llvm::APInt truthTable(16, 0);
   for (unsigned i = 0; i < 16; ++i) {
     bool a = (i >> 0) & 1;
     bool b = (i >> 1) & 1;
     bool c = (i >> 2) & 1;
     bool d = (i >> 3) & 1;
     if ((a && b && c) || (c && d))
-      tt.table.setBit(i);
+      truthTable.setBit(i);
   }
 
-  SOPForm sop = extractSOPFromTruthTable(tt);
+  SOPForm sop = extractSOPFromTruthTable(truthTable);
 
-  EXPECT_EQ(sop.computeTruthTable(), tt.table);
+  EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
 }
 

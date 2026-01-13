@@ -9,6 +9,7 @@
 #include "circt/Dialect/Synth/SynthUtils.h"
 #include "circt/Support/NPNClass.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace circt;
 using namespace circt::synth;
@@ -291,8 +292,10 @@ bool SOPForm::isIrredundant() {
   return true;
 }
 
-SOPForm circt::synth::extractSOPFromTruthTable(const APInt &truthTable,
-                                               unsigned numVars) {
+SOPForm circt::synth::extractSOPFromTruthTable(const APInt &truthTable) {
+  auto numVars = llvm::Log2_64_Ceil(truthTable.getBitWidth());
+  assert((1u << numVars) == truthTable.getBitWidth() &&
+         "Truth table size must be a power of two");
   SOPForm sop(numVars);
 
   if (numVars == 0 || truthTable.isZero())
@@ -301,13 +304,14 @@ SOPForm circt::synth::extractSOPFromTruthTable(const APInt &truthTable,
   // Call the ISOP algorithm
   // dontCareSet = onSet means all ON-set bits are don't-cares (no OFF-set
   // constraints)
-  (void)isopImpl(truthTable, truthTable, numVars, numVars, sop);
+  auto result = isopImpl(truthTable, truthTable, numVars, numVars, sop);
 
 #ifdef DEBUG
   // Verify the result is correct
-  APInt result = sop.computeTruthTable();
-  (void)result;
-  assert(result == tt.table && "ISOP does not match original truth table!");
+  APInt tt = sop.computeTruthTable();
+  (void)tt;
+  assert(result == tt && "ISOP does not match original truth table!");
+  assert(result == truthTable && "ISOP does not match original truth table!");
 #endif
 
   return sop;

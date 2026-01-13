@@ -65,7 +65,7 @@ struct SOPForm {
 ///   1. No cube can be removed without changing the function
 ///   2. The cubes are pairwise disjoint (no minterm is covered by multiple
 ///   cubes)
-SOPForm extractSOPFromTruthTable(const APInt &truthTable, unsigned numVars);
+SOPForm extractSOPFromTruthTable(const APInt &truthTable);
 
 } // namespace synth
 } // namespace circt
