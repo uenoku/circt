@@ -234,7 +234,6 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
     // inverted bit remains 0 for positive literal var
   }
 
-  // Verify invariants
   assert((onSet & ~totalCover).isZero() && "result must cover onSet");
   assert((totalCover & ~dontCareSet).isZero() &&
          "result must be subset of dontCareSet");
