@@ -177,36 +177,39 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
 
   assert(varIndex > 0 && "No more variables to process");
 
-  // Find the highest variable that actually appears in onSet or dontCareSet
-  int var = varIndex - 1;
-  for (; var >= 0; --var)
-    if (variableInSupport(onSet, numVars, var) ||
-        variableInSupport(dontCareSet, numVars, var))
+  // Find a splitting variable and compute its cofactors
+  int var = -1;
+  APInt onSet0, onSet1, dc0, dc1;
+  
+  for (int v = varIndex - 1; v >= 0; --v) {
+    auto [on0, on1] = computeCofactors(onSet, numVars, v);
+    auto [dcof0, dcof1] = computeCofactors(dontCareSet, numVars, v);
+    
+    if (on0 != on1 || dcof0 != dcof1) {
+      var = v;
+      onSet0 = std::move(on0);
+      onSet1 = std::move(on1);
+      dc0 = std::move(dcof0);
+      dc1 = std::move(dcof1);
       break;
+    }
+  }
 
-  // If no variable found, add empty cube if needed
   assert(var >= 0 && "No variable found in onSet or dontCareSet");
 
-  // Compute cofactors with respect to the splitting variable
-  auto [negativeCofactor, positiveCofactor] =
-      computeCofactors(onSet, numVars, var);
-  auto [negativeDC, positiveDC] = computeCofactors(dontCareSet, numVars, var);
-
-  // Recurse on minterms unique to negative cofactor (will get !var literal)
+  // Recurse on minterms unique to negative cofactor
   size_t negativeBegin = result.cubes.size();
-  APInt negativeCover = isopImpl(negativeCofactor & ~positiveDC, negativeDC,
-                                 numVars, var, result);
+  APInt negativeCover = isopImpl(onSet0 & ~dc1, dc0, numVars, var, result);
   size_t negativeEnd = result.cubes.size();
 
-  // Recurse on minterms unique to positive cofactor (will get var literal)
-  APInt positiveCover = isopImpl(positiveCofactor & ~negativeDC, positiveDC,
-                                 numVars, var, result);
+  // Recurse on minterms unique to positive cofactor
+  APInt positiveCover = isopImpl(onSet1 & ~dc0, dc1, numVars, var, result);
   size_t positiveEnd = result.cubes.size();
 
-  // Recurse on shared minterms (will get no literal for this variable)
-  APInt sharedCover = isopImpl((negativeCofactor & ~negativeCover) |
-                                   (positiveCofactor & ~positiveCover),
-                               negativeDC & positiveDC, numVars, var, result);
+  // Recurse on shared minterms
+  APInt sharedCover = isopImpl((onSet0 & ~negativeCover) |
+                                   (onSet1 & ~positiveCover),
+                               dc0 & dc1, numVars, var, result);
 
   // Create masks for the variable to restrict covers to their domains
   APInt negativeMask =
