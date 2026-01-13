@@ -41,7 +41,7 @@ static constexpr uint64_t kVarMasks[2][6] = {
 /// For positive=false: mask has 1s where var=0 in the truth table encoding
 template <bool positive>
 static APInt createVarMask(unsigned numVars, unsigned var) {
-  uint32_t numBits = 1u << numVars;
+  uint64_t numBits = 1u << numVars;
 
   // Use precomputed table for small cases (up to 6 variables = 64 bits)
   if (numVars <= 6) {
@@ -55,16 +55,16 @@ static APInt createVarMask(unsigned numVars, unsigned var) {
 
   // For larger cases, build mask by setting bits in blocks
   APInt mask(numBits, 0);
-  uint32_t shift = 1u << var;
+  uint64_t shift = 1u << var;
 
-  for (uint32_t i = 0; i < numBits; i += 2 * shift) {
+  for (uint64_t i = 0; i < numBits; i += 2 * shift) {
     if (positive) {
       // Set upper half of each block
-      for (uint32_t j = 0; j < shift && (i + shift + j) < numBits; ++j)
+      for (uint64_t j = 0; j < shift && (i + shift + j) < numBits; ++j)
         mask.setBit(i + shift + j);
     } else {
       // Set lower half of each block
-      for (uint32_t j = 0; j < shift && (i + j) < numBits; ++j)
+      for (uint64_t j = 0; j < shift && (i + j) < numBits; ++j)
         mask.setBit(i + j);
     }
   }
@@ -95,8 +95,8 @@ static APInt createVarMask(unsigned numVars, unsigned var, bool positive) {
 /// Returns: (negative cofactor, positive cofactor)
 static std::pair<APInt, APInt>
 computeCofactors(const APInt &f, unsigned numVars, unsigned var) {
-  uint32_t numBits = 1u << numVars;
-  uint32_t shift = 1u << var;
+  uint64_t numBits = 1u << numVars;
+  uint64_t shift = 1u << var;
 
   // Create mask that selects bits for each cofactor
   APInt blockMask = APInt::getLowBitsSet(numBits, shift);
@@ -105,7 +105,7 @@ computeCofactors(const APInt &f, unsigned numVars, unsigned var) {
   APInt mask0(numBits, 0); // Selects bits where var=0
   APInt mask1(numBits, 0); // Selects bits where var=1
 
-  for (uint32_t i = 0; i < numBits; i += 2 * shift) {
+  for (uint64_t i = 0; i < numBits; i += 2 * shift) {
     mask0 |= blockMask.shl(i);         // Lower half of each block
     mask1 |= blockMask.shl(i + shift); // Upper half of each block
   }
