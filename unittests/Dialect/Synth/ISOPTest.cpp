@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/Synth/SynthUtils.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "gtest/gtest.h"
 
 using namespace circt;
@@ -138,7 +139,7 @@ TEST(ISOPTest, LargeInputsFunction) {
                                {0x123456789ABCDEF0, 0xFEDCBA9876543210},
                                {0xFEDCBA9876543210, 0x123456789ABCDEF0}};
   for (unsigned i = 0; i < 10; ++i) {
-    llvm::APInt truthTable(128, {testCases[i][0], testCases[i][1]});
+    llvm::APInt truthTable(128, testCases[i]);
     SOPForm sop = extractISOPFromTruthTable(truthTable);
     EXPECT_EQ(sop.computeTruthTable(), truthTable)
         << "Failed on test case " << i;
