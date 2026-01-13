@@ -121,19 +121,6 @@ computeCofactors(const APInt &f, unsigned numVars, unsigned var) {
   return {cof0, cof1};
 }
 
-/// Check if a variable is in the support of the function.
-///
-/// The support of a Boolean function is the set of variables that the function
-/// depends on. A variable x is in the support if changing its value can change
-/// the function's output. Formally, x is in the support if f|x=0 != f|x=1
-/// (the positive and negative cofactors differ).
-///
-/// Example: f(a,b,c) = a*b has support {a,b} since c doesn't affect the output.
-static bool variableInSupport(const APInt &f, unsigned numVars, unsigned var) {
-  auto [f0, f1] = computeCofactors(f, numVars, var);
-  return f0 != f1;
-}
-
 /// Minato-Morreale ISOP algorithm.
 ///
 /// Computes an Irredundant Sum-of-Products (ISOP) cover for a Boolean function.
