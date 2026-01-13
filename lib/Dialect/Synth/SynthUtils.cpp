@@ -205,8 +205,8 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
       createVarMask<true>(numVars, var); // Minterms where var=1
 
   // Combine results: restrict each cover to its domain
-  APInt totalCover = sharedCover | (negativeCover & negativeMask) |
-                     (positiveCover & positiveMask);
+  APInt totalCover = (negativeCover & negativeMask) |
+                     (positiveCover & positiveMask) | sharedCover;
 
   // Add negative literal to cubes from first recursion
   APInt mask(numVars, 1 << var);
