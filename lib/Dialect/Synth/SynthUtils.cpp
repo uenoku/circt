@@ -291,17 +291,17 @@ bool SOPForm::isIrredundant() {
   return true;
 }
 
-SOPForm
-circt::synth::extractSOPFromTruthTable(const circt::BinaryTruthTable &tt) {
-  SOPForm sop(tt.numInputs);
+SOPForm circt::synth::extractSOPFromTruthTable(const APInt &truthTable,
+                                               unsigned numVars) {
+  SOPForm sop(numVars);
 
-  if (tt.numInputs == 0 || tt.table.isZero())
+  if (numVars == 0 || truthTable.isZero())
     return sop;
 
   // Call the ISOP algorithm
   // dontCareSet = onSet means all ON-set bits are don't-cares (no OFF-set
   // constraints)
-  (void)isopImpl(tt.table, tt.table, tt.numInputs, tt.numInputs, sop);
+  (void)isopImpl(truthTable, truthTable, numVars, numVars, sop);
 
 #ifdef DEBUG
   // Verify the result is correct
