@@ -179,18 +179,16 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
 
   // Find a splitting variable and compute its cofactors
   int var = -1;
-  APInt onSet0, onSet1, dc0, dc1;
-  
+  APInt negativeCofactor, positiveCofactor, negativeDC, positiveDC;
   for (int v = varIndex - 1; v >= 0; --v) {
-    auto [on0, on1] = computeCofactors(onSet, numVars, v);
-    auto [dcof0, dcof1] = computeCofactors(dontCareSet, numVars, v);
-    
-    if (on0 != on1 || dcof0 != dcof1) {
+    std::tie(negativeCofactor, positiveCofactor) =
+        computeCofactors(onSet, numVars, v);
+    std::tie(negativeDC, positiveDC) =
+        computeCofactors(dontCareSet, numVars, v);
+
+    // Check if variable is in support of onSet or dontCareSet.
+    if (negativeCofactor != positiveCofactor || negativeDC != positiveDC) {
       var = v;
-      onSet0 = std::move(on0);
-      onSet1 = std::move(on1);
-      dc0 = std::move(dcof0);
-      dc1 = std::move(dcof1);
       break;
     }
   }
@@ -199,17 +197,19 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
 
   // Recurse on minterms unique to negative cofactor
   size_t negativeBegin = result.cubes.size();
-  APInt negativeCover = isopImpl(onSet0 & ~dc1, dc0, numVars, var, result);
+  APInt negativeCover = isopImpl(negativeCofactor & ~positiveDC, negativeDC,
+                                 numVars, var, result);
   size_t negativeEnd = result.cubes.size();
 
   // Recurse on minterms unique to positive cofactor
-  APInt positiveCover = isopImpl(onSet1 & ~dc0, dc1, numVars, var, result);
+  APInt positiveCover = isopImpl(positiveCofactor & ~negativeDC, positiveDC,
+                                 numVars, var, result);
   size_t positiveEnd = result.cubes.size();
 
   // Recurse on shared minterms
-  APInt sharedCover = isopImpl((onSet0 & ~negativeCover) |
-                                   (onSet1 & ~positiveCover),
-                               dc0 & dc1, numVars, var, result);
+  APInt sharedCover = isopImpl((negativeCofactor & ~negativeCover) |
+                                   (positiveCofactor & ~positiveCover),
+                               negativeDC & positiveDC, numVars, var, result);
 
   // Create masks for the variable to restrict covers to their domains
   APInt negativeMask =
