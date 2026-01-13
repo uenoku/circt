@@ -52,6 +52,9 @@ struct SOPForm {
 
   void dump(llvm::raw_ostream &os) const;
   llvm::APInt computeTruthTable() const;
+  // Check if the SOP form is irredundant (no cube can be removed).
+  // This is slow brute-force check and shouldn't be used in ISOP extraction
+  // itself.
   bool isIrredundant();
 };
 
@@ -62,7 +65,7 @@ struct SOPForm {
 ///   1. No cube can be removed without changing the function
 ///   2. The cubes are pairwise disjoint (no minterm is covered by multiple
 ///   cubes)
-SOPForm extractSOPFromTruthTable(const circt::BinaryTruthTable &tt);
+SOPForm extractSOPFromTruthTable(const APInt &truthTable, unsigned numVars);
 
 } // namespace synth
 } // namespace circt

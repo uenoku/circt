@@ -253,20 +253,25 @@ void SOPForm::dump(llvm::raw_ostream &os) const {
   }
 }
 
+/// Compute the truth table represented by the SOP form.
 APInt SOPForm::computeTruthTable() const {
   APInt tt(1 << numVars, 0);
   for (const auto &cube : cubes) {
     APInt cubeTT = ~APInt(1 << numVars, 0);
     for (unsigned i = 0; i < numVars; ++i) {
-      if (cube.mask[i]) {
+      if (cube.mask[i])
         cubeTT &= createVarMask(numVars, i, !cube.inverted[i]);
-      }
     }
     tt |= cubeTT;
   }
   return tt;
 }
 
+// Check if the SOP form is irredundant (no cube can be removed).
+// This is done by attempting to remove each literal from each cube
+// and checking if the overall truth table remains the same.
+// This is a brute-force check that verifies the irredundancy property and
+// shouldn't be used as part of the ISOP extraction itself.
 bool SOPForm::isIrredundant() {
   APInt tt = computeTruthTable();
   for (auto &cube : cubes) {
