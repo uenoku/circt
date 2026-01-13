@@ -126,23 +126,25 @@ TEST(ISOPTest, ComplexFunction) {
   EXPECT_TRUE(sop.isIrredundant());
 }
 
-TEST(ISOPTest, FourInputFunction) {
-  // 4-input function to test scalability
-  // f(a,b,c,d) = a*b*c + c*d
-  llvm::APInt truthTable(16, 0);
-  for (unsigned i = 0; i < 16; ++i) {
-    bool a = (i >> 0) & 1;
-    bool b = (i >> 1) & 1;
-    bool c = (i >> 2) & 1;
-    bool d = (i >> 3) & 1;
-    if ((a && b && c) || (c && d))
-      truthTable.setBit(i);
+TEST(ISOPTest, LargeInputsFunction) {
+  uint64_t testCases[10][2] = {{0x0000000000000000, 0x0000000000000000},
+                               {0xFFFFFFFFFFFFFFFF, 0x0000000000000000},
+                               {0xAAAAAAAAAAAAAAAA, 0x5555555555555555},
+                               {0x5555555555555555, 0xAAAAAAAAAAAAAAAA},
+                               {0xF0F0F0F0F0F0F0F0, 0x0F0F0F0F0F0F0F0F},
+                               {0x0F0F0F0F0F0F0F0F, 0xF0F0F0F0F0F0F0F0},
+                               {0xCCCCCCCCCCCCCCCC, 0x3333333333333333},
+                               {0x3333333333333333, 0xCCCCCCCCCCCCCCCC},
+                               {0x123456789ABCDEF0, 0xFEDCBA9876543210},
+                               {0xFEDCBA9876543210, 0x123456789ABCDEF0}};
+  for (unsigned i = 0; i < 10; ++i) {
+    llvm::APInt truthTable(128, {testCases[i][0], testCases[i][1]});
+    SOPForm sop = extractSOPFromTruthTable(truthTable);
+    EXPECT_EQ(sop.computeTruthTable(), truthTable)
+        << "Failed on test case " << i;
+    EXPECT_TRUE(sop.isIrredundant())
+        << "ISOP is not irredundant on test case " << i;
   }
-
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
-
-  EXPECT_EQ(sop.computeTruthTable(), truthTable);
-  EXPECT_TRUE(sop.isIrredundant());
 }
 
 } // namespace
