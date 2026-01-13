@@ -229,10 +229,8 @@ static APInt isopImpl(const APInt &onSet, const APInt &dontCareSet,
   }
 
   // Add positive literal to cubes from second recursion
-  for (size_t i = negativeEnd; i < positiveEnd; ++i) {
+  for (size_t i = negativeEnd; i < positiveEnd; ++i)
     result.cubes[i].mask |= mask;
-    // inverted bit remains 0 for positive literal var
-  }
 
   assert((onSet & ~totalCover).isZero() && "result must cover onSet");
   assert((totalCover & ~dontCareSet).isZero() &&
