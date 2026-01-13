@@ -26,7 +26,7 @@ TEST(ISOPTest, SimpleAND) {
   // Truth table: 0001 (only true when both inputs are 1)
   llvm::APInt truthTable(4, 0b0001);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   // Verify correctness: computed truth table matches original
   llvm::APInt computed = sop.computeTruthTable();
@@ -45,7 +45,7 @@ TEST(ISOPTest, SimpleOR) {
   // Truth table: 0111 (true when at least one input is 1)
   llvm::APInt truthTable(4, 0b0111);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -59,7 +59,7 @@ TEST(ISOPTest, SimpleXOR) {
   // Truth table: 0110 (true when inputs differ)
   llvm::APInt truthTable(4, 0b0110);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -76,7 +76,7 @@ TEST(ISOPTest, Majority3) {
   // Truth table: 00010111 (true when at least 2 inputs are 1)
   llvm::APInt truthTable(8, 0b11101000); // Note: LSB is minterm 000
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -92,7 +92,7 @@ TEST(ISOPTest, ConstantZero) {
   // Constant 0 function
   llvm::APInt truthTable(4, 0);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -105,7 +105,7 @@ TEST(ISOPTest, ConstantOne) {
   // Constant 1 function
   llvm::APInt truthTable(4, 0b1111);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -120,7 +120,7 @@ TEST(ISOPTest, ComplexFunction) {
   // Truth table: 10111100
   llvm::APInt truthTable(8, 0b00111101);
 
-  SOPForm sop = extractSOPFromTruthTable(truthTable);
+  SOPForm sop = extractISOPFromTruthTable(truthTable);
 
   EXPECT_EQ(sop.computeTruthTable(), truthTable);
   EXPECT_TRUE(sop.isIrredundant());
@@ -139,7 +139,7 @@ TEST(ISOPTest, LargeInputsFunction) {
                                {0xFEDCBA9876543210, 0x123456789ABCDEF0}};
   for (unsigned i = 0; i < 10; ++i) {
     llvm::APInt truthTable(128, {testCases[i][0], testCases[i][1]});
-    SOPForm sop = extractSOPFromTruthTable(truthTable);
+    SOPForm sop = extractISOPFromTruthTable(truthTable);
     EXPECT_EQ(sop.computeTruthTable(), truthTable)
         << "Failed on test case " << i;
     EXPECT_TRUE(sop.isIrredundant())

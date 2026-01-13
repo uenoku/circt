@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/SynthUtils.h"
-#include "circt/Support/NPNClass.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -292,7 +291,7 @@ bool SOPForm::isIrredundant() {
   return true;
 }
 
-SOPForm circt::synth::extractSOPFromTruthTable(const APInt &truthTable) {
+SOPForm circt::synth::extractISOPFromTruthTable(const APInt &truthTable) {
   auto numVars = llvm::Log2_64_Ceil(truthTable.getBitWidth());
   assert((1u << numVars) == truthTable.getBitWidth() &&
          "Truth table size must be a power of two");
