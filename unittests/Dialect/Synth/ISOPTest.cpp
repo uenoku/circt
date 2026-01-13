@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/SynthUtils.h"
 #include "circt/Support/NPNClass.h"
 #include "llvm/ADT/APInt.h"
 #include "gtest/gtest.h"
