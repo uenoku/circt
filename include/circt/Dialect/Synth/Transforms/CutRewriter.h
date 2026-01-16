@@ -59,6 +59,7 @@ class CutRewriter;
 class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
+struct ValueNumbering;
 
 /// Result of matching a cut against a pattern.
 ///
@@ -174,6 +175,11 @@ class Cut {
   /// The root operation produces the output of the cut.
   mlir::Operation *root = nullptr;
 
+  /// Signature bitset for fast cut size estimation.
+  /// Bit i is set if value with index i is in the cut's inputs.
+  /// This enables O(1) estimation of merged cut size using popcount.
+  uint64_t signature = 0;
+
 public:
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
@@ -190,12 +196,27 @@ public:
   /// Set the root operation of this cut.
   void setRoot(mlir::Operation *op) { root = op; }
 
+  /// Get the signature of this cut.
+  uint64_t getSignature() const { return signature; }
+
+  /// Set the signature of this cut.
+  void setSignature(uint64_t sig) { signature = sig; }
+
+  /// Compute and set the signature based on current inputs.
+  void computeSignature(const ValueNumbering &valueNumbering);
+
+  /// Estimate the size of merging this cut with another using signatures.
+  /// Returns the estimated number of unique inputs in the merged cut.
+  unsigned estimateMergedSize(const Cut &other) const;
+
   void dump(llvm::raw_ostream &os) const;
 
   /// Merge this cut with another cut to form a new cut.
   /// The new cut combines the inputs from both cuts with the given root.
-  Cut mergeWith(const Cut &other, Operation *newRoot) const;
-  Cut reRoot(Operation *newRoot) const;
+  /// The valueNumbering is used to compute the signature of the merged cut.
+  Cut mergeWith(const Cut &other, Operation *newRoot,
+                const ValueNumbering &valueNumbering) const;
+  Cut reRoot(Operation *newRoot, const ValueNumbering &valueNumbering) const;
 
   /// Get the number of inputs to this cut.
   unsigned getInputSize() const;
@@ -206,6 +227,11 @@ public:
   /// Get the truth table for this cut.
   /// The truth table represents the boolean function computed by this cut.
   const BinaryTruthTable &getTruthTable() const;
+
+  /// Compute and cache the truth table for this cut.
+  /// This should be called during cut enumeration to compute truth tables
+  /// eagerly.
+  void computeTruthTable();
 
   /// Get the NPN canonical form for this cut.
   /// This is used for efficient pattern matching against library components.
@@ -310,6 +336,36 @@ struct CutRewriterOptions {
 // Cut Enumeration Engine
 //===----------------------------------------------------------------------===//
 
+/// Value numbering system for assigning unique indices to values.
+///
+/// Similar to mockturtle's approach, this assigns a unique integer index to
+/// each value in topological order. This enables:
+/// - Fast value comparisons using integer indices
+/// - Cache-friendly data structures
+/// - Efficient signature-based cut filtering
+class ValueNumbering {
+public:
+  /// Assign a unique index to a value if not already assigned.
+  /// Returns the index for the value.
+  uint32_t getOrAssignIndex(mlir::Value value);
+
+  /// Get the index for a value. Asserts if value not numbered.
+  uint32_t getIndex(mlir::Value value) const;
+
+  /// Get the value for a given index.
+  mlir::Value getValue(uint32_t index) const;
+
+  /// Get the total number of values numbered.
+  size_t size() const { return values.size(); }
+
+  /// Clear all numberings.
+  void clear();
+
+private:
+  llvm::DenseMap<mlir::Value, uint32_t> valueToIndex;
+  llvm::SmallVector<mlir::Value> values;
+};
+
 /// Cut enumeration engine for combinational logic networks.
 ///
 /// The CutEnumerator is responsible for generating cuts for each node in a
@@ -357,6 +413,10 @@ public:
     return cutSets;
   }
 
+  /// Get the value numbering system.
+  ValueNumbering &getValueNumbering() { return valueNumbering; }
+  const ValueNumbering &getValueNumbering() const { return valueNumbering; }
+
 private:
   /// Visit a single operation and generate cuts for it.
   LogicalResult visit(Operation *op);
@@ -375,6 +435,9 @@ private:
   /// Function to match cuts against available patterns.
   /// Set during enumeration and used when finalizing cut sets.
   llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut;
+
+  /// Value numbering system for assigning unique indices to values.
+  ValueNumbering valueNumbering;
 };
 
 /// Base class for cut rewriting patterns used in combinational logic
