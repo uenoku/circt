@@ -42,6 +42,7 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -56,6 +57,37 @@
 
 using namespace circt;
 using namespace circt::synth;
+
+//===----------------------------------------------------------------------===//
+// ValueNumbering
+//===----------------------------------------------------------------------===//
+
+uint32_t ValueNumbering::getOrAssignIndex(mlir::Value value) {
+  auto [it, inserted] = valueToIndex.try_emplace(value, values.size());
+  if (inserted)
+    values.push_back(value);
+  return it->second;
+}
+
+uint32_t ValueNumbering::getIndex(mlir::Value value) const {
+  auto it = valueToIndex.find(value);
+  assert(it != valueToIndex.end() && "Value not numbered");
+  return it->second;
+}
+
+mlir::Value ValueNumbering::getValue(uint32_t index) const {
+  assert(index < values.size() && "Index out of bounds");
+  return values[index];
+}
+
+void ValueNumbering::clear() {
+  valueToIndex.clear();
+  values.clear();
+}
+
+//===----------------------------------------------------------------------===//
+// Helper functions
+//===----------------------------------------------------------------------===//
 
 static bool isSupportedLogicOp(mlir::Operation *op) {
   // Check if the operation is a combinational operation that can be simulated
@@ -290,15 +322,16 @@ unsigned Cut::getInputSize() const { return inputs.size(); }
 
 unsigned Cut::getOutputSize() const { return getRoot()->getNumResults(); }
 
-const BinaryTruthTable &Cut::getTruthTable() const {
+void Cut::computeTruthTable() {
+  // Skip if already computed
   if (truthTable)
-    return *truthTable;
+    return;
 
   if (isTrivialCut()) {
     // For a trivial cut, a truth table is simply the identity function.
     // 0 -> 0, 1 -> 1
     truthTable = BinaryTruthTable(1, 1, {llvm::APInt(2, 2)});
-    return *truthTable;
+    return;
   }
 
   // Walk the IR from root to inputs to collect operations
@@ -324,9 +357,33 @@ const BinaryTruthTable &Cut::getTruthTable() const {
     collectOps(root);
 
   // Create a truth table with the given number of inputs and outputs
-  truthTable = *computeTruthTable(getRoot()->getResults(), operations, inputs);
+  truthTable =
+      *::computeTruthTable(getRoot()->getResults(), operations, inputs);
+}
 
+const BinaryTruthTable &Cut::getTruthTable() const {
+  if (truthTable)
+    return *truthTable;
+
+  // This should not happen if truth tables are computed eagerly
+  // But we keep this as a fallback for compatibility
+  const_cast<Cut *>(this)->computeTruthTable();
   return *truthTable;
+}
+
+void Cut::computeSignature(const ValueNumbering &valueNumbering) {
+  signature = 0;
+  for (auto input : inputs) {
+    uint32_t index = valueNumbering.getIndex(input);
+    if (index < 64) // Only use first 64 values for signature
+      signature |= (1ULL << index);
+  }
+}
+
+unsigned Cut::estimateMergedSize(const Cut &other) const {
+  // Use popcount on the OR of signatures to estimate merged size
+  uint64_t mergedSig = signature | other.signature;
+  return llvm::popcount(mergedSig);
 }
 
 static Cut getAsTrivialCut(mlir::Value value) {
@@ -334,6 +391,8 @@ static Cut getAsTrivialCut(mlir::Value value) {
   Cut cut;
   // There is no input for the primary input cut.
   cut.inputs.insert(value);
+  // Compute truth table eagerly for trivial cut
+  cut.computeTruthTable();
 
   return cut;
 }
@@ -353,7 +412,8 @@ static Cut getAsTrivialCut(mlir::Value value) {
                       [&](Value v) { return v == *cut.inputs.begin(); });
 }
 
-Cut Cut::mergeWith(const Cut &other, Operation *newRoot) const {
+Cut Cut::mergeWith(const Cut &other, Operation *newRoot,
+                   const ValueNumbering &valueNumbering) const {
   assert(isCutDerivedFromOperand(*this, newRoot) &&
          isCutDerivedFromOperand(other, newRoot) &&
          "The operation must be a child of the current root operation");
@@ -418,17 +478,27 @@ Cut Cut::mergeWith(const Cut &other, Operation *newRoot) const {
     }
   }
 
+  // Compute signature for the new cut
+  newCut.computeSignature(valueNumbering);
+
+  // Compute truth table eagerly during cut enumeration
+  newCut.computeTruthTable();
+
   return newCut;
 }
 
 // Reroot the cut with a new root operation.
 // This is used to create a new cut with the same inputs but a different root.
-Cut Cut::reRoot(Operation *newRoot) const {
+Cut Cut::reRoot(Operation *newRoot,
+                const ValueNumbering &valueNumbering) const {
   assert(isCutDerivedFromOperand(*this, newRoot) &&
          "The operation must be a child of the current root operation");
   Cut newCut;
   newCut.inputs = inputs;
   newCut.setRoot(newRoot);
+  // Compute signature and truth table eagerly
+  newCut.computeSignature(valueNumbering);
+  newCut.computeTruthTable();
   return newCut;
 }
 
@@ -675,7 +745,10 @@ llvm::MapVector<Value, std::unique_ptr<CutSet>> CutEnumerator::takeVector() {
   return std::move(cutSets);
 }
 
-void CutEnumerator::clear() { cutSets.clear(); }
+void CutEnumerator::clear() {
+  cutSets.clear();
+  valueNumbering.clear();
+}
 
 LogicalResult CutEnumerator::visit(Operation *op) {
   if (isSupportedLogicOp(op))
@@ -718,11 +791,13 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
 
   // Create the singleton cut (just this operation)
   Cut primaryInputCut = getAsTrivialCut(result);
+  // Compute signature for the primary input cut
+  primaryInputCut.computeSignature(valueNumbering);
 
   auto *resultCutSet = createNewCutSet(result);
 
   // Add the singleton cut first
-  resultCutSet->addCut(primaryInputCut);
+  resultCutSet->addCut(std::move(primaryInputCut));
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
@@ -736,7 +811,7 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
 
     // Try to extend each input cut by including this operation
     for (const Cut &inputCut : inputCutSet->getCuts()) {
-      Cut extendedCut = inputCut.reRoot(logicOp);
+      Cut extendedCut = inputCut.reRoot(logicOp, valueNumbering);
       // Skip cuts that exceed input size limit
       if (extendedCut.getInputSize() > options.maxCutInputSize)
         continue;
@@ -755,8 +830,15 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
   // Combine cuts from both inputs to create larger cuts
   for (const Cut &lhsCut : lhsCutSet->getCuts()) {
     for (const Cut &rhsCut : rhsCutSet->getCuts()) {
-      Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp);
-      // Skip cuts that exceed input size limit
+      // Fast rejection using signature-based filtering
+      // Estimate merged size before doing expensive merge operation
+      unsigned estimatedSize = lhsCut.estimateMergedSize(rhsCut);
+      if (estimatedSize > options.maxCutInputSize)
+        continue;
+
+      Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp, valueNumbering);
+      // Skip cuts that exceed input size limit (double-check after actual
+      // merge)
       if (mergedCut.getInputSize() > options.maxCutInputSize)
         continue;
 
@@ -779,6 +861,16 @@ LogicalResult CutEnumerator::enumerateCuts(
   // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
 
+  // Build value numbering in topological order
+  // This assigns unique indices to all values for signature computation
+  for (auto arg : topOp->getRegion(0).getBlocks().front().getArguments())
+    valueNumbering.getOrAssignIndex(arg);
+  topOp->walk([&](Operation *op) {
+    for (auto result : op->getResults())
+      valueNumbering.getOrAssignIndex(result);
+    return mlir::WalkResult::advance();
+  });
+
   // Walk through all operations in the module in a topological manner
   auto result = topOp->walk([&](Operation *op) {
     if (failed(visit(op)))
@@ -799,7 +891,10 @@ const CutSet *CutEnumerator::getCutSet(Value value) {
   if (it == cutSets.end()) {
     // Create new cut set for an unprocessed value
     auto cutSet = std::make_unique<CutSet>();
-    cutSet->addCut(getAsTrivialCut(value));
+    Cut trivialCut = getAsTrivialCut(value);
+    // Compute signature for the trivial cut
+    trivialCut.computeSignature(valueNumbering);
+    cutSet->addCut(std::move(trivialCut));
     auto [newIt, inserted] = cutSets.insert({value, std::move(cutSet)});
     assert(inserted && "Cut set already exists for this value");
     (void)newIt;
