@@ -195,14 +195,8 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
 //===----------------------------------------------------------------------===//
 
 bool Cut::isTrivialCut() const {
-  // A cut is a trival cut if it has no operations and only one input
-  return operations.empty() && inputs.size() == 1;
-}
-
-mlir::Operation *Cut::getRoot() const {
-  return operations.empty()
-             ? nullptr
-             : operations.back(); // The last operation is the root
+  // A cut is a trivial cut if it has no root operation and only one input
+  return root == nullptr && inputs.size() == 1;
 }
 
 const NPNClass &Cut::getNPNClass() const {
@@ -265,8 +259,11 @@ Cut::getInputArrivalTimes(CutEnumerator &enumerator,
 
 void Cut::dump(llvm::raw_ostream &os) const {
   os << "// === Cut Dump ===\n";
-  os << "Cut with " << getInputSize() << " inputs and " << operations.size()
-     << " operations:\n";
+  os << "Cut with " << getInputSize() << " inputs";
+  if (root)
+    os << " and root: " << *root;
+  os << "\n";
+
   if (isTrivialCut()) {
     os << "Primary input cut: " << *inputs.begin() << "\n";
     return;
@@ -276,11 +273,13 @@ void Cut::dump(llvm::raw_ostream &os) const {
   for (auto [idx, input] : llvm::enumerate(inputs)) {
     os << "  Input " << idx << ": " << input << "\n";
   }
-  os << "\nOperations: \n";
-  for (auto *op : operations) {
-    op->print(os);
+
+  if (root) {
+    os << "\nRoot operation: \n";
+    root->print(os);
     os << "\n";
   }
+
   auto &npnClass = getNPNClass();
   npnClass.dump(os);
 
@@ -301,6 +300,28 @@ const BinaryTruthTable &Cut::getTruthTable() const {
     truthTable = BinaryTruthTable(1, 1, {llvm::APInt(2, 2)});
     return *truthTable;
   }
+
+  // Walk the IR from root to inputs to collect operations
+  llvm::SmallSetVector<mlir::Operation *, 4> operations;
+  std::function<void(Operation *)> collectOps = [&](Operation *op) {
+    if (operations.contains(op))
+      return;
+
+    // Add operands first (topological order)
+    for (auto value : op->getOperands()) {
+      if (isAlwaysCutInput(value) || inputs.contains(value))
+        continue;
+
+      auto *defOp = value.getDefiningOp();
+      if (defOp && !inputs.contains(value))
+        collectOps(defOp);
+    }
+
+    operations.insert(op);
+  };
+
+  if (root)
+    collectOps(root);
 
   // Create a truth table with the given number of inputs and outputs
   truthTable = *computeTruthTable(getRoot()->getResults(), operations, inputs);
@@ -332,57 +353,53 @@ static Cut getAsTrivialCut(mlir::Value value) {
                       [&](Value v) { return v == *cut.inputs.begin(); });
 }
 
-Cut Cut::mergeWith(const Cut &other, Operation *root) const {
-  assert(isCutDerivedFromOperand(*this, root) &&
-         isCutDerivedFromOperand(other, root) &&
+Cut Cut::mergeWith(const Cut &other, Operation *newRoot) const {
+  assert(isCutDerivedFromOperand(*this, newRoot) &&
+         isCutDerivedFromOperand(other, newRoot) &&
          "The operation must be a child of the current root operation");
 
   // Create a new cut that combines this cut and the other cut
   Cut newCut;
-  // Topological sort the operations in the new cut.
-  // TODO: Merge-sort `operations` and `other.operations` by operation index
-  // (since it's already topo-sorted, we can use a simple merge).
-  std::function<void(Operation *)> populateOperations = [&](Operation *op) {
-    // If the operation is already in the cut, skip it
-    if (newCut.operations.contains(op))
+  newCut.setRoot(newRoot);
+
+  // Collect all operations in the new cut by walking from the root
+  llvm::SmallSetVector<mlir::Operation *, 4> operations;
+  std::function<void(Operation *)> collectOps = [&](Operation *op) {
+    if (operations.contains(op))
       return;
 
-    // Add its operands to the worklist
+    // Process operands first (for topological order)
     for (auto value : op->getOperands()) {
       if (isAlwaysCutInput(value))
         continue;
 
-      // If the value is in *both* cuts inputs, it is an input. So skip
-      // it.
+      // If the value is in *both* cuts' inputs, it is an input to the merged
+      // cut
       bool isInput = inputs.contains(value);
       bool isOtherInput = other.inputs.contains(value);
-      // If the value is in this cut inputs, it is an input. So skip it
       if (isInput && isOtherInput)
         continue;
 
       auto *defOp = value.getDefiningOp();
+      if (!defOp)
+        continue;
 
-      assert(defOp && "Value must have a defining operation since block"
-                      "arguments are treated as inputs");
+      // Check if this value should be treated as an input
+      // It's an input if it's in one of the original cuts' inputs
+      // and not defined within the other cut
+      if (isInput || isOtherInput)
+        continue;
 
-      // Otherwise, check if the operation is in the other cut.
-      if (isInput)
-        if (!other.operations.contains(defOp)) // op is in the other cut.
-          continue;
-      if (isOtherInput)
-        if (!operations.contains(defOp)) // op is in this cut.
-          continue;
-      populateOperations(defOp);
+      collectOps(defOp);
     }
 
-    // Add the operation to the cut
-    newCut.operations.insert(op);
+    operations.insert(op);
   };
 
-  populateOperations(root);
+  collectOps(newRoot);
 
-  // Construct inputs.
-  for (auto *operation : newCut.operations) {
+  // Construct inputs by examining all operations' operands
+  for (auto *operation : operations) {
     for (auto value : operation->getOperands()) {
       if (isAlwaysCutInput(value)) {
         newCut.inputs.insert(value);
@@ -390,32 +407,28 @@ Cut Cut::mergeWith(const Cut &other, Operation *root) const {
       }
 
       auto *defOp = value.getDefiningOp();
-      assert(defOp && "Value must have a defining operation");
+      if (!defOp) {
+        newCut.inputs.insert(value);
+        continue;
+      }
 
       // If the operation is not in the cut, it is an input
-      if (!newCut.operations.contains(defOp))
-        // Add the input to the cut
+      if (!operations.contains(defOp))
         newCut.inputs.insert(value);
     }
   }
-
-  // TODO: Sort the inputs by their defining operation.
-  // TODO: Update area and delay based on the merged cuts.
 
   return newCut;
 }
 
 // Reroot the cut with a new root operation.
-// This is used to create a new cut with the same inputs and operations, but a
-// different root operation.
-Cut Cut::reRoot(Operation *root) const {
-  assert(isCutDerivedFromOperand(*this, root) &&
+// This is used to create a new cut with the same inputs but a different root.
+Cut Cut::reRoot(Operation *newRoot) const {
+  assert(isCutDerivedFromOperand(*this, newRoot) &&
          "The operation must be a child of the current root operation");
   Cut newCut;
   newCut.inputs = inputs;
-  newCut.operations = operations;
-  // Add the new root operation to the cut
-  newCut.operations.insert(root);
+  newCut.setRoot(newRoot);
   return newCut;
 }
 
@@ -852,8 +865,8 @@ void CutEnumerator::dump() const {
         llvm::outs() << getTestVariableName(input, opCounter);
       });
       auto &pattern = cut.getMatchedPattern();
-      llvm::outs() << "}"
-                   << "@t" << cut.getTruthTable().table.getZExtValue() << "d";
+      llvm::outs() << "}" << "@t" << cut.getTruthTable().table.getZExtValue()
+                   << "d";
       if (pattern) {
         llvm::outs() << *std::max_element(pattern->getArrivalTimes().begin(),
                                           pattern->getArrivalTimes().end());
