@@ -152,11 +152,13 @@ public:
 ///
 /// The cut contains:
 /// - Input values: The boundary between the cut and the rest of the circuit
-/// - Operations: The logic operations within the cut boundary
 /// - Root operation: The output-driving operation of the cut
 ///
 /// Cuts are used in combinational logic optimization to identify regions that
 /// can be optimized and replaced with more efficient implementations.
+///
+/// Note: The operations field has been removed for performance. Truth tables
+/// are computed on-demand by walking the IR from the root to inputs.
 class Cut {
   /// Cached truth table for this cut.
   /// Computed lazily when first accessed to avoid unnecessary computation.
@@ -168,35 +170,35 @@ class Cut {
 
   std::optional<MatchedPattern> matchedPattern;
 
+  /// Root operation of this cut (nullptr for trivial cuts).
+  /// The root operation produces the output of the cut.
+  mlir::Operation *root = nullptr;
+
 public:
   /// External inputs to this cut (cut boundary).
   /// These are the values that flow into the cut from outside.
   llvm::SmallSetVector<mlir::Value, 4> inputs;
 
-  /// Operations contained within this cut.
-  /// Stored in topological order with the root operation at the end.
-  llvm::SmallSetVector<mlir::Operation *, 4> operations;
-
   /// Check if this cut represents a trivial cut.
-  /// A trivial cut has no internal operations and exactly one input.
+  /// A trivial cut has no root operation and exactly one input.
   bool isTrivialCut() const;
 
   /// Get the root operation of this cut.
   /// The root operation produces the output of the cut.
-  mlir::Operation *getRoot() const;
+  mlir::Operation *getRoot() const { return root; }
+
+  /// Set the root operation of this cut.
+  void setRoot(mlir::Operation *op) { root = op; }
 
   void dump(llvm::raw_ostream &os) const;
 
   /// Merge this cut with another cut to form a new cut.
-  /// The new cut combines the operations from both cuts with the given root.
-  Cut mergeWith(const Cut &other, Operation *root) const;
-  Cut reRoot(Operation *root) const;
+  /// The new cut combines the inputs from both cuts with the given root.
+  Cut mergeWith(const Cut &other, Operation *newRoot) const;
+  Cut reRoot(Operation *newRoot) const;
 
   /// Get the number of inputs to this cut.
   unsigned getInputSize() const;
-
-  /// Get the number of operations in this cut.
-  unsigned getCutSize() const;
 
   /// Get the number of outputs from root operation.
   unsigned getOutputSize() const;
