@@ -145,6 +145,12 @@ static cl::opt<int>
                                           "paths in the analysis results"),
                                  cl::init(5), cl::cat(mainCategory));
 
+static cl::opt<std::string> designProfileDir(
+    "design-profile-dir",
+    cl::desc("Directory for design profiler output. "
+             "Generates timing report at <dir>/<top>/timing.txt"),
+    cl::init(""), cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -291,6 +297,13 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.emitJSON = outputLongestPathJSON;
     options.topModuleName = topName;
     pm.addPass(circt::synth::createPrintLongestPathAnalysis(options));
+  }
+
+  if (!designProfileDir.empty()) {
+    circt::synth::DesignProfilerOptions options;
+    options.topModuleName = topName;
+    options.reportDir = designProfileDir;
+    pm.addPass(circt::synth::createDesignProfiler(options));
   }
 
   if (convertToComb)

@@ -253,7 +253,7 @@ static StringAttr getNameImpl(Value value) {
 static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
-                            StringRef comment = "") {
+                            StringRef comment = "", bool withLoc = false) {
   std::string pathString;
   llvm::raw_string_ostream osPath(pathString);
   object.instancePath.print(osPath);
@@ -263,11 +263,16 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
     os << ", delay=" << delay;
   if (!history.isEmpty()) {
     os << ", history=[";
-    llvm::interleaveComma(history, os, [&](DebugPoint p) { p.print(os); });
+    llvm::interleaveComma(history, os,
+                          [&](DebugPoint p) { p.print(os, withLoc); });
     os << "]";
   }
   if (!comment.empty())
     os << ", comment=\"" << comment << "\"";
+  if (withLoc && object.value) {
+    os << ", loc=";
+    object.value.getLoc().print(os);
+  }
   os << ")";
 }
 
@@ -286,21 +291,23 @@ using namespace aig;
 // Printing
 //===----------------------------------------------------------------------===//
 
-void OpenPath::print(llvm::raw_ostream &os) const {
-  printObjectImpl(os, startPoint, delay, history);
+void OpenPath::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, startPoint, delay, history, "", withLoc);
 }
 
-void DebugPoint::print(llvm::raw_ostream &os) const {
-  printObjectImpl(os, object, delay, {}, comment);
+void DebugPoint::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, object, delay, {}, comment, withLoc);
 }
 
-void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
+void Object::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, *this, -1, {}, "", withLoc);
+}
 
 StringAttr Object::getName() const { return getNameImpl(value); }
 
-void DataflowPath::printEndPoint(llvm::raw_ostream &os) {
+void DataflowPath::printEndPoint(llvm::raw_ostream &os, bool withLoc) {
   if (auto *object = std::get_if<Object>(&endPoint)) {
-    object->print(os);
+    object->print(os, withLoc);
   } else {
     auto &[module, resultNumber, bitPos] =
         *std::get_if<DataflowPath::OutputPort>(&endPoint);
@@ -309,13 +316,31 @@ void DataflowPath::printEndPoint(llvm::raw_ostream &os) {
   }
 }
 
-void DataflowPath::print(llvm::raw_ostream &os) {
+void DataflowPath::print(llvm::raw_ostream &os, bool withLoc) {
   os << "root=" << root.getModuleName() << ", ";
   os << "endPoint=";
-  printEndPoint(os);
+  printEndPoint(os, withLoc);
   os << ", ";
   os << "startPoint=";
-  path.print(os);
+  path.print(os, withLoc);
+}
+
+SmallVector<Object> DataflowPath::getIntermediateObjects() const {
+  SmallVector<Object> objects;
+  for (const auto &point : path.history)
+    objects.push_back(point.object);
+  std::reverse(objects.begin(), objects.end());
+  return objects;
+}
+
+SmallVector<Object> DataflowPath::getFullPathObjects() const {
+  SmallVector<Object> objects;
+  objects.push_back(getStartPoint());
+  auto intermediates = getIntermediateObjects();
+  objects.append(intermediates.begin(), intermediates.end());
+  if (auto *obj = std::get_if<Object>(&endPoint))
+    objects.push_back(*obj);
+  return objects;
 }
 
 //===----------------------------------------------------------------------===//

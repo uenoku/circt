@@ -54,7 +54,7 @@ struct Object {
            bitPos == other.bitPos;
   }
 
-  void print(llvm::raw_ostream &os) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false) const;
   Object &prependPaths(circt::igraph::InstancePathCache &cache,
                        circt::igraph::InstancePath path);
 
@@ -83,7 +83,7 @@ struct DebugPoint {
     ID.AddInteger(delay);
   }
 
-  void print(llvm::raw_ostream &os) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false) const;
 
   Object object;
   int64_t delay;
@@ -102,7 +102,7 @@ struct OpenPath {
   int64_t getDelay() const { return delay; }
   const llvm::ImmutableList<DebugPoint> &getHistory() const { return history; }
 
-  void print(llvm::raw_ostream &os) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false) const;
   OpenPath &
   prependPaths(circt::igraph::InstancePathCache &cache,
                llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
@@ -156,8 +156,16 @@ public:
 
   void setDelay(int64_t delay) { path.delay = delay; }
 
-  void print(llvm::raw_ostream &os);
-  void printEndPoint(llvm::raw_ostream &os);
+  void print(llvm::raw_ostream &os, bool withLoc = false);
+  void printEndPoint(llvm::raw_ostream &os, bool withLoc = false);
+
+  // Return intermediate objects on the path (excluding start and end points).
+  // Requires collectDebugInfo=true during analysis.
+  SmallVector<Object> getIntermediateObjects() const;
+
+  // Return all objects on the path including start and end points.
+  // Requires collectDebugInfo=true during analysis.
+  SmallVector<Object> getFullPathObjects() const;
 
   // Path elaboration for hierarchical analysis
   // Prepends instance path information to create full hierarchical paths
@@ -334,7 +342,7 @@ public:
 // for computing statistics and CAPI.
 class LongestPathCollection {
 public:
-  LongestPathCollection(MLIRContext *ctx) : ctx(ctx){};
+  LongestPathCollection(MLIRContext *ctx) : ctx(ctx) {};
   const DataflowPath &getPath(unsigned index) const { return paths[index]; }
   MLIRContext *getContext() const { return ctx; }
   llvm::SmallVector<DataflowPath, 64> paths;

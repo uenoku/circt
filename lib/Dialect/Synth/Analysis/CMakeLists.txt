@@ -7,6 +7,7 @@
 ##===----------------------------------------------------------------------===//
 
 add_circt_dialect_library(CIRCTSynthAnalysis
+  DesignProfiler.cpp
   LongestPathAnalysis.cpp
   PrintLongestPathAnalysis.cpp
 
