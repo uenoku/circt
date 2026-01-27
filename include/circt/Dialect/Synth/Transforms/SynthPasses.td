@@ -217,4 +217,26 @@ def SOPBalancing : CutRewriterPassBase<"synth-sop-balancing", "hw::HWModuleOp"> 
   let dependentDialects = ["synth::SynthDialect", "comb::CombDialect"];
 }
 
+def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
+  let summary = "Early PPA estimation and design profiling";
+  let description = [{
+    Performs design profiling for PPA estimation. Currently supports timing
+    analysis with clock domain classification. Paths are categorized as:
+    - reg-to-reg: Both endpoints are registers
+    - port-to-reg: Input port to register
+    - reg-to-port: Register to output port
+    - port-to-port: Combinational paths
+
+    Output: <reportDir>/<topModuleName>/timing.txt
+  }];
+  let options = [
+    Option<"topModuleName", "top", "std::string", "",
+           "Name of the top module to analyze">,
+    Option<"reportDir", "report-dir", "std::string", "\"reports\"",
+           "Directory for output reports">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

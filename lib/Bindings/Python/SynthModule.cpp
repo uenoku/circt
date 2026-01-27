@@ -114,6 +114,12 @@ void circt::python::populateDialectSynthSubmodule(nb::module_ &m) {
              return collection;
            });
 
+  // Helper struct to bundle path with collection for Python
+  struct DataflowPathWithCollection {
+    SynthLongestPathDataflowPath path;
+    SynthLongestPathCollection collection;
+  };
+
   nb::class_<SynthLongestPathCollection>(m, "_LongestPathCollection")
       .def("__del__",
            [](SynthLongestPathCollection &self) {
@@ -125,8 +131,10 @@ void circt::python::populateDialectSynthSubmodule(nb::module_ &m) {
            })
       .def("get_path",
            [](SynthLongestPathCollection &self,
-              int pathIndex) -> SynthLongestPathDataflowPath {
-             return synthLongestPathCollectionGetDataflowPath(self, pathIndex);
+              int pathIndex) -> DataflowPathWithCollection {
+             SynthLongestPathDataflowPath path =
+                 synthLongestPathCollectionGetDataflowPath(self, pathIndex);
+             return DataflowPathWithCollection{path, self};
            })
       .def("merge",
            [](SynthLongestPathCollection &self,
@@ -138,44 +146,42 @@ void circt::python::populateDialectSynthSubmodule(nb::module_ &m) {
              synthLongestPathCollectionDropNonCriticalPaths(self, perEndPoint);
            });
 
-  nb::class_<SynthLongestPathDataflowPath>(m, "_LongestPathDataflowPath")
+  nb::class_<DataflowPathWithCollection>(m, "_LongestPathDataflowPath")
       .def_prop_ro("delay",
-                   [](SynthLongestPathDataflowPath &self) {
-                     return synthLongestPathDataflowPathGetDelay(self);
+                   [](DataflowPathWithCollection &self) {
+                     return synthLongestPathDataflowPathGetDelay(self.path);
                    })
       .def_prop_ro("start_point",
-                   [](SynthLongestPathDataflowPath &self) {
-                     return synthLongestPathDataflowPathGetStartPoint(self);
+                   [](DataflowPathWithCollection &self) {
+                     return synthLongestPathDataflowPathGetStartPoint(self.path);
                    })
       .def_prop_ro("end_point",
-                   [](SynthLongestPathDataflowPath &self) {
-                     return synthLongestPathDataflowPathGetEndPoint(self);
+                   [](DataflowPathWithCollection &self) {
+                     return synthLongestPathDataflowPathGetEndPoint(self.path);
                    })
       .def_prop_ro("history",
-                   [](SynthLongestPathDataflowPath &self) {
-                     return synthLongestPathDataflowPathGetHistory(self);
+                   [](DataflowPathWithCollection &self) {
+                     return synthLongestPathCollectionGetHistory(
+                         self.collection, self.path);
                    })
-      .def_prop_ro("root", [](SynthLongestPathDataflowPath &self) {
-        return synthLongestPathDataflowPathGetRoot(self);
+      .def_prop_ro("root", [](DataflowPathWithCollection &self) {
+        return synthLongestPathDataflowPathGetRoot(self.path);
       });
 
   nb::class_<SynthLongestPathHistory>(m, "_LongestPathHistory")
-      .def_prop_ro("empty",
-                   [](SynthLongestPathHistory &self) {
-                     return synthLongestPathHistoryIsEmpty(self);
-                   })
-      .def_prop_ro("head",
-                   [](SynthLongestPathHistory &self) {
-                     SynthLongestPathObject object;
-                     int64_t delay;
-                     MlirStringRef comment;
-                     synthLongestPathHistoryGetHead(self, &object, &delay,
-                                                    &comment);
-                     return std::make_tuple(object, delay, comment);
-                   })
-      .def_prop_ro("tail", [](SynthLongestPathHistory &self) {
-        return synthLongestPathHistoryGetTail(self);
-      });
+      .def("__len__",
+           [](SynthLongestPathHistory &self) {
+             return synthLongestPathHistoryGetSize(self);
+           })
+      .def("__getitem__",
+           [](SynthLongestPathHistory &self, size_t index) {
+             SynthLongestPathObject object;
+             int64_t delay;
+             MlirStringRef comment;
+             synthLongestPathHistoryGetVal(self, index, &object, &delay,
+                                          &comment);
+             return std::make_tuple(object, delay, comment);
+           });
 
   nb::class_<SynthLongestPathObject>(m, "_LongestPathObject")
       .def_prop_ro("instance_path",

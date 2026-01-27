@@ -60,11 +60,14 @@ private:
 
   /// Print detailed information for the top K critical paths
   void printTopKPathDetails(SmallVectorImpl<DataflowPath> &allTimingPaths,
+                            const LongestPathAnalysis &analysis,
                             hw::HWModuleOp top, llvm::raw_ostream *os,
                             llvm::json::OStream *jsonOS);
 
   /// Print detailed history of a timing path showing intermediate debug points
-  void printPathHistory(const OpenPath &timingPath, llvm::raw_ostream &os);
+  void printPathHistory(const DataflowPath &path,
+                        const LongestPathAnalysis &analysis,
+                        llvm::raw_ostream &os);
 };
 
 } // namespace
@@ -130,7 +133,7 @@ LogicalResult PrintLongestPathAnalysisPass::printAnalysisResult(
 
   // Print detailed information for top K critical paths if requested
   if (showTopKPercent.getValue() > 0)
-    printTopKPathDetails(longestPathForEachEndPoint, top, os, jsonOS);
+    printTopKPathDetails(longestPathForEachEndPoint, analysis, top, os, jsonOS);
 
   return success();
 }
@@ -197,7 +200,8 @@ void PrintLongestPathAnalysisPass::printTimingLevelStatistics(
 /// This shows the most critical timing paths in the design, providing detailed
 /// information about each path including end/start points and path history.
 void PrintLongestPathAnalysisPass::printTopKPathDetails(
-    SmallVectorImpl<DataflowPath> &allTimingPaths, hw::HWModuleOp top,
+    SmallVectorImpl<DataflowPath> &allTimingPaths,
+    const LongestPathAnalysis &analysis, hw::HWModuleOp top,
     llvm::raw_ostream *os, llvm::json::OStream *jsonOS) {
 
   auto topKCount = static_cast<uint64_t>(allTimingPaths.size()) *
@@ -243,24 +247,31 @@ void PrintLongestPathAnalysisPass::printTopKPathDetails(
     *os << "\n";
 
     // Print detailed path history showing intermediate logic stages
-    printPathHistory(path.getPath(), *os);
+    printPathHistory(path, analysis, *os);
   }
 }
 
-/// Print detailed history of a timing path showing intermediate debug points.
-/// This traces the path from end point to start point, showing each logic stage
-/// and the delay contribution of each stage. This is crucial for understanding
-/// where delay is being accumulated along the critical path and identifying
-/// optimization opportunities.
-void PrintLongestPathAnalysisPass::printPathHistory(const OpenPath &timingPath,
-                                                    llvm::raw_ostream &os) {
-  int64_t remainingDelay = timingPath.getDelay();
+void PrintLongestPathAnalysisPass::printPathHistory(
+    const DataflowPath &path, const LongestPathAnalysis &analysis,
+    llvm::raw_ostream &os) {
+  SmallVector<DebugPoint> history;
+  if (failed(analysis.reconstructPath(path, history)))
+    return;
 
-  if (!timingPath.getHistory().isEmpty()) {
+  if (!history.empty()) {
     os << "== History Start (closer to end point) ==\n";
 
+    int64_t remainingDelay = path.getDelay();
+
     // Walk through debug points in order from end point to start point
-    for (auto &debugPoint : timingPath.getHistory()) {
+    // reconstructPath returns [Start, ..., End], so we reverse it to match
+    // the previous behavior (End to Start) if needed, but the previous code
+    // said "History Start (closer to end point)".
+    // Let's see: previous code iterated over getHistory() which was End to
+    // Start.
+    std::reverse(history.begin(), history.end());
+
+    for (auto &debugPoint : history) {
       // Calculate delay contribution of this logic stage
       int64_t stepDelay = remainingDelay - debugPoint.delay;
       remainingDelay = debugPoint.delay;
@@ -280,7 +291,6 @@ void PrintLongestPathAnalysisPass::runOnOperation() {
   LongestPathAnalysis analysis(
       getOperation(), am,
       LongestPathAnalysisOptions(
-          /*collectDebugInfo=*/showTopKPercent.getValue() > 0,
           /*lazyComputation=*/false,
           /*keepOnlyMaxDelayPaths=*/
           !test, StringAttr::get(&getContext(), topModuleName.getValue())));

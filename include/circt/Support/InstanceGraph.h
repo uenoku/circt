@@ -361,6 +361,9 @@ public:
   /// Print the path to any stream-like object.
   void print(llvm::raw_ostream &into) const;
 
+  /// Check if the path is valid.
+  LogicalResult verify() const;
+
 private:
   // Either path cache or DenseMapInfo is allowed to create paths.
   friend struct InstancePathCache;

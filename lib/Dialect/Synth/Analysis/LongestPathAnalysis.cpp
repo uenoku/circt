@@ -39,22 +39,14 @@
 #include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/Operation.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/AnalysisManager.h"
-#include "mlir/Pass/PassManager.h"
-#include "mlir/Pass/PassRegistry.h"
-#include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LLVM.h"
-#include "llvm/ADT//MapVector.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMapInfoVariant.h"
 #include "llvm/ADT/EquivalenceClasses.h"
-#include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
@@ -183,27 +175,6 @@ static void filterPaths(SmallVectorImpl<DataflowPath> &results,
       [](const DataflowPath &path) { return path.getDelay(); });
 }
 
-static llvm::ImmutableList<DebugPoint>
-mapList(llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-        llvm::ImmutableList<DebugPoint> list,
-        llvm::function_ref<DebugPoint(DebugPoint)> fn) {
-  if (list.isEmpty())
-    return list;
-  auto &head = list.getHead();
-  return debugPointFactory->add(fn(head),
-                                mapList(debugPointFactory, list.getTail(), fn));
-}
-
-static llvm::ImmutableList<DebugPoint>
-concatList(llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-           llvm::ImmutableList<DebugPoint> lhs,
-           llvm::ImmutableList<DebugPoint> rhs) {
-  if (lhs.isEmpty())
-    return rhs;
-  return debugPointFactory->add(
-      lhs.getHead(), concatList(debugPointFactory, lhs.getTail(), rhs));
-}
-
 static StringAttr getNameImpl(Value value) {
   if (auto arg = dyn_cast<BlockArgument>(value)) {
     auto op = dyn_cast<hw::HWModuleOp>(arg.getParentBlock()->getParentOp());
@@ -253,7 +224,7 @@ static StringAttr getNameImpl(Value value) {
 static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
-                            StringRef comment = "") {
+                            StringRef comment = "", bool withLoc = false) {
   std::string pathString;
   llvm::raw_string_ostream osPath(pathString);
   object.instancePath.print(osPath);
@@ -261,13 +232,13 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
      << object.bitPos << "]";
   if (delay != -1)
     os << ", delay=" << delay;
-  if (!history.isEmpty()) {
-    os << ", history=[";
-    llvm::interleaveComma(history, os, [&](DebugPoint p) { p.print(os); });
-    os << "]";
-  }
+
   if (!comment.empty())
     os << ", comment=\"" << comment << "\"";
+  if (withLoc && object.value) {
+    os << ", loc=";
+    object.value.getLoc().print(os);
+  }
   os << ")";
 }
 
@@ -286,21 +257,23 @@ using namespace aig;
 // Printing
 //===----------------------------------------------------------------------===//
 
-void OpenPath::print(llvm::raw_ostream &os) const {
-  printObjectImpl(os, startPoint, delay, history);
+void OpenPath::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, startPoint, delay, {}, "", withLoc);
 }
 
-void DebugPoint::print(llvm::raw_ostream &os) const {
-  printObjectImpl(os, object, delay, {}, comment);
+void DebugPoint::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, object, delay, {}, comment, withLoc);
 }
 
-void Object::print(llvm::raw_ostream &os) const { printObjectImpl(os, *this); }
+void Object::print(llvm::raw_ostream &os, bool withLoc) const {
+  printObjectImpl(os, *this, -1, {}, "", withLoc);
+}
 
 StringAttr Object::getName() const { return getNameImpl(value); }
 
-void DataflowPath::printEndPoint(llvm::raw_ostream &os) {
+void DataflowPath::printEndPoint(llvm::raw_ostream &os, bool withLoc) {
   if (auto *object = std::get_if<Object>(&endPoint)) {
-    object->print(os);
+    object->print(os, withLoc);
   } else {
     auto &[module, resultNumber, bitPos] =
         *std::get_if<DataflowPath::OutputPort>(&endPoint);
@@ -309,13 +282,43 @@ void DataflowPath::printEndPoint(llvm::raw_ostream &os) {
   }
 }
 
-void DataflowPath::print(llvm::raw_ostream &os) {
+void DataflowPath::print(llvm::raw_ostream &os, bool withLoc) {
   os << "root=" << root.getModuleName() << ", ";
   os << "endPoint=";
-  printEndPoint(os);
+  printEndPoint(os, withLoc);
   os << ", ";
   os << "startPoint=";
-  path.print(os);
+  path.print(os, withLoc);
+}
+
+SmallVector<Object> DataflowPath::getIntermediateObjects(
+    const LongestPathAnalysis &analysis) const {
+  SmallVector<DebugPoint> points;
+  if (failed(analysis.reconstructPath(*this, points)))
+    return {};
+  if (points.size() < 2)
+    return {};
+  SmallVector<Object> objects;
+  for (auto it = points.begin() + 1; it != points.end() - 1; ++it)
+    objects.push_back(it->object);
+  return objects;
+}
+
+SmallVector<Object>
+DataflowPath::getFullPathObjects(const LongestPathAnalysis &analysis) const {
+  SmallVector<DebugPoint> points;
+  if (failed(analysis.reconstructPath(*this, points)))
+    return {};
+  SmallVector<Object> objects;
+  for (auto &p : points)
+    objects.push_back(p.object);
+  return objects;
+}
+
+LogicalResult
+DataflowPath::getHistory(const LongestPathAnalysis &analysis,
+                         SmallVectorImpl<DebugPoint> &results) const {
+  return analysis.reconstructPath(*this, results);
 }
 
 //===----------------------------------------------------------------------===//
@@ -328,17 +331,9 @@ Object &Object::prependPaths(circt::igraph::InstancePathCache &cache,
   return *this;
 }
 
-OpenPath &OpenPath::prependPaths(
-    circt::igraph::InstancePathCache &cache,
-    llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-    circt::igraph::InstancePath path) {
+OpenPath &OpenPath::prependPaths(circt::igraph::InstancePathCache &cache,
+                                 circt::igraph::InstancePath path) {
   startPoint.prependPaths(cache, path);
-  if (debugPointFactory)
-    this->history = mapList(debugPointFactory, this->history,
-                            [&](DebugPoint p) -> DebugPoint {
-                              p.object.prependPaths(cache, path);
-                              return p;
-                            });
   return *this;
 }
 
@@ -346,11 +341,10 @@ OpenPath &OpenPath::prependPaths(
 // DataflowPath
 //===----------------------------------------------------------------------===//
 
-DataflowPath &DataflowPath::prependPaths(
-    circt::igraph::InstancePathCache &cache,
-    llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-    circt::igraph::InstancePath path) {
-  this->path.prependPaths(cache, debugPointFactory, path);
+DataflowPath &
+DataflowPath::prependPaths(circt::igraph::InstancePathCache &cache,
+                           circt::igraph::InstancePath path) {
+  this->path.prependPaths(cache, path);
   if (!path.empty()) {
     auto root = path.top()->getParentOfType<hw::HWModuleOp>();
     assert(root && "root is not a hw::HWModuleOp");
@@ -413,6 +407,7 @@ static llvm::json::Value toJSON(const DataflowPath::EndPointType &path,
   };
 }
 
+#if 0
 static llvm::json::Value toJSON(const DebugPoint &point) {
   return llvm::json::Object{
       {"object", toJSON(point.object)},
@@ -420,14 +415,11 @@ static llvm::json::Value toJSON(const DebugPoint &point) {
       {"comment", point.comment},
   };
 }
+#endif
 
 static llvm::json::Value toJSON(const OpenPath &path) {
-  llvm::json::Array history;
-  for (auto &point : path.history)
-    history.push_back(toJSON(point));
   return llvm::json::Object{{"start_point", toJSON(path.startPoint)},
-                            {"delay", path.delay},
-                            {"history", std::move(history)}};
+                            {"delay", path.delay}};
 }
 
 llvm::json::Value circt::synth::toJSON(const DataflowPath &path) {
@@ -481,7 +473,6 @@ public:
   // This is non-null only if `module` is a ModuleOp.
   circt::igraph::InstanceGraph *instanceGraph = nullptr;
 
-  bool doTraceDebugPoints() const { return option.collectDebugInfo; }
   bool doLazyComputation() const { return option.lazyComputation; }
   bool doKeepOnlyMaxDelayPaths() const { return option.keepOnlyMaxDelayPaths; }
   bool isLocalScope() const { return instanceGraph == nullptr; }
@@ -517,7 +508,7 @@ public:
   // to avoid using onlyMaxDelay mode, as we require precise input
   // dependency information for accurate delay propagation
   OperationAnalyzer(Location loc)
-      : ctx(nullptr, LongestPathAnalysisOptions(false, true, false)), loc(loc) {
+      : ctx(nullptr, LongestPathAnalysisOptions(true, false)), loc(loc) {
     mlir::OpBuilder builder(loc->getContext());
     moduleOp = mlir::ModuleOp::create(builder, loc);
     emptyName = StringAttr::get(loc->getContext(), "");
@@ -593,8 +584,7 @@ public:
 
   // A map from the object to the maximum distance and history.
   using ObjectToMaxDistance =
-      llvm::MapVector<Object,
-                      std::pair<int64_t, llvm::ImmutableList<DebugPoint>>>;
+      llvm::MapVector<Object, std::pair<int64_t, std::monostate>>;
 
   void getInternalPaths(SmallVectorImpl<DataflowPath> &results) const;
   void setTopLevel() { this->topLevel = true; }
@@ -613,13 +603,8 @@ public:
     return instancePathCache.get();
   }
 
-  llvm::ImmutableListFactory<DebugPoint> *getDebugPointFactory() const {
-    return debugPointFactory.get();
-  }
-
 private:
   void putUnclosedResult(const Object &object, int64_t delay,
-                         llvm::ImmutableList<DebugPoint> history,
                          ObjectToMaxDistance &objectToMaxDistance);
 
   // A map from the input port to the farthest end point.
@@ -713,7 +698,7 @@ private:
                              SmallVectorImpl<OpenPath> &results);
 
   // Helper functions.
-  LogicalResult addEdge(Value to, size_t toBitPos, int64_t delay,
+  LogicalResult addEdge(Value to, size_t bitPos, int64_t delay,
                         SmallVectorImpl<OpenPath> &results);
   LogicalResult markStartPoint(Value value, size_t bitPos,
                                SmallVectorImpl<OpenPath> &results);
@@ -726,8 +711,6 @@ private:
 
   // Thread-local data structures.
   std::unique_ptr<circt::igraph::InstancePathCache> instancePathCache;
-  // TODO: Make debug points optional.
-  std::unique_ptr<llvm::ImmutableListFactory<DebugPoint>> debugPointFactory;
 
   // A map from the value point to the longest paths.
   DenseMap<std::pair<Value, size_t>, std::unique_ptr<SmallVector<OpenPath>>>
@@ -750,8 +733,7 @@ private:
 
 LocalVisitor::LocalVisitor(hw::HWModuleOp module, Context *ctx)
     : module(module), ctx(ctx) {
-  debugPointFactory =
-      std::make_unique<llvm::ImmutableListFactory<DebugPoint>>();
+
   instancePathCache = ctx->instanceGraph
                           ? std::make_unique<circt::igraph::InstancePathCache>(
                                 *ctx->instanceGraph)
@@ -780,12 +762,11 @@ ArrayRef<OpenPath> LocalVisitor::getCachedPaths(Value value,
 }
 
 void LocalVisitor::putUnclosedResult(const Object &object, int64_t delay,
-                                     llvm::ImmutableList<DebugPoint> history,
                                      ObjectToMaxDistance &objectToMaxDistance) {
   auto &slot = objectToMaxDistance[object];
   if (slot.first >= delay && delay != 0)
     return;
-  slot = {delay, history};
+  slot = {delay, {}};
 }
 
 void LocalVisitor::waitUntilDone() const {
@@ -806,7 +787,7 @@ LogicalResult LocalVisitor::markRegEndPoint(Value endPoint, Value start,
       if (auto blockArg = dyn_cast<BlockArgument>(path.startPoint.value)) {
         // Not closed.
         putUnclosedResult(
-            {{}, endPoint, endPointBitPos}, path.delay, path.history,
+            {{}, endPoint, endPointBitPos}, path.delay,
             fromInputPortToEndPoint[{blockArg, path.startPoint.bitPos}]);
       } else {
         // If the start point is not a port, record to the results.
@@ -861,6 +842,7 @@ LogicalResult LocalVisitor::addEdge(Value to, size_t bitPos, int64_t delay,
     return failure();
   for (auto &path : *result) {
     auto newPath = path;
+    newPath.previousPoint = Trace{to, bitPos, path.delay};
     newPath.delay += delay;
     results.push_back(newPath);
   }
@@ -878,8 +860,8 @@ LogicalResult LocalVisitor::visit(mig::MajorityInverterOp op, size_t bitPos,
   // Use a 3-input majority inverter as the basic unit.
   // An n-input majority inverter requires n/2 stages of 3-input gates.
   size_t depth = op.getInputs().size() / 2;
-  for (auto input : op.getInputs()) {
-    if (failed(addEdge(input, bitPos, depth, results)))
+  for (auto &operand : op->getOpOperands()) {
+    if (failed(addEdge(operand.get(), bitPos, depth, results)))
       return failure();
   }
   return success();
@@ -913,8 +895,8 @@ LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
 
 LogicalResult LocalVisitor::visit(comb::TruthTableOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
-  for (auto input : op.getInputs()) {
-    if (failed(addEdge(input, 0, 1, results)))
+  for (auto &operand : op->getOpOperands()) {
+    if (failed(addEdge(operand.get(), 0, 1, results)))
       return failure();
   }
   return success();
@@ -975,7 +957,6 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
 
   for (auto &path : *result) {
     auto delay = path.delay;
-    auto history = path.history;
     auto newPath =
         instancePathCache->prependInstance(op, path.startPoint.instancePath);
     auto startPointPoint = path.startPoint;
@@ -983,20 +964,8 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
     auto arg = dyn_cast<BlockArgument>(startPointPoint.value);
     if (!arg) {
       // Update the history to have correct instance path.
-      auto newHistory = debugPointFactory->getEmptyList();
-      if (ctx->doTraceDebugPoints()) {
-        newHistory =
-            mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
-              p.object.instancePath =
-                  instancePathCache->prependInstance(op, p.object.instancePath);
-              return p;
-            });
-        newHistory = debugPointFactory->add(
-            DebugPoint({}, value, bitPos, delay, "output port"), newHistory);
-      }
-
       results.emplace_back(newPath, startPointPoint.value,
-                           startPointPoint.bitPos, delay, newHistory);
+                           startPointPoint.bitPos, delay);
       continue;
     }
 
@@ -1006,24 +975,7 @@ LogicalResult LocalVisitor::visit(hw::InstanceOp op, size_t bitPos,
     if (failed(result))
       return failure();
     for (auto path : *result) {
-      auto newHistory = debugPointFactory->getEmptyList();
-      if (ctx->doTraceDebugPoints()) {
-        // Update the history to have correct instance path.
-        newHistory =
-            mapList(debugPointFactory.get(), history, [&](DebugPoint p) {
-              p.object.instancePath =
-                  instancePathCache->prependInstance(op, p.object.instancePath);
-              p.delay += path.delay;
-              return p;
-            });
-        DebugPoint debugPoint({}, value, bitPos, delay + path.delay,
-                              "output port");
-        newHistory = debugPointFactory->add(debugPoint, newHistory);
-      }
-
       path.delay += delay;
-      path.history =
-          concatList(debugPointFactory.get(), newHistory, path.history);
       results.push_back(path);
     }
   }
@@ -1052,37 +1004,37 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
   auto size = op->getNumOperands();
   auto cost = llvm::Log2_64_Ceil(size);
   // Create edges each operand with cost ceil(log(size)).
-  for (auto operand : op->getOperands())
-    if (failed(addEdge(operand, bitPos, cost, results)))
+  for (auto &operand : op->getOpOperands())
+    if (failed(addEdge(operand.get(), bitPos, cost, results)))
       return failure();
   filterPaths(results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
   return success();
 }
 
-LogicalResult LocalVisitor::visitDefault(OpResult value, size_t bitPos,
+LogicalResult LocalVisitor::visitDefault(OpResult result, size_t bitPos,
                                          SmallVectorImpl<OpenPath> &results) {
   if (!isa_and_nonnull<hw::HWDialect, comb::CombDialect>(
-          value.getDefiningOp()->getDialect()))
+          result.getDefiningOp()->getDialect()))
     return success();
   // Query it to an operation analyzer.
   LLVM_DEBUG({
     llvm::dbgs() << "Visiting default: ";
-    llvm::dbgs() << " " << value << "[" << bitPos << "]\n";
+    llvm::dbgs() << " " << result << "[" << bitPos << "]\n";
   });
   SmallVector<std::tuple<size_t, size_t, int64_t>> oracleResults;
   auto paths =
-      operationAnalyzer->analyzeOperation(value, bitPos, oracleResults);
+      operationAnalyzer->analyzeOperation(result, bitPos, oracleResults);
   if (failed(paths)) {
     LLVM_DEBUG({
-      llvm::dbgs() << "Failed to get results for: " << value << "[" << bitPos
+      llvm::dbgs() << "Failed to get results for: " << result << "[" << bitPos
                    << "]\n";
     });
     return success();
   }
-  auto *op = value.getDefiningOp();
+  auto *op = result.getDefiningOp();
   for (auto [inputPortIndex, startPointBitPos, delay] : oracleResults) {
     LLVM_DEBUG({
-      llvm::dbgs() << "Adding edge: " << value << "[" << bitPos << "] -> "
+      llvm::dbgs() << "Adding edge: " << result << "[" << bitPos << "] -> "
                    << op->getOperand(inputPortIndex) << "[" << startPointBitPos
                    << "] with delay " << delay << "\n";
     });
@@ -1098,11 +1050,7 @@ LogicalResult LocalVisitor::visit(mlir::BlockArgument arg, size_t bitPos,
   assert(arg.getOwner() == module.getBodyBlock());
 
   // Record a debug point.
-  auto newHistory = ctx->doTraceDebugPoints()
-                        ? debugPointFactory->add(
-                              DebugPoint({}, arg, bitPos, 0, "input port"), {})
-                        : debugPointFactory->getEmptyList();
-  OpenPath newPoint({}, arg, bitPos, 0, newHistory);
+  OpenPath newPoint({}, arg, bitPos, 0);
   results.push_back(newPoint);
   return success();
 }
@@ -1170,20 +1118,8 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
                 comb::OrOp, comb::MuxOp, comb::XorOp, comb::TruthTableOp,
                 seq::FirRegOp, seq::CompRegOp, seq::FirMemReadOp,
                 seq::FirMemReadWriteOp, hw::WireOp>([&](auto op) {
-            size_t idx = results.size();
+            (void)results.size();
             auto result = visit(op, bitPos, results);
-            if (ctx->doTraceDebugPoints())
-              if (auto name =
-                      op->template getAttrOfType<StringAttr>("sv.namehint")) {
-
-                for (auto i = idx, e = results.size(); i < e; ++i) {
-                  DebugPoint debugPoint({}, value, bitPos, results[i].delay,
-                                        "namehint");
-                  auto newHistory =
-                      debugPointFactory->add(debugPoint, results[i].history);
-                  results[i].history = newHistory;
-                }
-              }
             return result;
           })
           .Case<hw::InstanceOp>([&](hw::InstanceOp op) {
@@ -1212,35 +1148,25 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
       auto [delay, history] = delayAndHistory;
       // Prepend the instance path.
       assert(instancePathCache);
-      auto newPath = instancePathCache->prependInstance(instance, instancePath);
+      (void)instancePathCache->prependInstance(instance, instancePath);
       auto computedResults =
           getOrComputePaths(instance.getOperand(arg.getArgNumber()), argBitPos);
       if (failed(computedResults))
         return failure();
 
       for (auto &result : *computedResults) {
-        auto newHistory = ctx->doTraceDebugPoints()
-                              ? mapList(debugPointFactory.get(), history,
-                                        [&](DebugPoint p) {
-                                          // Update the instance path to
-                                          // prepend the current instance.
-                                          p.object.instancePath = newPath;
-                                          p.delay += result.delay;
-                                          return p;
-                                        })
-                              : debugPointFactory->getEmptyList();
+        auto newPath = instancePathCache->prependInstance(
+            instance, result.startPoint.instancePath);
         if (auto newPort = dyn_cast<BlockArgument>(result.startPoint.value)) {
           putUnclosedResult(
               {newPath, endPoint, endPointBitPos}, result.delay + delay,
-              newHistory,
               fromInputPortToEndPoint[{newPort, result.startPoint.bitPos}]);
         } else {
           endPointResults[{newPath, endPoint, endPointBitPos}].emplace_back(
               newPath, result.startPoint.value, result.startPoint.bitPos,
               result.delay + delay,
-              ctx->doTraceDebugPoints() ? concatList(debugPointFactory.get(),
-                                                     newHistory, result.history)
-                                        : debugPointFactory->getEmptyList());
+              Trace{instance.getOperand(arg.getArgNumber()), argBitPos,
+                    result.delay});
         }
       }
     }
@@ -1266,8 +1192,7 @@ LogicalResult LocalVisitor::initializeAndRun(hw::OutputOp output) {
       if (failed(computedResults))
         return failure();
       for (const auto &result : *computedResults) {
-        putUnclosedResult(result.startPoint, result.delay, result.history,
-                          recordOutput);
+        putUnclosedResult(result.startPoint, result.delay, recordOutput);
       }
     }
   }
@@ -1517,6 +1442,7 @@ LogicalResult OperationAnalyzer::initializePipeline() {
 /// the instance graph, and provides the concrete implementations for the
 /// public LongestPathAnalysis API.
 struct LongestPathAnalysis::Impl {
+  friend class LongestPathAnalysis;
   Impl(Operation *module, mlir::AnalysisManager &am,
        const LongestPathAnalysisOptions &option);
 
@@ -1552,6 +1478,11 @@ struct LongestPathAnalysis::Impl {
   LogicalResult
   collectInternalToOutputPaths(StringAttr moduleName,
                                SmallVectorImpl<DataflowPath> &results) const;
+
+  /// Collect open paths from module input ports to module output ports.
+  LogicalResult
+  collectInputToOutputPaths(StringAttr moduleName,
+                            SmallVectorImpl<DataflowPath> &results) const;
 
   /// Top modules inferred or specified for this analysis run.
   llvm::ArrayRef<hw::HWModuleOp> getTopModules() const { return topModules; }
@@ -1663,7 +1594,6 @@ LogicalResult LongestPathAnalysis::Impl::collectClosedPaths(
             localResults.emplace_back(point, dataFlow,
                                       top->getModule<hw::HWModuleOp>());
             localResults.back().prependPaths(*visitor->getInstancePathCache(),
-                                             visitor->getDebugPointFactory(),
                                              instancePath);
           }
         } else {
@@ -1706,7 +1636,7 @@ LogicalResult LongestPathAnalysis::Impl::collectInputToInternalPaths(
       auto [path, start, startBitPos] = point;
       auto [delay, history] = delayAndHistory;
       results.emplace_back(Object(path, start, startBitPos),
-                           OpenPath({}, arg, argBitPos, delay, history),
+                           OpenPath({}, arg, argBitPos, delay),
                            visitor->getHWModuleOp());
     }
   }
@@ -1724,11 +1654,34 @@ LogicalResult LongestPathAnalysis::Impl::collectInternalToOutputPaths(
     auto [resultNum, bitPos] = key;
     for (auto [point, delayAndHistory] : value) {
       auto [path, start, startBitPos] = point;
+      if (isa<BlockArgument>(start))
+        continue;
       auto [delay, history] = delayAndHistory;
       results.emplace_back(
           std::make_tuple(visitor->getHWModuleOp(), resultNum, bitPos),
-          OpenPath(path, start, startBitPos, delay, history),
-          visitor->getHWModuleOp());
+          OpenPath(path, start, startBitPos, delay), visitor->getHWModuleOp());
+    }
+  }
+
+  return success();
+}
+
+LogicalResult LongestPathAnalysis::Impl::collectInputToOutputPaths(
+    StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const {
+  auto *visitor = ctx.getLocalVisitor(moduleName);
+  if (!visitor)
+    return failure();
+
+  for (auto &[key, value] : visitor->getFromOutputPortToStartPoint()) {
+    auto [resultNum, bitPos] = key;
+    for (auto [point, delayAndHistory] : value) {
+      auto [path, start, startBitPos] = point;
+      if (!isa<BlockArgument>(start))
+        continue;
+      auto [delay, history] = delayAndHistory;
+      results.emplace_back(
+          std::make_tuple(visitor->getHWModuleOp(), resultNum, bitPos),
+          OpenPath(path, start, startBitPos, delay), visitor->getHWModuleOp());
     }
   }
 
@@ -1914,8 +1867,6 @@ LongestPathAnalysis::LongestPathAnalysis(
     : impl(new Impl(moduleOp, am, option)), ctx(moduleOp->getContext()) {
   LLVM_DEBUG({
     llvm::dbgs() << "LongestPathAnalysis created\n";
-    if (option.collectDebugInfo)
-      llvm::dbgs() << " - Collecting debug info\n";
     if (option.lazyComputation)
       llvm::dbgs() << " - Lazy computation enabled\n";
     if (option.keepOnlyMaxDelayPaths)
@@ -1963,6 +1914,14 @@ LogicalResult LongestPathAnalysis::getOpenPathsFromInternalToOutputPorts(
   return impl->collectInternalToOutputPaths(moduleName, results);
 }
 
+LogicalResult LongestPathAnalysis::getOpenPathsFromInputToOutputPorts(
+    StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const {
+  if (!isAnalysisValid)
+    return failure();
+
+  return impl->collectInputToOutputPaths(moduleName, results);
+}
+
 LogicalResult
 LongestPathAnalysis::getAllPaths(StringAttr moduleName,
                                  SmallVectorImpl<DataflowPath> &results,
@@ -1973,6 +1932,62 @@ LongestPathAnalysis::getAllPaths(StringAttr moduleName,
     return failure();
   if (failed(getOpenPathsFromInternalToOutputPorts(moduleName, results)))
     return failure();
+  if (failed(getOpenPathsFromInputToOutputPorts(moduleName, results)))
+    return failure();
+  return success();
+}
+
+LogicalResult LongestPathAnalysis::reconstructPath(
+    const DataflowPath &path, SmallVectorImpl<DebugPoint> &result) const {
+  auto current = path.getEndPoint();
+  auto currentDelay = path.getDelay();
+  auto startPoint = path.getStartPoint();
+
+  // Helper to find predecessor path
+  auto findPredecessor = [&](Value val, size_t bitPos,
+                             int64_t targetDelay) -> std::optional<OpenPath> {
+    auto parentHWModule =
+        val.getParentRegion()->getParentOfType<hw::HWModuleOp>();
+    if (!parentHWModule)
+      return std::nullopt;
+    auto *localVisitor =
+        impl->ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
+    if (!localVisitor)
+      return std::nullopt;
+
+    auto paths = localVisitor->getCachedPaths(val, bitPos);
+    for (const auto &p : paths) {
+      if (p.startPoint == startPoint && p.delay == targetDelay)
+        return p;
+    }
+    return std::nullopt;
+  };
+
+  // If endpoint is an object, start there
+  if (auto *obj = std::get_if<Object>(&current)) {
+    result.push_back(
+        DebugPoint{obj->instancePath, obj->value, obj->bitPos, currentDelay});
+
+    OpenPath currentOpenPath = path.getPath();
+    while (currentOpenPath.previousPoint) {
+      auto trace = currentOpenPath.previousPoint.value();
+      result.push_back(DebugPoint{obj->instancePath, trace.value, trace.bitPos,
+                                  trace.delay});
+
+      auto next = findPredecessor(trace.value, trace.bitPos, trace.delay);
+      if (!next)
+        break;
+      currentOpenPath = *next;
+    }
+
+    // Finally add the start point if it's not already the last point
+    if (result.back().object.value != startPoint.value) {
+      result.push_back(DebugPoint{startPoint.instancePath, startPoint.value,
+                                  startPoint.bitPos, 0});
+    }
+  }
+
+  std::reverse(result.begin(), result.end());
   return success();
 }
 
