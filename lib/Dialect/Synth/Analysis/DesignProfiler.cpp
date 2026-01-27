@@ -396,8 +396,7 @@ void DesignProfilerPass::runOnOperation() {
   auto am = getAnalysisManager();
   LongestPathAnalysis localAnalysis(
       module, am,
-      LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
-                                 /*lazyComputation=*/false,
+      LongestPathAnalysisOptions(/*lazyComputation=*/false,
                                  /*keepOnlyMaxDelayPaths=*/false, topNameAttr));
   analysis = &localAnalysis;
 
