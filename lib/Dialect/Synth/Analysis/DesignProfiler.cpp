@@ -159,14 +159,16 @@ ClockDomain DesignProfilerPass::getClockForEndpoint(const Object &obj) {
     Object clkObj(obj.instancePath, clk, 0);
 
     // // Verify and fix the instance path if needed.
-    // // The instance path should point to the module containing the clock value.
+    // // The instance path should point to the module containing the clock
+    // value.
     // // If the leaf instance doesn't instantiate the clock's parent module,
     // // we need to drop the last instance from the path.
     // auto clkParentOp = llvm::dyn_cast<hw::HWModuleOp>(
     //     clk.getParentRegion()->getParentOp());
     // if (clkParentOp && !obj.instancePath.empty()) {
     //   auto instOp = dyn_cast<hw::InstanceOp>(obj.instancePath.leaf());
-    //   if (instOp && instOp.getModuleNameAttr().getAttr() != clkParentOp.getModuleNameAttr()) {
+    //   if (instOp && instOp.getModuleNameAttr().getAttr() !=
+    //   clkParentOp.getModuleNameAttr()) {
     //     // The instance path includes an extra instance - drop it
     //     clkObj = Object(obj.instancePath.dropBack(), clk, 0);
     //   }
@@ -197,7 +199,8 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
       clkObj.value.getParentRegion()->getParentOp());
   if (parentOp && !clkObj.instancePath.empty()) {
     auto instOp = dyn_cast<hw::InstanceOp>(clkObj.instancePath.leaf());
-    if (instOp && instOp.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
+    if (instOp &&
+        instOp.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
       llvm::errs() << "ERROR: Instance path is still incorrect after fix!\n";
       llvm::errs() << "Instance path: " << clkObj.instancePath << "\n";
       llvm::errs() << "Parent op: " << parentOp.getModuleName() << "\n";
@@ -220,6 +223,10 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
 
     // If defined by op, it's a local source.
     if (auto *op = clkObj.value.getDefiningOp()) {
+      if (auto wire = dyn_cast<hw::WireOp>(op)) {
+        clkObj = Object(clkObj.instancePath, wire.getInput(), 0);
+        continue;
+      }
       if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
         // The clock comes from an instance output. We need to trace into the
         // instance to find where this output comes from inside the instance.
