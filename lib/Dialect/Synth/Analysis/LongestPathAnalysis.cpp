@@ -1080,8 +1080,8 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputePaths(Value value,
   // Unique the results.
   filterPaths(*results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
   LLVM_DEBUG({
-    llvm::dbgs() << value << "[" << bitPos << "] "
-                 << "Found " << results->size() << " paths\n";
+    llvm::dbgs() << value << "[" << bitPos << "] " << "Found "
+                 << results->size() << " paths\n";
     llvm::dbgs() << "====Paths:\n";
     for (auto &path : *results) {
       path.print(llvm::dbgs());
@@ -1148,22 +1148,24 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
       auto [delay, history] = delayAndHistory;
       // Prepend the instance path.
       assert(instancePathCache);
-      (void)instancePathCache->prependInstance(instance, instancePath);
+      auto newPath = instancePathCache->prependInstance(instance, instancePath);
+
       auto computedResults =
           getOrComputePaths(instance.getOperand(arg.getArgNumber()), argBitPos);
       if (failed(computedResults))
         return failure();
 
       for (auto &result : *computedResults) {
-        auto newPath = instancePathCache->prependInstance(
-            instance, result.startPoint.instancePath);
+
         if (auto newPort = dyn_cast<BlockArgument>(result.startPoint.value)) {
           putUnclosedResult(
               {newPath, endPoint, endPointBitPos}, result.delay + delay,
               fromInputPortToEndPoint[{newPort, result.startPoint.bitPos}]);
         } else {
+          auto resultNewPath = instancePathCache->prependInstance(
+              instance, result.startPoint.instancePath);
           endPointResults[{newPath, endPoint, endPointBitPos}].emplace_back(
-              newPath, result.startPoint.value, result.startPoint.bitPos,
+              resultNewPath, result.startPoint.value, result.startPoint.bitPos,
               result.delay + delay,
               Trace{instance.getOperand(arg.getArgNumber()), argBitPos,
                     result.delay});
