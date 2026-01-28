@@ -172,13 +172,14 @@ static void checkAssert(Value value) {
 
 ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
   history.clear();
-  auto parentOp = llvm::dyn_cast<hw::HWModuleOp>(clkObj.value.getParentRegion()->getParentOp());
+  auto parentOp = llvm::dyn_cast<hw::HWModuleOp>(
+      clkObj.value.getParentRegion()->getParentOp());
   if (!clkObj.instancePath.empty()) {
     auto instOp = dyn_cast<hw::InstanceOp>(clkObj.instancePath.leaf());
     if (instOp.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
       llvm::errs() << "ERROR: Instance path is incorrect!\n";
       llvm::errs() << "Instance path: " << clkObj.instancePath << "\n";
-      llvm::errs() << "Parent op: " << parentOp << "\n";
+      llvm::errs() << "Parent op: " << parentOp.getModuleName() << "\n";
       llvm::errs() << "Instance op: " << instOp << "\n";
       assert(false);
     }
