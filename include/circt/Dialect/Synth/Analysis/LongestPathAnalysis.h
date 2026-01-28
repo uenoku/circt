@@ -63,6 +63,8 @@ struct Object {
   circt::igraph::InstancePath instancePath;
   Value value;
   size_t bitPos;
+
+  LogicalResult verify() const;
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
@@ -349,7 +351,7 @@ public:
 // for computing statistics and CAPI.
 class LongestPathCollection {
 public:
-  LongestPathCollection(MLIRContext *ctx) : ctx(ctx) {};
+  LongestPathCollection(MLIRContext *ctx) : ctx(ctx){};
   const DataflowPath &getPath(unsigned index) const { return paths[index]; }
   MLIRContext *getContext() const { return ctx; }
   llvm::SmallVector<DataflowPath, 64> paths;

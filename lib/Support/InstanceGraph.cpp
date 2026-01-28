@@ -306,7 +306,7 @@ LogicalResult InstancePath::verify() const {
       auto parent = path[i + 1]->getParentOfType<ModuleOpInterface>();
       if (!llvm::is_contained(names, parent.getModuleNameAttr())) {
         return mlir::emitError(path[i]->getLoc())
-               << "instance path is incorrect. Expected ";
+               << "instance path is incorrect";
       }
     }
   }

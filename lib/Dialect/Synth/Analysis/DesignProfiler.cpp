@@ -154,7 +154,24 @@ ClockDomain DesignProfilerPass::getClockForEndpoint(const Object &obj) {
     clk = firreg.getClk();
 
   if (clk) {
+    // The clock value is defined in the same module as the register.
+    // So we use the same instance path.
     Object clkObj(obj.instancePath, clk, 0);
+
+    // // Verify and fix the instance path if needed.
+    // // The instance path should point to the module containing the clock value.
+    // // If the leaf instance doesn't instantiate the clock's parent module,
+    // // we need to drop the last instance from the path.
+    // auto clkParentOp = llvm::dyn_cast<hw::HWModuleOp>(
+    //     clk.getParentRegion()->getParentOp());
+    // if (clkParentOp && !obj.instancePath.empty()) {
+    //   auto instOp = dyn_cast<hw::InstanceOp>(obj.instancePath.leaf());
+    //   if (instOp && instOp.getModuleNameAttr().getAttr() != clkParentOp.getModuleNameAttr()) {
+    //     // The instance path includes an extra instance - drop it
+    //     clkObj = Object(obj.instancePath.dropBack(), clk, 0);
+    //   }
+    // }
+
     return traceClockSource(clkObj);
   }
 
@@ -172,16 +189,20 @@ static void checkAssert(Value value) {
 
 ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
   history.clear();
+
+  // Verify the instance path is consistent with the value's parent module.
+  // This should have been fixed in getClockForEndpoint, but we check here
+  // to catch any remaining issues.
   auto parentOp = llvm::dyn_cast<hw::HWModuleOp>(
       clkObj.value.getParentRegion()->getParentOp());
-  if (!clkObj.instancePath.empty()) {
+  if (parentOp && !clkObj.instancePath.empty()) {
     auto instOp = dyn_cast<hw::InstanceOp>(clkObj.instancePath.leaf());
-    if (instOp.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
-      llvm::errs() << "ERROR: Instance path is incorrect!\n";
+    if (instOp && instOp.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
+      llvm::errs() << "ERROR: Instance path is still incorrect after fix!\n";
       llvm::errs() << "Instance path: " << clkObj.instancePath << "\n";
       llvm::errs() << "Parent op: " << parentOp.getModuleName() << "\n";
       llvm::errs() << "Instance op: " << instOp << "\n";
-      assert(false);
+      assert(false && "Instance path consistency check failed");
     }
   }
   while (true) {

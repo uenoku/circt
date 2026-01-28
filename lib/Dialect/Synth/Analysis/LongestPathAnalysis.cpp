@@ -50,6 +50,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
@@ -329,6 +330,45 @@ Object &Object::prependPaths(circt::igraph::InstancePathCache &cache,
                              circt::igraph::InstancePath path) {
   instancePath = cache.concatPath(path, instancePath);
   return *this;
+}
+
+LogicalResult Object::verify() const {
+  // Check that the value exists
+  if (!value)
+    return success(); // Empty object is valid
+
+  // Verify the instance path is valid
+  if (failed(instancePath.verify()))
+    return failure();
+
+  // If instance path is empty, the value should be in the top-level module
+  if (instancePath.empty())
+    return success();
+
+  // Verify that the instance path is consistent with the value's parent module.
+  // The leaf of the instance path should be an instance that instantiates
+  // the module containing this value.
+  auto v = value;
+  auto parentOp =
+      llvm::dyn_cast<hw::HWModuleOp>(v.getParentRegion()->getParentOp());
+  if (!parentOp)
+    return success(); // Value is not in a HWModuleOp, can't verify
+
+  auto leaf = instancePath.leaf();
+  if (auto inst = dyn_cast<hw::InstanceOp>(leaf.getOperation())) {
+    // Check that the instance references the module containing the value
+    if (inst.getModuleNameAttr().getAttr() != parentOp.getModuleNameAttr()) {
+      auto loc = inst.getLoc();
+      auto diag = emitError(loc)
+                  << "Instance path is inconsistent with value parent module";
+      diag.attachNote(v.getLoc()) << "Value is defined here";
+      diag.attachNote(loc) << "Instance path leaf: " << inst.getInstanceName()
+                           << " (module: " << inst.getModuleName() << ")";
+      return failure();
+    }
+  }
+
+  return success();
 }
 
 OpenPath &OpenPath::prependPaths(circt::igraph::InstancePathCache &cache,
@@ -1579,11 +1619,11 @@ LogicalResult LongestPathAnalysis::Impl::computeGlobalPaths(
 template <bool elaborate>
 LogicalResult LongestPathAnalysis::Impl::collectClosedPaths(
     StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const {
-  auto collectClosedPaths = [&](StringAttr name,
-                                SmallVectorImpl<DataflowPath> &localResults,
-                                igraph::InstanceGraphNode *top = nullptr) {
+  auto collectClosedPaths =
+      [&](StringAttr name, SmallVectorImpl<DataflowPath> &localResults,
+          igraph::InstanceGraphNode *top = nullptr) -> LogicalResult {
     if (!isAnalysisAvailable(name))
-      return;
+      return success();
     auto *visitor = ctx.getLocalVisitorMutable(name);
     for (auto &[point, state] : visitor->getEndPointResults()) {
       for (const auto &dataFlow : state) {
@@ -1597,12 +1637,34 @@ LogicalResult LongestPathAnalysis::Impl::collectClosedPaths(
                                       top->getModule<hw::HWModuleOp>());
             localResults.back().prependPaths(*visitor->getInstancePathCache(),
                                              instancePath);
+            if (failed(localResults.back().getStartPoint().verify())) {
+              auto diag = mlir::emitError(
+                  localResults.back().getStartPoint().value.getLoc());
+              llvm::SmallString<4> str;
+              llvm::raw_svector_ostream os(str);
+              localResults.back().print(os);
+              diag << "Invalid path: " << str;
+              return failure();
+            }
+            if (std::holds_alternative<Object>(
+                    localResults.back().getEndPoint()) &&
+                failed(localResults.back().getEndPointAsObject().verify())) {
+              auto diag = mlir::emitError(
+                  localResults.back().getStartPoint().value.getLoc());
+              llvm::SmallString<4> str;
+              llvm::raw_svector_ostream os(str);
+              localResults.back().print(os);
+              diag << "Invalid path: " << str;
+
+              return failure();
+            }
           }
         } else {
           localResults.emplace_back(point, dataFlow, visitor->getHWModuleOp());
         }
       }
     }
+    return success();
   };
 
   if (ctx.instanceGraph) {
@@ -1613,14 +1675,16 @@ LogicalResult LongestPathAnalysis::Impl::collectClosedPaths(
     for (auto *child : llvm::post_order(node))
       resultsMap[child->getModule().getModuleNameAttr()] = {};
 
-    mlir::parallelForEach(
-        node->getModule().getContext(), resultsMap,
-        [&](auto &it) { collectClosedPaths(it.first, it.second, node); });
+    if (failed(mlir::failableParallelForEach(
+            node->getModule().getContext(), resultsMap, [&](auto &it) {
+              return collectClosedPaths(it.first, it.second, node);
+            })))
+      return failure();
 
     for (auto &[name, localResults] : resultsMap)
       results.append(localResults.begin(), localResults.end());
   } else {
-    collectClosedPaths(moduleName, results);
+    return collectClosedPaths(moduleName, results);
   }
 
   return success();
