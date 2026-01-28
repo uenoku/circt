@@ -364,6 +364,8 @@ LogicalResult Object::verify() const {
       diag.attachNote(v.getLoc()) << "Value is defined here";
       diag.attachNote(loc) << "Instance path leaf: " << inst.getInstanceName()
                            << " (module: " << inst.getModuleName() << ")";
+      diag.attachNote(loc) << "Value parent module: "
+                           << parentOp.getModuleName();
       return failure();
     }
   }
@@ -803,6 +805,8 @@ ArrayRef<OpenPath> LocalVisitor::getCachedPaths(Value value,
 
 void LocalVisitor::putUnclosedResult(const Object &object, int64_t delay,
                                      ObjectToMaxDistance &objectToMaxDistance) {
+  if (failed(object.verify()))
+    emitError(object.value.getLoc()) << "Invalid object";
   auto &slot = objectToMaxDistance[object];
   if (slot.first >= delay && delay != 0)
     return;
@@ -1202,10 +1206,10 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
               {newPath, endPoint, endPointBitPos}, result.delay + delay,
               fromInputPortToEndPoint[{newPort, result.startPoint.bitPos}]);
         } else {
-          auto resultNewPath = instancePathCache->prependInstance(
-              instance, result.startPoint.instancePath);
+          // auto resultNewPath = instancePathCache->prependInstance(
+          //     instance, result.startPoint.instancePath);
           endPointResults[{newPath, endPoint, endPointBitPos}].emplace_back(
-              resultNewPath, result.startPoint.value, result.startPoint.bitPos,
+              result.startPoint.instancePath, result.startPoint.value, result.startPoint.bitPos,
               result.delay + delay,
               Trace{instance.getOperand(arg.getArgNumber()), argBitPos,
                     result.delay});
