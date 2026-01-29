@@ -371,7 +371,14 @@ std::string DesignProfilerPass::getClockName(ClockDomain clock) {
       name = "arg" + std::to_string(blockArg.getArgNumber());
     }
   } else if (Operation *defOp = clock.value.getDefiningOp()) {
-    if (auto attr = defOp->getAttrOfType<StringAttr>("sv.namehint"))
+    if (auto instanceOp = dyn_cast<hw::InstanceOp>(defOp)) {
+      name = instanceOp.getInstanceName().str();
+      // Add a port name.
+      if (auto portName = instanceOp.getOutputName(
+              cast<OpResult>(clock.value).getResultNumber())) {
+        name += "/" + portName.getValue().str();
+      }
+    } else if (auto attr = defOp->getAttrOfType<StringAttr>("sv.namehint"))
       name = attr.getValue().str();
     else if (auto attr = defOp->getAttrOfType<StringAttr>("name"))
       name = attr.getValue().str();
@@ -538,7 +545,7 @@ void DesignProfilerPass::runOnOperation() {
   LongestPathAnalysis localAnalysis(
       module, am,
       LongestPathAnalysisOptions(/*lazyComputation=*/false,
-                                 /*keepOnlyMaxDelayPaths=*/false, topNameAttr));
+                                 /*keepOnlyMaxDelayPaths=*/true, topNameAttr));
   analysis = &localAnalysis;
 
   // Get instance graph and create path cache.
