@@ -239,4 +239,23 @@ def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
                            "circt::synth::SynthDialect"];
 }
 
+def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
+  let summary = "Preprocessing pass for synthesis IR";
+  let description = [{
+    This pass performs preprocessing transformations on synthesis IR:
+    1. Converts specific external modules (SimpleClockMux_wrapper) to seq.clock_mux
+    2. Pattern matches clock divider implementations and converts them to seq.clock_div
+
+    The clock divider pattern matched is:
+      %true = hw.constant true
+      %clock_div = seq.firreg %0 clock %clock reset async %reset, %true : i1
+      %0 = synth.aig.and_inv not %clock_div : i1
+
+    This is converted to:
+      %clock_div_out = seq.clock_div %clock by 1
+  }];
+  let dependentDialects = ["circt::seq::SeqDialect", "circt::hw::HWDialect",
+                           "circt::comb::CombDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

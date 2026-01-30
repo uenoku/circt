@@ -1193,25 +1193,28 @@ LogicalResult LocalVisitor::initializeAndRun(hw::InstanceOp instance) {
       // Prepend the instance path.
       assert(instancePathCache);
       auto newPath = instancePathCache->prependInstance(instance, instancePath);
-
       auto computedResults =
           getOrComputePaths(instance.getOperand(arg.getArgNumber()), argBitPos);
       if (failed(computedResults))
         return failure();
 
       for (auto &result : *computedResults) {
+        Object newEndPoint(newPath, endPoint, endPointBitPos);
+        // Determine if this path continues upward or terminates here.
+        // If the start point is a module input port, the path
+        // continues to the parent module and needs further propagation.
         if (auto newPort = dyn_cast<BlockArgument>(result.startPoint.value)) {
           // Record as "unclosed" - this path segment crosses module
           // boundaries and needs to be combined with paths in the parent.
           putUnclosedResult(
-              {newPath, endPoint, endPointBitPos}, result.delay + delay,
+              newEndPoint, result.delay + delay,
               fromInputPortToEndPoint[{newPort, result.startPoint.bitPos}]);
         } else {
-          endPointResults[{newPath, endPoint, endPointBitPos}].emplace_back(
-              result.startPoint.instancePath, result.startPoint.value,
-              result.startPoint.bitPos, result.delay + delay,
-              Trace{instance.getOperand(arg.getArgNumber()), argBitPos,
-                    result.delay});
+          // This path originates from an internal sequential element
+          // in the parent module, so it's a complete register-to-register path
+          // that can be recorded as closed.
+          endPointResults[newEndPoint].emplace_back(result.startPoint,
+                                                    result.delay + delay);
         }
       }
     }

@@ -16,6 +16,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   SOPBalancing.cpp
   StructuralHash.cpp
   SynthesisPipeline.cpp
+  SynthPreprocess.cpp
   TechMapper.cpp
   TestPriorityCuts.cpp
 
@@ -31,6 +32,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   LINK_LIBS PUBLIC
   CIRCTHW
   CIRCTComb
+  CIRCTSeq
   CIRCTSV
   CIRCTSynthAnalysis
   CIRCTCombToSynth
