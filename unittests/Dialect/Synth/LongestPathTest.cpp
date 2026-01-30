@@ -86,7 +86,7 @@ TEST(LongestPathTest, BasicTest) {
   // Check global analysis
   {
     LongestPathAnalysis longestPath(module.get(), am,
-                                    LongestPathAnalysisOptions(true, false));
+                                    LongestPathAnalysisOptions(false, false));
     llvm::SmallVector<DataflowPath> results;
     auto closedPath =
         longestPath.getInternalPaths(basicModule.getModuleNameAttr(), results);
@@ -118,10 +118,8 @@ TEST(LongestPathTest, BasicTest) {
               2); //  avg([3, 3, 0, 0]) = ceil((3+3+0+0)/4) = 2
 
     // Check history.
-    auto history = results[0].getHistory();
     SmallVector<DebugPoint> points;
-    for (auto &point : history)
-      points.push_back(point);
+    EXPECT_TRUE(succeeded(results[0].getHistory(longestPath, points)));
 
     EXPECT_EQ(points.size(), 3u);
     EXPECT_EQ(points[0].comment, "output port"); // inst.r
@@ -133,9 +131,11 @@ TEST(LongestPathTest, BasicTest) {
     EXPECT_TRUE(succeeded(longestPathWithoutDebug.getInternalPaths(
         basicModule.getModuleNameAttr(), results)));
     EXPECT_EQ(results.size(), 4u);
-    // No history must be recorded.
-    for (auto path : results)
-      EXPECT_TRUE(path.getHistory().isEmpty());
+    // History can still be reconstructed even without collectDebugInfo.
+    for (auto path : results) {
+      SmallVector<DebugPoint> pathPoints;
+      EXPECT_TRUE(succeeded(path.getHistory(longestPathWithoutDebug, pathPoints)));
+    }
   }
 
   // Check local paths
@@ -193,7 +193,7 @@ TEST(LongestPathTest, ElaborationTest) {
   AnalysisManager am(mam);
 
   LongestPathAnalysis longestPath(module.get(), am,
-                                  LongestPathAnalysisOptions(true, false));
+                                  LongestPathAnalysisOptions(false, false));
   llvm::SmallVector<DataflowPath> elaboratedPaths, unelaboratedPaths;
   auto elaborated =
       longestPath.getInternalPaths(basicModule.getModuleNameAttr(),
@@ -293,7 +293,7 @@ TEST(LongestPathTest, OpenPaths) {
   AnalysisManager am(mam);
 
   LongestPathAnalysis longestPath(module.get(), am,
-                                  LongestPathAnalysisOptions(true, false));
+                                  LongestPathAnalysisOptions(false, false));
 
   // Test getOpenPathsFromInputPortsToInternal (input-to-register paths)
   llvm::SmallVector<DataflowPath> inputToInternalPaths;
