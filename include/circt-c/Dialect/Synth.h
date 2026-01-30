@@ -107,6 +107,11 @@ synthLongestPathCollectionMerge(SynthLongestPathCollection dest,
 MLIR_CAPI_EXPORTED void synthLongestPathCollectionDropNonCriticalPaths(
     SynthLongestPathCollection collection, bool perEndPoint);
 
+// Get history for a dataflow path from the collection
+MLIR_CAPI_EXPORTED SynthLongestPathHistory
+synthLongestPathCollectionGetHistory(SynthLongestPathCollection collection,
+                                     SynthLongestPathDataflowPath dataflowPath);
+
 //===----------------------------------------------------------------------===//
 // DataflowPath API
 //===----------------------------------------------------------------------===//
@@ -119,12 +124,11 @@ synthLongestPathDataflowPathGetStartPoint(
     SynthLongestPathDataflowPath dataflowPath);
 
 MLIR_CAPI_EXPORTED SynthLongestPathObject
-synthLongestPathDataflowPathGetEndPoint(
-    SynthLongestPathDataflowPath dataflowPath);
+synthLongestPathDataflowPathGetEndPoint(SynthLongestPathDataflowPath dataflowPath);
 
 MLIR_CAPI_EXPORTED SynthLongestPathHistory
-synthLongestPathDataflowPathGetHistory(
-    SynthLongestPathDataflowPath dataflowPath);
+synthLongestPathDataflowPathGetHistory(SynthLongestPathAnalysis analysis,
+                                       SynthLongestPathDataflowPath dataflowPath);
 
 MLIR_CAPI_EXPORTED MlirOperation
 synthLongestPathDataflowPathGetRoot(SynthLongestPathDataflowPath dataflowPath);
@@ -133,16 +137,13 @@ synthLongestPathDataflowPathGetRoot(SynthLongestPathDataflowPath dataflowPath);
 // History API
 //===----------------------------------------------------------------------===//
 
-MLIR_CAPI_EXPORTED bool
-synthLongestPathHistoryIsEmpty(SynthLongestPathHistory history);
+MLIR_CAPI_EXPORTED size_t
+synthLongestPathHistoryGetSize(SynthLongestPathHistory history);
 
 MLIR_CAPI_EXPORTED void
-synthLongestPathHistoryGetHead(SynthLongestPathHistory history,
-                               SynthLongestPathObject *object, int64_t *delay,
-                               MlirStringRef *comment);
-
-MLIR_CAPI_EXPORTED SynthLongestPathHistory
-synthLongestPathHistoryGetTail(SynthLongestPathHistory history);
+synthLongestPathHistoryGetVal(SynthLongestPathHistory history, size_t index,
+                              SynthLongestPathObject *object, int64_t *delay,
+                              MlirStringRef *comment);
 
 //===----------------------------------------------------------------------===//
 // Object API
