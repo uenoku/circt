@@ -298,6 +298,21 @@ ArrayRef<InstancePath> InstancePathCache::getPaths(ModuleOpInterface op,
 }
 // NOLINTEND(misc-no-recursion)
 
+LogicalResult InstancePath::verify() const {
+  for (unsigned i = 0, n = path.size(); i < n; ++i) {
+    auto inst = path[i];
+    auto names = inst.getReferencedModuleNamesAttr();
+    if (i + 1 < n) {
+      auto parent = path[i + 1]->getParentOfType<ModuleOpInterface>();
+      if (!llvm::is_contained(names, parent.getModuleNameAttr())) {
+        return mlir::emitError(path[i]->getLoc())
+               << "instance path is incorrect";
+      }
+    }
+  }
+  return success();
+}
+
 void InstancePath::print(llvm::raw_ostream &into) const {
   into << "$root";
   for (unsigned i = 0, n = path.size(); i < n; ++i) {
@@ -333,7 +348,10 @@ InstancePath InstancePathCache::appendInstance(InstancePath path,
   auto *newPath = allocator.Allocate<InstanceOpInterface>(n);
   std::copy(path.begin(), path.end(), newPath);
   newPath[path.size()] = inst;
-  return InstancePath(ArrayRef(newPath, n));
+  auto result = InstancePath(ArrayRef(newPath, n));
+  if (failed(result.verify()))
+    llvm::errs() << "Invalid path: " << result << "\n";
+  return result;
 }
 
 InstancePath InstancePathCache::prependInstance(InstanceOpInterface inst,

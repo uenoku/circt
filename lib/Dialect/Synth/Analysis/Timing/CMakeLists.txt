@@ -6,19 +6,18 @@
 ##
 ##===----------------------------------------------------------------------===//
 
-add_circt_dialect_library(CIRCTSynthAnalysis
-  DesignProfiler.cpp
-  LongestPathAnalysis.cpp
-  PathFilter.cpp
-  PrintLongestPathAnalysis.cpp
-  ResourceUsageAnalysis.cpp
+add_circt_dialect_library(CIRCTTimingAnalysis
+  ArrivalAnalysis.cpp
+  DelayModel.cpp
+  ObjectCollection.cpp
+  PathEnumerator.cpp
+  RequiredTimeAnalysis.cpp
+  TimingAnalysis.cpp
+  TimingGraph.cpp
+  TimingReport.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${CIRCT_MAIN_INCLUDE_DIR}/circt/Dialect/Synth
-
-  DEPENDS
-  CIRCTSynthTransformsIncGen
-  CIRCTConversionPassIncGen
+  ${CIRCT_MAIN_INCLUDE_DIR}/circt/Dialect/Synth/Analysis/Timing
 
   LINK_COMPONENTS
   Support
@@ -26,13 +25,9 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   LINK_LIBS PUBLIC
   CIRCTHW
   CIRCTComb
-  CIRCTSupport
   CIRCTSeq
   CIRCTSynth
-  CIRCTTimingAnalysis
+  CIRCTSupport
   MLIRIR
-  MLIRPass
-  MLIRTransforms
 )
 
-add_subdirectory(Timing)

@@ -54,15 +54,40 @@ struct Object {
            bitPos == other.bitPos;
   }
 
-  void print(llvm::raw_ostream &os) const;
+  bool operator<(const Object &other) const {
+    // Compare instance paths first
+    if (instancePath.size() != other.instancePath.size())
+      return instancePath.size() < other.instancePath.size();
+    for (size_t i = 0; i < instancePath.size(); ++i) {
+      if (instancePath[i].getAsOpaquePointer() !=
+          other.instancePath[i].getAsOpaquePointer())
+        return instancePath[i].getAsOpaquePointer() <
+               other.instancePath[i].getAsOpaquePointer();
+    }
+    // Then compare values
+    if (value.getAsOpaquePointer() != other.value.getAsOpaquePointer())
+      return value.getAsOpaquePointer() < other.value.getAsOpaquePointer();
+    // Finally compare bit positions
+    return bitPos < other.bitPos;
+  }
+
+  void print(llvm::raw_ostream &os, bool withLoc = false,
+             bool addRegSuffix = false) const;
   Object &prependPaths(circt::igraph::InstancePathCache &cache,
                        circt::igraph::InstancePath path);
 
   StringAttr getName() const;
 
+  /// Get the full hierarchical path name for this object.
+  /// Format: "inst1/inst2/signalName" (no bit index).
+  /// Used for pattern matching in path filtering.
+  std::string getFullPathName() const;
+
   circt::igraph::InstancePath instancePath;
   Value value;
   size_t bitPos;
+
+  LogicalResult verify() const;
 };
 
 // A debug point represents a point in the dataflow graph which carries delay
@@ -83,7 +108,8 @@ struct DebugPoint {
     ID.AddInteger(delay);
   }
 
-  void print(llvm::raw_ostream &os) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false,
+             bool addRegSuffix = false) const;
 
   Object object;
   int64_t delay;
@@ -91,32 +117,27 @@ struct DebugPoint {
 };
 
 // An OpenPath represents a path from a start point with an associated
-// delay and history of debug points.
+// delay. Path reconstruction is done lazily by walking the IR.
 struct OpenPath {
   OpenPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
-           int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
-      : OpenPath(Object(path, value, bitPos), delay, history) {}
-  OpenPath(Object startPoint, int64_t delay = 0,
-           llvm::ImmutableList<DebugPoint> history = {})
-      : startPoint(startPoint), delay(delay), history(history) {}
+           int64_t delay = 0)
+      : OpenPath(Object(path, value, bitPos), delay) {}
+  OpenPath(Object startPoint, int64_t delay = 0)
+      : startPoint(startPoint), delay(delay) {}
   OpenPath() = default;
 
   const Object &getStartPoint() const { return startPoint; }
   int64_t getDelay() const { return delay; }
-  const llvm::ImmutableList<DebugPoint> &getHistory() const { return history; }
 
-  void print(llvm::raw_ostream &os) const;
-  OpenPath &
-  prependPaths(circt::igraph::InstancePathCache &cache,
-               llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-               circt::igraph::InstancePath path);
+  void print(llvm::raw_ostream &os, bool withLoc = false) const;
+  OpenPath &prependPaths(circt::igraph::InstancePathCache &cache,
+                         circt::igraph::InstancePath path);
 
   Object startPoint;
   int64_t delay;
-  // History of debug points represented by linked lists.
-  // The head of the list is the farthest point from the start point.
-  llvm::ImmutableList<DebugPoint> history;
 };
+
+class LongestPathAnalysis;
 
 // A DataflowPath represents a complete timing path from a end point to a
 // start point with associated delay information. This is the primary result
@@ -149,9 +170,6 @@ public:
     return std::get<OutputPort>(endPoint);
   }
   hw::HWModuleOp getRoot() const { return root; }
-  const llvm::ImmutableList<DebugPoint> &getHistory() const {
-    return path.history;
-  }
   const OpenPath &getPath() const { return path; }
 
   // Get source location for the end point (for diagnostics)
@@ -159,15 +177,28 @@ public:
 
   void setDelay(int64_t delay) { path.delay = delay; }
 
-  void print(llvm::raw_ostream &os);
-  void printEndPoint(llvm::raw_ostream &os);
+  void print(llvm::raw_ostream &os, bool withLoc = false);
+  void printEndPoint(llvm::raw_ostream &os, bool withLoc = false);
+
+  // Return intermediate objects on the path (excluding start and end points).
+  // This reconstructs the path on-demand.
+  SmallVector<Object>
+  getIntermediateObjects(const LongestPathAnalysis &analysis) const;
+
+  // Return all objects on the path including start and end points.
+  // This reconstructs the path on-demand.
+  SmallVector<Object>
+  getFullPathObjects(const LongestPathAnalysis &analysis) const;
+
+  // Get the history of debug points along this path.
+  // Reconstructs the path history on-demand using the provided analysis.
+  LogicalResult getHistory(const LongestPathAnalysis &analysis,
+                           SmallVectorImpl<DebugPoint> &results) const;
 
   // Path elaboration for hierarchical analysis
   // Prepends instance path information to create full hierarchical paths
-  DataflowPath &
-  prependPaths(circt::igraph::InstancePathCache &cache,
-               llvm::ImmutableListFactory<DebugPoint> *debugPointFactory,
-               circt::igraph::InstancePath path);
+  DataflowPath &prependPaths(circt::igraph::InstancePathCache &cache,
+                             circt::igraph::InstancePath path);
 
 private:
   EndPointType endPoint; // Either Object or (port_index, bit_index)
@@ -177,6 +208,71 @@ private:
 
 // JSON serialization for DataflowPath
 llvm::json::Value toJSON(const circt::synth::DataflowPath &path);
+
+//===----------------------------------------------------------------------===//
+// Trait-based Path Filtering
+//===----------------------------------------------------------------------===//
+//
+// Path filtering uses a trait-based approach where each filter trait defines
+// a "category" for paths. Paths in the same category are deduplicated,
+// keeping only the maximum delay path per category.
+//
+// Filter traits must provide:
+//   - CategoryType: The type used to categorize paths
+//   - static CategoryType getCategoryForOpenPath(const OpenPath &)
+//   - static CategoryType getCategoryForDataflowPath(const DataflowPath &)
+//
+// This trait-based design eliminates virtual function overhead and enables
+// compile-time optimization.
+
+/// Filter that keeps only the maximum delay path globally.
+/// Category is always 1, so all paths compete for a single slot.
+/// This is the default filter used when keepOnlyMaxDelayPaths=true.
+struct MaxDelayFilter {
+  using CategoryType = int;
+
+  static CategoryType getCategoryForOpenPath(const OpenPath &path) {
+    return 1; // Single category - all paths compete
+  }
+
+  static CategoryType getCategoryForDataflowPath(const DataflowPath &path) {
+    return 1; // Single category - all paths compete
+  }
+};
+
+/// Filter that keeps maximum delay path per endpoint.
+/// This is the default filter when keepOnlyMaxDelayPaths=false.
+/// For OpenPath: category is the start point
+/// For DataflowPath: category is the (endpoint, startpoint) pair
+struct PerEndpointFilter {
+  static Object getCategoryForOpenPath(const OpenPath &path) {
+    return path.startPoint;
+  }
+
+  static std::pair<DataflowPath::EndPointType, Object>
+  getCategoryForDataflowPath(const DataflowPath &path) {
+    return std::make_pair(path.getEndPoint(), path.getStartPoint());
+  }
+};
+
+/// Filter that keeps maximum delay path per clock domain.
+/// Category is the clock domain Object extracted from register endpoints.
+/// For paths without clocks (port-to-port), uses empty Object.
+struct ClockDomainFilter {
+  using CategoryType = Object;
+
+  static Object getCategoryForOpenPath(const OpenPath &path) {
+    return getClockForEndpoint(path.startPoint);
+  }
+
+  static Object getCategoryForDataflowPath(const DataflowPath &path) {
+    return getClockForEndpoint(path.getStartPoint());
+  }
+
+private:
+  // Helper to extract clock domain from an endpoint
+  static Object getClockForEndpoint(const Object &obj);
+};
 
 /// Configuration options for the longest path analysis.
 ///
@@ -191,12 +287,6 @@ llvm::json::Value toJSON(const circt::synth::DataflowPath &path);
 ///   // For fast critical path identification only
 ///   LongestPathAnalysisOption options(false, false, true);
 struct LongestPathAnalysisOptions {
-  /// Enable collection of debug points along timing paths.
-  /// When enabled, records intermediate points with delay values and comments
-  /// for debugging, visualization, and understanding delay contributions.
-  /// Moderate performance impact.
-  bool collectDebugInfo = false;
-
   /// Enable lazy computation mode for on-demand analysis.
   /// Performs delay computations lazily and caches results, tracking IR
   /// changes. Better for iterative workflows where only specific paths
@@ -214,11 +304,10 @@ struct LongestPathAnalysisOptions {
   StringAttr topModuleName = {};
 
   /// Construct analysis options with the specified settings.
-  LongestPathAnalysisOptions(bool collectDebugInfo = false,
-                             bool lazyComputation = false,
+  LongestPathAnalysisOptions(bool lazyComputation = false,
                              bool keepOnlyMaxDelayPaths = false,
                              StringAttr topModuleName = {})
-      : collectDebugInfo(collectDebugInfo), lazyComputation(lazyComputation),
+      : lazyComputation(lazyComputation),
         keepOnlyMaxDelayPaths(keepOnlyMaxDelayPaths),
         topModuleName(topModuleName) {}
 };
@@ -276,6 +365,11 @@ public:
   LogicalResult getOpenPathsFromInternalToOutputPorts(
       StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
 
+  // Return input-to-output timing paths for the given module.
+  // These are open paths from module input ports to module output ports.
+  LogicalResult getOpenPathsFromInputToOutputPorts(
+      StringAttr moduleName, SmallVectorImpl<DataflowPath> &results) const;
+
   // Get all timing paths in the given module including both closed and open
   // paths. This is a convenience method that combines results from
   // getInternalPaths, getOpenPathsFromInputPortsToInternal, and
@@ -284,6 +378,20 @@ public:
   LogicalResult getAllPaths(StringAttr moduleName,
                             SmallVectorImpl<DataflowPath> &results,
                             bool elaboratePaths = false) const;
+
+  // Get timing paths to any object matching the given patterns.
+  // This allows querying paths to arbitrary design objects (combinational
+  // nodes, wires, etc.), not just registers and output ports. The patterns
+  // use glob syntax (*, ?, [abc]). Returns DataflowPath entries for each
+  // matched object.
+  LogicalResult getPathsToMatchingObjects(
+      StringAttr moduleName, llvm::ArrayRef<std::string> patterns,
+      SmallVectorImpl<DataflowPath> &results,
+      SmallVectorImpl<std::string> *matchedObjectNames = nullptr) const;
+
+  // Reconstruct the path from the given dataflow path.
+  LogicalResult reconstructPath(const DataflowPath &path,
+                                SmallVectorImpl<DebugPoint> &result) const;
 
   // Return true if the analysis is available for the given module.
   bool isAnalysisAvailable(StringAttr moduleName) const;
@@ -311,8 +419,7 @@ public:
   IncrementalLongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am)
       : LongestPathAnalysis(
             moduleOp, am,
-            LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
-                                       /*lazyComputation=*/true,
+            LongestPathAnalysisOptions(/*lazyComputation=*/true,
                                        /*keepOnlyMaxDelayPaths=*/true)) {}
 
   IncrementalLongestPathAnalysis(Operation *moduleOp, mlir::AnalysisManager &am,

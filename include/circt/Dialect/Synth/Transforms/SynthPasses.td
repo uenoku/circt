@@ -357,4 +357,65 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
 include "SynthMockturtlePasses.td"
 #endif
 
+def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
+  let summary = "Early PPA estimation and design profiling";
+  let description = [{
+    Performs design profiling for PPA estimation. Currently supports timing
+    analysis with clock domain classification. Paths are categorized as:
+    - reg-to-reg: Both endpoints are registers
+    - port-to-reg: Input port to register
+    - reg-to-port: Register to output port
+    - port-to-port: Combinational paths
+
+    Path filtering is supported via glob patterns:
+    - `*` matches zero or more characters
+    - `?` matches exactly one character
+    - `[abc]` matches any character in the set
+
+    When both start and end filters are specified, paths must match both
+    (AND semantics). Multiple patterns in each filter use OR semantics.
+
+    Two analysis backends are available:
+    - Default (LongestPathAnalysis): Backward tracing from endpoints
+    - Two-Stage (TimingAnalysis): Forward arrival propagation + on-demand path
+      enumeration, similar to commercial EDA tools
+
+    Output: <reportDir>/<topModuleName>/timing.txt
+  }];
+  let options = [
+    Option<"topModuleName", "top", "std::string", "",
+           "Name of the top module to analyze">,
+    Option<"reportDir", "report-dir", "std::string", "\"reports\"",
+           "Directory for output reports">,
+    ListOption<"filterStartPoints", "filter-start", "std::string",
+               "Glob patterns to filter paths by start point names">,
+    ListOption<"filterEndPoints", "filter-end", "std::string",
+               "Glob patterns to filter paths by end point names">,
+    Option<"useTwoStageAnalysis", "two-stage", "bool", "false",
+           "Use two-stage timing analysis (forward arrival + path enumeration)">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
+def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
+  let summary = "Preprocessing pass for synthesis IR";
+  let description = [{
+    This pass performs preprocessing transformations on synthesis IR:
+    1. Converts specific external modules to seq operations:
+       - SimpleClockMux_wrapper -> seq.clock_mux
+       - EICG_wrapper -> seq.clock_gate
+    2. Pattern matches clock divider implementations and converts them to seq.clock_div
+
+    The clock divider pattern matched is:
+      %true = hw.constant true
+      %clock_div = seq.firreg %0 clock %clock reset async %reset, %true : i1
+      %0 = synth.aig.and_inv not %clock_div : i1
+
+    This is converted to:
+      %clock_div_out = seq.clock_div %clock by 1
+  }];
+  let dependentDialects = ["circt::seq::SeqDialect", "circt::hw::HWDialect",
+                           "circt::comb::CombDialect"];
+}
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

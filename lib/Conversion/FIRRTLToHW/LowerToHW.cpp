@@ -775,8 +775,8 @@ void FIRRTLModuleLowering::runOnOperation() {
               opsToProcess.push_back(fileOp);
               return success();
             })
-            .Case<OptionOp, OptionCaseOp>([&](auto) {
-              // Option operations are removed after lowering instance choices.
+            .Case<OptionOp, OptionCaseOp>([&](auto optionOp) {
+              optionOp->erase();
               return success();
             })
             .Default([&](Operation *op) {

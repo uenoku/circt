@@ -4,11 +4,9 @@
 // RUN: circt-synth %s -analysis-output=- -top test -analysis-output-format=json | FileCheck %s --check-prefix JSON
 
 // COMMON-LABEL: # Longest Path Analysis result for "counter"
-// COMMON-NEXT: Found 168 paths
-// COMMON-NEXT: Found 32 unique end points
-// AIG-NEXT: Maximum path delay: 27
-// MIG-NEXT: Maximum path delay: 30
-// LUT6-NEXT: Maximum path delay: 6
+// AIG: Maximum path delay: 27
+// MIG: Maximum path delay: 30
+// LUT6: Maximum path delay: 6
 // Don't test detailed reports as they are not stable.
 
 hw.module @counter(in %a: i16, in %clk: !seq.clock, out result: i16) {

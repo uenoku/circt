@@ -8,7 +8,6 @@
 
 #include "circt-c/Dialect/Synth.h"
 
-#include "circt-c/Dialect/Synth.h"
 #include "circt-c/Support/InstanceGraph.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
@@ -22,7 +21,6 @@
 #include "mlir/CAPI/Registration.h"
 #include "mlir/CAPI/Support.h"
 #include "mlir/Pass/AnalysisManager.h"
-#include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/Support/JSON.h"
 #include <memory>
@@ -43,11 +41,16 @@ struct LongestPathAnalysisWrapper {
   std::unique_ptr<LongestPathAnalysis> analysis;
 };
 
+// Wrapper struct to hold both the collection and the analysis for CAPI
+struct LongestPathCollectionWrapper {
+  std::unique_ptr<LongestPathCollection> collection;
+  const LongestPathAnalysis *analysis;
+};
+
 DEFINE_C_API_PTR_METHODS(SynthLongestPathAnalysis, LongestPathAnalysisWrapper)
-DEFINE_C_API_PTR_METHODS(SynthLongestPathCollection, LongestPathCollection)
+DEFINE_C_API_PTR_METHODS(SynthLongestPathCollection, LongestPathCollectionWrapper)
 DEFINE_C_API_PTR_METHODS(SynthLongestPathDataflowPath, DataflowPath)
-DEFINE_C_API_PTR_METHODS(SynthLongestPathHistory,
-                         llvm::ImmutableListImpl<DebugPoint>)
+DEFINE_C_API_PTR_METHODS(SynthLongestPathHistory, SmallVector<DebugPoint>)
 
 // SynthLongestPathObject is a pointer to either an Object or an OutputPort so
 // we can not use DEFINE_C_API_PTR_METHODS.
@@ -91,7 +94,7 @@ synthLongestPathAnalysisCreate(MlirOperation module, bool collectDebugInfo,
       StringAttr::get(op->getContext(), unwrap(topModuleName));
   wrapper->analysis = std::make_unique<LongestPathAnalysis>(
       op, am,
-      LongestPathAnalysisOptions(collectDebugInfo, lazyComputation,
+      LongestPathAnalysisOptions(lazyComputation,
                                  keepOnlyMaxDelayPaths, topModuleNameAttr));
   return wrap(wrapper);
 }
@@ -106,13 +109,15 @@ synthLongestPathAnalysisGetPaths(SynthLongestPathAnalysis analysis,
                                  bool elaboratePaths) {
   auto *wrapper = unwrap(analysis);
   auto *lpa = wrapper->analysis.get();
-  auto *collection = new LongestPathCollection(lpa->getContext());
+  auto *collWrapper = new LongestPathCollectionWrapper();
+  collWrapper->collection = std::make_unique<LongestPathCollection>(lpa->getContext());
+  collWrapper->analysis = lpa;
   auto result =
-      lpa->computeGlobalPaths(unwrap(value), bitPos, collection->paths);
+      lpa->computeGlobalPaths(unwrap(value), bitPos, collWrapper->collection->paths);
   if (failed(result))
     return {nullptr};
-  collection->sortInDescendingOrder();
-  return wrap(collection);
+  collWrapper->collection->sortInDescendingOrder();
+  return wrap(collWrapper);
 }
 
 SynthLongestPathCollection
@@ -123,14 +128,16 @@ synthLongestPathAnalysisGetInternalPaths(SynthLongestPathAnalysis analysis,
   auto *lpa = wrapper->analysis.get();
   auto moduleNameAttr = StringAttr::get(lpa->getContext(), unwrap(moduleName));
 
-  auto *collection = new LongestPathCollection(lpa->getContext());
+  auto *collWrapper = new LongestPathCollectionWrapper();
+  collWrapper->collection = std::make_unique<LongestPathCollection>(lpa->getContext());
+  collWrapper->analysis = lpa;
   if (!lpa->isAnalysisAvailable(moduleNameAttr) ||
-      failed(lpa->getInternalPaths(moduleNameAttr, collection->paths,
+      failed(lpa->getInternalPaths(moduleNameAttr, collWrapper->collection->paths,
                                    elaboratePaths)))
     return {nullptr};
 
-  collection->sortInDescendingOrder();
-  return wrap(collection);
+  collWrapper->collection->sortInDescendingOrder();
+  return wrap(collWrapper);
 }
 
 // Get external paths from module input ports to internal sequential elements.
@@ -141,14 +148,16 @@ synthLongestPathAnalysisGetPathsFromInputPortsToInternal(
   auto *lpa = wrapper->analysis.get();
   auto moduleNameAttr = StringAttr::get(lpa->getContext(), unwrap(moduleName));
 
-  auto *collection = new LongestPathCollection(lpa->getContext());
+  auto *collWrapper = new LongestPathCollectionWrapper();
+  collWrapper->collection = std::make_unique<LongestPathCollection>(lpa->getContext());
+  collWrapper->analysis = lpa;
   if (!lpa->isAnalysisAvailable(moduleNameAttr) ||
       failed(lpa->getOpenPathsFromInputPortsToInternal(moduleNameAttr,
-                                                       collection->paths)))
+                                                       collWrapper->collection->paths)))
     return {nullptr};
 
-  collection->sortInDescendingOrder();
-  return wrap(collection);
+  collWrapper->collection->sortInDescendingOrder();
+  return wrap(collWrapper);
 }
 
 // Get external paths from internal sequential elements to module output ports.
@@ -159,14 +168,16 @@ synthLongestPathAnalysisGetPathsFromInternalToOutputPorts(
   auto *lpa = wrapper->analysis.get();
   auto moduleNameAttr = StringAttr::get(lpa->getContext(), unwrap(moduleName));
 
-  auto *collection = new LongestPathCollection(lpa->getContext());
+  auto *collWrapper = new LongestPathCollectionWrapper();
+  collWrapper->collection = std::make_unique<LongestPathCollection>(lpa->getContext());
+  collWrapper->analysis = lpa;
   if (!lpa->isAnalysisAvailable(moduleNameAttr) ||
       failed(lpa->getOpenPathsFromInternalToOutputPorts(moduleNameAttr,
-                                                        collection->paths)))
+                                                        collWrapper->collection->paths)))
     return {nullptr};
 
-  collection->sortInDescendingOrder();
-  return wrap(collection);
+  collWrapper->collection->sortInDescendingOrder();
+  return wrap(collWrapper);
 }
 
 // ===----------------------------------------------------------------------===//
@@ -184,29 +195,42 @@ void synthLongestPathCollectionDestroy(SynthLongestPathCollection collection) {
 size_t
 synthLongestPathCollectionGetSize(SynthLongestPathCollection collection) {
   auto *wrapper = unwrap(collection);
-  return wrapper->paths.size();
+  return wrapper->collection->paths.size();
 }
 
 // Get a specific path from the collection as DataflowPath object
 SynthLongestPathDataflowPath
 synthLongestPathCollectionGetDataflowPath(SynthLongestPathCollection collection,
                                           size_t index) {
-  auto *wrapper = unwrap(collection);
-  auto &path = wrapper->paths[index];
-  return wrap(&path);
+  auto *collWrapper = unwrap(collection);
+  return wrap(&collWrapper->collection->paths[index]);
 }
 
 void synthLongestPathCollectionMerge(SynthLongestPathCollection dest,
                                      SynthLongestPathCollection src) {
   auto *destWrapper = unwrap(dest);
   auto *srcWrapper = unwrap(src);
-  destWrapper->merge(*srcWrapper);
+  destWrapper->collection->merge(*srcWrapper->collection);
 }
 
 void synthLongestPathCollectionDropNonCriticalPaths(
     SynthLongestPathCollection collection, bool perEndPoint) {
   auto *wrapper = unwrap(collection);
-  wrapper->dropNonCriticalPaths(perEndPoint);
+  wrapper->collection->dropNonCriticalPaths(perEndPoint);
+}
+
+SynthLongestPathHistory
+synthLongestPathCollectionGetHistory(SynthLongestPathCollection collection,
+                                     SynthLongestPathDataflowPath dataflowPath) {
+  auto *collWrapper = unwrap(collection);
+  auto *path = unwrap(dataflowPath);
+  auto *history = new SmallVector<DebugPoint>();
+
+  if (collWrapper->analysis) {
+    path->getHistory(*collWrapper->analysis, *history);
+  }
+
+  return wrap(history);
 }
 
 //===----------------------------------------------------------------------===//
@@ -214,68 +238,68 @@ void synthLongestPathCollectionDropNonCriticalPaths(
 //===----------------------------------------------------------------------===//
 
 int64_t
-synthLongestPathDataflowPathGetDelay(SynthLongestPathDataflowPath path) {
-  auto *wrapper = unwrap(path);
-  return wrapper->getDelay();
+synthLongestPathDataflowPathGetDelay(SynthLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  return path->getDelay();
 }
 
-SynthLongestPathObject
-synthLongestPathDataflowPathGetStartPoint(SynthLongestPathDataflowPath path) {
-  auto *wrapper = unwrap(path);
-  auto &startPoint = wrapper->getStartPoint();
+SynthLongestPathObject synthLongestPathDataflowPathGetStartPoint(
+    SynthLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  auto &startPoint = path->getStartPoint();
   return wrap(const_cast<Object *>(&startPoint));
 }
 
 SynthLongestPathObject
-synthLongestPathDataflowPathGetEndPoint(SynthLongestPathDataflowPath path) {
-  auto *wrapper = unwrap(path);
-  if (auto *object = std::get_if<Object>(&wrapper->getEndPoint())) {
+synthLongestPathDataflowPathGetEndPoint(SynthLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  if (auto *object = std::get_if<Object>(&path->getEndPoint())) {
     return wrap(object);
   }
-  auto *ptr = std::get_if<DataflowPath::OutputPort>(&wrapper->getEndPoint());
+  auto *ptr = std::get_if<DataflowPath::OutputPort>(&path->getEndPoint());
   return wrap(ptr);
 }
 
 SynthLongestPathHistory
-synthLongestPathDataflowPathGetHistory(SynthLongestPathDataflowPath path) {
-  auto *wrapper = unwrap(path);
-  return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(
-      wrapper->getHistory().getInternalPointer()));
+synthLongestPathDataflowPathGetHistory(SynthLongestPathAnalysis analysis,
+                                       SynthLongestPathDataflowPath dataflowPath) {
+  auto *analysisWrapper = unwrap(analysis);
+  auto *path = unwrap(dataflowPath);
+  auto *history = new SmallVector<DebugPoint>();
+
+  if (analysisWrapper && analysisWrapper->analysis) {
+    path->getHistory(*analysisWrapper->analysis, *history);
+  }
+
+  return wrap(history);
 }
 
 MlirOperation
-synthLongestPathDataflowPathGetRoot(SynthLongestPathDataflowPath path) {
-  auto *wrapper = unwrap(path);
-  return wrap(wrapper->getRoot());
+synthLongestPathDataflowPathGetRoot(SynthLongestPathDataflowPath dataflowPath) {
+  auto *path = unwrap(dataflowPath);
+  return wrap(path->getRoot());
 }
 
 //===----------------------------------------------------------------------===//
 // History
 //===----------------------------------------------------------------------===//
 
-bool synthLongestPathHistoryIsEmpty(SynthLongestPathHistory history) {
-  auto *wrapper = unwrap(history);
-  return llvm::ImmutableList<DebugPoint>(wrapper).isEmpty();
+size_t synthLongestPathHistoryGetSize(SynthLongestPathHistory history) {
+  auto *vec = unwrap(history);
+  return vec->size();
 }
 
-void synthLongestPathHistoryGetHead(SynthLongestPathHistory history,
-                                    SynthLongestPathObject *object,
-                                    int64_t *delay, MlirStringRef *comment) {
-  auto *wrapper = unwrap(history);
-  auto list = llvm::ImmutableList<DebugPoint>(wrapper);
+void synthLongestPathHistoryGetVal(SynthLongestPathHistory history, size_t index,
+                                   SynthLongestPathObject *object,
+                                   int64_t *delay, MlirStringRef *comment) {
+  auto *vec = unwrap(history);
 
-  auto &head = list.getHead();
-  *object = wrap(&head.object);
-  *delay = head.delay;
-  *comment = mlirStringRefCreate(head.comment.data(), head.comment.size());
-}
-
-SynthLongestPathHistory
-synthLongestPathHistoryGetTail(SynthLongestPathHistory history) {
-  auto *wrapper = unwrap(history);
-  auto list = llvm::ImmutableList<DebugPoint>(wrapper);
-  auto *tail = list.getTail().getInternalPointer();
-  return wrap(const_cast<llvm::ImmutableListImpl<DebugPoint> *>(tail));
+  if (index < vec->size()) {
+    auto &point = (*vec)[index];
+    *object = wrap(&point.object);
+    *delay = point.delay;
+    *comment = mlirStringRefCreate(point.comment.data(), point.comment.size());
+  }
 }
 
 //===----------------------------------------------------------------------===//

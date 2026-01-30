@@ -49,8 +49,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -157,6 +157,30 @@ static cl::opt<int>
                                  cl::desc("Output top K percent of longest "
                                           "paths in the analysis results"),
                                  cl::init(5), cl::cat(mainCategory));
+
+static cl::opt<std::string> designProfileDir(
+    "design-profile-dir",
+    cl::desc("Directory for design profiler output. "
+             "Generates timing report at <dir>/<top>/timing.txt"),
+    cl::init(""), cl::cat(mainCategory));
+
+static cl::list<std::string>
+    filterStartPoints("filter-start",
+                      cl::desc("Glob patterns to filter paths by start point "
+                               "names (can specify multiple)"),
+                      cl::cat(mainCategory));
+
+static cl::list<std::string>
+    filterEndPoints("filter-end",
+                    cl::desc("Glob patterns to filter paths by end point "
+                             "names (can specify multiple)"),
+                    cl::cat(mainCategory));
+
+static cl::opt<bool> useTwoStageAnalysis(
+    "two-stage",
+    cl::desc("Use two-stage timing analysis (forward arrival + path "
+             "enumeration) for design profiler"),
+    cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
@@ -289,6 +313,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.targetIR = targetIR;
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
+    pm.addPass(circt::synth::createSynthPreprocess());
+    pm.addPass(circt::createSimpleCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
 
     // Mockturtle optimization pipeline
     if (enableMockturtle) {
@@ -360,6 +387,18 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       options.topModuleName = topName;
       pm.addPass(circt::synth::createPrintResourceUsageAnalysis(options));
     }
+  }
+
+  if (!designProfileDir.empty()) {
+    circt::synth::DesignProfilerOptions options;
+    options.topModuleName = topName;
+    options.reportDir = designProfileDir;
+    for (const auto &pat : filterStartPoints)
+      options.filterStartPoints.push_back(pat);
+    for (const auto &pat : filterEndPoints)
+      options.filterEndPoints.push_back(pat);
+    options.useTwoStageAnalysis = useTwoStageAnalysis;
+    pm.addPass(circt::synth::createDesignProfiler(options));
   }
 
   if (convertToComb)

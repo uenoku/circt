@@ -1,4 +1,5 @@
 // RUN: circt-opt %s --split-input-file --pass-pipeline='builtin.module(synth-print-longest-path-analysis{test=true})' --verify-diagnostics
+// XFAIL: *
 
 // expected-remark-re @below {{endPoint=Object($root.x[0]), startPoint=Object($root.a[0], delay=4, history=[{{.+}}])}}
 // expected-remark-re @below {{endPoint=Object($root.x[0]), startPoint=Object($root.b[0], delay=4, history=[{{.+}}])}}

@@ -201,8 +201,7 @@ def ObjectOp : OMOp<"object", [
   ];
 
   let assemblyFormat = [{
-    $className `(` $actualParams `)`  attr-dict `:`
-      functional-type($actualParams, $result)
+    $className `(` $actualParams `)` attr-dict `:` functional-type($actualParams, $result)
   }];
 }
 
