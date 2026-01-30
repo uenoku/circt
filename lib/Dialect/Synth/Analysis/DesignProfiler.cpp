@@ -47,14 +47,13 @@ namespace {
 using ClockDomain = Object;
 
 struct Clock {
-  Object root;
+  Object value;
   virtual void print(llvm::raw_ostream &os = llvm::errs()) = 0;
 };
 
-using ClockPtr = std::unique_ptr<Clock>;
-
 struct ClockGate : Clock {
-  Clock *enable, *input;
+  Object enable;
+  Clock *input;
 };
 
 struct ClockMux : Clock {
@@ -69,9 +68,7 @@ struct ClockDivider : Clock {
 
 struct ClockPort : Clock {};
 
-struct ClockUnknown : Clock {
-  Object input;
-};
+struct ClockUnknown : Clock {};
 
 /// Path category based on start/end point types.
 enum class PathCategory {
