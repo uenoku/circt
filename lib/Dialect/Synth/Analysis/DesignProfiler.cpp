@@ -46,6 +46,33 @@ namespace {
 /// Empty Object (null value) means "port" (unclocked).
 using ClockDomain = Object;
 
+struct Clock {
+  Object root;
+  virtual void print(llvm::raw_ostream &os = llvm::errs()) = 0;
+};
+
+using ClockPtr = std::unique_ptr<Clock>;
+
+struct ClockGate : Clock {
+  Clock *enable, *input;
+};
+
+struct ClockMux : Clock {
+  Object sel;
+  Clock *trueCase, *falseCase;
+};
+
+struct ClockDivider : Clock {
+  Clock *input;
+  int pow2;
+};
+
+struct ClockPort : Clock {};
+
+struct ClockUnknown : Clock {
+  Object input;
+};
+
 /// Path category based on start/end point types.
 enum class PathCategory {
   RegToReg,   // Both endpoints are registers
@@ -108,6 +135,7 @@ struct DesignProfilerPass
 
 private:
   SmallVector<Object> history;
+  DenseMap<Object, ClockDomain> clockCache;
   /// Get the clock value for a path endpoint. Returns nullptr for ports.
   ClockDomain getClockForEndpoint(const Object &obj);
 
@@ -190,7 +218,11 @@ static void checkAssert(Value value) {
 }
 
 ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
+  auto it = clockCache.find(clkObj);
+  if (it != clockCache.end())
+    return it->second;
   history.clear();
+  auto orig = clkObj;
 
   // Verify the instance path is consistent with the value's parent module.
   // This should have been fixed in getClockForEndpoint, but we check here
@@ -227,6 +259,12 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
         clkObj = Object(clkObj.instancePath, wire.getInput(), 0);
         continue;
       }
+
+      if (auto clockDiv = dyn_cast<seq::ClockGateOp>(op)) {
+        clkObj = Object(clkObj.instancePath, clockDiv.getInput(), 0);
+        continue;
+      }
+
       if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
         // The clock comes from an instance output. We need to trace into the
         // instance to find where this output comes from inside the instance.
@@ -325,6 +363,7 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
     // Stop if we can't handle the instance type.
     break;
   }
+  clockCache[orig] = clkObj;
   return clkObj;
 }
 

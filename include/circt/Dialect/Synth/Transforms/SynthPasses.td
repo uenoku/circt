@@ -243,7 +243,9 @@ def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
   let summary = "Preprocessing pass for synthesis IR";
   let description = [{
     This pass performs preprocessing transformations on synthesis IR:
-    1. Converts specific external modules (SimpleClockMux_wrapper) to seq.clock_mux
+    1. Converts specific external modules to seq operations:
+       - SimpleClockMux_wrapper -> seq.clock_mux
+       - EICG_wrapper -> seq.clock_gate
     2. Pattern matches clock divider implementations and converts them to seq.clock_div
 
     The clock divider pattern matched is:

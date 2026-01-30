@@ -270,6 +270,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
+    pm.addPass(circt::synth::createSynthPreprocess());
+    pm.addPass(circt::createSimpleCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
     if (untilReached(UntilMapping))
       return;
     if (lowerToKLUTs) {
