@@ -356,10 +356,15 @@ LogicalResult AIGERRunner::runSolver(hw::HWModuleOp module, StringRef inputPath,
     commandArgs.push_back(processedArg);
 
   // Execute the solver
+  auto startTime = std::chrono::high_resolution_clock::now();
   int executionResult = llvm::sys::ExecuteAndWait(
       solverProgram.get(), commandArgs,
       /*Env=*/std::nullopt, /*Redirects=*/{},
       /*SecondsToWait=*/0, /*MemoryLimit=*/0, &executionError);
+  auto endTime = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsedSeconds = endTime - startTime;
+  llvm::dbgs() << "Solver execution time: " << elapsedSeconds.count()
+               << " seconds\n";
 
   // Check for execution failure
   if (executionResult != 0)
