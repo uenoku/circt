@@ -217,4 +217,8 @@ def SOPBalancing : CutRewriterPassBase<"synth-sop-balancing", "hw::HWModuleOp"> 
   let dependentDialects = ["synth::SynthDialect", "comb::CombDialect"];
 }
 
+#ifdef CIRCT_MOCKTURTLE_ENABLED 
+include "SynthMockturtlePasses.td"
+#endif
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

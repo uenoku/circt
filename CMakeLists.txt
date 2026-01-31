@@ -170,7 +170,7 @@ set(CIRCT_TOOLS_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}" CACHE PATH
     "Path for binary subdirectory (defaults to '${CMAKE_INSTALL_BINDIR}')")
 
 option(CIRCT_INCLUDE_TESTS
-       "Generate build targets for the CIRCT tests." ON)
+       "Generate build targets for the CIRCT tests." On)
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_MAIN_SRC_DIR}/cmake/modules")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
@@ -600,7 +600,6 @@ if(CIRCT_SLANG_FRONTEND_ENABLED)
         # We won't use those APIs directly. Just make them static libraries for
         # the sake of running slang normally.
         set_target_properties(${dep_target} PROPERTIES PUBLIC_HEADER "")
-
         install(TARGETS ${dep_target} EXPORT CIRCTTargets)
       endif()
     endforeach()
@@ -609,6 +608,66 @@ if(CIRCT_SLANG_FRONTEND_ENABLED)
   else()
     find_package(slang 9.1 REQUIRED)
   endif()
+endif()
+
+#-------------------------------------------------------------------------------
+# Mockturtle Integration
+#-------------------------------------------------------------------------------
+
+option(CIRCT_MOCKTURTLE_ENABLED "Enables mockturtle integration." ON)
+llvm_canonicalize_cmake_booleans(CIRCT_MOCKTURTLE_ENABLED)
+
+if(CIRCT_MOCKTURTLE_ENABLED)
+  message(STATUS "Mockturtle integration is enabled")
+  include(FetchContent)
+    
+  # Disable Mockturtle examples
+  set(MOCKTURTLE_BUILD_EXAMPLES OFF CACHE BOOL "Build Mockturtle examples" FORCE)
+  FetchContent_Declare(
+    mockturtle
+    GIT_REPOSITORY https://github.com/lsils/mockturtle.git
+    GIT_TAG 420f0271ab9f63a1644bf465ab47c970c173bd7b
+    GIT_SHALLOW ON
+  )
+  set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE "NEVER")
+  # Define necessary compile definitions for mockturtle and ABC
+  add_definitions(-DFMT_HEADER_ONLY -DDISABLE_NAUTY -DLIN64 -DABC_NAMESPACE=pabc -DABC_NO_USE_READLINE)
+  add_compile_definitions(CIRCT_MOCKTURTLE_ENABLED)
+    
+  FetchContent_MakeAvailable(mockturtle)
+  add_library(mockturtle_interface INTERFACE)
+  # percy requires ABC's libraries so link them.
+  target_link_libraries(mockturtle_interface INTERFACE libabcsat libabcesop)
+  set(MOCKTURLE_LIBS bill kitty parallel_hashmap percy rang lorina json fmt)
+  target_include_directories(mockturtle_interface INTERFACE $<BUILD_INTERFACE:${mockturtle_SOURCE_DIR}/include>)
+  foreach(lib ${MOCKTURLE_LIBS})
+    target_include_directories(mockturtle_interface INTERFACE
+                               $<BUILD_INTERFACE:${mockturtle_SOURCE_DIR}/lib/${lib}>)
+  endforeach()
+
+  # Include directories for ABC libraries.
+  # TODO: Figure out why abcsat and abcesop don't pick these up in their own CMakeLists.
+  set_target_properties(libabcsat PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
+                        $<BUILD_INTERFACE:${mockturtle_SOURCE_DIR}/lib/abcsat>)
+  set_target_properties(libabcesop PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
+                        $<BUILD_INTERFACE:${mockturtle_SOURCE_DIR}/lib/abcesop>)
+    
+  foreach(lib libabcsat libabcesop)
+    target_compile_options(${lib} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fexceptions -frtti>)
+    # Remove no-exceptions flags if they were set globally
+    get_target_property(lib_flags ${lib} COMPILE_OPTIONS)
+    if(lib_flags)
+      list(REMOVE_ITEM lib_flags "-fno-exceptions" "-fno-rtti")
+      set_target_properties(${lib} PROPERTIES COMPILE_OPTIONS "${lib_flags}")
+    endif()
+  endforeach()
+  set_property(GLOBAL APPEND PROPERTY CIRCT_EXPORTS mockturtle_interface libabcsat libabcesop)
+  # Disable the installation of headers coming from third-party libraries.
+  # We won't use those APIs directly. Just make them static libraries for
+  # the sake of running mockturtle normally.
+  set_target_properties(mockturtle_interface libabcesop libabcesop PROPERTIES PUBLIC_HEADER "")
+  install(TARGETS mockturtle_interface libabcsat libabcesop EXPORT CIRCTTargets)
+  message(STATUS "Mockturtle integration configured successfully")
 endif()
 
 #-------------------------------------------------------------------------------
