@@ -14,6 +14,8 @@
 #ifndef CIRCT_DIALECT_SYNTH_TRANSFORMS_SYNTHPASSES_H
 #define CIRCT_DIALECT_SYNTH_TRANSFORMS_SYNTHPASSES_H
 
+#include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/Synth/SynthDialect.h"
 #include "mlir/Pass/Pass.h"
 #include <limits>
 
