@@ -54,6 +54,23 @@ struct Object {
            bitPos == other.bitPos;
   }
 
+  bool operator<(const Object &other) const {
+    // Compare instance paths first
+    if (instancePath.size() != other.instancePath.size())
+      return instancePath.size() < other.instancePath.size();
+    for (size_t i = 0; i < instancePath.size(); ++i) {
+      if (instancePath[i].getAsOpaquePointer() !=
+          other.instancePath[i].getAsOpaquePointer())
+        return instancePath[i].getAsOpaquePointer() <
+               other.instancePath[i].getAsOpaquePointer();
+    }
+    // Then compare values
+    if (value.getAsOpaquePointer() != other.value.getAsOpaquePointer())
+      return value.getAsOpaquePointer() < other.value.getAsOpaquePointer();
+    // Finally compare bit positions
+    return bitPos < other.bitPos;
+  }
+
   void print(llvm::raw_ostream &os, bool withLoc = false) const;
   Object &prependPaths(circt::igraph::InstancePathCache &cache,
                        circt::igraph::InstancePath path);

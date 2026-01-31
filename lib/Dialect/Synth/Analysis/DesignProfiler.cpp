@@ -800,10 +800,10 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
 
   // Group paths by category and clock domain.
   using ClockPairStats =
-      std::map<std::pair<std::string, std::string>, PathStats>;
+      DenseMap<std::pair<ClockDomain, ClockDomain>, PathStats>;
   ClockPairStats regToRegStats;
-  std::map<std::string, PathStats> portToRegStats;
-  std::map<std::string, PathStats> regToPortStats;
+  DenseMap<ClockDomain, PathStats> portToRegStats;
+  DenseMap<ClockDomain, PathStats> regToPortStats;
   PathStats portToPortStats;
 
   int64_t totalMaxDelay = 0;
@@ -827,15 +827,15 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
 
     switch (cat) {
     case PathCategory::RegToReg: {
-      auto key = std::make_pair(getClockName(srcClock), getClockName(dstClock));
+      auto key = std::make_pair(srcClock, dstClock);
       regToRegStats[key].addPath(path);
       break;
     }
     case PathCategory::PortToReg:
-      portToRegStats[getClockName(dstClock)].addPath(path);
+      portToRegStats[dstClock].addPath(path);
       break;
     case PathCategory::RegToPort:
-      regToPortStats[getClockName(srcClock)].addPath(path);
+      regToPortStats[srcClock].addPath(path);
       break;
     case PathCategory::PortToPort:
       portToPortStats.addPath(path);
@@ -886,29 +886,20 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
   if (!regToRegStats.empty()) {
     os << "## Reg-to-Reg Paths\n";
     for (auto &[clockPair, stats] : regToRegStats) {
-      os << "### " << clockPair.first << " -> " << clockPair.second << "\n";
-      //
-      //      // Check for common clock gate
-      //      // Find the clock objects for this pair
-      //      Clock *srcClockTree = nullptr;
-      //      Clock *dstClockTree = nullptr;
-      //
-      //      for (auto clock : uniqueClocks) {
-      //        std::string name = getClockName(clock);
-      //        if (name == clockPair.first) {
-      //          srcClockTree = traceClockTree(clock);
-      //        }
-      //        if (name == clockPair.second) {
-      //          dstClockTree = traceClockTree(clock);
-      //        }
-      //      }
-      //
-      //      if (srcClockTree && dstClockTree) {
-      //        printClockTree(srcClockTree, os, "  ", true);
-      //        os << "  └── " << clockPair.first << " -> " << clockPair.second
-      //        << "\n"; printClockTree(dstClockTree, os, "    ", true);
-      //      }
-      //
+      std::string srcName = getClockName(clockPair.first);
+      std::string dstName = getClockName(clockPair.second);
+      os << "### " << srcName << " -> " << dstName << "\n";
+
+      // Check for common clock gate
+      Clock *srcClockTree = traceClockTree(clockPair.first);
+      Clock *dstClockTree = traceClockTree(clockPair.second);
+
+      if (srcClockTree && dstClockTree) {
+        if (haveCommonClockGate(srcClockTree, dstClockTree)) {
+          os << "  ⚠️  Common clock gate detected between source and destination clocks\n";
+        }
+      }
+
       printStats(stats);
     }
     os << "\n";
@@ -918,7 +909,8 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
   if (!portToRegStats.empty()) {
     os << "## Port-to-Reg Paths\n";
     for (auto &[clock, stats] : portToRegStats) {
-      os << "### -> " << clock << "\n";
+      std::string clockName = getClockName(clock);
+      os << "### -> " << clockName << "\n";
       printStats(stats);
     }
     os << "\n";
@@ -928,7 +920,8 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
   if (!regToPortStats.empty()) {
     os << "## Reg-to-Port Paths\n";
     for (auto &[clock, stats] : regToPortStats) {
-      os << "### " << clock << " ->\n";
+      std::string clockName = getClockName(clock);
+      os << "### " << clockName << " ->\n";
       printStats(stats);
     }
     os << "\n";
