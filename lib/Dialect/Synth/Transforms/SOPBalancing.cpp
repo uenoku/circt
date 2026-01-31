@@ -182,10 +182,11 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    if (cut.isTrivialCut() || cut.getOutputSize() != 1)
+    const auto &network = enumerator.getLogicNetwork();
+    if (cut.isTrivialCut() || cut.getOutputSize(network) != 1)
       return std::nullopt;
 
-    const auto &tt = cut.getTruthTable();
+    const auto &tt = *cut.getTruthTable();
     const SOPForm &sop = sopCache.getOrCompute(tt.table, tt.numInputs);
     if (sop.cubes.empty())
       return std::nullopt;
@@ -213,7 +214,8 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
                                  const Cut &cut) const override {
-    const auto &tt = cut.getTruthTable();
+    const auto &network = enumerator.getLogicNetwork();
+    const auto &tt = *cut.getTruthTable();
     const SOPForm &sop = sopCache.getOrCompute(tt.table, tt.numInputs);
     LLVM_DEBUG({
       llvm::dbgs() << "Rewriting SOP:\n";
@@ -223,15 +225,23 @@ struct SOPBalancingPattern : public CutRewritePattern {
     SmallVector<DelayType, expectedISOPInputs> arrivalTimes;
     if (failed(cut.getInputArrivalTimes(enumerator, arrivalTimes)))
       return failure();
+    
+    // Convert indices to Values for building the operation
+    SmallVector<Value, 6> inputValues;
+    inputValues.reserve(cut.inputs.size());
+    for (auto idx : cut.inputs)
+      inputValues.push_back(network.getValue(idx));
+    
     // Construct the fused location.
     SetVector<Location> inputLocs;
-    inputLocs.insert(cut.getRoot()->getLoc());
-    for (auto input : cut.inputs)
-      inputLocs.insert(input.getLoc());
+    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    inputLocs.insert(rootOp->getLoc());
+    for (auto inputVal : inputValues)
+      inputLocs.insert(inputVal.getLoc());
 
     auto loc = builder.getFusedLoc(inputLocs.getArrayRef());
 
-    Value result = buildBalancedSOP(builder, loc, sop, cut.inputs.getArrayRef(),
+    Value result = buildBalancedSOP(builder, loc, sop, inputValues,
                                     arrivalTimes);
 
     auto *op = result.getDefiningOp();

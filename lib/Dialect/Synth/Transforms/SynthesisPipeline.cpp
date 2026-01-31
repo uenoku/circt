@@ -126,8 +126,8 @@ void circt::synth::buildSynthOptimizationPipeline(
     // FIXME: The following is very small compared to the default value of ABC
     // (6/8) and mockturtle(4/25) due to inefficient implementation of
     // CutRewriter.
-    sopOptions.maxCutInputSize = 4;
-    sopOptions.maxCutsPerRoot = 4;
+    sopOptions.maxCutInputSize = 6;
+    sopOptions.maxCutsPerRoot = 10;
     pm.addPass(synth::createSOPBalancing(sopOptions));
     pm.addPass(createStructuralHash());
   }

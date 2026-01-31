@@ -11,6 +11,7 @@
 add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
   CutRewriter.cpp
+  FunctionalReduction.cpp
   GenericLUTMapper.cpp
   LowerVariadic.cpp
   LowerWordToBits.cpp
@@ -56,4 +57,8 @@ add_subdirectory(MockturtleIntegration)
 target_link_libraries(CIRCTSynthTransforms PRIVATE
   CIRCTSynthMockturtleIntegration
 ) 
+endif()
+
+if(CIRCT_CADICAL_ENABLED)
+target_link_libraries(CIRCTSynthTransforms PRIVATE CaDiCaL)
 endif()

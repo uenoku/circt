@@ -443,7 +443,12 @@ option(Z3_DISABLE "Disable the z3 tests.")
 if (Z3_DISABLE)
   message(STATUS "Disabling tests requiring z3.")
 else()
-  if(Z3_DIR)
+  # First check if LLVM was built with Z3 support
+  if(LLVM_ENABLE_Z3_SOLVER)
+    message(STATUS "Using Z3 from LLVM (LLVM_ENABLE_Z3_SOLVER=ON)")
+    set(Z3_FOUND TRUE)
+    # LLVM's Z3 integration provides Z3_INCLUDE_DIR and links via LLVM libraries
+  elseif(Z3_DIR)
     # Search and load the package configuration file in the specified directory.
     find_package(Z3 CONFIG REQUIRED PATHS ${Z3_DIR} NO_DEFAULT_PATH)
     if(Z3_FOUND)
@@ -668,6 +673,19 @@ if(CIRCT_MOCKTURTLE_ENABLED)
   set_target_properties(mockturtle_interface libabcesop libabcesop PROPERTIES PUBLIC_HEADER "")
   install(TARGETS mockturtle_interface libabcsat libabcesop EXPORT CIRCTTargets)
   message(STATUS "Mockturtle integration configured successfully")
+endif()
+
+#-------------------------------------------------------------------------------
+# CaDiCaL SAT Solver
+#-------------------------------------------------------------------------------
+
+option(CIRCT_CADICAL_ENABLED "Enable CaDiCaL SAT solver for FRAIG optimization." ON)
+llvm_canonicalize_cmake_booleans(CIRCT_CADICAL_ENABLED)
+
+if(CIRCT_CADICAL_ENABLED)
+  message(STATUS "CaDiCaL SAT solver integration is enabled")
+  include(AddCaDiCaL)
+  add_compile_definitions(CIRCT_CADICAL_ENABLED)
 endif()
 
 #-------------------------------------------------------------------------------

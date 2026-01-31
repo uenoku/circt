@@ -37,7 +37,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
@@ -59,80 +58,220 @@ using namespace circt;
 using namespace circt::synth;
 
 //===----------------------------------------------------------------------===//
-// ValueNumbering
+// LogicNetwork
 //===----------------------------------------------------------------------===//
 
-uint32_t ValueNumbering::getOrAssignIndex(mlir::Value value) {
-  auto [it, inserted] = valueToIndex.try_emplace(value, values.size());
-  if (inserted)
-    values.push_back(value);
+uint32_t LogicNetwork::getOrCreateIndex(mlir::Value value) {
+  auto [it, inserted] = valueToIndex.try_emplace(value, gates.size());
+  if (inserted) {
+    indexToValue.push_back(value);
+    gates.emplace_back(); // Will be filled in later
+  }
   return it->second;
 }
 
-uint32_t ValueNumbering::getIndex(mlir::Value value) const {
+uint32_t LogicNetwork::getIndex(mlir::Value value) const {
   auto it = valueToIndex.find(value);
-  assert(it != valueToIndex.end() && "Value not numbered");
+  assert(it != valueToIndex.end() &&
+         "Value not found in LogicNetwork - use getOrCreateIndex or check with "
+         "hasIndex first");
   return it->second;
 }
 
-mlir::Value ValueNumbering::getValue(uint32_t index) const {
-  assert(index < values.size() && "Index out of bounds");
-  return values[index];
+bool LogicNetwork::hasIndex(mlir::Value value) const {
+  return valueToIndex.count(value) > 0;
 }
 
-void ValueNumbering::clear() {
+Value LogicNetwork::getValue(uint32_t index) const {
+  // Index 0 and 1 are reserved for constants, they have no associated Value
+  if (index == kConstant0 || index == kConstant1)
+    return mlir::Value();
+
+  assert(index < indexToValue.size() &&
+         "Index out of bounds in LogicNetwork::getValue");
+  return indexToValue[index];
+}
+
+uint32_t LogicNetwork::addPrimaryInput(mlir::Value value) {
+  uint32_t index = getOrCreateIndex(value);
+  gates[index].set(nullptr, LogicNetworkGate::PrimaryInput);
+  return index;
+}
+
+uint32_t LogicNetwork::addAndGate(mlir::Operation *op, Signal lhs, Signal rhs) {
+  mlir::Value result = op->getResult(0);
+  uint32_t index = getOrCreateIndex(result);
+  gates[index].set(op, LogicNetworkGate::And2);
+  gates[index].edges[0] = lhs;
+  gates[index].edges[1] = rhs;
+  return index;
+}
+
+uint32_t LogicNetwork::addXorGate(mlir::Operation *op, Signal lhs, Signal rhs) {
+  mlir::Value result = op->getResult(0);
+  uint32_t index = getOrCreateIndex(result);
+  gates[index].set(op, LogicNetworkGate::Xor2);
+  gates[index].edges[0] = lhs;
+  gates[index].edges[1] = rhs;
+  return index;
+}
+
+uint32_t LogicNetwork::addMajGate(mlir::Operation *op, Signal a, Signal b,
+                                  Signal c) {
+  mlir::Value result = op->getResult(0);
+  uint32_t index = getOrCreateIndex(result);
+  gates[index].set(op, LogicNetworkGate::Maj3);
+  gates[index].edges[0] = a;
+  gates[index].edges[1] = b;
+  gates[index].edges[2] = c;
+  return index;
+}
+
+uint32_t LogicNetwork::addOtherGate(mlir::Operation *op, mlir::Value result) {
+  uint32_t index = getOrCreateIndex(result);
+  gates[index].set(op, LogicNetworkGate::Other);
+  return index;
+}
+
+LogicalResult LogicNetwork::buildFromBlock(mlir::Block *block) {
+  // Pre-size vectors to reduce reallocations (rough estimate)
+  size_t estimatedSize =
+      block->getArguments().size() + block->getOperations().size();
+  indexToValue.reserve(estimatedSize);
+  gates.reserve(estimatedSize);
+
+  // Ensure all block arguments are indexed as primary inputs first
+  for (auto arg : block->getArguments()) {
+    if (!hasIndex(arg)) {
+      addPrimaryInput(arg);
+    }
+  }
+
+  // Process operations in topological order
+  for (auto &op : block->getOperations()) {
+    // Handle aig::AndInverterOp
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+      // For variadic AND, we need to handle the inverted array
+      auto inputs = andOp.getInputs();
+
+      // Get or create signals for inputs (with proper inversion flags)
+      SmallVector<Signal, 3> edges;
+      for (size_t i = 0; i < inputs.size(); ++i)
+        edges.push_back(getOrCreateSignal(inputs[i], andOp.isInverted(i)));
+
+      if (inputs.size() == 1) {
+        // Single-input AND is a buffer or NOT gate
+        if (!edges[0].isInverted()) {
+          // Non-inverted buffer: directly alias the result to the input
+          mlir::Value result = andOp.getResult();
+          uint32_t inputIdx = edges[0].getIndex();
+          valueToIndex[result] = inputIdx;
+        } else {
+          // Inverted operation: create a NOT gate
+          uint32_t index = getOrCreateIndex(andOp.getResult());
+          gates[index].set(&op, LogicNetworkGate::Identity);
+          // FIXME: This is weird - we should probably have a constructor for
+          // Signal
+          gates[index].edges[0] = edges[0];
+        }
+      } else if (inputs.size() == 2) {
+        addAndGate(&op, edges[0], edges[1]);
+      } else {
+        // Delegate variadic AND to "Other" gate handling
+        // Note: Additional inputs are handled via the operation pointer
+      }
+      continue;
+    }
+    if (auto combOp = dyn_cast<comb::XorOp>(&op)) {
+      // Handle comb::XorOp
+      if (combOp->getNumOperands() != 2) {
+        // Delegate variadic XOR to "Other" gate handling
+        // Note: Additional inputs are handled via the operation pointer
+        for (auto result : op.getResults()) {
+          // For the gate-like operations that are supported.
+          if (result.getType().isInteger(1)) {
+            // Add an PI.
+            if (!hasIndex(result))
+              addPrimaryInput(result);
+          }
+        }
+      }
+      auto lhsSignal = getOrCreateSignal(combOp.getOperand(0), false);
+      auto rhsSignal = getOrCreateSignal(combOp.getOperand(1), false);
+      addXorGate(&op, lhsSignal, rhsSignal);
+      continue;
+    }
+    if (auto combOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
+      // Handle synth::mig::MajorityInverterOp
+      if (combOp->getNumOperands() == 1) {
+        // Single input = inverter
+        auto inputSignal =
+            getOrCreateSignal(combOp.getOperand(0), combOp.isInverted(0));
+        uint32_t index = getOrCreateIndex(combOp.getResult());
+        if (!combOp.isInverted(0)) {
+          // Non-inverted buffer: directly alias the result to the input
+          mlir::Value result = combOp.getResult();
+          uint32_t inputIdx = inputSignal.getIndex();
+          valueToIndex[result] = inputIdx;
+          continue;
+        }
+        gates[index].set(&op, LogicNetworkGate::Identity);
+        gates[index].edges[0] = inputSignal;
+        continue;
+      }
+      if (combOp->getNumOperands() != 3) {
+        // Delegate variadic MAJ to "Other" gate handling
+        // Note: Additional inputs are handled via the operation pointer
+        addOtherGate(&op, combOp.getResult());
+        continue;
+      }
+      auto aSignal =
+          getOrCreateSignal(combOp.getOperand(0), combOp.isInverted(0));
+      auto bSignal =
+          getOrCreateSignal(combOp.getOperand(1), combOp.isInverted(1));
+      auto cSignal =
+          getOrCreateSignal(combOp.getOperand(2), combOp.isInverted(2));
+      addMajGate(&op, aSignal, bSignal, cSignal);
+      continue;
+    }
+
+    // Handle other operations - treat their results as "other" (like PIs)
+    for (auto result : op.getResults()) {
+      // For the gate-like operations that are supported.
+      if (result.getType().isInteger(1)) {
+        // Add an PI.
+        if (!hasIndex(result))
+          addPrimaryInput(result);
+      }
+    }
+  }
+
+  return success();
+}
+
+void LogicNetwork::clear() {
   valueToIndex.clear();
-  values.clear();
+  indexToValue.clear();
+  gates.clear();
+  // Re-add the constant nodes (index 0 = const0, index 1 = const1)
+  gates.emplace_back();
+  gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
+  gates.emplace_back();
+  gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+  // Placeholders for constants in indexToValue
+  indexToValue.push_back(mlir::Value()); // const0
+  indexToValue.push_back(mlir::Value()); // const1
 }
 
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
 
-static bool isSupportedLogicOp(mlir::Operation *op) {
-  // Check if the operation is a combinational operation that can be simulated
-  // TODO: Extend this to allow comb.and/xor/or as well.
-  return isa<aig::AndInverterOp>(op);
-}
-
-static void simulateLogicOp(Operation *op, DenseMap<Value, llvm::APInt> &eval) {
-  assert(isSupportedLogicOp(op) &&
-         "Operation must be a supported logic operation for simulation");
-
-  // Simulate the operation by evaluating its inputs and computing the output
-  // This is a simplified simulation for demonstration purposes
-  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-    SmallVector<llvm::APInt, 2> inputs;
-    inputs.reserve(andOp.getInputs().size());
-    for (auto input : andOp.getInputs()) {
-      auto it = eval.find(input);
-      if (it == eval.end())
-        llvm::report_fatal_error("Input value not found in evaluation map");
-      inputs.push_back(it->second);
-    }
-    // Evaluate the and inverter
-    eval[andOp.getResult()] = andOp.evaluate(inputs);
-    return;
-  }
-
-  llvm::report_fatal_error(
-      "Unsupported operation for simulation. isSupportedLogicOp should "
-      "be used to check if the operation can be simulated.");
-}
-
-// Return true if the value is always a cut input.
-static bool isAlwaysCutInput(Value value) {
-  auto *op = value.getDefiningOp();
-  // If the value has no defining operation, it is an input
-  if (!op)
-    return true;
-
-  if (op->hasTrait<OpTrait::ConstantLike>()) {
-    // Constant values are never cut inputs.
-    return false;
-  }
-
-  return !isSupportedLogicOp(op);
+// Return true if the gate at the given index is always a cut input.
+// This includes primary inputs and non-simulatable operations.
+static bool isAlwaysCutInput(const LogicNetwork &network, uint32_t index) {
+  const auto &gate = network.getGate(index);
+  return gate.isAlwaysCutInput() || gate.getKind() == LogicNetworkGate::Other;
 }
 
 // Return true if the new area/delay is better than the old area/delay in the
@@ -155,9 +294,9 @@ LogicalResult
 circt::synth::topologicallySortLogicNetwork(mlir::Operation *topOp) {
 
   auto isOperationReady = [](Value value, Operation *op) -> bool {
-    // Topologically sort simulatable ops and purely
-    // dataflow ops. Other operations can be scheduled.
-    return !(isSupportedLogicOp(op) ||
+    // Topologically sort AIG ops and dataflow ops. Other operations can be
+    // scheduled.
+    return !(isa<aig::AndInverterOp>(op) ||
              isa<comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
@@ -168,12 +307,20 @@ circt::synth::topologicallySortLogicNetwork(mlir::Operation *topOp) {
   return success();
 }
 
-/// Get the truth table for an op.
-template <typename OpRange>
-FailureOr<BinaryTruthTable> static computeTruthTable(
-    mlir::ValueRange values, const OpRange &ops,
-    const llvm::SmallSetVector<mlir::Value, 4> &inputArgs) {
-  // Create a truth table for the operation
+/// Get the truth table for operations within a block.
+/// This is used for computing truth tables from MLIR operations (e.g., for
+/// technology library patterns), not for LogicNetwork-based cut enumeration.
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
+                                                        Block *block) {
+  // Get the input arguments from the block
+  llvm::SmallSetVector<Value, 4> inputArgs;
+  for (auto arg : block->getArguments())
+    inputArgs.insert(arg);
+
+  // If there are no inputs, return an empty truth table
+  if (inputArgs.empty())
+    return BinaryTruthTable();
+
   int64_t numInputs = inputArgs.size();
   int64_t numOutputs = values.size();
   if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
@@ -186,40 +333,55 @@ FailureOr<BinaryTruthTable> static computeTruthTable(
                            "Multiple outputs are not supported yet");
   }
 
-  // Create a truth table with the given number of inputs and outputs
-  BinaryTruthTable truthTable(numInputs, numOutputs);
-  // The truth table size is 2^numInputs
   // Create a map to evaluate the operation
   DenseMap<Value, APInt> eval;
   for (uint32_t i = 0; i < numInputs; ++i)
     eval[inputArgs[i]] = circt::createVarMask(numInputs, i, true);
-  // Simulate the operation
-  for (auto *op : ops) {
-    if (op->getNumResults() == 0)
-      continue; // Skip operations with no results
-    if (!isSupportedLogicOp(op))
-      return op->emitError("Unsupported operation for truth table simulation");
 
-    // Simulate the operation
-    simulateLogicOp(op, eval);
+  // Simulate the operations in the block
+  for (Operation &op : *block) {
+    if (op.getNumResults() == 0)
+      continue;
+
+    // Support AIG, XOR, and MIG operations
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+      SmallVector<llvm::APInt, 2> inputs;
+      inputs.reserve(andOp.getInputs().size());
+      for (auto input : andOp.getInputs()) {
+        auto it = eval.find(input);
+        if (it == eval.end())
+          return andOp.emitError("Input value not found in evaluation map");
+        inputs.push_back(it->second);
+      }
+      eval[andOp.getResult()] = andOp.evaluate(inputs);
+    } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
+      auto it = eval.find(xorOp.getOperand(0));
+      if (it == eval.end())
+        return xorOp.emitError("Input value not found in evaluation map");
+      llvm::APInt result = it->second;
+      for (unsigned i = 1; i < xorOp.getNumOperands(); ++i) {
+        it = eval.find(xorOp.getOperand(i));
+        if (it == eval.end())
+          return xorOp.emitError("Input value not found in evaluation map");
+        result ^= it->second;
+      }
+      eval[xorOp.getResult()] = result;
+    } else if (auto migOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
+      SmallVector<llvm::APInt, 3> inputs;
+      inputs.reserve(migOp.getInputs().size());
+      for (auto input : migOp.getInputs()) {
+        auto it = eval.find(input);
+        if (it == eval.end())
+          return migOp.emitError("Input value not found in evaluation map");
+        inputs.push_back(it->second);
+      }
+      eval[migOp.getResult()] = migOp.evaluate(inputs);
+    } else if (!isa<hw::OutputOp>(&op)) {
+      return op.emitError("Unsupported operation for truth table simulation");
+    }
   }
-  // TODO: Currently numOutputs is always 1, so we can just return the first
-  // one.
+
   return BinaryTruthTable(numInputs, 1, eval[values[0]]);
-}
-
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
-  // Get the input arguments from the block
-  llvm::SmallSetVector<Value, 4> inputs;
-  for (auto arg : block->getArguments())
-    inputs.insert(arg);
-
-  // If there are no inputs, return an empty truth table
-  if (inputs.empty())
-    return BinaryTruthTable();
-
-  return computeTruthTable(values, llvm::make_pointer_range(*block), inputs);
 }
 
 //===----------------------------------------------------------------------===//
@@ -227,8 +389,9 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
 //===----------------------------------------------------------------------===//
 
 bool Cut::isTrivialCut() const {
-  // A cut is a trivial cut if it has no root operation and only one input
-  return root == nullptr && inputs.size() == 1;
+  // A cut is a trivial cut if it has no root (rootIndex == 0 means no root)
+  // and only one input
+  return rootIndex == 0 && inputs.size() == 1;
 }
 
 const NPNClass &Cut::getNPNClass() const {
@@ -236,7 +399,7 @@ const NPNClass &Cut::getNPNClass() const {
   if (npnClass)
     return *npnClass;
 
-  auto truthTable = getTruthTable();
+  const auto &truthTable = *getTruthTable();
 
   // Compute the NPN canonical form
   auto canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
@@ -245,31 +408,27 @@ const NPNClass &Cut::getNPNClass() const {
   return *npnClass;
 }
 
-void Cut::getPermutatedInputs(const NPNClass &patternNPN,
-                              SmallVectorImpl<Value> &permutedInputs) const {
+void Cut::getPermutatedInputIndices(
+    const NPNClass &patternNPN,
+    SmallVectorImpl<unsigned> &permutedIndices) const {
   auto npnClass = getNPNClass();
-  SmallVector<unsigned> idx;
-  npnClass.getInputPermutation(patternNPN, idx);
-  permutedInputs.reserve(idx.size());
-  for (auto inputIndex : idx) {
-    assert(inputIndex < inputs.size() && "Input index out of bounds");
-    permutedInputs.push_back(inputs[inputIndex]);
-  }
+  npnClass.getInputPermutation(patternNPN, permutedIndices);
 }
 
 LogicalResult
 Cut::getInputArrivalTimes(CutEnumerator &enumerator,
                           SmallVectorImpl<DelayType> &results) const {
   results.reserve(getInputSize());
+  const auto &network = enumerator.getLogicNetwork();
 
   // Compute arrival times for each input.
-  for (auto input : inputs) {
-    if (isAlwaysCutInput(input)) {
+  for (auto inputIndex : inputs) {
+    if (isAlwaysCutInput(network, inputIndex)) {
       // If the input is a primary input, it has no delay.
       results.push_back(0);
       continue;
     }
-    auto *cutSet = enumerator.getCutSet(input);
+    auto *cutSet = enumerator.getCutSet(inputIndex);
     assert(cutSet && "Input must have a valid cut set");
 
     // If there is no matching pattern, it means it's not possible to use the
@@ -280,35 +439,44 @@ Cut::getInputArrivalTimes(CutEnumerator &enumerator,
 
     const auto &matchedPattern = *bestCut->getMatchedPattern();
 
+    // Get the value for result number lookup
+    mlir::Value inputValue = network.getValue(inputIndex);
     // Otherwise, the cut input is an op result. Get the arrival time
     // from the matched pattern.
     results.push_back(matchedPattern.getArrivalTime(
-        cast<mlir::OpResult>(input).getResultNumber()));
+        cast<mlir::OpResult>(inputValue).getResultNumber()));
   }
 
   return success();
 }
 
-void Cut::dump(llvm::raw_ostream &os) const {
+void Cut::dump(llvm::raw_ostream &os, const LogicNetwork &network) const {
   os << "// === Cut Dump ===\n";
   os << "Cut with " << getInputSize() << " inputs";
-  if (root)
-    os << " and root: " << *root;
+  if (rootIndex != 0) {
+    auto *rootOp = network.getGate(rootIndex).getOperation();
+    if (rootOp)
+      os << " and root: " << *rootOp;
+  }
   os << "\n";
 
   if (isTrivialCut()) {
-    os << "Primary input cut: " << *inputs.begin() << "\n";
+    mlir::Value inputVal = network.getValue(inputs[0]);
+    os << "Primary input cut: " << inputVal << "\n";
     return;
   }
 
-  os << "Inputs: \n";
-  for (auto [idx, input] : llvm::enumerate(inputs)) {
-    os << "  Input " << idx << ": " << input << "\n";
+  os << "Inputs (indices): \n";
+  for (auto [idx, inputIndex] : llvm::enumerate(inputs)) {
+    mlir::Value inputVal = network.getValue(inputIndex);
+    os << "  Input " << idx << " (index " << inputIndex << "): " << inputVal
+       << "\n";
   }
 
-  if (root) {
+  if (rootIndex != 0) {
     os << "\nRoot operation: \n";
-    root->print(os);
+    if (auto *rootOp = network.getGate(rootIndex).getOperation())
+      rootOp->print(os);
     os << "\n";
   }
 
@@ -320,62 +488,161 @@ void Cut::dump(llvm::raw_ostream &os) const {
 
 unsigned Cut::getInputSize() const { return inputs.size(); }
 
-unsigned Cut::getOutputSize() const { return getRoot()->getNumResults(); }
+unsigned Cut::getOutputSize(const LogicNetwork &network) const {
+  if (rootIndex == 0)
+    return 1; // Trivial cut has 1 output
+  auto *rootOp = network.getGate(rootIndex).getOperation();
+  return rootOp ? rootOp->getNumResults() : 1;
+}
 
-void Cut::computeTruthTable() {
-  // Skip if already computed
-  if (truthTable)
-    return;
+/// Simulate a gate and return its truth table.
+static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
+                                llvm::DenseMap<uint32_t, llvm::APInt> &cache,
+                                unsigned numInputs) {
+  // Check cache first
+  auto cacheIt = cache.find(index);
+  if (cacheIt != cache.end())
+    return cacheIt->second;
 
+  const auto &gate = network.getGate(index);
+  llvm::APInt result;
+
+  switch (gate.getKind()) {
+  case LogicNetworkGate::Constant:
+    // Constant 0 or 1 - return all zeros or all ones
+    if (index == LogicNetwork::kConstant0)
+      result = llvm::APInt::getZero(1U << numInputs);
+    else
+      result = llvm::APInt::getAllOnes(1U << numInputs);
+    break;
+
+  case LogicNetworkGate::PrimaryInput:
+  case LogicNetworkGate::Other:
+    // Should be in cache already as cut input
+    llvm_unreachable("Primary input/Other not in cache - not a cut input?");
+
+  case LogicNetworkGate::And2: {
+    // Get children truth tables
+    auto lhs =
+        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
+    auto rhs =
+        simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
+
+    // Apply inversions
+    if (gate.edges[0].isInverted())
+      lhs.flipAllBits();
+    if (gate.edges[1].isInverted())
+      rhs.flipAllBits();
+
+    result = lhs & rhs;
+    break;
+  }
+
+  case LogicNetworkGate::Xor2: {
+    auto lhs =
+        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
+    auto rhs =
+        simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
+
+    if (gate.edges[0].isInverted())
+      lhs.flipAllBits();
+    if (gate.edges[1].isInverted())
+      rhs.flipAllBits();
+
+    result = lhs ^ rhs;
+    break;
+  }
+
+  case LogicNetworkGate::Maj3: {
+    auto a = simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
+    auto b = simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
+    auto c = simulateGate(network, gate.edges[2].getIndex(), cache, numInputs);
+
+    if (gate.edges[0].isInverted())
+      a.flipAllBits();
+    if (gate.edges[1].isInverted())
+      b.flipAllBits();
+    if (gate.edges[2].isInverted())
+      c.flipAllBits();
+
+    // MAJ(a,b,c) = (a & b) | (a & c) | (b & c)
+    result = (a & b) | (a & c) | (b & c);
+    break;
+  }
+
+  case LogicNetworkGate::Identity: {
+    // Get input truth table
+    auto input =
+        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
+
+    // Apply inversion from the edge (should always be inverted for NOT gates)
+    if (gate.edges[0].isInverted())
+      input.flipAllBits();
+
+    result = input;
+    break;
+  }
+  }
+
+  cache[index] = result;
+  return result;
+}
+
+void Cut::computeTruthTable(const LogicNetwork &network) {
   if (isTrivialCut()) {
     // For a trivial cut, a truth table is simply the identity function.
     // 0 -> 0, 1 -> 1
-    truthTable = BinaryTruthTable(1, 1, {llvm::APInt(2, 2)});
+    truthTable.emplace(1, 1, llvm::APInt(2, 2));
     return;
   }
 
-  // Walk the IR from root to inputs to collect operations
-  llvm::SmallSetVector<mlir::Operation *, 4> operations;
-  std::function<void(Operation *)> collectOps = [&](Operation *op) {
-    if (operations.contains(op))
-      return;
+  unsigned numInputs = inputs.size();
+  if (numInputs >= maxTruthTableInputs) {
+    llvm_unreachable("Too many inputs for truth table computation");
+  }
 
-    // Add operands first (topological order)
-    for (auto value : op->getOperands()) {
-      if (isAlwaysCutInput(value) || inputs.contains(value))
-        continue;
+  // Initialize cache with input variable masks
+  llvm::DenseMap<uint32_t, llvm::APInt> cache;
+  for (unsigned i = 0; i < numInputs; ++i) {
+    cache[inputs[i]] = circt::createVarMask(numInputs, i, true);
+  }
 
-      auto *defOp = value.getDefiningOp();
-      if (defOp && !inputs.contains(value))
-        collectOps(defOp);
-    }
+  // Simulate from root
+  llvm::APInt result = simulateGate(network, rootIndex, cache, numInputs);
 
-    operations.insert(op);
-  };
-
-  if (root)
-    collectOps(root);
-
-  // Create a truth table with the given number of inputs and outputs
-  truthTable =
-      *::computeTruthTable(getRoot()->getResults(), operations, inputs);
+  truthTable.emplace(numInputs, 1, result);
 }
 
-const BinaryTruthTable &Cut::getTruthTable() const {
-  if (truthTable)
-    return *truthTable;
+// Forward declaration for lazy truth table computation
+static BinaryTruthTable
+computeTruthTableForGate(const LogicNetworkGate &rootGate,
+                         const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
+                         const Cut *const *cuts, unsigned numCuts);
 
-  // This should not happen if truth tables are computed eagerly
-  // But we keep this as a fallback for compatibility
-  const_cast<Cut *>(this)->computeTruthTable();
-  return *truthTable;
+void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
+  // Trivial cuts already have their TT computed
+  if (isTrivialCut()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  // If no operand cuts stored, fall back to simulation
+  if (operandCuts.empty()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  // Use the fast incremental method via computeTruthTableForGate
+  const auto &gate = network.getGate(rootIndex);
+  BinaryTruthTable tt = computeTruthTableForGate(
+      gate, inputs, operandCuts.data(), operandCuts.size());
+  truthTable.emplace(std::move(tt));
 }
 
-void Cut::computeSignature(const ValueNumbering &valueNumbering) {
+void Cut::computeSignature() {
   signature = 0;
-  for (auto input : inputs) {
-    uint32_t index = valueNumbering.getIndex(input);
-    if (index < 64) // Only use first 64 values for signature
+  for (auto index : inputs) {
+    if (index < 64) // Only use first 64 indices for signature
       signature |= (1ULL << index);
   }
 }
@@ -386,120 +653,252 @@ unsigned Cut::estimateMergedSize(const Cut &other) const {
   return llvm::popcount(mergedSig);
 }
 
-static Cut getAsTrivialCut(mlir::Value value) {
-  // Create a cut with a single root operation
-  Cut cut;
-  // There is no input for the primary input cut.
-  cut.inputs.insert(value);
-  // Compute truth table eagerly for trivial cut
-  cut.computeTruthTable();
+/// Expand a truth table to a larger input set by mapping original inputs to
+/// new positions. This is used during cut merging to align truth tables to the
+/// merged input set.
+///
+/// Example: f(a,b) with mapping [2,4] means variable 'a' at position 2,
+/// 'b' at position 4 in the merged space. The result is f(..., x2, ..., x4,
+/// ...) which equals the original function value, independent of other
+/// variables.
+///
+/// Efficient algorithm for N <= 6:
+/// For each original truth table entry that is 1, compute the "subcube" of
+/// merged indices that map to it and OR them together.
+///
+/// Complexity: O(2^numOrigInputs * numOrigInputs) instead of
+/// O(2^numMergedInputs * numOrigInputs).
+///
+/// @param tt The original truth table
+/// @param inputMapping Maps original input index -> merged input position
+/// @param numMergedInputs Number of inputs in the merged cut
+static llvm::APInt expandTruthTable(const llvm::APInt &tt,
+                                    ArrayRef<unsigned> inputMapping,
+                                    unsigned numMergedInputs) {
+  unsigned numOrigInputs = inputMapping.size();
+  unsigned mergedSize = 1U << numMergedInputs;
 
-  return cut;
-}
+  // Fast path: identity mapping with same size
+  if (numOrigInputs == numMergedInputs) {
+    bool isIdentity = true;
+    for (unsigned i = 0; i < numOrigInputs && isIdentity; ++i)
+      isIdentity = (inputMapping[i] == i);
+    if (isIdentity)
+      return tt.zext(mergedSize);
+  }
 
-[[maybe_unused]] static bool isCutDerivedFromOperand(const Cut &cut,
-                                                     Operation *op) {
-  if (auto *root = cut.getRoot())
-    return llvm::any_of(op->getOperands(),
-                        [&](Value v) { return v.getDefiningOp() == root; });
+  // For small truth tables (N <= 6), use efficient 64-bit operations
+  if (numMergedInputs <= 6) {
+    uint64_t origTT = tt.getZExtValue();
+    uint64_t result = 0;
 
-  assert(cut.isTrivialCut());
-  // If the cut is trivial, it has no operations, so it must be a primary input.
-  // In this case, the only operation that can be derived from it is the
-  // primary input itself.
-  return cut.inputs.size() == 1 &&
-         llvm::any_of(op->getOperands(),
-                      [&](Value v) { return v == *cut.inputs.begin(); });
-}
+    // Precompute variable masks using bit manipulation.
+    // varMask[i] has bit j set iff (j >> i) & 1 == 1
+    // This is the standard "variable i" mask for truth tables.
+    //
+    // Pattern for variable i (0-indexed):
+    //   var 0: 0xAAAAAAAAAAAAAAAA (alternating 0,1)
+    //   var 1: 0xCCCCCCCCCCCCCCCC (alternating 00,11)
+    //   var 2: 0xF0F0F0F0F0F0F0F0 (alternating 0000,1111)
+    //   var i: repeating pattern of 2^i zeros followed by 2^i ones
+    //
+    // Formula: varMask[i] = (0xFFFF...F / ((1 << (1 << i)) + 1)) << (1 << i)
+    // But easier to just use the known constants for N <= 6:
+    static constexpr uint64_t kVarMasks[6] = {
+        0xAAAAAAAAAAAAAAAAULL, // var 0: 10101010...
+        0xCCCCCCCCCCCCCCCCULL, // var 1: 11001100...
+        0xF0F0F0F0F0F0F0F0ULL, // var 2: 11110000...
+        0xFF00FF00FF00FF00ULL, // var 3
+        0xFFFF0000FFFF0000ULL, // var 4
+        0xFFFFFFFF00000000ULL  // var 5
+    };
 
-Cut Cut::mergeWith(const Cut &other, Operation *newRoot,
-                   const ValueNumbering &valueNumbering) const {
-  assert(isCutDerivedFromOperand(*this, newRoot) &&
-         isCutDerivedFromOperand(other, newRoot) &&
-         "The operation must be a child of the current root operation");
+    // Mask to limit to mergedSize bits
+    uint64_t sizeMask = (mergedSize == 64) ? ~0ULL : ((1ULL << mergedSize) - 1);
 
-  // Create a new cut that combines this cut and the other cut
-  Cut newCut;
-  newCut.setRoot(newRoot);
-
-  // Collect all operations in the new cut by walking from the root
-  llvm::SmallSetVector<mlir::Operation *, 4> operations;
-  std::function<void(Operation *)> collectOps = [&](Operation *op) {
-    if (operations.contains(op))
-      return;
-
-    // Process operands first (for topological order)
-    for (auto value : op->getOperands()) {
-      if (isAlwaysCutInput(value))
+    // For each original truth table entry that is 1
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (!((origTT >> origIdx) & 1))
         continue;
 
-      // If the value is in *both* cuts' inputs, it is an input to the merged
-      // cut
-      bool isInput = inputs.contains(value);
-      bool isOtherInput = other.inputs.contains(value);
-      if (isInput && isOtherInput)
-        continue;
+      // Compute pattern: all mergedIdx that map to origIdx
+      // Start with all 1s, then constrain for each original variable
+      uint64_t pattern = sizeMask;
 
-      auto *defOp = value.getDefiningOp();
-      if (!defOp)
-        continue;
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = (origIdx >> i) & 1;
+        uint64_t varMask = kVarMasks[mergedPos] & sizeMask;
 
-      // Check if this value should be treated as an input
-      // It's an input if it's in one of the original cuts' inputs
-      // and not defined within the other cut
-      if (isInput || isOtherInput)
-        continue;
+        if (origBit)
+          pattern &= varMask;
+        else
+          pattern &= ~varMask;
+      }
 
-      collectOps(defOp);
+      result |= pattern;
     }
 
-    operations.insert(op);
-  };
+    return llvm::APInt(mergedSize, result);
+  }
 
-  collectOps(newRoot);
+  // Fallback for larger truth tables
+  llvm::APInt result = llvm::APInt::getZero(mergedSize);
 
-  // Construct inputs by examining all operations' operands
-  for (auto *operation : operations) {
-    for (auto value : operation->getOperands()) {
-      if (isAlwaysCutInput(value)) {
-        newCut.inputs.insert(value);
-        continue;
-      }
+  for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+    unsigned origIdx = 0;
+    for (unsigned i = 0; i < numOrigInputs; ++i) {
+      if ((mergedIdx >> inputMapping[i]) & 1)
+        origIdx |= (1U << i);
+    }
+    if (tt[origIdx])
+      result.setBit(mergedIdx);
+  }
 
-      auto *defOp = value.getDefiningOp();
-      if (!defOp) {
-        newCut.inputs.insert(value);
-        continue;
-      }
+  return result;
+}
 
-      // If the operation is not in the cut, it is an input
-      if (!operations.contains(defOp))
-        newCut.inputs.insert(value);
+/// Helper to get and expand a truth table for an operand in the merged space.
+/// The operand can be:
+/// 1. A cut input (returns variable mask)
+/// 2. A specific cut's output (returns that cut's truth table, expanded)
+static llvm::APInt getExpandedTruthTable(
+    uint32_t operandIdx, bool isInverted,
+    const llvm::SmallDenseMap<uint32_t, unsigned, 8> &indexToMergedPos,
+    unsigned numMergedInputs, const Cut *const *cuts, unsigned numCuts) {
+
+  // Check if operand is one of the merged inputs
+  auto it = indexToMergedPos.find(operandIdx);
+  if (it != indexToMergedPos.end()) {
+    // It's a cut input - return variable mask (inverted if needed)
+    return circt::createVarMask(numMergedInputs, it->second, !isInverted);
+  }
+
+  // Otherwise, find which cut produces this operand
+  for (unsigned i = 0; i < numCuts; ++i) {
+    if (!cuts[i])
+      continue;
+
+    uint32_t cutOutput =
+        cuts[i]->isTrivialCut() ? cuts[i]->inputs[0] : cuts[i]->getRootIndex();
+
+    if (cutOutput == operandIdx) {
+      // Found the cut - expand its truth table to merged space
+      const auto &cutTT = *cuts[i]->getTruthTable();
+
+      // Build mapping for this cut's inputs to merged positions
+      SmallVector<unsigned, 6> mapping;
+      for (auto idx : cuts[i]->inputs)
+        mapping.push_back(indexToMergedPos.lookup(idx));
+
+      auto result = expandTruthTable(cutTT.table, mapping, numMergedInputs);
+      if (isInverted)
+        result.flipAllBits();
+      return result;
     }
   }
 
-  // Compute signature for the new cut
-  newCut.computeSignature(valueNumbering);
-
-  // Compute truth table eagerly during cut enumeration
-  newCut.computeTruthTable();
-
-  return newCut;
+  llvm_unreachable("Operand not found in cuts or inputs");
 }
 
-// Reroot the cut with a new root operation.
-// This is used to create a new cut with the same inputs but a different root.
-Cut Cut::reRoot(Operation *newRoot,
-                const ValueNumbering &valueNumbering) const {
-  assert(isCutDerivedFromOperand(*this, newRoot) &&
-         "The operation must be a child of the current root operation");
-  Cut newCut;
-  newCut.inputs = inputs;
-  newCut.setRoot(newRoot);
-  // Compute signature and truth table eagerly
-  newCut.computeSignature(valueNumbering);
-  newCut.computeTruthTable();
-  return newCut;
+/// Compute the truth table for a gate based on its operand cuts.
+/// This uses incremental computation which is much faster than simulation.
+static BinaryTruthTable
+computeTruthTableForGate(const LogicNetworkGate &rootGate,
+                         const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
+                         const Cut *const *cuts, unsigned numCuts) {
+
+  unsigned numMergedInputs = mergedInputs.size();
+
+  // Build index map: LogicNetwork index -> position in mergedInputs
+  // SmallDenseMap stores inline for small N, avoiding heap allocation
+  // Reserve buckets for expected size to reduce grow() overhead
+  llvm::SmallDenseMap<uint32_t, unsigned, 8> indexToMergedPos(numMergedInputs);
+  for (auto [pos, idx] : llvm::enumerate(mergedInputs))
+    indexToMergedPos[idx] = pos;
+
+  llvm::APInt result;
+
+  switch (rootGate.getKind()) {
+  case LogicNetworkGate::And2: {
+    auto lhs = getExpandedTruthTable(
+        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+    auto rhs = getExpandedTruthTable(
+        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+
+    result = lhs & rhs;
+    break;
+  }
+
+  case LogicNetworkGate::Xor2: {
+    auto lhs = getExpandedTruthTable(
+        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+    auto rhs = getExpandedTruthTable(
+        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+
+    result = lhs ^ rhs;
+    break;
+  }
+
+  case LogicNetworkGate::Maj3: {
+    auto a = getExpandedTruthTable(
+        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+    auto b = getExpandedTruthTable(
+        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+    auto c = getExpandedTruthTable(
+        rootGate.edges[2].getIndex(), rootGate.edges[2].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+
+    result = (a & b) | (a & c) | (b & c);
+    break;
+  }
+
+  case LogicNetworkGate::Identity: {
+    auto input = getExpandedTruthTable(
+        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
+        indexToMergedPos, numMergedInputs, cuts, numCuts);
+
+    result = input;
+    break;
+  }
+
+  default:
+    llvm_unreachable("Unsupported operation for truth table computation");
+  }
+
+  return BinaryTruthTable(numMergedInputs, 1, result);
+}
+
+static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {
+  // Create a trivial cut for a value
+  Cut cut;
+  cut.inputs.push_back(index);
+  // Compute truth table eagerly for trivial cut
+  cut.computeTruthTable(network);
+  cut.computeSignature();
+  return cut;
+}
+
+[[maybe_unused]] static bool
+isCutDerivedFromOperand(const Cut &cut, uint32_t opIndex,
+                        const LogicNetwork &network) {
+  const auto &gate = network.getGate(opIndex);
+  uint32_t cutOutputIndex =
+      cut.isTrivialCut() ? cut.inputs[0] : cut.getRootIndex();
+
+  // Check if any of the gate's fanins match the cut's output
+  for (unsigned i = 0; i < gate.getNumFanins(); ++i) {
+    if (gate.edges[i].getIndex() == cutOutputIndex)
+      return true;
+  }
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -534,65 +933,61 @@ Cut *CutSet::getBestMatchedCut() const { return bestCut; }
 
 unsigned CutSet::size() const { return cuts.size(); }
 
-void CutSet::addCut(Cut cut) {
+void CutSet::addCut(Cut *cut) {
   assert(!isFrozen && "Cannot add cuts to a frozen cut set");
-  cuts.push_back(std::move(cut));
+  cuts.push_back(cut);
 }
 
-ArrayRef<Cut> CutSet::getCuts() const { return cuts; }
+ArrayRef<Cut *> CutSet::getCuts() const { return cuts; }
 
 // Remove duplicate cuts and non-minimal cuts. A cut is non-minimal if there
-// exists another cut that is a subset of it. We use a bitset to represent the
-// inputs of each cut for efficient subset checking.
-static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut> &cuts) {
+// exists another cut that is a subset of it. We use the signature for efficient
+// subset checking since inputs are now indices.
+static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
   // First sort the cuts by input size (ascending). This ensures that when we
   // iterate through the cuts, we always encounter smaller cuts first, allowing
   // us to efficiently check for non-minimality. Stable sort to maintain
   // relative order of cuts with the same input size.
-  std::stable_sort(cuts.begin(), cuts.end(), [](const Cut &a, const Cut &b) {
-    return a.getInputSize() < b.getInputSize();
+  // NOTE: Sorting pointers is much faster than sorting Cut objects
+  std::stable_sort(cuts.begin(), cuts.end(), [](const Cut *a, const Cut *b) {
+    return a->getInputSize() < b->getInputSize();
   });
 
-  llvm::SmallVector<llvm::Bitset<64>, 4> inputBitMasks;
-  DenseMap<Value, unsigned> inputIndices;
-  auto getIndex = [&](Value v) -> unsigned {
-    auto it = inputIndices.find(v);
-    if (it != inputIndices.end())
-      return it->second;
-    unsigned index = inputIndices.size();
-    if (LLVM_UNLIKELY(index >= 64))
-      llvm::report_fatal_error(
-          "Too many unique inputs across cuts. Max 64 supported. Consider "
-          "increasing the compile-time constant.");
-    inputIndices[v] = index;
-    return index;
-  };
+  // Track kept cuts for proper subset checking
+  llvm::SmallVector<Cut *, 4> keptCuts;
+  keptCuts.reserve(cuts.size()); // Reserve to avoid reallocations
 
+  // Ok, now filter out non-minimal cuts
   for (unsigned i = 0; i < cuts.size(); ++i) {
-    auto &cut = cuts[i];
-    // Create a unique identifier for the cut based on its inputs.
-    llvm::Bitset<64> inputsMask;
-    for (auto input : cut.inputs.getArrayRef())
-      inputsMask.set(getIndex(input));
+    const Cut *cut = cuts[i];
+    uint64_t cutSig = cut->getSignature(); // Cache signature
 
-    bool isUnique = llvm::all_of(
-        inputBitMasks, [&](const llvm::Bitset<64> &existingCutInputMask) {
-          // If the bitset is a subset of the current inputsMask, it is not
-          // unique
-          return (existingCutInputMask & inputsMask) != existingCutInputMask;
-        });
+    // Check if any existing cut is a subset of this cut
+    // If so, this cut is dominated and should be filtered out
+    bool isSubset = llvm::any_of(keptCuts, [cutSig,
+                                            &cut](const Cut *existingCut) {
+      // Quick signature check
+      // Check if existingCut's signature is a subset of cut's signature
+      if ((existingCut->getSignature() & cutSig) != existingCut->getSignature())
+        return false;
 
-    if (!isUnique)
+      // Perform detailed subset check
+      return std::includes(cut->inputs.begin(), cut->inputs.end(),
+                           existingCut->inputs.begin(),
+                           existingCut->inputs.end());
+    });
+
+    if (isSubset)
       continue;
 
     // If the cut is unique, keep it
-    size_t uniqueCount = inputBitMasks.size();
+    size_t uniqueCount = keptCuts.size();
     if (i != uniqueCount)
-      cuts[uniqueCount] = std::move(cut);
-    inputBitMasks.push_back(inputsMask);
+      cuts[uniqueCount] = const_cast<Cut *>(cut);
+    keptCuts.push_back(cuts[uniqueCount]);
   }
 
-  unsigned uniqueCount = inputBitMasks.size();
+  unsigned uniqueCount = keptCuts.size();
 
   LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
                           << " Unique cuts: " << uniqueCount << "\n");
@@ -603,26 +998,35 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut> &cuts) {
 
 void CutSet::finalize(
     const CutRewriterOptions &options,
-    llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut) {
+    llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
+    llvm::BumpPtrAllocator &allocator, const LogicNetwork &logicNetwork) {
 
   // Step 1: Remove duplicate and non-minimal cuts to reduce the search space
   // This eliminates cuts that are strictly dominated by others
   removeDuplicateAndNonMinimalCuts(cuts);
 
-  // Step 2: Match each remaining cut against available patterns
+  // Step 2: Lazily compute truth tables only for cuts that survived
+  // deduplication This avoids wasting cycles computing TTs for duplicate cuts
+  // Use fast incremental method when operand cuts are available
+  for (Cut *cut : cuts) {
+    if (!cut->getTruthTable().has_value())
+      cut->computeTruthTableFromOperands(logicNetwork);
+  }
+
+  // Step 3: Match each remaining cut against available patterns
   // This computes timing and area information needed for prioritization
-  for (auto &cut : cuts) {
+  for (Cut *cut : cuts) {
     // Verify cut doesn't exceed input size limits
-    assert(cut.getInputSize() <= options.maxCutInputSize &&
+    assert(cut->getInputSize() <= options.maxCutInputSize &&
            "Cut input size exceeds maximum allowed size");
 
     // Attempt to match the cut against available patterns
-    auto matched = matchCut(cut);
+    auto matched = matchCut(*cut);
     if (!matched)
       continue; // No matching pattern found for this cut
 
     // Store the matched pattern with the cut for later evaluation
-    cut.setMatchedPattern(std::move(*matched));
+    cut->setMatchedPattern(std::move(*matched));
   }
 
   // Step 3: Sort cuts by priority to select the best ones
@@ -637,14 +1041,14 @@ void CutSet::finalize(
   // Partition the cuts into trivial and non-trivial cuts.
   auto *trivialCutsEnd =
       std::stable_partition(cuts.begin(), cuts.end(),
-                            [](const Cut &cut) { return cut.isTrivialCut(); });
+                            [](const Cut *cut) { return cut->isTrivialCut(); });
 
   std::stable_sort(trivialCutsEnd, cuts.end(),
-                   [&options](const Cut &a, const Cut &b) -> bool {
-                     assert(!a.isTrivialCut() && !b.isTrivialCut() &&
+                   [&options](const Cut *a, const Cut *b) -> bool {
+                     assert(!a->isTrivialCut() && !b->isTrivialCut() &&
                             "Trivial cuts should have been excluded");
-                     const auto &aMatched = a.getMatchedPattern();
-                     const auto &bMatched = b.getMatchedPattern();
+                     const auto &aMatched = a->getMatchedPattern();
+                     const auto &bMatched = b->getMatchedPattern();
 
                      // Both cuts have matched patterns.
                      if (aMatched && bMatched)
@@ -660,7 +1064,7 @@ void CutSet::finalize(
                        return false;
 
                      // Both cuts are unmatched - prefer smaller input size
-                     return a.getInputSize() < b.getInputSize();
+                     return a->getInputSize() < b->getInputSize();
                    });
 
   // Step 4: Limit the number of cuts to prevent exponential growth
@@ -669,13 +1073,13 @@ void CutSet::finalize(
     cuts.resize(options.maxCutSizePerRoot);
 
   // Select the best cut from the remaining candidates
-  for (auto &cut : cuts) {
-    const auto &currentMatch = cut.getMatchedPattern();
+  for (Cut *cut : cuts) {
+    const auto &currentMatch = cut->getMatchedPattern();
     if (!currentMatch)
       continue; // Skip cuts without matched patterns
 
     // This is already sorted, so the first matched cut is the best.
-    bestCut = &cut;
+    bestCut = cut;
     break;
   }
 
@@ -734,44 +1138,62 @@ CutRewritePatternSet::CutRewritePatternSet(
 CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
     : options(options) {}
 
-CutSet *CutEnumerator::createNewCutSet(Value value) {
-  auto [cutSetPtr, inserted] =
-      cutSets.try_emplace(value, std::make_unique<CutSet>());
-  assert(inserted && "Cut set already exists for this value");
-  return cutSetPtr->second.get();
+CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
+  void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));
+  CutSet *cutSet = new (mem) CutSet();
+  auto [cutSetPtr, inserted] = cutSets.try_emplace(index, cutSet);
+  assert(inserted && "Cut set already exists for this index");
+  return cutSetPtr->second;
 }
 
-llvm::MapVector<Value, std::unique_ptr<CutSet>> CutEnumerator::takeVector() {
-  return std::move(cutSets);
+llvm::SmallVector<std::pair<uint32_t, CutSet *>> CutEnumerator::takeCutSets() {
+  llvm::SmallVector<std::pair<uint32_t, CutSet *>> result;
+  result.reserve(cutSets.size());
+  for (auto &[idx, cutSet] : cutSets)
+    result.emplace_back(idx, cutSet);
+  cutSets.clear();
+  return result;
 }
 
 void CutEnumerator::clear() {
   cutSets.clear();
-  valueNumbering.clear();
+  processingOrder.clear();
+  logicNetwork.clear();
+  allocator.Reset();
 }
 
 LogicalResult CutEnumerator::visit(Operation *op) {
-  if (isSupportedLogicOp(op))
-    return visitLogicOp(op);
+  // Check if this is a supported logic operation
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+    // Skip non-inverted single-input operations (buffers) - they're aliased
+    // NOT gates (inverted single-input) are processed as logic gates
+    if (andOp.getInputs().size() == 1 && !andOp.isInverted(0))
+      return success();
+
+    // Process multi-input AND operations and NOT gates
+    uint32_t index = logicNetwork.getIndex(op->getResult(0));
+    return visitLogicOp(index);
+  }
 
   // Skip other operations. If the operation is not a supported logic
   // operation, we create a trivial cut lazily.
   return success();
 }
 
-LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
-  assert(logicOp->getNumResults() == 1 &&
+LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
+  const auto &gate = logicNetwork.getGate(nodeIndex);
+  auto *logicOp = gate.getOperation();
+  assert(logicOp && logicOp->getNumResults() == 1 &&
          "Logic operation must have a single result");
 
-  Value result = logicOp->getResult(0);
-  unsigned numOperands = logicOp->getNumOperands();
+  unsigned numFanins = gate.getNumFanins();
 
   // Validate operation constraints
   // TODO: Variadic operations and non-single-bit results can be supported
-  if (numOperands > 2)
-    return logicOp->emitError("Cut enumeration supports at most 2 operands, "
+  if (numFanins > 3)
+    return logicOp->emitError("Cut enumeration supports at most 3 operands, "
                               "found: ")
-           << numOperands;
+           << numFanins;
   if (!logicOp->getOpResult(0).getType().isInteger(1))
     return logicOp->emitError()
            << "Supported logic operations must have a single bit "
@@ -779,72 +1201,142 @@ LogicalResult CutEnumerator::visitLogicOp(Operation *logicOp) {
            << logicOp->getResult(0).getType();
 
   SmallVector<const CutSet *, 2> operandCutSets;
-  operandCutSets.reserve(numOperands);
-  // Collect cut sets for each operand
-  for (unsigned i = 0; i < numOperands; ++i) {
-    auto *operandCutSet = getCutSet(logicOp->getOperand(i));
+  operandCutSets.reserve(numFanins);
+
+  // Collect cut sets for each fanin (using LogicNetwork edges)
+  for (unsigned i = 0; i < numFanins; ++i) {
+    uint32_t faninIndex = gate.edges[i].getIndex();
+    auto *operandCutSet = getCutSet(faninIndex);
     if (!operandCutSet)
-      return logicOp->emitError("Failed to get cut set for operand ")
-             << i << ": " << logicOp->getOperand(i);
+      return logicOp->emitError("Failed to get cut set for fanin index ")
+             << faninIndex;
     operandCutSets.push_back(operandCutSet);
   }
 
-  // Create the singleton cut (just this operation)
-  Cut primaryInputCut = getAsTrivialCut(result);
-  // Compute signature for the primary input cut
-  primaryInputCut.computeSignature(valueNumbering);
+  // Create the singleton cut (just this operation as a trivial cut)
+  Cut *primaryInputCut = new (allocator.Allocate(sizeof(Cut), alignof(Cut)))
+      Cut(getAsTrivialCut(nodeIndex, logicNetwork));
 
-  auto *resultCutSet = createNewCutSet(result);
+  auto *resultCutSet = createNewCutSet(nodeIndex);
+  processingOrder.push_back(nodeIndex);
 
   // Add the singleton cut first
-  resultCutSet->addCut(std::move(primaryInputCut));
+  resultCutSet->addCut(primaryInputCut);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
     // Finalize cut set: remove duplicates, limit size, and match patterns
-    resultCutSet->finalize(options, matchCut);
+    resultCutSet->finalize(options, matchCut, allocator, logicNetwork);
   });
 
-  // Handle unary operations
-  if (numOperands == 1) {
-    const auto &inputCutSet = operandCutSets[0];
+  // Cache maxCutInputSize to avoid repeated access
+  const unsigned maxInputSize = options.maxCutInputSize;
 
-    // Try to extend each input cut by including this operation
-    for (const Cut &inputCut : inputCutSet->getCuts()) {
-      Cut extendedCut = inputCut.reRoot(logicOp, valueNumbering);
-      // Skip cuts that exceed input size limit
-      if (extendedCut.getInputSize() > options.maxCutInputSize)
-        continue;
+  // This lambda generates nested loops at runtime to iterate over all
+  // combinations of cuts from N operands
+  auto enumerateCutCombinations = [&](auto &&self, unsigned operandIdx,
+                                      SmallVector<const Cut *, 3> &cutPtrs,
+                                      uint64_t currentSig) -> void {
+    // Base case: all operands processed, create merged cut
+    if (operandIdx == numFanins) {
+      // Efficient k-way merge: since all cut inputs are sorted, use merge
+      // with duplicate elimination in a single pass
+      SmallVector<uint32_t, 6> mergedInputs;
 
-      resultCutSet->addCut(std::move(extendedCut));
+      if (numFanins == 1) {
+        // Single input: just copy
+        mergedInputs = cutPtrs[0]->inputs;
+      } else if (numFanins == 2) {
+        // Two-way merge (common case for AND gates)
+        const auto &inputs0 = cutPtrs[0]->inputs;
+        const auto &inputs1 = cutPtrs[1]->inputs;
+        mergedInputs.reserve(inputs0.size() + inputs1.size());
+
+        unsigned i = 0, j = 0;
+        while (i < inputs0.size() && j < inputs1.size()) {
+          if (inputs0[i] < inputs1[j]) {
+            mergedInputs.push_back(inputs0[i++]);
+          } else if (inputs0[i] > inputs1[j]) {
+            mergedInputs.push_back(inputs1[j++]);
+          } else {
+            mergedInputs.push_back(inputs0[i++]);
+            j++; // Skip duplicate
+          }
+        }
+        // Append remaining elements
+        while (i < inputs0.size())
+          mergedInputs.push_back(inputs0[i++]);
+        while (j < inputs1.size())
+          mergedInputs.push_back(inputs1[j++]);
+      } else {
+        // Three-way merge (for MAJ/MUX gates)
+        const SmallVectorImpl<uint32_t> &inputs0 = cutPtrs[0]->inputs;
+        const SmallVectorImpl<uint32_t> &inputs1 = cutPtrs[1]->inputs;
+        const SmallVectorImpl<uint32_t> &inputs2 = cutPtrs[2]->inputs;
+        mergedInputs.reserve(inputs0.size() + inputs1.size() + inputs2.size());
+
+        unsigned i = 0, j = 0, k = 0;
+        while (i < inputs0.size() || j < inputs1.size() || k < inputs2.size()) {
+          // Find minimum among available elements
+          uint32_t minVal = UINT32_MAX;
+          if (i < inputs0.size())
+            minVal = std::min(minVal, inputs0[i]);
+          if (j < inputs1.size())
+            minVal = std::min(minVal, inputs1[j]);
+          if (k < inputs2.size())
+            minVal = std::min(minVal, inputs2[k]);
+
+          mergedInputs.push_back(minVal);
+
+          // Advance all iterators pointing to minVal (handles duplicates)
+          if (i < inputs0.size() && inputs0[i] == minVal)
+            i++;
+          if (j < inputs1.size() && inputs1[j] == minVal)
+            j++;
+          if (k < inputs2.size() && inputs2[k] == minVal)
+            k++;
+        }
+      }
+
+      // Double-check after merge
+      if (mergedInputs.size() > maxInputSize)
+        return;
+
+      // Create the merged cut
+      Cut *mergedCut =
+          new (allocator.Allocate(sizeof(Cut), alignof(Cut))) Cut();
+      mergedCut->setRootIndex(nodeIndex);
+      mergedCut->inputs = std::move(mergedInputs);
+      mergedCut->computeSignature();
+
+      // Store operand cuts for lazy truth table computation using fast
+      // incremental method (after duplicate removal in finalize)
+      mergedCut->setOperandCuts(cutPtrs);
+      resultCutSet->addCut(mergedCut);
+      return;
     }
-    return success();
-  }
 
-  // Handle binary operations (like AND, OR, XOR gates)
-  assert(numOperands == 2 && "Expected binary operation");
+    // Recursive case: iterate over cuts for current operand
+    const CutSet *currentCutSet = operandCutSets[operandIdx];
+    for (const Cut *cut : currentCutSet->getCuts()) {
+      uint64_t cutSig = cut->getSignature();
+      uint64_t newSig = currentSig | cutSig;
+      if (llvm::popcount(newSig) > maxInputSize)
+        continue; // Early rejection based on signature
 
-  const auto *lhsCutSet = operandCutSets[0];
-  const auto *rhsCutSet = operandCutSets[1];
+      cutPtrs.push_back(cut);
 
-  // Combine cuts from both inputs to create larger cuts
-  for (const Cut &lhsCut : lhsCutSet->getCuts()) {
-    for (const Cut &rhsCut : rhsCutSet->getCuts()) {
-      // Fast rejection using signature-based filtering
-      // Estimate merged size before doing expensive merge operation
-      unsigned estimatedSize = lhsCut.estimateMergedSize(rhsCut);
-      if (estimatedSize > options.maxCutInputSize)
-        continue;
+      // Recurse to next operand
+      self(self, operandIdx + 1, cutPtrs, newSig);
 
-      Cut mergedCut = lhsCut.mergeWith(rhsCut, logicOp, valueNumbering);
-      // Skip cuts that exceed input size limit (double-check after actual
-      // merge)
-      if (mergedCut.getInputSize() > options.maxCutInputSize)
-        continue;
-
-      resultCutSet->addCut(std::move(mergedCut));
+      cutPtrs.pop_back();
     }
-  }
+  };
+
+  // Start the recursion with empty cut pointer list and zero signature
+  SmallVector<const Cut *, 3> cutPtrs;
+  cutPtrs.reserve(numFanins);
+  enumerateCutCombinations(enumerateCutCombinations, 0, cutPtrs, 0ULL);
 
   return success();
 }
@@ -861,47 +1353,51 @@ LogicalResult CutEnumerator::enumerateCuts(
   // Store the pattern matching function for use during cut finalization
   this->matchCut = matchCut;
 
-  // Build value numbering in topological order
-  // This assigns unique indices to all values for signature computation
-  for (auto arg : topOp->getRegion(0).getBlocks().front().getArguments())
-    valueNumbering.getOrAssignIndex(arg);
-  topOp->walk([&](Operation *op) {
-    for (auto result : op->getResults())
-      valueNumbering.getOrAssignIndex(result);
-    return mlir::WalkResult::advance();
-  });
-
-  // Walk through all operations in the module in a topological manner
-  auto result = topOp->walk([&](Operation *op) {
-    if (failed(visit(op)))
-      return mlir::WalkResult::interrupt();
-    return mlir::WalkResult::advance();
-  });
-
-  if (result.wasInterrupted())
+  // Build the flat logic network representation for efficient simulation
+  auto &block = topOp->getRegion(0).getBlocks().front();
+  if (failed(logicNetwork.buildFromBlock(&block)))
     return failure();
+
+  for (const auto &[index, gate] : llvm::enumerate(logicNetwork.getGates())) {
+    // Skip non-logic gates.
+    if (!gate.isLogicGate())
+      continue;
+
+    // Ensure cut set exists for each logic gate
+    if (failed(visitLogicOp(index)))
+      return failure();
+  }
+
+  // // Walk through all operations in the module in a topological manner
+  // auto result = topOp->walk([&](Operation *op) {
+  //   if (failed(visit(op)))
+  //     return mlir::WalkResult::interrupt();
+  //   return mlir::WalkResult::advance();
+  // });
+
+  // if (result.wasInterrupted())
+  //   return failure();
 
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
   return success();
 }
 
-const CutSet *CutEnumerator::getCutSet(Value value) {
+const CutSet *CutEnumerator::getCutSet(uint32_t index) {
   // Check if cut set already exists
-  auto *it = cutSets.find(value);
+  auto it = cutSets.find(index);
   if (it == cutSets.end()) {
-    // Create new cut set for an unprocessed value
-    auto cutSet = std::make_unique<CutSet>();
-    Cut trivialCut = getAsTrivialCut(value);
-    // Compute signature for the trivial cut
-    trivialCut.computeSignature(valueNumbering);
-    cutSet->addCut(std::move(trivialCut));
-    auto [newIt, inserted] = cutSets.insert({value, std::move(cutSet)});
-    assert(inserted && "Cut set already exists for this value");
-    (void)newIt;
+    // Create new cut set for an unprocessed value (primary input or other)
+    void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));
+    CutSet *cutSet = new (mem) CutSet();
+    Cut *trivialCut = new (allocator.Allocate(sizeof(Cut), alignof(Cut)))
+        Cut(getAsTrivialCut(index, logicNetwork));
+    cutSet->addCut(trivialCut);
+    auto [newIt, inserted] = cutSets.insert({index, cutSet});
+    assert(inserted && "Cut set already exists for this index");
     it = newIt;
   }
 
-  return it->second.get();
+  return it->second;
 }
 
 /// Generate a human-readable name for a value used in test output.
@@ -950,17 +1446,22 @@ getTestVariableName(Value value, DenseMap<OperationName, unsigned> &opCounter) {
 
 void CutEnumerator::dump() const {
   DenseMap<OperationName, unsigned> opCounter;
-  for (auto &[value, cutSetPtr] : cutSets) {
-    auto &cutSet = *cutSetPtr;
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto &cutSet = *it->second;
+    mlir::Value value = logicNetwork.getValue(index);
     llvm::outs() << getTestVariableName(value, opCounter) << " "
                  << cutSet.getCuts().size() << " cuts:";
-    for (const Cut &cut : cutSet.getCuts()) {
+    for (const Cut *cut : cutSet.getCuts()) {
       llvm::outs() << " {";
-      llvm::interleaveComma(cut.inputs, llvm::outs(), [&](Value input) {
-        llvm::outs() << getTestVariableName(input, opCounter);
+      llvm::interleaveComma(cut->inputs, llvm::outs(), [&](uint32_t inputIdx) {
+        mlir::Value inputVal = logicNetwork.getValue(inputIdx);
+        llvm::outs() << getTestVariableName(inputVal, opCounter);
       });
-      auto &pattern = cut.getMatchedPattern();
-      llvm::outs() << "}" << "@t" << cut.getTruthTable().table.getZExtValue()
+      auto &pattern = cut->getMatchedPattern();
+      llvm::outs() << "}" << "@t" << cut->getTruthTable()->table.getZExtValue()
                    << "d";
       if (pattern) {
         llvm::outs() << *std::max_element(pattern->getArrivalTimes().begin(),
@@ -1050,24 +1551,24 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   if (cut.isTrivialCut())
     return {};
 
+  const auto &network = cutEnumerator.getLogicNetwork();
   const CutRewritePattern *bestPattern = nullptr;
   SmallVector<DelayType, 4> inputArrivalTimes;
   SmallVector<DelayType, 1> bestArrivalTimes;
   double bestArea = 0.0;
   inputArrivalTimes.reserve(cut.getInputSize());
-  bestArrivalTimes.reserve(cut.getOutputSize());
+  bestArrivalTimes.reserve(cut.getOutputSize(network));
 
   // Compute arrival times for each input.
-  for (auto input : cut.inputs) {
-    assert(input.getType().isInteger(1));
-    if (isAlwaysCutInput(input)) {
+  for (auto inputIndex : cut.inputs) {
+    if (isAlwaysCutInput(network, inputIndex)) {
       // If the input is a primary input, it has no delay.
       // TODO: This doesn't consider a global delay. Need to capture
       // `arrivalTime` on the IR to make the primary input delays visible.
       inputArrivalTimes.push_back(0);
       continue;
     }
-    auto *cutSet = cutEnumerator.getCutSet(input);
+    auto *cutSet = cutEnumerator.getCutSet(inputIndex);
     assert(cutSet && "Input must have a valid cut set");
 
     // If there is no matching pattern, it means it's not possible to use the
@@ -1078,10 +1579,12 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
     const auto &matchedPattern = *bestCut->getMatchedPattern();
 
+    // Get the value for result number lookup
+    mlir::Value inputValue = network.getValue(inputIndex);
     // Otherwise, the cut input is an op result. Get the arrival time
     // from the matched pattern.
     inputArrivalTimes.push_back(matchedPattern.getArrivalTime(
-        cast<mlir::OpResult>(input).getResultNumber()));
+        cast<mlir::OpResult>(inputValue).getResultNumber()));
   }
 
   auto computeArrivalTimeAndPickBest =
@@ -1089,7 +1592,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
         SmallVector<DelayType, 1> outputArrivalTimes;
         // Compute the maximum delay for each output from inputs.
-        for (unsigned outputIndex = 0, outputSize = cut.getOutputSize();
+        for (unsigned outputIndex = 0, outputSize = cut.getOutputSize(network);
              outputIndex < outputSize; ++outputIndex) {
           // Compute the arrival time for this output.
           DelayType outputArrivalTime = 0;
@@ -1115,7 +1618,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           LLVM_DEBUG({
             llvm::dbgs() << "== Matched Pattern ==============\n";
             llvm::dbgs() << "Matching cut: \n";
-            cut.dump(llvm::dbgs());
+            cut.dump(llvm::dbgs(), network);
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
             llvm::dbgs() << " with area: " << matchResult.area;
@@ -1167,25 +1670,37 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   LLVM_DEBUG(llvm::dbgs() << "Performing cut-based rewriting...\n");
-  const auto &cutVector = cutEnumerator.getCutSets();
+  const auto &network = cutEnumerator.getLogicNetwork();
+  const auto &cutSets = cutEnumerator.getCutSets();
+  auto processingOrder = cutEnumerator.getProcessingOrder();
+
   // Note: Don't clear cutEnumerator yet - we need it during rewrite
   UnusedOpPruner pruner;
   PatternRewriter rewriter(top->getContext());
-  for (auto &[value, cutSet] : llvm::reverse(cutVector)) {
+
+  // Process in reverse topological order
+  for (auto index : llvm::reverse(processingOrder)) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+
+    mlir::Value value = network.getValue(index);
+    auto &cutSet = *it->second;
+
     if (value.use_empty()) {
       if (auto *op = value.getDefiningOp())
         pruner.eraseNow(op);
       continue;
     }
 
-    if (isAlwaysCutInput(value)) {
+    if (isAlwaysCutInput(network, index)) {
       // If the value is a primary input, skip it
       LLVM_DEBUG(llvm::dbgs() << "Skipping inputs: " << value << "\n");
       continue;
     }
 
     LLVM_DEBUG(llvm::dbgs() << "Cut set for value: " << value << "\n");
-    auto *bestCut = cutSet->getBestMatchedCut();
+    auto *bestCut = cutSet.getBestMatchedCut();
     if (!bestCut) {
       if (options.allowNoMatch)
         continue; // No matching pattern found, skip this value
@@ -1193,14 +1708,16 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
              << value;
     }
 
-    rewriter.setInsertionPoint(bestCut->getRoot());
+    // Get the root operation from LogicNetwork
+    auto *rootOp = network.getGate(bestCut->getRootIndex()).getOperation();
+    rewriter.setInsertionPoint(rootOp);
     const auto &matchedPattern = bestCut->getMatchedPattern();
     auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
                                                         *bestCut);
     if (failed(result))
       return failure();
 
-    rewriter.replaceOp(bestCut->getRoot(), *result);
+    rewriter.replaceOp(rootOp, *result);
 
     if (options.attachDebugTiming) {
       auto array = rewriter.getI64ArrayAttr(matchedPattern->getArrivalTimes());
