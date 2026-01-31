@@ -226,11 +226,39 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
                             StringRef comment = "", bool withLoc = false) {
+  // Build conventional path: inst1/inst2/inst3/port[bit] or inst1/inst2/inst3/_reg
   std::string pathString;
   llvm::raw_string_ostream osPath(pathString);
-  object.instancePath.print(osPath);
-  os << "Object(" << pathString << "." << object.getName().getValue() << "["
-     << object.bitPos << "]";
+
+  // Print instance path without module names
+  for (auto inst : object.instancePath) {
+    osPath << inst.getInstanceName() << "/";
+  }
+
+  // Print the signal name
+  auto name = object.getName().getValue();
+  osPath << name;
+
+  // Print bit position
+  // For single-bit signals, omit the bit index
+  // For multi-bit signals, show [bitPos]
+  if (object.value) {
+    auto type = object.value.getType();
+    if (auto intType = dyn_cast<mlir::IntegerType>(type)) {
+      if (intType.getWidth() > 1) {
+        osPath << "[" << object.bitPos << "]";
+      }
+    } else {
+      // For non-integer types, always show bit position
+      osPath << "[" << object.bitPos << "]";
+    }
+  } else {
+    // If no value, show bit position
+    osPath << "[" << object.bitPos << "]";
+  }
+
+  os << pathString;
+
   if (delay != -1)
     os << ", delay=" << delay;
 
@@ -240,7 +268,6 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
     os << ", loc=";
     object.value.getLoc().print(os);
   }
-  os << ")";
 }
 
 template <typename T>
@@ -279,7 +306,8 @@ void DataflowPath::printEndPoint(llvm::raw_ostream &os, bool withLoc) {
     auto &[module, resultNumber, bitPos] =
         *std::get_if<DataflowPath::OutputPort>(&endPoint);
     auto outputPortName = root.getOutputName(resultNumber);
-    os << "Object($root." << outputPortName << "[" << bitPos << "])";
+    // Use conventional format: just the port name with bit index
+    os << outputPortName << "[" << bitPos << "]";
   }
 }
 

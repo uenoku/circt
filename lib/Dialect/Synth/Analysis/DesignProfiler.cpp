@@ -12,11 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
+#include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/InstanceGraph.h"
 #include "mlir/Support/FileUtilities.h"
@@ -48,27 +50,89 @@ using ClockDomain = Object;
 
 struct Clock {
   Object value;
+  virtual ~Clock() = default;
   virtual void print(llvm::raw_ostream &os = llvm::errs()) = 0;
 };
 
 struct ClockGate : Clock {
   Object enable;
   Clock *input;
+
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockGate(enable=";
+    enable.print(os);
+    os << ", input=";
+    if (input)
+      input->print(os);
+    else
+      os << "null";
+    os << ")";
+  }
 };
 
 struct ClockMux : Clock {
   Object sel;
   Clock *trueCase, *falseCase;
+
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockMux(sel=";
+    sel.print(os);
+    os << ", true=";
+    if (trueCase)
+      trueCase->print(os);
+    else
+      os << "null";
+    os << ", false=";
+    if (falseCase)
+      falseCase->print(os);
+    else
+      os << "null";
+    os << ")";
+  }
 };
 
 struct ClockDivider : Clock {
   Clock *input;
   int pow2;
+
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockDivider(pow2=" << pow2 << ", input=";
+    if (input)
+      input->print(os);
+    else
+      os << "null";
+    os << ")";
+  }
 };
 
-struct ClockPort : Clock {};
+struct ClockInverter : Clock {
+  Clock *input;
 
-struct ClockUnknown : Clock {};
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockInverter(input=";
+    if (input)
+      input->print(os);
+    else
+      os << "null";
+    os << ")";
+  }
+};
+
+struct ClockPort : Clock {
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockPort(";
+    value.print(os);
+    os << ")";
+  }
+};
+
+struct ClockUnknown : Clock {
+  void print(llvm::raw_ostream &os = llvm::errs()) override {
+    os << "ClockUnknown(";
+    value.print(os);
+    os << ")";
+  }
+};
 
 /// Path category based on start/end point types.
 enum class PathCategory {
@@ -133,11 +197,44 @@ struct DesignProfilerPass
 private:
   SmallVector<Object> history;
   DenseMap<Object, ClockDomain> clockCache;
+  DenseMap<Object, Clock *> clockTreeCache;
+  SmallVector<Clock *> allocatedClocks;
+
+  // Helper to allocate and track a clock object
+  template <typename T>
+  T *allocateClock() {
+    T *clk = new T();
+    allocatedClocks.push_back(clk);
+    return clk;
+  }
+
+  // Cleanup allocated clocks
+  void cleanupClocks() {
+    for (auto *clk : allocatedClocks) {
+      delete clk;
+    }
+    allocatedClocks.clear();
+    clockTreeCache.clear();
+  }
+
   /// Get the clock value for a path endpoint. Returns nullptr for ports.
   ClockDomain getClockForEndpoint(const Object &obj);
 
   /// Trace a clock signal back through the hierarchy if it is a port.
   ClockDomain traceClockSource(ClockDomain clkObj);
+
+  /// Trace a clock signal and build a Clock tree structure.
+  Clock *traceClockTree(Object clkObj);
+
+  /// Print a clock tree in a hierarchical format.
+  void printClockTree(Clock *clk, llvm::raw_ostream &os,
+                      const std::string &indent = "", bool isLast = true);
+
+  /// Find all clock gates in a clock tree.
+  void findClockGates(Clock *clk, SmallVectorImpl<ClockGate *> &gates);
+
+  /// Check if two clock trees have a common clock gate input.
+  bool haveCommonClockGate(Clock *clk1, Clock *clk2);
 
   /// Determine the path category based on start/end types.
   PathCategory categorize(const DataflowPath &path);
@@ -242,13 +339,13 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
       break;
 
     history.push_back(clkObj);
-    if (!isa<seq::ClockType>(clkObj.value.getType())) {
-      for (auto obj : history) {
-        obj.print(llvm::errs());
-        llvm::errs() << "\n";
-      }
-      checkAssert(clkObj.value);
-    }
+    // if (!isa<seq::ClockType>(clkObj.value.getType())) {
+    //   for (auto obj : history) {
+    //     obj.print(llvm::errs());
+    //     llvm::errs() << "\n";
+    //   }
+    //   checkAssert(clkObj.value);
+    // }
 
     // If defined by op, it's a local source.
     if (auto *op = clkObj.value.getDefiningOp()) {
@@ -257,8 +354,19 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
         continue;
       }
 
-      if (auto clockDiv = dyn_cast<seq::ClockGateOp>(op)) {
-        clkObj = Object(clkObj.instancePath, clockDiv.getInput(), 0);
+      // Handle clock gate - trace through to the input clock
+      if (auto clockGate = dyn_cast<seq::ClockGateOp>(op)) {
+        clkObj = Object(clkObj.instancePath, clockGate.getInput(), 0);
+        continue;
+      }
+      // Handle clock gate - trace through to the input clock
+      if (auto fromClock = dyn_cast<seq::FromClockOp>(op)) {
+        clkObj = Object(clkObj.instancePath, fromClock.getInput(), 0);
+        continue;
+      }
+
+      if (auto toClock = dyn_cast<seq::ToClockOp>(op)) {
+        clkObj = Object(clkObj.instancePath, toClock.getInput(), 0);
         continue;
       }
 
@@ -292,10 +400,10 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
         assert(resultNum < terminator->getNumOperands());
         Value outputVal = terminator->getOperand(resultNum);
 
-        // Only continue tracing if the output value is still a clock type.
-        // If the module converts clock to data, we stop here.
-        if (!isa<seq::ClockType>(outputVal.getType()))
-          break;
+        // // Only continue tracing if the output value is still a clock type.
+        // // If the module converts clock to data, we stop here.
+        // if (!isa<seq::ClockType>(outputVal.getType()))
+        //   break;
 
         // Build a new instance path by appending this instance.
         // We're going INTO the instance, so we append it to the path.
@@ -364,6 +472,161 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
   return clkObj;
 }
 
+Clock *DesignProfilerPass::traceClockTree(Object clkObj) {
+  // Check cache first
+  auto it = clockTreeCache.find(clkObj);
+  if (it != clockTreeCache.end())
+    return it->second;
+
+  if (!clkObj.value) {
+    // Null clock - return ClockUnknown
+    auto *clk = allocateClock<ClockUnknown>();
+    clk->value = clkObj;
+    clockTreeCache[clkObj] = clk;
+    return clk;
+  }
+
+  // If defined by op, build the appropriate Clock structure
+  if (auto *op = clkObj.value.getDefiningOp()) {
+    // Handle wire - trace through
+    if (auto wire = dyn_cast<hw::WireOp>(op)) {
+      Object inputObj(clkObj.instancePath, wire.getInput(), 0);
+      return traceClockTree(inputObj);
+    }
+
+    // Handle clock gate
+    if (auto clockGate = dyn_cast<seq::ClockGateOp>(op)) {
+      auto *clkGate = allocateClock<ClockGate>();
+      clkGate->value = clkObj;
+      clkGate->enable = Object(clkObj.instancePath, clockGate.getEnable(), 0);
+      Object inputObj(clkObj.instancePath, clockGate.getInput(), 0);
+      clkGate->input = traceClockTree(inputObj);
+      clockTreeCache[clkObj] = clkGate;
+      return clkGate;
+    }
+
+    // Handle clock mux
+    if (auto clockMux = dyn_cast<seq::ClockMuxOp>(op)) {
+      auto *clkMux = allocateClock<ClockMux>();
+      clkMux->value = clkObj;
+      clkMux->sel = Object(clkObj.instancePath, clockMux.getCond(), 0);
+      Object trueObj(clkObj.instancePath, clockMux.getTrueClock(), 0);
+      Object falseObj(clkObj.instancePath, clockMux.getFalseClock(), 0);
+      clkMux->trueCase = traceClockTree(trueObj);
+      clkMux->falseCase = traceClockTree(falseObj);
+      clockTreeCache[clkObj] = clkMux;
+      return clkMux;
+    }
+
+    // Handle clock divider
+    if (auto clockDiv = dyn_cast<seq::ClockDividerOp>(op)) {
+      auto *clkDivider = allocateClock<ClockDivider>();
+      clkDivider->value = clkObj;
+      clkDivider->pow2 = clockDiv.getPow2();
+      Object inputObj(clkObj.instancePath, clockDiv.getInput(), 0);
+      clkDivider->input = traceClockTree(inputObj);
+      clockTreeCache[clkObj] = clkDivider;
+      return clkDivider;
+    }
+
+    // Handle clock inverter
+    if (auto clockInv = dyn_cast<seq::ClockInverterOp>(op)) {
+      auto *clkInverter = allocateClock<ClockInverter>();
+      clkInverter->value = clkObj;
+      Object inputObj(clkObj.instancePath, clockInv.getInput(), 0);
+      clkInverter->input = traceClockTree(inputObj);
+      clockTreeCache[clkObj] = clkInverter;
+      return clkInverter;
+    }
+
+    // Handle seq::ToClockOp - trace through transparently
+    if (auto toClock = dyn_cast<seq::ToClockOp>(op)) {
+      Object inputObj(clkObj.instancePath, toClock.getInput(), 0);
+      return traceClockTree(inputObj);
+    }
+
+    // Handle seq::FromClockOp - trace through transparently
+    if (auto fromClock = dyn_cast<seq::FromClockOp>(op)) {
+      Object inputObj(clkObj.instancePath, fromClock.getInput(), 0);
+      return traceClockTree(inputObj);
+    }
+
+    // Handle synth::aig::AndInverterOp with single inverted operand (NOT gate)
+    if (auto inverter = dyn_cast<synth::aig::AndInverterOp>(op)) {
+      if (inverter.getNumOperands() == 1 && inverter.isInverted(0)) {
+        auto *clkInverter = allocateClock<ClockInverter>();
+        clkInverter->value = clkObj;
+        Object inputObj(clkObj.instancePath, inverter.getOperand(0), 0);
+        clkInverter->input = traceClockTree(inputObj);
+        clockTreeCache[clkObj] = clkInverter;
+        return clkInverter;
+      }
+    }
+
+    // Handle instance output - trace into the instance
+    if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
+      if (instanceGraph && pathCache) {
+        auto resultValue = dyn_cast<OpResult>(clkObj.value);
+        if (resultValue) {
+          unsigned resultNum = resultValue.getResultNumber();
+          auto moduleName = inst.getReferencedModuleNameAttr();
+          auto *moduleNode = instanceGraph->lookup(moduleName);
+          if (moduleNode) {
+            auto hwModule = dyn_cast<hw::HWModuleOp>(
+                *moduleNode->getModule().getOperation());
+            if (hwModule) {
+              auto *terminator = hwModule.getBodyBlock()->getTerminator();
+              Value outputVal = terminator->getOperand(resultNum);
+              auto newPath =
+                  pathCache->appendInstance(clkObj.instancePath, inst);
+              Object innerObj(newPath, outputVal, 0);
+              return traceClockTree(innerObj);
+            }
+          }
+        }
+      }
+    }
+
+    // Unknown operation - return ClockUnknown
+    auto *clk = allocateClock<ClockUnknown>();
+    clk->value = clkObj;
+    clockTreeCache[clkObj] = clk;
+    return clk;
+  }
+
+  // It's a BlockArgument (port)
+  auto blockArg = dyn_cast<BlockArgument>(clkObj.value);
+  if (blockArg) {
+    auto *ownerBlock = blockArg.getOwner();
+    if (isa<hw::HWModuleOp>(ownerBlock->getParentOp())) {
+      // If we can trace up through the instance hierarchy, do so
+      if (!clkObj.instancePath.empty()) {
+        auto instOp = clkObj.instancePath.leaf();
+        if (auto hwInst = dyn_cast<hw::InstanceOp>(instOp.getOperation())) {
+          unsigned argIdx = blockArg.getArgNumber();
+          if (argIdx < hwInst.getNumOperands()) {
+            Value parentVal = hwInst.getInputs()[argIdx];
+            Object parentObj(clkObj.instancePath.dropBack(), parentVal, 0);
+            return traceClockTree(parentObj);
+          }
+        }
+      }
+
+      // It's a top-level port
+      auto *clk = allocateClock<ClockPort>();
+      clk->value = clkObj;
+      clockTreeCache[clkObj] = clk;
+      return clk;
+    }
+  }
+
+  // Unknown - return ClockUnknown
+  auto *clk = allocateClock<ClockUnknown>();
+  clk->value = clkObj;
+  clockTreeCache[clkObj] = clk;
+  return clk;
+}
+
 PathCategory DesignProfilerPass::categorize(const DataflowPath &path) {
   bool startIsReg = false;
   bool endIsReg = false;
@@ -391,6 +654,94 @@ PathCategory DesignProfilerPass::categorize(const DataflowPath &path) {
   if (startIsReg && !endIsReg)
     return PathCategory::RegToPort;
   return PathCategory::PortToPort;
+}
+
+void DesignProfilerPass::printClockTree(Clock *clk, llvm::raw_ostream &os,
+                                        const std::string &indent,
+                                        bool isLast) {
+  if (!clk) {
+    os << indent << (isLast ? "└── " : "├── ") << "(null)\n";
+    return;
+  }
+
+  std::string branch = isLast ? "└── " : "├── ";
+  std::string childIndent = indent + (isLast ? "    " : "│   ");
+
+  if (auto *gate = dynamic_cast<ClockGate *>(clk)) {
+    os << indent << branch << "ClockGate\n";
+    os << childIndent << "├── enable: ";
+    gate->enable.print(os);
+    os << "\n";
+    os << childIndent << "└── input:\n";
+    printClockTree(gate->input, os, childIndent + "    ", true);
+  } else if (auto *mux = dynamic_cast<ClockMux *>(clk)) {
+    os << indent << branch << "ClockMux\n";
+    os << childIndent << "├── selector: ";
+    mux->sel.print(os);
+    os << "\n";
+    os << childIndent << "├── true:\n";
+    printClockTree(mux->trueCase, os, childIndent + "│   ", false);
+    os << childIndent << "└── false:\n";
+    printClockTree(mux->falseCase, os, childIndent + "    ", true);
+  } else if (auto *div = dynamic_cast<ClockDivider *>(clk)) {
+    os << indent << branch << "ClockDivider (÷" << (1 << div->pow2) << ")\n";
+    os << childIndent << "└── input:\n";
+    printClockTree(div->input, os, childIndent + "    ", true);
+  } else if (auto *inv = dynamic_cast<ClockInverter *>(clk)) {
+    os << indent << branch << "ClockInverter\n";
+    os << childIndent << "└── input:\n";
+    printClockTree(inv->input, os, childIndent + "    ", true);
+  } else if (auto *port = dynamic_cast<ClockPort *>(clk)) {
+    os << indent << branch << "ClockPort: ";
+    port->value.print(os);
+    os << "\n";
+  } else if (auto *unknown = dynamic_cast<ClockUnknown *>(clk)) {
+    os << indent << branch << "ClockUnknown: ";
+    unknown->value.print(os);
+    os << "\n";
+  } else {
+    os << indent << branch << "(unknown clock type)\n";
+  }
+}
+
+void DesignProfilerPass::findClockGates(Clock *clk,
+                                        SmallVectorImpl<ClockGate *> &gates) {
+  if (!clk)
+    return;
+
+  if (auto *gate = dynamic_cast<ClockGate *>(clk)) {
+    gates.push_back(gate);
+    findClockGates(gate->input, gates);
+  } else if (auto *mux = dynamic_cast<ClockMux *>(clk)) {
+    findClockGates(mux->trueCase, gates);
+    findClockGates(mux->falseCase, gates);
+  } else if (auto *div = dynamic_cast<ClockDivider *>(clk)) {
+    findClockGates(div->input, gates);
+  } else if (auto *inv = dynamic_cast<ClockInverter *>(clk)) {
+    findClockGates(inv->input, gates);
+  }
+  // ClockPort and ClockUnknown are leaf nodes, no recursion needed
+}
+
+bool DesignProfilerPass::haveCommonClockGate(Clock *clk1, Clock *clk2) {
+  if (!clk1 || !clk2)
+    return false;
+
+  SmallVector<ClockGate *, 8> gates1, gates2;
+  findClockGates(clk1, gates1);
+  findClockGates(clk2, gates2);
+
+  // Check if any clock gates have the same enable signal
+  for (auto *gate1 : gates1) {
+    for (auto *gate2 : gates2) {
+      // Compare enable signals
+      if (gate1->enable == gate2->enable) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 std::string DesignProfilerPass::getClockName(ClockDomain clock) {
@@ -520,7 +871,14 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
 
   os << "## Clock Domains\n";
   for (auto clock : uniqueClocks) {
-    os << "  " << getClockName(clock) << "\n";
+    os << "### " << getClockName(clock) << "\n";
+    Clock *clockTree = traceClockTree(clock);
+    if (clockTree) {
+      printClockTree(clockTree, os, "", true);
+    } else {
+      os << "  (no clock tree available)\n";
+    }
+    os << "\n";
   }
   os << "\n";
 
@@ -529,6 +887,28 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
     os << "## Reg-to-Reg Paths\n";
     for (auto &[clockPair, stats] : regToRegStats) {
       os << "### " << clockPair.first << " -> " << clockPair.second << "\n";
+      //
+      //      // Check for common clock gate
+      //      // Find the clock objects for this pair
+      //      Clock *srcClockTree = nullptr;
+      //      Clock *dstClockTree = nullptr;
+      //
+      //      for (auto clock : uniqueClocks) {
+      //        std::string name = getClockName(clock);
+      //        if (name == clockPair.first) {
+      //          srcClockTree = traceClockTree(clock);
+      //        }
+      //        if (name == clockPair.second) {
+      //          dstClockTree = traceClockTree(clock);
+      //        }
+      //      }
+      //
+      //      if (srcClockTree && dstClockTree) {
+      //        printClockTree(srcClockTree, os, "  ", true);
+      //        os << "  └── " << clockPair.first << " -> " << clockPair.second
+      //        << "\n"; printClockTree(dstClockTree, os, "    ", true);
+      //      }
+      //
       printStats(stats);
     }
     os << "\n";
@@ -623,9 +1003,12 @@ void DesignProfilerPass::runOnOperation() {
     return signalPassFailure();
   }
 
-  if (failed(writeReport(topModule, file->os())))
+  if (failed(writeReport(topModule, file->os()))) {
+    cleanupClocks();
     return signalPassFailure();
+  }
 
   file->keep();
+  cleanupClocks();
   markAllAnalysesPreserved();
 }
