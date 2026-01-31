@@ -47,6 +47,7 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -211,6 +212,17 @@ static cl::opt<bool>
                                              "ports pass"),
                                     cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<bool> enableMockturtle(
+    "enable-mockturtle",
+    cl::desc("Enable mockturtle optimizations. It will raise an error if no "
+             "mockturtle is available."),
+    cl::init(false), cl::cat(mainCategory));
+
+static cl::opt<bool> enableMockturtleFunctionalReduction(
+    "enable-mockturtle-functional-reduction",
+    cl::desc("Enable mockturtle functional reduction."), cl::init(false),
+    cl::cat(mainCategory));
+
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
 //===----------------------------------------------------------------------===//
@@ -264,6 +276,15 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
+
+    // Mockturtle optimization pipeline
+    if (enableMockturtle) {
+      circt::synth::MockturtleOptimizationPipelineOptions mockturtleOptions;
+      mockturtleOptions.synthesisStrategy = synthesisStrategy;
+      mockturtleOptions.enableFunctionalReduction.setValue(
+          enableMockturtleFunctionalReduction);
+      circt::synth::buildMockturtleOptimizationPipeline(pm, mockturtleOptions);
+    }
     if (untilReached(UntilMapping))
       return;
     if (lowerToKLUTs) {
@@ -413,6 +434,18 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
   return success();
 }
 
+LogicalResult validateOptions() {
+#ifndef CIRCT_MOCKTURTLE_ENABLED
+  if (enableMockturtle || enableMockturtleFunctionalReduction) {
+    llvm::errs() << "Error: Mockturtle optimizations are not available in this "
+                    "build.\nRemove the -enable-mockturtle option.\n";
+
+    return failure();
+  }
+#endif
+  return success();
+}
+
 /// The entry point for the `circt-synth` tool:
 /// configures and parses the command-line options,
 /// registers all dialects within a MLIR context,
@@ -456,6 +489,10 @@ int main(int argc, char **argv) {
   SourceMgrDiagnosticHandler sourceMgrHandler(sourceMgr, &context);
   // Avoid printing a superfluous note on diagnostic emission.
   context.printOpOnDiagnostic(false);
+
+  // Validate command-line options.
+  if (failed(validateOptions()))
+    exit(1);
 
   // Perform the synthesis; using `exit` to avoid the slow
   // teardown of the MLIR context.
