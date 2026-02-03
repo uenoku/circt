@@ -775,6 +775,12 @@ void FIRRTLModuleLowering::runOnOperation() {
               opsToProcess.push_back(fileOp);
               return success();
             })
+            .Case<OptionOp>([&](auto optionOp) {
+              // Option operations are erased during lowering since we generate
+              // sv.generate.case directly from instance_choice operations
+              optionOp.erase();
+              return success();
+            })
             .Default([&](Operation *op) {
               // We don't know what this op is.  If it has no illegal FIRRTL
               // types, we can forward the operation.  Otherwise, we emit an
@@ -895,8 +901,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -1927,6 +1932,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitDecl(RegResetOp op);
   LogicalResult visitDecl(MemOp op);
   LogicalResult visitDecl(InstanceOp oldInstance);
+  LogicalResult visitDecl(InstanceChoiceOp instanceChoice);
   LogicalResult visitDecl(VerbatimWireOp op);
   LogicalResult visitDecl(ContractOp op);
 
@@ -3117,8 +3123,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -3955,6 +3960,232 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
     (void)setLowering(oldPortResult, resultVal);
     ++resultNo;
   }
+  return success();
+}
+
+LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp instanceChoice) {
+  // Lower firrtl.instance_choice directly to sv.generate.case
+
+  // Get the option name
+  auto optionName = instanceChoice.getOptionNameAttr();
+  auto caseNames = instanceChoice.getCaseNamesAttr();
+  auto moduleNames = instanceChoice.getModuleNamesAttr();
+
+  // Get the first module to determine port structure
+  auto moduleName = cast<FlatSymbolRefAttr>(moduleNames[0]);
+  auto *instanceGraphNode =
+      circuitState.getInstanceGraph().lookup(moduleName.getAttr());
+
+  if (!instanceGraphNode) {
+    return instanceChoice.emitError("could not find module ") << moduleName;
+  }
+
+  Operation *firModule = instanceGraphNode->getModule();
+  auto *hwModule = circuitState.getNewModule(firModule);
+  if (!hwModule) {
+    return instanceChoice.emitError("could not find lowered module ")
+           << moduleName;
+  }
+
+  // Get port information
+  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(firModule).getPorts();
+
+  // Create wires for output ports that will be assigned from inside the
+  // generate block Also create backedges for input ports
+  SmallVector<Value> outputWires;
+  SmallVector<Value> inputBackedges;
+
+  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
+    auto &port = portInfo[portIndex];
+    auto portType = lowerType(port.type);
+    if (!portType || portType.isInteger(0))
+      continue;
+
+    auto oldPortResult = instanceChoice.getResult(portIndex);
+
+    if (port.isOutput()) {
+      // Create a wire for this output port
+      auto wire = sv::WireOp::create(builder, portType,
+                                     instanceChoice.getName().str() + "_" +
+                                         port.getName().str());
+      outputWires.push_back(wire);
+
+      // Map the FIRRTL result to this wire
+      (void)setLowering(oldPortResult, wire);
+    } else if (port.isInput()) {
+      // Create a backedge for input ports
+      auto backedge = createBackedge(oldPortResult, portType);
+      inputBackedges.push_back(backedge);
+    }
+  }
+
+  // Create a unique name for the generate block
+  SmallString<64> genName;
+  genName = instanceChoice.getName();
+  genName += "_choice";
+
+  // Create a parameter reference for the option
+  // We use the option name as a parameter that will be set at elaboration time
+  // Use string type for the parameter (will be defined in
+  // InstanceChoicePackage)
+  auto paramType = hw::StringType::get(builder.getContext());
+
+  // Create a package-qualified parameter name (e.g.,
+  // "InstanceChoicePackage::Platform")
+  SmallString<128> qualifiedParamName;
+  qualifiedParamName = "InstanceChoicePackage::";
+  qualifiedParamName += optionName.getValue();
+
+  auto qualifiedParamNameAttr = builder.getStringAttr(qualifiedParamName);
+  auto paramRef = hw::ParamDeclRefAttr::get(qualifiedParamNameAttr, paramType);
+
+  // Create the generate block
+  auto generateOp = sv::GenerateOp::create(builder, instanceChoice.getLoc(),
+                                           builder.getStringAttr(genName));
+
+  // Create a new block for the generate body
+  auto *genBlock = new Block();
+  generateOp.getBody().push_back(genBlock);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(genBlock);
+
+  // Build case patterns and names
+  SmallVector<Attribute> casePatterns;
+  SmallVector<Attribute> caseNameAttrs;
+
+  // Add a case for each module alternative
+  for (size_t i = 0; i < moduleNames.size(); ++i) {
+    // Build the case name for the region label
+    SmallString<32> caseName;
+    SmallString<64> patternValue;
+
+    if (i == 0) {
+      caseName = "default_case";
+      patternValue = "\"Default\"";
+    } else {
+      auto symRef = cast<SymbolRefAttr>(caseNames[i - 1]);
+      caseName = symRef.getLeafReference().getValue();
+      patternValue = "\"";
+      patternValue += caseName;
+      patternValue += "\"";
+    }
+
+    // Create a string literal pattern (e.g., "Default", "FPGA", "ASIC")
+    auto patternAttr = builder.getStringAttr(patternValue);
+    auto typedPatternAttr = mlir::TypedAttr(mlir::cast<mlir::TypedAttr>(
+        hw::ParamVerbatimAttr::get(patternAttr, paramType)));
+    casePatterns.push_back(typedPatternAttr);
+    caseNameAttrs.push_back(builder.getStringAttr(caseName));
+  }
+
+  // Add a default case that causes an error for unhandled values
+  casePatterns.push_back(UnitAttr::get(builder.getContext()));
+  caseNameAttrs.push_back(builder.getStringAttr("unknown_option"));
+
+  // Create the generate.case operation (including the default error case)
+  auto genCaseOp = builder.create<sv::GenerateCaseOp>(
+      instanceChoice.getLoc(), paramRef, builder.getArrayAttr(casePatterns),
+      builder.getArrayAttr(caseNameAttrs),
+      moduleNames.size() + 1); // +1 for the default error case
+
+  // For each case, create a region with the appropriate instance
+  for (size_t i = 0; i < moduleNames.size(); ++i) {
+    auto &region = genCaseOp.getCaseRegions()[i];
+    auto *block = new Block();
+    region.push_back(block);
+
+    OpBuilder::InsertionGuard caseGuard(builder);
+    builder.setInsertionPointToEnd(block);
+
+    // Get the module to instantiate for this case
+    auto moduleName = cast<FlatSymbolRefAttr>(moduleNames[i]);
+
+    // Look up the FIRRTL module using the instance graph
+    auto *instanceGraphNode =
+        circuitState.getInstanceGraph().lookup(moduleName.getAttr());
+
+    if (!instanceGraphNode) {
+      return instanceChoice.emitError("could not find module ")
+             << moduleName << " for case " << i;
+    }
+
+    Operation *firModule = instanceGraphNode->getModule();
+    auto *hwModule = circuitState.getNewModule(firModule);
+    if (!hwModule) {
+      return instanceChoice.emitError("could not find lowered module ")
+             << moduleName;
+    }
+
+    // Get port information
+    SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(firModule).getPorts();
+
+    // Prepare operands for the instance
+    SmallVector<Value, 8> operands;
+    unsigned inputIdx = 0;
+    for (size_t portIndex = 0, e = portInfo.size(); portIndex != e;
+         ++portIndex) {
+      auto &port = portInfo[portIndex];
+      auto portType = lowerType(port.type);
+      if (!portType || portType.isInteger(0) || port.isOutput())
+        continue;
+
+      if (port.isInput()) {
+        // For input ports, use the backedge we created earlier
+        operands.push_back(inputBackedges[inputIdx++]);
+      } else {
+        // Inout port - create a wire inside the generate block
+        auto wire = sv::WireOp::create(builder, portType,
+                                       "." + port.getName().str() + ".wire");
+        operands.push_back(wire);
+      }
+    }
+
+    // Create the instance
+    auto newInstance = hw::InstanceOp::create(
+        builder, hwModule, instanceChoice.getNameAttr(), operands, ArrayAttr{},
+        instanceChoice.getInnerSymAttr());
+
+    // Assign instance outputs to the wires we created earlier
+    unsigned wireIdx = 0;
+    for (size_t portIndex = 0, e = portInfo.size(); portIndex != e;
+         ++portIndex) {
+      auto &port = portInfo[portIndex];
+      if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
+        continue;
+
+      auto portType = lowerType(port.type);
+      if (!portType || portType.isInteger(0))
+        continue;
+
+      Value resultVal = newInstance.getResult(wireIdx);
+
+      // Assign the instance output to the wire
+      sv::AssignOp::create(builder, outputWires[wireIdx], resultVal);
+
+      ++wireIdx;
+    }
+  }
+
+  // Add a default case that causes an error for unhandled values
+  {
+    auto &defaultRegion = genCaseOp.getCaseRegions()[moduleNames.size()];
+    auto *defaultBlock = new Block();
+    defaultRegion.push_back(defaultBlock);
+
+    OpBuilder::InsertionGuard defaultGuard(builder);
+    builder.setInsertionPointToEnd(defaultBlock);
+
+    // Create an error message for unhandled option values
+    SmallString<128> errorMsg;
+    errorMsg = "// Unhandled option value for ";
+    errorMsg += optionName.getValue();
+    errorMsg += "\n";
+    errorMsg += "// How to cause synthesis error reliably in SV?.\n";
+
+    sv::VerbatimOp::create(builder, builder.getStringAttr(errorMsg));
+  }
+
   return success();
 }
 

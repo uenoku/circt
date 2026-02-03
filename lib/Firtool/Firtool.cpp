@@ -48,8 +48,10 @@ LogicalResult firtool::populatePreprocessTransforms(mlir::PassManager &pm,
   pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
       firrtl::createLowerIntrinsics());
 
-  if (auto mode = FirtoolOptions::toInferDomainsPassMode(opt.getDomainMode()))
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createInferDomains({*mode}));
+  // LowerDomain broken for InstanceChoice.
+  // if (auto mode =
+  // FirtoolOptions::toInferDomainsPassMode(opt.getDomainMode()))
+  //   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createInferDomains({*mode}));
 
   return success();
 }
@@ -58,9 +60,9 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
                                                   const FirtoolOptions &opt) {
   // TODO: Ensure instance graph and other passes can handle instance choice
   // then run this pass after all diagnostic passes have run.
-  pm.addNestedPass<firrtl::CircuitOp>(firrtl::createSpecializeOption(
-      {/*selectDefaultInstanceChoice*/ opt
-           .shouldSelectDefaultInstanceChoice()}));
+  // pm.addNestedPass<firrtl::CircuitOp>(firrtl::createSpecializeOption(
+  //     {/*selectDefaultInstanceChoice*/ opt
+  //          .shouldSelectDefaultInstanceChoice()}));
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerSignatures());
 
   // This pass is _not_ idempotent.  It preserves its controlling annotation for
@@ -169,8 +171,10 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
   if (opt.shouldReplaceSequentialMemories())
     pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerMemory());
 
-  if (!opt.shouldDisableOptimization())
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createIMConstProp());
+  if (!opt.shouldDisableOptimization()) {
+    // Broken for instance choice.
+    // pm.nest<firrtl::CircuitOp>().addPass(firrtl::createIMConstProp());
+  }
 
   pm.addNestedPass<firrtl::CircuitOp>(firrtl::createAddSeqMemPorts());
 
@@ -188,7 +192,8 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
   pm.addNestedPass<firrtl::CircuitOp>(mlir::createSymbolDCEPass());
 
   // Run InnerSymbolDCE as late as possible, but before IMDCE.
-  pm.addPass(firrtl::createInnerSymbolDCE());
+  // Broken for InstanceChoice.
+  // pm.addPass(firrtl::createInnerSymbolDCE());
 
   // The above passes, IMConstProp in particular, introduce additional
   // canonicalization opportunities that we should pick up here before we
@@ -203,10 +208,11 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
         circt::firrtl::createRegisterOptimizer());
     // Re-run IMConstProp to propagate constants produced by register
     // optimizations.
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createIMConstProp());
+    // Broken for InstanceChoice.
+    // pm.nest<firrtl::CircuitOp>().addPass(firrtl::createIMConstProp());
     pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
         createSimpleCanonicalizerPass());
-    pm.addPass(firrtl::createIMDeadCodeElim());
+    // pm.addPass(firrtl::createIMDeadCodeElim());
     if (opt.shouldInlineInputOnlyModules()) {
       pm.nest<firrtl::CircuitOp>().addPass(
           firrtl::createAnnotateInputOnlyModules());
@@ -235,13 +241,17 @@ LogicalResult firtool::populateLowFIRRTLToHW(mlir::PassManager &pm,
   // Run layersink immediately before LowerXMR. LowerXMR will "freeze" the
   // location of probed objects by placing symbols on them. Run layersink first
   // so that probed objects can be sunk if possible.
-  if (!opt.shouldDisableLayerSink() && !opt.shouldDisableOptimization())
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLayerSink());
+  // Broken for instance choice.
+  // if (!opt.shouldDisableLayerSink() && !opt.shouldDisableOptimization())
+  //   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLayerSink());
 
   // Lower the ref.resolve and ref.send ops and remove the RefType ports.
   // LowerToHW cannot handle RefType so, this pass must be run to remove all
   // RefType ports and ops.
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerXMR());
+
+  pm.nest<firrtl::CircuitOp>().addPass(
+      firrtl::createCreateInstanceChoicePackage());
 
   // Layer lowering passes.  Move operations into layers when possible and
   // remove layers by converting them to other constructs.  This lowering
@@ -286,7 +296,8 @@ LogicalResult firtool::populateLowFIRRTLToHW(mlir::PassManager &pm,
       firrtl::createResolveTraces({opt.getOutputAnnotationFilename().str()}));
 
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerDPI());
-  pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerDomains());
+  // LowerDomain broken for InstanceChoice.
+  // pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerDomains());
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerClasses());
   pm.nest<firrtl::CircuitOp>().addPass(om::createVerifyObjectFieldsPass());
 
@@ -383,15 +394,16 @@ populatePrepareForExportVerilog(mlir::PassManager &pm,
   pm.nest<hw::HWModuleOp>().addPass(sv::createHWLegalizeModulesPass());
 
   // Tidy up the IR to improve verilog emission quality.
-  if (!opt.shouldDisableOptimization())
-    pm.nest<hw::HWModuleOp>().addPass(sv::createPrettifyVerilogPass());
+  // if (!opt.shouldDisableOptimization())
+  //   pm.nest<hw::HWModuleOp>().addPass(sv::createPrettifyVerilogPass());
 
-  if (opt.shouldStripFirDebugInfo())
-    pm.addPass(circt::createStripDebugInfoWithPredPass([](mlir::Location loc) {
-      if (auto fileLoc = dyn_cast<FileLineColLoc>(loc))
-        return fileLoc.getFilename().getValue().ends_with(".fir");
-      return false;
-    }));
+  // if (opt.shouldStripFirDebugInfo())
+  // ????
+  //   pm.addPass(circt::createStripDebugInfoWithPredPass([](mlir::Location loc) {
+  //     if (auto fileLoc = dyn_cast<FileLineColLoc>(loc))
+  //       return fileLoc.getFilename().getValue().ends_with(".fir");
+  //     return false;
+  //   }));
 
   if (opt.shouldStripDebugInfo())
     pm.addPass(circt::createStripDebugInfoWithPredPass(

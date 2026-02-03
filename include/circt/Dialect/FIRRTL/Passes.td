@@ -961,5 +961,29 @@ def AnnotateInputOnlyModules : Pass<"firrtl-annotate-input-only-modules",
   ];
 }
 
+def CreateInstanceChoicePackage : Pass<"firrtl-create-instance-choice-package", "firrtl::CircuitOp"> {
+  let summary = "Create SystemVerilog package for instance choice options";
+  let description = [{
+    This pass creates a SystemVerilog package (InstanceChoicePackage) containing
+    integer parameters for each option case defined in the FIRRTL circuit.
+
+    For each `firrtl.option` with its `firrtl.option_case` operations, the pass
+    generates:
+    1. Integer parameters for each case (e.g., Platform$Default = 0, Platform$FPGA = 1)
+    2. A default selection parameter (e.g., Platform = Platform$Default)
+
+    The generated package enables post-Verilog configuration of instance choices
+    by allowing the parameter values to be overridden at compilation time.
+
+    Example output:
+    ```systemverilog
+    package InstanceChoicePackage;
+      localparam int Platform$Default = 0, Platform$FPGA = 1, Platform$ASIC = 2;
+      localparam int Platform = Platform$Default;
+    endpackage
+    ```
+  }];
+}
+
 
 #endif // CIRCT_DIALECT_FIRRTL_PASSES_TD

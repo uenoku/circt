@@ -22,6 +22,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/InnerSymbolNamespace.h"
 #include "circt/Support/Debug.h"
+#include "circt/Support/InstanceGraphInterface.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/Utils.h"
 #include "mlir/IR/IRMapping.h"
@@ -1089,7 +1090,17 @@ LogicalResult Inliner::flattenInstances(FModuleOp module) {
   auto moduleName = module.getNameAttr();
   ModuleInliningContext mic(module);
 
-  auto visit = [&](InstanceOp instance) {
+  auto visit = [&](igraph::InstanceOpInterface instanceInterface) {
+    auto instance = dyn_cast<InstanceOp>(instanceInterface.getOperation());
+    if (!instance) {
+      // Mark all referred modules.
+      for (auto targetName : instanceInterface.getReferencedModuleNamesAttr())
+        if (auto *op = symbolTable.lookup(cast<StringAttr>(targetName)))
+          if (auto target = dyn_cast<FModuleOp>(op))
+            liveModules.insert(op);
+      return WalkResult::advance();
+    }
+
     // If it's not a regular module we can't inline it. Mark it as live.
     auto *targetModule = symbolTable.lookup(instance.getModuleName());
     auto target = dyn_cast<FModuleOp>(targetModule);
@@ -1515,7 +1526,8 @@ LogicalResult Inliner::run() {
       continue;
     for (auto nla : rootMap[mod.getModuleNameAttr()])
       nlaMap[nla].markDead();
-    mod.erase();
+    // It's broken for modules referred by instance choices. 
+    // mod.erase();
   }
 
   // Remove leftover inline annotations, and check no flatten annotations
