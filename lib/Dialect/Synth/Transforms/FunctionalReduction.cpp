@@ -100,6 +100,9 @@ private:
   int getOrCreateVar(Value v);
   void addStructuralConstraints(Value v);
 
+  // CEX feedback: refine equivalence classes using counterexample from SAT
+  void refineByCEX();
+
   // Phase 4: Merge equivalent nodes
   void mergeEquivalentNodes();
 
@@ -115,7 +118,7 @@ private:
   // Configuration
   unsigned numPatterns;
   unsigned conflictLimit;
-  [[maybe_unused]] bool enableFeedback;
+  bool enableFeedback;
 
   // CaDiCaL SAT solver
   CaDiCaL::Solver *solver;
@@ -498,16 +501,110 @@ void FRAIGSolver::addStructuralConstraints(Value v) {
   // Unknown operation - no structural constraint (treated as free variable)
 }
 
+void FRAIGSolver::refineByCEX() {
+  // Extract counterexample from SAT solver and use it as an additional
+  // simulation pattern to split false equivalence classes.
+  // This is the key ABC optimization: each CEX immediately eliminates
+  // many false candidates without needing SAT calls.
+
+  // Extract input values from the counterexample
+  llvm::DenseMap<Value, bool> cexValues;
+  for (auto input : primaryInputs) {
+    auto it = varMap.find(input);
+    if (it == varMap.end())
+      continue;
+    int val = solver->val(it->second);
+    cexValues[input] = (val > 0);
+  }
+
+  // Simulate the CEX through all values
+  for (auto value : allValues) {
+    if (cexValues.count(value))
+      continue;
+
+    Operation *op = value.getDefiningOp();
+    if (!op) {
+      // Unvisited primary input without a SAT variable — default to false
+      cexValues[value] = false;
+      continue;
+    }
+
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+      bool result = true;
+      auto inputs = andOp.getInputs();
+      auto inverted = andOp.getInverted();
+      for (auto [input, inv] : llvm::zip(inputs, inverted)) {
+        bool v = cexValues.lookup(input);
+        result &= (inv ? !v : v);
+      }
+      cexValues[value] = result;
+      continue;
+    }
+
+    if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
+      auto inputs = majOp.getInputs();
+      auto inverted = majOp.getInverted();
+      SmallVector<bool> vals;
+      for (auto [input, inv] : llvm::zip(inputs, inverted)) {
+        bool v = cexValues.lookup(input);
+        vals.push_back(inv ? !v : v);
+      }
+      // Count true values — majority wins
+      unsigned trueCount = llvm::count(vals, true);
+      cexValues[value] = (trueCount > vals.size() / 2);
+      continue;
+    }
+
+    cexValues[value] = false;
+  }
+
+  // Refine equivalence classes: split any class where the CEX distinguishes
+  // members from their representative
+  SmallVector<EquivClass> newClasses;
+  for (auto &ec : equivClasses) {
+    bool repVal = cexValues.lookup(ec.representative);
+
+    SmallVector<std::pair<Value, bool>> surviving;
+    for (auto &[member, isComplement] : ec.members) {
+      if (provenEquiv.count(member))
+        continue;
+      bool memberVal = cexValues.lookup(member);
+      // For equivalence: rep and member should have same value
+      // For complement: rep and member should have opposite values
+      bool expectedEqual = !isComplement;
+      if ((repVal == memberVal) == expectedEqual)
+        surviving.push_back({member, isComplement});
+    }
+
+    if (!surviving.empty()) {
+      EquivClass newEc;
+      newEc.representative = ec.representative;
+      newEc.members = std::move(surviving);
+      newClasses.push_back(std::move(newEc));
+    }
+  }
+
+  unsigned removed = equivClasses.size() - newClasses.size();
+  equivClasses = std::move(newClasses);
+
+  LLVM_DEBUG(if (removed) llvm::dbgs()
+             << "FRAIG: CEX feedback refined classes, removed " << removed
+             << " classes\n");
+}
+
 void FRAIGSolver::verifyCandidates() {
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting SAT verification with "
                           << equivClasses.size() << " equivalence classes\n");
 
   // Check equivalences using CaDiCaL's assumption-based incremental solving.
   // Structural constraints are added lazily when a node is first accessed.
-  // For each candidate pair, we check if (rep XOR target) is satisfiable
-  // using assumptions. If UNSAT, the equivalence is proven.
+  //
+  // To check if rep == target (where target = member or NOT member):
+  //   1. Assume rep=1, target=0. If SAT, they're not equivalent (CEX found).
+  //   2. If UNSAT, assume rep=0, target=1. If SAT, not equivalent.
+  //   3. If both UNSAT, they're equivalent.
+  // This avoids creating auxiliary XOR variables and clauses entirely.
   for (auto &ec : equivClasses) {
-    // Lazily add structural constraints for representative
     addStructuralConstraints(ec.representative);
     int repVar = getOrCreateVar(ec.representative);
 
@@ -517,62 +614,69 @@ void FRAIGSolver::verifyCandidates() {
 
       stats.numSATCalls++;
 
-      // Lazily add structural constraints for member
       addStructuralConstraints(member);
       int memberVar = getOrCreateVar(member);
 
-      // Create an auxiliary XOR variable to check equivalence:
-      // For equivalence:  check SAT of (rep XOR member)
-      // For complement:   check SAT of (rep XNOR member), i.e. (rep XOR NOT member)
-      //
-      // We use assumptions: assume the XOR output is true.
-      // If UNSAT, they are equivalent/complementary.
-      int xorVar = ++nextVar;
-
-      // Determine target literal
+      // targetLit is positive if checking equivalence, negative if complement
       int targetLit = isComplement ? -memberVar : memberVar;
 
-      // Tseitin encoding for xorVar <=> (repVar XOR targetLit)
-      // XOR(a, b) in CNF with output x:
-      //   (-x OR a OR b), (-x OR -a OR -b), (x OR -a OR b), (x OR a OR -b)
-      // where a = repVar, b = targetLit (which may be negative)
-      solver->add(-xorVar); solver->add(repVar); solver->add(targetLit); solver->add(0);
-      solver->add(-xorVar); solver->add(-repVar); solver->add(-targetLit); solver->add(0);
-      solver->add(xorVar); solver->add(-repVar); solver->add(targetLit); solver->add(0);
-      solver->add(xorVar); solver->add(repVar); solver->add(-targetLit); solver->add(0);
+      // Check 1: Can rep=1 and target=0?
+      solver->assume(repVar);
+      solver->assume(-targetLit);
+      int result1 = solver->solve();
 
-      // Assume the XOR output is true (i.e., they differ)
-      solver->assume(xorVar);
-
-      int result = solver->solve();
-
-      if (result == 20) {
-        // UNSAT - equivalence proven!
-        provenEquiv[member] = {ec.representative, isComplement};
-        stats.numProvedEquiv++;
-
-        // Add proven equivalence as persistent clause so future queries
-        // benefit from it. rep == target means NOT(rep XOR target),
-        // which is: xorVar must be false.
-        solver->add(-xorVar);
-        solver->add(0);
-
-        LLVM_DEBUG(llvm::dbgs()
-                   << "FRAIG: Proved " << member << " == "
-                   << (isComplement ? "NOT(" : "") << ec.representative
-                   << (isComplement ? ")" : "") << "\n");
-      } else if (result == 10) {
-        // SAT - counterexample found
+      if (result1 == 10) {
+        // SAT - counterexample found, not equivalent
         stats.numDisprovedEquiv++;
-
+        if (enableFeedback)
+          refineByCEX();
         LLVM_DEBUG(llvm::dbgs() << "FRAIG: Disproved equivalence for " << member
-                                << "\n");
-      } else {
-        // UNKNOWN (timeout/resource limit) - skip this pair
-        stats.numUnknown++;
-        LLVM_DEBUG(llvm::dbgs() << "FRAIG: UNKNOWN (resource limit) for "
-                                << member << "\n");
+                                << " (case rep=1, target=0)\n");
+        continue;
       }
+
+      if (result1 != 20) {
+        // UNKNOWN
+        stats.numUnknown++;
+        LLVM_DEBUG(llvm::dbgs() << "FRAIG: UNKNOWN for " << member << "\n");
+        continue;
+      }
+
+      // Check 2: Can rep=0 and target=1?
+      solver->assume(-repVar);
+      solver->assume(targetLit);
+      int result2 = solver->solve();
+
+      if (result2 == 10) {
+        // SAT - counterexample found, not equivalent
+        stats.numDisprovedEquiv++;
+        if (enableFeedback)
+          refineByCEX();
+        LLVM_DEBUG(llvm::dbgs() << "FRAIG: Disproved equivalence for " << member
+                                << " (case rep=0, target=1)\n");
+        continue;
+      }
+
+      if (result2 != 20) {
+        stats.numUnknown++;
+        LLVM_DEBUG(llvm::dbgs() << "FRAIG: UNKNOWN for " << member << "\n");
+        continue;
+      }
+
+      // Both UNSAT - equivalence proven!
+      provenEquiv[member] = {ec.representative, isComplement};
+      stats.numProvedEquiv++;
+
+      // Add proven equivalence as permanent clauses:
+      // rep => target:  (-repVar OR targetLit)
+      // target => rep:  (-targetLit OR repVar)
+      solver->add(-repVar); solver->add(targetLit); solver->add(0);
+      solver->add(-targetLit); solver->add(repVar); solver->add(0);
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "FRAIG: Proved " << member << " == "
+                 << (isComplement ? "NOT(" : "") << ec.representative
+                 << (isComplement ? ")" : "") << "\n");
     }
   }
 
