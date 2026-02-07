@@ -95,6 +95,10 @@ private:
   // Phase 2: Build equivalence classes from simulation
   void buildEquivalenceClasses();
 
+  // Phase 2b: Sort equivalence classes and members by priority
+  void sortByPriority();
+  unsigned computeDepth(Value v);
+
   // Phase 3: SAT-based verification with incremental solving
   void verifyCandidates();
   int getOrCreateVar(Value v);
@@ -151,6 +155,9 @@ private:
 
   // Track which values have constraints added
   llvm::DenseSet<Value> constraintsAdded;
+
+  // Depth cache for priority ordering (memoized)
+  llvm::DenseMap<Value, unsigned> depthCache;
 
   // Statistics
   Stats stats;
@@ -369,6 +376,83 @@ void FRAIGSolver::buildEquivalenceClasses() {
 
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Built " << equivClasses.size()
                           << " equivalence classes\n");
+}
+
+unsigned FRAIGSolver::computeDepth(Value v) {
+  auto it = depthCache.find(v);
+  if (it != depthCache.end())
+    return it->second;
+
+  Operation *op = v.getDefiningOp();
+  if (!op) {
+    depthCache[v] = 0;
+    return 0;
+  }
+
+  unsigned maxInputDepth = 0;
+  for (Value operand : op->getOperands()) {
+    if (operand.getType().isInteger(1))
+      maxInputDepth = std::max(maxInputDepth, computeDepth(operand));
+  }
+
+  unsigned depth = maxInputDepth + 1;
+  depthCache[v] = depth;
+  return depth;
+}
+
+void FRAIGSolver::sortByPriority() {
+  // Priority ordering for SAT efficiency:
+  // 1. Within each class, pick the shallowest node as representative
+  //    (smallest fanin cone = smallest SAT problem baseline).
+  // 2. Sort members by depth (shallowest first = smallest COI overlap,
+  //    cheapest SAT calls first).
+  // 3. Sort classes by size (smallest first = fewer SAT calls, proven
+  //    equivalences help prune later classes via learned clauses).
+
+  for (auto &ec : equivClasses) {
+    // Find shallowest node among representative + all members
+    unsigned repDepth = computeDepth(ec.representative);
+    size_t bestIdx = SIZE_MAX; // SIZE_MAX means representative is best
+    unsigned bestDepth = repDepth;
+    bool bestComplement = false;
+
+    for (size_t i = 0; i < ec.members.size(); ++i) {
+      unsigned d = computeDepth(ec.members[i].first);
+      if (d < bestDepth) {
+        bestDepth = d;
+        bestIdx = i;
+        bestComplement = ec.members[i].second;
+      }
+    }
+
+    // Swap representative if a shallower member was found
+    if (bestIdx != SIZE_MAX) {
+      Value oldRep = ec.representative;
+      ec.representative = ec.members[bestIdx].first;
+      // Old rep becomes a member; inversion is relative to new rep
+      ec.members[bestIdx] = {oldRep, bestComplement};
+      // If new rep was a complement of old rep, flip all member inversions
+      if (bestComplement) {
+        for (auto &[member, isComp] : ec.members)
+          isComp = !isComp;
+      }
+    }
+
+    // Sort members by depth (shallowest first → cheapest SAT calls first)
+    llvm::sort(ec.members, [this](const std::pair<Value, bool> &a,
+                                  const std::pair<Value, bool> &b) {
+      return computeDepth(a.first) < computeDepth(b.first);
+    });
+  }
+
+  // Sort classes: smallest first (fewer members = processed quickly,
+  // proven equivalences add clauses that help later classes)
+  llvm::sort(equivClasses, [](const EquivClass &a, const EquivClass &b) {
+    return a.members.size() < b.members.size();
+  });
+
+  LLVM_DEBUG(llvm::dbgs() << "FRAIG: Sorted " << equivClasses.size()
+                          << " classes by priority\n");
 }
 
 //===----------------------------------------------------------------------===//
@@ -743,6 +827,9 @@ FRAIGSolver::Stats FRAIGSolver::run() {
     LLVM_DEBUG(llvm::dbgs() << "FRAIG: No equivalence candidates found\n");
     return stats;
   }
+
+  // Phase 2b: Sort by priority for SAT efficiency
+  sortByPriority();
 
   // Phase 3: SAT-based verification
   verifyCandidates();
