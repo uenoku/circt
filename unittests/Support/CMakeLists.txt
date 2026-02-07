@@ -2,6 +2,7 @@ add_circt_unittest(CIRCTSupportTests
   FVIntTest.cpp
   JSONTest.cpp
   PrettyPrinterTest.cpp
+  SatSolverTest.cpp
   TruthTableTest.cpp
 )
 
