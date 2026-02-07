@@ -58,3 +58,7 @@ target_link_libraries(CIRCTSynthTransforms PRIVATE
   CIRCTSynthMockturtleIntegration
 ) 
 endif()
+
+if(CIRCT_CADICAL_ENABLED)
+target_link_libraries(CIRCTSynthTransforms PRIVATE CaDiCaL)
+endif()

@@ -676,6 +676,19 @@ if(CIRCT_MOCKTURTLE_ENABLED)
 endif()
 
 #-------------------------------------------------------------------------------
+# CaDiCaL SAT Solver
+#-------------------------------------------------------------------------------
+
+option(CIRCT_CADICAL_ENABLED "Enable CaDiCaL SAT solver for FRAIG optimization." ON)
+llvm_canonicalize_cmake_booleans(CIRCT_CADICAL_ENABLED)
+
+if(CIRCT_CADICAL_ENABLED)
+  message(STATUS "CaDiCaL SAT solver integration is enabled")
+  include(AddCaDiCaL)
+  add_compile_definitions(CIRCT_CADICAL_ENABLED)
+endif()
+
+#-------------------------------------------------------------------------------
 # Arcilator JIT
 #-------------------------------------------------------------------------------
 

@@ -28,7 +28,12 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/RandomNumberGenerator.h"
+
+#ifdef CIRCT_CADICAL_ENABLED
+#include <cadical.hpp>
+#else
 #include "llvm/Support/SMTAPI.h"
+#endif
 
 #define DEBUG_TYPE "synth-functional-reduction"
 
@@ -43,6 +48,105 @@ using namespace circt;
 using namespace circt::synth;
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// SAT Solver Wrapper - Unified interface for CaDiCaL and Z3
+//===----------------------------------------------------------------------===//
+
+#ifdef CIRCT_CADICAL_ENABLED
+// CaDiCaL-based implementation (fast, dedicated SAT solver)
+class SATSolver {
+public:
+  SATSolver(unsigned conflictLimit) : solver(new CaDiCaL::Solver()) {
+    if (conflictLimit > 0) {
+      // CaDiCaL uses "conflicts" limit
+      solver->limit("conflicts", conflictLimit);
+    }
+  }
+
+  ~SATSolver() { delete solver; }
+
+  bool isValid() const { return solver != nullptr; }
+
+  // Get or create a variable for a value (1-indexed for IPASIR)
+  int getOrCreateVar(Value v) {
+    auto it = varMap.find(v);
+    if (it != varMap.end())
+      return it->second;
+    int var = ++nextVar;
+    varMap[v] = var;
+    return var;
+  }
+
+  // Add a clause (IPASIR style: list of lits terminated by 0)
+  void addClause(llvm::ArrayRef<int> lits) {
+    for (int lit : lits)
+      solver->add(lit);
+    solver->add(0); // Terminate clause
+  }
+
+  // Check SAT with optional assumptions
+  // Returns: true=SAT, false=UNSAT, nullopt=UNKNOWN
+  std::optional<bool> solve(llvm::ArrayRef<int> assumptions = {}) {
+    for (int lit : assumptions)
+      solver->assume(lit);
+    
+    int res = solver->solve();
+    if (res == CaDiCaL::SATISFIABLE)
+      return true;
+    if (res == CaDiCaL::UNSATISFIABLE)
+      return false;
+    return std::nullopt; // UNKNOWN (limit hit)
+  }
+
+private:
+  CaDiCaL::Solver *solver;
+  llvm::DenseMap<Value, int> varMap;
+  int nextVar = 0;
+};
+
+#else
+// Z3-based fallback implementation
+class SATSolver {
+public:
+  SATSolver(unsigned conflictLimit) {
+    solver = llvm::CreateZ3Solver();
+    if (solver) {
+      solver->useSATTactic();
+      if (conflictLimit > 0)
+        solver->setUnsignedParam("rlimit", conflictLimit);
+    }
+  }
+
+  bool isValid() const { return solver != nullptr; }
+
+  int getOrCreateVar(Value v) {
+    auto it = exprMap.find(v);
+    if (it != exprMap.end())
+      return 0; // Dummy return, expr already exists
+    
+    std::string name = "v" + std::to_string(exprMap.size());
+    llvm::SMTExprRef sym = solver->mkSymbol(name.c_str(), solver->getBoolSort());
+    exprMap[v] = sym;
+    return 0; // Dummy
+  }
+
+  llvm::SMTExprRef getExpr(Value v) { return exprMap.lookup(v); }
+
+  void addClause(llvm::ArrayRef<int> lits) {
+    // Not used in Z3 mode - we use addConstraint directly
+  }
+
+  std::optional<bool> solve(llvm::ArrayRef<int> assumptions = {}) {
+    return solver->check();
+  }
+
+  llvm::SMTSolverRef solver;
+
+private:
+  llvm::DenseMap<Value, llvm::SMTExprRef> exprMap;
+};
+#endif
 
 //===----------------------------------------------------------------------===//
 // FRAIG Solver - Core FRAIG implementation using APInt for simulation
