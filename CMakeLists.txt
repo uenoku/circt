@@ -443,7 +443,12 @@ option(Z3_DISABLE "Disable the z3 tests.")
 if (Z3_DISABLE)
   message(STATUS "Disabling tests requiring z3.")
 else()
-  if(Z3_DIR)
+  # First check if LLVM was built with Z3 support
+  if(LLVM_ENABLE_Z3_SOLVER)
+    message(STATUS "Using Z3 from LLVM (LLVM_ENABLE_Z3_SOLVER=ON)")
+    set(Z3_FOUND TRUE)
+    # LLVM's Z3 integration provides Z3_INCLUDE_DIR and links via LLVM libraries
+  elseif(Z3_DIR)
     # Search and load the package configuration file in the specified directory.
     find_package(Z3 CONFIG REQUIRED PATHS ${Z3_DIR} NO_DEFAULT_PATH)
     if(Z3_FOUND)

@@ -245,6 +245,51 @@ def MIGAlgebraicRewriting : Pass<"synth-mig-algebraic-rewriting", "hw::HWModuleO
   ];
 }
 
+def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
+  let summary = "FRAIG-based functional reduction using SMT solver";
+  let description = [{
+    This pass implements FRAIG (Functionally Reduced And-Inverter Graph) 
+    optimization using the Z3 SMT solver. It identifies and merges functionally
+    equivalent nodes through simulation-based candidate detection followed by
+    SAT-based verification.
+
+    The algorithm works in three phases:
+    1. Random simulation to partition nodes into equivalence classes
+    2. SAT-based verification of candidate equivalences using incremental solving
+    3. Node merging when equivalence is proven
+
+    Supports both `synth.aig.and_inv` (AndInverterOp) and `synth.mig.maj_inv` 
+    (MajorityInverterOp) operations. Only single-bit (i1) values are processed;
+    multi-bit operations should be lowered first using `synth-lower-word-to-bits`.
+
+    Note: This pass requires Z3 to be available (via LLVM_ENABLE_Z3_SOLVER or
+    external Z3 installation).
+  }];
+  let options = [
+    Option<"numRandomPatterns", "num-random-patterns", "unsigned", "4096",
+           "Number of random simulation patterns (each pattern is one bit in a 64-bit word)">,
+    Option<"satConflictLimit", "sat-conflict-limit", "unsigned", "10000",
+           "Conflict limit per SAT solver call (0 = unlimited)">,
+    Option<"enableCEXFeedback", "enable-cex-feedback", "bool", "true",
+           "Enable counterexample feedback to refine simulation">
+  ];
+  let statistics = [
+    Statistic<"numEquivClasses", "num-equiv-classes",
+              "Number of non-trivial equivalence classes after simulation">,
+    Statistic<"numSATCalls", "num-sat-calls",
+              "Number of SAT solver invocations">,
+    Statistic<"numProvedEquiv", "num-proved-equiv",
+              "Number of equivalences proven by SAT">,
+    Statistic<"numDisprovedEquiv", "num-disproved-equiv",
+              "Number of equivalences disproved by SAT (CEX found)">,
+    Statistic<"numUnknown", "num-unknown",
+              "Number of SAT calls hitting resource limit (UNKNOWN)">,
+    Statistic<"numMergedNodes", "num-merged-nodes",
+              "Number of nodes merged due to functional equivalence">
+  ];
+  let dependentDialects = ["synth::SynthDialect"];
+}
+
 #ifdef CIRCT_MOCKTURTLE_ENABLED 
 include "SynthMockturtlePasses.td"
 #endif
