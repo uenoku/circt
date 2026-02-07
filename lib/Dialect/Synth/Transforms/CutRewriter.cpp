@@ -296,7 +296,7 @@ circt::synth::topologicallySortLogicNetwork(mlir::Operation *topOp) {
   auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops and dataflow ops. Other operations can be
     // scheduled.
-    return !(isa<aig::AndInverterOp>(op) ||
+    return !(isa<aig::AndInverterOp, mig::MajorityInverterOp>(op) ||
              isa<comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 

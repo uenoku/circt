@@ -60,5 +60,6 @@ target_link_libraries(CIRCTSynthTransforms PRIVATE
 endif()
 
 if(CIRCT_CADICAL_ENABLED)
-target_link_libraries(CIRCTSynthTransforms PRIVATE CaDiCaL)
+  target_link_libraries(CIRCTSynthTransforms PRIVATE CaDiCaL)
 endif()
+

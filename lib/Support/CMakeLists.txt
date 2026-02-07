@@ -1,6 +1,17 @@
 set(VERSION_CPP "${CMAKE_CURRENT_BINARY_DIR}/Version.cpp")
 set_source_files_properties("${VERSION_CPP}" PROPERTIES GENERATED TRUE)
 
+set(LINK_LIBS_PUBLIC
+  MLIRIR
+  MLIRSupport
+  MLIRTransforms
+  MLIRTransformUtils
+)
+
+if(CIRCT_CADICAL_ENABLED)
+  list(APPEND LINK_LIBS_PUBLIC CaDiCaL)
+endif()
+
 add_circt_library(CIRCTSupport
   APInt.cpp
   BackedgeBuilder.cpp
@@ -16,6 +27,7 @@ add_circt_library(CIRCTSupport
   Passes.cpp
   Path.cpp
   PrettyPrinter.cpp
+  SatSolver.cpp
   PrettyPrinterHelpers.cpp
   SymCache.cpp
   TruthTable.cpp
@@ -23,10 +35,7 @@ add_circt_library(CIRCTSupport
   "${VERSION_CPP}"
 
   LINK_LIBS PUBLIC
-  MLIRIR
-  MLIRSupport
-  MLIRTransforms
-  MLIRTransformUtils
+  ${LINK_LIBS_PUBLIC}
   )
 
 #-------------------------------------------------------------------------------
