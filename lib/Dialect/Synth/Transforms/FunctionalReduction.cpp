@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass implements FRAIG (Functionally Reduced And-Inverter Graph)
-// optimization using SMT solver with incremental solving. It identifies and
-// merges functionally equivalent nodes through simulation-based candidate
+// optimization using CaDiCaL SAT solver with incremental solving. It identifies
+// and merges functionally equivalent nodes through simulation-based candidate
 // detection followed by SAT-based verification.
 //
 //===----------------------------------------------------------------------===//
@@ -31,8 +31,6 @@
 
 #ifdef CIRCT_CADICAL_ENABLED
 #include <cadical.hpp>
-#else
-#include "llvm/Support/SMTAPI.h"
 #endif
 
 #define DEBUG_TYPE "synth-functional-reduction"
@@ -50,127 +48,31 @@ using namespace circt::synth;
 namespace {
 
 //===----------------------------------------------------------------------===//
-// SAT Solver Wrapper - Unified interface for CaDiCaL and Z3
+// FRAIG Solver - Core FRAIG implementation using CaDiCaL SAT solver
 //===----------------------------------------------------------------------===//
 
-#ifdef CIRCT_CADICAL_ENABLED
-// CaDiCaL-based implementation (fast, dedicated SAT solver)
-class SATSolver {
-public:
-  SATSolver(unsigned conflictLimit) : solver(new CaDiCaL::Solver()) {
-    if (conflictLimit > 0) {
-      // CaDiCaL uses "conflicts" limit
-      solver->limit("conflicts", conflictLimit);
-    }
-  }
-
-  ~SATSolver() { delete solver; }
-
-  bool isValid() const { return solver != nullptr; }
-
-  // Get or create a variable for a value (1-indexed for IPASIR)
-  int getOrCreateVar(Value v) {
-    auto it = varMap.find(v);
-    if (it != varMap.end())
-      return it->second;
-    int var = ++nextVar;
-    varMap[v] = var;
-    return var;
-  }
-
-  // Add a clause (IPASIR style: list of lits terminated by 0)
-  void addClause(llvm::ArrayRef<int> lits) {
-    for (int lit : lits)
-      solver->add(lit);
-    solver->add(0); // Terminate clause
-  }
-
-  // Check SAT with optional assumptions
-  // Returns: true=SAT, false=UNSAT, nullopt=UNKNOWN
-  std::optional<bool> solve(llvm::ArrayRef<int> assumptions = {}) {
-    for (int lit : assumptions)
-      solver->assume(lit);
-    
-    int res = solver->solve();
-    if (res == CaDiCaL::SATISFIABLE)
-      return true;
-    if (res == CaDiCaL::UNSATISFIABLE)
-      return false;
-    return std::nullopt; // UNKNOWN (limit hit)
-  }
-
-private:
-  CaDiCaL::Solver *solver;
-  llvm::DenseMap<Value, int> varMap;
-  int nextVar = 0;
-};
-
-#else
-// Z3-based fallback implementation
-class SATSolver {
-public:
-  SATSolver(unsigned conflictLimit) {
-    solver = llvm::CreateZ3Solver();
-    if (solver) {
-      solver->useSATTactic();
-      if (conflictLimit > 0)
-        solver->setUnsignedParam("rlimit", conflictLimit);
-    }
-  }
-
-  bool isValid() const { return solver != nullptr; }
-
-  int getOrCreateVar(Value v) {
-    auto it = exprMap.find(v);
-    if (it != exprMap.end())
-      return 0; // Dummy return, expr already exists
-    
-    std::string name = "v" + std::to_string(exprMap.size());
-    llvm::SMTExprRef sym = solver->mkSymbol(name.c_str(), solver->getBoolSort());
-    exprMap[v] = sym;
-    return 0; // Dummy
-  }
-
-  llvm::SMTExprRef getExpr(Value v) { return exprMap.lookup(v); }
-
-  void addClause(llvm::ArrayRef<int> lits) {
-    // Not used in Z3 mode - we use addConstraint directly
-  }
-
-  std::optional<bool> solve(llvm::ArrayRef<int> assumptions = {}) {
-    return solver->check();
-  }
-
-  llvm::SMTSolverRef solver;
-
-private:
-  llvm::DenseMap<Value, llvm::SMTExprRef> exprMap;
-};
+#ifndef CIRCT_CADICAL_ENABLED
+#error "FunctionalReduction pass requires CaDiCaL SAT solver. Enable with -DCIRCT_CADICAL_ENABLED=ON"
 #endif
-
-//===----------------------------------------------------------------------===//
-// FRAIG Solver - Core FRAIG implementation using APInt for simulation
-//===----------------------------------------------------------------------===//
 
 class FRAIGSolver {
 public:
   FRAIGSolver(hw::HWModuleOp module, unsigned numPatterns,
               unsigned conflictLimit, bool enableFeedback)
       : module(module), numPatterns(numPatterns), conflictLimit(conflictLimit),
-        enableFeedback(enableFeedback) {
-    solver = llvm::CreateZ3Solver();
-    if (solver) {
-      // Use Z3's SAT tactic for pure boolean problems - much faster than SMT
-      solver->useSATTactic();
-      
-      if (conflictLimit > 0) {
-        // Z3 uses "rlimit" (resource limit) to bound solving effort.
-        solver->setUnsignedParam("rlimit", conflictLimit);
-      }
+        enableFeedback(enableFeedback), solver(new CaDiCaL::Solver()) {
+    // Disable BVA (bounded variable addition) to avoid CaDiCaL introducing
+    // new variables that conflict with our variable numbering.
+    solver->set("factor", 0);
+    solver->set("factorcheck", 0);
+    if (conflictLimit > 0) {
+      solver->limit("conflicts", conflictLimit);
     }
   }
 
-  /// Returns true if the solver is valid (Z3 available).
+  ~FRAIGSolver() { delete solver; }
+
+  /// Returns true if the solver is valid (CaDiCaL available).
   bool isValid() const { return solver != nullptr; }
 
   /// Run the FRAIG algorithm and return statistics.
@@ -179,7 +81,7 @@ public:
     unsigned numSATCalls = 0;
     unsigned numProvedEquiv = 0;
     unsigned numDisprovedEquiv = 0;
-    unsigned numUnknown = 0; // Timeout/resource limit hit
+    unsigned numUnknown = 0;
     unsigned numMergedNodes = 0;
   };
   Stats run();
@@ -191,16 +93,12 @@ private:
   llvm::APInt simulateValue(Value v);
 
   // Phase 2: Build equivalence classes from simulation
-  // We track (value, isInverted) pairs - two values are equivalent if their
-  // signatures match, or complements if one is the bitwise NOT of the other.
-  // LLVM's EquivalenceClasses doesn't support the inversion flag, so we use
-  // a custom structure that groups by canonical signature.
   void buildEquivalenceClasses();
 
   // Phase 3: SAT-based verification with incremental solving
   void verifyCandidates();
-  llvm::SMTExprRef buildSMTExpr(Value v);
-  llvm::SMTExprRef getOrCreateInputSymbol(Value v);
+  int getOrCreateVar(Value v);
+  void addStructuralConstraints(Value v);
 
   // Phase 4: Merge equivalent nodes
   void mergeEquivalentNodes();
@@ -216,11 +114,11 @@ private:
 
   // Configuration
   unsigned numPatterns;
-  [[maybe_unused]] unsigned conflictLimit; // TODO: Use for SAT resource limits
-  [[maybe_unused]] bool enableFeedback;    // TODO: Implement CEX feedback
+  unsigned conflictLimit;
+  [[maybe_unused]] bool enableFeedback;
 
-  // SMT solver instance
-  llvm::SMTSolverRef solver;
+  // CaDiCaL SAT solver
+  CaDiCaL::Solver *solver;
 
   // All i1 values in topological order (inputs first, then operations)
   SmallVector<Value> allValues;
@@ -229,30 +127,27 @@ private:
   SmallVector<Value> primaryInputs;
 
   // Simulation signatures: value -> APInt simulation result
-  // Each bit position represents one simulation pattern
   llvm::DenseMap<Value, llvm::APInt> simSignatures;
 
-  // Input patterns for simulation (random + dynamic from CEX)
+  // Input patterns for simulation
   llvm::DenseMap<Value, llvm::APInt> inputPatterns;
 
-  // Equivalence class: representative + members with inversion flag
-  // We can't use LLVM's EquivalenceClasses directly because we need to track
-  // whether a member is equivalent or complementary to the representative.
+  // Equivalence class structure
   struct EquivClass {
     Value representative;
-    // Members: (value, isComplement) - isComplement means value == ~rep
-    SmallVector<std::pair<Value, bool>> members;
+    SmallVector<std::pair<Value, bool>> members; // (value, isComplement)
   };
   SmallVector<EquivClass> equivClasses;
 
   // Proven equivalences: value -> (representative, isComplement)
   llvm::DenseMap<Value, std::pair<Value, bool>> provenEquiv;
 
-  // SMT expression cache
-  llvm::DenseMap<Value, llvm::SMTExprRef> exprCache;
+  // SAT variable mapping: Value -> SAT variable (1-indexed for IPASIR)
+  llvm::DenseMap<Value, int> varMap;
+  int nextVar = 0;
 
-  // Input symbols for SMT (for CEX extraction)
-  llvm::DenseMap<Value, llvm::SMTExprRef> inputSymbols;
+  // Track which values have constraints added
+  llvm::DenseSet<Value> constraintsAdded;
 
   // Statistics
   Stats stats;
@@ -481,166 +376,192 @@ void FRAIGSolver::buildEquivalenceClasses() {
 // 2. Add structural constraints (definitions) to solver ONCE
 // 3. For each equivalence check, just add XOR of the two variables
 //
-// This allows Z3 to maintain learned clauses across checks.
+// This allows CaDiCaL to maintain learned clauses across checks.
 //===----------------------------------------------------------------------===//
 
-llvm::SMTExprRef FRAIGSolver::getOrCreateInputSymbol(Value v) {
-  auto it = inputSymbols.find(v);
-  if (it != inputSymbols.end())
+int FRAIGSolver::getOrCreateVar(Value v) {
+  auto it = varMap.find(v);
+  if (it != varMap.end())
     return it->second;
 
-  // Create a unique name for this input
-  std::string name = "v" + std::to_string(inputSymbols.size());
-  llvm::SMTSortRef boolSort = solver->getBoolSort();
-  llvm::SMTExprRef sym = solver->mkSymbol(name.c_str(), boolSort);
-  inputSymbols[v] = sym;
-  return sym;
+  int var = ++nextVar;
+  varMap[v] = var;
+  return var;
 }
 
-llvm::SMTExprRef FRAIGSolver::buildSMTExpr(Value v) {
-  // Check cache first - return the VARIABLE for this node
-  auto it = exprCache.find(v);
-  if (it != exprCache.end())
-    return it->second;
+void FRAIGSolver::addStructuralConstraints(Value v) {
+  // Only add constraints once per value
+  if (!constraintsAdded.insert(v).second)
+    return;
 
-  // Create a fresh variable for this node
-  llvm::SMTExprRef nodeVar = getOrCreateInputSymbol(v);
-  exprCache[v] = nodeVar;
-
-  // For primary inputs (no defining op), just return the variable
   Operation *op = v.getDefiningOp();
   if (!op)
-    return nodeVar;
+    return; // Primary input - no structural constraint
 
-  // For operations, add structural constraint: nodeVar <=> f(inputs)
-  // This is added to the solver ONCE, not for each equivalence check
+  int outVar = getOrCreateVar(v);
 
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
     auto inputs = andOp.getInputs();
     auto inverted = andOp.getInverted();
 
-    // Build the AND expression from input variables
-    llvm::SMTExprRef andExpr = buildSMTExpr(inputs[0]);
-    if (inverted[0])
-      andExpr = solver->mkNot(andExpr);
-
-    for (size_t i = 1; i < inputs.size(); ++i) {
-      llvm::SMTExprRef inputVar = buildSMTExpr(inputs[i]);
-      if (inverted[i])
-        inputVar = solver->mkNot(inputVar);
-      andExpr = solver->mkAnd(andExpr, inputVar);
+    // Collect input literals (positive or negative based on inversion)
+    SmallVector<int> inputLits;
+    for (auto [input, inv] : llvm::zip(inputs, inverted)) {
+      addStructuralConstraints(input);
+      int var = getOrCreateVar(input);
+      inputLits.push_back(inv ? -var : var);
     }
 
-    // Add constraint: nodeVar <=> andExpr
-    solver->addConstraint(solver->mkEqual(nodeVar, andExpr));
-    return nodeVar;
+    // Tseitin encoding for outVar <=> AND(inputLits)
+    // Forward: outVar => AND(inputLits)
+    //   For each input lit_i: (-outVar OR lit_i)
+    for (int lit : inputLits) {
+      solver->add(-outVar);
+      solver->add(lit);
+      solver->add(0);
+    }
+    // Backward: AND(inputLits) => outVar
+    //   (NOT lit_1 OR NOT lit_2 OR ... OR outVar)
+    for (int lit : inputLits)
+      solver->add(-lit);
+    solver->add(outVar);
+    solver->add(0);
+    return;
   }
 
   if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
     auto inputs = majOp.getInputs();
     auto inverted = majOp.getInverted();
 
-    // Get input variables with inversions
-    SmallVector<llvm::SMTExprRef> inputVars;
+    // Collect input literals
+    SmallVector<int> inputLits;
     for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-      llvm::SMTExprRef inputVar = buildSMTExpr(input);
-      if (inv)
-        inputVar = solver->mkNot(inputVar);
-      inputVars.push_back(inputVar);
+      addStructuralConstraints(input);
+      int var = getOrCreateVar(input);
+      inputLits.push_back(inv ? -var : var);
     }
 
-    // Build majority expression: MAJ(a,b,c) = (a∧b) ∨ (b∧c) ∨ (a∧c)
-    auto buildMaj3 = [this](llvm::SMTExprRef a, llvm::SMTExprRef b,
-                            llvm::SMTExprRef c) -> llvm::SMTExprRef {
-      auto ab = solver->mkAnd(a, b);
-      auto bc = solver->mkAnd(b, c);
-      auto ac = solver->mkAnd(a, c);
-      return solver->mkOr(solver->mkOr(ab, bc), ac);
-    };
-
-    llvm::SMTExprRef majExpr;
-    if (inputVars.size() == 3) {
-      majExpr = buildMaj3(inputVars[0], inputVars[1], inputVars[2]);
+    // Tseitin encoding for MAJ(a,b,c) = (a∧b) ∨ (b∧c) ∨ (a∧c)
+    // For 3 inputs: outVar <=> MAJ(a, b, c)
+    if (inputLits.size() == 3) {
+      int a = inputLits[0], b = inputLits[1], c = inputLits[2];
+      // Forward: outVar => MAJ(a,b,c)
+      // Equivalent to: NOT outVar OR (a∧b) OR (b∧c) OR (a∧c)
+      // In CNF:
+      //   (-outVar OR a OR b)
+      //   (-outVar OR a OR c)
+      //   (-outVar OR b OR c)
+      solver->add(-outVar); solver->add(a); solver->add(b); solver->add(0);
+      solver->add(-outVar); solver->add(a); solver->add(c); solver->add(0);
+      solver->add(-outVar); solver->add(b); solver->add(c); solver->add(0);
+      // Backward: MAJ(a,b,c) => outVar
+      // Equivalent to: NOT(a∧b) AND NOT(b∧c) AND NOT(a∧c) OR outVar
+      // In CNF:
+      //   (outVar OR -a OR -b)
+      //   (outVar OR -a OR -c)
+      //   (outVar OR -b OR -c)
+      solver->add(outVar); solver->add(-a); solver->add(-b); solver->add(0);
+      solver->add(outVar); solver->add(-a); solver->add(-c); solver->add(0);
+      solver->add(outVar); solver->add(-b); solver->add(-c); solver->add(0);
     } else {
-      // Recursive majority for >3 inputs
-      while (inputVars.size() > 3) {
-        llvm::SMTExprRef maj =
-            buildMaj3(inputVars[0], inputVars[1], inputVars[2]);
-        inputVars.erase(inputVars.begin(), inputVars.begin() + 3);
-        inputVars.insert(inputVars.begin(), maj);
+      // Recursive majority for >3 inputs using auxiliary variables
+      while (inputLits.size() > 3) {
+        int a = inputLits[0], b = inputLits[1], c = inputLits[2];
+        int aux = ++nextVar;
+        // aux <=> MAJ(a, b, c) using same 6 clauses
+        solver->add(-aux); solver->add(a); solver->add(b); solver->add(0);
+        solver->add(-aux); solver->add(a); solver->add(c); solver->add(0);
+        solver->add(-aux); solver->add(b); solver->add(c); solver->add(0);
+        solver->add(aux); solver->add(-a); solver->add(-b); solver->add(0);
+        solver->add(aux); solver->add(-a); solver->add(-c); solver->add(0);
+        solver->add(aux); solver->add(-b); solver->add(-c); solver->add(0);
+        inputLits.erase(inputLits.begin(), inputLits.begin() + 3);
+        inputLits.insert(inputLits.begin(), aux);
       }
-      majExpr = (inputVars.size() == 3)
-                    ? buildMaj3(inputVars[0], inputVars[1], inputVars[2])
-                    : inputVars[0];
+      if (inputLits.size() == 3) {
+        int a = inputLits[0], b = inputLits[1], c = inputLits[2];
+        solver->add(-outVar); solver->add(a); solver->add(b); solver->add(0);
+        solver->add(-outVar); solver->add(a); solver->add(c); solver->add(0);
+        solver->add(-outVar); solver->add(b); solver->add(c); solver->add(0);
+        solver->add(outVar); solver->add(-a); solver->add(-b); solver->add(0);
+        solver->add(outVar); solver->add(-a); solver->add(-c); solver->add(0);
+        solver->add(outVar); solver->add(-b); solver->add(-c); solver->add(0);
+      } else if (inputLits.size() == 1) {
+        // Degenerate: outVar <=> inputLits[0]
+        solver->add(-outVar); solver->add(inputLits[0]); solver->add(0);
+        solver->add(outVar); solver->add(-inputLits[0]); solver->add(0);
+      }
     }
-
-    // Add constraint: nodeVar <=> majExpr
-    solver->addConstraint(solver->mkEqual(nodeVar, majExpr));
-    return nodeVar;
+    return;
   }
 
-  // Unknown operation - variable already created, no structural constraint
-  return nodeVar;
+  // Unknown operation - no structural constraint (treated as free variable)
 }
 
 void FRAIGSolver::verifyCandidates() {
-  // Structural constraints are added lazily by buildSMTExpr() when a node
-  // is first accessed. This avoids building expressions for nodes that are
-  // never involved in equivalence checks.
-
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting SAT verification with "
                           << equivClasses.size() << " equivalence classes\n");
 
-  // Check equivalences using push/pop
-  // The structural constraints persist, we only add/remove the XOR query
-  // When we prove an equivalence, we add it as a persistent constraint
-  // so future queries benefit from it (key optimization for incremental SAT)
+  // Check equivalences using CaDiCaL's assumption-based incremental solving.
+  // Structural constraints are added lazily when a node is first accessed.
+  // For each candidate pair, we check if (rep XOR target) is satisfiable
+  // using assumptions. If UNSAT, the equivalence is proven.
   for (auto &ec : equivClasses) {
-    // Lazily build expression for representative (adds structural constraints)
-    llvm::SMTExprRef repVar = buildSMTExpr(ec.representative);
+    // Lazily add structural constraints for representative
+    addStructuralConstraints(ec.representative);
+    int repVar = getOrCreateVar(ec.representative);
 
     for (auto &[member, isComplement] : ec.members) {
-      // Skip if already proven equivalent to something
       if (provenEquiv.count(member))
         continue;
 
       stats.numSATCalls++;
 
-      // Lazily build expression for member (adds structural constraints)
-      llvm::SMTExprRef memberVar = buildSMTExpr(member);
+      // Lazily add structural constraints for member
+      addStructuralConstraints(member);
+      int memberVar = getOrCreateVar(member);
 
-      // Use incremental solving: push, add constraint, check, pop
-      solver->push();
+      // Create an auxiliary XOR variable to check equivalence:
+      // For equivalence:  check SAT of (rep XOR member)
+      // For complement:   check SAT of (rep XNOR member), i.e. (rep XOR NOT member)
+      //
+      // We use assumptions: assume the XOR output is true.
+      // If UNSAT, they are equivalent/complementary.
+      int xorVar = ++nextVar;
 
-      // For equivalence: check if (rep != target) is SAT
-      // For complement: check if (rep != NOT(member)) is SAT
-      // If UNSAT, they are equivalent/complementary
-      llvm::SMTExprRef targetVar =
-          isComplement ? solver->mkNot(memberVar) : memberVar;
+      // Determine target literal
+      int targetLit = isComplement ? -memberVar : memberVar;
 
-      // Assert rep != target. If UNSAT, then rep == target must hold.
-      solver->addConstraint(solver->mkNot(solver->mkEqual(repVar, targetVar)));
+      // Tseitin encoding for xorVar <=> (repVar XOR targetLit)
+      // XOR(a, b) in CNF with output x:
+      //   (-x OR a OR b), (-x OR -a OR -b), (x OR -a OR b), (x OR a OR -b)
+      // where a = repVar, b = targetLit (which may be negative)
+      solver->add(-xorVar); solver->add(repVar); solver->add(targetLit); solver->add(0);
+      solver->add(-xorVar); solver->add(-repVar); solver->add(-targetLit); solver->add(0);
+      solver->add(xorVar); solver->add(-repVar); solver->add(targetLit); solver->add(0);
+      solver->add(xorVar); solver->add(repVar); solver->add(-targetLit); solver->add(0);
 
-      std::optional<bool> result = solver->check();
+      // Assume the XOR output is true (i.e., they differ)
+      solver->assume(xorVar);
 
-      // Pop the XOR query before potentially adding equivalence constraint
-      solver->pop();
+      int result = solver->solve();
 
-      if (result.has_value() && !result.value()) {
+      if (result == 20) {
         // UNSAT - equivalence proven!
         provenEquiv[member] = {ec.representative, isComplement};
         stats.numProvedEquiv++;
 
-        // KEY OPTIMIZATION: Add proven equivalence as persistent constraint
-        // This allows future queries to benefit from this knowledge
-        // rep == target (or rep == NOT(member) for complements)
-        solver->addConstraint(solver->mkEqual(repVar, targetVar));
+        // Add proven equivalence as persistent clause so future queries
+        // benefit from it. rep == target means NOT(rep XOR target),
+        // which is: xorVar must be false.
+        solver->add(-xorVar);
+        solver->add(0);
 
         LLVM_DEBUG(llvm::dbgs()
                    << "FRAIG: Proved " << member << " == "
                    << (isComplement ? "NOT(" : "") << ec.representative
                    << (isComplement ? ")" : "") << "\n");
-      } else if (result.has_value() && result.value()) {
+      } else if (result == 10) {
         // SAT - counterexample found
         stats.numDisprovedEquiv++;
 
@@ -771,7 +692,7 @@ struct FunctionalReductionPass
                       enableCEXFeedback);
 
     if (!fraig.isValid()) {
-      module.emitWarning() << "Z3 solver not available, skipping FRAIG";
+      module.emitWarning() << "CaDiCaL solver not available, skipping FRAIG";
       return;
     }
 
