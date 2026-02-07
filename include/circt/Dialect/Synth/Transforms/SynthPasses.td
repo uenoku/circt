@@ -268,7 +268,7 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
   let options = [
     Option<"numRandomPatterns", "num-random-patterns", "unsigned", "4096",
            "Number of random simulation patterns (each pattern is one bit in a 64-bit word)">,
-    Option<"satConflictLimit", "sat-conflict-limit", "unsigned", "10000",
+    Option<"satConflictLimit", "sat-conflict-limit", "unsigned", "100000",
            "Conflict limit per SAT solver call (0 = unlimited)">,
     Option<"enableCEXFeedback", "enable-cex-feedback", "bool", "true",
            "Enable counterexample feedback to refine simulation">

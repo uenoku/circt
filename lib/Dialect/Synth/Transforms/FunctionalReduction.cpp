@@ -55,11 +55,14 @@ public:
       : module(module), numPatterns(numPatterns), conflictLimit(conflictLimit),
         enableFeedback(enableFeedback) {
     solver = llvm::CreateZ3Solver();
-    if (solver && conflictLimit > 0) {
-      // Z3 uses "rlimit" (resource limit) to bound solving effort.
-      // This limits the number of internal resource units (roughly correlated
-      // with conflicts/decisions) before returning UNKNOWN.
-      solver->setUnsignedParam("rlimit", conflictLimit);
+    if (solver) {
+      // Use Z3's SAT tactic for pure boolean problems - much faster than SMT
+      solver->useSATTactic();
+      
+      if (conflictLimit > 0) {
+        // Z3 uses "rlimit" (resource limit) to bound solving effort.
+        solver->setUnsignedParam("rlimit", conflictLimit);
+      }
     }
   }
 
@@ -477,23 +480,20 @@ llvm::SMTExprRef FRAIGSolver::buildSMTExpr(Value v) {
 }
 
 void FRAIGSolver::verifyCandidates() {
-  // Phase 1: Build all variables and add structural constraints to solver
-  // This is done ONCE before any equivalence checks
-  for (auto &ec : equivClasses) {
-    buildSMTExpr(ec.representative);
-    for (auto &[member, isComplement] : ec.members)
-      buildSMTExpr(member);
-  }
+  // Structural constraints are added lazily by buildSMTExpr() when a node
+  // is first accessed. This avoids building expressions for nodes that are
+  // never involved in equivalence checks.
 
-  LLVM_DEBUG(llvm::dbgs() << "FRAIG: Added structural constraints for "
-                          << exprCache.size() << " nodes\n");
+  LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting SAT verification with "
+                          << equivClasses.size() << " equivalence classes\n");
 
-  // Phase 2: Check equivalences using push/pop
+  // Check equivalences using push/pop
   // The structural constraints persist, we only add/remove the XOR query
   // When we prove an equivalence, we add it as a persistent constraint
   // so future queries benefit from it (key optimization for incremental SAT)
   for (auto &ec : equivClasses) {
-    llvm::SMTExprRef repVar = exprCache.lookup(ec.representative);
+    // Lazily build expression for representative (adds structural constraints)
+    llvm::SMTExprRef repVar = buildSMTExpr(ec.representative);
 
     for (auto &[member, isComplement] : ec.members) {
       // Skip if already proven equivalent to something
@@ -502,22 +502,20 @@ void FRAIGSolver::verifyCandidates() {
 
       stats.numSATCalls++;
 
-      // Use incremental solving: push, add XOR constraint, check, pop
+      // Lazily build expression for member (adds structural constraints)
+      llvm::SMTExprRef memberVar = buildSMTExpr(member);
+
+      // Use incremental solving: push, add constraint, check, pop
       solver->push();
 
-      llvm::SMTExprRef memberVar = exprCache.lookup(member);
-
-      // For equivalence: check if (repVar XOR memberVar) is SAT
-      // For complement: check if (repVar XOR NOT(memberVar)) is SAT
+      // For equivalence: check if (rep != target) is SAT
+      // For complement: check if (rep != NOT(member)) is SAT
       // If UNSAT, they are equivalent/complementary
       llvm::SMTExprRef targetVar =
           isComplement ? solver->mkNot(memberVar) : memberVar;
 
-      // XOR constraint: (rep AND NOT(target)) OR (NOT(rep) AND target)
-      llvm::SMTExprRef xorConstraint =
-          solver->mkOr(solver->mkAnd(repVar, solver->mkNot(targetVar)),
-                       solver->mkAnd(solver->mkNot(repVar), targetVar));
-      solver->addConstraint(xorConstraint);
+      // Assert rep != target. If UNSAT, then rep == target must hold.
+      solver->addConstraint(solver->mkNot(solver->mkEqual(repVar, targetVar)));
 
       std::optional<bool> result = solver->check();
 
