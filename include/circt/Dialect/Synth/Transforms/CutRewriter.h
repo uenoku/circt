@@ -297,6 +297,7 @@ private:
   llvm::SmallVector<LogicNetworkGate> gates;
 };
 
+
 /// Result of matching a cut against a pattern.
 ///
 /// This structure contains the area and per-input delay information
