@@ -80,14 +80,11 @@ struct GenericLUT : public CutRewritePattern {
       lutTable.push_back(truthTable.table[i]);
 
     // Reverse the inputs to match the LUT input order
-    // Convert indices to Values first
-    SmallVector<Value> lutInputs;
-    lutInputs.reserve(cut.inputs.size());
-    for (auto it = cut.inputs.rbegin(); it != cut.inputs.rend(); ++it)
-      lutInputs.push_back(network.getValue(*it));
+    SmallVector<Value> lutInputs = cut.getInputValues(network);
+    std::reverse(lutInputs.begin(), lutInputs.end());
 
     // Get the root operation location
-    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    auto *rootOp = cut.getRootOperation(network);
     
     // Generate comb.truth table operation.
     auto truthTableOp = comb::TruthTableOp::create(

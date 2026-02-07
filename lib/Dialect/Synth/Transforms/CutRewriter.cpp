@@ -58,8 +58,171 @@ using namespace circt;
 using namespace circt::synth;
 
 //===----------------------------------------------------------------------===//
-// LogicNetwork
+// Internal Implementation Details (detail namespace)
 //===----------------------------------------------------------------------===//
+
+namespace circt {
+namespace synth {
+namespace detail {
+
+/// Edge representation in the logic network.
+/// Similar to mockturtle's signal, this encodes both a node index and inversion
+/// in a single 32-bit value. The LSB indicates whether the signal is inverted.
+struct Signal {
+  uint32_t data = 0;
+
+  Signal() = default;
+  Signal(uint32_t index, bool inverted)
+      : data((index << 1) | (inverted ? 1 : 0)) {}
+  explicit Signal(uint32_t raw) : data(raw) {}
+
+  /// Get the node index (without the inversion bit).
+  uint32_t getIndex() const { return data >> 1; }
+
+  /// Check if this edge is inverted.
+  bool isInverted() const { return data & 1; }
+
+  /// Get the raw data (index << 1 | inverted).
+  uint32_t getRaw() const { return data; }
+
+  Signal flipInversion() const { return Signal(getIndex(), !isInverted()); }
+
+  /// Create an inverted version of this edge.
+  Signal operator!() const { return Signal(data ^ 1); }
+
+  bool operator==(const Signal &other) const { return data == other.data; }
+  bool operator!=(const Signal &other) const { return data != other.data; }
+  bool operator<(const Signal &other) const { return data < other.data; }
+};
+
+/// Represents a single gate/node in the flat logic network.
+struct LogicNetworkGate {
+  /// Kind of logic gate.
+  enum Kind : uint8_t {
+    Constant = 0, ///< Constant 0/1 node (index 0 = const0, index 1 = const1)
+    PrimaryInput = 1, ///< Primary input to the network
+    And2 = 2,         ///< AND gate (2-input, aig::AndInverterOp)
+    Xor2 = 3,         ///< XOR gate (2-input)
+    Maj3 = 4,         ///< Majority gate (3-input, mig::MajOp)
+    Identity = 5,     ///< Identity gate (used for 1-input inverter)
+    Other = 6 ///< Other/variadic operation (supports variadic and/xor/or/maj)
+  };
+
+  /// Operation pointer and kind packed together.
+  llvm::PointerIntPair<mlir::Operation *, 3, Kind> opAndKind;
+
+  /// Fanin edges (up to 3 inputs).
+  Signal edges[3];
+
+  LogicNetworkGate() : opAndKind(nullptr, Constant) {}
+
+  Kind getKind() const { return opAndKind.getInt(); }
+  mlir::Operation *getOperation() const { return opAndKind.getPointer(); }
+  void set(mlir::Operation *op, Kind kind) {
+    opAndKind.setPointerAndInt(op, kind);
+  }
+
+  unsigned getNumFanins() const {
+    switch (getKind()) {
+    case Constant:
+    case PrimaryInput:
+      return 0;
+    case And2:
+    case Xor2:
+      return 2;
+    case Maj3:
+      return 3;
+    case Identity:
+      return 1;
+    case Other:
+      if (auto *op = getOperation())
+        return op->getNumOperands();
+      return 0;
+    }
+    llvm_unreachable("Unknown gate kind");
+  }
+
+  bool isLogicGate() const {
+    Kind k = getKind();
+    return k == And2 || k == Xor2 || k == Maj3 || k == Identity || k == Other;
+  }
+
+  bool isAlwaysCutInput() const {
+    Kind k = getKind();
+    return k == PrimaryInput || k == Constant;
+  }
+
+  bool isVariadic() const { return getKind() == Other; }
+};
+
+/// Flat logic network representation for efficient cut enumeration.
+class LogicNetwork {
+public:
+  static constexpr uint32_t kConstant0 = 0;
+  static constexpr uint32_t kConstant1 = 1;
+
+  const auto &getGates() const { return gates; }
+
+  LogicNetwork() {
+    gates.emplace_back();
+    gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
+    gates.emplace_back();
+    gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+    indexToValue.push_back(mlir::Value()); // const0
+    indexToValue.push_back(mlir::Value()); // const1
+  }
+
+  static Signal getConstant0() { return Signal(kConstant0, false); }
+  static Signal getConstant1() { return Signal(kConstant0, true); }
+
+  uint32_t getOrCreateIndex(mlir::Value value);
+  uint32_t getIndex(mlir::Value value) const;
+  bool hasIndex(mlir::Value value) const;
+  Value getValue(uint32_t index) const;
+  Operation *getOperation(uint32_t index) const;
+
+  Signal getSignal(mlir::Value value, bool inverted) const {
+    return Signal(getIndex(value), inverted);
+  }
+
+  Signal getOrCreateSignal(mlir::Value value, bool inverted) {
+    return Signal(getOrCreateIndex(value), inverted);
+  }
+
+  Value getValue(Signal signal) const { return getValue(signal.getIndex()); }
+
+  const LogicNetworkGate &getGate(uint32_t index) const { return gates[index]; }
+  LogicNetworkGate &getGate(uint32_t index) { return gates[index]; }
+
+  size_t size() const { return gates.size(); }
+
+  uint32_t addPrimaryInput(mlir::Value value);
+  uint32_t addAndGate(mlir::Operation *op, Signal lhs, Signal rhs);
+  uint32_t addXorGate(mlir::Operation *op, Signal lhs, Signal rhs);
+  uint32_t addMajGate(mlir::Operation *op, Signal a, Signal b, Signal c);
+  uint32_t addOtherGate(mlir::Operation *op, mlir::Value result);
+  LogicalResult buildFromBlock(mlir::Block *block);
+  void clear();
+
+private:
+  llvm::DenseMap<mlir::Value, uint32_t> valueToIndex;
+  llvm::SmallVector<mlir::Value> indexToValue;
+  llvm::SmallVector<LogicNetworkGate> gates;
+};
+
+} // namespace detail
+} // namespace synth
+} // namespace circt
+
+//===----------------------------------------------------------------------===//
+// LogicNetwork Method Implementations
+//===----------------------------------------------------------------------===//
+
+using namespace circt;
+using namespace circt::synth;
+using detail::LogicNetwork;
+using detail::LogicNetworkGate;
+using detail::Signal;
 
 uint32_t LogicNetwork::getOrCreateIndex(mlir::Value value) {
   auto [it, inserted] = valueToIndex.try_emplace(value, gates.size());
@@ -92,35 +255,40 @@ Value LogicNetwork::getValue(uint32_t index) const {
   return indexToValue[index];
 }
 
+Operation *LogicNetwork::getOperation(uint32_t index) const {
+  assert(index < gates.size() && "Index out of bounds in LogicNetwork::getOperation");
+  return gates[index].getOperation();
+}
+
 uint32_t LogicNetwork::addPrimaryInput(mlir::Value value) {
   uint32_t index = getOrCreateIndex(value);
-  gates[index].set(nullptr, LogicNetworkGate::PrimaryInput);
+  gates[index].set(nullptr, detail::LogicNetworkGate::PrimaryInput);
   return index;
 }
 
-uint32_t LogicNetwork::addAndGate(mlir::Operation *op, Signal lhs, Signal rhs) {
+uint32_t LogicNetwork::addAndGate(mlir::Operation *op, detail::Signal lhs, detail::Signal rhs) {
   mlir::Value result = op->getResult(0);
   uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::And2);
+  gates[index].set(op, detail::LogicNetworkGate::And2);
   gates[index].edges[0] = lhs;
   gates[index].edges[1] = rhs;
   return index;
 }
 
-uint32_t LogicNetwork::addXorGate(mlir::Operation *op, Signal lhs, Signal rhs) {
+uint32_t LogicNetwork::addXorGate(mlir::Operation *op, detail::Signal lhs, detail::Signal rhs) {
   mlir::Value result = op->getResult(0);
   uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Xor2);
+  gates[index].set(op, detail::LogicNetworkGate::Xor2);
   gates[index].edges[0] = lhs;
   gates[index].edges[1] = rhs;
   return index;
 }
 
-uint32_t LogicNetwork::addMajGate(mlir::Operation *op, Signal a, Signal b,
-                                  Signal c) {
+uint32_t LogicNetwork::addMajGate(mlir::Operation *op, detail::Signal a, detail::Signal b,
+                                  detail::Signal c) {
   mlir::Value result = op->getResult(0);
   uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Maj3);
+  gates[index].set(op, detail::LogicNetworkGate::Maj3);
   gates[index].edges[0] = a;
   gates[index].edges[1] = b;
   gates[index].edges[2] = c;
@@ -129,7 +297,7 @@ uint32_t LogicNetwork::addMajGate(mlir::Operation *op, Signal a, Signal b,
 
 uint32_t LogicNetwork::addOtherGate(mlir::Operation *op, mlir::Value result) {
   uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Other);
+  gates[index].set(op, detail::LogicNetworkGate::Other);
   return index;
 }
 
@@ -155,7 +323,7 @@ LogicalResult LogicNetwork::buildFromBlock(mlir::Block *block) {
       auto inputs = andOp.getInputs();
 
       // Get or create signals for inputs (with proper inversion flags)
-      SmallVector<Signal, 3> edges;
+      SmallVector<detail::Signal, 3> edges;
       for (size_t i = 0; i < inputs.size(); ++i)
         edges.push_back(getOrCreateSignal(inputs[i], andOp.isInverted(i)));
 
@@ -169,9 +337,9 @@ LogicalResult LogicNetwork::buildFromBlock(mlir::Block *block) {
         } else {
           // Inverted operation: create a NOT gate
           uint32_t index = getOrCreateIndex(andOp.getResult());
-          gates[index].set(&op, LogicNetworkGate::Identity);
+          gates[index].set(&op, detail::LogicNetworkGate::Identity);
           // FIXME: This is weird - we should probably have a constructor for
-          // Signal
+          // detail::Signal
           gates[index].edges[0] = edges[0];
         }
       } else if (inputs.size() == 2) {
@@ -215,7 +383,7 @@ LogicalResult LogicNetwork::buildFromBlock(mlir::Block *block) {
           valueToIndex[result] = inputIdx;
           continue;
         }
-        gates[index].set(&op, LogicNetworkGate::Identity);
+        gates[index].set(&op, detail::LogicNetworkGate::Identity);
         gates[index].edges[0] = inputSignal;
         continue;
       }
@@ -255,9 +423,9 @@ void LogicNetwork::clear() {
   gates.clear();
   // Re-add the constant nodes (index 0 = const0, index 1 = const1)
   gates.emplace_back();
-  gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
+  gates[kConstant0].set(nullptr, detail::LogicNetworkGate::Constant);
   gates.emplace_back();
-  gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+  gates[kConstant1].set(nullptr, detail::LogicNetworkGate::Constant);
   // Placeholders for constants in indexToValue
   indexToValue.push_back(mlir::Value()); // const0
   indexToValue.push_back(mlir::Value()); // const1
@@ -271,7 +439,7 @@ void LogicNetwork::clear() {
 // This includes primary inputs and non-simulatable operations.
 static bool isAlwaysCutInput(const LogicNetwork &network, uint32_t index) {
   const auto &gate = network.getGate(index);
-  return gate.isAlwaysCutInput() || gate.getKind() == LogicNetworkGate::Other;
+  return gate.isAlwaysCutInput() || gate.getKind() == detail::LogicNetworkGate::Other;
 }
 
 // Return true if the new area/delay is better than the old area/delay in the
@@ -394,6 +562,27 @@ bool Cut::isTrivialCut() const {
   return rootIndex == 0 && inputs.size() == 1;
 }
 
+Value Cut::getInputValue(unsigned idx, const LogicNetwork &network) const {
+  assert(idx < inputs.size() && "Input index out of bounds");
+  return network.getValue(inputs[idx]);
+}
+
+SmallVector<Value> Cut::getInputValues(const LogicNetwork &network) const {
+  SmallVector<Value> values;
+  values.reserve(inputs.size());
+  for (auto inputIdx : inputs)
+    values.push_back(network.getValue(inputIdx));
+  return values;
+}
+
+Value Cut::getRootValue(const LogicNetwork &network) const {
+  return network.getValue(rootIndex);
+}
+
+Operation *Cut::getRootOperation(const LogicNetwork &network) const {
+  return network.getOperation(rootIndex);
+}
+
 const NPNClass &Cut::getNPNClass() const {
   // If the NPN is already computed, return it
   if (npnClass)
@@ -508,7 +697,7 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
   llvm::APInt result;
 
   switch (gate.getKind()) {
-  case LogicNetworkGate::Constant:
+  case detail::LogicNetworkGate::Constant:
     // Constant 0 or 1 - return all zeros or all ones
     if (index == LogicNetwork::kConstant0)
       result = llvm::APInt::getZero(1U << numInputs);
@@ -516,12 +705,12 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
       result = llvm::APInt::getAllOnes(1U << numInputs);
     break;
 
-  case LogicNetworkGate::PrimaryInput:
-  case LogicNetworkGate::Other:
+  case detail::LogicNetworkGate::PrimaryInput:
+  case detail::LogicNetworkGate::Other:
     // Should be in cache already as cut input
     llvm_unreachable("Primary input/Other not in cache - not a cut input?");
 
-  case LogicNetworkGate::And2: {
+  case detail::LogicNetworkGate::And2: {
     // Get children truth tables
     auto lhs =
         simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
@@ -538,7 +727,7 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     break;
   }
 
-  case LogicNetworkGate::Xor2: {
+  case detail::LogicNetworkGate::Xor2: {
     auto lhs =
         simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
     auto rhs =
@@ -553,7 +742,7 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     break;
   }
 
-  case LogicNetworkGate::Maj3: {
+  case detail::LogicNetworkGate::Maj3: {
     auto a = simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
     auto b = simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
     auto c = simulateGate(network, gate.edges[2].getIndex(), cache, numInputs);
@@ -570,7 +759,7 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     break;
   }
 
-  case LogicNetworkGate::Identity: {
+  case detail::LogicNetworkGate::Identity: {
     // Get input truth table
     auto input =
         simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
@@ -821,7 +1010,7 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
   llvm::APInt result;
 
   switch (rootGate.getKind()) {
-  case LogicNetworkGate::And2: {
+  case detail::LogicNetworkGate::And2: {
     auto lhs = getExpandedTruthTable(
         rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
         indexToMergedPos, numMergedInputs, cuts, numCuts);
@@ -833,7 +1022,7 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
     break;
   }
 
-  case LogicNetworkGate::Xor2: {
+  case detail::LogicNetworkGate::Xor2: {
     auto lhs = getExpandedTruthTable(
         rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
         indexToMergedPos, numMergedInputs, cuts, numCuts);
@@ -845,7 +1034,7 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
     break;
   }
 
-  case LogicNetworkGate::Maj3: {
+  case detail::LogicNetworkGate::Maj3: {
     auto a = getExpandedTruthTable(
         rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
         indexToMergedPos, numMergedInputs, cuts, numCuts);
@@ -860,7 +1049,7 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
     break;
   }
 
-  case LogicNetworkGate::Identity: {
+  case detail::LogicNetworkGate::Identity: {
     auto input = getExpandedTruthTable(
         rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
         indexToMergedPos, numMergedInputs, cuts, numCuts);
@@ -1132,7 +1321,7 @@ CutRewritePatternSet::CutRewritePatternSet(
 }
 
 //===----------------------------------------------------------------------===//
-// CutEnumerator
+// CutEnumerator Implementation
 //===----------------------------------------------------------------------===//
 
 CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
@@ -1160,6 +1349,24 @@ void CutEnumerator::clear() {
   processingOrder.clear();
   logicNetwork.clear();
   allocator.Reset();
+}
+
+const CutSet *CutEnumerator::getCutSet(uint32_t index) {
+  // Check if cut set already exists
+  auto it = cutSets.find(index);
+  if (it == cutSets.end()) {
+    // Create new cut set for an unprocessed value (primary input or other)
+    void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));
+    CutSet *cutSet = new (mem) CutSet();
+    Cut *trivialCut = new (allocator.Allocate(sizeof(Cut), alignof(Cut)))
+        Cut(getAsTrivialCut(index, logicNetwork));
+    cutSet->addCut(trivialCut);
+    auto [newIt, inserted] = cutSets.insert({index, cutSet});
+    assert(inserted && "Cut set already exists for this index");
+    it = newIt;
+  }
+
+  return it->second;
 }
 
 LogicalResult CutEnumerator::visit(Operation *op) {
@@ -1368,23 +1575,11 @@ LogicalResult CutEnumerator::enumerateCuts(
       return failure();
   }
 
-  // // Walk through all operations in the module in a topological manner
-  // auto result = topOp->walk([&](Operation *op) {
-  //   if (failed(visit(op)))
-  //     return mlir::WalkResult::interrupt();
-  //   return mlir::WalkResult::advance();
-  // });
-
-  // if (result.wasInterrupted())
-  //   return failure();
-
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
   return success();
 }
 
-const CutSet *CutEnumerator::getCutSet(uint32_t index) {
-  // Check if cut set already exists
-  auto it = cutSets.find(index);
+/// Generate a human-readable name for a value used in test output.
   if (it == cutSets.end()) {
     // Create new cut set for an unprocessed value (primary input or other)
     void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));

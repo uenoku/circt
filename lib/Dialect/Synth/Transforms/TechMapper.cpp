@@ -136,13 +136,12 @@ struct TechLibraryPattern : public CutRewritePattern {
     SmallVector<unsigned> permutedIndices;
     cut.getPermutatedInputIndices(npnClass, permutedIndices);
     for (auto idx : permutedIndices) {
-      auto inputIndex = cut.inputs[idx];
-      auto inputValue = network.getValue(inputIndex);
+      auto inputValue = cut.getInputValue(idx, network);
       inputs.push_back(inputValue);
     }
 
     // Get the root operation location
-    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    auto *rootOp = cut.getRootOperation(network);
 
     // TODO: Give a better name to the instance
     auto instanceOp = hw::InstanceOp::create(builder, rootOp->getLoc(), module,

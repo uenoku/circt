@@ -227,14 +227,11 @@ struct SOPBalancingPattern : public CutRewritePattern {
       return failure();
     
     // Convert indices to Values for building the operation
-    SmallVector<Value, 6> inputValues;
-    inputValues.reserve(cut.inputs.size());
-    for (auto idx : cut.inputs)
-      inputValues.push_back(network.getValue(idx));
+    SmallVector<Value, 6> inputValues = cut.getInputValues(network);
     
     // Construct the fused location.
     SetVector<Location> inputLocs;
-    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    auto *rootOp = cut.getRootOperation(network);
     inputLocs.insert(rootOp->getLoc());
     for (auto inputVal : inputValues)
       inputLocs.insert(inputVal.getLoc());
