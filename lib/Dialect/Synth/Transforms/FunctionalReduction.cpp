@@ -60,17 +60,9 @@ public:
   FRAIGSolver(hw::HWModuleOp module, unsigned numPatterns,
               unsigned conflictLimit, bool enableFeedback)
       : module(module), numPatterns(numPatterns), conflictLimit(conflictLimit),
-        enableFeedback(enableFeedback), solver(new CaDiCaL::Solver()) {
-    // Disable BVA (bounded variable addition) to avoid CaDiCaL introducing
-    // new variables that conflict with our variable numbering.
-    solver->set("factor", 0);
-    solver->set("factorcheck", 0);
-  }
+        enableFeedback(enableFeedback) {}
 
-  ~FRAIGSolver() { delete solver; }
-
-  /// Returns true if the solver is valid (CaDiCaL available).
-  bool isValid() const { return solver != nullptr; }
+  ~FRAIGSolver() = default;
 
   /// Run the FRAIG algorithm and return statistics.
   struct Stats {
@@ -96,13 +88,24 @@ private:
   void sortByPriority();
   unsigned computeDepth(Value v);
 
-  // Phase 3: SAT-based verification with incremental solving
+  // Phase 3: SAT-based verification with per-pair solvers
   void verifyCandidates();
-  int getOrCreateVar(Value v);
-  void addStructuralConstraints(Value v);
+
+  // Create a fresh solver and encode only the COI for two values
+  CaDiCaL::Solver *createSolverForPair(Value a, Value b);
+  void addCOI(CaDiCaL::Solver *s, Value v,
+              llvm::DenseMap<Value, int> &localVarMap, int &localNextVar,
+              llvm::DenseSet<Value> &visited);
+  int getOrCreateLocalVar(Value v, llvm::DenseMap<Value, int> &localVarMap,
+                          int &localNextVar);
+  void addLocalStructuralConstraints(CaDiCaL::Solver *s, Value v,
+                                     llvm::DenseMap<Value, int> &localVarMap,
+                                     int &localNextVar,
+                                     llvm::DenseSet<Value> &visited);
 
   // CEX feedback: refine equivalence classes using counterexample from SAT
-  void refineByCEX();
+  void refineByCEX(CaDiCaL::Solver *solver,
+                   llvm::DenseMap<Value, int> &localVarMap);
 
   // Phase 4: Merge equivalent nodes
   void mergeEquivalentNodes();
@@ -120,10 +123,6 @@ private:
   unsigned numPatterns;
   unsigned conflictLimit;
   bool enableFeedback;
-
-  // CaDiCaL SAT solver
-  CaDiCaL::Solver *solver;
-
   // All i1 values in topological order (inputs first, then operations)
   SmallVector<Value> allValues;
 
@@ -145,13 +144,6 @@ private:
 
   // Proven equivalences: value -> (representative, isComplement)
   llvm::DenseMap<Value, std::pair<Value, bool>> provenEquiv;
-
-  // SAT variable mapping: Value -> SAT variable (1-indexed for IPASIR)
-  llvm::DenseMap<Value, int> varMap;
-  int nextVar = 0;
-
-  // Track which values have constraints added
-  llvm::DenseSet<Value> constraintsAdded;
 
   // Depth cache for priority ordering (memoized)
   llvm::DenseMap<Value, unsigned> depthCache;
@@ -453,63 +445,59 @@ void FRAIGSolver::sortByPriority() {
 }
 
 //===----------------------------------------------------------------------===//
-// Phase 3: SAT-based verification with incremental solving
+// Phase 3: SAT-based verification with per-pair solvers
 //
-// For efficiency, we use Tseitin-style encoding:
-// 1. Create a boolean variable for each node
-// 2. Add structural constraints (definitions) to solver ONCE
-// 3. For each equivalence check, just add XOR of the two variables
-//
-// This allows CaDiCaL to maintain learned clauses across checks.
+// For each equivalence check, we create a fresh CaDiCaL solver and encode
+// only the cone-of-influence (COI) of the two values being compared. This
+// keeps clause databases small and propagation fast — the key bottleneck
+// with a monolithic solver was scanning huge watch lists (84% in propagate).
 //===----------------------------------------------------------------------===//
 
-int FRAIGSolver::getOrCreateVar(Value v) {
-  auto it = varMap.find(v);
-  if (it != varMap.end())
+int FRAIGSolver::getOrCreateLocalVar(Value v,
+                                     llvm::DenseMap<Value, int> &localVarMap,
+                                     int &localNextVar) {
+  auto it = localVarMap.find(v);
+  if (it != localVarMap.end())
     return it->second;
-
-  int var = ++nextVar;
-  varMap[v] = var;
+  int var = ++localNextVar;
+  localVarMap[v] = var;
   return var;
 }
 
-void FRAIGSolver::addStructuralConstraints(Value v) {
-  // Only add constraints once per value
-  if (!constraintsAdded.insert(v).second)
+void FRAIGSolver::addLocalStructuralConstraints(
+    CaDiCaL::Solver *s, Value v, llvm::DenseMap<Value, int> &localVarMap,
+    int &localNextVar, llvm::DenseSet<Value> &visited) {
+  if (!visited.insert(v).second)
     return;
 
   Operation *op = v.getDefiningOp();
   if (!op)
-    return; // Primary input - no structural constraint
+    return;
 
-  int outVar = getOrCreateVar(v);
+  int outVar = getOrCreateLocalVar(v, localVarMap, localNextVar);
 
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
     auto inputs = andOp.getInputs();
     auto inverted = andOp.getInverted();
 
-    // Collect input literals (positive or negative based on inversion)
     SmallVector<int> inputLits;
     for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-      addStructuralConstraints(input);
-      int var = getOrCreateVar(input);
+      addLocalStructuralConstraints(s, input, localVarMap, localNextVar,
+                                    visited);
+      int var = getOrCreateLocalVar(input, localVarMap, localNextVar);
       inputLits.push_back(inv ? -var : var);
     }
 
-    // Tseitin encoding for outVar <=> AND(inputLits)
-    // Forward: outVar => AND(inputLits)
-    //   For each input lit_i: (-outVar OR lit_i)
+    // Tseitin: outVar <=> AND(inputLits)
     for (int lit : inputLits) {
-      solver->add(-outVar);
-      solver->add(lit);
-      solver->add(0);
+      s->add(-outVar);
+      s->add(lit);
+      s->add(0);
     }
-    // Backward: AND(inputLits) => outVar
-    //   (NOT lit_1 OR NOT lit_2 OR ... OR outVar)
     for (int lit : inputLits)
-      solver->add(-lit);
-    solver->add(outVar);
-    solver->add(0);
+      s->add(-lit);
+    s->add(outVar);
+    s->add(0);
     return;
   }
 
@@ -517,72 +505,84 @@ void FRAIGSolver::addStructuralConstraints(Value v) {
     auto inputs = majOp.getInputs();
     auto inverted = majOp.getInverted();
 
-    // Collect input literals
     SmallVector<int> inputLits;
     for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-      addStructuralConstraints(input);
-      int var = getOrCreateVar(input);
+      addLocalStructuralConstraints(s, input, localVarMap, localNextVar,
+                                    visited);
+      int var = getOrCreateLocalVar(input, localVarMap, localNextVar);
       inputLits.push_back(inv ? -var : var);
     }
 
-    // Tseitin encoding for MAJ(a,b,c) = (a∧b) ∨ (b∧c) ∨ (a∧c)
-    // For 3 inputs: outVar <=> MAJ(a, b, c)
     if (inputLits.size() == 3) {
       int a = inputLits[0], b = inputLits[1], c = inputLits[2];
-      // Forward: outVar => MAJ(a,b,c)
-      // Equivalent to: NOT outVar OR (a∧b) OR (b∧c) OR (a∧c)
-      // In CNF:
-      //   (-outVar OR a OR b)
-      //   (-outVar OR a OR c)
-      //   (-outVar OR b OR c)
-      solver->add(-outVar); solver->add(a); solver->add(b); solver->add(0);
-      solver->add(-outVar); solver->add(a); solver->add(c); solver->add(0);
-      solver->add(-outVar); solver->add(b); solver->add(c); solver->add(0);
-      // Backward: MAJ(a,b,c) => outVar
-      // Equivalent to: NOT(a∧b) AND NOT(b∧c) AND NOT(a∧c) OR outVar
-      // In CNF:
-      //   (outVar OR -a OR -b)
-      //   (outVar OR -a OR -c)
-      //   (outVar OR -b OR -c)
-      solver->add(outVar); solver->add(-a); solver->add(-b); solver->add(0);
-      solver->add(outVar); solver->add(-a); solver->add(-c); solver->add(0);
-      solver->add(outVar); solver->add(-b); solver->add(-c); solver->add(0);
+      s->add(-outVar); s->add(a); s->add(b); s->add(0);
+      s->add(-outVar); s->add(a); s->add(c); s->add(0);
+      s->add(-outVar); s->add(b); s->add(c); s->add(0);
+      s->add(outVar); s->add(-a); s->add(-b); s->add(0);
+      s->add(outVar); s->add(-a); s->add(-c); s->add(0);
+      s->add(outVar); s->add(-b); s->add(-c); s->add(0);
     } else {
-      // Recursive majority for >3 inputs using auxiliary variables
       while (inputLits.size() > 3) {
         int a = inputLits[0], b = inputLits[1], c = inputLits[2];
-        int aux = ++nextVar;
-        // aux <=> MAJ(a, b, c) using same 6 clauses
-        solver->add(-aux); solver->add(a); solver->add(b); solver->add(0);
-        solver->add(-aux); solver->add(a); solver->add(c); solver->add(0);
-        solver->add(-aux); solver->add(b); solver->add(c); solver->add(0);
-        solver->add(aux); solver->add(-a); solver->add(-b); solver->add(0);
-        solver->add(aux); solver->add(-a); solver->add(-c); solver->add(0);
-        solver->add(aux); solver->add(-b); solver->add(-c); solver->add(0);
+        int aux = ++localNextVar;
+        s->add(-aux); s->add(a); s->add(b); s->add(0);
+        s->add(-aux); s->add(a); s->add(c); s->add(0);
+        s->add(-aux); s->add(b); s->add(c); s->add(0);
+        s->add(aux); s->add(-a); s->add(-b); s->add(0);
+        s->add(aux); s->add(-a); s->add(-c); s->add(0);
+        s->add(aux); s->add(-b); s->add(-c); s->add(0);
         inputLits.erase(inputLits.begin(), inputLits.begin() + 3);
         inputLits.insert(inputLits.begin(), aux);
       }
       if (inputLits.size() == 3) {
         int a = inputLits[0], b = inputLits[1], c = inputLits[2];
-        solver->add(-outVar); solver->add(a); solver->add(b); solver->add(0);
-        solver->add(-outVar); solver->add(a); solver->add(c); solver->add(0);
-        solver->add(-outVar); solver->add(b); solver->add(c); solver->add(0);
-        solver->add(outVar); solver->add(-a); solver->add(-b); solver->add(0);
-        solver->add(outVar); solver->add(-a); solver->add(-c); solver->add(0);
-        solver->add(outVar); solver->add(-b); solver->add(-c); solver->add(0);
+        s->add(-outVar); s->add(a); s->add(b); s->add(0);
+        s->add(-outVar); s->add(a); s->add(c); s->add(0);
+        s->add(-outVar); s->add(b); s->add(c); s->add(0);
+        s->add(outVar); s->add(-a); s->add(-b); s->add(0);
+        s->add(outVar); s->add(-a); s->add(-c); s->add(0);
+        s->add(outVar); s->add(-b); s->add(-c); s->add(0);
       } else if (inputLits.size() == 1) {
-        // Degenerate: outVar <=> inputLits[0]
-        solver->add(-outVar); solver->add(inputLits[0]); solver->add(0);
-        solver->add(outVar); solver->add(-inputLits[0]); solver->add(0);
+        s->add(-outVar); s->add(inputLits[0]); s->add(0);
+        s->add(outVar); s->add(-inputLits[0]); s->add(0);
       }
     }
     return;
   }
-
-  // Unknown operation - no structural constraint (treated as free variable)
 }
 
-void FRAIGSolver::refineByCEX() {
+/// Configure a CaDiCaL solver for minimal overhead FRAIG queries.
+static void configureSolver(CaDiCaL::Solver *s) {
+  // Disable BVA to avoid variable numbering conflicts.
+  s->set("factor", 0);
+  s->set("factorcheck", 0);
+  // Disable all preprocessing and inprocessing. For FRAIG's many short
+  // SAT queries on small COI-only clause databases, these are pure overhead.
+  s->set("preprocesslight", 0);
+  s->set("fastelim", 0);
+  s->set("sweep", 0);
+  s->set("backbone", 0);
+  s->set("deduplicate", 0);
+  s->set("lucky", 0);
+  s->set("subsume", 0);
+  s->set("vivify", 0);
+  s->set("walk", 0);
+  s->set("probe", 0);
+  s->set("inprobing", 0);
+  s->set("elim", 0);
+  s->set("ternary", 0);
+  s->set("transred", 0);
+  s->set("decompose", 0);
+  s->set("congruence", 0);
+  s->set("cover", 0);
+  s->set("condition", 0);
+  s->set("compact", 0);
+  s->set("eagersubsume", 0);
+  s->set("stabilize", 0);
+}
+
+void FRAIGSolver::refineByCEX(CaDiCaL::Solver *solver,
+                              llvm::DenseMap<Value, int> &localVarMap) {
   // Extract counterexample from SAT solver and use it as an additional
   // simulation pattern to split false equivalence classes.
   // This is the key ABC optimization: each CEX immediately eliminates
@@ -591,8 +591,8 @@ void FRAIGSolver::refineByCEX() {
   // Extract input values from the counterexample
   llvm::DenseMap<Value, bool> cexValues;
   for (auto input : primaryInputs) {
-    auto it = varMap.find(input);
-    if (it == varMap.end())
+    auto it = localVarMap.find(input);
+    if (it == localVarMap.end())
       continue;
     int val = solver->val(it->second);
     cexValues[input] = (val > 0);
@@ -669,30 +669,40 @@ void FRAIGSolver::verifyCandidates() {
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting SAT verification with "
                           << equivClasses.size() << " equivalence classes\n");
 
-  // Check equivalences using CaDiCaL's assumption-based incremental solving.
-  // No auxiliary variables or temporary clauses are created.
-  //
-  // To prove rep == target, we check both directions:
-  //   1. assume(rep=1, target=0) — if SAT, disproved (early exit)
-  //   2. assume(rep=0, target=1) — if SAT, disproved
-  //   3. Both UNSAT → proven equivalent
-  //
-  // Most false candidates are caught by check 1 alone (1 SAT call).
-  // Proven equivalences need 2 calls. No clause bloat from aux variables.
+  // For each equivalence class, create one solver with the representative's
+  // COI, then incrementally add each member's COI. This balances small clause
+  // databases (COI-only) with reduced solver allocation overhead.
   //
   // CEX feedback may modify equivClasses, so we use index-based iteration.
   for (size_t ecIdx = 0; ecIdx < equivClasses.size(); ++ecIdx) {
     auto &ec = equivClasses[ecIdx];
-    addStructuralConstraints(ec.representative);
-    int repVar = getOrCreateVar(ec.representative);
+    if (ec.members.empty())
+      continue;
+
+    // Create solver for this equivalence class
+    auto *solver = new CaDiCaL::Solver();
+    configureSolver(solver);
+
+    llvm::DenseMap<Value, int> localVarMap;
+    llvm::DenseSet<Value> visited;
+    int localNextVar = 0;
+
+    // Encode the representative's COI once
+    addLocalStructuralConstraints(solver, ec.representative, localVarMap,
+                                  localNextVar, visited);
+    int repVar =
+        getOrCreateLocalVar(ec.representative, localVarMap, localNextVar);
 
     for (size_t mIdx = 0; mIdx < ec.members.size(); ++mIdx) {
       auto [member, isComplement] = ec.members[mIdx];
       if (provenEquiv.count(member))
         continue;
 
-      addStructuralConstraints(member);
-      int memberVar = getOrCreateVar(member);
+      // Incrementally add this member's COI (shared nodes already visited)
+      addLocalStructuralConstraints(solver, member, localVarMap, localNextVar,
+                                    visited);
+      int memberVar =
+          getOrCreateLocalVar(member, localVarMap, localNextVar);
       int targetLit = isComplement ? -memberVar : memberVar;
 
       // Check 1: Can rep=1 and target=0?
@@ -707,7 +717,7 @@ void FRAIGSolver::verifyCandidates() {
         stats.numDisprovedEquiv++;
         LLVM_DEBUG(llvm::dbgs() << "FRAIG: Disproved " << member << "\n");
         if (enableFeedback)
-          refineByCEX();
+          refineByCEX(solver, localVarMap);
         continue;
       }
 
@@ -730,7 +740,7 @@ void FRAIGSolver::verifyCandidates() {
         stats.numDisprovedEquiv++;
         LLVM_DEBUG(llvm::dbgs() << "FRAIG: Disproved " << member << "\n");
         if (enableFeedback)
-          refineByCEX();
+          refineByCEX(solver, localVarMap);
         continue;
       }
 
@@ -745,15 +755,14 @@ void FRAIGSolver::verifyCandidates() {
       provenEquiv[member] = {ec.representative, isComplement};
       stats.numProvedEquiv++;
 
-      // Add proven equivalence as permanent clauses:
+      // Add proven equivalence as permanent clauses to help future members
       solver->add(-repVar); solver->add(targetLit); solver->add(0);
       solver->add(-targetLit); solver->add(repVar); solver->add(0);
 
-      LLVM_DEBUG(llvm::dbgs()
-                 << "FRAIG: Proved " << member << " == "
-                 << (isComplement ? "NOT(" : "") << ec.representative
-                 << (isComplement ? ")" : "") << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "FRAIG: Proved\n");
     }
+
+    delete solver;
   }
 
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: SAT verification complete. Proved "
@@ -873,11 +882,6 @@ struct FunctionalReductionPass
     // Create and run FRAIG solver
     FRAIGSolver fraig(module, numRandomPatterns, satConflictLimit,
                       enableCEXFeedback);
-
-    if (!fraig.isValid()) {
-      module.emitWarning() << "CaDiCaL solver not available, skipping FRAIG";
-      return;
-    }
 
     auto stats = fraig.run();
 
