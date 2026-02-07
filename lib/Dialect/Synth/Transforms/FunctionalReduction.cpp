@@ -65,9 +65,6 @@ public:
     // new variables that conflict with our variable numbering.
     solver->set("factor", 0);
     solver->set("factorcheck", 0);
-    if (conflictLimit > 0) {
-      solver->limit("conflicts", conflictLimit);
-    }
   }
 
   ~FRAIGSolver() { delete solver; }
@@ -700,6 +697,8 @@ void FRAIGSolver::verifyCandidates() {
 
       // Check 1: Can rep=1 and target=0?
       stats.numSATCalls++;
+      if (conflictLimit > 0)
+        solver->limit("conflicts", conflictLimit);
       solver->assume(repVar);
       solver->assume(-targetLit);
       int result1 = solver->solve();
@@ -714,11 +713,15 @@ void FRAIGSolver::verifyCandidates() {
 
       if (result1 != 20) {
         stats.numUnknown++;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "FRAIG: Unknown (conflict limit) for " << member << "\n");
         continue;
       }
 
       // Check 2: Can rep=0 and target=1?
       stats.numSATCalls++;
+      if (conflictLimit > 0)
+        solver->limit("conflicts", conflictLimit);
       solver->assume(-repVar);
       solver->assume(targetLit);
       int result2 = solver->solve();
@@ -733,6 +736,8 @@ void FRAIGSolver::verifyCandidates() {
 
       if (result2 != 20) {
         stats.numUnknown++;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "FRAIG: Unknown (conflict limit) for " << member << "\n");
         continue;
       }
 
