@@ -246,10 +246,10 @@ def MIGAlgebraicRewriting : Pass<"synth-mig-algebraic-rewriting", "hw::HWModuleO
 }
 
 def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
-  let summary = "FRAIG-based functional reduction using SMT solver";
+  let summary = "FRAIG-based functional reduction using SAT solver";
   let description = [{
     This pass implements FRAIG (Functionally Reduced And-Inverter Graph) 
-    optimization using the Z3 SMT solver. It identifies and merges functionally
+    optimization using a SAT solver. It identifies and merges functionally
     equivalent nodes through simulation-based candidate detection followed by
     SAT-based verification.
 
@@ -262,8 +262,8 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
     (MajorityInverterOp) operations. Only single-bit (i1) values are processed;
     multi-bit operations should be lowered first using `synth-lower-word-to-bits`.
 
-    Note: This pass requires Z3 to be available (via LLVM_ENABLE_Z3_SOLVER or
-    external Z3 installation).
+    Uses CaDiCaL SAT solver if CIRCT_CADICAL_ENABLED is set, otherwise falls
+    back to the built-in MiniSAT solver.
   }];
   let options = [
     Option<"numRandomPatterns", "num-random-patterns", "unsigned", "4096",
@@ -271,7 +271,9 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
     Option<"satConflictLimit", "sat-conflict-limit", "unsigned", "100000",
            "Conflict limit per SAT solver call (0 = unlimited)">,
     Option<"enableCEXFeedback", "enable-cex-feedback", "bool", "true",
-           "Enable counterexample feedback to refine simulation">
+           "Enable counterexample feedback to refine simulation">,
+    Option<"seed", "seed", "unsigned", "0",
+           "Seed for random pattern generation (0 = use system entropy)">
   ];
   let statistics = [
     Statistic<"numEquivClasses", "num-equiv-classes",
