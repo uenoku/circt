@@ -674,6 +674,8 @@ void FRAIGSolver::verifyCandidates() {
       continue;
 
     // Fresh solver per equivalence class, encoding only the COI.
+    // TODO: ABC uses a global solver that shares clauses.
+    //       Consider replacing a local solver with a global one.
     MiniSATSolver solver;
 
     llvm::DenseMap<Value, int> localVarMap;
