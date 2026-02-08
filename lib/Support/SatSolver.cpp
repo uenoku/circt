@@ -18,11 +18,11 @@ using namespace circt;
 //===----------------------------------------------------------------------===//
 
 void MiniSATSolver::add(int lit) {
+  // TODO: Avoid using 0 to commit clause API.
   if (lit == 0) {
     commitClause();
     clauseBuf.clear();
   } else {
-    assert(lit != 0 && "Literal must be non-zero");
     ensureVar(std::abs(lit));
     clauseBuf.push_back(lit);
   }
