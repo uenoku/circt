@@ -157,7 +157,7 @@ void MiniSATSolver::backtrack(int level) {
 // Boolean Constraint Propagation
 //===----------------------------------------------------------------------===//
 
-int MiniSATSolver::propagate() {
+MiniSATSolver::Conflict MiniSATSolver::propagate() {
   while (propagHead < static_cast<int>(trail.size())) {
     int p = trail[propagHead++];
     int falseLit = negLit(p);
@@ -170,14 +170,16 @@ int MiniSATSolver::propagate() {
       if (w.isBinary()) {
         int otherEnc = encodeLit(w.otherLit());
         if (!enqueue(otherEnc, kNoReason)) {
-          binConflLits[0] = falseLit;
-          binConflLits[1] = otherEnc;
-          // Copy remaining watches and return conflict.
+          Conflict confl;
+          confl.index = Conflict::kBinary;
+          confl.binLits[0] = falseLit;
+          confl.binLits[1] = otherEnc;
+          // Copy remaining watches.
           ws[j++] = ws[i++];
           while (i < ws.size())
             ws[j++] = ws[i++];
           ws.resize(j);
-          return kBinaryConflict;
+          return confl;
         }
         ws[j++] = ws[i++];
         continue;
@@ -220,19 +222,19 @@ int MiniSATSolver::propagate() {
         while (i < ws.size())
           ws[j++] = ws[i++];
         ws.resize(j);
-        return static_cast<int>(ci);
+        return Conflict{static_cast<int>(ci), {}};
       }
     }
     ws.resize(j);
   }
-  return -1; // no conflict
+  return Conflict{}; // no conflict
 }
 
 //===----------------------------------------------------------------------===//
 // Conflict Analysis (1UIP)
 //===----------------------------------------------------------------------===//
 
-void MiniSATSolver::analyze(int conflIdx,
+void MiniSATSolver::analyze(const Conflict &confl,
                             llvm::SmallVectorImpl<int> &outLearnt,
                             int &outBackLevel) {
   int pathCount = 0;
@@ -255,11 +257,11 @@ void MiniSATSolver::analyze(int conflIdx,
   };
 
   // Seed with the conflict clause literals.
-  if (conflIdx == kBinaryConflict) {
-    processLit(binConflLits[0]);
-    processLit(binConflLits[1]);
+  if (confl.isBinary()) {
+    processLit(confl.binLits[0]);
+    processLit(confl.binLits[1]);
   } else {
-    Clause &c = getClause(conflIdx);
+    Clause &c = getClause(confl.index);
     if (c.learnt)
       bumpClauseActivity(c);
     for (unsigned k = 0; k < c.size; k++)
@@ -294,10 +296,12 @@ void MiniSATSolver::analyze(int conflIdx,
   for (size_t i = 1; i < outLearnt.size(); i++)
     levelMask |= 1u << (vars[litVar(outLearnt[i])].level & 31);
 
+  llvm::SmallVector<int> stack;
+  llvm::SmallVector<int> toClear;
   size_t writePos = 1;
   for (size_t i = 1; i < outLearnt.size(); i++) {
     int v = litVar(outLearnt[i]);
-    if (vars[v].reason < 0 || !isRedundant(v, levelMask))
+    if (vars[v].reason < 0 || !isRedundant(v, levelMask, stack, toClear))
       outLearnt[writePos++] = outLearnt[i];
   }
   outLearnt.resize(writePos);
@@ -322,16 +326,20 @@ void MiniSATSolver::analyze(int conflIdx,
   }
 }
 
-bool MiniSATSolver::isRedundant(int v, unsigned levelMask) {
-  analyzeStack.clear();
-  analyzeStack.push_back(v);
-  int top = static_cast<int>(clearList.size());
+bool MiniSATSolver::isRedundant(int v, unsigned levelMask,
+                                llvm::SmallVectorImpl<int> &stack,
+                                llvm::SmallVectorImpl<int> &toClear) {
+  stack.clear();
+  stack.push_back(v);
+  int top = static_cast<int>(toClear.size());
 
-  while (!analyzeStack.empty()) {
-    int x = analyzeStack.pop_back_val();
+  while (!stack.empty()) {
+    int x = stack.pop_back_val();
     int reason = vars[x].reason;
-    if (reason < 0)
-      return cleanupRedundancyCheck(top);
+    if (reason < 0) {
+      cleanupRedundancyCheck(top, toClear);
+      return false;
+    }
 
     Clause &c = getClause(reason);
     for (unsigned k = 0; k < c.size; k++) {
@@ -341,21 +349,22 @@ bool MiniSATSolver::isRedundant(int v, unsigned levelMask) {
         continue;
       if (var.reason >= 0 && ((1u << (var.level & 31)) & levelMask)) {
         var.seen = 1;
-        analyzeStack.push_back(lv);
-        clearList.push_back(lv);
+        stack.push_back(lv);
+        toClear.push_back(lv);
       } else {
-        return cleanupRedundancyCheck(top);
+        cleanupRedundancyCheck(top, toClear);
+        return false;
       }
     }
   }
   return true;
 }
 
-bool MiniSATSolver::cleanupRedundancyCheck(int top) {
-  for (int i = top; i < static_cast<int>(clearList.size()); i++)
-    vars[clearList[i]].seen = 0;
-  clearList.resize(top);
-  return false;
+void MiniSATSolver::cleanupRedundancyCheck(
+    int top, llvm::SmallVectorImpl<int> &toClear) {
+  for (int i = top; i < static_cast<int>(toClear.size()); i++)
+    vars[toClear[i]].seen = 0;
+  toClear.resize(top);
 }
 
 //===----------------------------------------------------------------------===//
@@ -379,46 +388,46 @@ void MiniSATSolver::commitClause() {
     return;
 
   // Encode, sort, deduplicate.
-  tmpLits.clear();
+  llvm::SmallVector<int> lits;
   for (int lit : clauseBuf)
-    tmpLits.push_back(encodeLit(lit));
-  llvm::sort(tmpLits);
+    lits.push_back(encodeLit(lit));
+  llvm::sort(lits);
 
   size_t w = 0;
-  for (size_t i = 0; i < tmpLits.size(); i++) {
-    if (w > 0 && tmpLits[i] == tmpLits[w - 1])
+  for (size_t i = 0; i < lits.size(); i++) {
+    if (w > 0 && lits[i] == lits[w - 1])
       continue;
-    if (w > 0 && tmpLits[i] == negLit(tmpLits[w - 1]))
+    if (w > 0 && lits[i] == negLit(lits[w - 1]))
       return; // tautology
-    if (decisionLevel() == 0 && evalLit(tmpLits[i]) == kTrue)
+    if (decisionLevel() == 0 && evalLit(lits[i]) == kTrue)
       return; // satisfied at root
-    if (decisionLevel() == 0 && evalLit(tmpLits[i]) == kFalse)
+    if (decisionLevel() == 0 && evalLit(lits[i]) == kFalse)
       continue; // falsified at root
-    tmpLits[w++] = tmpLits[i];
+    lits[w++] = lits[i];
   }
-  tmpLits.resize(w);
+  lits.resize(w);
 
-  if (tmpLits.empty()) {
+  if (lits.empty()) {
     ok = false;
     return;
   }
-  if (tmpLits.size() == 1) {
-    ok = enqueue(tmpLits[0], kNoReason);
+  if (lits.size() == 1) {
+    ok = enqueue(lits[0], kNoReason);
     return;
   }
 
   numClauses++;
 
-  if (tmpLits.size() == 2) {
-    addBinaryWatch(tmpLits[0], tmpLits[1]);
+  if (lits.size() == 2) {
+    addBinaryWatch(lits[0], lits[1]);
     return;
   }
 
   auto ci = static_cast<uint32_t>(problemClauses.size());
   problemClauses.push_back(
-      {static_cast<uint32_t>(tmpLits.size()), /*learnt=*/false, 0.0f,
-       llvm::SmallVector<int, 4>(tmpLits.begin(), tmpLits.end())});
-  addWatchPair(tmpLits[0], tmpLits[1], ci);
+      {static_cast<uint32_t>(lits.size()), /*learnt=*/false, 0.0f,
+       llvm::SmallVector<int, 4>(lits.begin(), lits.end())});
+  addWatchPair(lits[0], lits[1], ci);
 }
 
 void MiniSATSolver::recordLearnt(llvm::SmallVectorImpl<int> &lits) {
@@ -517,8 +526,8 @@ MiniSATSolver::Result MiniSATSolver::search(int64_t confBudget) {
   llvm::SmallVector<int> learntClause;
 
   for (;;) {
-    int confl = propagate();
-    if (confl != -1) {
+    Conflict confl = propagate();
+    if (!confl.isNone()) {
       conflicts++;
       if (decisionLevel() == rootLevel)
         return kUNSAT;
@@ -556,7 +565,7 @@ MiniSATSolver::Result MiniSATSolver::solveImpl(int64_t confLimit) {
   if (!ok)
     return kUNSAT;
 
-  if (propagate() != -1) {
+  if (!propagate().isNone()) {
     ok = false;
     return kUNSAT;
   }
@@ -567,7 +576,7 @@ MiniSATSolver::Result MiniSATSolver::solveImpl(int64_t confLimit) {
     int enc = encodeLit(extLit);
     newDecisionLevel();
     rootLevel = decisionLevel();
-    if (!enqueue(enc, kDecisionReason) || propagate() != -1) {
+    if (!enqueue(enc, kDecisionReason) || !propagate().isNone()) {
       backtrack(0);
       rootLevel = 0;
       return kUNSAT;

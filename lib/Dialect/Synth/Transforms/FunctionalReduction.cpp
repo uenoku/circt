@@ -16,6 +16,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/SatSolver.h"
 #include "mlir/IR/Builders.h"
@@ -233,7 +234,7 @@ void FRAIGSolver::runSimulation() {
 llvm::APInt FRAIGSolver::simulateValue(Value v) {
   Operation *op = v.getDefiningOp();
   if (!op)
-    return inputPatterns.lookup(v);
+    return inputPatterns.at(v);
 
   if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
     // AND of all inputs with inversions
@@ -242,7 +243,7 @@ llvm::APInt FRAIGSolver::simulateValue(Value v) {
     auto inverted = andOp.getInverted();
 
     for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-      llvm::APInt sig = simSignatures.lookup(input);
+      llvm::APInt sig = simSignatures.at(input);
       if (inv)
         sig.flipAllBits();
       result &= sig;
@@ -257,7 +258,7 @@ llvm::APInt FRAIGSolver::simulateValue(Value v) {
     // Get simulation values with inversions applied
     SmallVector<llvm::APInt> sigs;
     for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-      llvm::APInt sig = simSignatures.lookup(input);
+      llvm::APInt sig = simSignatures.at(input);
       if (inv)
         sig.flipAllBits();
       sigs.push_back(sig);
@@ -307,7 +308,7 @@ void FRAIGSolver::buildEquivalenceClasses() {
   llvm::DenseMap<llvm::hash_code, SmallVector<SigInfo>> sigGroups;
 
   for (auto value : allValues) {
-    llvm::APInt sig = simSignatures.lookup(value);
+    llvm::APInt sig = simSignatures.at(value);
     llvm::APInt invSig = ~sig;
 
     // Use lexicographically smaller as canonical
@@ -331,7 +332,7 @@ void FRAIGSolver::buildEquivalenceClasses() {
     // and separate into equivalence classes
     llvm::DenseMap<llvm::APInt, SmallVector<SigInfo>> exactGroups;
     for (auto &info : group) {
-      llvm::APInt sig = simSignatures.lookup(info.value);
+      llvm::APInt sig = simSignatures.at(info.value);
       llvm::APInt invSig = ~sig;
       const llvm::APInt &canonical = info.isInverted ? invSig : sig;
       exactGroups[canonical].push_back(info);
@@ -422,7 +423,7 @@ void FRAIGSolver::sortByPriority() {
       }
     }
 
-    // Sort members by depth (shallowest first → cheapest SAT calls first)
+    // Sort members by depth (shallowest first -> cheapest SAT calls first)
     llvm::sort(ec.members, [this](const std::pair<Value, bool> &a,
                                   const std::pair<Value, bool> &b) {
       return computeDepth(a.first) < computeDepth(b.first);
@@ -579,7 +580,7 @@ void FRAIGSolver::refineByCEX(MiniSATSolver &solver,
       auto inputs = andOp.getInputs();
       auto inverted = andOp.getInverted();
       for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-        bool v = cexValues.lookup(input);
+        bool v = cexValues.at(input);
         result &= (inv ? !v : v);
       }
       cexValues[value] = result;
@@ -591,7 +592,7 @@ void FRAIGSolver::refineByCEX(MiniSATSolver &solver,
       auto inverted = majOp.getInverted();
       SmallVector<bool> vals;
       for (auto [input, inv] : llvm::zip(inputs, inverted)) {
-        bool v = cexValues.lookup(input);
+        bool v = cexValues.at(input);
         vals.push_back(inv ? !v : v);
       }
       // Count true values — majority wins
@@ -608,13 +609,13 @@ void FRAIGSolver::refineByCEX(MiniSATSolver &solver,
   // callers iterating by index remain valid.
   unsigned removedMembers = 0;
   for (auto &ec : equivClasses) {
-    bool repVal = cexValues.lookup(ec.representative);
+    bool repVal = cexValues.at(ec.representative);
 
     auto it = llvm::remove_if(ec.members, [&](std::pair<Value, bool> &entry) {
       auto [member, isComplement] = entry;
       if (provenEquiv.count(member))
         return false; // Keep proven members
-      bool memberVal = cexValues.lookup(member);
+      bool memberVal = cexValues.at(member);
       bool expectedEqual = !isComplement;
       bool matches = (repVal == memberVal) == expectedEqual;
       if (!matches)
@@ -657,8 +658,7 @@ void FRAIGSolver::verifyCandidates() {
 
       addLocalStructuralConstraints(solver, member, localVarMap, localNextVar,
                                     visited);
-      int memberVar =
-          getOrCreateLocalVar(member, localVarMap, localNextVar);
+      int memberVar = getOrCreateLocalVar(member, localVarMap, localNextVar);
       int targetLit = isComplement ? -memberVar : memberVar;
 
       // Check 1: Can rep=1 and target=0?
@@ -775,6 +775,14 @@ void FRAIGSolver::mergeEquivalentNodes() {
 FRAIGSolver::Stats FRAIGSolver::run() {
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting functional reduction with "
                           << numPatterns << " simulation patterns\n");
+  // Topologically sort the values
+
+  if (failed(circt::synth::topologicallySortLogicNetwork(module))) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "FRAIG: Failed to topologically sort logic network\n");
+    module->emitError() << "FRAIG: Failed to topologically sort logic network";
+    return stats;
+  }
 
   // Phase 1: Collect values and run simulation
   collectValues();
@@ -825,9 +833,8 @@ struct FunctionalReductionPass
   void runOnOperation() override {
     auto module = getOperation();
 
-    LLVM_DEBUG(llvm::dbgs()
-               << "Running FunctionalReduction (FRAIG) pass on "
-               << module.getName() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Running FunctionalReduction (FRAIG) pass on "
+                            << module.getName() << "\n");
 
     // Create and run FRAIG solver
     FRAIGSolver fraig(module, numRandomPatterns, satConflictLimit,

@@ -167,9 +167,6 @@ private:
   static constexpr int kNoReason = -1;
   static constexpr int kDecisionReason = -2;
 
-  /// Sentinel return value for binary-clause conflicts in propagate().
-  static constexpr int kBinaryConflict = -2;
-
   /// Watch entry tag: high bit set means the entry stores the other literal
   /// of a binary clause (encoded as uint32_t) rather than a clause index.
   static constexpr uint32_t kBinaryTag = 0x80000000u;
@@ -235,7 +232,7 @@ private:
   /// All data for one SAT variable, grouped for clarity.
   /// `vars` is 0-indexed: external variable v (1-indexed) maps to vars[v-1].
   /// Internal litVar() already returns 0-indexed, so vars[litVar(enc)] works
-  /// directly — no +1 offset needed anywhere.
+  /// directly.
   struct Variable {
     double activity = 0.0;
     int level = 0;
@@ -244,6 +241,18 @@ private:
     Assign modelVal = kUndef;
     int8_t polarity = 0;
     int8_t seen = 0;
+  };
+
+  // ---- Conflict result from BCP ----
+
+  /// Returned by propagate() to describe a conflict (or lack thereof).
+  struct Conflict {
+    int index = -1;       // -1 = no conflict, else clause index or kBinary
+    int binLits[2] = {};  // the two encoded literals (valid when isBinary())
+
+    static constexpr int kBinary = -2;
+    bool isNone() const { return index == -1; }
+    bool isBinary() const { return index == kBinary; }
   };
 
   // ---- Variable management ----
@@ -263,13 +272,15 @@ private:
   void backtrack(int level);
 
   // ---- Boolean Constraint Propagation ----
-  int propagate();
+  Conflict propagate();
 
   // ---- Conflict Analysis (1UIP) ----
-  void analyze(int conflIdx, llvm::SmallVectorImpl<int> &outLearnt,
+  void analyze(const Conflict &confl, llvm::SmallVectorImpl<int> &outLearnt,
                int &outBackLevel);
-  bool isRedundant(int v, unsigned levelMask);
-  bool cleanupRedundancyCheck(int top);
+  bool isRedundant(int v, unsigned levelMask,
+                   llvm::SmallVectorImpl<int> &stack,
+                   llvm::SmallVectorImpl<int> &toClear);
+  void cleanupRedundancyCheck(int top, llvm::SmallVectorImpl<int> &toClear);
 
   // ---- Clause construction ----
   void addWatchPair(int lit0, int lit1, uint32_t ci);
@@ -316,13 +327,9 @@ private:
   llvm::SmallVector<Clause, 0> problemClauses;
   llvm::SmallVector<Clause, 0> learntClauses;
 
-  // Temporaries.
+  // Clause/assumption builders (accumulate across add()/assume() calls).
   llvm::SmallVector<int> clauseBuf;
   llvm::SmallVector<int> assumptionBuf;
-  llvm::SmallVector<int> tmpLits;
-  int binConflLits[2] = {};
-  llvm::SmallVector<int> analyzeStack;
-  llvm::SmallVector<int> clearList;
 };
 
 } // namespace circt
