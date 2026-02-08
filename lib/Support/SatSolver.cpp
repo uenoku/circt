@@ -22,12 +22,14 @@ void MiniSATSolver::add(int lit) {
     commitClause();
     clauseBuf.clear();
   } else {
+    assert(lit != 0 && "Literal must be non-zero");
     ensureVar(std::abs(lit));
     clauseBuf.push_back(lit);
   }
 }
 
 void MiniSATSolver::assume(int lit) {
+  assert(lit != 0 && "Assumption literal must be non-zero");
   ensureVar(std::abs(lit));
   assumptionBuf.push_back(lit);
 }
@@ -121,8 +123,12 @@ int MiniSATSolver::decisionLevel() const {
 bool MiniSATSolver::enqueue(int p, int reason) {
   int v = litVar(p);
   auto &var = vars[v];
-  if (var.assign != kUndef)
-    return var.assign == ((p & 1) ? kFalse : kTrue);
+  if (var.assign != kUndef) {
+    // Check if current assignment is consistent with the literal we're trying
+    // to enqueue
+    Assign expectedAssign = (p & 1) ? kFalse : kTrue;
+    return var.assign == expectedAssign;
+  }
   var.assign = (p & 1) ? kFalse : kTrue;
   var.level = decisionLevel();
   var.reason = reason;
@@ -190,13 +196,15 @@ MiniSATSolver::Conflict MiniSATSolver::propagate() {
       int *lits = c.lits.data();
       int sz = static_cast<int>(c.size);
 
-      // Put the false literal at position 1.
+      // Put the false literal at position 1 (watched literals are at positions
+      // 0 and 1).
       if (lits[0] == falseLit)
         std::swap(lits[0], lits[1]);
-      assert(lits[1] == falseLit);
+      assert(lits[1] == falseLit && "False literal must be at position 1");
 
       // Clause already satisfied by lits[0]?
-      if (evalLit(lits[0]) == kTrue) {
+      bool clauseSatisfied = (evalLit(lits[0]) == kTrue);
+      if (clauseSatisfied) {
         ws[j++] = ws[i++];
         continue;
       }
@@ -585,8 +593,7 @@ MiniSATSolver::Result MiniSATSolver::solveImpl(int64_t confLimit) {
 
   Result result = kUNKNOWN;
   for (int iter = 0; result == kUNKNOWN; iter++) {
-    int64_t budget =
-        static_cast<int64_t>(kLubyBase * luby(kLubyFactor, iter));
+    int64_t budget = static_cast<int64_t>(kLubyBase * luby(kLubyFactor, iter));
     if (confLimit >= 0)
       budget = std::min(budget, confLimit);
     result = search(budget);

@@ -99,6 +99,11 @@ private:
                                      int &localNextVar,
                                      llvm::DenseSet<Value> &visited);
 
+  /// Helper: Add Tseitin clauses for majority-3 gate: outVar <=> MAJ(a, b, c).
+  /// MAJ(a,b,c) is true when at least 2 of {a,b,c} are true.
+  static void addMajority3Clauses(MiniSATSolver &s, int outVar, int a, int b,
+                                  int c);
+
   // CEX feedback: refine equivalence classes using counterexample from SAT
   void refineByCEX(MiniSATSolver &solver,
                    llvm::DenseMap<Value, int> &localVarMap);
@@ -459,6 +464,44 @@ int FRAIGSolver::getOrCreateLocalVar(Value v,
   return var;
 }
 
+void FRAIGSolver::addMajority3Clauses(MiniSATSolver &s, int outVar, int a,
+                                      int b, int c) {
+  // Tseitin encoding for: outVar <=> MAJ(a, b, c)
+  // MAJ is true when at least 2 of {a, b, c} are true.
+  //
+  // Forward direction (outVar => at least 2 true):
+  //   outVar => (a AND b) OR (a AND c) OR (b AND c)
+  //   Clauses: (!outVar OR a OR b), (!outVar OR a OR c), (!outVar OR b OR c)
+  s.add(-outVar);
+  s.add(a);
+  s.add(b);
+  s.add(0);
+  s.add(-outVar);
+  s.add(a);
+  s.add(c);
+  s.add(0);
+  s.add(-outVar);
+  s.add(b);
+  s.add(c);
+  s.add(0);
+
+  // Backward direction (at least 2 true => outVar):
+  //   (a AND b) OR (a AND c) OR (b AND c) => outVar
+  //   Clauses: (outVar OR !a OR !b), (outVar OR !a OR !c), (outVar OR !b OR !c)
+  s.add(outVar);
+  s.add(-a);
+  s.add(-b);
+  s.add(0);
+  s.add(outVar);
+  s.add(-a);
+  s.add(-c);
+  s.add(0);
+  s.add(outVar);
+  s.add(-b);
+  s.add(-c);
+  s.add(0);
+}
+
 void FRAIGSolver::addLocalStructuralConstraints(
     MiniSATSolver &s, Value v, llvm::DenseMap<Value, int> &localVarMap,
     int &localNextVar, llvm::DenseSet<Value> &visited) {
@@ -509,37 +552,28 @@ void FRAIGSolver::addLocalStructuralConstraints(
     }
 
     if (inputLits.size() == 3) {
-      int a = inputLits[0], b = inputLits[1], c = inputLits[2];
-      s.add(-outVar); s.add(a); s.add(b); s.add(0);
-      s.add(-outVar); s.add(a); s.add(c); s.add(0);
-      s.add(-outVar); s.add(b); s.add(c); s.add(0);
-      s.add(outVar); s.add(-a); s.add(-b); s.add(0);
-      s.add(outVar); s.add(-a); s.add(-c); s.add(0);
-      s.add(outVar); s.add(-b); s.add(-c); s.add(0);
+      // Direct majority-3 encoding
+      addMajority3Clauses(s, outVar, inputLits[0], inputLits[1], inputLits[2]);
     } else {
+      // Recursive decomposition for >3 inputs
       while (inputLits.size() > 3) {
         int a = inputLits[0], b = inputLits[1], c = inputLits[2];
         int aux = ++localNextVar;
-        s.add(-aux); s.add(a); s.add(b); s.add(0);
-        s.add(-aux); s.add(a); s.add(c); s.add(0);
-        s.add(-aux); s.add(b); s.add(c); s.add(0);
-        s.add(aux); s.add(-a); s.add(-b); s.add(0);
-        s.add(aux); s.add(-a); s.add(-c); s.add(0);
-        s.add(aux); s.add(-b); s.add(-c); s.add(0);
+        addMajority3Clauses(s, aux, a, b, c);
         inputLits.erase(inputLits.begin(), inputLits.begin() + 3);
         inputLits.insert(inputLits.begin(), aux);
       }
       if (inputLits.size() == 3) {
-        int a = inputLits[0], b = inputLits[1], c = inputLits[2];
-        s.add(-outVar); s.add(a); s.add(b); s.add(0);
-        s.add(-outVar); s.add(a); s.add(c); s.add(0);
-        s.add(-outVar); s.add(b); s.add(c); s.add(0);
-        s.add(outVar); s.add(-a); s.add(-b); s.add(0);
-        s.add(outVar); s.add(-a); s.add(-c); s.add(0);
-        s.add(outVar); s.add(-b); s.add(-c); s.add(0);
+        addMajority3Clauses(s, outVar, inputLits[0], inputLits[1],
+                            inputLits[2]);
       } else if (inputLits.size() == 1) {
-        s.add(-outVar); s.add(inputLits[0]); s.add(0);
-        s.add(outVar); s.add(-inputLits[0]); s.add(0);
+        // Degenerate case: single input (shouldn't happen in practice)
+        s.add(-outVar);
+        s.add(inputLits[0]);
+        s.add(0);
+        s.add(outVar);
+        s.add(-inputLits[0]);
+        s.add(0);
       }
     }
     return;
@@ -708,8 +742,12 @@ void FRAIGSolver::verifyCandidates() {
       stats.numProvedEquiv++;
 
       // Add as permanent clauses to help future members.
-      solver.add(-repVar); solver.add(targetLit); solver.add(0);
-      solver.add(-targetLit); solver.add(repVar); solver.add(0);
+      solver.add(-repVar);
+      solver.add(targetLit);
+      solver.add(0);
+      solver.add(-targetLit);
+      solver.add(repVar);
+      solver.add(0);
 
       LLVM_DEBUG(llvm::dbgs() << "FRAIG: Proved\n");
     }

@@ -149,13 +149,13 @@ public:
   void assume(int lit);
 
   /// Solve under current assumptions. Returns kSAT, kUNSAT, or kUNKNOWN.
-  Result solve(int64_t confLimit = -1);
+  [[nodiscard]] Result solve(int64_t confLimit = -1);
 
   /// Model value for variable `v` after kSAT. Returns v (true) or -v (false).
-  int val(int v) const;
+  [[nodiscard]] int val(int v) const;
 
   /// Number of clauses currently in the solver.
-  int getNumClauses() const { return numClauses; }
+  [[nodiscard]] int getNumClauses() const { return numClauses; }
 
 private:
   // ---- Constants ----
@@ -177,14 +177,21 @@ private:
   static constexpr uint32_t kLearntMask = ~kLearntTag;
 
   /// VSIDS activity rescaling thresholds.
+  /// When activity exceeds kVarActRescale, all activities are multiplied by
+  /// kVarActRescaleInv to prevent overflow while preserving relative ordering.
   static constexpr double kVarActRescale = 1e100;
   static constexpr double kVarActRescaleInv = 1e-100;
+  /// Variable activity decay: 0.95 means 5% decay per conflict.
   static constexpr double kVarActDecayFactor = 1.0 / 0.95;
+  /// Clause activity rescaling to prevent overflow.
   static constexpr double kClaActRescale = 1e20;
   static constexpr double kClaActRescaleInv = 1e-20;
+  /// Clause activity decay: 0.999 means 0.1% decay per conflict.
   static constexpr double kClaActDecayFactor = 1.0 / 0.999;
 
   /// Luby restart: base number of conflicts per restart round.
+  /// The Luby sequence provides a universal restart strategy that works well
+  /// across different problem types without parameter tuning.
   static constexpr int64_t kLubyBase = 100;
   static constexpr double kLubyFactor = 2.0;
 
@@ -247,8 +254,8 @@ private:
 
   /// Returned by propagate() to describe a conflict (or lack thereof).
   struct Conflict {
-    int index = -1;       // -1 = no conflict, else clause index or kBinary
-    int binLits[2] = {};  // the two encoded literals (valid when isBinary())
+    int index = -1;      // -1 = no conflict, else clause index or kBinary
+    int binLits[2] = {}; // the two encoded literals (valid when isBinary())
 
     static constexpr int kBinary = -2;
     bool isNone() const { return index == -1; }
@@ -277,8 +284,7 @@ private:
   // ---- Conflict Analysis (1UIP) ----
   void analyze(const Conflict &confl, llvm::SmallVectorImpl<int> &outLearnt,
                int &outBackLevel);
-  bool isRedundant(int v, unsigned levelMask,
-                   llvm::SmallVectorImpl<int> &stack,
+  bool isRedundant(int v, unsigned levelMask, llvm::SmallVectorImpl<int> &stack,
                    llvm::SmallVectorImpl<int> &toClear);
   void cleanupRedundancyCheck(int top, llvm::SmallVectorImpl<int> &toClear);
 
@@ -317,19 +323,16 @@ private:
   llvm::SmallVector<llvm::SmallVector<WatchEntry, 4>, 0> watchLists;
 
   // Decision trail.
-  llvm::SmallVector<int> trail;
-  llvm::SmallVector<int> trailLimits;
+  llvm::SmallVector<int> trail, trailLimits;
 
   // VSIDS decision heap.
   IndexedMaxHeap vsidsHeap;
 
   // Clause pools.
-  llvm::SmallVector<Clause, 0> problemClauses;
-  llvm::SmallVector<Clause, 0> learntClauses;
+  llvm::SmallVector<Clause, 0> problemClauses, learntClauses;
 
   // Clause/assumption builders (accumulate across add()/assume() calls).
-  llvm::SmallVector<int> clauseBuf;
-  llvm::SmallVector<int> assumptionBuf;
+  llvm::SmallVector<int> clauseBuf, assumptionBuf;
 };
 
 } // namespace circt
