@@ -40,7 +40,7 @@ MiniSATSolver::Result MiniSATSolver::solve(int64_t confLimit) {
 
 int MiniSATSolver::val(int v) const {
   assert(v > 0 && v <= numVars);
-  return modelVals[v] == kTrue ? v : -v;
+  return vars[v - 1].modelVal == kTrue ? v : -v;
 }
 
 //===----------------------------------------------------------------------===//
@@ -67,15 +67,9 @@ void MiniSATSolver::ensureVar(int v) {
     return;
   int old = numVars;
   numVars = v;
-  assigns.grow(v);
-  varLevels.grow(v);
-  varReasons.grow(v);
-  varActivity.grow(v);
-  varPolarity.grow(v);
-  varSeen.grow(v);
-  modelVals.grow(v);
+  vars.resize(numVars);
   watchLists.resize(numVars * 2);
-  auto sf = [this](int x) { return varActivity[x + 1]; };
+  auto sf = [this](int x) { return vars[x].activity; };
   vsidsHeap.grow(numVars);
   for (int i = old; i < numVars; i++)
     vsidsHeap.insert(i, sf);
@@ -86,13 +80,13 @@ void MiniSATSolver::ensureVar(int v) {
 //===----------------------------------------------------------------------===//
 
 void MiniSATSolver::bumpVarActivity(int v) {
-  varActivity[v + 1] += varActInc;
-  if (varActivity[v + 1] > kVarActRescale) {
-    for (int i = 1; i <= numVars; i++)
-      varActivity[i] *= kVarActRescaleInv;
+  vars[v].activity += varActInc;
+  if (vars[v].activity > kVarActRescale) {
+    for (auto &var : vars)
+      var.activity *= kVarActRescaleInv;
     varActInc *= kVarActRescaleInv;
   }
-  auto sf = [this](int x) { return varActivity[x + 1]; };
+  auto sf = [this](int x) { return vars[x].activity; };
   vsidsHeap.increased(v, sf);
 }
 
@@ -114,7 +108,7 @@ void MiniSATSolver::decayClauseActivity() { claActInc *= kClaActDecayFactor; }
 //===----------------------------------------------------------------------===//
 
 MiniSATSolver::Assign MiniSATSolver::evalLit(int enc) const {
-  Assign a = assigns[litVar(enc) + 1];
+  Assign a = vars[litVar(enc)].assign;
   if (a == kUndef)
     return kUndef;
   return static_cast<Assign>((enc & 1) ? -a : a);
@@ -126,11 +120,12 @@ int MiniSATSolver::decisionLevel() const {
 
 bool MiniSATSolver::enqueue(int p, int reason) {
   int v = litVar(p);
-  if (assigns[v + 1] != kUndef)
-    return assigns[v + 1] == ((p & 1) ? kFalse : kTrue);
-  assigns[v + 1] = (p & 1) ? kFalse : kTrue;
-  varLevels[v + 1] = decisionLevel();
-  varReasons[v + 1] = reason;
+  auto &var = vars[v];
+  if (var.assign != kUndef)
+    return var.assign == ((p & 1) ? kFalse : kTrue);
+  var.assign = (p & 1) ? kFalse : kTrue;
+  var.level = decisionLevel();
+  var.reason = reason;
   trail.push_back(p);
   return true;
 }
@@ -142,13 +137,14 @@ void MiniSATSolver::newDecisionLevel() {
 void MiniSATSolver::backtrack(int level) {
   if (decisionLevel() <= level)
     return;
-  auto sf = [this](int x) { return varActivity[x + 1]; };
+  auto sf = [this](int x) { return vars[x].activity; };
   for (int i = static_cast<int>(trail.size()) - 1; i >= trailLimits[level];
        i--) {
     int v = litVar(trail[i]);
-    assigns[v + 1] = kUndef;
-    varReasons[v + 1] = kNoReason;
-    varPolarity[v + 1] = (trail[i] & 1) ? 1 : 0;
+    auto &var = vars[v];
+    var.assign = kUndef;
+    var.reason = kNoReason;
+    var.polarity = (trail[i] & 1) ? 1 : 0;
     if (!vsidsHeap.contains(v))
       vsidsHeap.insert(v, sf);
   }
@@ -247,10 +243,11 @@ void MiniSATSolver::analyze(int conflIdx,
 
   auto processLit = [&](int lit) {
     int v = litVar(lit);
-    if (!varSeen[v + 1] && varLevels[v + 1] > 0) {
-      varSeen[v + 1] = 1;
+    auto &var = vars[v];
+    if (!var.seen && var.level > 0) {
+      var.seen = 1;
       bumpVarActivity(v);
-      if (varLevels[v + 1] == decisionLevel())
+      if (var.level == decisionLevel())
         pathCount++;
       else
         outLearnt.push_back(lit);
@@ -271,14 +268,14 @@ void MiniSATSolver::analyze(int conflIdx,
 
   // Walk trail backwards to find 1UIP.
   while (pathCount > 0) {
-    while (!varSeen[litVar(trail[trailIdx]) + 1])
+    while (!vars[litVar(trail[trailIdx])].seen)
       trailIdx--;
     p = trail[trailIdx--];
-    varSeen[litVar(p) + 1] = 0;
+    vars[litVar(p)].seen = 0;
     pathCount--;
 
     if (pathCount > 0) {
-      int reason = varReasons[litVar(p) + 1];
+      int reason = vars[litVar(p)].reason;
       if (reason >= 0) {
         Clause &c = getClause(reason);
         if (c.learnt)
@@ -295,28 +292,28 @@ void MiniSATSolver::analyze(int conflIdx,
   // Minimize via self-subsumption.
   unsigned levelMask = 0;
   for (size_t i = 1; i < outLearnt.size(); i++)
-    levelMask |= 1u << (varLevels[litVar(outLearnt[i]) + 1] & 31);
+    levelMask |= 1u << (vars[litVar(outLearnt[i])].level & 31);
 
   size_t writePos = 1;
   for (size_t i = 1; i < outLearnt.size(); i++) {
     int v = litVar(outLearnt[i]);
-    if (varReasons[v + 1] < 0 || !isRedundant(v, levelMask))
+    if (vars[v].reason < 0 || !isRedundant(v, levelMask))
       outLearnt[writePos++] = outLearnt[i];
   }
   outLearnt.resize(writePos);
 
   for (auto lit : outLearnt)
-    varSeen[litVar(lit) + 1] = 0;
+    vars[litVar(lit)].seen = 0;
 
   // Find backtrack level = second-highest decision level in learnt clause.
   if (outLearnt.size() == 1) {
     outBackLevel = 0;
   } else {
     int maxIdx = 1;
-    int maxLev = varLevels[litVar(outLearnt[1]) + 1];
+    int maxLev = vars[litVar(outLearnt[1])].level;
     for (size_t i = 2; i < outLearnt.size(); i++) {
-      if (varLevels[litVar(outLearnt[i]) + 1] > maxLev) {
-        maxLev = varLevels[litVar(outLearnt[i]) + 1];
+      if (vars[litVar(outLearnt[i])].level > maxLev) {
+        maxLev = vars[litVar(outLearnt[i])].level;
         maxIdx = static_cast<int>(i);
       }
     }
@@ -332,18 +329,18 @@ bool MiniSATSolver::isRedundant(int v, unsigned levelMask) {
 
   while (!analyzeStack.empty()) {
     int x = analyzeStack.pop_back_val();
-    int reason = varReasons[x + 1];
+    int reason = vars[x].reason;
     if (reason < 0)
       return cleanupRedundancyCheck(top);
 
     Clause &c = getClause(reason);
     for (unsigned k = 0; k < c.size; k++) {
       int lv = litVar(c.lits[k]);
-      if (lv == x || varSeen[lv + 1] || varLevels[lv + 1] == 0)
+      auto &var = vars[lv];
+      if (lv == x || var.seen || var.level == 0)
         continue;
-      if (varReasons[lv + 1] >= 0 &&
-          ((1u << (varLevels[lv + 1] & 31)) & levelMask)) {
-        varSeen[lv + 1] = 1;
+      if (var.reason >= 0 && ((1u << (var.level & 31)) & levelMask)) {
+        var.seen = 1;
         analyzeStack.push_back(lv);
         clearList.push_back(lv);
       } else {
@@ -356,7 +353,7 @@ bool MiniSATSolver::isRedundant(int v, unsigned levelMask) {
 
 bool MiniSATSolver::cleanupRedundancyCheck(int top) {
   for (int i = top; i < static_cast<int>(clearList.size()); i++)
-    varSeen[clearList[i] + 1] = 0;
+    vars[clearList[i]].seen = 0;
   clearList.resize(top);
   return false;
 }
@@ -466,16 +463,15 @@ void MiniSATSolver::reduceLearnts() {
       continue;
     // Don't remove if clause is the reason for a current assignment.
     int v = litVar(c.lits[0]);
-    if (assigns[v + 1] != kUndef &&
-        varReasons[v + 1] == static_cast<int>(idx | kLearntTag))
+    if (vars[v].assign != kUndef &&
+        vars[v].reason == static_cast<int>(idx | kLearntTag))
       continue;
     c.size = 0; // mark deleted
     removed++;
   }
 
   // Purge dangling watch references.
-  for (int i = 0; i < numVars * 2; i++) {
-    auto &ws = watchLists[i];
+  for (auto &ws : watchLists) {
     llvm::erase_if(ws, [&](WatchEntry &w) {
       return !w.isBinary() && getClause(w.clauseIdx()).size == 0;
     });
@@ -487,10 +483,10 @@ void MiniSATSolver::reduceLearnts() {
 //===----------------------------------------------------------------------===//
 
 int MiniSATSolver::pickBranchVar() {
-  auto sf = [this](int x) { return varActivity[x + 1]; };
+  auto sf = [this](int x) { return vars[x].activity; };
   while (!vsidsHeap.empty()) {
     int v = vsidsHeap.pop(sf);
-    if (assigns[v + 1] == kUndef)
+    if (vars[v].assign == kUndef)
       return v;
   }
   return -1;
@@ -544,13 +540,13 @@ MiniSATSolver::Result MiniSATSolver::search(int64_t confBudget) {
       int next = pickBranchVar();
       if (next == -1) {
         // All variables assigned — satisfiable.
-        for (int i = 1; i <= numVars; i++)
-          modelVals[i] = assigns[i];
+        for (auto &var : vars)
+          var.modelVal = var.assign;
         backtrack(rootLevel);
         return kSAT;
       }
       newDecisionLevel();
-      enqueue(varPolarity[next + 1] ? (2 * next + 1) : (2 * next),
+      enqueue(vars[next].polarity ? (2 * next + 1) : (2 * next),
               kDecisionReason);
     }
   }
