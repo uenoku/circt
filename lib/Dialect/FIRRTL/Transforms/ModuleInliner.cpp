@@ -1037,7 +1037,10 @@ LogicalResult Inliner::flattenInto(StringRef prefix, InliningLevel &il,
 
   LLVM_DEBUG(llvm::dbgs() << "flattening " << target.getModuleName() << " into "
                           << il.mic.module.getModuleName() << "\n");
-  auto visit = [&](Operation *op) {
+  auto visit = [&](Operation *op) -> LogicalResult {
+    if (auto choice = dyn_cast<InstanceChoiceOp>(op))
+      return choice.emitError("instance choice cannot be flattened. Consider "
+                              "removing Flatten annotations");
     // If it's not an instance op, clone it and continue.
     auto instance = dyn_cast<InstanceOp>(op);
     if (!instance) {
