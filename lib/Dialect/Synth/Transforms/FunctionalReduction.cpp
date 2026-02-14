@@ -688,6 +688,10 @@ void FRAIGSolver<SATSolverT>::verifyCandidates() {
   LLVM_DEBUG(llvm::dbgs() << "FRAIG: Starting SAT verification with "
                           << equivClasses.size() << " equivalence classes\n");
 
+  // Check if user wants to dump all SAT queries
+  const char *dumpDir = std::getenv("FRAIG_DUMP_SAT");
+  bool dumpAll = (dumpDir != nullptr);
+
   // Global solver with bookmark/rollback (ABC-style):
   // - Pre-allocate variables for all values so they persist across rollbacks
   // - Learned clauses accumulate across equivalence classes (knowledge sharing)
@@ -729,6 +733,20 @@ void FRAIGSolver<SATSolverT>::verifyCandidates() {
 
       // Check 1: Can rep=1 and target=0?
       stats.numSATCalls++;
+
+      // Optionally dump SAT query for debugging
+      if (dumpAll) {
+        std::string filename = std::string(dumpDir) + "/sat_query_" +
+                               std::to_string(stats.numSATCalls) + "_check1.cnf";
+        std::error_code EC;
+        llvm::raw_fd_ostream out(filename, EC);
+        if (!EC) {
+          solver.dumpDIMACS(out, {repVar, -targetLit});
+          LLVM_DEBUG(llvm::dbgs()
+                     << "FRAIG: Dumped SAT query to " << filename << "\n");
+        }
+      }
+
       solver.assume(repVar);
       solver.assume(-targetLit);
       auto result1 = solver.solve(conflictLimit);
@@ -749,6 +767,20 @@ void FRAIGSolver<SATSolverT>::verifyCandidates() {
 
       // Check 2: Can rep=0 and target=1?
       stats.numSATCalls++;
+
+      // Optionally dump SAT query for debugging
+      if (dumpAll) {
+        std::string filename = std::string(dumpDir) + "/sat_query_" +
+                               std::to_string(stats.numSATCalls) + "_check2.cnf";
+        std::error_code EC;
+        llvm::raw_fd_ostream out(filename, EC);
+        if (!EC) {
+          solver.dumpDIMACS(out, {-repVar, targetLit});
+          LLVM_DEBUG(llvm::dbgs()
+                     << "FRAIG: Dumped SAT query to " << filename << "\n");
+        }
+      }
+
       solver.assume(-repVar);
       solver.assume(targetLit);
       auto result2 = solver.solve(conflictLimit);
@@ -940,6 +972,7 @@ public:
     LLVM_DEBUG(llvm::dbgs() << "Assuming: " << lit << "\n");
     solver->assume(lit);
     testSolver.assume(lit);
+    currentAssumptions.push_back(lit);
   }
 
   [[nodiscard]] Result solve(int64_t confLimit = -1) {
@@ -979,7 +1012,37 @@ public:
                            : (miniSatResult == MiniSATSolver::kUNSAT ? "UNSAT"
                                                                       : "UNKNOWN"))
                    << "\n";
+
+      // Dump DIMACS reproducer for debugging
+      static int mismatchCount = 0;
+      std::string filename =
+          "/tmp/cadical_mismatch_" + std::to_string(++mismatchCount) + ".cnf";
+      std::error_code EC;
+      llvm::raw_fd_ostream out(filename, EC);
+      if (!EC) {
+        dumpDIMACS(out, currentAssumptions);
+        llvm::errs() << "Dumped reproducer to " << filename << "\n";
+      } else {
+        llvm::errs() << "Failed to dump reproducer: " << EC.message() << "\n";
+      }
+
+      // Also dump MiniSAT's view
+      std::string miniFilename =
+          "/tmp/minisat_mismatch_" + std::to_string(mismatchCount) + ".cnf";
+      llvm::raw_fd_ostream miniOut(miniFilename, EC);
+      if (!EC) {
+        // Convert assumptions to proper format for dumpDIMACS
+        llvm::SmallVector<int> extAssumptions;
+        for (int lit : currentAssumptions) {
+          extAssumptions.push_back(lit);
+        }
+        testSolver.dumpDIMACS(miniOut, extAssumptions);
+        llvm::errs() << "Dumped MiniSAT view to " << miniFilename << "\n";
+      }
     }
+
+    // Clear assumptions for next solve
+    currentAssumptions.clear();
 
     return cadicalResult;
   }
@@ -1046,6 +1109,38 @@ public:
 
   [[nodiscard]] bool hasBookmark() const { return hasBookmark_; }
 
+  /// Export current formula in DIMACS CNF format for debugging.
+  void dumpDIMACS(llvm::raw_ostream &os,
+                  llvm::ArrayRef<int> assumptions = {}) const {
+    // Count total clauses
+    size_t totalClauses = clauses.size() + assumptions.size();
+
+    // DIMACS header (need to track maxVar)
+    int maxVar = 0;
+    for (const auto &clause : clauses) {
+      for (int lit : clause) {
+        maxVar = std::max(maxVar, std::abs(lit));
+      }
+    }
+    for (int lit : assumptions) {
+      maxVar = std::max(maxVar, std::abs(lit));
+    }
+
+    os << "p cnf " << maxVar << " " << totalClauses << "\n";
+
+    // All clauses
+    for (const auto &clause : clauses) {
+      for (int lit : clause)
+        os << lit << " ";
+      os << "0\n";
+    }
+
+    // Assumptions as unit clauses
+    for (int lit : assumptions) {
+      os << lit << " 0\n";
+    }
+  }
+
 private:
   CaDiCaL::Solver *solver;
   bool hasBookmark_ = false;
@@ -1053,6 +1148,7 @@ private:
   llvm::SmallVector<llvm::SmallVector<int, 4>, 0>
       bookmarkedClauses;                   // Clauses at bookmark
   llvm::SmallVector<int, 4> currentClause; // Current clause being built
+  llvm::SmallVector<int, 4> currentAssumptions; // Current assumptions
 
   MiniSATSolver testSolver;
 };
