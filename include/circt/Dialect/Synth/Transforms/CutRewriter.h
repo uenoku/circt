@@ -125,7 +125,7 @@ struct LogicNetworkGate {
 
   /// Operation pointer and kind packed together.
   /// The kind is stored in the low bits of the pointer.
-  llvm::PointerIntPair<mlir::Operation *, 3, Kind> opAndKind;
+  llvm::PointerIntPair<Operation *, 3, Kind> opAndKind;
 
   /// Fanin edges (up to 3 inputs). For AND gates, only edges[0] and edges[1]
   /// are used. For MAJ gates, all three are used. For PrimaryInput/Constant,
@@ -140,12 +140,10 @@ struct LogicNetworkGate {
   Kind getKind() const { return opAndKind.getInt(); }
 
   /// Get the operation pointer (nullptr for constants).
-  mlir::Operation *getOperation() const { return opAndKind.getPointer(); }
+  Operation *getOperation() const { return opAndKind.getPointer(); }
 
   /// Set the kind and operation.
-  void set(mlir::Operation *op, Kind kind) {
-    opAndKind.setPointerAndInt(op, kind);
-  }
+  void set(Operation *op, Kind kind) { opAndKind.setPointerAndInt(op, kind); }
 
   /// Get the number of fanin edges based on kind.
   /// For Other (variadic) gates, uses op->getNumOperands().
@@ -206,7 +204,7 @@ public:
   static constexpr uint32_t kConstant0 = 0;
   static constexpr uint32_t kConstant1 = 1;
 
-  const auto &getGates() const { return gates; }
+  ArrayRef<LogicNetworkGate> getGates() const { return gates; }
 
   LogicNetwork() {
     // Reserve index 0 for constant 0 and index 1 for constant 1
@@ -215,8 +213,8 @@ public:
     gates.emplace_back();
     gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
     // indexToValue needs placeholders for constants
-    indexToValue.push_back(mlir::Value()); // const0
-    indexToValue.push_back(mlir::Value()); // const1
+    indexToValue.push_back(Value()); // const0
+    indexToValue.push_back(Value()); // const1
   }
 
   /// Get a LogicEdge representing constant 0.
@@ -225,30 +223,30 @@ public:
   /// Get a LogicEdge representing constant 1 (constant 0 inverted).
   static Signal getConstant1() { return Signal(kConstant0, true); }
 
-  /// Assign a unique index to a value if not already assigned.
-  /// Returns the raw index (without inversion) for the value.
-  uint32_t getOrCreateIndex(mlir::Value value);
+  /// Get or create an index for a value.
+  /// If the value doesn't have an index yet, assigns one and returns the index.
+  uint32_t getOrCreateIndex(Value value);
 
   /// Get the raw index for a value. Asserts if value is not found.
   /// Note: This returns only the index, not a Signal with inversion info.
   /// Use hasIndex() to check existence first, or use getOrCreateIndex().
-  uint32_t getIndex(mlir::Value value) const;
+  uint32_t getIndex(Value value) const;
 
   /// Check if a value has been indexed.
-  bool hasIndex(mlir::Value value) const;
+  bool hasIndex(Value value) const;
 
   /// Get the value for a given raw index. Asserts if index is out of bounds.
   /// Returns null Value for constant indices (0 and 1).
   Value getValue(uint32_t index) const;
 
-  /// Get a Signal for a value (returns non-inverted signal).
+  /// Get a Signal for a value.
   /// Asserts if value not found - use hasIndex() first if unsure.
-  Signal getSignal(mlir::Value value, bool inverted) const {
+  Signal getSignal(Value value, bool inverted) const {
     return Signal(getIndex(value), inverted);
   }
 
-  /// Get or create a Signal for a value (non-inverted).
-  Signal getOrCreateSignal(mlir::Value value, bool inverted) {
+  /// Get or create a Signal for a value.
+  Signal getOrCreateSignal(Value value, bool inverted) {
     return Signal(getOrCreateIndex(value), inverted);
   }
 
@@ -265,33 +263,33 @@ public:
   size_t size() const { return gates.size(); }
 
   /// Add a primary input to the network.
-  uint32_t addPrimaryInput(mlir::Value value);
+  uint32_t addPrimaryInput(Value value);
 
   /// Add an AND gate to the network.
-  uint32_t addAndGate(mlir::Operation *op, Signal lhs, Signal rhs);
+  uint32_t addAndGate(Operation *op, Signal lhs, Signal rhs);
 
   /// Add a XOR gate to the network.
-  uint32_t addXorGate(mlir::Operation *op, Signal lhs, Signal rhs);
+  uint32_t addXorGate(Operation *op, Signal lhs, Signal rhs);
 
   /// Add a MAJ gate to the network.
-  uint32_t addMajGate(mlir::Operation *op, Signal a, Signal b, Signal c);
+  uint32_t addMajGate(Operation *op, Signal a, Signal b, Signal c);
 
   /// Add a gate that is treated as "other" (not simulatable, acts as PI).
-  uint32_t addOtherGate(mlir::Operation *op, mlir::Value result);
+  uint32_t addOtherGate(Operation *op, Value result);
 
   /// Build the logic network from a region/block in topological order.
   /// Returns failure if the IR is not in a valid form.
-  LogicalResult buildFromBlock(mlir::Block *block);
+  LogicalResult buildFromBlock(Block *block);
 
   /// Clear the network and reset to initial state.
   void clear();
 
 private:
   /// Map from MLIR Value to network index.
-  llvm::DenseMap<mlir::Value, uint32_t> valueToIndex;
+  llvm::DenseMap<Value, uint32_t> valueToIndex;
 
   /// Map from network index to MLIR Value.
-  llvm::SmallVector<mlir::Value> indexToValue;
+  llvm::SmallVector<Value> indexToValue;
 
   /// Vector of all gates in the network.
   llvm::SmallVector<LogicNetworkGate> gates;
