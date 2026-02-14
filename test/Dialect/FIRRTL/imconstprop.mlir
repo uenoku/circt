@@ -971,3 +971,45 @@ firrtl.circuit "DomainPreservation" {
     firrtl.domain.define %a, %0
   }
 }
+
+// -----
+
+// Test that InstanceChoiceOp is conservatively handled
+firrtl.circuit "InstanceChoiceTest" {
+  firrtl.option @ChoiceOption {
+    firrtl.option_case @A
+    firrtl.option_case @B
+  }
+
+  // CHECK-LABEL: firrtl.module private @ModuleA
+  firrtl.module private @ModuleA(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    // CHECK: firrtl.matchingconnect %out, %in
+    firrtl.matchingconnect %out, %in : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: firrtl.module private @ModuleB
+  firrtl.module private @ModuleB(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    // CHECK: %c1_ui1 = firrtl.constant 1
+    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
+    // CHECK: firrtl.matchingconnect %out, %c1_ui1
+    firrtl.matchingconnect %out, %c1_ui1 : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceTest
+  firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    %c0_ui1 = firrtl.constant 0 : !firrtl.uint<1>
+
+    // InstanceChoiceOp should be conservatively handled - connections to its ports are ignored
+    // and all results are marked as overdefined
+    // CHECK: %inst_in, %inst_out = firrtl.instance_choice inst @ModuleA alternatives @ChoiceOption
+    %inst_in, %inst_out = firrtl.instance_choice inst @ModuleA alternatives @ChoiceOption { @A -> @ModuleA, @B -> @ModuleB } (in in: !firrtl.uint<1>, out out: !firrtl.uint<1>)
+
+    // This connection should be preserved (not optimized away)
+    // CHECK: firrtl.matchingconnect %inst_in, %c0_ui1
+    firrtl.matchingconnect %inst_in, %c0_ui1 : !firrtl.uint<1>
+
+    // The output should not be constant-propagated even though we're connecting a constant to the input
+    // CHECK: firrtl.matchingconnect %out, %inst_out
+    firrtl.matchingconnect %out, %inst_out : !firrtl.uint<1>
+  }
+}

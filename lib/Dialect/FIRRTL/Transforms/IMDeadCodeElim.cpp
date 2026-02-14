@@ -107,7 +107,7 @@ private:
 
   // The type with which we associate liveness.
   using ElementType =
-      std::variant<Value, FModuleOp, InstanceOp, hw::HierPathOp>;
+      std::variant<Value, FModuleOp, InstanceOp, InstanceChoiceOp, hw::HierPathOp>;
 
   void markAlive(ElementType element) {
     if (!liveElements.insert(element).second)
@@ -159,8 +159,13 @@ void IMDeadCodeElimPass::visitInstanceOp(InstanceOp instance) {
 
 void IMDeadCodeElimPass::visitModuleOp(FModuleOp module) {
   // If the module needs to be alive, so are its instances.
-  for (auto *use : instanceGraph->lookup(module)->uses())
-    markAlive(cast<InstanceOp>(*use->getInstance()));
+  for (auto *use : instanceGraph->lookup(module)->uses()) {
+    auto instanceOp = use->getInstance();
+    if (auto instance = dyn_cast<InstanceOp>(*instanceOp))
+      markAlive(instance);
+    else if (auto instanceChoice = dyn_cast<InstanceChoiceOp>(*instanceOp))
+      markAlive(instanceChoice);
+  }
 }
 
 void IMDeadCodeElimPass::visitHierPathOp(hw::HierPathOp hierPathOp) {
@@ -255,7 +260,19 @@ void IMDeadCodeElimPass::markBlockExecutable(Block *block) {
       markDeclaration(&op);
     else if (auto instance = dyn_cast<InstanceOp>(op))
       markInstanceOp(instance);
-    else if (auto object = dyn_cast<ObjectOp>(op))
+    else if (auto instanceChoice = dyn_cast<InstanceChoiceOp>(op)) {
+      // Conservatively mark InstanceChoiceOp alive.
+      markAlive(instanceChoice);
+      // Mark all possible target modules as executable.
+      for (auto moduleName : instanceChoice.getReferencedModuleNamesAttr()) {
+        auto moduleNameStr = cast<StringAttr>(moduleName);
+        auto *node = instanceGraph->lookup(moduleNameStr);
+        if (!node)
+          continue;
+        if (auto fModule = dyn_cast<FModuleOp>(node->getModule()))
+          markBlockExecutable(fModule.getBodyBlock());
+      }
+    } else if (auto object = dyn_cast<ObjectOp>(op))
       markObjectOp(object);
     else if (isa<FConnectLike>(op))
       // Skip connect op.
@@ -300,14 +317,19 @@ void IMDeadCodeElimPass::forwardConstantOutputPort(FModuleOp module) {
 
   // Rewrite all uses.
   for (auto *use : instanceGraphNode->uses()) {
-    auto instance = cast<InstanceOp>(*use->getInstance());
-    ImplicitLocOpBuilder builder(instance.getLoc(), instance);
-    for (auto [index, constant] : constantPortIndicesAndValues) {
-      auto result = instance.getResult(index);
-      assert(ports[index].isOutput() && "must be an output port");
+    auto instanceOp = use->getInstance();
+    Operation *op = instanceOp.getOperation();
 
-      // Replace the port with the constant.
-      result.replaceAllUsesWith(ConstantOp::create(builder, constant));
+    // Only handle InstanceOp, not InstanceChoiceOp (conservatively skip it)
+    if (auto instance = dyn_cast<InstanceOp>(op)) {
+      ImplicitLocOpBuilder builder(instance.getLoc(), instance);
+      for (auto [index, constant] : constantPortIndicesAndValues) {
+        auto result = instance.getResult(index);
+        assert(ports[index].isOutput() && "must be an output port");
+
+        // Replace the port with the constant.
+        result.replaceAllUsesWith(ConstantOp::create(builder, constant));
+      }
     }
   }
 }
@@ -500,9 +522,16 @@ void IMDeadCodeElimPass::visitValue(Value value) {
       // output ports.
       if (portDirection == Direction::In) {
         for (auto *instRec : instanceGraph->lookup(module)->uses()) {
-          auto instance = cast<InstanceOp>(instRec->getInstance());
-          if (liveElements.contains(instance))
-            markAlive(instance.getResult(blockArg.getArgNumber()));
+          auto instanceOp = instRec->getInstance();
+          Operation *op = instanceOp.getOperation();
+
+          if (auto instance = dyn_cast<InstanceOp>(op)) {
+            if (liveElements.contains(instance))
+              markAlive(instance.getResult(blockArg.getArgNumber()));
+          } else if (auto instanceChoice = dyn_cast<InstanceChoiceOp>(op)) {
+            if (liveElements.contains(instanceChoice))
+              markAlive(instanceChoice.getResult(blockArg.getArgNumber()));
+          }
         }
       }
 
@@ -655,21 +684,33 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
 
   // First, delete dead instances.
   for (auto *use : llvm::make_early_inc_range(instanceGraphNode->uses())) {
-    auto instance = cast<InstanceOp>(*use->getInstance());
-    if (!liveElements.count(instance)) {
-      // Replace old instance results with dummy wires.
-      ImplicitLocOpBuilder builder(instance.getLoc(), instance);
-      for (auto index : llvm::seq(0u, instance.getNumResults()))
-        replaceInstanceResultWithWire(builder, index, instance);
-      // Make sure that we update the instance graph.
-      use->erase();
-      instance.erase();
+    auto instanceOp = use->getInstance();
+    Operation *op = instanceOp.getOperation();
+
+    // Check if this is an InstanceOp (not InstanceChoiceOp which we conservatively keep alive)
+    if (auto instance = dyn_cast<InstanceOp>(op)) {
+      if (!liveElements.count(instance)) {
+        // Replace old instance results with dummy wires.
+        ImplicitLocOpBuilder builder(instance.getLoc(), instance);
+        for (auto index : llvm::seq(0u, instance.getNumResults()))
+          replaceInstanceResultWithWire(builder, index, instance);
+        // Make sure that we update the instance graph.
+        use->erase();
+        instance.erase();
+      }
     }
+    // InstanceChoiceOp is always kept alive (conservative approach)
   }
 
   // Ports of public modules cannot be modified.
   if (module.isPublic())
     return;
+
+  // Conservatively skip port removal for modules referenced by InstanceChoiceOp
+  for (auto *use : instanceGraphNode->uses()) {
+    if (isa<InstanceChoiceOp>(use->getInstance().getOperation()))
+      return;
+  }
 
   unsigned numOldPorts = module.getNumPorts();
   llvm::BitVector deadPortIndexes(numOldPorts);
@@ -699,7 +740,7 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
       if (llvm::any_of(instanceGraph->lookup(module)->uses(),
                        [&](InstanceRecord *record) {
                          return isKnownAlive(
-                             record->getInstance()->getResult(index));
+                             record->getInstance().getOperation()->getResult(index));
                        }))
         continue;
 
@@ -745,32 +786,37 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
 
   // Rewrite all uses.
   for (auto *use : llvm::make_early_inc_range(instanceGraphNode->uses())) {
-    auto instance = cast<InstanceOp>(*use->getInstance());
-    ImplicitLocOpBuilder builder(instance.getLoc(), instance);
-    // Replace old instance results with dummy wires.
-    for (auto index : deadPortIndexes.set_bits())
-      replaceInstanceResultWithWire(builder, index, instance);
+    auto instanceOp = use->getInstance();
+    Operation *op = instanceOp.getOperation();
 
-    // Since we will rewrite instance op, it is necessary to remove old
-    // instance results from liveSet.
-    for (auto oldResult : instance.getResults())
-      liveElements.erase(oldResult);
+    // Only handle InstanceOp, not InstanceChoiceOp (conservatively skip it)
+    if (auto instance = dyn_cast<InstanceOp>(op)) {
+      ImplicitLocOpBuilder builder(instance.getLoc(), instance);
+      // Replace old instance results with dummy wires.
+      for (auto index : deadPortIndexes.set_bits())
+        replaceInstanceResultWithWire(builder, index, instance);
 
-    // Create a new instance op without dead ports.
-    auto newInstance =
-        instance.cloneWithErasedPortsAndReplaceUses(deadPortIndexes);
+      // Since we will rewrite instance op, it is necessary to remove old
+      // instance results from liveSet.
+      for (auto oldResult : instance.getResults())
+        liveElements.erase(oldResult);
 
-    // Mark new results as alive.
-    for (auto newResult : newInstance.getResults())
-      liveElements.insert(newResult);
+      // Create a new instance op without dead ports.
+      auto newInstance =
+          instance.cloneWithErasedPortsAndReplaceUses(deadPortIndexes);
 
-    instanceGraph->replaceInstance(instance, newInstance);
-    if (liveElements.contains(instance)) {
-      liveElements.erase(instance);
-      liveElements.insert(newInstance);
+      // Mark new results as alive.
+      for (auto newResult : newInstance.getResults())
+        liveElements.insert(newResult);
+
+      instanceGraph->replaceInstance(instance, newInstance);
+      if (liveElements.contains(instance)) {
+        liveElements.erase(instance);
+        liveElements.insert(newInstance);
+      }
+      // Remove old one.
+      instance.erase();
     }
-    // Remove old one.
-    instance.erase();
   }
 
   numRemovedPorts += deadPortIndexes.count();
@@ -815,13 +861,18 @@ void IMDeadCodeElimPass::eraseEmptyModule(FModuleOp module) {
 
   SmallVector<Location> instancesWithSymbols;
   for (auto *use : llvm::make_early_inc_range(instanceGraphNode->uses())) {
-    auto instance = cast<InstanceOp>(use->getInstance());
-    if (instance.getInnerSym()) {
-      instancesWithSymbols.push_back(instance.getLoc());
-      continue;
+    auto instanceOp = use->getInstance();
+    Operation *op = instanceOp.getOperation();
+
+    // Only handle InstanceOp, conservatively skip InstanceChoiceOp
+    if (auto instance = dyn_cast<InstanceOp>(op)) {
+      if (instance.getInnerSym()) {
+        instancesWithSymbols.push_back(instance.getLoc());
+        continue;
+      }
+      use->erase();
+      instance.erase();
     }
-    use->erase();
-    instance.erase();
   }
 
   // If there is an instance with a symbol, we don't delete the module itself.

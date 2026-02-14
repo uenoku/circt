@@ -513,6 +513,11 @@ void IMConstPropPass::markBlockExecutable(Block *block) {
         .Case<InvalidValueOp>(
             [&](auto invalid) { markInvalidValueOp(invalid); })
         .Case<InstanceOp>([&](auto instance) { markInstanceOp(instance); })
+        .Case<InstanceChoiceOp>([&](auto instanceChoice) {
+          // Conservatively mark all results as overdefined for now.
+          for (auto result : instanceChoice.getResults())
+            markOverdefined(result);
+        })
         .Case<ObjectOp>([&](auto obj) { markObjectOp(obj); })
         .Case<MemOp>([&](auto mem) { markMemOp(mem); })
         .Case<LayerBlockOp>(
@@ -782,6 +787,10 @@ void IMConstPropPass::visitConnectLike(FConnectLike connect,
           FieldRef(modulePortVal, fieldRefDestConnected.getFieldID()),
           srcValue);
     }
+
+    // Driving an instance_choice port is conservatively ignored for now.
+    if (dest.getDefiningOp<InstanceChoiceOp>())
+      return;
 
     // Driving a memory result is ignored because these are always treated
     // as overdefined.

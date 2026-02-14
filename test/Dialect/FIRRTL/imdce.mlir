@@ -658,3 +658,40 @@ firrtl.circuit "DomainInfo" {
     firrtl.matchingconnect %b, %bar_b: !firrtl.uint<1>
   }
 }
+
+// -----
+
+// Test that InstanceChoiceOp is conservatively preserved
+firrtl.circuit "InstanceChoiceTest" {
+  firrtl.option @ChoiceOption {
+    firrtl.option_case @A
+    firrtl.option_case @B
+  }
+
+  // Modules referenced by instance_choice should be preserved with all ports
+  // CHECK-LABEL: firrtl.module private @ModuleA
+  // CHECK-SAME: in %in: !firrtl.uint<1>
+  // CHECK-SAME: out %out: !firrtl.uint<1>
+  // CHECK-NEXT: }
+  // expected-warning @+1 {{module `ModuleA` is empty but cannot be removed because the module has ports "in", "out" are referenced by name or dontTouched}}
+  firrtl.module private @ModuleA(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: firrtl.module private @ModuleB
+  // CHECK-SAME: in %in: !firrtl.uint<1>
+  // CHECK-SAME: out %out: !firrtl.uint<1>
+  // CHECK-NEXT: }
+  // expected-warning @+1 {{module `ModuleB` is empty but cannot be removed because the module has ports "in", "out" are referenced by name or dontTouched}}
+  firrtl.module private @ModuleB(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceTest
+  firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    // CHECK: firrtl.instance_choice inst @ModuleA alternatives @ChoiceOption
+    %inst_in, %inst_out = firrtl.instance_choice inst @ModuleA alternatives @ChoiceOption { @A -> @ModuleA, @B -> @ModuleB } (in in: !firrtl.uint<1>, out out: !firrtl.uint<1>)
+    firrtl.matchingconnect %inst_in, %in : !firrtl.uint<1>
+    firrtl.matchingconnect %out, %inst_out : !firrtl.uint<1>
+  }
+}
