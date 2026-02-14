@@ -61,7 +61,7 @@ using namespace circt::synth;
 // LogicNetwork
 //===----------------------------------------------------------------------===//
 
-uint32_t LogicNetwork::getOrCreateIndex(mlir::Value value) {
+uint32_t LogicNetwork::getOrCreateIndex(Value value) {
   auto [it, inserted] = valueToIndex.try_emplace(value, gates.size());
   if (inserted) {
     indexToValue.push_back(value);
@@ -70,179 +70,167 @@ uint32_t LogicNetwork::getOrCreateIndex(mlir::Value value) {
   return it->second;
 }
 
-uint32_t LogicNetwork::getIndex(mlir::Value value) const {
-  auto it = valueToIndex.find(value);
+uint32_t LogicNetwork::getIndex(Value value) const {
+  const auto it = valueToIndex.find(value);
   assert(it != valueToIndex.end() &&
          "Value not found in LogicNetwork - use getOrCreateIndex or check with "
          "hasIndex first");
   return it->second;
 }
 
-bool LogicNetwork::hasIndex(mlir::Value value) const {
-  return valueToIndex.count(value) > 0;
+bool LogicNetwork::hasIndex(Value value) const {
+  return valueToIndex.contains(value);
 }
 
 Value LogicNetwork::getValue(uint32_t index) const {
   // Index 0 and 1 are reserved for constants, they have no associated Value
   if (index == kConstant0 || index == kConstant1)
-    return mlir::Value();
+    return Value();
 
   assert(index < indexToValue.size() &&
          "Index out of bounds in LogicNetwork::getValue");
   return indexToValue[index];
 }
 
-uint32_t LogicNetwork::addPrimaryInput(mlir::Value value) {
-  uint32_t index = getOrCreateIndex(value);
-  gates[index].set(nullptr, LogicNetworkGate::PrimaryInput);
+uint32_t LogicNetwork::addPrimaryInput(Value value) {
+  const uint32_t index = getOrCreateIndex(value);
+  auto &gate = gates[index];
+  gate.set(nullptr, LogicNetworkGate::PrimaryInput);
   return index;
 }
 
-uint32_t LogicNetwork::addAndGate(mlir::Operation *op, Signal lhs, Signal rhs) {
-  mlir::Value result = op->getResult(0);
-  uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::And2);
-  gates[index].edges[0] = lhs;
-  gates[index].edges[1] = rhs;
+uint32_t LogicNetwork::addAndGate(Operation *op, Signal lhs, Signal rhs) {
+  const uint32_t index = getOrCreateIndex(op->getResult(0));
+  auto &gate = gates[index];
+  gate.set(op, LogicNetworkGate::And2);
+  gate.edges[0] = lhs;
+  gate.edges[1] = rhs;
   return index;
 }
 
-uint32_t LogicNetwork::addXorGate(mlir::Operation *op, Signal lhs, Signal rhs) {
-  mlir::Value result = op->getResult(0);
-  uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Xor2);
-  gates[index].edges[0] = lhs;
-  gates[index].edges[1] = rhs;
+uint32_t LogicNetwork::addXorGate(Operation *op, Signal lhs, Signal rhs) {
+  const uint32_t index = getOrCreateIndex(op->getResult(0));
+  auto &gate = gates[index];
+  gate.set(op, LogicNetworkGate::Xor2);
+  gate.edges[0] = lhs;
+  gate.edges[1] = rhs;
   return index;
 }
 
-uint32_t LogicNetwork::addMajGate(mlir::Operation *op, Signal a, Signal b,
-                                  Signal c) {
-  mlir::Value result = op->getResult(0);
-  uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Maj3);
-  gates[index].edges[0] = a;
-  gates[index].edges[1] = b;
-  gates[index].edges[2] = c;
+uint32_t LogicNetwork::addMajGate(Operation *op, Signal a, Signal b, Signal c) {
+  const uint32_t index = getOrCreateIndex(op->getResult(0));
+  auto &gate = gates[index];
+  gate.set(op, LogicNetworkGate::Maj3);
+  gate.edges[0] = a;
+  gate.edges[1] = b;
+  gate.edges[2] = c;
   return index;
 }
 
-uint32_t LogicNetwork::addOtherGate(mlir::Operation *op, mlir::Value result) {
-  uint32_t index = getOrCreateIndex(result);
-  gates[index].set(op, LogicNetworkGate::Other);
+uint32_t LogicNetwork::addOtherGate(Operation *op, Value result) {
+  const uint32_t index = getOrCreateIndex(result);
+  auto &gate = gates[index];
+  gate.set(op, LogicNetworkGate::Other);
   return index;
 }
 
-LogicalResult LogicNetwork::buildFromBlock(mlir::Block *block) {
+LogicalResult LogicNetwork::buildFromBlock(Block *block) {
   // Pre-size vectors to reduce reallocations (rough estimate)
-  size_t estimatedSize =
+  const size_t estimatedSize =
       block->getArguments().size() + block->getOperations().size();
   indexToValue.reserve(estimatedSize);
   gates.reserve(estimatedSize);
 
   // Ensure all block arguments are indexed as primary inputs first
-  for (auto arg : block->getArguments()) {
-    if (!hasIndex(arg)) {
+  for (Value arg : block->getArguments()) {
+    if (!hasIndex(arg))
       addPrimaryInput(arg);
-    }
   }
 
   // Process operations in topological order
-  for (auto &op : block->getOperations()) {
+  for (Operation &op : block->getOperations()) {
     // Handle aig::AndInverterOp
     if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
       // For variadic AND, we need to handle the inverted array
-      auto inputs = andOp.getInputs();
+      const auto inputs = andOp.getInputs();
 
       // Get or create signals for inputs (with proper inversion flags)
       SmallVector<Signal, 3> edges;
-      for (size_t i = 0; i < inputs.size(); ++i)
+      edges.reserve(inputs.size());
+      for (size_t i = 0, e = inputs.size(); i < e; ++i)
         edges.push_back(getOrCreateSignal(inputs[i], andOp.isInverted(i)));
 
       if (inputs.size() == 1) {
         // Single-input AND is a buffer or NOT gate
         if (!edges[0].isInverted()) {
           // Non-inverted buffer: directly alias the result to the input
-          mlir::Value result = andOp.getResult();
-          uint32_t inputIdx = edges[0].getIndex();
+          Value result = andOp.getResult();
+          const uint32_t inputIdx = edges[0].getIndex();
           valueToIndex[result] = inputIdx;
         } else {
           // Inverted operation: create a NOT gate
-          uint32_t index = getOrCreateIndex(andOp.getResult());
-          gates[index].set(&op, LogicNetworkGate::Identity);
-          // FIXME: This is weird - we should probably have a constructor for
-          // Signal
-          gates[index].edges[0] = edges[0];
+          const uint32_t index = getOrCreateIndex(andOp.getResult());
+          auto &gate = gates[index];
+          gate.set(&op, LogicNetworkGate::Identity);
+          gate.edges[0] = edges[0];
         }
       } else if (inputs.size() == 2) {
         addAndGate(&op, edges[0], edges[1]);
-      } else {
-        // Delegate variadic AND to "Other" gate handling
-        // Note: Additional inputs are handled via the operation pointer
       }
+      // Variadic AND gates with >2 inputs are delegated to "Other" handling
       continue;
     }
-    if (auto combOp = dyn_cast<comb::XorOp>(&op)) {
+    if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
       // Handle comb::XorOp
-      if (combOp->getNumOperands() != 2) {
+      if (xorOp->getNumOperands() != 2) {
         // Delegate variadic XOR to "Other" gate handling
-        // Note: Additional inputs are handled via the operation pointer
-        for (auto result : op.getResults()) {
-          // For the gate-like operations that are supported.
-          if (result.getType().isInteger(1)) {
-            // Add an PI.
-            if (!hasIndex(result))
-              addPrimaryInput(result);
-          }
+        for (Value result : op.getResults()) {
+          if (result.getType().isInteger(1) && !hasIndex(result))
+            addPrimaryInput(result);
         }
+        continue;
       }
-      auto lhsSignal = getOrCreateSignal(combOp.getOperand(0), false);
-      auto rhsSignal = getOrCreateSignal(combOp.getOperand(1), false);
+      const Signal lhsSignal = getOrCreateSignal(xorOp.getOperand(0), false);
+      const Signal rhsSignal = getOrCreateSignal(xorOp.getOperand(1), false);
       addXorGate(&op, lhsSignal, rhsSignal);
       continue;
     }
-    if (auto combOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
+    if (auto majOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
       // Handle synth::mig::MajorityInverterOp
-      if (combOp->getNumOperands() == 1) {
+      if (majOp->getNumOperands() == 1) {
         // Single input = inverter
-        auto inputSignal =
-            getOrCreateSignal(combOp.getOperand(0), combOp.isInverted(0));
-        uint32_t index = getOrCreateIndex(combOp.getResult());
-        if (!combOp.isInverted(0)) {
+        const Signal inputSignal =
+            getOrCreateSignal(majOp.getOperand(0), majOp.isInverted(0));
+        if (!majOp.isInverted(0)) {
           // Non-inverted buffer: directly alias the result to the input
-          mlir::Value result = combOp.getResult();
-          uint32_t inputIdx = inputSignal.getIndex();
-          valueToIndex[result] = inputIdx;
+          valueToIndex[majOp.getResult()] = inputSignal.getIndex();
           continue;
         }
-        gates[index].set(&op, LogicNetworkGate::Identity);
-        gates[index].edges[0] = inputSignal;
+        const uint32_t index = getOrCreateIndex(majOp.getResult());
+        auto &gate = gates[index];
+        gate.set(&op, LogicNetworkGate::Identity);
+        gate.edges[0] = inputSignal;
         continue;
       }
-      if (combOp->getNumOperands() != 3) {
+      if (majOp->getNumOperands() != 3) {
         // Delegate variadic MAJ to "Other" gate handling
-        // Note: Additional inputs are handled via the operation pointer
-        addOtherGate(&op, combOp.getResult());
+        addOtherGate(&op, majOp.getResult());
         continue;
       }
-      auto aSignal =
-          getOrCreateSignal(combOp.getOperand(0), combOp.isInverted(0));
-      auto bSignal =
-          getOrCreateSignal(combOp.getOperand(1), combOp.isInverted(1));
-      auto cSignal =
-          getOrCreateSignal(combOp.getOperand(2), combOp.isInverted(2));
+      const Signal aSignal =
+          getOrCreateSignal(majOp.getOperand(0), majOp.isInverted(0));
+      const Signal bSignal =
+          getOrCreateSignal(majOp.getOperand(1), majOp.isInverted(1));
+      const Signal cSignal =
+          getOrCreateSignal(majOp.getOperand(2), majOp.isInverted(2));
       addMajGate(&op, aSignal, bSignal, cSignal);
       continue;
     }
 
     // Handle other operations - treat their results as "other" (like PIs)
-    for (auto result : op.getResults()) {
-      // For the gate-like operations that are supported.
-      if (result.getType().isInteger(1)) {
-        // Add an PI.
-        if (!hasIndex(result))
-          addPrimaryInput(result);
-      }
+    for (Value result : op.getResults()) {
+      if (result.getType().isInteger(1) && !hasIndex(result))
+        addPrimaryInput(result);
     }
   }
 
@@ -259,8 +247,8 @@ void LogicNetwork::clear() {
   gates.emplace_back();
   gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
   // Placeholders for constants in indexToValue
-  indexToValue.push_back(mlir::Value()); // const0
-  indexToValue.push_back(mlir::Value()); // const1
+  indexToValue.push_back(Value()); // const0
+  indexToValue.push_back(Value()); // const1
 }
 
 //===----------------------------------------------------------------------===//
@@ -279,31 +267,24 @@ static bool isAlwaysCutInput(const LogicNetwork &network, uint32_t index) {
 static bool compareDelayAndArea(OptimizationStrategy strategy, double newArea,
                                 ArrayRef<DelayType> newDelay, double oldArea,
                                 ArrayRef<DelayType> oldDelay) {
-  if (OptimizationStrategyArea == strategy) {
-    // Compare by area first.
+  if (strategy == OptimizationStrategyArea)
     return newArea < oldArea || (newArea == oldArea && newDelay < oldDelay);
-  }
-  if (OptimizationStrategyTiming == strategy) {
-    // Compare by delay first.
+  if (strategy == OptimizationStrategyTiming)
     return newDelay < oldDelay || (newDelay == oldDelay && newArea < oldArea);
-  }
   llvm_unreachable("Unknown mapping strategy");
 }
 
-LogicalResult
-circt::synth::topologicallySortLogicNetwork(mlir::Operation *topOp) {
-
-  auto isOperationReady = [](Value value, Operation *op) -> bool {
+LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
+  const auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops and dataflow ops. Other operations can be
     // scheduled.
     return !(isa<aig::AndInverterOp, mig::MajorityInverterOp>(op) ||
              isa<comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
-  auto result = topologicallySortGraphRegionBlocks(topOp, isOperationReady);
-  if (failed(result))
-    return mlir::emitError(topOp->getLoc(),
-                           "failed to sort operations topologically");
+  if (failed(topologicallySortGraphRegionBlocks(topOp, isOperationReady)))
+    return emitError(topOp->getLoc(),
+                     "failed to sort operations topologically");
   return success();
 }
 
@@ -314,15 +295,15 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
                                                         Block *block) {
   // Get the input arguments from the block
   llvm::SmallSetVector<Value, 4> inputArgs;
-  for (auto arg : block->getArguments())
+  for (Value arg : block->getArguments())
     inputArgs.insert(arg);
 
   // If there are no inputs, return an empty truth table
   if (inputArgs.empty())
     return BinaryTruthTable();
 
-  int64_t numInputs = inputArgs.size();
-  int64_t numOutputs = values.size();
+  const int64_t numInputs = inputArgs.size();
+  const int64_t numOutputs = values.size();
   if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
     if (numOutputs == 0)
       return BinaryTruthTable(numInputs, 0);
