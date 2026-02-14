@@ -1930,6 +1930,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitDecl(RegResetOp op);
   LogicalResult visitDecl(MemOp op);
   LogicalResult visitDecl(InstanceOp oldInstance);
+  LogicalResult visitDecl(InstanceChoiceOp oldInstanceChoice);
   LogicalResult visitDecl(VerbatimWireOp op);
   LogicalResult visitDecl(ContractOp op);
 
@@ -3958,6 +3959,141 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
     (void)setLowering(oldPortResult, resultVal);
     ++resultNo;
   }
+  return success();
+}
+
+LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
+  // Get the default module (first in the list)
+  auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
+  auto *defaultModuleNode = circuitState.getInstanceGraph().lookup(defaultModuleName.getAttr());
+  if (!defaultModuleNode) {
+    oldInstanceChoice->emitOpError("could not find default module [")
+        << defaultModuleName << "] referenced by instance choice";
+    return failure();
+  }
+
+  Operation *oldModule = defaultModuleNode->getModule();
+  auto *newModule = circuitState.getNewModule(oldModule);
+  if (!newModule) {
+    oldInstanceChoice->emitOpError("could not find lowered module [")
+        << defaultModuleName << "] referenced by instance choice";
+    return failure();
+  }
+
+  // Generate a unique macro name for this instance choice
+  // Format: __target_<CircuitName>_<ModuleName>_<InstanceName>
+  SmallString<128> macroName;
+  {
+    llvm::raw_svector_ostream os(macroName);
+    os << "__target_" << circuitState.circuitOp.getName() << "_"
+       << theModule.getName() << "_" << oldInstanceChoice.getInstanceName();
+  }
+
+  auto macroNameAttr = builder.getStringAttr(macroName);
+  auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
+
+  // Add macro declaration to the circuit state
+  circuitState.addMacroDecl(macroNameAttr);
+
+  // Create the `ifndef/define/endif structure:
+  // `ifndef __target_Circuit_Module_inst
+  // `define __target_Circuit_Module_inst DefaultModule
+  // `endif
+  addToIfDefBlock(
+      macroName,
+      /*thenCtor=*/[&]() {},
+      /*elseCtor=*/[&]() {
+        sv::MacroDefOp::create(
+            builder, macroRef, builder.getStringAttr("{{0}}"),
+            builder.getArrayAttr({defaultModuleName}));
+      });
+
+  // Now lower the instance similar to InstanceOp, but using the default module
+  // Get port information from the default module
+  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(oldModule).getPorts();
+
+  // If this is a referenced to a parameterized extmodule, bring the parameters
+  ArrayAttr parameters;
+  if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldModule))
+    parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
+
+  // Prepare input operands (same logic as InstanceOp)
+  SmallVector<Value, 8> operands;
+  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
+    auto &port = portInfo[portIndex];
+    auto portType = lowerType(port.type);
+    if (!portType) {
+      oldInstanceChoice->emitOpError("could not lower type of port ")
+          << port.name;
+      return failure();
+    }
+
+    // Drop zero bit input/inout ports.
+    if (portType.isInteger(0))
+      continue;
+
+    // We wire outputs up after creating the instance.
+    if (port.isOutput())
+      continue;
+
+    auto portResult = oldInstanceChoice.getResult(portIndex);
+    assert(portResult && "invalid IR, couldn't find port");
+
+    // Replace the input port with a backedge.
+    if (port.isInput()) {
+      operands.push_back(createBackedge(portResult, portType));
+      continue;
+    }
+
+    // Handle analog types
+    if (type_isa<AnalogType>(portResult.getType()) && portResult.hasOneUse()) {
+      if (auto attach = dyn_cast<AttachOp>(*portResult.getUsers().begin())) {
+        if (auto source = getSingleNonInstanceOperand(attach)) {
+          auto loweredResult = getPossiblyInoutLoweredValue(source);
+          operands.push_back(loweredResult);
+          (void)setLowering(portResult, loweredResult);
+          continue;
+        }
+      }
+    }
+
+    // Create a wire for each inout operand
+    auto wire = sv::WireOp::create(builder, portType,
+                                   "." + port.getName().str() + ".wire");
+    (void)setLowering(portResult, wire);
+    operands.push_back(wire);
+  }
+
+  // Handle inner symbol
+  auto innerSym = oldInstanceChoice.getInnerSymAttr();
+
+  // Create the new hw.instance operation (not hw.instance_choice)
+  auto newInstance =
+      hw::InstanceOp::create(builder, newModule,
+                             oldInstanceChoice.getInstanceNameAttr(), operands,
+                             parameters, innerSym);
+
+  if (newInstance.getInnerSymAttr()) {
+    auto key = std::make_pair<Attribute, Attribute>(
+        theModule.getNameAttr(),
+        newInstance.getInnerNameAttr());
+    if (auto forceName = circuitState.instanceForceNames.lookup(key))
+      newInstance->setAttr("hw.verilogName", forceName);
+  }
+
+  // Remap outputs to instance results
+  unsigned resultNo = 0;
+  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
+    auto &port = portInfo[portIndex];
+    if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
+      continue;
+
+    Value resultVal = newInstance.getResult(resultNo);
+    auto oldPortResult = oldInstanceChoice.getResult(portIndex);
+    (void)setLowering(oldPortResult, resultVal);
+    ++resultNo;
+  }
+
   return success();
 }
 
