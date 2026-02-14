@@ -776,6 +776,10 @@ void FIRRTLModuleLowering::runOnOperation() {
               opsToProcess.push_back(fileOp);
               return success();
             })
+            .Case<OptionOp, OptionCaseOp>([&](auto) {
+              // Option operations are removed after lowering instance choices
+              return success();
+            })
             .Default([&](Operation *op) {
               // We don't know what this op is.  If it has no illegal FIRRTL
               // types, we can forward the operation.  Otherwise, we emit an
@@ -3963,6 +3967,10 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
+  // Get all the target modules
+  auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
+  auto caseNames = oldInstanceChoice.getCaseNamesAttr();
+
   // Get the default module (first in the list)
   auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
   auto *defaultModuleNode = circuitState.getInstanceGraph().lookup(defaultModuleName.getAttr());
@@ -3972,15 +3980,79 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     return failure();
   }
 
-  Operation *oldModule = defaultModuleNode->getModule();
-  auto *newModule = circuitState.getNewModule(oldModule);
-  if (!newModule) {
+  Operation *defaultModule = defaultModuleNode->getModule();
+  auto *defaultNewModule = circuitState.getNewModule(defaultModule);
+  if (!defaultNewModule) {
     oldInstanceChoice->emitOpError("could not find lowered module [")
         << defaultModuleName << "] referenced by instance choice";
     return failure();
   }
 
-  // Generate a unique macro name for this instance choice
+  // Get port information from the default module (all alternatives must have same ports)
+  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(defaultModule).getPorts();
+
+  // Prepare input operands
+  SmallVector<Value, 8> inputOperands;
+
+  // Create wires for output ports that will be assigned from within ifdef blocks
+  SmallVector<sv::WireOp, 8> outputWires;
+
+  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
+    auto &port = portInfo[portIndex];
+    auto portType = lowerType(port.type);
+    if (!portType) {
+      oldInstanceChoice->emitOpError("could not lower type of port ")
+          << port.name;
+      return failure();
+    }
+
+    // Drop zero bit ports.
+    if (portType.isInteger(0))
+      continue;
+
+    auto portResult = oldInstanceChoice.getResult(portIndex);
+    assert(portResult && "invalid IR, couldn't find port");
+
+    // Handle input ports - these are results from the instance_choice that will be driven
+    // We need to create a backedge for them
+    if (port.isInput()) {
+      auto backedge = createBackedge(portResult, portType);
+      inputOperands.push_back(backedge);
+      continue;
+    }
+
+    // Handle output ports - create a wire that will be assigned from ifdef blocks
+    if (port.isOutput()) {
+      auto wire = sv::WireOp::create(builder, portType,
+                                     oldInstanceChoice.getInstanceName().str() +
+                                     "." + port.getName().str());
+      outputWires.push_back(wire);
+      (void)setLowering(portResult, wire);
+      continue;
+    }
+
+    // Handle analog/inout types
+    if (type_isa<AnalogType>(portResult.getType()) && portResult.hasOneUse()) {
+      if (auto attach = dyn_cast<AttachOp>(*portResult.getUsers().begin())) {
+        if (auto source = getSingleNonInstanceOperand(attach)) {
+          auto loweredResult = getPossiblyInoutLoweredValue(source);
+          inputOperands.push_back(loweredResult);
+          (void)setLowering(portResult, loweredResult);
+          continue;
+        }
+      }
+    }
+
+    // Create a wire for each inout operand
+    auto wire = sv::WireOp::create(builder, portType,
+                                   "." + port.getName().str() + ".wire");
+    (void)setLowering(portResult, wire);
+    inputOperands.push_back(wire);
+  }
+
+  auto innerSym = oldInstanceChoice.getInnerSymAttr();
+
+  // Generate a macro name for the default target
   // Format: __target_<CircuitName>_<ModuleName>_<InstanceName>
   SmallString<128> macroName;
   {
@@ -3992,107 +4064,106 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   auto macroNameAttr = builder.getStringAttr(macroName);
   auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
 
-  // Add macro declaration to the circuit state
+  // Add macro declaration and define it to the default module name
   circuitState.addMacroDecl(macroNameAttr);
-
-  // Create the `ifndef/define/endif structure:
-  // `ifndef __target_Circuit_Module_inst
-  // `define __target_Circuit_Module_inst DefaultModule
-  // `endif
   addToIfDefBlock(
       macroName,
       /*thenCtor=*/[&]() {},
       /*elseCtor=*/[&]() {
         sv::MacroDefOp::create(
-            builder, macroRef, builder.getStringAttr("{{0}}"),
-            builder.getArrayAttr({defaultModuleName}));
+            builder, macroRef, builder.getStringAttr(defaultModuleName.getAttr().getValue()));
       });
 
-  // Now lower the instance similar to InstanceOp, but using the default module
-  // Get port information from the default module
-  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(oldModule).getPorts();
-
-  // If this is a referenced to a parameterized extmodule, bring the parameters
-  ArrayAttr parameters;
-  if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldModule))
-    parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
-
-  // Prepare input operands (same logic as InstanceOp)
-  SmallVector<Value, 8> operands;
-  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
-    auto &port = portInfo[portIndex];
-    auto portType = lowerType(port.type);
-    if (!portType) {
-      oldInstanceChoice->emitOpError("could not lower type of port ")
-          << port.name;
-      return failure();
+  // Lambda to create an instance for a given module and assign outputs to wires
+  auto createInstanceAndAssign = [&](Operation *oldMod) {
+    auto *newMod = circuitState.getNewModule(oldMod);
+    if (!newMod) {
+      oldInstanceChoice->emitOpError("could not find lowered module");
+      return;
     }
 
-    // Drop zero bit input/inout ports.
-    if (portType.isInteger(0))
-      continue;
+    ArrayAttr parameters;
+    if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
+      parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
 
-    // We wire outputs up after creating the instance.
-    if (port.isOutput())
-      continue;
+    // Build full operand list (inputs + inouts)
+    SmallVector<Value, 8> allOperands = inputOperands;
 
-    auto portResult = oldInstanceChoice.getResult(portIndex);
-    assert(portResult && "invalid IR, couldn't find port");
+    auto inst = hw::InstanceOp::create(builder, newMod,
+                                       oldInstanceChoice.getInstanceNameAttr(),
+                                       allOperands, parameters, innerSym);
 
-    // Replace the input port with a backedge.
-    if (port.isInput()) {
-      operands.push_back(createBackedge(portResult, portType));
-      continue;
+    if (inst.getInnerSymAttr()) {
+      auto key = std::make_pair<Attribute, Attribute>(
+          theModule.getNameAttr(),
+          inst.getInnerNameAttr());
+      if (auto forceName = circuitState.instanceForceNames.lookup(key))
+        inst->setAttr("hw.verilogName", forceName);
     }
 
-    // Handle analog types
-    if (type_isa<AnalogType>(portResult.getType()) && portResult.hasOneUse()) {
-      if (auto attach = dyn_cast<AttachOp>(*portResult.getUsers().begin())) {
-        if (auto source = getSingleNonInstanceOperand(attach)) {
-          auto loweredResult = getPossiblyInoutLoweredValue(source);
-          operands.push_back(loweredResult);
-          (void)setLowering(portResult, loweredResult);
-          continue;
-        }
+    // Assign instance outputs to the wires
+    unsigned wireIdx = 0;
+    for (unsigned i = 0; i < inst.getNumResults(); ++i) {
+      if (wireIdx < outputWires.size()) {
+        sv::AssignOp::create(builder, outputWires[wireIdx], inst.getResult(i));
+        ++wireIdx;
       }
     }
+  };
 
-    // Create a wire for each inout operand
-    auto wire = sv::WireOp::create(builder, portType,
-                                   "." + port.getName().str() + ".wire");
-    (void)setLowering(portResult, wire);
-    operands.push_back(wire);
+  // Create nested ifdef blocks for each alternative, with default at the end
+  // Structure:
+  // `ifdef CASE1
+  //   hw.instance @Module1
+  //   assign wire = inst.out
+  // `else
+  //   `ifdef CASE2
+  //     hw.instance @Module2
+  //     assign wire = inst.out
+  //   `else
+  //     hw.instance @ModuleDefault
+  //     assign wire = inst.out
+
+  // Build the nested ifdef structure from the end backwards
+  std::function<void()> buildElseBlock;
+
+  // Start with the default case
+  buildElseBlock = [&]() {
+    createInstanceAndAssign(defaultModule);
+  };
+
+  // Wrap each alternative in an ifdef, working backwards
+  for (int i = caseNames.size() - 1; i >= 0; --i) {
+    auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
+    auto caseName = caseSymRef.getLeafReference();
+    auto moduleName = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+
+    auto *moduleNode = circuitState.getInstanceGraph().lookup(moduleName.getAttr());
+    if (!moduleNode) {
+      oldInstanceChoice->emitOpError("could not find module [")
+          << moduleName << "] referenced by instance choice";
+      return failure();
+    }
+    Operation *altModule = moduleNode->getModule();
+
+    // Register the macro declaration for this case
+    circuitState.addMacroDecl(builder.getStringAttr(caseName.getValue()));
+
+    // Capture the previous else block
+    auto prevElseBlock = buildElseBlock;
+
+    buildElseBlock = [&, caseName, altModule, prevElseBlock]() {
+      addToIfDefBlock(
+          caseName.getValue(),
+          /*thenCtor=*/[&]() {
+            createInstanceAndAssign(altModule);
+          },
+          /*elseCtor=*/prevElseBlock);
+    };
   }
 
-  // Handle inner symbol
-  auto innerSym = oldInstanceChoice.getInnerSymAttr();
-
-  // Create the new hw.instance operation (not hw.instance_choice)
-  auto newInstance =
-      hw::InstanceOp::create(builder, newModule,
-                             oldInstanceChoice.getInstanceNameAttr(), operands,
-                             parameters, innerSym);
-
-  if (newInstance.getInnerSymAttr()) {
-    auto key = std::make_pair<Attribute, Attribute>(
-        theModule.getNameAttr(),
-        newInstance.getInnerNameAttr());
-    if (auto forceName = circuitState.instanceForceNames.lookup(key))
-      newInstance->setAttr("hw.verilogName", forceName);
-  }
-
-  // Remap outputs to instance results
-  unsigned resultNo = 0;
-  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
-    auto &port = portInfo[portIndex];
-    if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
-      continue;
-
-    Value resultVal = newInstance.getResult(resultNo);
-    auto oldPortResult = oldInstanceChoice.getResult(portIndex);
-    (void)setLowering(oldPortResult, resultVal);
-    ++resultNo;
-  }
+  // Execute the nested ifdef structure
+  buildElseBlock();
 
   return success();
 }

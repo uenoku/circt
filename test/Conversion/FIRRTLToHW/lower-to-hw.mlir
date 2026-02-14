@@ -1945,3 +1945,49 @@ firrtl.circuit "ExternalRequirements" {
     firrtl.instance ext @ExtMod()
   }
 }
+
+// -----
+
+// Test that instance_choice is lowered to sv.ifdef with multiple hw.instance
+firrtl.circuit "InstanceChoiceTest" {
+  firrtl.option @Opt {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+
+  firrtl.module private @ModuleDefault(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<8>
+  }
+
+  firrtl.module private @ModuleFPGA(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<8>
+  }
+
+  firrtl.module private @ModuleASIC(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<8>
+  }
+
+  // CHECK-LABEL: hw.module @InstanceChoiceTest
+  firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+    // CHECK: %[[WIRE:.+]] = sv.wire
+    // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
+    // CHECK: sv.ifdef @__target_InstanceChoiceTest_InstanceChoiceTest_inst
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.macro.def @__target_InstanceChoiceTest_InstanceChoiceTest_inst "ModuleDefault"
+    // CHECK-NEXT: }
+    // CHECK: sv.ifdef @FPGA {
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst" @ModuleFPGA
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.ifdef @ASIC {
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst" @ModuleASIC
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst" @ModuleDefault
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK: hw.output %[[READ]]
+    %inst_in, %inst_out = firrtl.instance_choice inst @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA, @ASIC -> @ModuleASIC } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
+    firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
+    firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
+  }
+}
