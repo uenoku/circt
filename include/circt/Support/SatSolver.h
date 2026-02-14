@@ -22,9 +22,11 @@
 #ifndef CIRCT_SUPPORT_SATSOLVER_H
 #define CIRCT_SUPPORT_SATSOLVER_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
 
@@ -206,6 +208,13 @@ public:
 
   /// Pre-allocate variables up to maxVar (1-indexed) without adding clauses.
   void reserveVars(int maxVar) { ensureVar(maxVar); }
+
+  /// Export current formula in DIMACS CNF format. Optionally includes
+  /// assumptions as unit clauses. Useful for debugging and creating reproducers.
+  /// Format: "p cnf <vars> <clauses>\n" followed by clauses (space-separated
+  /// literals terminated by 0).
+  void dumpDIMACS(llvm::raw_ostream &os,
+                  llvm::ArrayRef<int> assumptions = {}) const;
 
   /// Save current solver state. Must be at decision level 0 with no pending
   /// propagations. On rollback, variables/clauses added after bookmark are

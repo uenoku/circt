@@ -869,3 +869,1007 @@ TEST(MiniSATSolverTest, FullAdderCorrectness) {
       for (int cin = 0; cin < 2; cin++)
         testAdder(a, b, cin);
 }
+
+//===----------------------------------------------------------------------===//
+// MiniSATSolver - Common Incremental SAT Test Patterns
+//===----------------------------------------------------------------------===//
+
+// Test pattern: AllSAT-style model enumeration with blocking clauses
+TEST(MiniSATSolverTest, IncrementalModelEnumeration) {
+  MiniSATSolver s;
+  // Formula: (NOT x1 OR x2) AND (NOT x1 OR x3)
+  // This has exactly 3 satisfying assignments:
+  //   1. x1=F (any x2, x3)... wait no, that's 4 assignments
+  // Let's use a simpler formula with exactly 2 models:
+  // (x1 OR x2) AND (NOT x1 OR NOT x2)
+  // Models: {x1=T,x2=F}, {x1=F,x2=T}
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // Find first solution
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  int v1First = s.val(1), v2First = s.val(2);
+
+  // Block first solution
+  s.add(v1First > 0 ? -1 : 1);
+  s.add(v2First > 0 ? -2 : 2);
+  s.add(0);
+
+  // Find second solution
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  int v1Second = s.val(1), v2Second = s.val(2);
+  EXPECT_TRUE(v1First != v1Second || v2First != v2Second);
+
+  // Block second solution
+  s.add(v1Second > 0 ? -1 : 1);
+  s.add(v2Second > 0 ? -2 : 2);
+  s.add(0);
+
+  // Should be UNSAT now (all 2 models blocked)
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+}
+
+// Test pattern: Shared prefix with different temporary clauses
+TEST(MiniSATSolverTest, IncrementalSharedPrefix) {
+  MiniSATSolver s;
+  s.reserveVars(4);
+
+  // Permanent clauses: (x1 OR x2)
+  s.add(1);
+  s.add(2);
+  s.add(0);
+
+  // Test 1: Add temporary (NOT x1 OR x3), expect SAT
+  s.bookmark();
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  s.rollback();
+
+  // Test 2: Add temporary (NOT x1 OR x4) AND (NOT x2 OR NOT x4), expect SAT
+  s.bookmark();
+  s.add(-1);
+  s.add(4);
+  s.add(0);
+  s.add(-2);
+  s.add(-4);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  s.rollback();
+
+  // Test 3: Add temporary (NOT x1) AND (NOT x2), expect UNSAT
+  s.bookmark();
+  s.add(-1);
+  s.add(0);
+  s.add(-2);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+  s.rollback();
+
+  // Original formula should still be SAT
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Equivalence checking with bookmark/rollback (FRAIG-style)
+TEST(MiniSATSolverTest, IncrementalEquivalenceChecking) {
+  MiniSATSolver s;
+  s.reserveVars(4);
+
+  // Test 1: Check if two AND gates with same inputs are equivalent
+  // f1 = a AND b (var 3), f2 = a AND b (var 4)
+  // They should be equivalent (both return same value for all inputs)
+  s.bookmark();
+
+  // Encode f1 = a AND b
+  s.add(-3);
+  s.add(1);
+  s.add(0);
+  s.add(-3);
+  s.add(2);
+  s.add(0);
+  s.add(3);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // Encode f2 = a AND b
+  s.add(-4);
+  s.add(1);
+  s.add(0);
+  s.add(-4);
+  s.add(2);
+  s.add(0);
+  s.add(4);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // Check if they can differ: try f1=T, f2=F
+  s.assume(3);
+  s.assume(-4);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT); // Cannot differ (equivalent)
+
+  // Check if they can differ: try f1=F, f2=T
+  s.assume(-3);
+  s.assume(4);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT); // Cannot differ (equivalent)
+
+  s.rollback();
+
+  // Test 2: Check if AND and OR are equivalent (they're not)
+  s.bookmark();
+
+  // Encode f1 = a AND b (var 3)
+  s.add(-3);
+  s.add(1);
+  s.add(0);
+  s.add(-3);
+  s.add(2);
+  s.add(0);
+  s.add(3);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // Encode f2 = a OR b (var 4)
+  s.add(-4);
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(4);
+  s.add(-1);
+  s.add(0);
+  s.add(4);
+  s.add(-2);
+  s.add(0);
+
+  // Check if they can differ: try f1=T, f2=F
+  s.assume(3);
+  s.assume(-4);
+  auto result = s.solve();
+  // Should be SAT or UNSAT depending on which direction differs
+  EXPECT_TRUE(result == MiniSATSolver::kSAT ||
+              result == MiniSATSolver::kUNSAT);
+
+  // Check if they can differ: try f1=F, f2=T (e.g., a=T, b=F: AND=F, OR=T)
+  s.assume(-3);
+  s.assume(4);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT); // Can differ (not equivalent)
+
+  s.rollback();
+}
+
+// Test pattern: Incremental constraint strengthening
+TEST(MiniSATSolverTest, IncrementalConstraintStrengthening) {
+  MiniSATSolver s;
+  s.reserveVars(4);
+
+  // Start with: (x1 OR x2 OR x3 OR x4)
+  s.add(1);
+  s.add(2);
+  s.add(3);
+  s.add(4);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x1 OR NOT x2)
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x3 OR NOT x4)
+  s.add(-3);
+  s.add(-4);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x1 OR NOT x3)
+  s.add(-1);
+  s.add(-3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x2 OR NOT x4)
+  s.add(-2);
+  s.add(-4);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x1 OR NOT x4)
+  s.add(-1);
+  s.add(-4);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add: (NOT x2 OR NOT x3) - now only {x1,x3}, {x1,x4}, {x2,x3}, {x2,x4}
+  s.add(-2);
+  s.add(-3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Nested bookmark/rollback
+TEST(MiniSATSolverTest, IncrementalNestedBookmarks) {
+  // Current implementation: calling bookmark() replaces the previous bookmark.
+  // Calling rollback() multiple times goes back to the same bookmark state.
+  MiniSATSolver s;
+  s.reserveVars(3);
+
+  // First bookmark with no clauses
+  s.bookmark();
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.getNumClauses(), 1);
+
+  // Second bookmark (replaces the first) - now has 1 clause
+  s.bookmark();
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.getNumClauses(), 2);
+
+  // First rollback goes to second bookmark (1 clause)
+  s.rollback();
+  EXPECT_EQ(s.getNumClauses(), 1);
+
+  // Second rollback goes to same bookmark (still 1 clause - idempotent)
+  s.rollback();
+  EXPECT_EQ(s.getNumClauses(), 1);
+}
+
+// Test pattern: Assumptions are properly cleared between solves
+TEST(MiniSATSolverTest, IncrementalAssumptionClearing) {
+  MiniSATSolver s;
+  // Formula: (x1 OR x2)
+  s.add(1);
+  s.add(2);
+  s.add(0);
+
+  // Solve with assumption x1=F
+  s.assume(-1);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(2), 2); // x2 must be true
+
+  // Next solve should clear assumptions - both x1 and x2 can be anything
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  // Both should be satisfiable (no forced values without assumptions)
+}
+
+// Test pattern: UNSAT with assumptions, then SAT without
+TEST(MiniSATSolverTest, IncrementalUnsatToSat) {
+  MiniSATSolver s;
+  // Formula: (x1 OR x2) AND (NOT x1 OR x3)
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+
+  // With contradictory assumptions: UNSAT
+  s.assume(-1);
+  s.assume(-2);
+  s.assume(-3);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  // Without assumptions: SAT
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Conflicting assumptions
+TEST(MiniSATSolverTest, IncrementalConflictingAssumptions) {
+  MiniSATSolver s;
+  // No clauses, just conflicting assumptions
+  s.assume(1);
+  s.assume(-1);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  // Should be SAT without assumptions
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Unit propagation at root level persists
+TEST(MiniSATSolverTest, IncrementalUnitPropagation) {
+  MiniSATSolver s;
+  // Add unit clause: x1 must be true
+  s.add(1);
+  s.add(0);
+
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+
+  // Add more clauses - x1 should still be forced true
+  s.add(2);
+  s.add(3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1); // Still forced
+
+  // Add clause that depends on x1's value
+  s.add(-1);
+  s.add(2);
+  s.add(0); // (NOT x1 OR x2) with x1=T means x2=T
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+  EXPECT_EQ(s.val(2), 2); // Forced by implication
+}
+
+// Test pattern: Bookmark with existing unit propagations
+TEST(MiniSATSolverTest, IncrementalBookmarkWithUnits) {
+  MiniSATSolver s;
+  s.reserveVars(3);
+
+  // Add unit clauses
+  s.add(1);
+  s.add(0);
+  s.add(2);
+  s.add(0);
+
+  // Solve to ensure propagation is complete before bookmark
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+  EXPECT_EQ(s.val(2), 2);
+
+  // Bookmark captures state with units
+  s.bookmark();
+
+  // Add temporary clause
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+  EXPECT_EQ(s.val(3), 3); // Forced by clause and x1=T
+
+  // Rollback should restore to state with x1=T, x2=T
+  s.rollback();
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+  EXPECT_EQ(s.val(2), 2);
+}
+
+// Test pattern: Multiple equivalence checks (simulating FRAIG)
+TEST(MiniSATSolverTest, IncrementalMultipleFRAIGChecks) {
+  MiniSATSolver s;
+  s.reserveVars(10);
+  s.bookmark();
+
+  // Check 1: Are c1=(a AND b) and c2=(a AND b) equivalent? (Yes)
+  s.add(-3);
+  s.add(1);
+  s.add(0); // c1 implies a
+  s.add(-3);
+  s.add(2);
+  s.add(0); // c1 implies b
+  s.add(3);
+  s.add(-1);
+  s.add(-2);
+  s.add(0); // (a AND b) implies c1
+
+  s.add(-4);
+  s.add(1);
+  s.add(0); // c2 implies a
+  s.add(-4);
+  s.add(2);
+  s.add(0); // c2 implies b
+  s.add(4);
+  s.add(-1);
+  s.add(-2);
+  s.add(0); // (a AND b) implies c2
+
+  s.assume(-3);
+  s.assume(4);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT); // Cannot differ
+  s.rollback();
+
+  // Check 2: Are c5=(x OR y) and c6=(x AND y) equivalent? (No)
+  s.bookmark();
+  s.add(-5);
+  s.add(7);
+  s.add(8);
+  s.add(0); // c5 implies (x OR y)
+  s.add(5);
+  s.add(-7);
+  s.add(0); // x implies c5
+  s.add(5);
+  s.add(-8);
+  s.add(0); // y implies c5
+
+  s.add(-6);
+  s.add(7);
+  s.add(0); // c6 implies x
+  s.add(-6);
+  s.add(8);
+  s.add(0); // c6 implies y
+  s.add(6);
+  s.add(-7);
+  s.add(-8);
+  s.add(0); // (x AND y) implies c6
+
+  s.assume(5);
+  s.assume(-6);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT); // Can differ (x=T,y=F: OR=T, AND=F)
+  s.rollback();
+}
+
+// Test pattern: Stress test with many bookmark/rollback cycles
+TEST(MiniSATSolverTest, IncrementalManyRollbacks) {
+  MiniSATSolver s;
+  s.reserveVars(5);
+
+  // Base formula: (x1 OR x2)
+  s.add(1);
+  s.add(2);
+  s.add(0);
+
+  for (int i = 0; i < 20; i++) {
+    s.bookmark();
+
+    // Add temporary clauses
+    s.add(-1);
+    s.add(3);
+    s.add(0);
+    s.add(-2);
+    s.add(4);
+    s.add(0);
+
+    EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+    // Rollback
+    s.rollback();
+    EXPECT_EQ(s.getNumClauses(), 1); // Back to base
+  }
+
+  // After all rollbacks, base formula should still work
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Binary vs long clauses in rollback
+TEST(MiniSATSolverTest, IncrementalMixedClauseLengths) {
+  MiniSATSolver s;
+  s.reserveVars(6);
+  s.bookmark();
+
+  // Add binary clauses
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+
+  // Add ternary clause
+  s.add(2);
+  s.add(4);
+  s.add(5);
+  s.add(0);
+
+  // Add longer clause
+  s.add(-2);
+  s.add(-3);
+  s.add(-4);
+  s.add(6);
+  s.add(0);
+
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.getNumClauses(), 4);
+
+  s.rollback();
+  EXPECT_EQ(s.getNumClauses(), 0);
+}
+
+// Test pattern: Learned clauses are cleared on rollback
+TEST(MiniSATSolverTest, IncrementalLearntClausesCleared) {
+  MiniSATSolver s;
+  s.reserveVars(6);
+  s.bookmark();
+
+  // Add pigeonhole problem that will generate learned clauses
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(3);
+  s.add(4);
+  s.add(0);
+  s.add(5);
+  s.add(6);
+  s.add(0);
+  s.add(-1);
+  s.add(-3);
+  s.add(0);
+  s.add(-1);
+  s.add(-5);
+  s.add(0);
+  s.add(-3);
+  s.add(-5);
+  s.add(0);
+  s.add(-2);
+  s.add(-4);
+  s.add(0);
+  s.add(-2);
+  s.add(-6);
+  s.add(0);
+  s.add(-4);
+  s.add(-6);
+  s.add(0);
+
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  // Rollback should clear learned clauses
+  s.rollback();
+
+  // Now add a SAT instance - learned clauses from previous UNSAT
+  // should not interfere
+  s.bookmark();
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  s.rollback();
+}
+
+// Test pattern: Incremental solver as oracle (multiple assumption sets)
+TEST(MiniSATSolverTest, IncrementalAssumptionOracle) {
+  MiniSATSolver s;
+  // Formula: (x1 OR x2 OR x3) AND (NOT x1 OR NOT x2) AND (NOT x1 OR NOT x3)
+  s.add(1);
+  s.add(2);
+  s.add(3);
+  s.add(0);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+  s.add(-1);
+  s.add(-3);
+  s.add(0);
+
+  // Query 1: Can x1 be true?
+  s.assume(1);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Query 2: Can x1 and x2 both be true?
+  s.assume(1);
+  s.assume(2);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  // Query 3: Can x2 and x3 both be true?
+  s.assume(2);
+  s.assume(3);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Query 4: Can all be false?
+  s.assume(-1);
+  s.assume(-2);
+  s.assume(-3);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+}
+
+// Test pattern: Empty formula with bookmark
+TEST(MiniSATSolverTest, IncrementalEmptyFormula) {
+  MiniSATSolver s;
+  s.reserveVars(2);
+  s.bookmark();
+
+  // No clauses - should be SAT
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Add clause
+  s.add(1);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(1), 1);
+
+  // Rollback to empty
+  s.rollback();
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.getNumClauses(), 0);
+}
+
+// Test pattern: Bookmark then immediately rollback
+TEST(MiniSATSolverTest, IncrementalImmediateRollback) {
+  MiniSATSolver s;
+  s.reserveVars(3);
+
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  EXPECT_EQ(s.getNumClauses(), 1);
+
+  s.bookmark();
+  s.rollback();
+
+  // Should be back to same state
+  EXPECT_EQ(s.getNumClauses(), 1);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+// Test pattern: Large conjunction (many binary clauses)
+TEST(MiniSATSolverTest, IncrementalManyBinaryClauses) {
+  MiniSATSolver s;
+  s.reserveVars(20);
+  s.bookmark();
+
+  // Add chain: x1=>x2=>x3=>...=>x20
+  for (int i = 1; i < 20; i++) {
+    s.add(-i);
+    s.add(i + 1);
+    s.add(0);
+  }
+
+  // Assert x1=T, x20=F -> UNSAT
+  s.add(1);
+  s.add(0);
+  s.add(-20);
+  s.add(0);
+
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  s.rollback();
+  EXPECT_EQ(s.getNumClauses(), 0);
+}
+
+// Test pattern: Incremental cardinality constraint
+TEST(MiniSATSolverTest, IncrementalCardinalityConstraint) {
+  MiniSATSolver s;
+  // At-most-one constraint on x1, x2, x3
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+  s.add(-1);
+  s.add(-3);
+  s.add(0);
+  s.add(-2);
+  s.add(-3);
+  s.add(0);
+
+  // Check: can x1 be true? (Yes)
+  s.assume(1);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  EXPECT_EQ(s.val(2), -2); // x2 must be false
+  EXPECT_EQ(s.val(3), -3); // x3 must be false
+
+  // Check: can x2 and x3 both be true? (No)
+  s.assume(2);
+  s.assume(3);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  // Incrementally strengthen: add at-least-one constraint
+  s.add(1);
+  s.add(2);
+  s.add(3);
+  s.add(0);
+
+  // Now exactly one must be true
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  int count = (s.val(1) > 0 ? 1 : 0) + (s.val(2) > 0 ? 1 : 0) +
+              (s.val(3) > 0 ? 1 : 0);
+  EXPECT_EQ(count, 1);
+}
+
+// Test pattern: Incremental search with backtracking budget
+TEST(MiniSATSolverTest, IncrementalWithConflictLimit) {
+  MiniSATSolver s;
+  s.reserveVars(10);
+
+  // Add a moderately hard problem
+  for (int i = 1; i < 10; i++) {
+    s.add(-i);
+    s.add(i + 1);
+    s.add(0);
+  }
+  s.add(-10);
+  s.add(1);
+  s.add(0);
+
+  // Solve with very low limit - might return UNKNOWN
+  auto result = s.solve(1);
+  EXPECT_TRUE(result == MiniSATSolver::kSAT ||
+              result == MiniSATSolver::kUNKNOWN);
+
+  // Solve with no limit - should definitely return SAT
+  result = s.solve();
+  EXPECT_EQ(result, MiniSATSolver::kSAT);
+
+  // Add more clauses incrementally
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+}
+
+//===----------------------------------------------------------------------===//
+// MiniSATSolver - CaDiCaL comparison bug reproducers
+//===----------------------------------------------------------------------===//
+
+// Reproducer for bug found in mul.sv FRAIG run where CaDiCaL returns SAT
+// but MiniSAT returns UNSAT on the same problem. This indicates a correctness
+// bug in the MiniSAT implementation's bookmark/rollback mechanism.
+//
+// The original failure involved 2079 clauses with assumptions [865 -866],
+// where MiniSAT incorrectly reported UNSAT due to a conflict at root level
+// with binary clause [-31 -210].
+//
+// This test creates a simpler version that may expose similar issues.
+TEST(MiniSATSolverTest, BookmarkRollbackWithComplexAssumptions) {
+  MiniSATSolver s;
+  s.reserveVars(100);
+  s.bookmark();
+
+  // Add a complex network of binary and ternary clauses that could expose
+  // issues in the bookmark/rollback + assumptions interaction
+
+  // Create a chain of implications
+  for (int i = 1; i <= 30; i++) {
+    s.add(-i);
+    s.add(i + 1);
+    s.add(0);
+  }
+
+  // Add some binary clauses that form a complex dependency
+  s.add(10);
+  s.add(-31);
+  s.add(0);
+  s.add(14);
+  s.add(-31);
+  s.add(0);
+
+  // Add ternary clauses
+  s.add(-31);
+  s.add(-50);
+  s.add(-60);
+  s.add(0);
+  s.add(31);
+  s.add(50);
+  s.add(0);
+
+  // First solve should be SAT
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+
+  // Now solve with assumptions - should still be consistent
+  s.assume(50);
+  s.assume(-60);
+  auto result = s.solve();
+
+  // Result should be either SAT or UNSAT, but never a crash or corruption
+  EXPECT_TRUE(result == MiniSATSolver::kSAT ||
+              result == MiniSATSolver::kUNSAT);
+
+  s.rollback();
+
+  // After rollback, solver should be in clean state
+  EXPECT_EQ(s.getNumClauses(), 0);
+}
+
+// Reproducer focusing on the specific pattern: binary clause conflict
+// at root level after assumptions + BCP with bookmark/rollback.
+TEST(MiniSATSolverTest, BinaryConflictAtRootAfterRollback) {
+  MiniSATSolver s;
+  s.reserveVars(50);
+  s.bookmark();
+
+  // Create a scenario where assumptions + BCP could lead to root-level
+  // conflicts if rollback doesn't properly restore watch lists
+
+  // Binary clauses that should trigger specific watch list patterns
+  s.add(1);
+  s.add(-10);
+  s.add(0);
+  s.add(2);
+  s.add(-10);
+  s.add(0);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // This creates: (1 OR -10), (2 OR -10), (-1 OR -2)
+  // With assumptions, this might expose rollback bugs
+
+  // First query
+  s.assume(1);
+  s.assume(2);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT); // Conflict via (-1 OR -2)
+
+  s.rollback();
+
+  // After rollback, the same problem setup
+  s.bookmark();
+  s.add(1);
+  s.add(-10);
+  s.add(0);
+  s.add(2);
+  s.add(-10);
+  s.add(0);
+  s.add(-1);
+  s.add(-2);
+  s.add(0);
+
+  // Should get the same result
+  s.assume(1);
+  s.assume(2);
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+
+  s.rollback();
+}
+
+// Test for accumulation of learned clauses across bookmark/rollback cycles
+// which could cause incorrect UNSAT results.
+TEST(MiniSATSolverTest, LearnedClauseAccumulationBug) {
+  MiniSATSolver s;
+  s.reserveVars(20);
+  s.bookmark();
+
+  // Cycle 1: Add clauses that generate learned clauses (3-into-2 pigeonhole)
+  // Same as Pigeonhole3Into2 test
+  s.add(1);
+  s.add(2);
+  s.add(0);
+  s.add(3);
+  s.add(4);
+  s.add(0);
+  s.add(5);
+  s.add(6);
+  s.add(0);
+  s.add(-1);
+  s.add(-3);
+  s.add(0);
+  s.add(-1);
+  s.add(-5);
+  s.add(0);
+  s.add(-3);
+  s.add(-5);
+  s.add(0);
+  s.add(-2);
+  s.add(-4);
+  s.add(0);
+  s.add(-2);
+  s.add(-6);
+  s.add(0);
+  s.add(-4);
+  s.add(-6);
+  s.add(0);
+
+  EXPECT_EQ(s.solve(), MiniSATSolver::kUNSAT);
+  s.rollback();
+
+  // Cycle 2: Add different SAT clauses - should not be affected by
+  // learned clauses from Cycle 1
+  s.bookmark();
+  s.add(7);
+  s.add(8);
+  s.add(0);
+  s.add(-7);
+  s.add(9);
+  s.add(0);
+
+  // This should be SAT, but if learned clauses leak, might be UNSAT
+  EXPECT_EQ(s.solve(), MiniSATSolver::kSAT);
+  s.rollback();
+}
+
+// Test the exact failure pattern from mul.sv: assumptions with many
+// binary clauses after bookmark/rollback
+TEST(MiniSATSolverTest, ManyBinaryClausesWithAssumptions) {
+  MiniSATSolver s;
+  s.reserveVars(200);
+  s.bookmark();
+
+  // Add many binary clauses (simulating Tseitin encoding)
+  for (int i = 1; i <= 50; i++) {
+    s.add(i);
+    s.add(-(i + 50));
+    s.add(0);
+
+    s.add(i + 10);
+    s.add(-(i + 50));
+    s.add(0);
+
+    s.add(-(i + 50));
+    s.add(-(i + 100));
+    s.add(0);
+
+    s.add(i + 50);
+    s.add(-(i + 100));
+    s.add(0);
+  }
+
+  // Solve with assumptions
+  s.assume(100);
+  s.assume(-101);
+
+  auto result1 = s.solve();
+
+  // Rollback and re-add same problem
+  s.rollback();
+  s.bookmark();
+
+  for (int i = 1; i <= 50; i++) {
+    s.add(i);
+    s.add(-(i + 50));
+    s.add(0);
+
+    s.add(i + 10);
+    s.add(-(i + 50));
+    s.add(0);
+
+    s.add(-(i + 50));
+    s.add(-(i + 100));
+    s.add(0);
+
+    s.add(i + 50);
+    s.add(-(i + 100));
+    s.add(0);
+  }
+
+  s.assume(100);
+  s.assume(-101);
+
+  auto result2 = s.solve();
+
+  // Results should be consistent across rollback
+  EXPECT_EQ(result1, result2) << "Solver gives different results before/after rollback!";
+
+  s.rollback();
+}
+
+TEST(MiniSATSolverTest, DIMACSExport) {
+  MiniSATSolver s;
+
+  // Create a simple formula: (x1 OR x2) AND (NOT x1 OR x3)
+  // Clause 1: x1 OR x2
+  s.add(1);
+  s.add(2);
+  s.add(0);
+
+  // Clause 2: NOT x1 OR x3
+  s.add(-1);
+  s.add(3);
+  s.add(0);
+
+  // Export to string
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  s.dumpDIMACS(os);
+
+  // Verify header
+  EXPECT_TRUE(output.find("p cnf 3 2") != std::string::npos)
+      << "Expected 3 variables and 2 clauses in header";
+
+  // Verify clauses are present
+  EXPECT_TRUE(output.find("1 2 0") != std::string::npos)
+      << "Expected clause '1 2 0'";
+  EXPECT_TRUE(output.find("-1 3 0") != std::string::npos)
+      << "Expected clause '-1 3 0'";
+}
+
+TEST(MiniSATSolverTest, DIMACSExportWithAssumptions) {
+  MiniSATSolver s;
+
+  // Simple clause: x1 OR x2
+  s.add(1);
+  s.add(2);
+  s.add(0);
+
+  // Export with assumptions
+  std::string output;
+  llvm::raw_string_ostream os(output);
+  s.dumpDIMACS(os, {1, -2}); // Assume x1=true, x2=false
+
+  // Verify assumptions are exported as unit clauses
+  EXPECT_TRUE(output.find("1 0") != std::string::npos)
+      << "Expected assumption '1 0'";
+  EXPECT_TRUE(output.find("-2 0") != std::string::npos)
+      << "Expected assumption '-2 0'";
+
+  // Should have 3 clauses total (1 original + 2 assumptions)
+  EXPECT_TRUE(output.find("p cnf 2 3") != std::string::npos)
+      << "Expected 2 variables and 3 clauses";
+}

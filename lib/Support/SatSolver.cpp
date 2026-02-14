@@ -8,9 +8,12 @@
 
 #include "circt/Support/SatSolver.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cmath>
+
+#define DEBUG_TYPE "sat-solver"
 
 using namespace circt;
 
@@ -43,6 +46,46 @@ MiniSATSolver::Result MiniSATSolver::solve(int64_t confLimit) {
 int MiniSATSolver::val(int v) const {
   assert(v > 0 && v <= numVars && "invalid variable index");
   return vars[v - 1].modelVal == kTrue ? v : -v;
+}
+
+void MiniSATSolver::dumpDIMACS(llvm::raw_ostream &os,
+                                llvm::ArrayRef<int> assumptions) const {
+  // Count total clauses: problem + learnt + binary + assumptions
+  size_t totalClauses = problemClauses.size() + learntClauses.size() +
+                        binaryClauses.size() + learntBinaryClauses.size() +
+                        assumptions.size();
+
+  // DIMACS header
+  os << "p cnf " << numVars << " " << totalClauses << "\n";
+
+  // Problem clauses (non-binary)
+  for (const auto &clause : problemClauses) {
+    for (int lit : clause.lits)
+      os << decodeLit(lit) << " ";
+    os << "0\n";
+  }
+
+  // Binary problem clauses
+  for (const auto &[lit0, lit1] : binaryClauses) {
+    os << decodeLit(lit0) << " " << decodeLit(lit1) << " 0\n";
+  }
+
+  // Learned clauses (optional - helps reproducibility)
+  for (const auto &clause : learntClauses) {
+    for (int lit : clause.lits)
+      os << decodeLit(lit) << " ";
+    os << "0\n";
+  }
+
+  // Binary learned clauses
+  for (const auto &[lit0, lit1] : learntBinaryClauses) {
+    os << decodeLit(lit0) << " " << decodeLit(lit1) << " 0\n";
+  }
+
+  // Assumptions as unit clauses
+  for (int lit : assumptions) {
+    os << lit << " 0\n";
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -135,7 +178,6 @@ void MiniSATSolver::backtrack(int level) {
                << " clearFrom=" << clearFrom << "\n";
 
   auto sf = [this](int x) { return vars[x].activity; };
-  bool found865 = false;
   for (int i = static_cast<int>(trail.size()) - 1; i >= clearFrom; i--) {
     int v = litVar(trail[i]);
     auto &var = vars[v];
@@ -643,7 +685,17 @@ MiniSATSolver::Result MiniSATSolver::search(int64_t confBudget) {
       int backLevel;
       analyze(confl, learntClause, backLevel);
       backtrack(std::max(backLevel, rootLevel));
-      recordLearnt(learntClause);
+      // Only record learned clauses if they don't involve assumption levels.
+      // Learned clauses containing literals from assumption levels (1..rootLevel)
+      // are contaminated and invalid for other assumption sets.
+      if (backLevel < rootLevel) {
+        // Don't learn - clause is tainted by assumptions
+        LLVM_DEBUG(llvm::dbgs() << "LEARN: Skipping tainted clause (backLevel="
+                                << backLevel << " < rootLevel=" << rootLevel
+                                << ")\n");
+      } else {
+        recordLearnt(learntClause);
+      }
       decayVarActivity();
       decayClauseActivity();
     } else {
@@ -719,13 +771,9 @@ MiniSATSolver::Result MiniSATSolver::solveImpl(int64_t confLimit) {
                    << " assign=" << static_cast<int>(vars[v].assign)
                    << " wantedLit=" << enc << "\n";
     }
-    llvm::errs() << "  After enqueue: trail.size=" << trail.size()
-                 << " var865.assign=" << static_cast<int>(vars[865].assign)
-                 << "\n";
+    llvm::errs() << "  After enqueue: trail.size=" << trail.size() << "\n";
     Conflict assumptionConfl = propagate();
-    llvm::errs() << "  After propagate: trail.size=" << trail.size()
-                 << " var865.assign=" << static_cast<int>(vars[865].assign)
-                 << "\n";
+    llvm::errs() << "  After propagate: trail.size=" << trail.size() << "\n";
     if (!enqueueOk || !assumptionConfl.isNone()) {
       llvm::errs() << "SOLVE: Assumption conflict! enqueueOk=" << enqueueOk
                    << " conflictNone=" << assumptionConfl.isNone() << "\n";
