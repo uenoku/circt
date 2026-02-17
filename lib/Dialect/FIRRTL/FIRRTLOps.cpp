@@ -4037,6 +4037,12 @@ StringRef ObjectOp::getInstanceName() { return getName(); }
 
 StringAttr ObjectOp::getInstanceNameAttr() { return getNameAttr(); }
 
+ArrayRef<bool> ObjectOp::getPortDirections() {
+  // ObjectOp doesn't have port results like InstanceOp.
+  // It returns a single ClassType result, so return an empty array.
+  return {};
+}
+
 StringAttr ObjectOp::getReferencedModuleNameAttr() {
   return getClassNameAttr();
 }

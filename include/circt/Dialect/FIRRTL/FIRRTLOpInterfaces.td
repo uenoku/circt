@@ -296,6 +296,10 @@ def FInstanceLike : OpInterface<"FInstanceLike", [
   let description = [{
       Provide common instance information for FIRRTL instance-like operations.
   }];
+  let methods = [
+    InterfaceMethod<"Get the port directions",
+    "ArrayRef<bool>", "getPortDirections">
+  ];
 }
 
 def ClassLike : OpInterface<"ClassLike", [FModuleLike]> {

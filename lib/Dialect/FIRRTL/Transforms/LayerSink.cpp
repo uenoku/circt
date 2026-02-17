@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/FIRRTL/FIRRTLInstanceGraph.h"
+#include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Support/Debug.h"
 #include "mlir/IR/Dominance.h"
@@ -98,8 +99,13 @@ public:
         return true;
     if (op->getNumRegions() != 0)
       return true;
-    if (auto instance = dyn_cast<InstanceOp>(op))
-      return effectfulModules.contains(instance.getModuleNameAttr().getAttr());
+    if (auto instance = dyn_cast<FInstanceLike>(op)) {
+      for (auto module : instance.getReferencedModuleNamesAttr()) {
+        if (effectfulModules.contains(cast<StringAttr>(module)))
+          return true;
+      }
+      return false;
+    }
     if (isa<FConnectLike, WireOp, RegResetOp, RegOp, MemOp, NodeOp>(op))
       return false;
     return !(mlir::isMemoryEffectFree(op) ||
@@ -337,12 +343,11 @@ void DemandInfo::updateConnects(WorkStack &work, Operation *op, Demand demand) {
   if (isa<WireOp, RegResetOp, RegOp, MemOp, ObjectOp>(op)) {
     for (auto result : op->getResults())
       updateConnects(work, result, demand);
-  } else if (auto inst = dyn_cast<InstanceOp>(op)) {
+  } else if (auto inst = dyn_cast<FInstanceLike>(op)) {
     auto dirs = inst.getPortDirections();
-    for (unsigned i = 0, e = inst->getNumResults(); i < e; ++i) {
-      if (direction::get(dirs[i]) == Direction::In)
-        updateConnects(work, inst.getResult(i), demand);
-    }
+    for (auto [i, dir] : llvm::enumerate(dirs))
+      if (direction::get(dir) == Direction::In)
+        updateConnects(work, inst->getResult(i), demand);
   }
 }
 
