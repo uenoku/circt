@@ -4257,22 +4257,16 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     instanceInnerSymNames.push_back(innerSymName);
   }
 
-  // Define the macro to the default instance's inner symbol name
-  // If the macro is already defined, emit an error
-  SmallString<256> errorMessage;
-  {
-    llvm::raw_svector_ostream os(errorMessage);
-    os << macroName << "__must__not__be__set";
-  }
-  auto errorMessageAttr = builder.getStringAttr(errorMessage);
-
   addToIfDefBlock(
       macroName,
       /*thenCtor=*/
-      [&]() { sv::MacroErrorOp::create(builder, errorMessageAttr); },
+      [&]() {},
       /*elseCtor=*/
       [&]() {
-        sv::MacroDefOp::create(builder, macroRef, instanceInnerSymNames[0]);
+        auto array = builder.getArrayAttr({hw::InnerRefAttr::get(
+            theModule.getNameAttr(), instanceInnerSymNames[0])});
+        sv::MacroDefOp::create(builder, macroRef,
+                               builder.getStringAttr("{{0}}"), array);
       });
 
   // Register instance choice information for global include file generation
