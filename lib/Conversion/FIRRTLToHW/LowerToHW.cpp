@@ -949,57 +949,81 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
          << ".vh";
     }
 
-    // Build the content of the include file
-    SmallString<1024> includeContent;
-    {
-      llvm::raw_svector_ostream os(includeContent);
-      os << "// Specialization file for module: " << moduleName << "\n";
-      os << "// Option: " << optionName << ", Case: " << caseName << "\n";
-      os << "\n";
-
-      // Define the global option case macro to avoid conflicts
-      // Format: __option__<OptionName>_<CaseName>
-      SmallString<128> optionCaseMacro;
-      {
-        llvm::raw_svector_ostream mos(optionCaseMacro);
-        mos << "__option__" << optionName << "_" << caseName;
-      }
-
-      os << "`ifndef " << optionCaseMacro << "\n";
-      os << " `define " << optionCaseMacro << "\n";
-      os << "`endif // " << optionCaseMacro << "\n";
-      os << "\n";
-
-      // Emit instance name macros for all instances in this module
-      for (auto &info : instances) {
-        // Macro name format: __target_<Option>_<module>_<instance>
-        // Use lowercase module name to match the spec example
-        SmallString<128> instanceMacro;
-        {
-          llvm::raw_svector_ostream mos(instanceMacro);
-          mos << "__target_" << optionName << "_" << info.moduleName.getValue()
-              << "_" << info.instanceName.getValue();
-        }
-
-        // Error checking: macro must not already be set
-        os << "`ifdef " << instanceMacro << "\n";
-        os << " `ERROR" << instanceMacro << "__must__not__be__set\n";
-        os << "`else\n";
-        os << " `define " << instanceMacro << " "
-           << info.targetModule.getValue() << "\n";
-        os << "`endif\n";
-        os << "\n";
-      }
-    }
-
     // Create the emit.file operation at the top level
     auto fileSymbolName = circuitNamespace.newName(includeFileName);
 
     auto emitFile = emit::FileOp::create(builder, circuit.getLoc(),
                                          includeFileName, fileSymbolName);
     builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
-    emit::VerbatimOp::create(builder, circuit.getLoc(),
-                             builder.getStringAttr(includeContent));
+
+    // Add header comment
+    {
+      SmallString<256> headerComment;
+      llvm::raw_svector_ostream os(headerComment);
+      os << "// Specialization file for module: " << moduleName << "\n";
+      os << "// Option: " << optionName << ", Case: " << caseName << "\n";
+      emit::VerbatimOp::create(builder, circuit.getLoc(),
+                               builder.getStringAttr(headerComment));
+    }
+
+    // Define the global option case macro to avoid conflicts
+    // Format: __option__<OptionName>_<CaseName>
+    SmallString<128> optionCaseMacro;
+    {
+      llvm::raw_svector_ostream mos(optionCaseMacro);
+      mos << "__option__" << optionName << "_" << caseName;
+    }
+
+    auto optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
+    auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
+
+    // `ifndef __option__<OptionName>_<CaseName>
+    //  `define __option__<OptionName>_<CaseName>
+    // `endif
+    sv::IfDefOp::create(
+        builder, circuit.getLoc(), optionCaseMacroRef,
+        /*thenCtor=*/[&]() {},
+        /*elseCtor=*/
+        [&]() {
+          sv::MacroDefOp::create(builder, circuit.getLoc(), optionCaseMacroRef);
+        });
+
+    // Emit instance name macros for all instances in this module
+    for (auto &info : instances) {
+      // Macro name format: __target_<Option>_<module>_<instance>
+      SmallString<128> instanceMacro;
+      {
+        llvm::raw_svector_ostream mos(instanceMacro);
+        mos << "__target_" << optionName << "_" << info.moduleName.getValue()
+            << "_" << info.instanceName.getValue();
+      }
+
+      auto instanceMacroAttr = builder.getStringAttr(instanceMacro);
+      auto instanceMacroRef = FlatSymbolRefAttr::get(instanceMacroAttr);
+
+      // Error checking: macro must not already be set
+      // `ifdef __target_<Option>_<module>_<instance>
+      //  `ERROR__target_<Option>_<module>_<instance>__must__not__be__set
+      // `else
+      //  `define __target_<Option>_<module>_<instance> <TargetModule>
+      // `endif
+      SmallString<256> errorMessage;
+      {
+        llvm::raw_svector_ostream os(errorMessage);
+        os << instanceMacro << "__must__not__be__set";
+      }
+      auto errorMessageAttr = builder.getStringAttr(errorMessage);
+
+      sv::IfDefOp::create(
+          builder, circuit.getLoc(), instanceMacroRef,
+          /*thenCtor=*/
+          [&]() { sv::MacroErrorOp::create(builder, circuit.getLoc(), errorMessageAttr); },
+          /*elseCtor=*/
+          [&]() {
+            sv::MacroDefOp::create(builder, circuit.getLoc(), instanceMacroRef,
+                                   info.targetModule);
+          });
+    }
 
     // Set output file attribute - .vh files should be excluded from file list
     auto outputFileAttr = hw::OutputFileAttr::getFromFilename(
