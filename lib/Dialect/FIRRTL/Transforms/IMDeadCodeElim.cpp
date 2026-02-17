@@ -106,8 +106,8 @@ private:
   InstanceGraph *instanceGraph;
 
   // The type with which we associate liveness.
-  using ElementType =
-      std::variant<Value, FModuleOp, InstanceOp, InstanceChoiceOp, hw::HierPathOp>;
+  using ElementType = std::variant<Value, FModuleOp, InstanceOp,
+                                   InstanceChoiceOp, hw::HierPathOp>;
 
   void markAlive(ElementType element) {
     if (!liveElements.insert(element).second)
@@ -263,14 +263,22 @@ void IMDeadCodeElimPass::markBlockExecutable(Block *block) {
     else if (auto instanceChoice = dyn_cast<InstanceChoiceOp>(op)) {
       // Conservatively mark InstanceChoiceOp alive.
       markAlive(instanceChoice);
+      markBlockUndeletable(instanceChoice);
+      // Mark all results (ports) as alive.
+      for (auto result : instanceChoice.getResults())
+        markAlive(result);
       // Mark all possible target modules as executable.
       for (auto moduleName : instanceChoice.getReferencedModuleNamesAttr()) {
         auto moduleNameStr = cast<StringAttr>(moduleName);
         auto *node = instanceGraph->lookup(moduleNameStr);
         if (!node)
           continue;
-        if (auto fModule = dyn_cast<FModuleOp>(node->getModule()))
+
+        if (auto fModule = dyn_cast<FModuleOp>(*node->getModule())) {
           markBlockExecutable(fModule.getBodyBlock());
+          for (auto result : fModule.getBodyBlock()->getArguments())
+            markAlive(result);
+        }
       }
     } else if (auto object = dyn_cast<ObjectOp>(op))
       markObjectOp(object);
@@ -658,36 +666,36 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
   LLVM_DEBUG(llvm::dbgs() << "Prune ports of module: " << module.getName()
                           << "\n");
 
-  auto replaceInstanceResultWithWire = [&](ImplicitLocOpBuilder &builder,
-                                           unsigned index,
-                                           InstanceOp instance) {
-    auto result = instance.getResult(index);
-    if (isAssumedDead(result)) {
-      // If the result is dead, replace the result with an unrealized conversion
-      // cast which works as a dummy placeholder.
-      auto wire =
-          mlir::UnrealizedConversionCastOp::create(
-              builder, ArrayRef<Type>{result.getType()}, ArrayRef<Value>{})
-              ->getResult(0);
-      result.replaceAllUsesWith(wire);
-      return;
-    }
+  auto replaceInstanceResultWithWire =
+      [&](ImplicitLocOpBuilder &builder, unsigned index, InstanceOp instance) {
+        auto result = instance.getResult(index);
+        if (isAssumedDead(result)) {
+          // If the result is dead, replace the result with an unrealized
+          // conversion cast which works as a dummy placeholder.
+          auto wire =
+              mlir::UnrealizedConversionCastOp::create(
+                  builder, ArrayRef<Type>{result.getType()}, ArrayRef<Value>{})
+                  ->getResult(0);
+          result.replaceAllUsesWith(wire);
+          return;
+        }
 
-    Value wire = WireOp::create(builder, result.getType()).getResult();
-    result.replaceAllUsesWith(wire);
-    // If a module port is dead but its instance result is alive, the port
-    // is used as a temporary wire so make sure that a replaced wire is
-    // putted into `liveSet`.
-    liveElements.erase(result);
-    liveElements.insert(wire);
-  };
+        Value wire = WireOp::create(builder, result.getType()).getResult();
+        result.replaceAllUsesWith(wire);
+        // If a module port is dead but its instance result is alive, the port
+        // is used as a temporary wire so make sure that a replaced wire is
+        // putted into `liveSet`.
+        liveElements.erase(result);
+        liveElements.insert(wire);
+      };
 
   // First, delete dead instances.
   for (auto *use : llvm::make_early_inc_range(instanceGraphNode->uses())) {
     auto instanceOp = use->getInstance();
     Operation *op = instanceOp.getOperation();
 
-    // Check if this is an InstanceOp (not InstanceChoiceOp which we conservatively keep alive)
+    // Check if this is an InstanceOp (not InstanceChoiceOp which we
+    // conservatively keep alive)
     if (auto instance = dyn_cast<InstanceOp>(op)) {
       if (!liveElements.count(instance)) {
         // Replace old instance results with dummy wires.
@@ -740,7 +748,8 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
       if (llvm::any_of(instanceGraph->lookup(module)->uses(),
                        [&](InstanceRecord *record) {
                          return isKnownAlive(
-                             record->getInstance().getOperation()->getResult(index));
+                             record->getInstance().getOperation()->getResult(
+                                 index));
                        }))
         continue;
 
