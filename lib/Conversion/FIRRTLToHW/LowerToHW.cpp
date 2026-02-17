@@ -85,7 +85,8 @@ static Value getSingleNonInstanceOperand(AttachOp op) {
 /// Information about an instance choice for global include file generation.
 struct InstanceChoiceInfo {
   StringAttr moduleName;   // Parent module name
-  StringAttr instanceName; // Local instance name
+  StringAttr instanceName; // Local instance name (for macro name)
+  StringAttr innerSymName; // Inner symbol name (for macro value)
   StringAttr targetModule; // Target module name for this option case
 };
 
@@ -479,11 +480,12 @@ private:
 
   void addInstanceChoiceForCase(StringRef optionName, StringRef caseName,
                                 StringAttr moduleName, StringAttr instanceName,
+                                StringAttr innerSymName,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     std::string key = (optionName + "_" + caseName).str();
     instanceChoicesByOptionCase[key].push_back(
-        {moduleName, instanceName, targetModule});
+        {moduleName, instanceName, innerSymName, targetModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -899,7 +901,7 @@ void FIRRTLModuleLowering::runOnOperation() {
 
 /// Emit global include files for instance choice options.
 /// Creates one include file per option case following the FIRRTL ABI spec.
-/// Filename format: targets_<Module>_<Option>_<Case>.vh
+/// Filename format: targets_<Module>_<Option>_<Case>.svh
 /// Macro format: __target_<Option>_<module>_<instance>
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &state) {
@@ -946,7 +948,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     {
       llvm::raw_svector_ostream os(includeFileName);
       os << "targets_" << moduleName << "_" << optionName << "_" << caseName
-         << ".vh";
+         << ".svh";
     }
 
     // Create the emit.file operation at the top level
@@ -1005,7 +1007,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       // `ifdef __target_<Option>_<module>_<instance>
       //  `ERROR__target_<Option>_<module>_<instance>__must__not__be__set
       // `else
-      //  `define __target_<Option>_<module>_<instance> <TargetModule>
+      //  `define __target_<Option>_<module>_<instance> <InnerSymName>
       // `endif
       SmallString<256> errorMessage;
       {
@@ -1017,11 +1019,17 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       sv::IfDefOp::create(
           builder, circuit.getLoc(), instanceMacroRef,
           /*thenCtor=*/
-          [&]() { sv::MacroErrorOp::create(builder, circuit.getLoc(), errorMessageAttr); },
+          [&]() {
+            sv::MacroErrorOp::create(builder, circuit.getLoc(),
+                                     errorMessageAttr);
+          },
           /*elseCtor=*/
           [&]() {
+            auto attr = ArrayAttr::get(
+                &getContext(),
+                {hw::InnerRefAttr::get(info.moduleName, info.innerSymName)});
             sv::MacroDefOp::create(builder, circuit.getLoc(), instanceMacroRef,
-                                   info.targetModule);
+                                   builder.getStringAttr("{{0}}"), attr);
           });
     }
 
@@ -4217,12 +4225,10 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     inputOperands.push_back(wire);
   }
 
-  auto innerSym = oldInstanceChoice.getInnerSymAttr();
-
   // Get the Option name (e.g., "Platform")
   auto optionName = oldInstanceChoice.getOptionNameAttr();
 
-  // Generate a macro name for the default target
+  // Generate a macro name for the target
   // Format: __target_<Option>_<module>_<instance>
   SmallString<128> macroName;
   {
@@ -4234,37 +4240,49 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   auto macroNameAttr = builder.getStringAttr(macroName);
   auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
 
-  // Add macro declaration and define it to the default module name
+  // Add macro declaration
   circuitState.addMacroDecl(macroNameAttr);
+
+  // Pre-create inner symbols for all instances (default + all cases)
+  // Index 0 is for the default, index i+1 is for caseNames[i]
+  SmallVector<hw::InnerSymAttr> instanceInnerSyms;
+  SmallVector<StringAttr> instanceInnerSymNames;
+  for (size_t i = 0; i <= caseNames.size(); ++i) {
+    hw::InnerSymAttr innerSym;
+    StringAttr innerSymName;
+    std::tie(innerSym, innerSymName) = getOrAddInnerSym(
+        oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
+        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
+    instanceInnerSyms.push_back(innerSym);
+    instanceInnerSymNames.push_back(innerSymName);
+  }
+
+  // Define the macro to the default instance's inner symbol name
   addToIfDefBlock(
       macroName,
       /*thenCtor=*/[&]() {},
       /*elseCtor=*/
       [&]() {
-        sv::MacroDefOp::create(
-            builder, macroRef,
-            builder.getStringAttr(defaultModuleName.getAttr().getValue()));
+        sv::MacroDefOp::create(builder, macroRef, instanceInnerSymNames[0]);
       });
 
   // Register instance choice information for global include file generation
   // This will emit one include file per option case (e.g., Platform_FPGA.svh)
-  {
-    // Register for each option case
-    // moduleNames[0] is the default, moduleNames[i+1] corresponds to
-    // caseNames[i]
-    for (size_t i = 0; i < caseNames.size(); ++i) {
-      auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
-      auto caseName = caseSymRef.getLeafReference();
-      auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+  for (size_t i = 0; i < caseNames.size(); ++i) {
+    auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
+    auto caseName = caseSymRef.getLeafReference();
+    auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
 
-      circuitState.addInstanceChoiceForCase(
-          optionName.getValue(), caseName.getValue(), theModule.getNameAttr(),
-          oldInstanceChoice.getInstanceNameAttr(), targetModuleRef.getAttr());
-    }
+    circuitState.addInstanceChoiceForCase(
+        optionName.getValue(), caseName.getValue(), theModule.getNameAttr(),
+        oldInstanceChoice.getInstanceNameAttr(), instanceInnerSymNames[i + 1],
+        targetModuleRef.getAttr());
   }
 
   // Lambda to create an instance for a given module and assign outputs to wires
-  auto createInstanceAndAssign = [&](Operation *oldMod) {
+  // Takes the inner symbol to use for this instance
+  auto createInstanceAndAssign = [&](Operation *oldMod,
+                                     hw::InnerSymAttr instInnerSym) {
     auto *newMod = circuitState.getNewModule(oldMod);
     if (!newMod) {
       oldInstanceChoice->emitOpError("could not find lowered module");
@@ -4280,7 +4298,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
     auto inst = hw::InstanceOp::create(builder, newMod,
                                        oldInstanceChoice.getInstanceNameAttr(),
-                                       allOperands, parameters, innerSym);
+                                       allOperands, parameters, instInnerSym);
 
     if (inst.getInnerSymAttr()) {
       auto key = std::make_pair<Attribute, Attribute>(theModule.getNameAttr(),
@@ -4315,8 +4333,11 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Build the nested ifdef structure from the end backwards
   std::function<void()> buildElseBlock;
 
-  // Start with the default case
-  buildElseBlock = [&]() { createInstanceAndAssign(defaultModule); };
+  // Start with the default case (uses instanceInnerSyms[0])
+  auto defaultInnerSym = instanceInnerSyms[0];
+  buildElseBlock = [&, defaultInnerSym]() {
+    createInstanceAndAssign(defaultModule, defaultInnerSym);
+  };
 
   // Wrap each alternative in an ifdef, working backwards
   for (int i = caseNames.size() - 1; i >= 0; --i) {
@@ -4343,14 +4364,18 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     // Register the macro declaration for this case
     circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
 
-    // Capture the previous else block
+    // Capture the previous else block and the inner symbol for this case
     auto prevElseBlock = buildElseBlock;
+    auto caseInnerSym = instanceInnerSyms[i + 1];
 
-    buildElseBlock = [&, optionCaseMacro = optionCaseMacro.str().str(), altModule,
-                      prevElseBlock]() {
+    buildElseBlock = [&, optionCaseMacro = optionCaseMacro.str().str(),
+                      altModule, prevElseBlock, caseInnerSym]() {
       addToIfDefBlock(
           optionCaseMacro,
-          /*thenCtor=*/[&]() { createInstanceAndAssign(altModule); },
+          /*thenCtor=*/
+          [&, altModule, caseInnerSym]() {
+            createInstanceAndAssign(altModule, caseInnerSym);
+          },
           /*elseCtor=*/prevElseBlock);
     };
   }
