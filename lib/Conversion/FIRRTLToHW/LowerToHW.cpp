@@ -465,6 +465,24 @@ private:
     macroDeclNames.insert(name);
   }
 
+  /// Information about an instance choice for global include file generation.
+  struct InstanceChoiceInfo {
+    StringAttr instanceName;      // Local instance name
+    StringAttr targetModule;      // Target module name for this option case
+  };
+
+  /// Map from "OptionName_CaseName" (e.g., "Platform_FPGA") to list of instance choices.
+  /// This is used to generate one include file per option case.
+  llvm::StringMap<SmallVector<InstanceChoiceInfo>> instanceChoicesByOptionCase;
+  std::mutex instanceChoicesMutex;
+
+  void addInstanceChoiceForCase(StringRef optionName, StringRef caseName,
+                                StringAttr instanceName, StringAttr targetModule) {
+    std::unique_lock<std::mutex> lock(instanceChoicesMutex);
+    std::string key = (optionName + "_" + caseName).str();
+    instanceChoicesByOptionCase[key].push_back({instanceName, targetModule});
+  }
+
   /// The list of fragments on which the modules rely. Must be set outside the
   /// parallelized module lowering since module type reads access it.
   DenseMap<hw::HWModuleOp, SetVector<Attribute>> fragments;
@@ -625,6 +643,8 @@ struct FIRRTLModuleLowering
 
 private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
+  void emitInstanceChoiceIncludes(CircuitOp op,
+                                  CircuitLoweringState &loweringState);
   LogicalResult lowerPorts(ArrayRef<PortInfo> firrtlPorts,
                            SmallVectorImpl<hw::PortInfo> &ports,
                            Operation *moduleOp, StringRef moduleName,
@@ -867,8 +887,87 @@ void FIRRTLModuleLowering::runOnOperation() {
   // Emit all the macros and preprocessor gunk at the start of the file.
   lowerFileHeader(circuit, state);
 
+  // Emit global include files for instance choice options.
+  emitInstanceChoiceIncludes(circuit, state);
+
   // Now that the modules are moved over, remove the Circuit.
   circuit.erase();
+}
+
+/// Emit global include files for instance choice options.
+/// Creates one include file per option case (e.g., Platform_FPGA.svh, Platform_ASIC.svh)
+/// containing instance name macros for all instance_choice operations using that option case.
+void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
+    CircuitOp circuit, CircuitLoweringState &state) {
+  llvm::errs() << "DEBUG: emitInstanceChoiceIncludes called, map size = "
+               << state.instanceChoicesByOptionCase.size() << "\n";
+  if (state.instanceChoicesByOptionCase.empty())
+    return;
+
+  // Insert at the top-level module (parent of circuit)
+  auto *topLevelModule = circuit->getParentOp();
+  OpBuilder builder(&getContext());
+  builder.setInsertionPointToEnd(cast<mlir::ModuleOp>(topLevelModule).getBody());
+  CircuitNamespace circuitNamespace(circuit);
+
+  // Emit one include file for each option case
+  for (auto &[optionCaseKey, instances] : state.instanceChoicesByOptionCase) {
+    llvm::errs() << "DEBUG: Processing option case " << optionCaseKey << " with "
+                 << instances.size() << " instances\n";
+    SmallString<128> includeFileName;
+    {
+      llvm::raw_svector_ostream os(includeFileName);
+      os << optionCaseKey << ".svh";
+    }
+    llvm::errs() << "DEBUG: Creating file " << includeFileName << "\n";
+
+    // Build the content of the include file
+    SmallString<1024> includeContent;
+    {
+      llvm::raw_svector_ostream os(includeContent);
+      os << "// Include file for option case: " << optionCaseKey << "\n";
+      os << "// This file defines instance name macros for all instance_choice operations\n";
+      os << "// when this option case is selected.\n";
+      os << "\n";
+
+      // Emit instance name macros for all instances using this option case
+      for (auto &info : instances) {
+        // The macro name format: __instance_<InstanceName>
+        SmallString<128> instanceMacro;
+        {
+          llvm::raw_svector_ostream mos(instanceMacro);
+          mos << "__instance_" << info.instanceName.getValue();
+        }
+
+        os << "`ifndef " << instanceMacro << "\n";
+        os << "`define " << instanceMacro << " " << info.targetModule.getValue() << "\n";
+        os << "`endif // " << instanceMacro << "\n";
+        os << "\n";
+      }
+    }
+
+    // Create the emit.file operation at the top level
+    auto fileSymbolName = circuitNamespace.newName(includeFileName);
+    llvm::errs() << "DEBUG: Creating emit.file with symbol " << fileSymbolName << "\n";
+
+    auto emitFile = emit::FileOp::create(builder, circuit.getLoc(),
+                                         includeFileName, fileSymbolName);
+    llvm::errs() << "DEBUG: emit.file created\n";
+    builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
+    emit::VerbatimOp::create(builder, circuit.getLoc(),
+                             builder.getStringAttr(includeContent));
+    llvm::errs() << "DEBUG: verbatim created\n";
+
+    // Set output file attribute - .svh files should be excluded from file list
+    auto outputFileAttr = hw::OutputFileAttr::getFromFilename(
+        builder.getContext(), includeFileName, /*excludeFromFileList=*/true);
+    emitFile->setAttr("output_file", outputFileAttr);
+    llvm::errs() << "DEBUG: output_file attribute set\n";
+
+    // Reset insertion point to after the emit.file
+    builder.setInsertionPointAfter(emitFile);
+  }
+  llvm::errs() << "DEBUG: emitInstanceChoiceIncludes finished\n";
 }
 
 /// Emit the file header that defines a bunch of macros.
@@ -4073,6 +4172,32 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         sv::MacroDefOp::create(
             builder, macroRef, builder.getStringAttr(defaultModuleName.getAttr().getValue()));
       });
+
+  // Register instance choice information for global include file generation
+  // This will emit one include file per option case (e.g., Platform_FPGA.svh)
+  {
+    llvm::errs() << "DEBUG: Registering instance choice for "
+                 << oldInstanceChoice.getInstanceName() << "\n";
+
+    // Get the Option name (e.g., "Platform")
+    auto optionName = oldInstanceChoice.getOptionNameAttr();
+    llvm::errs() << "DEBUG: Option name: " << optionName << "\n";
+
+    // Register for each option case
+    // moduleNames[0] is the default, moduleNames[i+1] corresponds to caseNames[i]
+    for (size_t i = 0; i < caseNames.size(); ++i) {
+      auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
+      auto caseName = caseSymRef.getLeafReference();
+      auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+
+      circuitState.addInstanceChoiceForCase(
+          optionName.getValue(),
+          caseName.getValue(),
+          oldInstanceChoice.getInstanceNameAttr(),
+          targetModuleRef.getAttr());
+      llvm::errs() << "DEBUG: Registered for case " << caseName << "\n";
+    }
+  }
 
   // Lambda to create an instance for a given module and assign outputs to wires
   auto createInstanceAndAssign = [&](Operation *oldMod) {
