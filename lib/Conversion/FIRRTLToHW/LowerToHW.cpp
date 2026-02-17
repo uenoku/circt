@@ -4258,9 +4258,18 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   }
 
   // Define the macro to the default instance's inner symbol name
+  // If the macro is already defined, emit an error
+  SmallString<256> errorMessage;
+  {
+    llvm::raw_svector_ostream os(errorMessage);
+    os << macroName << "__must__not__be__set";
+  }
+  auto errorMessageAttr = builder.getStringAttr(errorMessage);
+
   addToIfDefBlock(
       macroName,
-      /*thenCtor=*/[&]() {},
+      /*thenCtor=*/
+      [&]() { sv::MacroErrorOp::create(builder, errorMessageAttr); },
       /*elseCtor=*/
       [&]() {
         sv::MacroDefOp::create(builder, macroRef, instanceInnerSymNames[0]);
