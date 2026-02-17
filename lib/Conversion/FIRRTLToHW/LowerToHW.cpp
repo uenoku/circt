@@ -82,6 +82,13 @@ static Value getSingleNonInstanceOperand(AttachOp op) {
   return singleSource;
 }
 
+/// Information about an instance choice for global include file generation.
+struct InstanceChoiceInfo {
+  StringAttr moduleName;   // Parent module name
+  StringAttr instanceName; // Local instance name
+  StringAttr targetModule; // Target module name for this option case
+};
+
 /// This verifies that the target operation has been lowered to a legal
 /// operation.  This checks that the operation recursively has no FIRRTL
 /// operations or types.
@@ -465,22 +472,18 @@ private:
     macroDeclNames.insert(name);
   }
 
-  /// Information about an instance choice for global include file generation.
-  struct InstanceChoiceInfo {
-    StringAttr instanceName;      // Local instance name
-    StringAttr targetModule;      // Target module name for this option case
-  };
-
-  /// Map from "OptionName_CaseName" (e.g., "Platform_FPGA") to list of instance choices.
-  /// This is used to generate one include file per option case.
+  /// Map from "OptionName_CaseName" (e.g., "Platform_FPGA") to list of instance
+  /// choices. This is used to generate one include file per option case.
   llvm::StringMap<SmallVector<InstanceChoiceInfo>> instanceChoicesByOptionCase;
   std::mutex instanceChoicesMutex;
 
   void addInstanceChoiceForCase(StringRef optionName, StringRef caseName,
-                                StringAttr instanceName, StringAttr targetModule) {
+                                StringAttr moduleName, StringAttr instanceName,
+                                StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     std::string key = (optionName + "_" + caseName).str();
-    instanceChoicesByOptionCase[key].push_back({instanceName, targetModule});
+    instanceChoicesByOptionCase[key].push_back(
+        {moduleName, instanceName, targetModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -895,79 +898,104 @@ void FIRRTLModuleLowering::runOnOperation() {
 }
 
 /// Emit global include files for instance choice options.
-/// Creates one include file per option case (e.g., Platform_FPGA.svh, Platform_ASIC.svh)
-/// containing instance name macros for all instance_choice operations using that option case.
+/// Creates one include file per option case following the FIRRTL ABI spec.
+/// Filename format: targets_<Module>_<Option>_<Case>.vh
+/// Macro format: __target_<Option>_<module>_<instance>
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &state) {
-  llvm::errs() << "DEBUG: emitInstanceChoiceIncludes called, map size = "
-               << state.instanceChoicesByOptionCase.size() << "\n";
   if (state.instanceChoicesByOptionCase.empty())
     return;
 
   // Insert at the top-level module (parent of circuit)
   auto *topLevelModule = circuit->getParentOp();
   OpBuilder builder(&getContext());
-  builder.setInsertionPointToEnd(cast<mlir::ModuleOp>(topLevelModule).getBody());
+  builder.setInsertionPointToEnd(
+      cast<mlir::ModuleOp>(topLevelModule).getBody());
   CircuitNamespace circuitNamespace(circuit);
 
-  // Emit one include file for each option case
+  // Group instances by module name to generate one file per module per option
+  // case
+  llvm::StringMap<SmallVector<InstanceChoiceInfo>> instancesByModuleAndCase;
   for (auto &[optionCaseKey, instances] : state.instanceChoicesByOptionCase) {
-    llvm::errs() << "DEBUG: Processing option case " << optionCaseKey << " with "
-                 << instances.size() << " instances\n";
+    for (auto &info : instances) {
+      std::string key =
+          (info.moduleName.getValue() + "_" + optionCaseKey).str();
+      instancesByModuleAndCase[key].push_back(info);
+    }
+  }
+
+  // Emit one include file for each module and option case combination
+  for (auto &entry : instancesByModuleAndCase) {
+    StringRef combinedKey = entry.getKey();
+    auto &instances = entry.getValue();
+
+    // Extract module name and option case key from combined key
+    // Format: "ModuleName_OptionName_CaseName"
+    size_t firstUnderscore = combinedKey.find('_');
+    StringRef moduleName = combinedKey.substr(0, firstUnderscore);
+    StringRef optionCaseKey = combinedKey.substr(firstUnderscore + 1);
+
+    // Extract option name and case name from the key (format:
+    // "OptionName_CaseName")
+    size_t underscorePos = optionCaseKey.find('_');
+    StringRef optionName = optionCaseKey.substr(0, underscorePos);
+    StringRef caseName = optionCaseKey.substr(underscorePos + 1);
+
+    // Filename format: targets_<Module>_<Option>_<Case>.vh
     SmallString<128> includeFileName;
     {
       llvm::raw_svector_ostream os(includeFileName);
-      os << optionCaseKey << ".svh";
+      os << "targets_" << moduleName << "_" << optionName << "_" << caseName
+         << ".vh";
     }
-    llvm::errs() << "DEBUG: Creating file " << includeFileName << "\n";
 
     // Build the content of the include file
     SmallString<1024> includeContent;
     {
       llvm::raw_svector_ostream os(includeContent);
-      os << "// Include file for option case: " << optionCaseKey << "\n";
-      os << "// This file defines instance name macros for all instance_choice operations\n";
-      os << "// when this option case is selected.\n";
+      os << "// Specialization file for module: " << moduleName << "\n";
+      os << "// Option: " << optionName << ", Case: " << caseName << "\n";
       os << "\n";
 
-      // Emit instance name macros for all instances using this option case
+      // Emit instance name macros for all instances in this module
       for (auto &info : instances) {
-        // The macro name format: __instance_<InstanceName>
+        // Macro name format: __target_<Option>_<module>_<instance>
+        // Use lowercase module name to match the spec example
         SmallString<128> instanceMacro;
         {
           llvm::raw_svector_ostream mos(instanceMacro);
-          mos << "__instance_" << info.instanceName.getValue();
+          mos << "__target_" << optionName << "_" << info.moduleName.getValue()
+              << "_" << info.instanceName.getValue();
         }
 
-        os << "`ifndef " << instanceMacro << "\n";
-        os << "`define " << instanceMacro << " " << info.targetModule.getValue() << "\n";
-        os << "`endif // " << instanceMacro << "\n";
+        // Error checking: macro must not already be set
+        os << "`ifdef " << instanceMacro << "\n";
+        os << " `ERROR" << instanceMacro << "__must__not__be__set\n";
+        os << "`else\n";
+        os << " `define " << instanceMacro << " "
+           << info.targetModule.getValue() << "\n";
+        os << "`endif\n";
         os << "\n";
       }
     }
 
     // Create the emit.file operation at the top level
     auto fileSymbolName = circuitNamespace.newName(includeFileName);
-    llvm::errs() << "DEBUG: Creating emit.file with symbol " << fileSymbolName << "\n";
 
     auto emitFile = emit::FileOp::create(builder, circuit.getLoc(),
                                          includeFileName, fileSymbolName);
-    llvm::errs() << "DEBUG: emit.file created\n";
     builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
     emit::VerbatimOp::create(builder, circuit.getLoc(),
                              builder.getStringAttr(includeContent));
-    llvm::errs() << "DEBUG: verbatim created\n";
 
-    // Set output file attribute - .svh files should be excluded from file list
+    // Set output file attribute - .vh files should be excluded from file list
     auto outputFileAttr = hw::OutputFileAttr::getFromFilename(
         builder.getContext(), includeFileName, /*excludeFromFileList=*/true);
     emitFile->setAttr("output_file", outputFileAttr);
-    llvm::errs() << "DEBUG: output_file attribute set\n";
 
     // Reset insertion point to after the emit.file
     builder.setInsertionPointAfter(emitFile);
   }
-  llvm::errs() << "DEBUG: emitInstanceChoiceIncludes finished\n";
 }
 
 /// Emit the file header that defines a bunch of macros.
@@ -999,8 +1027,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -3224,8 +3251,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4072,7 +4098,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
   // Get the default module (first in the list)
   auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
-  auto *defaultModuleNode = circuitState.getInstanceGraph().lookup(defaultModuleName.getAttr());
+  auto *defaultModuleNode =
+      circuitState.getInstanceGraph().lookup(defaultModuleName.getAttr());
   if (!defaultModuleNode) {
     oldInstanceChoice->emitOpError("could not find default module [")
         << defaultModuleName << "] referenced by instance choice";
@@ -4087,13 +4114,16 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     return failure();
   }
 
-  // Get port information from the default module (all alternatives must have same ports)
-  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(defaultModule).getPorts();
+  // Get port information from the default module (all alternatives must have
+  // same ports)
+  SmallVector<PortInfo, 8> portInfo =
+      cast<FModuleLike>(defaultModule).getPorts();
 
   // Prepare input operands
   SmallVector<Value, 8> inputOperands;
 
-  // Create wires for output ports that will be assigned from within ifdef blocks
+  // Create wires for output ports that will be assigned from within ifdef
+  // blocks
   SmallVector<sv::WireOp, 8> outputWires;
 
   for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
@@ -4112,19 +4142,20 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto portResult = oldInstanceChoice.getResult(portIndex);
     assert(portResult && "invalid IR, couldn't find port");
 
-    // Handle input ports - these are results from the instance_choice that will be driven
-    // We need to create a backedge for them
+    // Handle input ports - these are results from the instance_choice that will
+    // be driven We need to create a backedge for them
     if (port.isInput()) {
       auto backedge = createBackedge(portResult, portType);
       inputOperands.push_back(backedge);
       continue;
     }
 
-    // Handle output ports - create a wire that will be assigned from ifdef blocks
+    // Handle output ports - create a wire that will be assigned from ifdef
+    // blocks
     if (port.isOutput()) {
       auto wire = sv::WireOp::create(builder, portType,
                                      oldInstanceChoice.getInstanceName().str() +
-                                     "." + port.getName().str());
+                                         "." + port.getName().str());
       outputWires.push_back(wire);
       (void)setLowering(portResult, wire);
       continue;
@@ -4168,34 +4199,30 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   addToIfDefBlock(
       macroName,
       /*thenCtor=*/[&]() {},
-      /*elseCtor=*/[&]() {
+      /*elseCtor=*/
+      [&]() {
         sv::MacroDefOp::create(
-            builder, macroRef, builder.getStringAttr(defaultModuleName.getAttr().getValue()));
+            builder, macroRef,
+            builder.getStringAttr(defaultModuleName.getAttr().getValue()));
       });
 
   // Register instance choice information for global include file generation
   // This will emit one include file per option case (e.g., Platform_FPGA.svh)
   {
-    llvm::errs() << "DEBUG: Registering instance choice for "
-                 << oldInstanceChoice.getInstanceName() << "\n";
-
     // Get the Option name (e.g., "Platform")
     auto optionName = oldInstanceChoice.getOptionNameAttr();
-    llvm::errs() << "DEBUG: Option name: " << optionName << "\n";
 
     // Register for each option case
-    // moduleNames[0] is the default, moduleNames[i+1] corresponds to caseNames[i]
+    // moduleNames[0] is the default, moduleNames[i+1] corresponds to
+    // caseNames[i]
     for (size_t i = 0; i < caseNames.size(); ++i) {
       auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
       auto caseName = caseSymRef.getLeafReference();
       auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
 
       circuitState.addInstanceChoiceForCase(
-          optionName.getValue(),
-          caseName.getValue(),
-          oldInstanceChoice.getInstanceNameAttr(),
-          targetModuleRef.getAttr());
-      llvm::errs() << "DEBUG: Registered for case " << caseName << "\n";
+          optionName.getValue(), caseName.getValue(), theModule.getNameAttr(),
+          oldInstanceChoice.getInstanceNameAttr(), targetModuleRef.getAttr());
     }
   }
 
@@ -4219,9 +4246,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                                        allOperands, parameters, innerSym);
 
     if (inst.getInnerSymAttr()) {
-      auto key = std::make_pair<Attribute, Attribute>(
-          theModule.getNameAttr(),
-          inst.getInnerNameAttr());
+      auto key = std::make_pair<Attribute, Attribute>(theModule.getNameAttr(),
+                                                      inst.getInnerNameAttr());
       if (auto forceName = circuitState.instanceForceNames.lookup(key))
         inst->setAttr("hw.verilogName", forceName);
     }
@@ -4253,9 +4279,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   std::function<void()> buildElseBlock;
 
   // Start with the default case
-  buildElseBlock = [&]() {
-    createInstanceAndAssign(defaultModule);
-  };
+  buildElseBlock = [&]() { createInstanceAndAssign(defaultModule); };
 
   // Wrap each alternative in an ifdef, working backwards
   for (int i = caseNames.size() - 1; i >= 0; --i) {
@@ -4263,7 +4287,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto caseName = caseSymRef.getLeafReference();
     auto moduleName = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
 
-    auto *moduleNode = circuitState.getInstanceGraph().lookup(moduleName.getAttr());
+    auto *moduleNode =
+        circuitState.getInstanceGraph().lookup(moduleName.getAttr());
     if (!moduleNode) {
       oldInstanceChoice->emitOpError("could not find module [")
           << moduleName << "] referenced by instance choice";
@@ -4280,9 +4305,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     buildElseBlock = [&, caseName, altModule, prevElseBlock]() {
       addToIfDefBlock(
           caseName.getValue(),
-          /*thenCtor=*/[&]() {
-            createInstanceAndAssign(altModule);
-          },
+          /*thenCtor=*/[&]() { createInstanceAndAssign(altModule); },
           /*elseCtor=*/prevElseBlock);
     };
   }
