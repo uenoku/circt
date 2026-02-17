@@ -957,6 +957,19 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       os << "// Option: " << optionName << ", Case: " << caseName << "\n";
       os << "\n";
 
+      // Define the global option case macro to avoid conflicts
+      // Format: __option__<OptionName>_<CaseName>
+      SmallString<128> optionCaseMacro;
+      {
+        llvm::raw_svector_ostream mos(optionCaseMacro);
+        mos << "__option__" << optionName << "_" << caseName;
+      }
+
+      os << "`ifndef " << optionCaseMacro << "\n";
+      os << " `define " << optionCaseMacro << "\n";
+      os << "`endif // " << optionCaseMacro << "\n";
+      os << "\n";
+
       // Emit instance name macros for all instances in this module
       for (auto &info : instances) {
         // Macro name format: __target_<Option>_<module>_<instance>
@@ -4182,13 +4195,16 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
   auto innerSym = oldInstanceChoice.getInnerSymAttr();
 
+  // Get the Option name (e.g., "Platform")
+  auto optionName = oldInstanceChoice.getOptionNameAttr();
+
   // Generate a macro name for the default target
-  // Format: __target_<CircuitName>_<ModuleName>_<InstanceName>
+  // Format: __target_<Option>_<module>_<instance>
   SmallString<128> macroName;
   {
     llvm::raw_svector_ostream os(macroName);
-    os << "__target_" << circuitState.circuitOp.getName() << "_"
-       << theModule.getName() << "_" << oldInstanceChoice.getInstanceName();
+    os << "__target_" << optionName.getValue() << "_" << theModule.getName()
+       << "_" << oldInstanceChoice.getInstanceName();
   }
 
   auto macroNameAttr = builder.getStringAttr(macroName);
@@ -4209,9 +4225,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Register instance choice information for global include file generation
   // This will emit one include file per option case (e.g., Platform_FPGA.svh)
   {
-    // Get the Option name (e.g., "Platform")
-    auto optionName = oldInstanceChoice.getOptionNameAttr();
-
     // Register for each option case
     // moduleNames[0] is the default, moduleNames[i+1] corresponds to
     // caseNames[i]
@@ -4296,15 +4309,23 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     }
     Operation *altModule = moduleNode->getModule();
 
+    // Build the full option case macro name: __option__<OptionName>_<CaseName>
+    SmallString<128> optionCaseMacro;
+    {
+      llvm::raw_svector_ostream os(optionCaseMacro);
+      os << "__option__" << optionName.getValue() << "_" << caseName.getValue();
+    }
+
     // Register the macro declaration for this case
-    circuitState.addMacroDecl(builder.getStringAttr(caseName.getValue()));
+    circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
 
     // Capture the previous else block
     auto prevElseBlock = buildElseBlock;
 
-    buildElseBlock = [&, caseName, altModule, prevElseBlock]() {
+    buildElseBlock = [&, optionCaseMacro = optionCaseMacro.str().str(), altModule,
+                      prevElseBlock]() {
       addToIfDefBlock(
-          caseName.getValue(),
+          optionCaseMacro,
           /*thenCtor=*/[&]() { createInstanceAndAssign(altModule); },
           /*elseCtor=*/prevElseBlock);
     };
