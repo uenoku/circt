@@ -859,13 +859,13 @@ firrtl.circuit "InstanceChoiceProbe" {
   // CHECK:   sv.verbatim
   // CHECK-SAME: ifdef __option__Platform_FPGA
   // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
-  // CHECK-SAME: ref_FPGATarget_probe
+  // CHECK-SAME: __target_Platform_InstanceChoiceProbe_inst.w
   // CHECK-SAME: elsif __option__Platform_ASIC
   // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
-  // CHECK-SAME: ref_ASICTarget_probe
+  // CHECK-SAME: __target_Platform_InstanceChoiceProbe_inst.w
   // CHECK-SAME: else
   // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
-  // CHECK-SAME: ref_DefaultTarget_probe
+  // CHECK-SAME: __target_Platform_InstanceChoiceProbe_inst.w
   // CHECK-SAME: endif
 
   // CHECK: firrtl.module @InstanceChoiceProbe
