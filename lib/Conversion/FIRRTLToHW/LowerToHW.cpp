@@ -776,6 +776,10 @@ void FIRRTLModuleLowering::runOnOperation() {
               opsToProcess.push_back(fileOp);
               return success();
             })
+            .Case<firrtl::OptionOp>([&](auto optionOp) {
+              optionOp->erase();
+              return success();
+            })
             .Default([&](Operation *op) {
               // We don't know what this op is.  If it has no illegal FIRRTL
               // types, we can forward the operation.  Otherwise, we emit an

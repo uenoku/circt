@@ -210,6 +210,71 @@ private:
 // JSON serialization for DataflowPath
 llvm::json::Value toJSON(const circt::synth::DataflowPath &path);
 
+//===----------------------------------------------------------------------===//
+// Trait-based Path Filtering
+//===----------------------------------------------------------------------===//
+//
+// Path filtering uses a trait-based approach where each filter trait defines
+// a "category" for paths. Paths in the same category are deduplicated,
+// keeping only the maximum delay path per category.
+//
+// Filter traits must provide:
+//   - CategoryType: The type used to categorize paths
+//   - static CategoryType getCategoryForOpenPath(const OpenPath &)
+//   - static CategoryType getCategoryForDataflowPath(const DataflowPath &)
+//
+// This trait-based design eliminates virtual function overhead and enables
+// compile-time optimization.
+
+/// Filter that keeps only the maximum delay path globally.
+/// Category is always 1, so all paths compete for a single slot.
+/// This is the default filter used when keepOnlyMaxDelayPaths=true.
+struct MaxDelayFilter {
+  using CategoryType = int;
+
+  static CategoryType getCategoryForOpenPath(const OpenPath &path) {
+    return 1; // Single category - all paths compete
+  }
+
+  static CategoryType getCategoryForDataflowPath(const DataflowPath &path) {
+    return 1; // Single category - all paths compete
+  }
+};
+
+/// Filter that keeps maximum delay path per endpoint.
+/// This is the default filter when keepOnlyMaxDelayPaths=false.
+/// For OpenPath: category is the start point
+/// For DataflowPath: category is the (endpoint, startpoint) pair
+struct PerEndpointFilter {
+  static Object getCategoryForOpenPath(const OpenPath &path) {
+    return path.startPoint;
+  }
+
+  static std::pair<DataflowPath::EndPointType, Object>
+  getCategoryForDataflowPath(const DataflowPath &path) {
+    return std::make_pair(path.getEndPoint(), path.getStartPoint());
+  }
+};
+
+/// Filter that keeps maximum delay path per clock domain.
+/// Category is the clock domain Object extracted from register endpoints.
+/// For paths without clocks (port-to-port), uses empty Object.
+struct ClockDomainFilter {
+  using CategoryType = Object;
+
+  static Object getCategoryForOpenPath(const OpenPath &path) {
+    return getClockForEndpoint(path.startPoint);
+  }
+
+  static Object getCategoryForDataflowPath(const DataflowPath &path) {
+    return getClockForEndpoint(path.getStartPoint());
+  }
+
+private:
+  // Helper to extract clock domain from an endpoint
+  static Object getClockForEndpoint(const Object &obj);
+};
+
 /// Configuration options for the longest path analysis.
 ///
 /// This struct controls various aspects of the analysis behavior, including

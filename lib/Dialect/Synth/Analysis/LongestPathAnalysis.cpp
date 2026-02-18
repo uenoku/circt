@@ -104,76 +104,71 @@ deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
   results.resize(keyToIndex.size() + startIndex);
 }
 
-// Filter and optimize OpenPaths based on analysis configuration.
-static void filterPaths(SmallVectorImpl<OpenPath> &results,
-                        bool keepOnlyMaxDelay, bool isLocalScope) {
+//===----------------------------------------------------------------------===//
+// Trait-based Path Filtering
+//===----------------------------------------------------------------------===//
+
+// Filter OpenPaths using a filter trait.
+// Deduplicates paths by category, keeping only the maximum delay path per
+// category.
+template <typename FilterTrait>
+static void filterOpenPaths(SmallVectorImpl<OpenPath> &results) {
   if (results.empty())
     return;
 
-  // Fast path for local scope with max-delay filtering:
-  // Simply find and keep only the single longest delay path
-  if (keepOnlyMaxDelay && isLocalScope) {
-    OpenPath maxDelay;
-    maxDelay.delay = -1; // Initialize to invalid delay
-
-    // Find the path with maximum delay
-    for (auto &path : results) {
-      if (path.delay > maxDelay.delay)
-        maxDelay = path;
-    }
-
-    // Replace all paths with just the maximum delay path
-    results.clear();
-    if (maxDelay.delay >= 0) // Only add if we found a valid path
-      results.push_back(maxDelay);
-    return;
-  }
-
-  // Remove paths with identical start point, keeping only the longest delay
-  // path for each unique points.
-  deduplicatePathsImpl<OpenPath, Object>(
-      results, 0, [](const auto &path) { return path.startPoint; },
-      [](const auto &path) { return path.delay; });
-
-  // Global scope max-delay filtering:
-  // Keep all module input ports (BlockArguments) but only the single
-  // longest internal path to preserve boundary information
-  if (keepOnlyMaxDelay) {
-    assert(!isLocalScope);
-    size_t writeIndex = 0;
-    OpenPath maxDelay;
-    maxDelay.delay = -1; // Initialize to invalid delay
-
-    for (size_t i = 0; i < results.size(); ++i) {
-      // Preserve all module input port paths (BlockArguments) since the input
-      // port might be the critical path.
-      if (isa<BlockArgument>(results[i].getStartPoint().value)) {
-        // Keep all module input port paths, as inputs themselves may be
-        // critical
-        results[writeIndex++] = results[i];
-      } else {
-        // For internal paths, track only the maximum delay path
-        if (results[i].delay > maxDelay.delay)
-          maxDelay = results[i];
-      }
-    }
-
-    // Resize to remove processed internal paths, then add the max delay path
-    results.resize(writeIndex);
-    if (maxDelay.delay >= 0) // Only add if we found a valid internal path
-      results.push_back(maxDelay);
-  }
+  using CategoryType =
+      decltype(FilterTrait::getCategoryForOpenPath(results[0]));
+  deduplicatePathsImpl<OpenPath, CategoryType>(
+      results, 0,
+      [](const OpenPath &path) {
+        return FilterTrait::getCategoryForOpenPath(path);
+      },
+      [](const OpenPath &path) { return path.delay; });
 }
 
-static void filterPaths(SmallVectorImpl<DataflowPath> &results,
-                        size_t startIndex = 0) {
-  deduplicatePathsImpl<DataflowPath,
-                       std::pair<DataflowPath::EndPointType, Object>>(
+// Filter DataflowPaths using a filter trait.
+// Deduplicates paths by category, keeping only the maximum delay path per
+// category.
+template <typename FilterTrait>
+static void filterDataflowPaths(SmallVectorImpl<DataflowPath> &results,
+                                size_t startIndex = 0) {
+  if (results.empty())
+    return;
+
+  using CategoryType =
+      decltype(FilterTrait::getCategoryForDataflowPath(results[0]));
+  deduplicatePathsImpl<DataflowPath, CategoryType>(
       results, startIndex,
       [](const DataflowPath &path) {
-        return std::pair(path.getEndPoint(), path.getStartPoint());
+        return FilterTrait::getCategoryForDataflowPath(path);
       },
       [](const DataflowPath &path) { return path.getDelay(); });
+}
+
+//===----------------------------------------------------------------------===//
+// ClockDomainFilter Implementation
+//===----------------------------------------------------------------------===//
+
+Object ClockDomainFilter::getClockForEndpoint(const Object &obj) {
+  if (!obj.value)
+    return {}; // Null object means port (unclocked)
+
+  Operation *defOp = obj.value.getDefiningOp();
+  if (!defOp)
+    return {}; // Block argument (port)
+
+  Value clk = nullptr;
+  // Check for register operations with clock
+  if (auto compreg = dyn_cast<seq::CompRegOp>(defOp))
+    clk = compreg.getClk();
+  else if (auto firreg = dyn_cast<seq::FirRegOp>(defOp))
+    clk = firreg.getClk();
+
+  if (!clk)
+    return {}; // Not a register
+
+  // Return the clock as an Object
+  return Object(obj.instancePath, clk, 0);
 }
 
 static StringAttr getNameImpl(Value value) {
@@ -226,7 +221,8 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
                             StringRef comment = "", bool withLoc = false) {
-  // Build conventional path: inst1/inst2/inst3/port[bit] or inst1/inst2/inst3/_reg
+  // Build conventional path: inst1/inst2/inst3/port[bit] or
+  // inst1/inst2/inst3/_reg
   std::string pathString;
   llvm::raw_string_ostream osPath(pathString);
 
@@ -961,7 +957,13 @@ LogicalResult LocalVisitor::visit(comb::MuxOp op, size_t bitPos,
       failed(addEdge(op.getTrueValue(), bitPos, 1, results)) ||
       failed(addEdge(op.getFalseValue(), bitPos, 1, results)))
     return failure();
-  filterPaths(results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
+
+  // Apply filtering based on analysis options
+  if (ctx->doKeepOnlyMaxDelayPaths())
+    filterOpenPaths<MaxDelayFilter>(results);
+  else
+    filterOpenPaths<PerEndpointFilter>(results);
+
   return success();
 }
 
@@ -1079,7 +1081,13 @@ LogicalResult LocalVisitor::addLogicOp(Operation *op, size_t bitPos,
   for (auto &operand : op->getOpOperands())
     if (failed(addEdge(operand.get(), bitPos, cost, results)))
       return failure();
-  filterPaths(results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
+
+  // Apply filtering based on analysis options
+  if (ctx->doKeepOnlyMaxDelayPaths())
+    filterOpenPaths<MaxDelayFilter>(results);
+  else
+    filterOpenPaths<PerEndpointFilter>(results);
+
   return success();
 }
 
@@ -1149,8 +1157,12 @@ FailureOr<ArrayRef<OpenPath>> LocalVisitor::getOrComputePaths(Value value,
   if (failed(visitValue(value, bitPos, *results)))
     return {};
 
-  // Unique the results.
-  filterPaths(*results, ctx->doKeepOnlyMaxDelayPaths(), ctx->isLocalScope());
+  // Apply filtering based on analysis options
+  if (ctx->doKeepOnlyMaxDelayPaths())
+    filterOpenPaths<MaxDelayFilter>(*results);
+  else
+    filterOpenPaths<PerEndpointFilter>(*results);
+
   LLVM_DEBUG({
     llvm::dbgs() << value << "[" << bitPos << "] " << "Found "
                  << results->size() << " paths\n";
@@ -1585,6 +1597,8 @@ private:
   Context ctx;
   /// Top-level HW modules that seed hierarchical analysis.
   SmallVector<hw::HWModuleOp> topModules;
+  /// Global path filter instance for DataflowPath filtering
+  // std::unique_ptr<PathFilter> globalPathFilter;
 };
 
 LogicalResult LongestPathAnalysis::Impl::computeGlobalPaths(
@@ -1646,7 +1660,13 @@ LogicalResult LongestPathAnalysis::Impl::computeGlobalPaths(
     }
   }
 
-  filterPaths(results, oldIndex);
+  // Filter paths after all paths are computed.
+  if (ctx.doKeepOnlyMaxDelayPaths())
+    filterDataflowPaths<MaxDelayFilter>(results, oldIndex);
+  else {
+    filterDataflowPaths<PerEndpointFilter>(results, oldIndex);
+  }
+
   return success();
 }
 
