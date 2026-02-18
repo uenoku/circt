@@ -816,3 +816,73 @@ firrtl.circuit "ConnectFlow" {
     firrtl.ref.define %probe, %0 : !firrtl.probe<clock>
   }
 }
+
+// -----
+// Test InstanceChoiceOp with probe ports generates ifdef-guarded macros.
+// The XMR is emitted as a VerbatimWireOp referencing the macro, not XMRDerefOp,
+// because InstanceChoiceOp cannot have an inner symbol that is preserved during
+// lowering.
+
+// CHECK-LABEL: firrtl.circuit "InstanceChoiceProbe"
+firrtl.circuit "InstanceChoiceProbe" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+
+  // CHECK: sv.macro.decl @ref_InstanceChoiceProbe_inst_probe
+  // CHECK-NOT: hw.hierpath{{.*}}InstanceChoiceProbe::@
+
+  // Each target module has a probe output port.
+  // CHECK: firrtl.module private @DefaultTarget()
+  firrtl.module private @DefaultTarget(out %probe: !firrtl.probe<uint<8>>) {
+    %w = firrtl.wire : !firrtl.uint<8>
+    %ref = firrtl.ref.send %w : !firrtl.uint<8>
+    firrtl.ref.define %probe, %ref : !firrtl.probe<uint<8>>
+  }
+
+  // CHECK: firrtl.module private @FPGATarget()
+  firrtl.module private @FPGATarget(out %probe: !firrtl.probe<uint<8>>) {
+    %w = firrtl.wire : !firrtl.uint<8>
+    %ref = firrtl.ref.send %w : !firrtl.uint<8>
+    firrtl.ref.define %probe, %ref : !firrtl.probe<uint<8>>
+  }
+
+  // CHECK: firrtl.module private @ASICTarget()
+  firrtl.module private @ASICTarget(out %probe: !firrtl.probe<uint<8>>) {
+    %w = firrtl.wire : !firrtl.uint<8>
+    %ref = firrtl.ref.send %w : !firrtl.uint<8>
+    firrtl.ref.define %probe, %ref : !firrtl.probe<uint<8>>
+  }
+
+  // CHECK: emit.file "ref_InstanceChoiceProbe.sv" {
+  // CHECK:   sv.verbatim
+  // CHECK-SAME: ifdef __option__Platform_FPGA
+  // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
+  // CHECK-SAME: ref_FPGATarget_probe
+  // CHECK-SAME: elsif __option__Platform_ASIC
+  // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
+  // CHECK-SAME: ref_ASICTarget_probe
+  // CHECK-SAME: else
+  // CHECK-SAME: define ref_InstanceChoiceProbe_inst_probe
+  // CHECK-SAME: ref_DefaultTarget_probe
+  // CHECK-SAME: endif
+
+  // CHECK: firrtl.module @InstanceChoiceProbe
+  firrtl.module @InstanceChoiceProbe(out %out: !firrtl.uint<8>) {
+    // The instance_choice should NOT have a sym attribute
+    // CHECK: firrtl.instance_choice inst @DefaultTarget
+    // CHECK-NOT: sym @
+    // CHECK-NOT: out probe
+    %inst_probe = firrtl.instance_choice inst @DefaultTarget alternatives @Platform {
+      @FPGA -> @FPGATarget,
+      @ASIC -> @ASICTarget
+    } (out probe: !firrtl.probe<uint<8>>)
+
+    // The XMR is emitted as VerbatimWireOp with the macro, not XMRDerefOp
+    // CHECK: %[[XMR:.+]] = firrtl.verbatim.wire "`ref_InstanceChoiceProbe_inst_probe" : () -> !firrtl.uint<8>
+    // CHECK: firrtl.matchingconnect %out, %[[XMR]]
+    %resolved = firrtl.ref.resolve %inst_probe : !firrtl.probe<uint<8>>
+    firrtl.matchingconnect %out, %resolved : !firrtl.uint<8>
+  }
+}
