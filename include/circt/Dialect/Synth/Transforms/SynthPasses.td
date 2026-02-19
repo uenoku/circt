@@ -227,13 +227,25 @@ def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
     - reg-to-port: Register to output port
     - port-to-port: Combinational paths
 
+    Path filtering is supported via glob patterns:
+    - `*` matches zero or more characters
+    - `?` matches exactly one character
+    - `[abc]` matches any character in the set
+
+    When both start and end filters are specified, paths must match both
+    (AND semantics). Multiple patterns in each filter use OR semantics.
+
     Output: <reportDir>/<topModuleName>/timing.txt
   }];
   let options = [
     Option<"topModuleName", "top", "std::string", "",
            "Name of the top module to analyze">,
     Option<"reportDir", "report-dir", "std::string", "\"reports\"",
-           "Directory for output reports">
+           "Directory for output reports">,
+    ListOption<"filterStartPoints", "filter-start", "std::string",
+               "Glob patterns to filter paths by start point names">,
+    ListOption<"filterEndPoints", "filter-end", "std::string",
+               "Glob patterns to filter paths by end point names">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

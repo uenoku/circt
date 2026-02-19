@@ -78,6 +78,11 @@ struct Object {
 
   StringAttr getName() const;
 
+  /// Get the full hierarchical path name for this object.
+  /// Format: "inst1/inst2/signalName" (no bit index).
+  /// Used for pattern matching in path filtering.
+  std::string getFullPathName() const;
+
   circt::igraph::InstancePath instancePath;
   Value value;
   size_t bitPos;

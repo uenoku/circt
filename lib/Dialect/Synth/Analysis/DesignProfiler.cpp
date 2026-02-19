@@ -17,6 +17,7 @@
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Synth/Analysis/PathFilter.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
@@ -256,6 +257,9 @@ private:
 
   /// Instance path cache for manipulating instance paths.
   circt::igraph::InstancePathCache *pathCache = nullptr;
+
+  /// Path filter for filtering by start/end point names.
+  std::optional<PathFilter> pathFilter;
 };
 
 } // namespace
@@ -798,6 +802,24 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
 
   llvm::dbgs() << "Found " << allPaths.size() << " paths\n";
 
+  // Enumerate output ports and compute matches if filtering by end points.
+  SmallVector<std::string> matchedOutputPorts;
+  if (pathFilter && !pathFilter->isPassthrough() &&
+      pathFilter->getNumEndPatterns() > 0) {
+    matchedOutputPorts = pathFilter->computeMatchingOutputPorts(top);
+    llvm::dbgs() << "Matched " << matchedOutputPorts.size()
+                 << " output ports for end-point filter\n";
+  }
+
+  // Apply path filter if specified.
+  size_t unfilteredCount = allPaths.size();
+  if (pathFilter && !pathFilter->isPassthrough()) {
+    llvm::erase_if(allPaths, [this](const DataflowPath &path) {
+      return !pathFilter->matches(path);
+    });
+    llvm::dbgs() << "After filtering: " << allPaths.size() << " paths\n";
+  }
+
   // Group paths by category and clock domain.
   using ClockPairStats =
       DenseMap<std::pair<ClockDomain, ClockDomain>, PathStats>;
@@ -886,8 +908,51 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
 
   os << "## Summary\n";
   os << "Total paths: " << allPaths.size();
+  if (pathFilter && !pathFilter->isPassthrough()) {
+    os << " (filtered from " << unfilteredCount << ")";
+  }
   os << " | Max delay: " << totalMaxDelay;
-  os << " | Clock domains: " << uniqueClocks.size() << "\n\n";
+  os << " | Clock domains: " << uniqueClocks.size() << "\n";
+
+  // Print filter information if active.
+  if (pathFilter && !pathFilter->isPassthrough()) {
+    os << "Filters: ";
+    bool first = true;
+    if (pathFilter->getNumStartPatterns() > 0) {
+      os << "start=[";
+      for (size_t i = 0; i < filterStartPoints.size(); ++i) {
+        if (i > 0)
+          os << ", ";
+        os << filterStartPoints[i];
+      }
+      os << "]";
+      first = false;
+    }
+    if (pathFilter->getNumEndPatterns() > 0) {
+      if (!first)
+        os << ", ";
+      os << "end=[";
+      for (size_t i = 0; i < filterEndPoints.size(); ++i) {
+        if (i > 0)
+          os << ", ";
+        os << filterEndPoints[i];
+      }
+      os << "]";
+    }
+    os << "\n";
+
+    // Print matched output ports if end-point filtering is active.
+    if (!matchedOutputPorts.empty()) {
+      os << "Matched output ports (" << matchedOutputPorts.size() << "): ";
+      for (size_t i = 0; i < matchedOutputPorts.size(); ++i) {
+        if (i > 0)
+          os << ", ";
+        os << matchedOutputPorts[i];
+      }
+      os << "\n";
+    }
+  }
+  os << "\n";
 
   os << "## Clock Domains\n";
   for (auto clock : uniqueClocks) {
@@ -981,6 +1046,19 @@ void DesignProfilerPass::runOnOperation() {
   instanceGraph = &am.getAnalysis<circt::igraph::InstanceGraph>();
   circt::igraph::InstancePathCache localPathCache(*instanceGraph);
   pathCache = &localPathCache;
+
+  // Create path filter from options.
+  if (!filterStartPoints.empty() || !filterEndPoints.empty()) {
+    auto filterOrErr = PathFilter::create(filterStartPoints, filterEndPoints);
+    if (!filterOrErr) {
+      module.emitError() << "invalid path filter pattern: "
+                         << llvm::toString(filterOrErr.takeError());
+      return signalPassFailure();
+    }
+    pathFilter = std::move(*filterOrErr);
+  } else {
+    pathFilter = std::nullopt;
+  }
 
   // Find the top module.
   hw::HWModuleOp topModule;

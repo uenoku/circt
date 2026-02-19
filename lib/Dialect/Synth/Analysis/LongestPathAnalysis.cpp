@@ -425,6 +425,15 @@ void Object::print(llvm::raw_ostream &os, bool withLoc, bool addRegSuffix) const
 
 StringAttr Object::getName() const { return getNameImpl(value); }
 
+std::string Object::getFullPathName() const {
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  for (auto inst : instancePath)
+    os << inst.getInstanceName() << "/";
+  os << getName().getValue();
+  return result;
+}
+
 void DataflowPath::printEndPoint(llvm::raw_ostream &os, bool withLoc) {
   if (auto *object = std::get_if<Object>(&endPoint)) {
     object->print(os, withLoc);

@@ -151,6 +151,18 @@ static cl::opt<std::string> designProfileDir(
              "Generates timing report at <dir>/<top>/timing.txt"),
     cl::init(""), cl::cat(mainCategory));
 
+static cl::list<std::string>
+    filterStartPoints("filter-start",
+                      cl::desc("Glob patterns to filter paths by start point "
+                               "names (can specify multiple)"),
+                      cl::cat(mainCategory));
+
+static cl::list<std::string>
+    filterEndPoints("filter-end",
+                    cl::desc("Glob patterns to filter paths by end point "
+                             "names (can specify multiple)"),
+                    cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -306,6 +318,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     circt::synth::DesignProfilerOptions options;
     options.topModuleName = topName;
     options.reportDir = designProfileDir;
+    for (const auto &pat : filterStartPoints)
+      options.filterStartPoints.push_back(pat);
+    for (const auto &pat : filterEndPoints)
+      options.filterEndPoints.push_back(pat);
     pm.addPass(circt::synth::createDesignProfiler(options));
   }
 
