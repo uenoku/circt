@@ -2193,9 +2193,10 @@ LogicalResult LongestPathAnalysis::reconstructPath(
     return impl->ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
   };
 
-  // Helper to find any predecessor path with matching startPoint
+  // Helper to find a path with a specific startPoint (for same-module paths)
   auto findPathWithStartPoint =
-      [&](Value val, size_t bitPos) -> std::optional<OpenPath> {
+      [&](Value val, size_t bitPos,
+          const Object &targetStartPoint) -> std::optional<OpenPath> {
     if (!val)
       return std::nullopt;
 
@@ -2205,10 +2206,51 @@ LogicalResult LongestPathAnalysis::reconstructPath(
 
     auto paths = localVisitor->getCachedPaths(val, bitPos);
     for (const auto &p : paths) {
-      if (p.startPoint == startPoint)
+      if (p.startPoint == targetStartPoint)
         return p;
     }
     return std::nullopt;
+  };
+
+  // Helper to find any path with a BlockArgument startPoint (for cross-instance)
+  auto findPathToBlockArg =
+      [&](Value val, size_t bitPos,
+          int64_t targetDelay) -> std::optional<OpenPath> {
+    if (!val)
+      return std::nullopt;
+
+    auto *localVisitor = getLocalVisitorForValue(val);
+    if (!localVisitor)
+      return std::nullopt;
+
+    auto paths = localVisitor->getCachedPaths(val, bitPos);
+    for (const auto &p : paths) {
+      // Look for paths whose startPoint is a BlockArgument (input port)
+      if (isa<BlockArgument>(p.startPoint.value)) {
+        // Prefer paths with matching delay
+        if (p.delay == targetDelay)
+          return p;
+      }
+    }
+    // If no exact delay match, accept any path to a BlockArgument
+    for (const auto &p : paths) {
+      if (isa<BlockArgument>(p.startPoint.value))
+        return p;
+    }
+    return std::nullopt;
+  };
+
+  // Helper to find the instance that instantiates a module
+  auto findInstanceForModule =
+      [&](hw::HWModuleOp childModule,
+          circt::igraph::InstancePath instPath) -> hw::InstanceOp {
+    if (instPath.empty())
+      return nullptr;
+    // The leaf of the instance path is the instance we're looking for
+    auto leaf = instPath.leaf();
+    if (auto inst = dyn_cast<hw::InstanceOp>(leaf.getOperation()))
+      return inst;
+    return nullptr;
   };
 
   // Helper to validate a value is still valid (not stale/deleted)
@@ -2231,14 +2273,18 @@ LogicalResult LongestPathAnalysis::reconstructPath(
 
   // Recursively fill the path by walking backward through the IR.
   // Uses cached delay information to find which operand is on the critical path.
-  std::function<void(Value, size_t, int64_t, circt::igraph::InstancePath)>
+  // This version handles crossing instance boundaries.
+  std::function<void(Value, size_t, int64_t, circt::igraph::InstancePath,
+                     const Object &)>
       fillPathRecursive = [&](Value val, size_t bitPos, int64_t delay,
-                              circt::igraph::InstancePath instPath) {
+                              circt::igraph::InstancePath instPath,
+                              const Object &currentTarget) {
         if (!isValueValid(val))
           return;
 
-        // Check if this is the start point
-        if (val == startPoint.value && bitPos == startPoint.bitPos) {
+        // Check if this is the target start point for this hierarchy level
+        if (val == currentTarget.value && bitPos == currentTarget.bitPos &&
+            instPath == currentTarget.instancePath) {
           result.push_back(DebugPoint{instPath, val, bitPos, 0});
           return;
         }
@@ -2246,11 +2292,41 @@ LogicalResult LongestPathAnalysis::reconstructPath(
         // Add this point to the result
         result.push_back(DebugPoint{instPath, val, bitPos, delay});
 
-        // If delay is 0, we should have reached the start point
+        // For BlockArgument in an inner module, trace to parent module
+        // even if delay is 0, because the actual startPoint may be in a
+        // parent module
+        if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+          // Check if we need to cross an instance boundary
+          if (!instPath.empty()) {
+            // Get the instance at the leaf of the path
+            auto inst = findInstanceForModule(
+                blockArg.getParentRegion()->getParentOfType<hw::HWModuleOp>(),
+                instPath);
+            if (inst) {
+              // Get the corresponding operand of the instance
+              auto argNum = blockArg.getArgNumber();
+              auto instOperand = inst->getOperand(argNum);
+
+              // Pop the instance from the path to continue in parent module
+              auto parentPath = instPath.dropBack();
+
+              // Continue tracing in the parent module
+              fillPathRecursive(instOperand, bitPos, delay, parentPath,
+                                currentTarget);
+              return;
+            }
+          }
+          // If we're in the same module as target and delay is 0, stop
+          if (delay <= 0)
+            return;
+          // Can't cross the boundary
+          return;
+        }
+
+        // If delay is 0 and not a BlockArgument, we should have reached start
         if (delay <= 0)
           return;
 
-        // For BlockArgument, this is typically a start point - stop here
         auto *defOp = val.getDefiningOp();
         if (!defOp)
           return;
@@ -2262,32 +2338,51 @@ LogicalResult LongestPathAnalysis::reconstructPath(
         // Get the operands and their bit positions for this operation
         auto operandBitPairs = getOperandBitPositions(defOp, bitPos);
 
-        // Find the operand that has a cached path with matching startPoint
-        // and expected delay (or close to it for robustness)
+        // Check if we're in a different module than the target start point
+        bool sameModule = instPath == currentTarget.instancePath;
+
+        // Find the operand that has a cached path
         for (auto [operand, opBitPos] : operandBitPairs) {
-          auto cachedPath = findPathWithStartPoint(operand, opBitPos);
+          std::optional<OpenPath> cachedPath;
+
+          if (sameModule) {
+            // Same module - look for exact startPoint match
+            cachedPath = findPathWithStartPoint(operand, opBitPos,
+                                                currentTarget);
+          } else {
+            // Different module - look for any path to a BlockArgument
+            int64_t targetDelay = (opCost == 0) ? delay : expectedInputDelay;
+            cachedPath = findPathToBlockArg(operand, opBitPos, targetDelay);
+          }
+
           if (cachedPath) {
             // For zero-delay ops, the input delay should match current delay
             // For other ops, input delay should be current delay - opCost
             int64_t targetDelay = (opCost == 0) ? delay : expectedInputDelay;
 
             // Accept the path if delay matches exactly or is close
-            // (to handle rounding differences in cost calculations)
             if (cachedPath->delay == targetDelay ||
                 (opCost > 0 && cachedPath->delay <= delay &&
                  cachedPath->delay >= expectedInputDelay)) {
-              fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath);
+              fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath,
+                                currentTarget);
               return;
             }
           }
         }
 
-        // If no exact match found, try to find any operand with a path to
-        // startPoint and continue (best effort reconstruction)
+        // If no exact match found, try best effort reconstruction
         for (auto [operand, opBitPos] : operandBitPairs) {
-          auto cachedPath = findPathWithStartPoint(operand, opBitPos);
+          std::optional<OpenPath> cachedPath;
+          if (sameModule) {
+            cachedPath = findPathWithStartPoint(operand, opBitPos,
+                                                currentTarget);
+          } else {
+            cachedPath = findPathToBlockArg(operand, opBitPos, delay);
+          }
           if (cachedPath) {
-            fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath);
+            fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath,
+                              currentTarget);
             return;
           }
         }
@@ -2299,7 +2394,8 @@ LogicalResult LongestPathAnalysis::reconstructPath(
       return failure();
 
     // Use recursive fill to trace the full path
-    fillPathRecursive(obj->value, obj->bitPos, currentDelay, obj->instancePath);
+    fillPathRecursive(obj->value, obj->bitPos, currentDelay, obj->instancePath,
+                      startPoint);
   }
 
   std::reverse(result.begin(), result.end());
