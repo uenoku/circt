@@ -109,21 +109,14 @@ struct DebugPoint {
   StringRef comment;
 };
 
-struct Trace {
-  Value value;
-  size_t bitPos;
-  int64_t delay;
-};
-
 // An OpenPath represents a path from a start point with an associated
-// delay and history of debug points.
+// delay. Path reconstruction is done lazily by walking the IR.
 struct OpenPath {
   OpenPath(circt::igraph::InstancePath path, Value value, size_t bitPos,
-           int64_t delay = 0, llvm::ImmutableList<DebugPoint> history = {})
-      : OpenPath(Object(path, value, bitPos), delay, history) {}
-  OpenPath(Object startPoint, int64_t delay = 0,
-           llvm::ImmutableList<DebugPoint> history = {})
-      : startPoint(startPoint), delay(delay), previousPoint(previousPoint) {}
+           int64_t delay = 0)
+      : OpenPath(Object(path, value, bitPos), delay) {}
+  OpenPath(Object startPoint, int64_t delay = 0)
+      : startPoint(startPoint), delay(delay) {}
   OpenPath() = default;
 
   const Object &getStartPoint() const { return startPoint; }
@@ -135,7 +128,6 @@ struct OpenPath {
 
   Object startPoint;
   int64_t delay;
-  std::optional<Trace> previousPoint;
 };
 
 class LongestPathAnalysis;

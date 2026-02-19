@@ -78,6 +78,80 @@ static size_t getBitWidth(Value value) {
   return hw::getBitWidth(value.getType());
 }
 
+// Returns the delay cost of an operation for path reconstruction.
+// This must match the delay calculations used in the analysis.
+static int64_t getOperationDelayCost(Operation *op) {
+  return TypeSwitch<Operation *, int64_t>(op)
+      .Case<aig::AndInverterOp>([](aig::AndInverterOp op) -> int64_t {
+        // AIG uses ceil(log2(n)) where n is number of inputs
+        return llvm::Log2_64_Ceil(op.getInputs().size());
+      })
+      .Case<mig::MajorityInverterOp>([](mig::MajorityInverterOp op) -> int64_t {
+        // MIG uses n/2 stages for n inputs
+        return op.getInputs().size() / 2;
+      })
+      .Case<comb::AndOp, comb::OrOp, comb::XorOp>([](Operation *op) -> int64_t {
+        return llvm::Log2_64_Ceil(op->getNumOperands());
+      })
+      .Case<comb::MuxOp>([](comb::MuxOp) -> int64_t { return 1; })
+      .Case<comb::ICmpOp>([](comb::ICmpOp) -> int64_t { return 1; })
+      .Case<comb::TruthTableOp>([](comb::TruthTableOp) -> int64_t { return 1; })
+      // Data movement ops have zero delay
+      .Case<comb::ExtractOp, comb::ConcatOp, comb::ReplicateOp, hw::WireOp>(
+          [](Operation *) -> int64_t { return 0; })
+      // Default: assume unit delay
+      .Default([](Operation *) -> int64_t { return 1; });
+}
+
+// Get operand(s) and their bit positions for path reconstruction.
+// Returns pairs of (operand, bitPos) that should be checked as predecessors.
+static SmallVector<std::pair<Value, size_t>>
+getOperandBitPositions(Operation *op, size_t resultBitPos) {
+  return TypeSwitch<Operation *, SmallVector<std::pair<Value, size_t>>>(op)
+      .Case<comb::ExtractOp>([&](comb::ExtractOp op) {
+        return SmallVector<std::pair<Value, size_t>>{
+            {op.getInput(), resultBitPos + op.getLowBit()}};
+      })
+      .Case<comb::ConcatOp>([&](comb::ConcatOp op) {
+        // Find which operand contains this bit
+        // Concat operands are ordered MSB first
+        SmallVector<std::pair<Value, size_t>> result;
+        size_t currentBit = 0;
+        for (auto operand : llvm::reverse(op.getInputs())) {
+          size_t width = getBitWidth(operand);
+          if (resultBitPos >= currentBit &&
+              resultBitPos < currentBit + width) {
+            result.push_back({operand, resultBitPos - currentBit});
+            break;
+          }
+          currentBit += width;
+        }
+        return result;
+      })
+      .Case<comb::ReplicateOp>([&](comb::ReplicateOp op) {
+        size_t inputWidth = getBitWidth(op.getInput());
+        return SmallVector<std::pair<Value, size_t>>{
+            {op.getInput(), resultBitPos % inputWidth}};
+      })
+      .Case<hw::WireOp>([&](hw::WireOp op) {
+        return SmallVector<std::pair<Value, size_t>>{
+            {op.getInput(), resultBitPos}};
+      })
+      .Case<comb::MuxOp>([&](comb::MuxOp op) {
+        return SmallVector<std::pair<Value, size_t>>{
+            {op.getTrueValue(), resultBitPos},
+            {op.getFalseValue(), resultBitPos},
+            {op.getCond(), 0}};
+      })
+      .Default([&](Operation *op) {
+        // For logic ops and others, all operands use same bit position
+        SmallVector<std::pair<Value, size_t>> result;
+        for (Value operand : op->getOperands())
+          result.push_back({operand, resultBitPos});
+        return result;
+      });
+}
+
 template <typename T, typename Key>
 static void
 deduplicatePathsImpl(SmallVectorImpl<T> &results, size_t startIndex,
@@ -209,10 +283,50 @@ static StringAttr getNameImpl(Value value) {
         str += ".write_port";
         return StringAttr::get(value.getContext(), str);
       })
+      .Case<aig::AndInverterOp>([&](aig::AndInverterOp op) {
+        // Check for sv.namehint first
+        if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+          return name;
+        // Generate a synthetic name based on result number
+        llvm::SmallString<32> str;
+        str += "and_inv";
+        return StringAttr::get(value.getContext(), str);
+      })
+      .Case<mig::MajorityInverterOp>([&](mig::MajorityInverterOp op) {
+        // Check for sv.namehint first
+        if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+          return name;
+        // Generate a synthetic name
+        llvm::SmallString<32> str;
+        str += "maj_inv";
+        return StringAttr::get(value.getContext(), str);
+      })
+      .Case<comb::ConcatOp>([&](comb::ConcatOp op) {
+        // Check for sv.namehint first
+        if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+          return name;
+        // Generate a synthetic name
+        return StringAttr::get(value.getContext(), "concat");
+      })
+      .Case<comb::MuxOp>([&](comb::MuxOp op) {
+        // Check for sv.namehint first
+        if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+          return name;
+        // Generate a synthetic name
+        return StringAttr::get(value.getContext(), "mux");
+      })
+      .Case<comb::AndOp, comb::OrOp, comb::XorOp, comb::ICmpOp>(
+          [&](Operation *op) {
+            if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+              return name;
+            // Return operation name as fallback
+            return StringAttr::get(value.getContext(),
+                                   op->getName().stripDialect());
+          })
       .Default([&](auto op) {
         if (auto name = op->template getAttrOfType<StringAttr>("sv.namehint"))
           return name;
-        llvm::errs() << "Unknown op: " << *op << "\n";
+        // Don't print Unknown op warning - just return empty name
         return StringAttr::get(value.getContext(), "");
       });
 }
@@ -910,7 +1024,6 @@ LogicalResult LocalVisitor::addEdge(Value to, size_t bitPos, int64_t delay,
     return failure();
   for (auto &path : *result) {
     auto newPath = path;
-    newPath.previousPoint = Trace{to, bitPos, path.delay};
     newPath.delay += delay;
     results.push_back(newPath);
   }
@@ -2063,48 +2176,130 @@ LogicalResult LongestPathAnalysis::reconstructPath(
   auto currentDelay = path.getDelay();
   auto startPoint = path.getStartPoint();
 
-  // Helper to find predecessor path
-  auto findPredecessor = [&](Value val, size_t bitPos,
-                             int64_t targetDelay) -> std::optional<OpenPath> {
-    auto parentHWModule =
-        val.getParentRegion()->getParentOfType<hw::HWModuleOp>();
+  // Helper to get the local visitor for a value
+  auto getLocalVisitorForValue = [&](Value val) -> const LocalVisitor * {
+    Region *parentRegion = nullptr;
+    if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      parentRegion = blockArg.getParentRegion();
+    } else if (auto opResult = dyn_cast<OpResult>(val)) {
+      if (auto defOp = opResult.getDefiningOp())
+        parentRegion = defOp->getParentRegion();
+    }
+    if (!parentRegion)
+      return nullptr;
+    auto parentHWModule = parentRegion->getParentOfType<hw::HWModuleOp>();
     if (!parentHWModule)
+      return nullptr;
+    return impl->ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
+  };
+
+  // Helper to find any predecessor path with matching startPoint
+  auto findPathWithStartPoint =
+      [&](Value val, size_t bitPos) -> std::optional<OpenPath> {
+    if (!val)
       return std::nullopt;
-    auto *localVisitor =
-        impl->ctx.getLocalVisitor(parentHWModule.getModuleNameAttr());
+
+    auto *localVisitor = getLocalVisitorForValue(val);
     if (!localVisitor)
       return std::nullopt;
 
     auto paths = localVisitor->getCachedPaths(val, bitPos);
     for (const auto &p : paths) {
-      if (p.startPoint == startPoint && p.delay == targetDelay)
+      if (p.startPoint == startPoint)
         return p;
     }
     return std::nullopt;
   };
 
+  // Helper to validate a value is still valid (not stale/deleted)
+  auto isValueValid = [](Value val) -> bool {
+    if (!val)
+      return false;
+    // For OpResult, check if the defining op exists and has a valid parent
+    if (auto opResult = dyn_cast<OpResult>(val)) {
+      auto *defOp = opResult.getDefiningOp();
+      if (!defOp || !defOp->getParentOp())
+        return false;
+    }
+    // For BlockArgument, check if the parent block exists
+    if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      if (!blockArg.getOwner() || !blockArg.getOwner()->getParentOp())
+        return false;
+    }
+    return true;
+  };
+
+  // Recursively fill the path by walking backward through the IR.
+  // Uses cached delay information to find which operand is on the critical path.
+  std::function<void(Value, size_t, int64_t, circt::igraph::InstancePath)>
+      fillPathRecursive = [&](Value val, size_t bitPos, int64_t delay,
+                              circt::igraph::InstancePath instPath) {
+        if (!isValueValid(val))
+          return;
+
+        // Check if this is the start point
+        if (val == startPoint.value && bitPos == startPoint.bitPos) {
+          result.push_back(DebugPoint{instPath, val, bitPos, 0});
+          return;
+        }
+
+        // Add this point to the result
+        result.push_back(DebugPoint{instPath, val, bitPos, delay});
+
+        // If delay is 0, we should have reached the start point
+        if (delay <= 0)
+          return;
+
+        // For BlockArgument, this is typically a start point - stop here
+        auto *defOp = val.getDefiningOp();
+        if (!defOp)
+          return;
+
+        // Get the delay cost of this operation
+        int64_t opCost = getOperationDelayCost(defOp);
+        int64_t expectedInputDelay = delay - opCost;
+
+        // Get the operands and their bit positions for this operation
+        auto operandBitPairs = getOperandBitPositions(defOp, bitPos);
+
+        // Find the operand that has a cached path with matching startPoint
+        // and expected delay (or close to it for robustness)
+        for (auto [operand, opBitPos] : operandBitPairs) {
+          auto cachedPath = findPathWithStartPoint(operand, opBitPos);
+          if (cachedPath) {
+            // For zero-delay ops, the input delay should match current delay
+            // For other ops, input delay should be current delay - opCost
+            int64_t targetDelay = (opCost == 0) ? delay : expectedInputDelay;
+
+            // Accept the path if delay matches exactly or is close
+            // (to handle rounding differences in cost calculations)
+            if (cachedPath->delay == targetDelay ||
+                (opCost > 0 && cachedPath->delay <= delay &&
+                 cachedPath->delay >= expectedInputDelay)) {
+              fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath);
+              return;
+            }
+          }
+        }
+
+        // If no exact match found, try to find any operand with a path to
+        // startPoint and continue (best effort reconstruction)
+        for (auto [operand, opBitPos] : operandBitPairs) {
+          auto cachedPath = findPathWithStartPoint(operand, opBitPos);
+          if (cachedPath) {
+            fillPathRecursive(operand, opBitPos, cachedPath->delay, instPath);
+            return;
+          }
+        }
+      };
+
   // If endpoint is an object, start there
   if (auto *obj = std::get_if<Object>(&current)) {
-    result.push_back(
-        DebugPoint{obj->instancePath, obj->value, obj->bitPos, currentDelay});
+    if (!isValueValid(obj->value))
+      return failure();
 
-    OpenPath currentOpenPath = path.getPath();
-    while (currentOpenPath.previousPoint) {
-      auto trace = currentOpenPath.previousPoint.value();
-      result.push_back(DebugPoint{obj->instancePath, trace.value, trace.bitPos,
-                                  trace.delay});
-
-      auto next = findPredecessor(trace.value, trace.bitPos, trace.delay);
-      if (!next)
-        break;
-      currentOpenPath = *next;
-    }
-
-    // Finally add the start point if it's not already the last point
-    if (result.back().object.value != startPoint.value) {
-      result.push_back(DebugPoint{startPoint.instancePath, startPoint.value,
-                                  startPoint.bitPos, 0});
-    }
+    // Use recursive fill to trace the full path
+    fillPathRecursive(obj->value, obj->bitPos, currentDelay, obj->instancePath);
   }
 
   std::reverse(result.begin(), result.end());
