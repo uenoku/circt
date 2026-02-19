@@ -331,10 +331,21 @@ static StringAttr getNameImpl(Value value) {
       });
 }
 
+// Check if a value is defined by a register operation
+static bool isRegisterValue(Value value) {
+  if (!value)
+    return false;
+  auto *defOp = value.getDefiningOp();
+  if (!defOp)
+    return false;
+  return isa<seq::CompRegOp, seq::FirRegOp>(defOp);
+}
+
 static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
                             int64_t delay = -1,
                             llvm::ImmutableList<DebugPoint> history = {},
-                            StringRef comment = "", bool withLoc = false) {
+                            StringRef comment = "", bool withLoc = false,
+                            bool addRegSuffix = false) {
   // Build conventional path: inst1/inst2/inst3/port[bit] or
   // inst1/inst2/inst3/_reg
   std::string pathString;
@@ -348,6 +359,10 @@ static void printObjectImpl(llvm::raw_ostream &os, const Object &object,
   // Print the signal name
   auto name = object.getName().getValue();
   osPath << name;
+
+  // Add _reg suffix for register values when requested
+  if (addRegSuffix && isRegisterValue(object.value))
+    osPath << "_reg";
 
   // Print bit position
   // For single-bit signals, omit the bit index
@@ -399,12 +414,13 @@ void OpenPath::print(llvm::raw_ostream &os, bool withLoc) const {
   printObjectImpl(os, startPoint, delay, {}, "", withLoc);
 }
 
-void DebugPoint::print(llvm::raw_ostream &os, bool withLoc) const {
-  printObjectImpl(os, object, delay, {}, comment, withLoc);
+void DebugPoint::print(llvm::raw_ostream &os, bool withLoc,
+                       bool addRegSuffix) const {
+  printObjectImpl(os, object, delay, {}, comment, withLoc, addRegSuffix);
 }
 
-void Object::print(llvm::raw_ostream &os, bool withLoc) const {
-  printObjectImpl(os, *this, -1, {}, "", withLoc);
+void Object::print(llvm::raw_ostream &os, bool withLoc, bool addRegSuffix) const {
+  printObjectImpl(os, *this, -1, {}, "", withLoc, addRegSuffix);
 }
 
 StringAttr Object::getName() const { return getNameImpl(value); }

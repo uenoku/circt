@@ -71,7 +71,8 @@ struct Object {
     return bitPos < other.bitPos;
   }
 
-  void print(llvm::raw_ostream &os, bool withLoc = false) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false,
+             bool addRegSuffix = false) const;
   Object &prependPaths(circt::igraph::InstancePathCache &cache,
                        circt::igraph::InstancePath path);
 
@@ -102,7 +103,8 @@ struct DebugPoint {
     ID.AddInteger(delay);
   }
 
-  void print(llvm::raw_ostream &os, bool withLoc = false) const;
+  void print(llvm::raw_ostream &os, bool withLoc = false,
+             bool addRegSuffix = false) const;
 
   Object object;
   int64_t delay;

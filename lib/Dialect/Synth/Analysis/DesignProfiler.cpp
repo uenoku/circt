@@ -850,13 +850,15 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
     os << "  Top 5 Critical Paths:\n";
     for (const auto &path : stats.topPaths) {
       os << "    [delay=" << path.getDelay() << "] ";
-      path.getStartPoint().print(os, /*withLoc=*/true);
+      // Print start point with _reg suffix for registers, no location (shown in
+      // path details)
+      path.getStartPoint().print(os, /*withLoc=*/false, /*addRegSuffix=*/true);
       os << " -> ";
       // We need to cast away constness to call printEndPoint because it takes
       // non-const reference in current API, or use a workaround.
       // Checking DataflowPath API: void printEndPoint(llvm::raw_ostream &os);
       // It is not const.
-      const_cast<DataflowPath &>(path).printEndPoint(os, /*withLoc=*/true);
+      const_cast<DataflowPath &>(path).printEndPoint(os, /*withLoc=*/false);
       os << "\n";
 
       // Reconstruct and print intermediate path points with locations
@@ -867,7 +869,11 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
           for (size_t i = 0; i < pathHistory.size(); ++i) {
             const auto &point = pathHistory[i];
             os << "        [" << i << "] ";
-            point.print(os, /*withLoc=*/true);
+            // Don't show location for start/end points (first and last), show
+            // for intermediate points. Add _reg suffix for start/end points.
+            bool isStartOrEnd = (i == 0 || i == pathHistory.size() - 1);
+            point.print(os, /*withLoc=*/!isStartOrEnd,
+                        /*addRegSuffix=*/isStartOrEnd);
             os << "\n";
           }
         }
