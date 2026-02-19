@@ -739,7 +739,7 @@ def FatalProceduralOp : FatalMessageOp<"fatal.procedural", [ProceduralOp]> {
   }];
 }
 
-def FatalOp : FatalMessageOp<"fatal", [NonProceduralOp]> {
+def FatalOp : FatalMessageOp<"fatal", []> {
   let summary = "`$fatal` severity message task (elaboration-time)";
   let description = [{
     Generates an elaboration-time fatal error which terminates the elaboration
@@ -786,7 +786,7 @@ foreach severity = ["Error", "Warning", "Info"] in {
   }
 
   // Define non-procedural (elaboration-time) severity message operations
-  def severity # "Op" : NonfatalMessageOp<severityLower, [NonProceduralOp]> {
+  def severity # "Op" : NonfatalMessageOp<severityLower, []> {
     let summary = "`$" # severityLower # "` severity message task (elaboration-time)";
     let description = [{
       This system task indicates an elaboration-time }] # severityLower # [{. It must
