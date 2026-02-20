@@ -648,6 +648,8 @@ struct FIRRTLModuleLowering
 
 private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
+  void emitInstanceChoiceIncludes(CircuitOp op,
+                                  CircuitLoweringState &loweringState);
   LogicalResult lowerPorts(ArrayRef<PortInfo> firrtlPorts,
                            SmallVectorImpl<hw::PortInfo> &ports,
                            Operation *moduleOp, StringRef moduleName,
@@ -799,6 +801,10 @@ void FIRRTLModuleLowering::runOnOperation() {
               opsToProcess.push_back(fileOp);
               return success();
             })
+            .Case<OptionOp, OptionCaseOp>([&](auto) {
+              // Option operations are removed after lowering instance choices
+              return success();
+            })
             .Default([&](Operation *op) {
               // We don't know what this op is.  If it has no illegal FIRRTL
               // types, we can forward the operation.  Otherwise, we emit an
@@ -885,6 +891,9 @@ void FIRRTLModuleLowering::runOnOperation() {
 
   // Emit all the macros and preprocessor gunk at the start of the file.
   lowerFileHeader(circuit, state);
+
+  // Emit global include files for instance choice options.
+  emitInstanceChoiceIncludes(circuit, state);
 
   // Now that the modules are moved over, remove the Circuit.
   circuit.erase();
@@ -1032,6 +1041,153 @@ endpackage
         emitGuardedDefine("STOP_COND", "STOP_COND_", "(`STOP_COND)", "1");
       });
     });
+  }
+}
+
+/// Emit global include files for instance choice options.
+/// Creates one include file per option case following the FIRRTL ABI spec.
+/// Filename format: targets_<Module>_<Option>_<Case>.svh
+/// Macro format: __target_<Option>_<module>_<instance>
+void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
+    CircuitOp circuit, CircuitLoweringState &state) {
+  if (state.instanceChoicesByCase.empty())
+    return;
+
+  // Insert at the top-level module (parent of circuit)
+  auto *topLevelModule = circuit->getParentOp();
+  OpBuilder builder(&getContext());
+  builder.setInsertionPointToEnd(
+      cast<mlir::ModuleOp>(topLevelModule).getBody());
+  CircuitNamespace circuitNamespace(circuit);
+
+  // Group instances by module name to generate one file per module per option
+  // case
+  llvm::StringMap<SmallVector<CircuitLoweringState::InstanceChoiceInfo>>
+      instancesByModuleAndCase;
+  for (auto &[optionCaseKey, instances] : state.instanceChoicesByCase) {
+    for (auto &info : instances) {
+      std::string key =
+          (info.parentModule.getValue() + "_" + optionCaseKey.first.str() +
+           "_" + optionCaseKey.second.str())
+              .str();
+      instancesByModuleAndCase[key].push_back(info);
+    }
+  }
+
+  // Emit one include file for each module and option case combination
+  for (auto &entry : instancesByModuleAndCase) {
+    StringRef combinedKey = entry.getKey();
+    auto &instances = entry.getValue();
+
+    // Extract module name and option case key from combined key
+    // Format: "ModuleName_OptionName_CaseName"
+    size_t firstUnderscore = combinedKey.find('_');
+    StringRef moduleName = combinedKey.substr(0, firstUnderscore);
+    StringRef optionCaseKey = combinedKey.substr(firstUnderscore + 1);
+
+    // Extract option name and case name from the key (format:
+    // "OptionName_CaseName")
+    size_t underscorePos = optionCaseKey.find('_');
+    StringRef optionName = optionCaseKey.substr(0, underscorePos);
+    StringRef caseName = optionCaseKey.substr(underscorePos + 1);
+
+    // Filename format: targets_<Module>_<Option>_<Case>.svh
+    SmallString<128> includeFileName;
+    {
+      llvm::raw_svector_ostream os(includeFileName);
+      os << "targets_" << moduleName << "_" << optionName << "_" << caseName
+         << ".svh";
+    }
+
+    // Create the emit.file operation at the top level
+    auto fileSymbolName = circuitNamespace.newName(includeFileName);
+
+    auto emitFile = emit::FileOp::create(builder, circuit.getLoc(),
+                                         includeFileName, fileSymbolName);
+    builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
+
+    // Add header comment
+    {
+      SmallString<256> headerComment;
+      llvm::raw_svector_ostream os(headerComment);
+      os << "// Specialization file for module: " << moduleName << "\n";
+      os << "// Option: " << optionName << ", Case: " << caseName << "\n";
+      emit::VerbatimOp::create(builder, circuit.getLoc(),
+                               builder.getStringAttr(headerComment));
+    }
+
+    // Define the global option case macro to avoid conflicts
+    // Format: __option__<OptionName>_<CaseName>
+    SmallString<128> optionCaseMacro;
+    {
+      llvm::raw_svector_ostream mos(optionCaseMacro);
+      mos << "__option__" << optionName << "_" << caseName;
+    }
+
+    auto optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
+    auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
+
+    // `ifndef __option__<OptionName>_<CaseName>
+    //  `define __option__<OptionName>_<CaseName>
+    // `endif
+    sv::IfDefOp::create(
+        builder, circuit.getLoc(), optionCaseMacroRef,
+        /*thenCtor=*/[&]() {},
+        /*elseCtor=*/
+        [&]() {
+          sv::MacroDefOp::create(builder, circuit.getLoc(), optionCaseMacroRef);
+        });
+
+    // Emit instance name macros for all instances in this module
+    for (auto &info : instances) {
+      // Macro name format: __target_<Option>_<module>_<instance>
+      SmallString<128> instanceMacro;
+      {
+        llvm::raw_svector_ostream mos(instanceMacro);
+        mos << "__target_" << optionName << "_" << info.parentModule.getValue()
+            << "_" << info.instanceName.getValue();
+      }
+
+      auto instanceMacroAttr = builder.getStringAttr(instanceMacro);
+      auto instanceMacroRef = FlatSymbolRefAttr::get(instanceMacroAttr);
+
+      // Error checking: macro must not already be set
+      // `ifdef __target_<Option>_<module>_<instance>
+      //  `ERROR__target_<Option>_<module>_<instance>__must__not__be__set
+      // `else
+      //  `define __target_<Option>_<module>_<instance> <InnerSymName>
+      // `endif
+      SmallString<256> errorMessage;
+      {
+        llvm::raw_svector_ostream os(errorMessage);
+        os << instanceMacro << "__must__not__be__set";
+      }
+      auto errorMessageAttr = builder.getStringAttr(errorMessage);
+
+      sv::IfDefOp::create(
+          builder, circuit.getLoc(), instanceMacroRef,
+          /*thenCtor=*/
+          [&]() {
+            sv::MacroErrorOp::create(builder, circuit.getLoc(),
+                                     errorMessageAttr);
+          },
+          /*elseCtor=*/
+          [&]() {
+            SmallVector<Attribute> attrs;
+            attrs.push_back(hw::InnerRefAttr::get(info.parentModule, info.instanceInnerSymName));
+            auto attr = ArrayAttr::get(&getContext(), attrs);
+            sv::MacroDefOp::create(builder, circuit.getLoc(), instanceMacroRef,
+                                   builder.getStringAttr("{{0}}"), attr);
+          });
+    }
+
+    // Set output file attribute - .svh files should be excluded from file list
+    auto outputFileAttr = hw::OutputFileAttr::getFromFilename(
+        builder.getContext(), includeFileName, /*excludeFromFileList=*/true);
+    emitFile->setAttr("output_file", outputFileAttr);
+
+    // Reset insertion point to after the emit.file
+    builder.setInsertionPointAfter(emitFile);
   }
 }
 
@@ -3986,58 +4142,93 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
-  // Get the default module and all alternative modules
-  auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
-  Operation *defaultModule = circuitState.getInstanceGraph().lookup(
-      defaultModuleName.getAttr())->getModule();
+  // Get all the target modules
+  auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
+  auto caseNames = oldInstanceChoice.getCaseNamesAttr();
 
-  auto *newDefaultModule = circuitState.getNewModule(defaultModule);
-  if (!newDefaultModule) {
-    oldInstanceChoice->emitOpError("could not find lowered default module [")
-        << defaultModuleName << "] referenced by instance_choice";
+  // Get the default module (first in the list)
+  auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
+  auto *defaultModuleNode =
+      circuitState.getInstanceGraph().lookup(defaultModuleName.getAttr());
+  if (!defaultModuleNode) {
+    oldInstanceChoice->emitOpError("could not find default module [")
+        << defaultModuleName << "] referenced by instance choice";
     return failure();
   }
 
-  // Get port information from the default module (all alternatives must match)
-  SmallVector<PortInfo, 8> portInfo = cast<FModuleLike>(defaultModule).getPorts();
+  Operation *defaultModule = defaultModuleNode->getModule();
+  auto *defaultNewModule = circuitState.getNewModule(defaultModule);
+  if (!defaultNewModule) {
+    oldInstanceChoice->emitOpError("could not find lowered module [")
+        << defaultModuleName << "] referenced by instance choice";
+    return failure();
+  }
 
-  // Prepare operands for the instance (same logic as InstanceOp)
-  SmallVector<Value, 8> allOperands;
+  // Get port information from the default module (all alternatives must have
+  // same ports)
+  SmallVector<PortInfo, 8> portInfo =
+      cast<FModuleLike>(defaultModule).getPorts();
+
+  // Prepare input operands
+  SmallVector<Value, 8> inputOperands;
+
+  // Create wires for output ports that will be assigned from within ifdef
+  // blocks
+  SmallVector<sv::WireOp, 8> outputWires;
+
   for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
     auto &port = portInfo[portIndex];
     auto portType = lowerType(port.type);
     if (!portType) {
-      oldInstanceChoice->emitOpError("could not lower type of port ") << port.name;
+      oldInstanceChoice->emitOpError("could not lower type of port ")
+          << port.name;
       return failure();
     }
 
-    // Drop zero bit input/inout ports.
+    // Drop zero bit ports.
     if (portType.isInteger(0))
-      continue;
-
-    // We wire outputs up after creating the instance.
-    if (port.isOutput())
       continue;
 
     auto portResult = oldInstanceChoice.getResult(portIndex);
     assert(portResult && "invalid IR, couldn't find port");
 
-    // Replace the input port with a backedge.
+    // Handle input ports - these are results from the instance_choice that will
+    // be driven We need to create a backedge for them
     if (port.isInput()) {
-      allOperands.push_back(createBackedge(portResult, portType));
+      auto backedge = createBackedge(portResult, portType);
+      inputOperands.push_back(backedge);
       continue;
+    }
+
+    // Handle output ports - create a wire that will be assigned from ifdef
+    // blocks
+    if (port.isOutput()) {
+      auto wire = sv::WireOp::create(builder, portType,
+                                     oldInstanceChoice.getInstanceName().str() +
+                                         "." + port.getName().str());
+      outputWires.push_back(wire);
+      (void)setLowering(portResult, wire);
+      continue;
+    }
+
+    // Handle analog/inout types
+    if (type_isa<AnalogType>(portResult.getType()) && portResult.hasOneUse()) {
+      if (auto attach = dyn_cast<AttachOp>(*portResult.getUsers().begin())) {
+        if (auto source = getSingleNonInstanceOperand(attach)) {
+          auto loweredResult = getPossiblyInoutLoweredValue(source);
+          inputOperands.push_back(loweredResult);
+          (void)setLowering(portResult, loweredResult);
+          continue;
+        }
+      }
     }
 
     // Create a wire for each inout operand
     auto wire = sv::WireOp::create(builder, portType,
                                    "." + port.getName().str() + ".wire");
     (void)setLowering(portResult, wire);
-    allOperands.push_back(wire);
+    inputOperands.push_back(wire);
   }
-
-  // Get the option name and case names
-  auto caseNames = oldInstanceChoice.getCaseNamesAttr();
-  auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
 
   // Get the Option name (e.g., "Platform")
   auto optionName = oldInstanceChoice.getOptionNameAttr();
@@ -4102,13 +4293,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto *newMod = circuitState.getNewModule(oldMod);
     if (!newMod) {
       oldInstanceChoice->emitOpError("could not find lowered module");
-      return failure();
+      return;
     }
 
-    // If this is a parameterized extmodule, bring the parameters over
     ArrayAttr parameters;
     if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
       parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
+
+    // Build full operand list (inputs + inouts)
+    SmallVector<Value, 8> allOperands = inputOperands;
 
     auto inst = hw::InstanceOp::create(builder, newMod,
                                        oldInstanceChoice.getInstanceNameAttr(),
@@ -4121,7 +4314,14 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         inst->setAttr("hw.verilogName", forceName);
     }
 
-    return success();
+    // Assign instance outputs to the wires
+    unsigned wireIdx = 0;
+    for (unsigned i = 0; i < inst.getNumResults(); ++i) {
+      if (wireIdx < outputWires.size()) {
+        sv::AssignOp::create(builder, outputWires[wireIdx], inst.getResult(i));
+        ++wireIdx;
+      }
+    }
   };
 
   // Build the nested ifdef structure from the end backwards
@@ -4171,24 +4371,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
   // Execute the nested ifdef structure
   buildElseBlock();
-
-  // Now wire up the outputs
-  unsigned resultNo = 0;
-  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
-    auto &port = portInfo[portIndex];
-    if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
-      continue;
-
-    // Create a wire to hold the output value
-    auto portType = lowerType(port.type);
-    auto wire = sv::WireOp::create(builder, portType,
-                                   oldInstanceChoice.getInstanceName().str() +
-                                   "." + port.getName().str());
-
-    auto oldPortResult = oldInstanceChoice.getResult(portIndex);
-    (void)setLowering(oldPortResult, wire);
-    ++resultNo;
-  }
 
   return success();
 }
