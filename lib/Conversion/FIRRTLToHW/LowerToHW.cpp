@@ -1075,8 +1075,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     SmallString<128> includeFileName;
     {
       llvm::raw_svector_ostream os(includeFileName);
-      os << "targets_" << moduleName << "_" << optionName << "_" << caseName
-         << ".svh";
+      os << "targets_" << moduleName.getValue() << "_"
+         << optionName.getValue() << "_" << caseName.getValue() << ".svh";
     }
 
     // Create the emit.file operation at the top level
@@ -1090,8 +1090,10 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     {
       SmallString<256> headerComment;
       llvm::raw_svector_ostream os(headerComment);
-      os << "// Specialization file for module: " << moduleName << "\n";
-      os << "// Option: " << optionName << ", Case: " << caseName << "\n";
+      os << "// Specialization file for module: " << moduleName.getValue()
+         << "\n";
+      os << "// Option: " << optionName.getValue()
+         << ", Case: " << caseName.getValue() << "\n";
       emit::VerbatimOp::create(builder, circuit.getLoc(),
                                builder.getStringAttr(headerComment));
     }
@@ -1101,7 +1103,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     SmallString<128> optionCaseMacro;
     {
       llvm::raw_svector_ostream mos(optionCaseMacro);
-      mos << "__option__" << optionName << "_" << caseName;
+      mos << "__option__" << optionName.getValue() << "_"
+          << caseName.getValue();
     }
 
     auto optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
@@ -1124,8 +1127,9 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       SmallString<128> instanceMacro;
       {
         llvm::raw_svector_ostream mos(instanceMacro);
-        mos << "__target_" << optionName << "_" << info.parentModule.getValue()
-            << "_" << info.instanceName.getValue();
+        mos << "__target_" << optionName.getValue() << "_"
+            << info.parentModule.getValue() << "_"
+            << info.instanceName.getValue();
       }
 
       auto instanceMacroAttr = builder.getStringAttr(instanceMacro);

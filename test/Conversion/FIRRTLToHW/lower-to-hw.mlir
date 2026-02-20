@@ -2062,6 +2062,18 @@ firrtl.circuit "MultiPortTest" {
     firrtl.matchingconnect %result, %proc_result : !firrtl.uint<32>
     firrtl.matchingconnect %valid, %proc_valid : !firrtl.uint<1>
   }
+  // CHECK: emit.file "targets_MultiPortTest_Platform_FPGA.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: MultiPortTest\0A// Option: Platform, Case: FPGA\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Platform_FPGA {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Platform_FPGA ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Platform_MultiPortTest_proc {
+  // CHECK-NEXT: sv.macro.error "__target_Platform_MultiPortTest_proc__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Platform_MultiPortTest_proc "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultiPortTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_MultiPortTest_Platform_FPGA.svh", excludeFromFileList>}
 }
 
 // -----
@@ -2117,4 +2129,40 @@ firrtl.circuit "ThreeAlternativesTest" {
     firrtl.matchingconnect %impl_in, %in : !firrtl.uint<16>
     firrtl.matchingconnect %out, %impl_out : !firrtl.uint<16>
   }
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_A.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: A\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_A {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_A ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_A.svh", excludeFromFileList>}
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_B.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: B\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_B {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_B ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_B.svh", excludeFromFileList>}
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_C.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: C\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_C {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_C ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_C.svh", excludeFromFileList>}
 }
