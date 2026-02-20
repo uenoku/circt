@@ -1949,6 +1949,7 @@ firrtl.circuit "ExternalRequirements" {
 // -----
 
 // Test that instance_choice is lowered to sv.ifdef with multiple hw.instance
+// and generates include files for each option case
 firrtl.circuit "InstanceChoiceTest" {
   firrtl.option @Opt {
     firrtl.option_case @FPGA
@@ -1990,6 +1991,30 @@ firrtl.circuit "InstanceChoiceTest" {
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
+  // CHECK: emit.file "targets_InstanceChoiceTest_Opt_ASIC.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: InstanceChoiceTest\0A// Option: Opt, Case: ASIC\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Opt_ASIC {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Opt_ASIC ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Opt_InstanceChoiceTest_inst {
+  // CHECK-NEXT: sv.macro.error "__target_Opt_InstanceChoiceTest_inst__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceTest_Opt_ASIC.svh", excludeFromFileList>}
+  // CHECK: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Opt_FPGA {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Opt_FPGA ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Opt_InstanceChoiceTest_inst {
+  // CHECK-NEXT: sv.macro.error "__target_Opt_InstanceChoiceTest_inst__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceTest_Opt_FPGA.svh", excludeFromFileList>}
 }
 
 // -----
