@@ -467,25 +467,31 @@ private:
 
   /// Information about an instance choice for a specific option case.
   struct InstanceChoiceInfo {
+    StringAttr optionName;
+    StringAttr caseName;
     StringAttr parentModule;
     StringAttr instanceName;
     StringAttr instanceInnerSymName;
     StringAttr targetModule;
   };
 
-  /// Map from (optionName, caseName) to list of instance choices for that case.
-  DenseMap<std::pair<StringRef, StringRef>, SmallVector<InstanceChoiceInfo>>
-      instanceChoicesByCase;
+  /// Map from (parentModule, optionName, caseName) to list of instance choices.
+  /// This grouping allows us to generate one include file per module per option
+  /// case without re-parsing strings.
+  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>,
+           SmallVector<InstanceChoiceInfo>>
+      instanceChoicesByModuleAndCase;
   std::mutex instanceChoicesMutex;
 
-  void addInstanceChoiceForCase(StringRef optionName, StringRef caseName,
+  void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule, StringAttr instanceName,
                                 StringAttr instanceInnerSymName,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
-    auto key = std::make_pair(optionName, caseName);
-    instanceChoicesByCase[key].push_back(
-        {parentModule, instanceName, instanceInnerSymName, targetModule});
+    auto key = std::make_tuple(parentModule, optionName, caseName);
+    instanceChoicesByModuleAndCase[key].push_back(
+        {optionName, caseName, parentModule, instanceName, instanceInnerSymName,
+         targetModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -1050,7 +1056,7 @@ endpackage
 /// Macro format: __target_<Option>_<module>_<instance>
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &state) {
-  if (state.instanceChoicesByCase.empty())
+  if (state.instanceChoicesByModuleAndCase.empty())
     return;
 
   // Insert at the top-level module (parent of circuit)
@@ -1060,36 +1066,10 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       cast<mlir::ModuleOp>(topLevelModule).getBody());
   CircuitNamespace circuitNamespace(circuit);
 
-  // Group instances by module name to generate one file per module per option
-  // case
-  llvm::StringMap<SmallVector<CircuitLoweringState::InstanceChoiceInfo>>
-      instancesByModuleAndCase;
-  for (auto &[optionCaseKey, instances] : state.instanceChoicesByCase) {
-    for (auto &info : instances) {
-      std::string key =
-          (info.parentModule.getValue() + "_" + optionCaseKey.first.str() +
-           "_" + optionCaseKey.second.str())
-              .str();
-      instancesByModuleAndCase[key].push_back(info);
-    }
-  }
-
   // Emit one include file for each module and option case combination
-  for (auto &entry : instancesByModuleAndCase) {
-    StringRef combinedKey = entry.getKey();
-    auto &instances = entry.getValue();
-
-    // Extract module name and option case key from combined key
-    // Format: "ModuleName_OptionName_CaseName"
-    size_t firstUnderscore = combinedKey.find('_');
-    StringRef moduleName = combinedKey.substr(0, firstUnderscore);
-    StringRef optionCaseKey = combinedKey.substr(firstUnderscore + 1);
-
-    // Extract option name and case name from the key (format:
-    // "OptionName_CaseName")
-    size_t underscorePos = optionCaseKey.find('_');
-    StringRef optionName = optionCaseKey.substr(0, underscorePos);
-    StringRef caseName = optionCaseKey.substr(underscorePos + 1);
+  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
+    // Extract module name, option name, and case name from the key
+    auto [moduleName, optionName, caseName] = key;
 
     // Filename format: targets_<Module>_<Option>_<Case>.svh
     SmallString<128> includeFileName;
@@ -4262,7 +4242,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
 
     circuitState.addInstanceChoiceForCase(
-        optionName.getValue(), caseName.getValue(), theModule.getNameAttr(),
+        optionName, caseName, theModule.getNameAttr(),
         oldInstanceChoice.getInstanceNameAttr(), instanceInnerSymNames[i + 1],
         targetModuleRef.getAttr());
   }
