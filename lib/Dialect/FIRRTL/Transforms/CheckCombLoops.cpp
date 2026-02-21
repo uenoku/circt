@@ -333,7 +333,7 @@ public:
   // relations is per field.
   void handleInstanceOp(InstanceOp inst) {
     auto refMod = inst.getReferencedModule<FModuleOp>(instanceGraph);
-    // TODO: External modules not handled !!
+    // Skip external modules.
     if (!refMod)
       return;
     auto modulePaths = modulePortPaths.find(refMod);

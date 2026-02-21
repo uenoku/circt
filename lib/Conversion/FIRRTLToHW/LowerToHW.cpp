@@ -484,7 +484,8 @@ private:
   std::mutex instanceChoicesMutex;
 
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
-                                StringAttr parentModule, StringAttr instanceName,
+                                StringAttr parentModule,
+                                StringAttr instanceName,
                                 StringAttr instanceInnerSymName,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
@@ -934,8 +935,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -1075,8 +1075,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     SmallString<128> includeFileName;
     {
       llvm::raw_svector_ostream os(includeFileName);
-      os << "targets_" << moduleName.getValue() << "_"
-         << optionName.getValue() << "_" << caseName.getValue() << ".svh";
+      os << "targets_" << moduleName.getValue() << "_" << optionName.getValue()
+         << "_" << caseName.getValue() << ".svh";
     }
 
     // Create the emit.file operation at the top level
@@ -1158,7 +1158,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
           /*elseCtor=*/
           [&]() {
             SmallVector<Attribute> attrs;
-            attrs.push_back(hw::InnerRefAttr::get(info.parentModule, info.instanceInnerSymName));
+            attrs.push_back(hw::InnerRefAttr::get(info.parentModule,
+                                                  info.instanceInnerSymName));
             auto attr = ArrayAttr::get(&getContext(), attrs);
             sv::MacroDefOp::create(builder, circuit.getLoc(), instanceMacroRef,
                                    builder.getStringAttr("{{0}}"), attr);
@@ -2032,10 +2033,11 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   /// Processes port information and creates appropriate operands for inputs,
   /// outputs, and inout ports. Returns failure if any port type cannot be
   /// lowered.
-  LogicalResult prepareInstanceOperands(
-      ArrayRef<PortInfo> portInfo, Operation *instanceOp,
-      SmallVectorImpl<Value> &inputOperands,
-      SmallVectorImpl<sv::WireOp> &outputWires, StringRef instanceName);
+  LogicalResult
+  prepareInstanceOperands(ArrayRef<PortInfo> portInfo, Operation *instanceOp,
+                          SmallVectorImpl<Value> &inputOperands,
+                          SmallVectorImpl<sv::WireOp> &outputWires,
+                          StringRef instanceName);
 
   void runWithInsertionPointAtEndOfBlock(const std::function<void(void)> &fn,
                                          Region &region);
@@ -3293,8 +3295,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4003,8 +4004,9 @@ LogicalResult FIRRTLLowering::visitDecl(MemOp op) {
 /// Helper function to prepare operands for instance creation.
 /// This function processes port information and creates appropriate operands
 /// for inputs, outputs, and inout ports.
-/// If instanceName is non-empty, creates wires for output ports (InstanceChoiceOp).
-/// If instanceName is empty, skips output ports (InstanceOp).
+/// If instanceName is non-empty, creates wires for output ports
+/// (InstanceChoiceOp). If instanceName is empty, skips output ports
+/// (InstanceOp).
 LogicalResult FIRRTLLowering::prepareInstanceOperands(
     ArrayRef<PortInfo> portInfo, Operation *instanceOp,
     SmallVectorImpl<Value> &inputOperands,
@@ -4203,8 +4205,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   SmallString<128> macroName;
   {
     llvm::raw_svector_ostream os(macroName);
-    os << "__target_" << optionName.getValue() << "_"
-       << theModule.getName() << "_" << oldInstanceChoice.getInstanceName();
+    os << "__target_" << optionName.getValue() << "_" << theModule.getName()
+       << "_" << oldInstanceChoice.getInstanceName();
   }
   auto macroNameAttr = builder.getStringAttr(macroName);
   auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
@@ -4304,8 +4306,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto caseName = caseSymRef.getLeafReference();
     auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
 
-    Operation *altModule = circuitState.getInstanceGraph().lookup(
-        targetModuleRef.getAttr())->getModule();
+    Operation *altModule = circuitState.getInstanceGraph()
+                               .lookup(targetModuleRef.getAttr())
+                               ->getModule();
 
     // Generate the macro name for this option case
     // Format: __option__<Option>_<Case>
