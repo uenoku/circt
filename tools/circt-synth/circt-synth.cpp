@@ -47,7 +47,9 @@
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -129,18 +131,11 @@ static cl::opt<bool>
                   cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<std::string>
-    outputResourceUsage("output-resource-usage",
-                        cl::desc("Output file for resource usage analysis "
-                                 "results. The analysis is only run "
-                                 "if file name is specified"),
-                        cl::init(""), cl::cat(mainCategory));
-
-static cl::opt<std::string>
-    outputLongestPath("output-longest-path",
-                      cl::desc("Output file for longest path analysis "
-                               "results. The analysis is only run "
-                               "if file name is specified"),
-                      cl::init(""), cl::cat(mainCategory));
+    analysisOutput("analysis-output",
+                   cl::desc("Directory for analysis output files. When specified, "
+                            "automatically runs all analyses and writes reports "
+                            "to this directory. Use '-' for stdout"),
+                   cl::init(""), cl::cat(mainCategory));
 
 enum AnalysisOutputFormat {
   AnalysisOutputFormatText,
@@ -300,22 +295,58 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     pm.addPass(synth::createTechMapper(options));
   }
 
-  // Run analysis if requested.
-  if (!outputLongestPath.empty()) {
-    circt::synth::PrintLongestPathAnalysisOptions options;
-    options.outputFile = outputLongestPath;
-    options.showTopKPercent = outputLongestPathTopKPercent;
-    options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
-    options.topModuleName = topName;
-    pm.addPass(circt::synth::createPrintLongestPathAnalysis(options));
-  }
+  // Run analysis if analysis output is specified.
+  if (!analysisOutput.empty()) {
+    // Create output directory if it's not stdout
+    if (analysisOutput != "-") {
+      std::error_code ec = llvm::sys::fs::create_directories(analysisOutput);
+      if (ec) {
+        llvm::errs() << "Error: cannot create analysis output directory '"
+                     << analysisOutput << "': " << ec.message() << "\n";
+        return;
+      }
+    }
 
-  if (!outputResourceUsage.empty()) {
-    circt::synth::PrintResourceUsageAnalysisOptions options;
-    options.outputFile = outputResourceUsage;
-    options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
-    options.topModuleName = topName;
-    pm.addPass(circt::synth::createPrintResourceUsageAnalysis(options));
+    // Determine file extension based on output format
+    const char *ext = analysisOutputFormat == AnalysisOutputFormatJSON
+                      ? ".json" : ".txt";
+
+    // Run longest path analysis
+    {
+      circt::synth::PrintLongestPathAnalysisOptions options;
+
+      // Construct output path
+      std::string outputPath = "-";
+      if (analysisOutput != "-") {
+        llvm::SmallString<128> path(analysisOutput);
+        llvm::sys::path::append(path, "longest_path" + llvm::Twine(ext));
+        outputPath = path.str().str();
+      }
+
+      options.outputFile = outputPath;
+      options.showTopKPercent = outputLongestPathTopKPercent;
+      options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
+      options.topModuleName = topName;
+      pm.addPass(circt::synth::createPrintLongestPathAnalysis(options));
+    }
+
+    // Run resource usage analysis
+    {
+      circt::synth::PrintResourceUsageAnalysisOptions options;
+
+      // Construct output path
+      std::string outputPath = "-";
+      if (analysisOutput != "-") {
+        llvm::SmallString<128> path(analysisOutput);
+        llvm::sys::path::append(path, "resource_usage" + llvm::Twine(ext));
+        outputPath = path.str().str();
+      }
+
+      options.outputFile = outputPath;
+      options.emitJSON = analysisOutputFormat == AnalysisOutputFormatJSON;
+      options.topModuleName = topName;
+      pm.addPass(circt::synth::createPrintResourceUsageAnalysis(options));
+    }
   }
 
   if (convertToComb)
