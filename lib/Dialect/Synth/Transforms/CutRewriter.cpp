@@ -227,6 +227,16 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       continue;
     }
 
+    // Handle hw::ConstantOp - map 1-bit constants to kConstant0/kConstant1
+    if (auto constOp = dyn_cast<hw::ConstantOp>(&op)) {
+      Value result = constOp.getResult();
+      if (result.getType().isInteger(1)) {
+        uint32_t constIdx = constOp.getValue().isZero() ? kConstant0 : kConstant1;
+        valueToIndex[result] = constIdx;
+        continue;
+      }
+    }
+
     // Handle other operations - treat their results as "other" (like PIs)
     for (Value result : op.getResults()) {
       if (result.getType().isInteger(1) && !hasIndex(result))
@@ -748,6 +758,21 @@ static llvm::APInt getExpandedTruthTable(
     uint32_t operandIdx, bool isInverted,
     const llvm::SmallDenseMap<uint32_t, unsigned, 8> &indexToMergedPos,
     unsigned numMergedInputs, const Cut *const *cuts, unsigned numCuts) {
+
+  // Handle constants directly: they are not cut inputs but may appear as
+  // operands of gates inside a cut.
+  if (operandIdx == LogicNetwork::kConstant0) {
+    auto result = llvm::APInt::getZero(1U << numMergedInputs);
+    if (isInverted)
+      result.flipAllBits();
+    return result;
+  }
+  if (operandIdx == LogicNetwork::kConstant1) {
+    auto result = llvm::APInt::getAllOnes(1U << numMergedInputs);
+    if (isInverted)
+      result.flipAllBits();
+    return result;
+  }
 
   // Check if operand is one of the merged inputs
   auto it = indexToMergedPos.find(operandIdx);
@@ -1278,6 +1303,17 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
             k++;
         }
       }
+
+      // Filter out constant indices (kConstant0/kConstant1) from cut inputs.
+      // Constants are handled directly in simulateGate without cache entries,
+      // so they should not appear as cut inputs.
+      mergedInputs.erase(
+          std::remove_if(mergedInputs.begin(), mergedInputs.end(),
+                         [](uint32_t idx) {
+                           return idx == LogicNetwork::kConstant0 ||
+                                  idx == LogicNetwork::kConstant1;
+                         }),
+          mergedInputs.end());
 
       // Double-check after merge
       if (mergedInputs.size() > maxInputSize)
