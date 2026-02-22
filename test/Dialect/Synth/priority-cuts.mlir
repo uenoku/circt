@@ -89,6 +89,22 @@ hw.module @test(in %a : i4, in %b : i2, out result : i3) {
     hw.output %result_concat : i3
 }
 
+// CHECK-LABEL: Enumerating cuts for module: hw_constant
+// Verify that hw.constant 0/1 are correctly treated as constants (not as
+// primary inputs). AND(a, 0) should produce truth table 0 (always false) and
+// AND(a, 1) should produce truth table 2 (identity), both with only 'a' as
+// the cut input.
+hw.module @hw_constant(in %a : i1, out out0 : i1, out out1 : i1) {
+    %c0 = hw.constant 0 : i1
+    %c1 = hw.constant 1 : i1
+    // CHECK: out0 2 cuts: {out0}@t2d0 {a}@t0d1
+    %out0 = synth.aig.and_inv %a, %c0 {sv.namehint = "out0"} : i1
+    // CHECK-NEXT: out1 2 cuts: {out1}@t2d0 {a}@t2d1
+    %out1 = synth.aig.and_inv %a, %c1 {sv.namehint = "out1"} : i1
+    // CHECK-NEXT: Cut enumeration completed successfully
+    hw.output %out0, %out1 : i1, i1
+}
+
 // CHECK-LABEL: Enumerating cuts for module: Issue8885
 // ROOT8: xor0 3 cuts:
 // ROOT8-SAME: {xor0}
