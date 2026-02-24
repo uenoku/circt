@@ -1056,8 +1056,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     SmallString<128> includeFileName;
     {
       llvm::raw_svector_ostream os(includeFileName);
-      os << "targets_" << moduleName.getValue() << "_"
-         << optionName.getValue() << "_" << caseName.getValue() << ".svh";
+      os << "targets_" << moduleName.getValue() << "_" << optionName.getValue()
+         << "_" << caseName.getValue() << ".svh";
     }
 
     // Create the emit.file operation at the top level
@@ -4119,6 +4119,11 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
+  if (oldInstanceChoice.getInnerSymAttr()) {
+    oldInstanceChoice->emitOpError(
+        "instance choice with inner sym cannot be lowered");
+    return failure();
+  }
   // Get all the target modules
   auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
   auto caseNames = oldInstanceChoice.getCaseNamesAttr();
@@ -4136,29 +4141,28 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
            << defaultModuleName << "] referenced by instance choice";
 
   // Get port information from the default module (all alternatives must have
-  // same ports)
+  // same ports).
   SmallVector<PortInfo, 8> portInfo =
       cast<FModuleLike>(defaultModule).getPorts();
 
-  // Prepare input operands
+  // Prepare input operands.
   SmallVector<Value, 8> inputOperands;
   if (failed(
           prepareInstanceOperands(portInfo, oldInstanceChoice, inputOperands)))
     return failure();
 
-  // Create wires for output ports that will be assigned from within ifdef
-  // blocks
+  // Create wires for output ports.
   SmallVector<sv::WireOp, 8> outputWires;
+  StringRef wirePrefix = oldInstanceChoice.getInstanceName();
   for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
     auto &port = portInfo[portIndex];
-    if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
+    if (!port.isOutput())
       continue;
     auto portType = lowerType(port.type);
-    if (!portType)
+    if (!portType || portType.isInteger(0))
       continue;
-    auto wire = sv::WireOp::create(builder, portType,
-                                   oldInstanceChoice.getInstanceName().str() +
-                                       "." + port.getName().str());
+    auto wire = sv::WireOp::create(
+        builder, portType, wirePrefix.str() + "." + port.getName().str());
     outputWires.push_back(wire);
     (void)setLowering(oldInstanceChoice.getResult(portIndex), wire);
   }
@@ -4278,8 +4282,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     SmallString<128> optionCaseMacro;
     {
       llvm::raw_svector_ostream os(optionCaseMacro);
-      os << "__option__" << optionName.getValue() << "_"
-         << caseName.getValue();
+      os << "__option__" << optionName.getValue() << "_" << caseName.getValue();
     }
 
     // Register the macro declaration for this case
