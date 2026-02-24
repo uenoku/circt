@@ -487,6 +487,57 @@ LogicalResult IfDefOp::canonicalize(IfDefOp op, PatternRewriter &rewriter) {
 }
 
 //===----------------------------------------------------------------------===//
+// Helper functions
+//===----------------------------------------------------------------------===//
+
+void circt::sv::createNestedIfDefs(
+    OpBuilder &builder, ArrayRef<StringRef> macroSymbols,
+    llvm::function_ref<void(OpBuilder &, size_t)> thenCtor,
+    llvm::function_ref<void(OpBuilder &)> defaultCtor) {
+
+  if (macroSymbols.empty()) {
+    if (defaultCtor)
+      defaultCtor(builder);
+    return;
+  }
+
+  // Build the nested structure recursively from the last macro backwards
+  std::function<void(OpBuilder &)> buildElseBlock;
+
+  // Start with the default case
+  buildElseBlock = [defaultCtor](OpBuilder &b) {
+    if (defaultCtor)
+      defaultCtor(b);
+  };
+
+  // Wrap each macro in an ifdef, working backwards
+  for (int i = macroSymbols.size() - 1; i >= 0; --i) {
+    StringRef macroSymbol = macroSymbols[i];
+    size_t index = i;
+
+    // Capture the previous else block
+    auto prevElseBlock = buildElseBlock;
+
+    buildElseBlock = [macroSymbol, index, thenCtor, prevElseBlock](OpBuilder &b) {
+      auto loc = b.getUnknownLoc();
+      ImplicitLocOpBuilder builder(loc, b);
+      IfDefOp::create(
+          builder, macroSymbol,
+          /*thenCtor=*/[&, index]() {
+            if (thenCtor)
+              thenCtor(builder, index);
+          },
+          /*elseCtor=*/[&, prevElseBlock]() {
+            prevElseBlock(builder);
+          });
+    };
+  }
+
+  // Execute the nested ifdef structure
+  buildElseBlock(builder);
+}
+
+//===----------------------------------------------------------------------===//
 // IfDefProceduralOp
 //===----------------------------------------------------------------------===//
 

@@ -915,8 +915,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -3273,8 +3272,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4258,17 +4256,11 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     }
   };
 
-  // Build the nested ifdef structure from the end backwards
-  std::function<void()> buildElseBlock;
+  // Build macro names and module list for nested ifdefs
+  SmallVector<StringRef> macroNames;
+  SmallVector<Operation *> altModules;
 
-  // Start with the default case (uses instanceInnerSyms[0])
-  auto defaultInnerSym = instanceInnerSyms[0];
-  buildElseBlock = [&, defaultInnerSym]() {
-    createInstanceAndAssign(defaultModule, defaultInnerSym);
-  };
-
-  // Wrap each alternative in an ifdef, working backwards
-  for (int i = caseNames.size() - 1; i >= 0; --i) {
+  for (size_t i = 0; i < caseNames.size(); ++i) {
     auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
     auto caseName = caseSymRef.getLeafReference();
     auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
@@ -4276,6 +4268,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     Operation *altModule = circuitState.getInstanceGraph()
                                .lookup(targetModuleRef.getAttr())
                                ->getModule();
+    altModules.push_back(altModule);
 
     // Generate the macro name for this option case
     // Format: __option__<Option>_<Case>
@@ -4287,25 +4280,35 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
     // Register the macro declaration for this case
     circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
-
-    // Capture the previous else block and the inner symbol for this case
-    auto prevElseBlock = buildElseBlock;
-    auto caseInnerSym = instanceInnerSyms[i + 1];
-
-    buildElseBlock = [&, optionCaseMacro = optionCaseMacro.str().str(),
-                      altModule, prevElseBlock, caseInnerSym]() {
-      addToIfDefBlock(
-          optionCaseMacro,
-          /*thenCtor=*/
-          [&, altModule, caseInnerSym]() {
-            createInstanceAndAssign(altModule, caseInnerSym);
-          },
-          /*elseCtor=*/prevElseBlock);
-    };
+    macroNames.push_back(optionCaseMacro.str());
   }
 
-  // Execute the nested ifdef structure
-  buildElseBlock();
+  // Use the helper function to create nested ifdefs
+  sv::createNestedIfDefs(
+      builder, macroNames,
+      /*thenCtor=*/
+      [&](OpBuilder &b, size_t index) {
+        // When macro[index] is defined, instantiate the corresponding module
+        Operation *altModule = altModules[index];
+        hw::InnerSymAttr caseInnerSym = instanceInnerSyms[index + 1];
+
+        // Temporarily set builder to use the correct insertion point
+        OpBuilder::InsertionGuard guard(builder);
+        builder.restoreInsertionPoint(b.saveInsertionPoint());
+
+        createInstanceAndAssign(altModule, caseInnerSym);
+      },
+      /*defaultCtor=*/
+      [&](OpBuilder &b) {
+        // Default case: instantiate the default module
+        hw::InnerSymAttr defaultInnerSym = instanceInnerSyms[0];
+
+        // Temporarily set builder to use the correct insertion point
+        OpBuilder::InsertionGuard guard(builder);
+        builder.restoreInsertionPoint(b.saveInsertionPoint());
+
+        createInstanceAndAssign(defaultModule, defaultInnerSym);
+      });
 
   return success();
 }
