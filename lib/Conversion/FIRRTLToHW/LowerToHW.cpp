@@ -1046,8 +1046,24 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       cast<mlir::ModuleOp>(topLevelModule).getBody());
   CircuitNamespace circuitNamespace(circuit);
 
+  // Sort keys to ensure deterministic output order
+  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>> sortedKeys;
+  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase)
+    sortedKeys.push_back(key);
+  llvm::sort(sortedKeys, [](const auto &a, const auto &b) {
+    // Sort by (moduleName, optionName, caseName)
+    auto [aModule, aOption, aCase] = a;
+    auto [bModule, bOption, bCase] = b;
+    if (aModule.getValue() != bModule.getValue())
+      return aModule.getValue() < bModule.getValue();
+    if (aOption.getValue() != bOption.getValue())
+      return aOption.getValue() < bOption.getValue();
+    return aCase.getValue() < bCase.getValue();
+  });
+
   // Emit one include file for each module and option case combination
-  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
+  for (auto &key : sortedKeys) {
+    auto &instances = state.instanceChoicesByModuleAndCase[key];
     // Extract module name, option name, and case name from the key
     auto [moduleName, optionName, caseName] = key;
 
@@ -4257,7 +4273,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   };
 
   // Build macro names and module list for nested ifdefs
-  SmallVector<StringRef> macroNames;
+  SmallVector<std::string> macroNames;
   SmallVector<Operation *> altModules;
 
   for (size_t i = 0; i < caseNames.size(); ++i) {
@@ -4280,35 +4296,29 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
     // Register the macro declaration for this case
     circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
-    macroNames.push_back(optionCaseMacro.str());
+    macroNames.push_back(optionCaseMacro.str().str());
   }
+
+  // Convert to StringRef for the helper function
+  SmallVector<StringRef> macroNameRefs;
+  for (const auto &name : macroNames)
+    macroNameRefs.push_back(name);
 
   // Use the helper function to create nested ifdefs
   sv::createNestedIfDefs(
-      builder, macroNames,
+      macroNameRefs,
+      /*ifdefCtor=*/
+      [&](StringRef macro, std::function<void()> thenCtor,
+          std::function<void()> elseCtor) {
+        addToIfDefBlock(macro, std::move(thenCtor), std::move(elseCtor));
+      },
       /*thenCtor=*/
-      [&](OpBuilder &b, size_t index) {
-        // When macro[index] is defined, instantiate the corresponding module
-        Operation *altModule = altModules[index];
-        hw::InnerSymAttr caseInnerSym = instanceInnerSyms[index + 1];
-
-        // Temporarily set builder to use the correct insertion point
-        OpBuilder::InsertionGuard guard(builder);
-        builder.restoreInsertionPoint(b.saveInsertionPoint());
-
-        createInstanceAndAssign(altModule, caseInnerSym);
+      [&](size_t index) {
+        createInstanceAndAssign(altModules[index],
+                                instanceInnerSyms[index + 1]);
       },
       /*defaultCtor=*/
-      [&](OpBuilder &b) {
-        // Default case: instantiate the default module
-        hw::InnerSymAttr defaultInnerSym = instanceInnerSyms[0];
-
-        // Temporarily set builder to use the correct insertion point
-        OpBuilder::InsertionGuard guard(builder);
-        builder.restoreInsertionPoint(b.saveInsertionPoint());
-
-        createInstanceAndAssign(defaultModule, defaultInnerSym);
-      });
+      [&]() { createInstanceAndAssign(defaultModule, instanceInnerSyms[0]); });
 
   return success();
 }

@@ -1967,7 +1967,6 @@ firrtl.circuit "InstanceChoiceTest" {
   // CHECK-LABEL: hw.module @InstanceChoiceTest
   firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     // CHECK: %[[WIRE:.+]] = sv.wire
-    // CHECK: %[[WIRE:.+]] = sv.wire
     // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
     // CHECK: sv.ifdef @__target_Opt_InstanceChoiceTest_inst
     // CHECK-NEXT: } else {

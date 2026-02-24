@@ -212,32 +212,43 @@ public:
 /// Create nested ifdef operations for a list of macro symbols.
 /// For each macro, creates an ifdef with a then branch and an else branch.
 /// The then branch is provided by the thenCtor callback, which receives the
-/// OpBuilder and the index of the current macro (0-based).
+/// index of the current macro (0-based).
 /// The else branch contains the next level of nesting, or the defaultCtor
 /// for the innermost level.
+/// The ifdefCtor callback is used to construct each ifdef, allowing the caller
+/// to use custom ifdef construction logic (e.g., addToIfDefBlock).
 ///
 /// Example:
-///   createNestedIfDefs(builder, {"MACRO1", "MACRO2"},
-///                      [&](OpBuilder &b, size_t index) {
-///                        // Code for when MACRO[index] is defined
-///                      },
-///                      [&](OpBuilder &b) {
-///                        // Code for when no macros are defined (default)
-///                      });
+///   createNestedIfDefs(
+///       {"MACRO1", "MACRO2"},
+///       [&](StringRef macro, auto thenCtor, auto elseCtor) {
+///         // Custom ifdef construction (e.g., addToIfDefBlock)
+///         addToIfDefBlock(macro, thenCtor, elseCtor);
+///       },
+///       [&](size_t index) {
+///         // Code for when MACRO[index] is defined
+///       },
+///       [&]() {
+///         // Code for when no macros are defined (default)
+///       });
 ///
 /// Generates:
 ///   `ifdef MACRO1
-///     // thenCtor(builder, 0)
+///     // thenCtor(0)
 ///   `else
 ///     `ifdef MACRO2
-///       // thenCtor(builder, 1)
+///       // thenCtor(1)
 ///     `else
-///       // defaultCtor(builder)
+///       // defaultCtor()
 ///     `endif
 ///   `endif
-void createNestedIfDefs(OpBuilder &builder, ArrayRef<StringRef> macroSymbols,
-                        llvm::function_ref<void(OpBuilder &, size_t)> thenCtor,
-                        llvm::function_ref<void(OpBuilder &)> defaultCtor);
+void createNestedIfDefs(
+    ArrayRef<StringRef> macroSymbols,
+    llvm::function_ref<void(StringRef, std::function<void()>,
+                            std::function<void()>)>
+        ifdefCtor,
+    llvm::function_ref<void(size_t)> thenCtor,
+    llvm::function_ref<void()> defaultCtor);
 
 } // namespace sv
 } // namespace circt

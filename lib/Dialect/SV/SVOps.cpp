@@ -491,23 +491,26 @@ LogicalResult IfDefOp::canonicalize(IfDefOp op, PatternRewriter &rewriter) {
 //===----------------------------------------------------------------------===//
 
 void circt::sv::createNestedIfDefs(
-    OpBuilder &builder, ArrayRef<StringRef> macroSymbols,
-    llvm::function_ref<void(OpBuilder &, size_t)> thenCtor,
-    llvm::function_ref<void(OpBuilder &)> defaultCtor) {
+    ArrayRef<StringRef> macroSymbols,
+    llvm::function_ref<void(StringRef, std::function<void()>,
+                            std::function<void()>)>
+        ifdefCtor,
+    llvm::function_ref<void(size_t)> thenCtor,
+    llvm::function_ref<void()> defaultCtor) {
 
   if (macroSymbols.empty()) {
     if (defaultCtor)
-      defaultCtor(builder);
+      defaultCtor();
     return;
   }
 
   // Build the nested structure recursively from the last macro backwards
-  std::function<void(OpBuilder &)> buildElseBlock;
+  std::function<void()> buildElseBlock;
 
   // Start with the default case
-  buildElseBlock = [defaultCtor](OpBuilder &b) {
+  buildElseBlock = [defaultCtor]() {
     if (defaultCtor)
-      defaultCtor(b);
+      defaultCtor();
   };
 
   // Wrap each macro in an ifdef, working backwards
@@ -518,23 +521,21 @@ void circt::sv::createNestedIfDefs(
     // Capture the previous else block
     auto prevElseBlock = buildElseBlock;
 
-    buildElseBlock = [macroSymbol, index, thenCtor, prevElseBlock](OpBuilder &b) {
-      auto loc = b.getUnknownLoc();
-      ImplicitLocOpBuilder builder(loc, b);
-      IfDefOp::create(
-          builder, macroSymbol,
-          /*thenCtor=*/[&, index]() {
+    buildElseBlock = [macroSymbol, index, thenCtor, prevElseBlock,
+                      ifdefCtor]() {
+      ifdefCtor(
+          macroSymbol,
+          /*thenCtor=*/
+          [index, thenCtor]() {
             if (thenCtor)
-              thenCtor(builder, index);
+              thenCtor(index);
           },
-          /*elseCtor=*/[&, prevElseBlock]() {
-            prevElseBlock(builder);
-          });
+          /*elseCtor=*/prevElseBlock);
     };
   }
 
   // Execute the nested ifdef structure
-  buildElseBlock(builder);
+  buildElseBlock();
 }
 
 //===----------------------------------------------------------------------===//
