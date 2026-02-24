@@ -4119,11 +4119,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
-  if (oldInstanceChoice.getInnerSymAttr()) {
-    oldInstanceChoice->emitOpError(
-        "instance choice with inner sym cannot be lowered");
-    return failure();
-  }
   // Get all the target modules
   auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
   auto caseNames = oldInstanceChoice.getCaseNamesAttr();
@@ -4143,69 +4138,135 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
            << defaultModuleName << "] referenced by instance choice";
 
   // Get port information from the default module (all alternatives must have
-  // same ports).
+  // same ports)
   SmallVector<PortInfo, 8> portInfo =
       cast<FModuleLike>(defaultModule).getPorts();
 
-  // Prepare input operands.
+  // Prepare input operands
   SmallVector<Value, 8> inputOperands;
   if (failed(
           prepareInstanceOperands(portInfo, oldInstanceChoice, inputOperands)))
     return failure();
 
-  // Create wires for output ports.
+  // Create wires for output ports that will be assigned from within ifdef
+  // blocks
   SmallVector<sv::WireOp, 8> outputWires;
-  StringRef wirePrefix = oldInstanceChoice.getInstanceName();
   for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
     auto &port = portInfo[portIndex];
-    if (!port.isOutput())
+    if (!port.isOutput() || isZeroBitFIRRTLType(port.type))
       continue;
     auto portType = lowerType(port.type);
-    if (!portType || portType.isInteger(0))
+    if (!portType)
       continue;
-    auto wire = sv::WireOp::create(
-        builder, portType, wirePrefix.str() + "." + port.getName().str());
+    auto wire = sv::WireOp::create(builder, portType,
+                                   oldInstanceChoice.getInstanceName().str() +
+                                       "." + port.getName().str());
     outputWires.push_back(wire);
     (void)setLowering(oldInstanceChoice.getResult(portIndex), wire);
   }
 
+  // Get the Option name (e.g., "Platform")
+  auto optionName = oldInstanceChoice.getOptionNameAttr();
+
+  // Generate a macro name for the target
+  // Format: __target_<Option>_<module>_<instance>
+  SmallString<128> macroName;
+  {
+    llvm::raw_svector_ostream os(macroName);
+    os << "__target_" << optionName.getValue() << "_" << theModule.getName()
+       << "_" << oldInstanceChoice.getInstanceName();
+  }
+  auto macroNameAttr = builder.getStringAttr(macroName);
+  auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
+
+  // Add macro declaration
+  circuitState.addMacroDecl(macroNameAttr);
+
+  // Pre-create inner symbols for all instances (default + all cases)
+  // Index 0 is for the default, index i+1 is for caseNames[i]
+  SmallVector<hw::InnerSymAttr> instanceInnerSyms;
+  SmallVector<StringAttr> instanceInnerSymNames;
+  for (size_t i = 0; i <= caseNames.size(); ++i) {
+    hw::InnerSymAttr innerSym;
+    StringAttr innerSymName;
+    std::tie(innerSym, innerSymName) = getOrAddInnerSym(
+        oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
+        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
+    instanceInnerSyms.push_back(innerSym);
+    instanceInnerSymNames.push_back(innerSymName);
+  }
+
+  // Define the macro to the default instance's inner symbol name
+  addToIfDefBlock(
+      macroName,
+      /*thenCtor=*/[&]() {},
+      /*elseCtor=*/
+      [&]() {
+        auto array = builder.getArrayAttr({hw::InnerRefAttr::get(
+            theModule.getNameAttr(), instanceInnerSymNames[0])});
+        sv::MacroDefOp::create(builder, macroRef,
+                               builder.getStringAttr("{{0}}"), array);
+      });
+
+  // Register instance choice information for global include file generation
+  // This will emit one include file per option case (e.g., Platform_FPGA.svh)
+  for (size_t i = 0; i < caseNames.size(); ++i) {
+    auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
+    auto caseName = caseSymRef.getLeafReference();
+    auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+
+    circuitState.addInstanceChoiceForCase(
+        optionName, caseName, theModule.getNameAttr(),
+        oldInstanceChoice.getInstanceNameAttr(), instanceInnerSymNames[i + 1],
+        targetModuleRef.getAttr());
+  }
+
   // Lambda to create an instance for a given module and assign outputs to wires
+  // Takes the inner symbol to use for this instance
   auto createInstanceAndAssign = [&](Operation *oldMod,
-                                     StringRef suffix) -> LogicalResult {
+                                     hw::InnerSymAttr instInnerSym) {
     auto *newMod = circuitState.getNewModule(oldMod);
-    if (!newMod)
-      return oldInstanceChoice->emitOpError("could not find lowered module");
+    if (!newMod) {
+      oldInstanceChoice->emitOpError("could not find lowered module");
+      return;
+    }
 
     ArrayAttr parameters;
     if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
       parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
 
-    // Create instance name with suffix
-    SmallString<64> instName;
-    instName = oldInstanceChoice.getInstanceName();
-    if (!suffix.empty()) {
-      instName += "_";
-      instName += suffix;
-    }
-    auto instNameAttr = builder.getStringAttr(instName);
+    auto inst = hw::InstanceOp::create(builder, newMod,
+                                       oldInstanceChoice.getInstanceNameAttr(),
+                                       inputOperands, parameters, instInnerSym);
 
-    // Create the instance
-    auto inst = hw::InstanceOp::create(builder, newMod, instNameAttr,
-                                       inputOperands, parameters,
-                                       /*innerSym=*/nullptr);
+    if (inst.getInnerSymAttr()) {
+      auto key = std::make_pair<Attribute, Attribute>(theModule.getNameAttr(),
+                                                      inst.getInnerNameAttr());
+      if (auto forceName = circuitState.instanceForceNames.lookup(key))
+        inst->setAttr("hw.verilogName", forceName);
+    }
 
     // Assign instance outputs to the wires
-    for (unsigned i = 0; i < inst.getNumResults(); ++i)
-      sv::AssignOp::create(builder, outputWires[i], inst.getResult(i));
-    return success();
+    unsigned wireIdx = 0;
+    for (unsigned i = 0; i < inst.getNumResults(); ++i) {
+      if (wireIdx < outputWires.size()) {
+        sv::AssignOp::create(builder, outputWires[wireIdx], inst.getResult(i));
+        ++wireIdx;
+      }
+    }
   };
 
-  // Create instance for the default module
-  if (failed(createInstanceAndAssign(defaultModule, "default")))
-    return failure();
+  // Build the nested ifdef structure from the end backwards
+  std::function<void()> buildElseBlock;
 
-  // Create instances for all alternative modules
-  for (size_t i = 0; i < caseNames.size(); ++i) {
+  // Start with the default case (uses instanceInnerSyms[0])
+  auto defaultInnerSym = instanceInnerSyms[0];
+  buildElseBlock = [&, defaultInnerSym]() {
+    createInstanceAndAssign(defaultModule, defaultInnerSym);
+  };
+
+  // Wrap each alternative in an ifdef, working backwards
+  for (int i = caseNames.size() - 1; i >= 0; --i) {
     auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
     auto caseName = caseSymRef.getLeafReference();
     auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
@@ -4213,15 +4274,37 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     Operation *altModule = circuitState.getInstanceGraph()
                                .lookup(targetModuleRef.getAttr())
                                ->getModule();
-    if (!altModule)
-      return oldInstanceChoice->emitOpError(
-                 "could not find alternative module [")
-             << targetModuleRef << "] referenced by instance choice";
 
-    // Create instance with case name as suffix
-    if (failed(createInstanceAndAssign(altModule, caseName.getValue())))
-      return failure();
+    // Generate the macro name for this option case
+    // Format: __option__<Option>_<Case>
+    SmallString<128> optionCaseMacro;
+    {
+      llvm::raw_svector_ostream os(optionCaseMacro);
+      os << "__option__" << optionName.getValue() << "_"
+         << caseName.getValue();
+    }
+
+    // Register the macro declaration for this case
+    circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
+
+    // Capture the previous else block and the inner symbol for this case
+    auto prevElseBlock = buildElseBlock;
+    auto caseInnerSym = instanceInnerSyms[i + 1];
+
+    buildElseBlock = [&, optionCaseMacro = optionCaseMacro.str().str(),
+                      altModule, prevElseBlock, caseInnerSym]() {
+      addToIfDefBlock(
+          optionCaseMacro,
+          /*thenCtor=*/
+          [&, altModule, caseInnerSym]() {
+            createInstanceAndAssign(altModule, caseInnerSym);
+          },
+          /*elseCtor=*/prevElseBlock);
+    };
   }
+
+  // Execute the nested ifdef structure
+  buildElseBlock();
 
   return success();
 }

@@ -1967,14 +1967,183 @@ firrtl.circuit "InstanceChoiceTest" {
   // CHECK-LABEL: hw.module @InstanceChoiceTest
   firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     // CHECK: %[[WIRE:.+]] = sv.wire
+    // CHECK: %[[WIRE:.+]] = sv.wire
     // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
-    // CHECK: %[[INST_DEFAULT:.+]] = hw.instance "inst_default" @ModuleDefault
-    // CHECK: sv.assign %[[WIRE]], %[[INST_DEFAULT]]
-    // CHECK: %[[INST_FPGA:.+]] = hw.instance "inst_FPGA" @ModuleFPGA
-    // CHECK: sv.assign %[[WIRE]], %[[INST_FPGA]]
+    // CHECK: sv.ifdef @__target_Opt_InstanceChoiceTest_inst
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+    // CHECK-NEXT: }
+    // CHECK: sv.ifdef @__option__Opt_FPGA {
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst" sym @{{.+}} @ModuleFPGA
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst" sym @{{.+}} @ModuleDefault
+    // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK: hw.output %[[READ]]
     %inst_in, %inst_out = firrtl.instance_choice inst @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
+  // CHECK: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Opt_FPGA {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Opt_FPGA ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Opt_InstanceChoiceTest_inst {
+  // CHECK-NEXT: sv.macro.error "__target_Opt_InstanceChoiceTest_inst__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceTest_Opt_FPGA.svh", excludeFromFileList>}
+}
+
+// -----
+
+// Test instance_choice with multiple ports
+firrtl.circuit "MultiPortTest" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+  }
+
+  firrtl.module private @MultiPortDefault(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
+    firrtl.matchingconnect %result, %data : !firrtl.uint<32>
+    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
+    firrtl.matchingconnect %valid, %c1_ui1 : !firrtl.uint<1>
+  }
+
+  firrtl.module private @MultiPortFPGA(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
+    firrtl.matchingconnect %result, %data : !firrtl.uint<32>
+    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
+    firrtl.matchingconnect %valid, %c1_ui1 : !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: hw.module @MultiPortTest
+  firrtl.module @MultiPortTest(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
+    // CHECK-DAG: %[[WIRE_RESULT:.+]] = sv.wire
+    // CHECK-DAG: %[[READ_RESULT:.+]] = sv.read_inout %[[WIRE_RESULT]]
+    // CHECK-DAG: %[[WIRE_VALID:.+]] = sv.wire
+    // CHECK-DAG: %[[READ_VALID:.+]] = sv.read_inout %[[WIRE_VALID]]
+    // CHECK: sv.ifdef @__target_Platform_MultiPortTest_proc
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.macro.def @__target_Platform_MultiPortTest_proc "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultiPortTest::@{{.+}}>])
+    // CHECK-NEXT: }
+    // CHECK: sv.ifdef @__option__Platform_FPGA {
+    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc" sym @{{.+}} @MultiPortFPGA(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
+    // CHECK-NEXT: sv.assign
+    // CHECK-NEXT: sv.assign
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc" sym @{{.+}} @MultiPortDefault(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
+    // CHECK-NEXT: sv.assign
+    // CHECK-NEXT: sv.assign
+    // CHECK: hw.output %[[READ_RESULT]], %[[READ_VALID]]
+    %proc_clk, %proc_data, %proc_result, %proc_valid = firrtl.instance_choice proc @MultiPortDefault alternatives @Platform { @FPGA -> @MultiPortFPGA } (in clk: !firrtl.clock, in data: !firrtl.uint<32>, out result: !firrtl.uint<32>, out valid: !firrtl.uint<1>)
+    firrtl.matchingconnect %proc_clk, %clk : !firrtl.clock
+    firrtl.matchingconnect %proc_data, %data : !firrtl.uint<32>
+    firrtl.matchingconnect %result, %proc_result : !firrtl.uint<32>
+    firrtl.matchingconnect %valid, %proc_valid : !firrtl.uint<1>
+  }
+  // CHECK: emit.file "targets_MultiPortTest_Platform_FPGA.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: MultiPortTest\0A// Option: Platform, Case: FPGA\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Platform_FPGA {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Platform_FPGA ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Platform_MultiPortTest_proc {
+  // CHECK-NEXT: sv.macro.error "__target_Platform_MultiPortTest_proc__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Platform_MultiPortTest_proc "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultiPortTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_MultiPortTest_Platform_FPGA.svh", excludeFromFileList>}
+}
+
+// -----
+
+// Test instance_choice with three alternatives
+firrtl.circuit "ThreeAlternativesTest" {
+  firrtl.option @Target {
+    firrtl.option_case @A
+    firrtl.option_case @B
+    firrtl.option_case @C
+  }
+
+  firrtl.module private @ImplDefault(in %in: !firrtl.uint<16>, out %out: !firrtl.uint<16>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<16>
+  }
+
+  firrtl.module private @ImplA(in %in: !firrtl.uint<16>, out %out: !firrtl.uint<16>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<16>
+  }
+
+  firrtl.module private @ImplB(in %in: !firrtl.uint<16>, out %out: !firrtl.uint<16>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<16>
+  }
+
+  firrtl.module private @ImplC(in %in: !firrtl.uint<16>, out %out: !firrtl.uint<16>) {
+    firrtl.matchingconnect %out, %in : !firrtl.uint<16>
+  }
+
+  // CHECK-LABEL: hw.module @ThreeAlternativesTest
+  firrtl.module @ThreeAlternativesTest(in %in: !firrtl.uint<16>, out %out: !firrtl.uint<16>) {
+    // CHECK: %[[WIRE:.+]] = sv.wire
+    // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
+    // CHECK: sv.ifdef @__target_Target_ThreeAlternativesTest_impl
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+    // CHECK-NEXT: }
+    // CHECK: sv.ifdef @__option__Target_A {
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplA
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.ifdef @__option__Target_B {
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplB
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: sv.ifdef @__option__Target_C {
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplC
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplDefault
+    // CHECK-NEXT: sv.assign %[[WIRE]]
+    // CHECK: hw.output %[[READ]]
+    %impl_in, %impl_out = firrtl.instance_choice impl @ImplDefault alternatives @Target { @A -> @ImplA, @B -> @ImplB, @C -> @ImplC } (in in: !firrtl.uint<16>, out out: !firrtl.uint<16>)
+    firrtl.matchingconnect %impl_in, %in : !firrtl.uint<16>
+    firrtl.matchingconnect %out, %impl_out : !firrtl.uint<16>
+  }
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_A.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: A\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_A {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_A ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_A.svh", excludeFromFileList>}
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_B.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: B\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_B {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_B ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_B.svh", excludeFromFileList>}
+  // CHECK: emit.file "targets_ThreeAlternativesTest_Target_C.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for module: ThreeAlternativesTest\0A// Option: Target, Case: C\0A"
+  // CHECK-NEXT: sv.ifdef @__option__Target_C {
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__option__Target_C ""
+  // CHECK-NEXT: }
+  // CHECK-NEXT: sv.ifdef @__target_Target_ThreeAlternativesTest_impl {
+  // CHECK-NEXT: sv.macro.error "__target_Target_ThreeAlternativesTest_impl__must__not__be__set"
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
+  // CHECK-NEXT: }
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_ThreeAlternativesTest_Target_C.svh", excludeFromFileList>}
 }
