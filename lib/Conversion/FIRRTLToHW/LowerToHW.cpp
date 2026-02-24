@@ -4122,7 +4122,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Get all the target modules
   auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
   auto caseNames = oldInstanceChoice.getCaseNamesAttr();
-
   // Get the default module (first in the list)
   auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
   auto *defaultModuleNode =
@@ -4130,7 +4129,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   if (!defaultModuleNode)
     return oldInstanceChoice->emitOpError("could not find default module [")
            << defaultModuleName << "] referenced by instance choice";
-
   Operation *defaultModule = defaultModuleNode->getModule();
   auto *defaultNewModule = circuitState.getNewModule(defaultModule);
   if (!defaultNewModule)
