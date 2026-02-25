@@ -2895,7 +2895,8 @@ void InstanceChoiceOp::build(
     OpBuilder &builder, OperationState &result, FModuleLike defaultModule,
     ArrayRef<std::pair<OptionCaseOp, FModuleLike>> cases, StringRef name,
     NameKindEnum nameKind, ArrayRef<Attribute> annotations,
-    ArrayRef<Attribute> portAnnotations, StringAttr innerSym) {
+    ArrayRef<Attribute> portAnnotations, StringAttr innerSym,
+    StringAttr targetSym) {
   // Gather the result types.
   SmallVector<Type> resultTypes;
   for (Attribute portType : defaultModule.getPortTypes())
@@ -2934,14 +2935,16 @@ void InstanceChoiceOp::build(
                defaultModule.getPortNamesAttr(), domainInfoAttr,
                builder.getArrayAttr(annotations), portAnnotationsAttr,
                defaultModule.getLayersAttr(),
-               innerSym ? hw::InnerSymAttr::get(innerSym) : hw::InnerSymAttr());
+               innerSym ? hw::InnerSymAttr::get(innerSym) : hw::InnerSymAttr(),
+               targetSym);
 }
 
 void InstanceChoiceOp::build(OpBuilder &builder, OperationState &odsState,
                              ArrayRef<PortInfo> ports, ArrayAttr moduleNames,
                              ArrayAttr caseNames, StringRef name,
                              NameKindEnum nameKind, ArrayAttr annotations,
-                             ArrayAttr layers, hw::InnerSymAttr innerSym) {
+                             ArrayAttr layers, hw::InnerSymAttr innerSym,
+                             StringAttr targetSym) {
   // Gather the result types and port information from PortInfo.
   SmallVector<Type> newResultTypes;
   SmallVector<bool> newPortDirections;
@@ -2967,7 +2970,7 @@ void InstanceChoiceOp::build(OpBuilder &builder, OperationState &odsState,
                nameKind, newPortDirections, builder.getArrayAttr(newPortNames),
                builder.getArrayAttr(newDomainInfo), annotations,
                builder.getArrayAttr(newPortAnnotations), layers.getValue(),
-               innerSym);
+               innerSym, targetSym);
 }
 
 std::optional<size_t> InstanceChoiceOp::getTargetResultIndex() {
@@ -3001,11 +3004,11 @@ void InstanceChoiceOp::print(OpAsmPrinter &p) {
     p << ' ' << stringifyNameKindEnum(getNameKindAttr().getValue());
 
   // Print the attr-dict.
-  SmallVector<StringRef, 11> omittedAttrs = {
+  SmallVector<StringRef, 12> omittedAttrs = {
       "moduleNames",     "caseNames", "name",
       "portDirections",  "portNames", "portTypes",
       "portAnnotations", "inner_sym", "nameKind",
-      "domainInfo"};
+      "domainInfo",      "target_sym"};
   if (getAnnotations().empty())
     omittedAttrs.push_back("annotations");
   if (getLayers().empty())
@@ -3299,7 +3302,8 @@ InstanceChoiceOp InstanceChoiceOp::cloneWithInsertedPorts(
       direction::packAttribute(context, newPortDirections),
       ArrayAttr::get(context, newPortNames),
       ArrayAttr::get(context, newDomainInfo), getAnnotationsAttr(),
-      ArrayAttr::get(context, newPortAnnos), getLayers(), getInnerSymAttr());
+      ArrayAttr::get(context, newPortAnnos), getLayers(), getInnerSymAttr(),
+      getTargetSymAttr());
 
   if (auto outputFile = (*this)->getAttr("output_file"))
     clone->setAttr("output_file", outputFile);
@@ -3338,7 +3342,7 @@ InstanceChoiceOp::cloneWithErasedPorts(const llvm::BitVector &erasures) {
       direction::packAttribute(getContext(), newPortDirections),
       ArrayAttr::get(getContext(), newPortNames), newPortDomains,
       getAnnotationsAttr(), ArrayAttr::get(getContext(), newPortAnnotations),
-      getLayers(), getInnerSymAttr());
+      getLayers(), getInnerSymAttr(), getTargetSymAttr());
 
   if (auto outputFile = (*this)->getAttr("output_file"))
     clone->setAttr("output_file", outputFile);

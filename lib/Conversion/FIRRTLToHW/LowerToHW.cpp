@@ -248,7 +248,7 @@ struct CircuitLoweringState {
     StringAttr optionName;
     StringAttr caseName; // null for default instance
     StringAttr parentModule;
-    StringAttr instanceName;
+    StringAttr targetSym; // The target symbol (macro name) for this instance choice
     hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
     StringAttr targetModule;
   };
@@ -511,13 +511,13 @@ private:
 
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule,
-                                StringAttr instanceName,
+                                StringAttr targetSym,
                                 hw::InstanceOp hwInstance,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     InstanceChoiceKey key{parentModule, optionName, caseName};
     instanceChoicesByModuleAndCase[key].push_back({optionName, caseName,
-                                                   parentModule, instanceName,
+                                                   parentModule, targetSym,
                                                    hwInstance, targetModule});
   }
 
@@ -1105,64 +1105,9 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       cast<mlir::ModuleOp>(topLevelModule).getBody());
   CircuitNamespace circuitNamespace(circuit);
 
-  // Collect all instance choices to generate globally unique macro names
-  // Map from (parentModule, optionName, instanceName) to macro name
-  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>, StringAttr>
-      instanceChoiceToMacroName;
-
-  // First pass: collect all unique instance choices and sort them for
-  // deterministic order
-  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>>
-      sortedInstanceKeys;
-  DenseSet<std::tuple<StringAttr, StringAttr, StringAttr>> seenInstanceKeys;
-
-  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
-    for (auto &info : instances) {
-      auto instanceKey =
-          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
-      if (seenInstanceKeys.insert(instanceKey).second) {
-        sortedInstanceKeys.push_back(instanceKey);
-      }
-    }
-  }
-
-  // Sort for deterministic output
-  llvm::sort(sortedInstanceKeys, [](const auto &a, const auto &b) {
-    auto [aModule, aOption, aInstance] = a;
-    auto [bModule, bOption, bInstance] = b;
-    if (aModule.getValue() != bModule.getValue())
-      return aModule.getValue() < bModule.getValue();
-    if (aOption.getValue() != bOption.getValue())
-      return aOption.getValue() < bOption.getValue();
-    return aInstance.getValue() < bInstance.getValue();
-  });
-
-  // Generate macro names for all instance choices with global scope awareness
-  for (auto &instanceKey : sortedInstanceKeys) {
-    auto [parentModule, optionName, instanceName] = instanceKey;
-
-    // Generate a globally unique macro name for the target
-    // Format: __target_<Option>_<module>_<instance>
-    SmallString<128> macroName;
-    {
-      llvm::raw_svector_ostream os(macroName);
-      os << "__target_" << optionName.getValue() << "_"
-         << parentModule.getValue() << "_" << instanceName.getValue();
-    }
-
-    // Use CircuitNamespace to ensure global uniqueness
-    auto uniqueMacroName = circuitNamespace.newName(macroName);
-    auto macroNameAttr = builder.getStringAttr(uniqueMacroName);
-    instanceChoiceToMacroName[instanceKey] = macroNameAttr;
-
-    // Add macro declaration
-    state.addMacroDecl(macroNameAttr);
-  }
-
   // Insert inline macro definitions into module bodies
   // For each default instance (caseName is null), insert an ifdef block
-  // that defines the macro to point to the default instance if not already
-  // defined
+  // that defines the macro to point to the default instance if not already defined
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
     for (auto &info : instances) {
       // Only process default instances (caseName is null)
@@ -1172,15 +1117,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       if (!info.hwInstance || !info.hwInstance.getInnerSymAttr())
         continue;
 
-      // Get the macro name for this instance choice
-      auto instanceKey =
-          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
-      auto it = instanceChoiceToMacroName.find(instanceKey);
-      if (it == instanceChoiceToMacroName.end())
-        continue;
-
-      auto macroNameAttr = it->second;
-      auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
+      // Use the target symbol directly from the InstanceChoiceInfo
+      auto macroRef = FlatSymbolRefAttr::get(info.targetSym);
       auto defaultInnerSym = info.hwInstance.getInnerSymAttr().getSymName();
 
       // Use the hwInstance to get the insertion point
@@ -1190,8 +1128,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       sv::IfDefOp::create(
           builder, info.hwInstance.getLoc(), macroRef,
           /*thenCtor=*/[&]() {},
-          /*elseCtor=*/
-          [&]() {
+          /*elseCtor=*/[&]() {
             auto array = builder.getArrayAttr(
                 {hw::InnerRefAttr::get(info.parentModule, defaultInnerSym)});
             sv::MacroDefOp::create(builder, info.hwInstance.getLoc(), macroRef,
@@ -1273,11 +1210,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       if (!info.hwInstance)
         continue;
 
-      // Get the globally unique macro name generated in the first pass
-      auto instanceKey =
-          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
-      auto instanceMacroAttr = instanceChoiceToMacroName.at(instanceKey);
-      auto instanceMacroRef = FlatSymbolRefAttr::get(instanceMacroAttr);
+      // Use the target symbol directly from the InstanceChoiceInfo
+      auto instanceMacroRef = FlatSymbolRefAttr::get(info.targetSym);
 
       // Get the inner symbol from the hw::InstanceOp
       auto innerSym = info.hwInstance.getInnerSymAttr();
@@ -1292,7 +1226,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       SmallString<256> errorMessage;
       {
         llvm::raw_svector_ostream os(errorMessage);
-        os << instanceMacroAttr.getValue() << "__must__not__be__set";
+        os << info.targetSym.getValue() << "__must__not__be__set";
       }
       auto errorMessageAttr = builder.getStringAttr(errorMessage);
 
@@ -4290,6 +4224,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         "instance choice with inner sym cannot be lowered");
     return failure();
   }
+
+  // Require target_sym to be set before lowering
+  StringAttr targetSym = oldInstanceChoice.getTargetSymAttr();
+  if (!targetSym) {
+    oldInstanceChoice->emitOpError(
+        "instance choice must have target_sym attribute set before lowering");
+    return failure();
+  }
+
   // Get all the target modules
   auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
   auto caseNames = oldInstanceChoice.getCaseNamesAttr();
@@ -4425,17 +4368,14 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                                    .getLeafReference()
                                    .getValue());
 
-        // Register instance choice information for global include file
-        // generation Macros will be generated in post-processing with global
-        // scope awareness
+        // Register instance choice information for global include file generation
         auto caseSymRef = cast<SymbolRefAttr>(caseNames[index]);
         auto caseName = caseSymRef.getLeafReference();
         auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[index + 1]);
 
         circuitState.addInstanceChoiceForCase(
             optionName, caseName, theModule.getNameAttr(),
-            oldInstanceChoice.getInstanceNameAttr(), inst,
-            targetModuleRef.getAttr());
+            targetSym, inst, targetModuleRef.getAttr());
       },
       /*defaultCtor=*/
       [&]() {
@@ -4445,8 +4385,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         auto defaultModuleRef = cast<FlatSymbolRefAttr>(moduleNames[0]);
         circuitState.addInstanceChoiceForCase(
             optionName, StringAttr(), theModule.getNameAttr(),
-            oldInstanceChoice.getInstanceNameAttr(), inst,
-            defaultModuleRef.getAttr());
+            targetSym, inst, defaultModuleRef.getAttr());
       });
 
   return success();
