@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/ExportAIGER.h"
+#include "circt/Conversion/ExportSCAProof.h"
 #include "circt/Conversion/ImportAIGER.h"
 #include "circt/Conversion/ImportLiberty.h"
 #include "circt/Dialect/Arc/ModelInfoExport.h"
@@ -43,6 +44,7 @@ inline void registerAllTranslations() {
     debug::registerTranslations();
     aiger::registerImportAIGERTranslation();
     aiger::registerExportAIGERTranslation();
+    registerExportSCAProofTranslation();
     liberty::registerImportLibertyTranslation();
     return true;
   }();
