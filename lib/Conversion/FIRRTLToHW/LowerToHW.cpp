@@ -4294,12 +4294,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   SmallVector<hw::InnerSymAttr> instanceInnerSyms;
   SmallVector<StringAttr> instanceInnerSymNames;
   for (size_t i = 0; i <= caseNames.size(); ++i) {
-    hw::InnerSymAttr innerSym;
-    StringAttr innerSymName;
-    std::tie(innerSym, innerSymName) = getOrAddInnerSym(
+    auto [innerSym, innerSymName] = getOrAddInnerSym(
         oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
-        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; },
-        oldInstanceChoice.getInstanceName());
+        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
     instanceInnerSyms.push_back(innerSym);
     instanceInnerSymNames.push_back(innerSymName);
   }
