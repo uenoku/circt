@@ -25,21 +25,18 @@ circuit top:
 
   module DefaultTarget:
     input clock: Clock
-    input data: UInt<32>
     output result: UInt<32>
 
     connect result, UInt<32>(0)
 
   module ASICTarget:
     input clock: Clock
-    input data: UInt<32>
     output result: UInt<32>
 
     connect result, UInt<32>(10)
 
   module FPGATarget:
     input clock: Clock
-    input data: UInt<32>
     output result: UInt<32>
 
     connect result, UInt<32>(20)
@@ -53,7 +50,6 @@ circuit top:
       FPGA => FPGATarget
 
     connect proc.clock, clk
-    connect proc.data, UInt<32>(0)
 
     ; Print the constant result value
     printf(clk, UInt<1>(1), "result: %d\n", proc.result)
