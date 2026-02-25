@@ -4239,7 +4239,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
   // Lambda to create an instance for a given module and assign outputs to wires
   // Takes the inner symbol to use for this instance
-  auto createInstanceAndAssign = [&](Operation *oldMod,
+  auto createInstanceAndAssign = [&](Operation *oldMod, StringRef suffix,
                                      hw::InnerSymAttr instInnerSym) {
     auto *newMod = circuitState.getNewModule(oldMod);
     if (!newMod) {
@@ -4251,32 +4251,28 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
       parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
 
-    auto inst = hw::InstanceOp::create(builder, newMod,
-                                       oldInstanceChoice.getInstanceNameAttr(),
+    // Create instance name with suffix
+    SmallString<64> instName;
+    instName = oldInstanceChoice.getInstanceName();
+    if (!suffix.empty()) {
+      instName += "_";
+      instName += suffix;
+    }
+    auto instNameAttr = builder.getStringAttr(instName);
+
+    auto inst = hw::InstanceOp::create(builder, newMod, instNameAttr,
                                        inputOperands, parameters, instInnerSym);
 
-    if (inst.getInnerSymAttr()) {
-      auto key = std::make_pair<Attribute, Attribute>(theModule.getNameAttr(),
-                                                      inst.getInnerNameAttr());
-      if (auto forceName = circuitState.instanceForceNames.lookup(key))
-        inst->setAttr("hw.verilogName", forceName);
-    }
-
     // Assign instance outputs to the wires
-    unsigned wireIdx = 0;
-    for (unsigned i = 0; i < inst.getNumResults(); ++i) {
-      if (wireIdx < outputWires.size()) {
-        sv::AssignOp::create(builder, outputWires[wireIdx], inst.getResult(i));
-        ++wireIdx;
-      }
-    }
+    for (unsigned i = 0; i < inst.getNumResults(); ++i)
+      sv::AssignOp::create(builder, outputWires[i], inst.getResult(i));
   };
 
   // Build macro names and module list for nested ifdefs
-  SmallVector<std::string> macroNames;
+  SmallVector<StringRef> macroNames;
   SmallVector<Operation *> altModules;
 
-  for (size_t i = 0; i < caseNames.size(); ++i) {
+  for (size_t i = 0, e = caseNames.size(); i < e; ++i) {
     auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
     auto caseName = caseSymRef.getLeafReference();
     auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
@@ -4286,17 +4282,23 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                                ->getModule();
     altModules.push_back(altModule);
 
-    // Generate the macro name for this option case
-    // Format: __option__<Option>_<Case>
-    SmallString<128> optionCaseMacro;
+    StringAttr optionCaseMacroAttr;
     {
-      llvm::raw_svector_ostream os(optionCaseMacro);
-      os << "__option__" << optionName.getValue() << "_" << caseName.getValue();
+      // Generate the macro name for this option case
+      // Format: __option__<Option>_<Case>
+      SmallString<128> optionCaseMacro;
+      {
+        llvm::raw_svector_ostream os(optionCaseMacro);
+        os << "__option__" << optionName.getValue() << "_"
+           << caseName.getValue();
+      }
+      optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
     }
 
     // Register the macro declaration for this case
-    circuitState.addMacroDecl(builder.getStringAttr(optionCaseMacro));
-    macroNames.push_back(optionCaseMacro.str().str());
+    // NOTE: LowerLayer/LowerXMR will be necessary to interact with this macro.
+    circuitState.addMacroDecl(optionCaseMacroAttr);
+    macroNames.push_back(optionCaseMacroAttr.getValue());
   }
 
   // Convert to StringRef for the helper function
@@ -4314,11 +4316,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       },
       /*thenCtor=*/
       [&](size_t index) {
-        createInstanceAndAssign(altModules[index],
-                                instanceInnerSyms[index + 1]);
+        createInstanceAndAssign(
+            altModules[index],
+            cast<SymbolRefAttr>(caseNames[index]).getLeafReference().getValue(),
+            instanceInnerSyms[index + 1]);
       },
       /*defaultCtor=*/
-      [&]() { createInstanceAndAssign(defaultModule, instanceInnerSyms[0]); });
+      [&]() {
+        createInstanceAndAssign(defaultModule, "default", instanceInnerSyms[0]);
+      });
 
   return success();
 }

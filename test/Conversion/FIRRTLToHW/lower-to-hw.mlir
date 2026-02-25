@@ -2028,11 +2028,11 @@ firrtl.circuit "MultiPortTest" {
     // CHECK-NEXT: sv.macro.def @__target_Platform_MultiPortTest_proc "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultiPortTest::@{{.+}}>])
     // CHECK-NEXT: }
     // CHECK: sv.ifdef @__option__Platform_FPGA {
-    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc" sym @{{.+}} @MultiPortFPGA(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
+    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc_FPGA" sym @{{.+}} @MultiPortFPGA(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
     // CHECK-NEXT: sv.assign
     // CHECK-NEXT: sv.assign
     // CHECK-NEXT: } else {
-    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc" sym @{{.+}} @MultiPortDefault(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
+    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc_default" sym @{{.+}} @MultiPortDefault(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
     // CHECK-NEXT: sv.assign
     // CHECK-NEXT: sv.assign
     // CHECK: hw.output %[[READ_RESULT]], %[[READ_VALID]]
@@ -2091,18 +2091,18 @@ firrtl.circuit "ThreeAlternativesTest" {
     // CHECK-NEXT: sv.macro.def @__target_Target_ThreeAlternativesTest_impl "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@ThreeAlternativesTest::@{{.+}}>])
     // CHECK-NEXT: }
     // CHECK: sv.ifdef @__option__Target_A {
-    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplA
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl_A" sym @{{.+}} @ImplA
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
     // CHECK-NEXT: sv.ifdef @__option__Target_B {
-    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplB
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl_B" sym @{{.+}} @ImplB
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
     // CHECK-NEXT: sv.ifdef @__option__Target_C {
-    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplC
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl_C" sym @{{.+}} @ImplC
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
-    // CHECK-NEXT: %{{.+}} = hw.instance "impl" sym @{{.+}} @ImplDefault
+    // CHECK-NEXT: %{{.+}} = hw.instance "impl_default" sym @{{.+}} @ImplDefault
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK: hw.output %[[READ]]
     %impl_in, %impl_out = firrtl.instance_choice impl @ImplDefault alternatives @Target { @A -> @ImplA, @B -> @ImplB, @C -> @ImplC } (in in: !firrtl.uint<16>, out out: !firrtl.uint<16>)
