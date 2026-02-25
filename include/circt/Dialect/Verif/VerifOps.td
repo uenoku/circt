@@ -499,6 +499,29 @@ def SymbolicValueOp : VerifOp<"symbolic_value", [
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 
+def PolyProbeOp : VerifOp<"poly_probe", [
+  HasParent<"hw::HWModuleOp">,
+]> {
+  let summary = "Attach polynomial-proof provenance to SSA values";
+  let description = [{
+    This operation records provenance hints for polynomial-based verification.
+    It is intended to be emitted during lowering (e.g. DatapathToComb) to
+    preserve correspondence between original datapath values and lowered comb
+    values.
+  }];
+  let arguments = (ins
+    AnyType:$value,
+    StrAttr:$origin,
+    StrAttr:$role,
+    OptionalAttr<I64Attr>:$origin_id,
+    OptionalAttr<I64Attr>:$input_idx,
+    OptionalAttr<I64Attr>:$result_idx,
+    OptionalAttr<I64Attr>:$bit_idx,
+    OptionalAttr<I64Attr>:$stage
+  );
+  let assemblyFormat = "$value attr-dict `:` type($value)";
+}
+
 //===----------------------------------------------------------------------===//
 // Formal Contracts
 //===----------------------------------------------------------------------===//

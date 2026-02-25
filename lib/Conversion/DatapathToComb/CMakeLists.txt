@@ -9,6 +9,7 @@ add_circt_conversion_library(CIRCTDatapathToComb
   CIRCTComb
   CIRCTDatapath
   CIRCTHW
+  CIRCTVerif
   MLIRIR
   MLIRPass
   MLIRSupport

@@ -14,6 +14,7 @@
 
 #include "circt/Conversion/CombToSMT.h"
 #include "circt/Conversion/DatapathToSMT.h"
+#include "circt/Conversion/ExportSCAProof.h"
 #include "circt/Conversion/HWToSMT.h"
 #include "circt/Conversion/SMTToZ3LLVM.h"
 #include "circt/Conversion/SynthToComb.h"
@@ -23,6 +24,7 @@
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/Emit/EmitPasses.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
@@ -101,14 +103,42 @@ static cl::opt<bool>
                           cl::desc("Log executions of toplevel module passes"),
                           cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<bool> useNativeSCA(
+    "native-sca",
+    cl::desc("Run native algebraic SCA equivalence check instead of SMT flow"),
+    cl::init(false), cl::cat(mainCategory));
+
+static cl::opt<uint64_t>
+    nativeScaMaxTerms("native-sca-max-terms",
+                      cl::desc("Maximum residual term count for native-sca"),
+                      cl::init(200000), cl::cat(mainCategory));
+
+static cl::opt<uint32_t>
+    nativeScaMaxDegree("native-sca-max-degree",
+                       cl::desc("Maximum residual degree for native-sca"),
+                       cl::init(64), cl::cat(mainCategory));
+
+static cl::opt<uint64_t>
+    nativeScaMaxSteps("native-sca-max-steps",
+                      cl::desc("Maximum rewrite steps for native-sca"),
+                      cl::init(200000), cl::cat(mainCategory));
+
 #ifdef CIRCT_LEC_ENABLE_JIT
 
-enum OutputFormat { OutputMLIR, OutputLLVM, OutputSMTLIB, OutputRunJIT };
+enum OutputFormat {
+  OutputMLIR,
+  OutputLLVM,
+  OutputSMTLIB,
+  OutputSingular,
+  OutputRunJIT
+};
 static cl::opt<OutputFormat> outputFormat(
     cl::desc("Specify output format"),
     cl::values(clEnumValN(OutputMLIR, "emit-mlir", "Emit LLVM MLIR dialect"),
                clEnumValN(OutputLLVM, "emit-llvm", "Emit LLVM"),
                clEnumValN(OutputSMTLIB, "emit-smtlib", "Emit object file"),
+               clEnumValN(OutputSingular, "emit-singular",
+                          "Emit Singular SCA proof script"),
                clEnumValN(OutputRunJIT, "run",
                           "Perform LEC and output result")),
     cl::init(OutputRunJIT), cl::cat(mainCategory));
@@ -119,12 +149,14 @@ static cl::list<std::string> sharedLibs{
 
 #else
 
-enum OutputFormat { OutputMLIR, OutputLLVM, OutputSMTLIB };
+enum OutputFormat { OutputMLIR, OutputLLVM, OutputSMTLIB, OutputSingular };
 static cl::opt<OutputFormat> outputFormat(
     cl::desc("Specify output format"),
     cl::values(clEnumValN(OutputMLIR, "emit-mlir", "Emit LLVM MLIR dialect"),
                clEnumValN(OutputLLVM, "emit-llvm", "Emit LLVM"),
-               clEnumValN(OutputSMTLIB, "emit-smtlib", "Emit object file")),
+               clEnumValN(OutputSMTLIB, "emit-smtlib", "Emit object file"),
+               clEnumValN(OutputSingular, "emit-singular",
+                          "Emit Singular SCA proof script")),
     cl::init(OutputLLVM), cl::cat(mainCategory));
 
 #endif
@@ -229,6 +261,39 @@ static LogicalResult executeLEC(MLIRContext &context) {
 
   pm.addPass(om::createStripOMPass());
   pm.addPass(emit::createStripEmitPass());
+
+  if (useNativeSCA) {
+    VerifyNativeSCAOptions opts;
+    opts.firstModule = firstModuleName;
+    opts.secondModule = secondModuleName;
+    opts.maxTerms = nativeScaMaxTerms;
+    opts.maxDegree = nativeScaMaxDegree;
+    opts.maxSteps = nativeScaMaxSteps;
+    pm.addPass(createVerifyNativeSCA(opts));
+    if (failed(pm.run(module.get())))
+      return failure();
+    return success();
+  }
+
+  if (outputFormat == OutputSingular) {
+    auto spec = module->lookupSymbol<hw::HWModuleOp>(firstModuleName);
+    if (!spec) {
+      llvm::errs() << "module '" << firstModuleName
+                   << "' not found for --emit-singular\n";
+      return failure();
+    }
+    auto impl = module->lookupSymbol<hw::HWModuleOp>(secondModuleName);
+    if (!impl) {
+      llvm::errs() << "module '" << secondModuleName
+                   << "' not found for --emit-singular\n";
+      return failure();
+    }
+    if (failed(exportSCAProof(spec, impl, outputFile.value()->os())))
+      return failure();
+    outputFile.value()->keep();
+    return success();
+  }
+
   {
     ConstructLECOptions opts;
     opts.firstModule = firstModuleName;

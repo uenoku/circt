@@ -1,5 +1,6 @@
 // RUN: circt-opt %s --pass-pipeline="builtin.module(hw.module(convert-datapath-to-comb))" | FileCheck %s
 // RUN: circt-opt %s --pass-pipeline="builtin.module(hw.module(convert-datapath-to-comb{lower-compress-to-add=true}))" | FileCheck %s --check-prefix=TO-ADD
+// RUN: circt-opt %s --pass-pipeline="builtin.module(hw.module(convert-datapath-to-comb{lower-compress-to-add=true emit-poly-probes=true}))" | FileCheck %s --check-prefix=PROBE
 // RUN: circt-opt %s --pass-pipeline="builtin.module(hw.module(convert-datapath-to-comb{lower-partial-product-to-booth=true}, canonicalize))" | FileCheck %s --check-prefix=FORCE-BOOTH
 // RUN: circt-opt %s --pass-pipeline="builtin.module(hw.module(convert-datapath-to-comb{timing-aware=true}))" | FileCheck %s --check-prefix=TIMING
 
@@ -34,6 +35,15 @@ hw.module @compressor_add(in %a : i2, in %b : i2, in %c : i2, out carry : i2, ou
   %0:2 = datapath.compress %a, %b, %c : i2 [3 -> 2]
   hw.output %0#0, %0#1 : i2, i2
 }
+
+// PROBE-LABEL: @compressor_add
+// PROBE: %[[Z:.+]] = hw.constant 0 : i2
+// PROBE: %[[ADD:.+]] = comb.add bin %a, %b, %c : i2
+// PROBE: verif.poly_probe %a {input_idx = 0 : i64, origin = "compress", origin_id = 0 : i64, role = "input"} : i2
+// PROBE: verif.poly_probe %b {input_idx = 1 : i64, origin = "compress", origin_id = 0 : i64, role = "input"} : i2
+// PROBE: verif.poly_probe %c {input_idx = 2 : i64, origin = "compress", origin_id = 0 : i64, role = "input"} : i2
+// PROBE: verif.poly_probe %[[Z]] {origin = "compress", origin_id = 0 : i64, result_idx = 0 : i64, role = "output"} : i2
+// PROBE: verif.poly_probe %[[ADD]] {origin = "compress", origin_id = 0 : i64, result_idx = 1 : i64, role = "output"} : i2
 
 // CHECK-LABEL: @partial_product
 hw.module @partial_product(in %a : i3, in %b : i3, out pp0 : i3, out pp1 : i3, out pp2 : i3) {

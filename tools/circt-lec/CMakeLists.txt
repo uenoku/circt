@@ -17,6 +17,7 @@ target_link_libraries(circt-lec
   CIRCTDatapath
   CIRCTDatapathToSMT
   CIRCTEmitTransforms
+  CIRCTExportSCAProof
   CIRCTHW
   CIRCTHWToSMT
   CIRCTLECTransforms
