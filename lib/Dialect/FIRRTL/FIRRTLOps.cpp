@@ -2896,7 +2896,7 @@ void InstanceChoiceOp::build(
     ArrayRef<std::pair<OptionCaseOp, FModuleLike>> cases, StringRef name,
     NameKindEnum nameKind, ArrayRef<Attribute> annotations,
     ArrayRef<Attribute> portAnnotations, StringAttr innerSym,
-    StringAttr targetSym) {
+    FlatSymbolRefAttr targetSym) {
   // Gather the result types.
   SmallVector<Type> resultTypes;
   for (Attribute portType : defaultModule.getPortTypes())
@@ -2944,7 +2944,7 @@ void InstanceChoiceOp::build(OpBuilder &builder, OperationState &odsState,
                              ArrayAttr caseNames, StringRef name,
                              NameKindEnum nameKind, ArrayAttr annotations,
                              ArrayAttr layers, hw::InnerSymAttr innerSym,
-                             StringAttr targetSym) {
+                             FlatSymbolRefAttr targetSym) {
   // Gather the result types and port information from PortInfo.
   SmallVector<Type> newResultTypes;
   SmallVector<bool> newPortDirections;
@@ -3004,11 +3004,11 @@ void InstanceChoiceOp::print(OpAsmPrinter &p) {
     p << ' ' << stringifyNameKindEnum(getNameKindAttr().getValue());
 
   // Print the attr-dict.
-  SmallVector<StringRef, 12> omittedAttrs = {
+  SmallVector<StringRef, 11> omittedAttrs = {
       "moduleNames",     "caseNames", "name",
       "portDirections",  "portNames", "portTypes",
       "portAnnotations", "inner_sym", "nameKind",
-      "domainInfo",      "target_sym"};
+      "domainInfo"};
   if (getAnnotations().empty())
     omittedAttrs.push_back("annotations");
   if (getLayers().empty())

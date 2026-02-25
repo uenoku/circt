@@ -235,7 +235,7 @@ def InstanceChoiceOp : HardwareDeclOp<"instance_choice", [
                        PortAnnotationsAttr:$portAnnotations,
                        LayerArrayAttr:$layers,
                        OptionalAttr<InnerSymAttr>:$inner_sym,
-                       OptionalAttr<StrAttr>:$target_sym);
+                       OptionalAttr<FlatSymbolRefAttr>:$target_sym);
 
   let results = (outs Variadic<AnyType>:$results);
 
@@ -308,7 +308,7 @@ def InstanceChoiceOp : HardwareDeclOp<"instance_choice", [
                    CArg<"ArrayRef<Attribute>", "{}">:$annotations,
                    CArg<"ArrayRef<Attribute>", "{}">:$portAnnotations,
                    CArg<"StringAttr", "StringAttr()">:$innerSym,
-                   CArg<"StringAttr", "StringAttr()">:$targetSym)>,
+                   CArg<"FlatSymbolRefAttr", "FlatSymbolRefAttr()">:$targetSym)>,
     OpBuilder<(ins "ArrayRef<PortInfo>":$ports,
                    "ArrayAttr":$moduleNames,
                    "ArrayAttr":$caseNames,
@@ -317,7 +317,7 @@ def InstanceChoiceOp : HardwareDeclOp<"instance_choice", [
                    CArg<"ArrayAttr", "{}">:$annotations,
                    CArg<"ArrayAttr", "{}">:$layers,
                    CArg<"hw::InnerSymAttr", "hw::InnerSymAttr()">:$innerSym,
-                   CArg<"StringAttr", "StringAttr()">:$targetSym)>
+                   CArg<"FlatSymbolRefAttr", "FlatSymbolRefAttr()">:$targetSym)>
   ];
 }
 

@@ -248,7 +248,7 @@ struct CircuitLoweringState {
     StringAttr optionName;
     StringAttr caseName; // null for default instance
     StringAttr parentModule;
-    StringAttr targetSym; // The target symbol (macro name) for this instance choice
+    FlatSymbolRefAttr targetSym; // The target symbol (macro name) for this instance choice
     hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
     StringAttr targetModule;
   };
@@ -511,7 +511,7 @@ private:
 
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule,
-                                StringAttr targetSym,
+                                FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
@@ -1118,7 +1118,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
         continue;
 
       // Use the target symbol directly from the InstanceChoiceInfo
-      auto macroRef = FlatSymbolRefAttr::get(info.targetSym);
+      auto macroRef = info.targetSym;
       auto defaultInnerSym = info.hwInstance.getInnerSymAttr().getSymName();
 
       // Use the hwInstance to get the insertion point
@@ -1211,7 +1211,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
         continue;
 
       // Use the target symbol directly from the InstanceChoiceInfo
-      auto instanceMacroRef = FlatSymbolRefAttr::get(info.targetSym);
+      auto instanceMacroRef = info.targetSym;
 
       // Get the inner symbol from the hw::InstanceOp
       auto innerSym = info.hwInstance.getInnerSymAttr();
@@ -1226,7 +1226,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       SmallString<256> errorMessage;
       {
         llvm::raw_svector_ostream os(errorMessage);
-        os << info.targetSym.getValue() << "__must__not__be__set";
+        os << info.targetSym.getAttr().getValue() << "__must__not__be__set";
       }
       auto errorMessageAttr = builder.getStringAttr(errorMessage);
 
@@ -4226,7 +4226,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   }
 
   // Require target_sym to be set before lowering
-  StringAttr targetSym = oldInstanceChoice.getTargetSymAttr();
+  FlatSymbolRefAttr targetSym = oldInstanceChoice.getTargetSymAttr();
   if (!targetSym) {
     oldInstanceChoice->emitOpError(
         "instance choice must have target_sym attribute set before lowering");
