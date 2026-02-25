@@ -811,7 +811,8 @@ FieldRef circt::firrtl::getFieldRefForTarget(const hw::InnerSymTarget &ist) {
 // Return InnerSymAttr with sym on specified fieldID.
 std::pair<hw::InnerSymAttr, StringAttr> circt::firrtl::getOrAddInnerSym(
     MLIRContext *context, hw::InnerSymAttr attr, uint64_t fieldID,
-    llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace) {
+    llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace,
+    StringRef symNameHint) {
   SmallVector<hw::InnerSymPropertiesAttr> props;
   if (attr) {
     // If already present, return it.
@@ -821,7 +822,7 @@ std::pair<hw::InnerSymAttr, StringAttr> circt::firrtl::getOrAddInnerSym(
   }
 
   // Otherwise, create symbol and add to list.
-  auto sym = StringAttr::get(context, getNamespace().newName("sym"));
+  auto sym = StringAttr::get(context, getNamespace().newName(symNameHint));
   props.push_back(hw::InnerSymPropertiesAttr::get(
       context, sym, fieldID, StringAttr::get(context, "public")));
   // TODO: store/ensure always sorted, insert directly, faster search.

@@ -159,7 +159,8 @@ FieldRef getFieldRefForTarget(const hw::InnerSymTarget &ist);
 /// to the specified field.
 std::pair<hw::InnerSymAttr, StringAttr>
 getOrAddInnerSym(MLIRContext *context, hw::InnerSymAttr attr, uint64_t fieldID,
-                 llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace);
+                 llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace,
+                 StringRef symNameHint = "sym");
 
 /// Returns an inner symbol identifier for the specified target (op or port),
 /// adding one if necessary.

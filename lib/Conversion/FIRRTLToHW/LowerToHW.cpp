@@ -243,6 +243,37 @@ struct FIRRTLModuleLowering;
 
 /// This is state shared across the parallel module lowering logic.
 struct CircuitLoweringState {
+  /// Information about an instance choice for a specific option case.
+  struct InstanceChoiceInfo {
+    StringAttr optionName;
+    StringAttr caseName;
+    StringAttr parentModule;
+    StringAttr instanceName;
+    StringAttr instanceMacroName; // The macro name for this instance choice
+    StringAttr caseInnerSymName;  // Inner symbol of the case-specific instance
+    StringAttr targetModule;
+  };
+
+  /// Key for grouping instance choices by module and option case.
+  struct InstanceChoiceKey {
+    StringAttr parentModule;
+    StringAttr optionName;
+    StringAttr caseName;
+
+    bool operator==(const InstanceChoiceKey &other) const {
+      return parentModule == other.parentModule &&
+             optionName == other.optionName && caseName == other.caseName;
+    }
+
+    bool operator<(const InstanceChoiceKey &other) const {
+      if (parentModule.getValue() != other.parentModule.getValue())
+        return parentModule.getValue() < other.parentModule.getValue();
+      if (optionName.getValue() != other.optionName.getValue())
+        return optionName.getValue() < other.optionName.getValue();
+      return caseName.getValue() < other.caseName.getValue();
+    }
+  };
+
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
   std::atomic<bool> usedAssertVerboseCond{false};
@@ -465,34 +496,24 @@ private:
     macroDeclNames.insert(name);
   }
 
-  /// Information about an instance choice for a specific option case.
-  struct InstanceChoiceInfo {
-    StringAttr optionName;
-    StringAttr caseName;
-    StringAttr parentModule;
-    StringAttr instanceName;
-    StringAttr instanceInnerSymName;
-    StringAttr targetModule;
-  };
-
   /// Map from (parentModule, optionName, caseName) to list of instance choices.
   /// This grouping allows us to generate one include file per module per option
   /// case without re-parsing strings.
-  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>,
-           SmallVector<InstanceChoiceInfo>>
+  DenseMap<InstanceChoiceKey, SmallVector<InstanceChoiceInfo>>
       instanceChoicesByModuleAndCase;
   std::mutex instanceChoicesMutex;
 
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule,
                                 StringAttr instanceName,
-                                StringAttr instanceInnerSymName,
+                                StringAttr instanceMacroName,
+                                StringAttr caseInnerSymName,
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
-    auto key = std::make_tuple(parentModule, optionName, caseName);
+    InstanceChoiceKey key{parentModule, optionName, caseName};
     instanceChoicesByModuleAndCase[key].push_back(
-        {optionName, caseName, parentModule, instanceName, instanceInnerSymName,
-         targetModule});
+        {optionName, caseName, parentModule, instanceName, instanceMacroName,
+         caseInnerSymName, targetModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -590,6 +611,38 @@ private:
   llvm::StringMap<emit::FileOp> emitFilesByFileName;
   llvm::sys::SmartMutex<true> emitFilesMutex;
 };
+
+} // namespace
+
+// Provide DenseMapInfo for InstanceChoiceKey
+namespace llvm {
+template <>
+struct DenseMapInfo<CircuitLoweringState::InstanceChoiceKey> {
+  using Key = CircuitLoweringState::InstanceChoiceKey;
+  using StringAttrInfo = DenseMapInfo<mlir::StringAttr>;
+
+  static Key getEmptyKey() {
+    return {StringAttrInfo::getEmptyKey(), StringAttrInfo::getEmptyKey(),
+            StringAttrInfo::getEmptyKey()};
+  }
+
+  static Key getTombstoneKey() {
+    return {StringAttrInfo::getTombstoneKey(),
+            StringAttrInfo::getTombstoneKey(),
+            StringAttrInfo::getTombstoneKey()};
+  }
+
+  static unsigned getHashValue(const Key &key) {
+    return llvm::hash_combine(StringAttrInfo::getHashValue(key.parentModule),
+                              StringAttrInfo::getHashValue(key.optionName),
+                              StringAttrInfo::getHashValue(key.caseName));
+  }
+
+  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
+};
+} // namespace llvm
+
+namespace {
 
 void CircuitLoweringState::processRemainingAnnotations(
     Operation *op, const AnnotationSet &annoSet) {
@@ -1047,25 +1100,18 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
   CircuitNamespace circuitNamespace(circuit);
 
   // Sort keys to ensure deterministic output order
-  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>> sortedKeys;
+  SmallVector<CircuitLoweringState::InstanceChoiceKey> sortedKeys;
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase)
     sortedKeys.push_back(key);
-  llvm::sort(sortedKeys, [](const auto &a, const auto &b) {
-    // Sort by (moduleName, optionName, caseName)
-    auto [aModule, aOption, aCase] = a;
-    auto [bModule, bOption, bCase] = b;
-    if (aModule.getValue() != bModule.getValue())
-      return aModule.getValue() < bModule.getValue();
-    if (aOption.getValue() != bOption.getValue())
-      return aOption.getValue() < bOption.getValue();
-    return aCase.getValue() < bCase.getValue();
-  });
+  llvm::sort(sortedKeys);
 
   // Emit one include file for each module and option case combination
   for (auto &key : sortedKeys) {
     auto &instances = state.instanceChoicesByModuleAndCase[key];
     // Extract module name, option name, and case name from the key
-    auto [moduleName, optionName, caseName] = key;
+    auto moduleName = key.parentModule;
+    auto optionName = key.optionName;
+    auto caseName = key.caseName;
 
     // Filename format: targets_<Module>_<Option>_<Case>.svh
     SmallString<128> includeFileName;
@@ -1119,28 +1165,20 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
     // Emit instance name macros for all instances in this module
     for (auto &info : instances) {
-      // Macro name format: __target_<Option>_<module>_<instance>
-      SmallString<128> instanceMacro;
-      {
-        llvm::raw_svector_ostream mos(instanceMacro);
-        mos << "__target_" << optionName.getValue() << "_"
-            << info.parentModule.getValue() << "_"
-            << info.instanceName.getValue();
-      }
-
-      auto instanceMacroAttr = builder.getStringAttr(instanceMacro);
+      // Use the macro name that was generated during instance lowering
+      auto instanceMacroAttr = info.instanceMacroName;
       auto instanceMacroRef = FlatSymbolRefAttr::get(instanceMacroAttr);
 
       // Error checking: macro must not already be set
-      // `ifdef __target_<Option>_<module>_<instance>
-      //  `ERROR__target_<Option>_<module>_<instance>__must__not__be__set
+      // `ifdef <instanceMacroName>
+      //  `ERROR<instanceMacroName>__must__not__be__set
       // `else
-      //  `define __target_<Option>_<module>_<instance> <InnerSymName>
+      //  `define <instanceMacroName> <InnerRefAttr>
       // `endif
       SmallString<256> errorMessage;
       {
         llvm::raw_svector_ostream os(errorMessage);
-        os << instanceMacro << "__must__not__be__set";
+        os << instanceMacroAttr.getValue() << "__must__not__be__set";
       }
       auto errorMessageAttr = builder.getStringAttr(errorMessage);
 
@@ -1155,7 +1193,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
           [&]() {
             SmallVector<Attribute> attrs;
             attrs.push_back(hw::InnerRefAttr::get(info.parentModule,
-                                                  info.instanceInnerSymName));
+                                                  info.caseInnerSymName));
             auto attr = ArrayAttr::get(&getContext(), attrs);
             sv::MacroDefOp::create(builder, circuit.getLoc(), instanceMacroRef,
                                    builder.getStringAttr("{{0}}"), attr);
@@ -4184,20 +4222,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Get the Option name (e.g., "Platform")
   auto optionName = oldInstanceChoice.getOptionNameAttr();
 
-  // Generate a macro name for the target
-  // Format: __target_<Option>_<module>_<instance>
-  SmallString<128> macroName;
-  {
-    llvm::raw_svector_ostream os(macroName);
-    os << "__target_" << optionName.getValue() << "_" << theModule.getName()
-       << "_" << oldInstanceChoice.getInstanceName();
-  }
-  auto macroNameAttr = builder.getStringAttr(macroName);
-  auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
-
-  // Add macro declaration
-  circuitState.addMacroDecl(macroNameAttr);
-
   // Pre-create inner symbols for all instances (default + all cases)
   // Index 0 is for the default, index i+1 is for caseNames[i]
   SmallVector<hw::InnerSymAttr> instanceInnerSyms;
@@ -4207,10 +4231,26 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     StringAttr innerSymName;
     std::tie(innerSym, innerSymName) = getOrAddInnerSym(
         oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
-        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
+        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; },
+        oldInstanceChoice.getInstanceName());
     instanceInnerSyms.push_back(innerSym);
     instanceInnerSymNames.push_back(innerSymName);
   }
+
+  // Generate a macro name for the target
+  // Format: __target_<Option>_<module>_<innerSymName>
+  // Use the default instance's inner symbol name for uniqueness
+  SmallString<128> macroName;
+  {
+    llvm::raw_svector_ostream os(macroName);
+    os << "__target_" << optionName.getValue() << "_" << theModule.getName()
+       << "_" << instanceInnerSymNames[0].getValue();
+  }
+  auto macroNameAttr = builder.getStringAttr(macroName);
+  auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
+
+  // Add macro declaration
+  circuitState.addMacroDecl(macroNameAttr);
 
   // Define the macro to the default instance's inner symbol name
   addToIfDefBlock(
@@ -4233,8 +4273,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
     circuitState.addInstanceChoiceForCase(
         optionName, caseName, theModule.getNameAttr(),
-        oldInstanceChoice.getInstanceNameAttr(), instanceInnerSymNames[i + 1],
-        targetModuleRef.getAttr());
+        oldInstanceChoice.getInstanceNameAttr(), macroNameAttr,
+        instanceInnerSymNames[i + 1], targetModuleRef.getAttr());
   }
 
   // Lambda to create an instance for a given module and assign outputs to wires
