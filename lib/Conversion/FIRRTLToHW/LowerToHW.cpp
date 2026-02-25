@@ -1099,47 +1099,12 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
   CircuitNamespace circuitNamespace(circuit);
 
   // Collect all instance choices to generate globally unique macro names
-  // Map from hw::InstanceOp to its macro name
-  DenseMap<Operation *, StringAttr> instanceToMacroName;
+  // Map from (parentModule, optionName, instanceName) to macro name
+  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>, StringAttr> instanceChoiceToMacroName;
 
-  // First pass: generate macro names for all instances with global scope awareness
-  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
-    auto optionName = key.optionName;
-    for (auto &info : instances) {
-      if (!info.hwInstance)
-        continue;
-
-      // Generate a globally unique macro name for the target
-      // Format: __target_<Option>_<module>_<instance>
-      // Use the hw::InstanceOp's inner symbol for uniqueness
-      auto innerSym = info.hwInstance.getInnerSymAttr();
-      if (!innerSym)
-        continue;
-
-      SmallString<128> macroName;
-      {
-        llvm::raw_svector_ostream os(macroName);
-        os << "__target_" << optionName.getValue() << "_"
-           << info.parentModule.getValue() << "_"
-           << innerSym.getSymName().getValue();
-      }
-
-      // Use CircuitNamespace to ensure global uniqueness
-      auto uniqueMacroName = circuitNamespace.newName(macroName);
-      auto macroNameAttr = builder.getStringAttr(uniqueMacroName);
-      instanceToMacroName[info.hwInstance] = macroNameAttr;
-
-      // Add macro declaration
-      state.addMacroDecl(macroNameAttr);
-    }
-  }
-
-  // Second pass: generate inline macro definitions
-  // For each unique (parentModule, optionName, instanceName), we generate one inline macro
-  // that points to the default instance (which has the "_default" suffix)
-  // Track which instance choices we've already processed
+  // First pass: generate macro names for all instance choices with global scope awareness
+  // We generate one macro per unique (parentModule, optionName, instanceName) tuple
   DenseSet<std::tuple<StringAttr, StringAttr, StringAttr>> processedInstanceChoices;
-  DenseMap<StringAttr, SmallVector<std::tuple<StringAttr, StringAttr, Location>>> macrosByModule;
 
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
     for (auto &info : instances) {
@@ -1149,65 +1114,27 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
       processedInstanceChoices.insert(instanceKey);
 
-      // Find the macro name for this instance choice
-      // We use the first case instance to determine the macro name pattern
-      if (!info.hwInstance)
-        continue;
-
-      auto it = instanceToMacroName.find(info.hwInstance);
-      if (it == instanceToMacroName.end())
-        continue;
-
-      auto macroName = it->second;
-      macrosByModule[info.parentModule].push_back({macroName, info.instanceName, info.hwInstance.getLoc()});
-    }
-  }
-
-  // Insert inline macro definitions into each parent module
-  for (auto &[moduleName, macros] : macrosByModule) {
-    // Find the hw::HWModuleOp for this module
-    hw::HWModuleOp hwModule = nullptr;
-    for (auto &[oldMod, newMod] : state.oldToNewModuleMap) {
-      if (auto mod = dyn_cast<hw::HWModuleOp>(newMod)) {
-        if (mod.getNameAttr() == moduleName) {
-          hwModule = mod;
-          break;
-        }
+      // Generate a globally unique macro name for the target
+      // Format: __target_<Option>_<module>_<instance>
+      SmallString<128> macroName;
+      {
+        llvm::raw_svector_ostream os(macroName);
+        os << "__target_" << key.optionName.getValue() << "_"
+           << info.parentModule.getValue() << "_"
+           << info.instanceName.getValue();
       }
-    }
 
-    if (!hwModule)
-      continue;
+      // Use CircuitNamespace to ensure global uniqueness
+      auto uniqueMacroName = circuitNamespace.newName(macroName);
+      auto macroNameAttr = builder.getStringAttr(uniqueMacroName);
+      instanceChoiceToMacroName[instanceKey] = macroNameAttr;
 
-    // Insert macro definitions at the beginning of the module body
-    OpBuilder modBuilder(&getContext());
-    modBuilder.setInsertionPointToStart(hwModule.getBodyBlock());
-
-    for (auto &[macroName, instanceName, loc] : macros) {
-      auto macroRef = FlatSymbolRefAttr::get(macroName);
-
-      // The default instance has the "_default" suffix
-      SmallString<64> defaultInstName;
-      defaultInstName = instanceName.getValue();
-      defaultInstName += "_default";
-      auto defaultInstSymName = modBuilder.getStringAttr(defaultInstName);
-
-      // Define the macro to the default instance's inner symbol name
-      // `ifndef <macroName>
-      //  `define <macroName> <InnerRefAttr>
-      // `endif
-      sv::IfDefOp::create(
-          modBuilder, loc, macroRef,
-          /*thenCtor=*/[&]() {},
-          /*elseCtor=*/
-          [&]() {
-            auto array = modBuilder.getArrayAttr({hw::InnerRefAttr::get(
-                moduleName, defaultInstSymName)});
-            sv::MacroDefOp::create(modBuilder, loc, macroRef,
-                                   modBuilder.getStringAttr("{{0}}"), array);
-          });
+      // Add macro declaration
+      state.addMacroDecl(macroNameAttr);
     }
   }
+
+
 
   // Sort keys to ensure deterministic output order
   SmallVector<CircuitLoweringState::InstanceChoiceKey> sortedKeys;
@@ -1279,8 +1206,9 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
         continue;
 
       // Get the globally unique macro name generated in the first pass
-      auto it = instanceToMacroName.find(info.hwInstance);
-      if (it == instanceToMacroName.end())
+      auto instanceKey = std::make_tuple(info.parentModule, key.optionName, info.instanceName);
+      auto it = instanceChoiceToMacroName.find(instanceKey);
+      if (it == instanceChoiceToMacroName.end())
         continue;
 
       auto instanceMacroAttr = it->second;
@@ -4359,9 +4287,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     instanceInnerSymNames.push_back(innerSymName);
   }
 
-  // Store hw::InstanceOp references for each case to generate macros later
-  // in post-processing with global scope awareness
-  SmallVector<hw::InstanceOp> caseInstances;
+
 
   // Lambda to create an instance for a given module and assign outputs to wires
   // Takes the inner symbol to use for this instance and returns the created instance
@@ -4436,7 +4362,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   for (const auto &name : macroNames)
     macroNameRefs.push_back(name);
 
-  // Use the helper function to create nested ifdefs and capture instances
+  // Use the helper function to create nested ifdefs and register instances
   sv::createNestedIfDefs(
       macroNameRefs,
       /*ifdefCtor=*/
@@ -4450,26 +4376,22 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
             altModules[index],
             cast<SymbolRefAttr>(caseNames[index]).getLeafReference().getValue(),
             instanceInnerSyms[index + 1]);
-        caseInstances.push_back(inst);
+
+        // Register instance choice information for global include file generation
+        // Macros will be generated in post-processing with global scope awareness
+        auto caseSymRef = cast<SymbolRefAttr>(caseNames[index]);
+        auto caseName = caseSymRef.getLeafReference();
+        auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[index + 1]);
+
+        circuitState.addInstanceChoiceForCase(
+            optionName, caseName, theModule.getNameAttr(),
+            oldInstanceChoice.getInstanceNameAttr(), inst,
+            targetModuleRef.getAttr());
       },
       /*defaultCtor=*/
       [&]() {
         createInstanceAndAssign(defaultModule, "default", instanceInnerSyms[0]);
       });
-
-  // Register instance choice information for global include file generation
-  // This will emit one include file per option case (e.g., Platform_FPGA.svh)
-  // Macros will be generated in post-processing with global scope awareness
-  for (size_t i = 0; i < caseNames.size(); ++i) {
-    auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]);
-    auto caseName = caseSymRef.getLeafReference();
-    auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
-
-    circuitState.addInstanceChoiceForCase(
-        optionName, caseName, theModule.getNameAttr(),
-        oldInstanceChoice.getInstanceNameAttr(), caseInstances[i],
-        targetModuleRef.getAttr());
-  }
 
   return success();
 }
