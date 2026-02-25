@@ -56,5 +56,38 @@ def ConstructLEC : Pass<"construct-lec", "::mlir::ModuleOp"> {
   ];
 }
 
-#endif // CIRCT_TOOLS_CIRCT_LEC_PASSES_TD
+def VerifyNativeSCA : Pass<"verify-native-sca", "::mlir::ModuleOp"> {
+  let summary = "Verify two hw.modules by native polynomial rewriting";
+  let description = [{
+    Verifies equivalence of two `hw.module` operations using native algebraic
+    backward rewriting over integer polynomials with Boolean variables.
 
+    This pass is intended as an alternative to SMT and Gröbner-basis based
+    checks for arithmetic-heavy circuits.
+  }];
+
+  let options = [
+    Option<"firstModule", "first-module", "std::string",
+           /*default=*/"",
+           "Name of the first module to compare (reference/spec).">,
+    Option<"secondModule", "second-module", "std::string",
+           /*default=*/"",
+           "Name of the second module to compare (implementation).">,
+    Option<"maxTerms", "max-terms", "uint64_t",
+           /*default=*/"500000",
+           "Maximum number of residual polynomial terms before giving up.">,
+    Option<"maxDegree", "max-degree", "uint32_t",
+           /*default=*/"64",
+           "Maximum polynomial degree before giving up.">,
+    Option<"maxSteps", "max-steps", "uint64_t",
+           /*default=*/"2000000",
+           "Maximum rewrite steps before giving up.">
+  ];
+
+  let dependentDialects = [
+    "circt::hw::HWDialect", "circt::comb::CombDialect",
+    "circt::datapath::DatapathDialect", "circt::verif::VerifDialect"
+  ];
+}
+
+#endif // CIRCT_TOOLS_CIRCT_LEC_PASSES_TD

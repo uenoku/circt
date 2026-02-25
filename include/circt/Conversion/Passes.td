@@ -910,7 +910,7 @@ def ConvertDatapathToComb : Pass<"convert-datapath-to-comb"> {
   let summary = "Convert Datapath ops to Comb ops";
     let dependentDialects = [
     "circt::comb::CombDialect", "circt::datapath::DatapathDialect",
-    "circt::hw::HWDialect"
+    "circt::hw::HWDialect", "circt::verif::VerifDialect"
   ];
   let options = [
     Option<"lowerCompressToAdd", "lower-compress-to-add", "bool", "false",
@@ -918,7 +918,9 @@ def ConvertDatapathToComb : Pass<"convert-datapath-to-comb"> {
     Option<"forceBooth", "lower-partial-product-to-booth", "bool", "false",
            "Force all partial products to be lowered to Booth arrays.">,
     Option<"timingAware", "timing-aware", "bool", "false",
-           "Use timing-aware compressor synthesis algorithm.">
+           "Use timing-aware compressor synthesis algorithm.">,
+    Option<"emitPolyProbes", "emit-poly-probes", "bool", "false",
+           "Emit verif.poly_probe operations for lowered datapath values.">
   ];
 }
 

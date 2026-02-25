@@ -11,6 +11,7 @@
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Verif/VerifOps.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -19,6 +20,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include <algorithm>
+#include <optional>
 
 #define DEBUG_TYPE "datapath-to-comb"
 
@@ -37,6 +39,33 @@ static SmallVector<Value> extractBits(OpBuilder &builder, Value val) {
   return bits;
 }
 
+static constexpr StringLiteral kPolyOriginIDAttr = "verif.poly_origin_id";
+
+static std::optional<int64_t> getPolyOriginID(Operation *op) {
+  if (auto attr = op->getAttrOfType<IntegerAttr>(kPolyOriginIDAttr))
+    return attr.getInt();
+  return std::nullopt;
+}
+
+static IntegerAttr optI64(PatternRewriter &rewriter,
+                          std::optional<int64_t> value) {
+  if (!value)
+    return {};
+  return rewriter.getI64IntegerAttr(*value);
+}
+
+static void
+emitPolyProbe(PatternRewriter &rewriter, Location loc, Value value,
+              StringRef origin, StringRef role, std::optional<int64_t> originID,
+              std::optional<int64_t> inputIdx, std::optional<int64_t> resultIdx,
+              std::optional<int64_t> bitIdx, std::optional<int64_t> stage) {
+  rewriter.create<verif::PolyProbeOp>(
+      loc, value, rewriter.getStringAttr(origin), rewriter.getStringAttr(role),
+      optI64(rewriter, originID), optI64(rewriter, inputIdx),
+      optI64(rewriter, resultIdx), optI64(rewriter, bitIdx),
+      optI64(rewriter, stage));
+}
+
 //===----------------------------------------------------------------------===//
 // Conversion patterns
 //===----------------------------------------------------------------------===//
@@ -46,7 +75,9 @@ namespace {
 // compress(a,b,c,d) -> {a+b+c+d, 0}
 // Facilitates use of downstream compression algorithms e.g. Yosys
 struct DatapathCompressOpAddConversion : mlir::OpRewritePattern<CompressOp> {
-  using mlir::OpRewritePattern<CompressOp>::OpRewritePattern;
+  DatapathCompressOpAddConversion(MLIRContext *context, bool emitProbes)
+      : mlir::OpRewritePattern<CompressOp>(context), emitProbes(emitProbes) {}
+
   LogicalResult
   matchAndRewrite(CompressOp op,
                   mlir::PatternRewriter &rewriter) const override {
@@ -59,16 +90,33 @@ struct DatapathCompressOpAddConversion : mlir::OpRewritePattern<CompressOp> {
     auto zeroOp = hw::ConstantOp::create(rewriter, loc, APInt(width, 0));
     SmallVector<Value> results(op.getNumResults() - 1, zeroOp);
     results.push_back(addOp);
+
+    if (emitProbes) {
+      auto originID = getPolyOriginID(op.getOperation());
+      for (auto [idx, input] : llvm::enumerate(inputs))
+        emitPolyProbe(rewriter, loc, input, "compress", "input", originID,
+                      static_cast<int64_t>(idx), std::nullopt, std::nullopt,
+                      std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(results))
+        emitPolyProbe(rewriter, loc, result, "compress", "output", originID,
+                      std::nullopt, static_cast<int64_t>(idx), std::nullopt,
+                      std::nullopt);
+    }
+
     rewriter.replaceOp(op, results);
     return success();
   }
+
+  const bool emitProbes;
 };
 
 // Replace compressor by a wallace tree of full-adders
 struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
   DatapathCompressOpConversion(MLIRContext *context,
-                               synth::IncrementalLongestPathAnalysis *analysis)
-      : mlir::OpRewritePattern<CompressOp>(context), analysis(analysis) {}
+                               synth::IncrementalLongestPathAnalysis *analysis,
+                               bool emitProbes)
+      : mlir::OpRewritePattern<CompressOp>(context), analysis(analysis),
+        emitProbes(emitProbes) {}
 
   LogicalResult
   matchAndRewrite(CompressOp op,
@@ -94,21 +142,39 @@ struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
         return failure();
     }
 
-    rewriter.replaceOp(op, comp.compressToHeight(rewriter, targetAddends));
+    auto lowered = comp.compressToHeight(rewriter, targetAddends);
+
+    if (emitProbes) {
+      auto originID = getPolyOriginID(op.getOperation());
+      for (auto [idx, input] : llvm::enumerate(inputs))
+        emitPolyProbe(rewriter, loc, input, "compress", "input", originID,
+                      static_cast<int64_t>(idx), std::nullopt, std::nullopt,
+                      std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(lowered))
+        emitPolyProbe(rewriter, loc, result, "compress", "output", originID,
+                      std::nullopt, static_cast<int64_t>(idx), std::nullopt,
+                      std::nullopt);
+    }
+
+    rewriter.replaceOp(op, lowered);
     return success();
   }
 
 private:
   synth::IncrementalLongestPathAnalysis *analysis = nullptr;
+  bool emitProbes = false;
 };
 
 struct DatapathPartialProductOpConversion : OpRewritePattern<PartialProductOp> {
   using OpRewritePattern<PartialProductOp>::OpRewritePattern;
 
-  DatapathPartialProductOpConversion(MLIRContext *context, bool forceBooth)
-      : OpRewritePattern<PartialProductOp>(context), forceBooth(forceBooth){};
+  DatapathPartialProductOpConversion(MLIRContext *context, bool forceBooth,
+                                     bool emitProbes)
+      : OpRewritePattern<PartialProductOp>(context), forceBooth(forceBooth),
+        emitProbes(emitProbes){};
 
   const bool forceBooth;
+  const bool emitProbes;
 
   LogicalResult matchAndRewrite(PartialProductOp op,
                                 PatternRewriter &rewriter) const override {
@@ -136,20 +202,24 @@ struct DatapathPartialProductOpConversion : OpRewritePattern<PartialProductOp> {
     // a2a3    0   a2    0    0    0    0
     //   a3    0    0    0    0    0    0
     if (a == b)
-      return lowerSqrAndArray(rewriter, a, op, width);
+      return lowerSqrAndArray(rewriter, a, op, width, emitProbes,
+                              getPolyOriginID(op.getOperation()));
 
     // Use result rows as a heuristic to guide partial product
     // implementation
     if (op.getNumResults() > 16 || forceBooth)
-      return lowerBoothArray(rewriter, a, b, op, width);
+      return lowerBoothArray(rewriter, a, b, op, width, emitProbes,
+                             getPolyOriginID(op.getOperation()));
     else
-      return lowerAndArray(rewriter, a, b, op, width);
+      return lowerAndArray(rewriter, a, b, op, width, emitProbes,
+                           getPolyOriginID(op.getOperation()));
   }
 
 private:
   static LogicalResult lowerAndArray(PatternRewriter &rewriter, Value a,
                                      Value b, PartialProductOp op,
-                                     unsigned width) {
+                                     unsigned width, bool emitProbes,
+                                     std::optional<int64_t> originID) {
 
     Location loc = op.getLoc();
     // Keep a as a bitvector - multiply by each digit of b
@@ -195,11 +265,25 @@ private:
     }
 
     rewriter.replaceOp(op, partialProducts);
+
+    if (emitProbes) {
+      emitPolyProbe(rewriter, loc, a, "partial_product", "input", originID, 0,
+                    std::nullopt, std::nullopt, std::nullopt);
+      emitPolyProbe(rewriter, loc, b, "partial_product", "input", originID, 1,
+                    std::nullopt, std::nullopt, std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(partialProducts))
+        emitPolyProbe(rewriter, loc, result, "partial_product", "output",
+                      originID, std::nullopt, static_cast<int64_t>(idx),
+                      std::nullopt, std::nullopt);
+    }
+
     return success();
   }
 
   static LogicalResult lowerSqrAndArray(PatternRewriter &rewriter, Value a,
-                                        PartialProductOp op, unsigned width) {
+                                        PartialProductOp op, unsigned width,
+                                        bool emitProbes,
+                                        std::optional<int64_t> originID) {
 
     Location loc = op.getLoc();
     SmallVector<Value> aBits = extractBits(rewriter, a);
@@ -259,12 +343,25 @@ private:
     }
 
     rewriter.replaceOp(op, partialProducts);
+
+    if (emitProbes) {
+      emitPolyProbe(rewriter, loc, a, "partial_product", "input", originID, 0,
+                    std::nullopt, std::nullopt, std::nullopt);
+      emitPolyProbe(rewriter, loc, a, "partial_product", "input", originID, 1,
+                    std::nullopt, std::nullopt, std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(partialProducts))
+        emitPolyProbe(rewriter, loc, result, "partial_product", "output",
+                      originID, std::nullopt, static_cast<int64_t>(idx),
+                      std::nullopt, std::nullopt);
+    }
+
     return success();
   }
 
   static LogicalResult lowerBoothArray(PatternRewriter &rewriter, Value a,
                                        Value b, PartialProductOp op,
-                                       unsigned width) {
+                                       unsigned width, bool emitProbes,
+                                       std::optional<int64_t> originID) {
     Location loc = op.getLoc();
     auto zeroFalse = hw::ConstantOp::create(rewriter, loc, APInt(1, 0));
     auto zeroWidth = hw::ConstantOp::create(rewriter, loc, APInt(width, 0));
@@ -430,6 +527,18 @@ private:
            "Expected number of booth partial products to match results");
 
     rewriter.replaceOp(op, partialProducts);
+
+    if (emitProbes) {
+      emitPolyProbe(rewriter, loc, a, "partial_product", "input", originID, 0,
+                    std::nullopt, std::nullopt, std::nullopt);
+      emitPolyProbe(rewriter, loc, b, "partial_product", "input", originID, 1,
+                    std::nullopt, std::nullopt, std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(partialProducts))
+        emitPolyProbe(rewriter, loc, result, "partial_product", "output",
+                      originID, std::nullopt, static_cast<int64_t>(idx),
+                      std::nullopt, std::nullopt);
+    }
+
     return success();
   }
 };
@@ -438,11 +547,13 @@ struct DatapathPosPartialProductOpConversion
     : OpRewritePattern<PosPartialProductOp> {
   using OpRewritePattern<PosPartialProductOp>::OpRewritePattern;
 
-  DatapathPosPartialProductOpConversion(MLIRContext *context, bool forceBooth)
-      : OpRewritePattern<PosPartialProductOp>(context),
-        forceBooth(forceBooth){};
+  DatapathPosPartialProductOpConversion(MLIRContext *context, bool forceBooth,
+                                        bool emitProbes)
+      : OpRewritePattern<PosPartialProductOp>(context), forceBooth(forceBooth),
+        emitProbes(emitProbes){};
 
   const bool forceBooth;
+  const bool emitProbes;
 
   LogicalResult matchAndRewrite(PosPartialProductOp op,
                                 PatternRewriter &rewriter) const override {
@@ -459,13 +570,15 @@ struct DatapathPosPartialProductOpConversion
     }
 
     // TODO: Implement Booth lowering
-    return lowerAndArray(rewriter, a, b, c, op, width);
+    return lowerAndArray(rewriter, a, b, c, op, width, emitProbes,
+                         getPolyOriginID(op.getOperation()));
   }
 
 private:
   static LogicalResult lowerAndArray(PatternRewriter &rewriter, Value a,
                                      Value b, Value c, PosPartialProductOp op,
-                                     unsigned width) {
+                                     unsigned width, bool emitProbes,
+                                     std::optional<int64_t> originID) {
 
     Location loc = op.getLoc();
     // Encode (a+b) by implementing a half-adder - then note the following
@@ -541,6 +654,20 @@ private:
     }
 
     rewriter.replaceOp(op, partialProducts);
+
+    if (emitProbes) {
+      emitPolyProbe(rewriter, loc, a, "pos_partial_product", "input", originID,
+                    0, std::nullopt, std::nullopt, std::nullopt);
+      emitPolyProbe(rewriter, loc, b, "pos_partial_product", "input", originID,
+                    1, std::nullopt, std::nullopt, std::nullopt);
+      emitPolyProbe(rewriter, loc, c, "pos_partial_product", "input", originID,
+                    2, std::nullopt, std::nullopt, std::nullopt);
+      for (auto [idx, result] : llvm::enumerate(partialProducts))
+        emitPolyProbe(rewriter, loc, result, "pos_partial_product", "output",
+                      originID, std::nullopt, static_cast<int64_t>(idx),
+                      std::nullopt, std::nullopt);
+    }
+
     return success();
   }
 };
@@ -582,18 +709,31 @@ static LogicalResult applyPatternsGreedilyWithTimingInfo(
 void ConvertDatapathToCombPass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
 
+  if (emitPolyProbes) {
+    int64_t nextID = 0;
+    getOperation()->walk([&](Operation *op) {
+      if (isa<datapath::CompressOp, datapath::PartialProductOp,
+              datapath::PosPartialProductOp>(op))
+        op->setAttr(
+            kPolyOriginIDAttr,
+            IntegerAttr::get(IntegerType::get(op->getContext(), 64), nextID++));
+    });
+  }
+
   patterns.add<DatapathPartialProductOpConversion,
-               DatapathPosPartialProductOpConversion>(patterns.getContext(),
-                                                      forceBooth);
+               DatapathPosPartialProductOpConversion>(
+      patterns.getContext(), forceBooth, emitPolyProbes);
   synth::IncrementalLongestPathAnalysis *analysis = nullptr;
   if (timingAware)
     analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
   if (lowerCompressToAdd)
     // Lower compressors to simple add operations for downstream optimisations
-    patterns.add<DatapathCompressOpAddConversion>(patterns.getContext());
+    patterns.add<DatapathCompressOpAddConversion>(patterns.getContext(),
+                                                  emitPolyProbes);
   else
     // Lower compressors to a complete gate-level implementation
-    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), analysis);
+    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), analysis,
+                                               emitPolyProbes);
 
   if (failed(applyPatternsGreedilyWithTimingInfo(
           getOperation(), std::move(patterns), analysis)))

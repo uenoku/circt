@@ -26,7 +26,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -35,6 +37,14 @@ using namespace circt;
 using namespace mlir;
 
 namespace {
+
+static std::string powerOfTwo(unsigned bit) {
+  llvm::APInt value(/*numBits=*/bit + 1, 1);
+  value = value.shl(bit);
+  llvm::SmallString<32> text;
+  value.toStringUnsigned(text);
+  return std::string(text);
+}
 
 /// Maps each SSA Value to a vector of variable names, one per bit.
 using BitVarMap = llvm::DenseMap<Value, SmallVector<std::string>>;
@@ -115,16 +125,20 @@ private:
   static std::string wordPoly(ArrayRef<std::string> bits) {
     std::string result;
     llvm::raw_string_ostream ss(result);
+    bool first = true;
     for (unsigned i = 0; i < bits.size(); ++i) {
-      if (i > 0)
-        ss << "+";
       if (bits[i] == "0")
         continue;
+      if (!first)
+        ss << "+";
       if (i == 0)
         ss << bits[i];
       else
-        ss << llvm::formatv("{0}*{1}", (1ULL << i), bits[i]);
+        ss << llvm::formatv("{0}*{1}", powerOfTwo(i), bits[i]);
+      first = false;
     }
+    if (first)
+      ss << "0";
     return result;
   }
 
@@ -170,10 +184,10 @@ LogicalResult ModuleEncoder::processOp(Operation *op) {
             newVars.push_back(gateVar);
             allVars.push_back(gateVar);
             booleanVars.push_back(gateVar);
-            gatePolynomials.push_back(
-                llvm::formatv("{0}-({1}+{2}-2*{1}*{2})", gateVar,
-                              currentVars[i], nextVars[i])
-                    .str());
+            gatePolynomials.push_back(llvm::formatv("{0}-({1}+{2}-2*{1}*{2})",
+                                                    gateVar, currentVars[i],
+                                                    nextVars[i])
+                                          .str());
           }
           currentVars = std::move(newVars);
         }
@@ -193,10 +207,10 @@ LogicalResult ModuleEncoder::processOp(Operation *op) {
             newVars.push_back(gateVar);
             allVars.push_back(gateVar);
             booleanVars.push_back(gateVar);
-            gatePolynomials.push_back(
-                llvm::formatv("{0}-({1}+{2}-{1}*{2})", gateVar,
-                              currentVars[i], nextVars[i])
-                    .str());
+            gatePolynomials.push_back(llvm::formatv("{0}-({1}+{2}-{1}*{2})",
+                                                    gateVar, currentVars[i],
+                                                    nextVars[i])
+                                          .str());
           }
           currentVars = std::move(newVars);
         }
@@ -283,8 +297,7 @@ LogicalResult ModuleEncoder::processOp(Operation *op) {
             ss << "(" << wordPoly(getBitVarsFor(input)) << ")";
           }
         }
-        gatePolynomials.push_back(
-            llvm::formatv("({0})-({1})", lhs, rhs).str());
+        gatePolynomials.push_back(llvm::formatv("({0})-({1})", lhs, rhs).str());
         return success();
       })
       .Case<datapath::PartialProductOp>([&](auto ppOp) {
@@ -301,15 +314,15 @@ LogicalResult ModuleEncoder::processOp(Operation *op) {
             ss << "(" << wordPoly(getBitVarsFor(result)) << ")";
           }
         }
-        std::string rhs = llvm::formatv(
-            "({0})*({1})", wordPoly(getBitVarsFor(ppOp.getLhs())),
-            wordPoly(getBitVarsFor(ppOp.getRhs())));
-        gatePolynomials.push_back(
-            llvm::formatv("({0})-({1})", lhs, rhs).str());
+        std::string rhs =
+            llvm::formatv("({0})*({1})", wordPoly(getBitVarsFor(ppOp.getLhs())),
+                          wordPoly(getBitVarsFor(ppOp.getRhs())));
+        gatePolynomials.push_back(llvm::formatv("({0})-({1})", lhs, rhs).str());
         return success();
       })
       .Case<datapath::PosPartialProductOp>([&](auto pppOp) {
-        // pos_partial_product: sum of outputs == (addend0 + addend1) * multiplicand
+        // pos_partial_product: sum of outputs == (addend0 + addend1) *
+        // multiplicand
         for (auto result : pppOp.getResults())
           assignFreshBitVars(result);
 
@@ -323,12 +336,10 @@ LogicalResult ModuleEncoder::processOp(Operation *op) {
           }
         }
         std::string rhs = llvm::formatv(
-            "(({0})+({1}))*({2})",
-            wordPoly(getBitVarsFor(pppOp.getAddend0())),
+            "(({0})+({1}))*({2})", wordPoly(getBitVarsFor(pppOp.getAddend0())),
             wordPoly(getBitVarsFor(pppOp.getAddend1())),
             wordPoly(getBitVarsFor(pppOp.getMultiplicand())));
-        gatePolynomials.push_back(
-            llvm::formatv("({0})-({1})", lhs, rhs).str());
+        gatePolynomials.push_back(llvm::formatv("({0})-({1})", lhs, rhs).str());
         return success();
       })
       .Case<hw::OutputOp>([&](auto) { return success(); })
@@ -358,10 +369,10 @@ private:
   buildInputVarNames(hw::HWModuleOp module);
 
   /// Assign shared input variables to a module's block arguments.
-  void assignInputs(
-      ModuleEncoder &encoder, hw::HWModuleOp module,
-      const SmallVector<std::pair<StringRef, SmallVector<std::string>>>
-          &inputVars);
+  void
+  assignInputs(ModuleEncoder &encoder, hw::HWModuleOp module,
+               const SmallVector<std::pair<StringRef, SmallVector<std::string>>>
+                   &inputVars);
 
   /// Emit a word-level polynomial from bit variables.
   static std::string emitWordPoly(ArrayRef<std::string> bits);
@@ -399,14 +410,20 @@ void SCAProofExporter::assignInputs(
 std::string SCAProofExporter::emitWordPoly(ArrayRef<std::string> bits) {
   std::string result;
   llvm::raw_string_ostream ss(result);
+  bool first = true;
   for (unsigned i = 0; i < bits.size(); ++i) {
-    if (i > 0)
+    if (bits[i] == "0")
+      continue;
+    if (!first)
       ss << "+";
     if (i == 0)
       ss << bits[i];
     else
-      ss << llvm::formatv("{0}*{1}", (1ULL << i), bits[i]);
+      ss << llvm::formatv("{0}*{1}", powerOfTwo(i), bits[i]);
+    first = false;
   }
+  if (first)
+    ss << "0";
   return result;
 }
 
@@ -561,11 +578,10 @@ void circt::registerExportSCAProofTranslation() {
       "export-sca-proof",
       "Export two hw.modules as Singular script for SCA equivalence checking",
       [](mlir::ModuleOp module, llvm::raw_ostream &os) -> LogicalResult {
-        SmallVector<hw::HWModuleOp> hwModules(
-            module.getOps<hw::HWModuleOp>());
+        SmallVector<hw::HWModuleOp> hwModules(module.getOps<hw::HWModuleOp>());
         if (hwModules.size() != 2)
           return module.emitError(
-              "expected exactly 2 hw.modules (spec and impl), got ")
+                     "expected exactly 2 hw.modules (spec and impl), got ")
                  << hwModules.size();
         // First module is spec, second is impl.
         return exportSCAProof(hwModules[0], hwModules[1], os);
