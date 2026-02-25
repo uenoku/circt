@@ -246,7 +246,7 @@ struct CircuitLoweringState {
   /// Information about an instance choice for a specific option case.
   struct InstanceChoiceInfo {
     StringAttr optionName;
-    StringAttr caseName;
+    StringAttr caseName; // null for default instance
     StringAttr parentModule;
     StringAttr instanceName;
     hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
@@ -269,6 +269,13 @@ struct CircuitLoweringState {
         return parentModule.getValue() < other.parentModule.getValue();
       if (optionName.getValue() != other.optionName.getValue())
         return optionName.getValue() < other.optionName.getValue();
+      // Handle null caseNames (default instances)
+      if (!caseName && !other.caseName)
+        return false;
+      if (!caseName)
+        return true; // null comes before non-null
+      if (!other.caseName)
+        return false;
       return caseName.getValue() < other.caseName.getValue();
     }
   };
@@ -1152,6 +1159,49 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     state.addMacroDecl(macroNameAttr);
   }
 
+  // Insert inline macro definitions into module bodies
+  // For each default instance (caseName is null), insert an ifdef block
+  // that defines the macro to point to the default instance if not already
+  // defined
+  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
+    for (auto &info : instances) {
+      // Only process default instances (caseName is null)
+      if (info.caseName)
+        continue;
+
+      if (!info.hwInstance || !info.hwInstance.getInnerSymAttr())
+        continue;
+
+      // Get the macro name for this instance choice
+      auto instanceKey =
+          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
+      auto it = instanceChoiceToMacroName.find(instanceKey);
+      if (it == instanceChoiceToMacroName.end())
+        continue;
+
+      auto macroNameAttr = it->second;
+      auto macroRef = FlatSymbolRefAttr::get(macroNameAttr);
+      auto defaultInnerSym = info.hwInstance.getInnerSymAttr().getSymName();
+
+      // Use the hwInstance to get the insertion point
+      auto savedIP = builder.saveInsertionPoint();
+      builder.setInsertionPoint(info.hwInstance);
+
+      sv::IfDefOp::create(
+          builder, info.hwInstance.getLoc(), macroRef,
+          /*thenCtor=*/[&]() {},
+          /*elseCtor=*/
+          [&]() {
+            auto array = builder.getArrayAttr(
+                {hw::InnerRefAttr::get(info.parentModule, defaultInnerSym)});
+            sv::MacroDefOp::create(builder, info.hwInstance.getLoc(), macroRef,
+                                   builder.getStringAttr("{{0}}"), array);
+          });
+
+      builder.restoreInsertionPoint(savedIP);
+    }
+  }
+
   // Sort keys to ensure deterministic output order
   SmallVector<CircuitLoweringState::InstanceChoiceKey> sortedKeys;
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase)
@@ -1165,6 +1215,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     auto moduleName = key.parentModule;
     auto optionName = key.optionName;
     auto caseName = key.caseName;
+    if (!caseName)
+      continue;
 
     // Filename format: targets_<Module>_<Option>_<Case>.svh
     SmallString<128> includeFileName;
@@ -4386,7 +4438,16 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
             targetModuleRef.getAttr());
       },
       /*defaultCtor=*/
-      [&]() { createInstanceAndAssign(defaultModule, "default"); });
+      [&]() {
+        auto inst = createInstanceAndAssign(defaultModule, "default");
+
+        // Register the default instance with nullptr caseName to distinguish it
+        auto defaultModuleRef = cast<FlatSymbolRefAttr>(moduleNames[0]);
+        circuitState.addInstanceChoiceForCase(
+            optionName, StringAttr(), theModule.getNameAttr(),
+            oldInstanceChoice.getInstanceNameAttr(), inst,
+            defaultModuleRef.getAttr());
+      });
 
   return success();
 }
