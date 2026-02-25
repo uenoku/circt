@@ -1102,36 +1102,51 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
   // Map from (parentModule, optionName, instanceName) to macro name
   DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>, StringAttr> instanceChoiceToMacroName;
 
-  // First pass: generate macro names for all instance choices with global scope awareness
-  // We generate one macro per unique (parentModule, optionName, instanceName) tuple
-  DenseSet<std::tuple<StringAttr, StringAttr, StringAttr>> processedInstanceChoices;
+  // First pass: collect all unique instance choices and sort them for deterministic order
+  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>> sortedInstanceKeys;
+  DenseSet<std::tuple<StringAttr, StringAttr, StringAttr>> seenInstanceKeys;
 
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
     for (auto &info : instances) {
       auto instanceKey = std::make_tuple(info.parentModule, key.optionName, info.instanceName);
-      if (processedInstanceChoices.contains(instanceKey))
-        continue;
-
-      processedInstanceChoices.insert(instanceKey);
-
-      // Generate a globally unique macro name for the target
-      // Format: __target_<Option>_<module>_<instance>
-      SmallString<128> macroName;
-      {
-        llvm::raw_svector_ostream os(macroName);
-        os << "__target_" << key.optionName.getValue() << "_"
-           << info.parentModule.getValue() << "_"
-           << info.instanceName.getValue();
+      if (seenInstanceKeys.insert(instanceKey).second) {
+        sortedInstanceKeys.push_back(instanceKey);
       }
-
-      // Use CircuitNamespace to ensure global uniqueness
-      auto uniqueMacroName = circuitNamespace.newName(macroName);
-      auto macroNameAttr = builder.getStringAttr(uniqueMacroName);
-      instanceChoiceToMacroName[instanceKey] = macroNameAttr;
-
-      // Add macro declaration
-      state.addMacroDecl(macroNameAttr);
     }
+  }
+
+  // Sort for deterministic output
+  llvm::sort(sortedInstanceKeys, [](const auto &a, const auto &b) {
+    auto [aModule, aOption, aInstance] = a;
+    auto [bModule, bOption, bInstance] = b;
+    if (aModule.getValue() != bModule.getValue())
+      return aModule.getValue() < bModule.getValue();
+    if (aOption.getValue() != bOption.getValue())
+      return aOption.getValue() < bOption.getValue();
+    return aInstance.getValue() < bInstance.getValue();
+  });
+
+  // Generate macro names for all instance choices with global scope awareness
+  for (auto &instanceKey : sortedInstanceKeys) {
+    auto [parentModule, optionName, instanceName] = instanceKey;
+
+    // Generate a globally unique macro name for the target
+    // Format: __target_<Option>_<module>_<instance>
+    SmallString<128> macroName;
+    {
+      llvm::raw_svector_ostream os(macroName);
+      os << "__target_" << optionName.getValue() << "_"
+         << parentModule.getValue() << "_"
+         << instanceName.getValue();
+    }
+
+    // Use CircuitNamespace to ensure global uniqueness
+    auto uniqueMacroName = circuitNamespace.newName(macroName);
+    auto macroNameAttr = builder.getStringAttr(uniqueMacroName);
+    instanceChoiceToMacroName[instanceKey] = macroNameAttr;
+
+    // Add macro declaration
+    state.addMacroDecl(macroNameAttr);
   }
 
 

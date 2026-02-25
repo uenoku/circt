@@ -1983,7 +1983,8 @@ firrtl.circuit "InstanceChoiceTest" {
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
-  // CHECK: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
+
+  // CHECK-LABEL: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
   // CHECK-NEXT: emit.verbatim "// Specialization file for module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
   // CHECK-NEXT: sv.ifdef @__option__Opt_FPGA {
   // CHECK-NEXT: } else {
