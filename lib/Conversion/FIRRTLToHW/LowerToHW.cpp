@@ -249,7 +249,7 @@ struct CircuitLoweringState {
     StringAttr caseName;
     StringAttr parentModule;
     StringAttr instanceName;
-    hw::InstanceOp hwInstance;    // The lowered hw::InstanceOp for this case
+    hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
     StringAttr targetModule;
   };
 
@@ -509,9 +509,9 @@ private:
                                 StringAttr targetModule) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     InstanceChoiceKey key{parentModule, optionName, caseName};
-    instanceChoicesByModuleAndCase[key].push_back(
-        {optionName, caseName, parentModule, instanceName, hwInstance,
-         targetModule});
+    instanceChoicesByModuleAndCase[key].push_back({optionName, caseName,
+                                                   parentModule, instanceName,
+                                                   hwInstance, targetModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -920,7 +920,6 @@ void FIRRTLModuleLowering::runOnOperation() {
   for (auto oldNew : state.oldToNewModuleMap)
     oldNew.first->erase();
 
-
   // Emit global include files for instance choice options.
   emitInstanceChoiceIncludes(circuit, state);
   if (!state.macroDeclNames.empty()) {
@@ -1085,7 +1084,8 @@ endpackage
 /// Creates one include file per option case following the FIRRTL ABI spec.
 /// Filename format: targets_<Module>_<Option>_<Case>.svh
 /// Macro format: __target_<Option>_<module>_<instance>
-/// Macros are generated here with global scope awareness using CircuitNamespace.
+/// Macros are generated here with global scope awareness using
+/// CircuitNamespace.
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &state) {
   if (state.instanceChoicesByModuleAndCase.empty())
@@ -1100,15 +1100,19 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
   // Collect all instance choices to generate globally unique macro names
   // Map from (parentModule, optionName, instanceName) to macro name
-  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>, StringAttr> instanceChoiceToMacroName;
+  DenseMap<std::tuple<StringAttr, StringAttr, StringAttr>, StringAttr>
+      instanceChoiceToMacroName;
 
-  // First pass: collect all unique instance choices and sort them for deterministic order
-  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>> sortedInstanceKeys;
+  // First pass: collect all unique instance choices and sort them for
+  // deterministic order
+  SmallVector<std::tuple<StringAttr, StringAttr, StringAttr>>
+      sortedInstanceKeys;
   DenseSet<std::tuple<StringAttr, StringAttr, StringAttr>> seenInstanceKeys;
 
   for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
     for (auto &info : instances) {
-      auto instanceKey = std::make_tuple(info.parentModule, key.optionName, info.instanceName);
+      auto instanceKey =
+          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
       if (seenInstanceKeys.insert(instanceKey).second) {
         sortedInstanceKeys.push_back(instanceKey);
       }
@@ -1136,8 +1140,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     {
       llvm::raw_svector_ostream os(macroName);
       os << "__target_" << optionName.getValue() << "_"
-         << parentModule.getValue() << "_"
-         << instanceName.getValue();
+         << parentModule.getValue() << "_" << instanceName.getValue();
     }
 
     // Use CircuitNamespace to ensure global uniqueness
@@ -1148,8 +1151,6 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     // Add macro declaration
     state.addMacroDecl(macroNameAttr);
   }
-
-
 
   // Sort keys to ensure deterministic output order
   SmallVector<CircuitLoweringState::InstanceChoiceKey> sortedKeys;
@@ -1221,7 +1222,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
         continue;
 
       // Get the globally unique macro name generated in the first pass
-      auto instanceKey = std::make_tuple(info.parentModule, key.optionName, info.instanceName);
+      auto instanceKey =
+          std::make_tuple(info.parentModule, key.optionName, info.instanceName);
       auto it = instanceChoiceToMacroName.find(instanceKey);
       if (it == instanceChoiceToMacroName.end())
         continue;
@@ -4302,12 +4304,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     instanceInnerSymNames.push_back(innerSymName);
   }
 
-
-
   // Lambda to create an instance for a given module and assign outputs to wires
-  // Takes the inner symbol to use for this instance and returns the created instance
-  auto createInstanceAndAssign = [&](Operation *oldMod, StringRef suffix,
-                                     hw::InnerSymAttr instInnerSym) -> hw::InstanceOp {
+  // Takes the inner symbol to use for this instance and returns the created
+  // instance
+  auto createInstanceAndAssign =
+      [&](Operation *oldMod, StringRef suffix,
+          hw::InnerSymAttr instInnerSym) -> hw::InstanceOp {
     auto *newMod = circuitState.getNewModule(oldMod);
     if (!newMod) {
       oldInstanceChoice->emitOpError("could not find lowered module");
@@ -4392,8 +4394,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
             cast<SymbolRefAttr>(caseNames[index]).getLeafReference().getValue(),
             instanceInnerSyms[index + 1]);
 
-        // Register instance choice information for global include file generation
-        // Macros will be generated in post-processing with global scope awareness
+        // Register instance choice information for global include file
+        // generation Macros will be generated in post-processing with global
+        // scope awareness
         auto caseSymRef = cast<SymbolRefAttr>(caseNames[index]);
         auto caseName = caseSymRef.getLeafReference();
         auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[index + 1]);

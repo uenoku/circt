@@ -14,7 +14,6 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLUTILS_H
 
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
-#include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
 
 namespace circt {
@@ -160,8 +159,7 @@ FieldRef getFieldRefForTarget(const hw::InnerSymTarget &ist);
 /// to the specified field.
 std::pair<hw::InnerSymAttr, StringAttr>
 getOrAddInnerSym(MLIRContext *context, hw::InnerSymAttr attr, uint64_t fieldID,
-                 llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace,
-                 StringRef symNameHint = "sym");
+                 llvm::function_ref<hw::InnerSymbolNamespace &()> getNamespace);
 
 /// Returns an inner symbol identifier for the specified target (op or port),
 /// adding one if necessary.
