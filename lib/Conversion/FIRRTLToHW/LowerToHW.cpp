@@ -1224,17 +1224,12 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       // Get the globally unique macro name generated in the first pass
       auto instanceKey =
           std::make_tuple(info.parentModule, key.optionName, info.instanceName);
-      auto it = instanceChoiceToMacroName.find(instanceKey);
-      if (it == instanceChoiceToMacroName.end())
-        continue;
-
-      auto instanceMacroAttr = it->second;
+      auto instanceMacroAttr = instanceChoiceToMacroName.at(instanceKey);
       auto instanceMacroRef = FlatSymbolRefAttr::get(instanceMacroAttr);
 
       // Get the inner symbol from the hw::InstanceOp
       auto innerSym = info.hwInstance.getInnerSymAttr();
-      if (!innerSym)
-        continue;
+      assert(innerSym && "expected instance to have inner symbol");
 
       // Error checking: macro must not already be set
       // `ifdef <instanceMacroName>
@@ -4289,29 +4284,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Get the Option name (e.g., "Platform")
   auto optionName = oldInstanceChoice.getOptionNameAttr();
 
-  // Pre-create inner symbols for all instances (default + all cases)
-  // Index 0 is for the default, index i+1 is for caseNames[i]
-  SmallVector<hw::InnerSymAttr> instanceInnerSyms;
-  SmallVector<StringAttr> instanceInnerSymNames;
-  for (size_t i = 0; i <= caseNames.size(); ++i) {
-    auto [innerSym, innerSymName] = getOrAddInnerSym(
-        oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
-        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
-    instanceInnerSyms.push_back(innerSym);
-    instanceInnerSymNames.push_back(innerSymName);
-  }
-
   // Lambda to create an instance for a given module and assign outputs to wires
   // Takes the inner symbol to use for this instance and returns the created
   // instance
-  auto createInstanceAndAssign =
-      [&](Operation *oldMod, StringRef suffix,
-          hw::InnerSymAttr instInnerSym) -> hw::InstanceOp {
+  auto createInstanceAndAssign = [&](Operation *oldMod,
+                                     StringRef suffix) -> hw::InstanceOp {
     auto *newMod = circuitState.getNewModule(oldMod);
-    if (!newMod) {
-      oldInstanceChoice->emitOpError("could not find lowered module");
-      return nullptr;
-    }
 
     ArrayAttr parameters;
     if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
@@ -4326,8 +4304,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     }
     auto instNameAttr = builder.getStringAttr(instName);
 
+    auto [innerSym, innerSymName] = getOrAddInnerSym(
+        oldInstanceChoice.getContext(), /*attr=*/nullptr, 0,
+        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
+
     auto inst = hw::InstanceOp::create(builder, newMod, instNameAttr,
-                                       inputOperands, parameters, instInnerSym);
+                                       inputOperands, parameters, innerSym);
 
     // Assign instance outputs to the wires
     for (unsigned i = 0; i < inst.getNumResults(); ++i)
@@ -4387,9 +4369,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       /*thenCtor=*/
       [&](size_t index) {
         auto inst = createInstanceAndAssign(
-            altModules[index],
-            cast<SymbolRefAttr>(caseNames[index]).getLeafReference().getValue(),
-            instanceInnerSyms[index + 1]);
+            altModules[index], cast<SymbolRefAttr>(caseNames[index])
+                                   .getLeafReference()
+                                   .getValue());
 
         // Register instance choice information for global include file
         // generation Macros will be generated in post-processing with global
@@ -4404,9 +4386,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
             targetModuleRef.getAttr());
       },
       /*defaultCtor=*/
-      [&]() {
-        createInstanceAndAssign(defaultModule, "default", instanceInnerSyms[0]);
-      });
+      [&]() { createInstanceAndAssign(defaultModule, "default"); });
 
   return success();
 }
