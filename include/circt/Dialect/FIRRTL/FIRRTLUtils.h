@@ -14,6 +14,7 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLUTILS_H
 
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
+#include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
 
 namespace circt {
