@@ -469,7 +469,7 @@ private:
 
   /// Information about an instance choice for a specific option case.
   struct LoweredInstanceChoice {
-    StringAttr optionName, caseName, parentModule;
+    StringAttr parentModule;
     // The target symbol (macro name) for this instance choice
     FlatSymbolRefAttr targetSym;
     hw::InstanceOp hwInstance;
@@ -490,7 +490,7 @@ private:
     OptionAndCase innerKey{optionName, caseName};
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
-        {optionName, caseName, parentModule, targetSym, hwInstance});
+        {parentModule, targetSym, hwInstance});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
