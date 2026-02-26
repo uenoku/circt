@@ -1,5 +1,4 @@
-//===- AssignInstanceChoiceSymbols.cpp - Assign symbols to instance choices
-//===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -60,8 +59,9 @@ FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
   // Get the option name
   auto optionName = op.getOptionNameAttr();
 
-  // Generate the target symbol name
-  // Format: __target_<Option>_<module>_<instance>
+  // Generate the target symbol name.
+  // This is not public API and can be generated in any way as long as it's
+  // unique.
   SmallString<128> targetSymName;
   {
     llvm::raw_svector_ostream os(targetSymName);
@@ -70,11 +70,9 @@ FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
   }
 
   // Ensure global uniqueness using CircuitNamespace
-  auto uniqueName = circuitNamespace.newName(targetSymName);
-  auto targetSymAttr = StringAttr::get(op.getContext(), uniqueName);
-  auto targetSym = FlatSymbolRefAttr::get(targetSymAttr);
-
-  // Set the target symbol attribute
+  auto uniqueName =
+      StringAttr::get(op.getContext(), circuitNamespace.newName(targetSymName));
+  auto targetSym = FlatSymbolRefAttr::get(uniqueName);
   op.setTargetSymAttr(targetSym);
 
   LLVM_DEBUG(llvm::dbgs() << "Assigned target symbol '" << uniqueName
@@ -92,21 +90,18 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
   // Create a circuit namespace for global uniqueness
   CircuitNamespace circuitNamespace(circuit);
 
-  // Add macro declarations for all assigned symbols
   OpBuilder builder(circuit.getContext());
   builder.setInsertionPointToStart(circuit.getBodyBlock());
 
-  // Track which symbols we've already created macro declarations for
   llvm::DenseSet<StringAttr> createdMacros;
   bool changed = false;
 
-  // Iterate through all modules in the instance graph
+  // Iterate through all instance choices.
   for (auto *node : instanceGraph) {
     auto module = dyn_cast<FModuleLike>(node->getModule().getOperation());
     if (!module)
       continue;
 
-    // Find all instance choice operations in this module
     for (auto *record : *node) {
       if (auto op = record->getInstance<InstanceChoiceOp>()) {
         auto targetSym = assignSymbol(op, circuitNamespace);
@@ -125,11 +120,3 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
 
   markAnalysesPreserved<InstanceGraph, InstanceInfo>();
 }
-
-namespace circt {
-namespace firrtl {
-std::unique_ptr<mlir::Pass> createAssignInstanceChoiceSymbolsPass() {
-  return std::make_unique<AssignInstanceChoiceSymbolsPass>();
-}
-} // namespace firrtl
-} // namespace circt
