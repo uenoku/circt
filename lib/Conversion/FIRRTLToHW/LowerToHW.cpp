@@ -279,34 +279,6 @@ struct CircuitLoweringState {
     }
   };
 
-  /// Key for grouping instance choices by module and option case.
-  /// Kept for compatibility with emitInstanceChoiceIncludes.
-  struct InstanceChoiceKey {
-    StringAttr parentModule;
-    StringAttr optionName;
-    StringAttr caseName;
-
-    bool operator==(const InstanceChoiceKey &other) const {
-      return parentModule == other.parentModule &&
-             optionName == other.optionName && caseName == other.caseName;
-    }
-
-    bool operator<(const InstanceChoiceKey &other) const {
-      if (parentModule.getValue() != other.parentModule.getValue())
-        return parentModule.getValue() < other.parentModule.getValue();
-      if (optionName.getValue() != other.optionName.getValue())
-        return optionName.getValue() < other.optionName.getValue();
-      // Handle null caseNames (default instances)
-      if (!caseName && !other.caseName)
-        return false;
-      if (!caseName)
-        return true; // null comes before non-null
-      if (!other.caseName)
-        return false;
-      return caseName.getValue() < other.caseName.getValue();
-    }
-  };
-
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
   std::atomic<bool> usedAssertVerboseCond{false};
@@ -671,31 +643,6 @@ struct DenseMapInfo<CircuitLoweringState::InstanceChoiceInnerKey> {
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
 
-// Provide DenseMapInfo for InstanceChoiceKey
-template <>
-struct DenseMapInfo<CircuitLoweringState::InstanceChoiceKey> {
-  using Key = CircuitLoweringState::InstanceChoiceKey;
-  using StringAttrInfo = DenseMapInfo<mlir::StringAttr>;
-
-  static Key getEmptyKey() {
-    return {StringAttrInfo::getEmptyKey(), StringAttrInfo::getEmptyKey(),
-            StringAttrInfo::getEmptyKey()};
-  }
-
-  static Key getTombstoneKey() {
-    return {StringAttrInfo::getTombstoneKey(),
-            StringAttrInfo::getTombstoneKey(),
-            StringAttrInfo::getTombstoneKey()};
-  }
-
-  static unsigned getHashValue(const Key &key) {
-    return llvm::hash_combine(StringAttrInfo::getHashValue(key.parentModule),
-                              StringAttrInfo::getHashValue(key.optionName),
-                              StringAttrInfo::getHashValue(key.caseName));
-  }
-
-  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
-};
 } // namespace llvm
 
 namespace {
