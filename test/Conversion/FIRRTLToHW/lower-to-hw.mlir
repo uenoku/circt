@@ -1956,48 +1956,71 @@ firrtl.circuit "InstanceChoiceTest" {
     firrtl.option_case @FPGA
   }
 
-  sv.macro.decl @target
+  firrtl.option @Power {
+    firrtl.option_case @Low
+  }
+
+  sv.macro.decl @InstanceChoiceUnit_inst
+  sv.macro.decl @InstanceChoiceTop_inst
+
 
   firrtl.module private @ModuleDefault(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
 
-  firrtl.module private @ModuleFPGA(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+  firrtl.module private @Foo(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
+  firrtl.module private @Bar() {}
+  firrtl.module private @Baz() {}
 
-  // CHECK-LABEL: hw.module @InstanceChoiceTest
-  firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+  // CHECK-LABEL: hw.module @InstanceChoiceUnit
+  firrtl.module @InstanceChoiceUnit(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     // CHECK: %[[WIRE:.+]] = sv.wire
     // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
     // CHECK: sv.ifdef @__option__Opt_FPGA {
-    // CHECK-NEXT: %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @ModuleFPGA
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @Foo
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
-    // CHECK-NEXT: sv.ifdef @target
+    // CHECK-NEXT: sv.ifdef @InstanceChoiceUnit_inst
     // CHECK-NEXT: } else {
-    // CHECK-NEXT{LITERAL}: sv.macro.def @target
-    // CHECK-SAME: ([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+    // CHECK-NEXT: sv.macro.def @InstanceChoiceUnit_inst
+    // CHECK-SAME: ([#hw.innerNameRef<@InstanceChoiceUnit::@{{.+}}>])
     // CHECK-NEXT: }
-    // CHECK-NEXT: %{{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
+    // CHECK:      {{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK: hw.output %[[READ]]
-    %inst_in, %inst_out = firrtl.instance_choice inst {target_sym = @target} @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
+    %inst_in, %inst_out = firrtl.instance_choice inst {target_sym = @InstanceChoiceUnit_inst} @ModuleDefault alternatives @Opt { @FPGA -> @Foo } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
 
-  // CHECK-LABEL: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
-  // CHECK-NEXT: emit.verbatim "// Specialization file for public module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
+  // CHECK-LABEL: hw.module @InstanceChoiceTest
+  firrtl.module @InstanceChoiceTest(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+    %inst_in, %inst_out = firrtl.instance inst @InstanceChoiceUnit (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
+
+    firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
+    firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
+    firrtl.instance_choice inst {target_sym = @InstanceChoiceTop_inst} @Bar alternatives @Power { @Low -> @Baz } ()
+  }
+
+  // CHECK-LABEL: emit.file "targets_InstanceChoiceUnit_Opt_FPGA.svh"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for public module: InstanceChoiceUnit\0A// Option: Opt, Case: FPGA\0A"
   // CHECK-NEXT: sv.ifdef @__option__Opt_FPGA {
   // CHECK-NEXT: } else {
   // CHECK-NEXT: sv.macro.def @__option__Opt_FPGA ""
   // CHECK-NEXT: }
-  // CHECK-NEXT: sv.ifdef @target {
-  // CHECK-NEXT: sv.macro.error "target__must__not__be__set"
+  // CHECK-NEXT: sv.ifdef @InstanceChoiceUnit_inst {
+  // CHECK-NEXT: sv.macro.error
   // CHECK-NEXT: } else {
-  // CHECK-NEXT: sv.macro.def @target "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+  // CHECK-NEXT: sv.macro.def @InstanceChoiceUnit_inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceUnit::@{{.+}}>])
   // CHECK-NEXT: }
-  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceTest_Opt_FPGA.svh", excludeFromFileList>}
+  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceUnit_Opt_FPGA.svh", excludeFromFileList>}
+
+  // CHECK-LABEL: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
+  // CHECK: sv.macro.def @InstanceChoiceUnit_inst
+
+  // CHECK-LABEL: emit.file "targets_InstanceChoiceTest_Power_Low.svh"
+  // CHECK: sv.macro.def @InstanceChoiceTop_inst
 }
 
