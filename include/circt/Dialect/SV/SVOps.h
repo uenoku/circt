@@ -213,24 +213,9 @@ public:
 /// For each macro, creates an ifdef with a then branch and an else branch.
 /// The then branch is provided by the thenCtor callback, which receives the
 /// index of the current macro (0-based).
-/// The else branch contains the next level of nesting, or the defaultCtor
-/// for the innermost level.
-/// The ifdefCtor callback is used to construct each ifdef, allowing the caller
-/// to use custom ifdef construction logic (e.g., addToIfDefBlock).
 ///
 /// Example:
-///   createNestedIfDefs(
-///       {"MACRO1", "MACRO2"},
-///       [&](StringRef macro, auto thenCtor, auto elseCtor) {
-///         // Custom ifdef construction (e.g., addToIfDefBlock)
-///         addToIfDefBlock(macro, thenCtor, elseCtor);
-///       },
-///       [&](size_t index) {
-///         // Code for when MACRO[index] is defined
-///       },
-///       [&]() {
-///         // Code for when no macros are defined (default)
-///       });
+///   createNestedIfDefs({"MACRO1", "MACRO2"}, ...});
 ///
 /// Generates:
 ///   `ifdef MACRO1
