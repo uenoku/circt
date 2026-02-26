@@ -256,8 +256,7 @@ struct CircuitLoweringState {
   };
 
   /// Key for grouping instance choices by option and case (without module).
-  using InstanceChoiceInnerKey =
-      std::pair<StringAttr, std::optional<StringAttr>>;
+  using InstanceChoiceInnerKey = std::pair<StringAttr, StringAttr>;
 
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
@@ -494,8 +493,7 @@ private:
                                 FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
-    InstanceChoiceInnerKey innerKey{
-        optionName, caseName ? std::optional(caseName) : std::nullopt};
+    InstanceChoiceInnerKey innerKey{optionName, caseName};
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
         {optionName, caseName, parentModule, targetSym, hwInstance});
   }
@@ -1088,47 +1086,16 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
         continue;
 
       // Accumulate all instance choices from this module
-      for (auto &[innerKey, instances] : it->second) {
+      for (auto &[innerKey, instances] : it->second)
         infos[innerKey].append(instances.begin(), instances.end());
-      }
     }
 
     // Create header files for each option case combination
     // Sort keys to ensure deterministic output order
     SmallVector<std::pair<StringAttr, StringAttr>> sortedKeys;
     // Insert inline macro definitions into module bodies for default instances
-    for (auto &[key, instances] : infos) {
-      // Only process default instances
-      if (key.second) {
-        sortedKeys.push_back({key.first, *key.second});
-        continue;
-      }
-
-      // Default.
-      for (auto &info : instances) {
-        // Use the target symbol directly from the InstanceChoiceInfo
-        auto macroRef = info.targetSym;
-        auto defaultInnerSym = info.hwInstance.getInnerSymAttr().getSymName();
-
-        // Use the hwInstance to get the insertion point
-        auto savedIP = builder.saveInsertionPoint();
-        builder.setInsertionPoint(info.hwInstance);
-
-        sv::IfDefOp::create(
-            builder, info.hwInstance.getLoc(), macroRef,
-            /*thenCtor=*/[&]() {},
-            /*elseCtor=*/
-            [&]() {
-              auto array = builder.getArrayAttr(
-                  {hw::InnerRefAttr::get(info.parentModule, defaultInnerSym)});
-              sv::MacroDefOp::create(builder, info.hwInstance.getLoc(),
-                                     macroRef, builder.getStringAttr("{{0}}"),
-                                     array);
-            });
-
-        builder.restoreInsertionPoint(savedIP);
-      }
-    }
+    for (auto &[key, instances] : infos)
+      sortedKeys.push_back(key);
 
     llvm::sort(sortedKeys, [](const auto &a, const auto &b) {
       if (a.first.getValue() != b.first.getValue())
@@ -4365,8 +4332,17 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       /*defaultCtor=*/
       [&]() {
         auto inst = createInstanceAndAssign(defaultModule, "default");
-        circuitState.addInstanceChoiceForCase(
-            optionName, StringAttr(), theModule.getNameAttr(), targetSym, inst);
+        sv::IfDefOp::create(
+            builder, inst.getLoc(), targetSym,
+            /*thenCtor=*/[&]() {},
+            /*elseCtor=*/
+            [&]() {
+              auto array = builder.getArrayAttr(
+                  {hw::InnerRefAttr::get(theModule.getNameAttr(),
+                                         inst.getInnerSymAttr().getSymName())});
+              sv::MacroDefOp::create(builder, inst.getLoc(), targetSym,
+                                     builder.getStringAttr("{{0}}"), array);
+            });
       });
 
   return success();
