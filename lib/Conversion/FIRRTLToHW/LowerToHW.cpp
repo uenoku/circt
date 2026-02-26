@@ -643,8 +643,7 @@ void CircuitLoweringState::processRemainingAnnotations(
                                         "' still remaining after LowerToHW");
   }
 }
-
-} // namespace
+} // end anonymous namespace
 
 namespace {
 struct FIRRTLModuleLowering
