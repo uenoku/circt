@@ -39,7 +39,6 @@
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Mutex.h"
@@ -245,18 +244,6 @@ struct FIRRTLModuleLowering;
 
 /// This is state shared across the parallel module lowering logic.
 struct CircuitLoweringState {
-  /// Information about an instance choice for a specific option case.
-  struct InstanceChoiceInfo {
-    StringAttr optionName;
-    StringAttr caseName; // null for default instance
-    StringAttr parentModule;
-    FlatSymbolRefAttr
-        targetSym; // The target symbol (macro name) for this instance choice
-    hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
-  };
-
-  /// Key for grouping instance choices by option and case (without module).
-  using InstanceChoiceInnerKey = std::pair<StringAttr, StringAttr>;
 
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
@@ -480,11 +467,19 @@ private:
     macroDeclNames.insert(name);
   }
 
-  /// Map from moduleName to (optionName, caseName) to list of instance choices.
-  /// This grouping allows us to generate one include file per module per option
-  /// case without re-parsing strings.
+  /// Information about an instance choice for a specific option case.
+  struct LoweredInstanceChoice {
+    StringAttr optionName, caseName, parentModule;
+    // The target symbol (macro name) for this instance choice
+    FlatSymbolRefAttr targetSym;
+    hw::InstanceOp hwInstance;
+  };
+
+  using OptionAndCase = std::pair<StringAttr, StringAttr>;
+
+  // Map from moduleName to (optionName, caseName) to list of instance choices.
   DenseMap<StringAttr,
-           DenseMap<InstanceChoiceInnerKey, SmallVector<InstanceChoiceInfo>>>
+           DenseMap<OptionAndCase, SmallVector<LoweredInstanceChoice>>>
       instanceChoicesByModuleAndCase;
   std::mutex instanceChoicesMutex;
 
@@ -492,7 +487,7 @@ private:
                                 StringAttr parentModule,
                                 FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance) {
-    InstanceChoiceInnerKey innerKey{optionName, caseName};
+    OptionAndCase innerKey{optionName, caseName};
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
         {optionName, caseName, parentModule, targetSym, hwInstance});
@@ -658,6 +653,12 @@ private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
   void emitInstanceChoiceIncludes(CircuitOp circuit,
                                   CircuitLoweringState &loweringState);
+  static void emitInstanceChoiceIncludeFile(
+      OpBuilder &builder, CircuitOp circuit, StringAttr publicModuleName,
+      StringAttr optionName, StringAttr caseName,
+      ArrayRef<CircuitLoweringState::LoweredInstanceChoice> instances,
+      CircuitNamespace &circuitNamespace);
+
   LogicalResult lowerPorts(ArrayRef<PortInfo> firrtlPorts,
                            SmallVectorImpl<hw::PortInfo> &ports,
                            Operation *moduleOp, StringRef moduleName,
@@ -1035,11 +1036,12 @@ endpackage
 
 /// Helper function to emit a single instance choice include file for a given
 /// (option, case) combination.
-static void emitInstanceChoiceIncludeFile(
+void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
     OpBuilder &builder, CircuitOp circuit, StringAttr publicModuleName,
     StringAttr optionName, StringAttr caseName,
-    ArrayRef<CircuitLoweringState::InstanceChoiceInfo> instances,
+    ArrayRef<CircuitLoweringState::LoweredInstanceChoice> instances,
     CircuitNamespace &circuitNamespace) {
+
   // Filename format: targets_<PublicModule>_<Option>_<Case>.svh
   SmallString<128> includeFileName;
   {
@@ -1165,8 +1167,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
     // Collect all instance choices reachable from this public module
     // Grouped by (optionName, caseName)
-    DenseMap<CircuitLoweringState::InstanceChoiceInnerKey,
-             SmallVector<CircuitLoweringState::InstanceChoiceInfo>>
+    DenseMap<CircuitLoweringState::OptionAndCase,
+             SmallVector<CircuitLoweringState::LoweredInstanceChoice>>
         infos;
 
     // Walk all modules reachable from this public module
