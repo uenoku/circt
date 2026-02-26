@@ -1963,12 +1963,11 @@ firrtl.circuit "InstanceChoiceTest" {
   sv.macro.decl @InstanceChoiceUnit_inst
   sv.macro.decl @InstanceChoiceTop_inst
 
-
   firrtl.module private @ModuleDefault(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
 
-  firrtl.module private @Foo(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
+  firrtl.module private @ModuleFPGA(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
   firrtl.module private @Bar() {}
@@ -1979,7 +1978,7 @@ firrtl.circuit "InstanceChoiceTest" {
     // CHECK: %[[WIRE:.+]] = sv.wire
     // CHECK: %[[READ:.+]] = sv.read_inout %[[WIRE]]
     // CHECK: sv.ifdef @__option__Opt_FPGA {
-    // CHECK-NEXT: %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @Foo
+    // CHECK-NEXT: %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @ModuleFPGA
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
     // CHECK-NEXT: sv.ifdef @InstanceChoiceUnit_inst
@@ -1990,7 +1989,7 @@ firrtl.circuit "InstanceChoiceTest" {
     // CHECK:      {{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK: hw.output %[[READ]]
-    %inst_in, %inst_out = firrtl.instance_choice inst {target_sym = @InstanceChoiceUnit_inst} @ModuleDefault alternatives @Opt { @FPGA -> @Foo } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
+    %inst_in, %inst_out = firrtl.instance_choice inst {target_sym = @InstanceChoiceUnit_inst} @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
