@@ -3208,6 +3208,10 @@ InstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
                            << " does not contain option case " << ref;
   }
 
+  if (auto targetSym = getTargetSymAttr())
+    if (!symbolTable.lookupNearestSymbolFrom(*this, targetSym))
+      return emitOpError() << "target " << targetSym << " does not exist";
+
   return success();
 }
 

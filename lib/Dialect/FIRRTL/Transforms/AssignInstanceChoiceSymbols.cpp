@@ -87,6 +87,7 @@ void AssignInstanceChoiceSymbolsPass::assignSymbol(
 void AssignInstanceChoiceSymbolsPass::runOnOperation() {
   auto circuit = getOperation();
   auto &instanceGraph = getAnalysis<InstanceGraph>();
+  auto &symbolTable = getAnalysis<SymbolTable>();
 
   // Create a circuit namespace for global uniqueness
   CircuitNamespace circuitNamespace(circuit);
