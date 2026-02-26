@@ -542,10 +542,6 @@ private:
                                 FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance,
                                 StringAttr targetModule) {
-    llvm::errs() << "addInstanceChoiceForCase called: option="
-                 << optionName.getValue() << ", case="
-                 << (caseName ? caseName.getValue() : StringRef("(default)"))
-                 << ", parent=" << parentModule.getValue() << "\n";
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     InstanceChoiceInnerKey innerKey{optionName, caseName};
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
@@ -1151,13 +1147,8 @@ endpackage
 /// CircuitNamespace.
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &loweringState) {
-  llvm::errs() << "=== emitInstanceChoiceIncludes START ===\n";
-  llvm::errs() << "instanceChoicesByModuleAndCase size: "
-               << loweringState.instanceChoicesByModuleAndCase.size() << "\n";
-  if (loweringState.instanceChoicesByModuleAndCase.empty()) {
-    llvm::errs() << "No instance choices found, returning early\n";
+  if (loweringState.instanceChoicesByModuleAndCase.empty())
     return;
-  }
 
   // Insert at the top-level module (parent of circuit)
   auto topLevelModule = cast<mlir::ModuleOp>(circuit->getParentOp());
@@ -1165,30 +1156,22 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
   builder.setInsertionPointToEnd(topLevelModule.getBody());
   CircuitNamespace circuitNamespace(circuit);
 
-  // First, find all public modules
+  // Find all public modules
   SmallVector<hw::HWModuleOp> publicModules;
-  LLVM_DEBUG(llvm::dbgs() << "Finding public modules...\n");
   for (auto &op : topLevelModule.getBody()->getOperations()) {
     if (auto module = dyn_cast<hw::HWModuleOp>(op)) {
-      if (module.isPublic()) {
-        LLVM_DEBUG(llvm::dbgs() << "  Found public module: "
-                                << module.getModuleName() << "\n");
+      if (module.isPublic())
         publicModules.push_back(module);
-      }
     }
   }
-  LLVM_DEBUG(llvm::dbgs() << "Total public modules: " << publicModules.size()
-                          << "\n");
 
   // For each public module, collect all instance choices reachable from it
   // and generate header files
   for (auto publicModule : publicModules) {
-    LLVM_DEBUG(llvm::dbgs() << "\nProcessing public module: "
-                            << publicModule.getModuleName() << "\n");
     auto *rootNode = loweringState.getInstanceGraph().lookup(publicModule);
     assert(rootNode && "Public module not found in instance graph");
 
-    auto publicModuleName = publicModule.getNameAttr();
+    auto publicModuleName = publicModule.getModuleNameAttr();
 
     // Collect all instance choices reachable from this public module
     // Grouped by (optionName, caseName)
@@ -1257,13 +1240,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     });
 
     // Emit one include file for each (option, case) combination
-    LLVM_DEBUG(llvm::dbgs() << "  Creating header files for "
-                            << sortedKeys.size() << " cases\n");
     for (auto &[optionName, caseName] : sortedKeys) {
       auto &instances = infos[{optionName, caseName}];
-      LLVM_DEBUG(llvm::dbgs() << "    Option: " << optionName.getValue()
-                              << ", Case: " << caseName.getValue()
-                              << ", Instances: " << instances.size() << "\n");
 
       // Filename format: targets_<PublicModule>_<Option>_<Case>.svh
       SmallString<128> includeFileName;
@@ -4330,10 +4308,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
-  llvm::errs() << "visitDecl(InstanceChoiceOp) called for instance: "
-               << oldInstanceChoice.getName() << "\n";
   if (oldInstanceChoice.getInnerSymAttr()) {
-    llvm::errs() << "  ERROR: has inner sym\n";
     oldInstanceChoice->emitOpError(
         "instance choice with inner sym cannot be lowered");
     return failure();
