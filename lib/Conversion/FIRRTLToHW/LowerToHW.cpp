@@ -253,7 +253,6 @@ struct CircuitLoweringState {
     FlatSymbolRefAttr
         targetSym; // The target symbol (macro name) for this instance choice
     hw::InstanceOp hwInstance; // The lowered hw::InstanceOp for this case
-    StringAttr targetModule;
   };
 
   /// Key for grouping instance choices by option and case (without module).
@@ -512,13 +511,11 @@ private:
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule,
                                 FlatSymbolRefAttr targetSym,
-                                hw::InstanceOp hwInstance,
-                                StringAttr targetModule) {
+                                hw::InstanceOp hwInstance) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     InstanceChoiceInnerKey innerKey{optionName, caseName};
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
-        {optionName, caseName, parentModule, targetSym, hwInstance,
-         targetModule});
+        {optionName, caseName, parentModule, targetSym, hwInstance});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -4408,21 +4405,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         // generation
         auto caseSymRef = cast<SymbolRefAttr>(caseNames[index]);
         auto caseName = caseSymRef.getLeafReference();
-        auto targetModuleRef = cast<FlatSymbolRefAttr>(moduleNames[index + 1]);
 
         circuitState.addInstanceChoiceForCase(
-            optionName, caseName, theModule.getNameAttr(), targetSym, inst,
-            targetModuleRef.getAttr());
+            optionName, caseName, theModule.getNameAttr(), targetSym, inst);
       },
       /*defaultCtor=*/
       [&]() {
         auto inst = createInstanceAndAssign(defaultModule, "default");
-
-        // Register the default instance with nullptr caseName to distinguish it
-        auto defaultModuleRef = cast<FlatSymbolRefAttr>(moduleNames[0]);
         circuitState.addInstanceChoiceForCase(
-            optionName, StringAttr(), theModule.getNameAttr(), targetSym, inst,
-            defaultModuleRef.getAttr());
+            optionName, StringAttr(), theModule.getNameAttr(), targetSym, inst);
       });
 
   return success();
