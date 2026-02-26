@@ -16,7 +16,7 @@
 ;
 ; ASIC: result:         10
 ; FPGA: result:         20
-; DEFAULT: result:          0
+; DEFAULT: result:       0
 
 FIRRTL version 5.1.0
 circuit top:
@@ -25,19 +25,16 @@ circuit top:
     ASIC
 
   module DefaultTarget:
-    input clock: Clock
     output result: UInt<32>
 
     connect result, UInt<32>(0)
 
   module ASICTarget:
-    input clock: Clock
     output result: UInt<32>
 
     connect result, UInt<32>(10)
 
   module FPGATarget:
-    input clock: Clock
     output result: UInt<32>
 
     connect result, UInt<32>(20)
@@ -50,12 +47,4 @@ circuit top:
       ASIC => ASICTarget
       FPGA => FPGATarget
 
-    connect proc.clock, clk
-
-    ; Print the constant result value
     printf(clk, UInt<1>(1), "result: %d\n", proc.result)
-
-    ; Create an initial block to print the result
-    wire result: UInt<32>
-    connect result, proc.result
-
