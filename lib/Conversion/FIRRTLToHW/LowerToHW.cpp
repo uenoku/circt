@@ -256,27 +256,8 @@ struct CircuitLoweringState {
   };
 
   /// Key for grouping instance choices by option and case (without module).
-  struct InstanceChoiceInnerKey {
-    StringAttr optionName;
-    StringAttr caseName;
-
-    bool operator==(const InstanceChoiceInnerKey &other) const {
-      return optionName == other.optionName && caseName == other.caseName;
-    }
-
-    bool operator<(const InstanceChoiceInnerKey &other) const {
-      if (optionName.getValue() != other.optionName.getValue())
-        return optionName.getValue() < other.optionName.getValue();
-      // Handle null caseNames (default instances)
-      if (!caseName && !other.caseName)
-        return false;
-      if (!caseName)
-        return true; // null comes before non-null
-      if (!other.caseName)
-        return false;
-      return caseName.getValue() < other.caseName.getValue();
-    }
-  };
+  using InstanceChoiceInnerKey =
+      std::pair<StringAttr, std::optional<StringAttr>>;
 
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
@@ -513,7 +494,8 @@ private:
                                 FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance) {
     std::unique_lock<std::mutex> lock(instanceChoicesMutex);
-    InstanceChoiceInnerKey innerKey{optionName, caseName};
+    InstanceChoiceInnerKey innerKey{
+        optionName, caseName ? std::optional(caseName) : std::nullopt};
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
         {optionName, caseName, parentModule, targetSym, hwInstance});
   }
@@ -615,32 +597,6 @@ private:
 };
 
 } // namespace
-
-// Provide DenseMapInfo for InstanceChoiceInnerKey
-namespace llvm {
-template <>
-struct DenseMapInfo<CircuitLoweringState::InstanceChoiceInnerKey> {
-  using Key = CircuitLoweringState::InstanceChoiceInnerKey;
-  using StringAttrInfo = DenseMapInfo<mlir::StringAttr>;
-
-  static Key getEmptyKey() {
-    return {StringAttrInfo::getEmptyKey(), StringAttrInfo::getEmptyKey()};
-  }
-
-  static Key getTombstoneKey() {
-    return {StringAttrInfo::getTombstoneKey(),
-            StringAttrInfo::getTombstoneKey()};
-  }
-
-  static unsigned getHashValue(const Key &key) {
-    return llvm::hash_combine(StringAttrInfo::getHashValue(key.optionName),
-                              StringAttrInfo::getHashValue(key.caseName));
-  }
-
-  static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
-};
-
-} // namespace llvm
 
 namespace {
 
@@ -1119,7 +1075,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
     // Collect all instance choices reachable from this public module
     // Grouped by (optionName, caseName)
-    DenseMap<std::pair<StringAttr, StringAttr>,
+    DenseMap<CircuitLoweringState::InstanceChoiceInnerKey,
              SmallVector<CircuitLoweringState::InstanceChoiceInfo>>
         infos;
 
@@ -1133,18 +1089,23 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
       // Accumulate all instance choices from this module
       for (auto &[innerKey, instances] : it->second) {
-        infos[{innerKey.optionName, innerKey.caseName}].append(
-            instances.begin(), instances.end());
+        infos[innerKey].append(instances.begin(), instances.end());
       }
     }
 
+    // Create header files for each option case combination
+    // Sort keys to ensure deterministic output order
+    SmallVector<std::pair<StringAttr, StringAttr>> sortedKeys;
     // Insert inline macro definitions into module bodies for default instances
     for (auto &[key, instances] : infos) {
-      for (auto &info : instances) {
-        // Only process default instances (caseName is null)
-        if (info.caseName)
-          continue;
+      // Only process default instances
+      if (key.second) {
+        sortedKeys.push_back({key.first, *key.second});
+        continue;
+      }
 
+      // Default.
+      for (auto &info : instances) {
         // Use the target symbol directly from the InstanceChoiceInfo
         auto macroRef = info.targetSym;
         auto defaultInnerSym = info.hwInstance.getInnerSymAttr().getSymName();
@@ -1169,14 +1130,6 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       }
     }
 
-    // Create header files for each option case combination
-    // Sort keys to ensure deterministic output order
-    SmallVector<std::pair<StringAttr, StringAttr>> sortedKeys;
-    for (auto &[key, instances] : infos) {
-      auto [optionName, caseName] = key;
-      if (caseName) // Only create files for non-default cases
-        sortedKeys.push_back({optionName, caseName});
-    }
     llvm::sort(sortedKeys, [](const auto &a, const auto &b) {
       if (a.first.getValue() != b.first.getValue())
         return a.first.getValue() < b.first.getValue();
