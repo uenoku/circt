@@ -475,6 +475,17 @@ static LogicalResult checkLayerCompatibility(
 }
 
 //===----------------------------------------------------------------------===//
+// Helper Functions
+//===----------------------------------------------------------------------===//
+
+std::string getOptionCaseMacroName(StringAttr optionName, StringAttr caseName) {
+  std::string macroName;
+  llvm::raw_string_ostream os(macroName);
+  os << "__option__" << optionName.getValue() << "_" << caseName.getValue();
+  return os.str();
+}
+
+//===----------------------------------------------------------------------===//
 // CircuitOp
 //===----------------------------------------------------------------------===//
 

@@ -41,25 +41,24 @@ public:
   void runOnOperation() override;
 
 private:
-  void assignSymbol(InstanceChoiceOp op, CircuitNamespace &circuitNamespace);
+  FlatSymbolRefAttr assignSymbol(InstanceChoiceOp op,
+                                 CircuitNamespace &circuitNamespace);
 };
 } // namespace
 
-void AssignInstanceChoiceSymbolsPass::assignSymbol(
+FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
     InstanceChoiceOp op, CircuitNamespace &circuitNamespace) {
   // Skip if already has a target symbol
   if (op.getTargetSymAttr())
-    return;
+    return op.getTargetSymAttr();
 
   // Get the parent module name
   auto parentModule = op->getParentOfType<FModuleLike>();
   if (!parentModule)
-    return;
+    return nullptr;
 
   // Get the option name
   auto optionName = op.getOptionNameAttr();
-  if (!optionName)
-    return;
 
   // Generate the target symbol name
   // Format: __target_<Option>_<module>_<instance>
@@ -108,14 +107,12 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
     // Find all instance choice operations in this module
     for (auto *record : *node) {
       if (auto op = record->getInstance<InstanceChoiceOp>()) {
-        assignSymbol(op, circuitNamespace);
-        if (auto targetSym = op.getTargetSymAttr()) {
-          // Create macro declaration only if we haven't created it yet
-          if (createdMacros.insert(targetSym.getAttr()).second) {
-            builder.create<sv::MacroDeclOp>(circuit.getLoc(),
-                                            targetSym.getAttr());
-          }
-        }
+        auto targetSym = assignSymbol(op, circuitNamespace);
+        assert(targetSym && "expected target symbol to be assigned");
+        // Create macro declaration only if we haven't created it yet
+        if (!createdMacros.insert(targetSym.getAttr()).second)
+          continue;
+        builder.create<sv::MacroDeclOp>(circuit.getLoc(), targetSym.getAttr());
       }
     }
   }
