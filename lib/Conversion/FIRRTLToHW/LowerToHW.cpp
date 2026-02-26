@@ -4274,7 +4274,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     altModules.push_back(altModule);
 
     // Generate the macro name for this option case
-    // Format: __option__<Option>_<Case>
     StringAttr optionCaseMacroAttr =
         getOptionCaseMacroName(optionName, caseName);
 
@@ -4286,14 +4285,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     macroNames.push_back(optionCaseMacroAttr.getValue());
   }
 
-  // Convert to StringRef for the helper function
-  SmallVector<StringRef> macroNameRefs;
-  for (const auto &name : macroNames)
-    macroNameRefs.push_back(name);
-
   // Use the helper function to create nested ifdefs and register instances
   sv::createNestedIfDefs(
-      macroNameRefs,
+      macroNames,
       /*ifdefCtor=*/
       [&](StringRef macro, std::function<void()> thenCtor,
           std::function<void()> elseCtor) {
@@ -4301,18 +4295,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       },
       /*thenCtor=*/
       [&](size_t index) {
-        auto inst = createInstanceAndAssign(
-            altModules[index], cast<SymbolRefAttr>(caseNames[index])
-                                   .getLeafReference()
-                                   .getValue());
-
-        // Register instance choice information for global include file
-        // generation
-        auto caseSymRef = cast<SymbolRefAttr>(caseNames[index]);
-        auto caseName = caseSymRef.getLeafReference();
-
+        auto caseSymRef =
+            cast<SymbolRefAttr>(caseNames[index]).getLeafReference();
+        auto inst =
+            createInstanceAndAssign(altModules[index], caseSymRef.getValue());
         circuitState.addInstanceChoiceForCase(
-            optionName, caseName, theModule.getNameAttr(), targetSym, inst);
+            optionName, caseSymRef, theModule.getNameAttr(), targetSym, inst);
       },
       /*defaultCtor=*/
       [&]() {
