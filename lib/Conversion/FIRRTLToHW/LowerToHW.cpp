@@ -1094,8 +1094,8 @@ endpackage
 /// Macros are generated here with global scope awareness using
 /// CircuitNamespace.
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
-    CircuitOp circuit, CircuitLoweringState &state) {
-  if (state.instanceChoicesByModuleAndCase.empty())
+    CircuitOp circuit, CircuitLoweringState &loweringState) {
+  if (loweringState.instanceChoicesByModuleAndCase.empty())
     return;
 
   // Insert at the top-level module (parent of circuit)
@@ -1108,7 +1108,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
   // Insert inline macro definitions into module bodies
   // For each default instance (caseName is null), insert an ifdef block
   // that defines the macro to point to the default instance if not already defined
-  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase) {
+  for (auto &[key, instances] : loweringState.instanceChoicesByModuleAndCase) {
     for (auto &info : instances) {
       // Only process default instances (caseName is null)
       if (info.caseName)
@@ -1141,13 +1141,13 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
   // Sort keys to ensure deterministic output order
   SmallVector<CircuitLoweringState::InstanceChoiceKey> sortedKeys;
-  for (auto &[key, instances] : state.instanceChoicesByModuleAndCase)
+  for (auto &[key, instances] : loweringState.instanceChoicesByModuleAndCase)
     sortedKeys.push_back(key);
   llvm::sort(sortedKeys);
 
   // Emit one include file for each module and option case combination
   for (auto &key : sortedKeys) {
-    auto &instances = state.instanceChoicesByModuleAndCase[key];
+    auto &instances = loweringState.instanceChoicesByModuleAndCase[key];
     // Extract module name, option name, and case name from the key
     auto moduleName = key.parentModule;
     auto optionName = key.optionName;
@@ -1207,9 +1207,6 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
     // Emit instance name macros for all instances in this module
     for (auto &info : instances) {
-      if (!info.hwInstance)
-        continue;
-
       // Use the target symbol directly from the InstanceChoiceInfo
       auto instanceMacroRef = info.targetSym;
 
