@@ -136,7 +136,7 @@ MatchingConnectOp getSingleConnectUserOf(Value value);
 
 /// Get the macro name for an option case.
 /// Format: __option__<OptionName>_<CaseName>
-std::string getOptionCaseMacroName(StringAttr optionName, StringAttr caseName);
+StringAttr getOptionCaseMacroName(StringAttr optionName, StringAttr caseName);
 
 // Out-of-line implementation of various trait verification methods and
 // functions commonly used among operations.

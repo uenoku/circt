@@ -492,8 +492,8 @@ private:
                                 StringAttr parentModule,
                                 FlatSymbolRefAttr targetSym,
                                 hw::InstanceOp hwInstance) {
-    std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     InstanceChoiceInnerKey innerKey{optionName, caseName};
+    std::unique_lock<std::mutex> lock(instanceChoicesMutex);
     instanceChoicesByModuleAndCase[parentModule][innerKey].push_back(
         {optionName, caseName, parentModule, targetSym, hwInstance});
   }
@@ -596,8 +596,6 @@ private:
 
 } // namespace
 
-namespace {
-
 void CircuitLoweringState::processRemainingAnnotations(
     Operation *op, const AnnotationSet &annoSet) {
   if (!enableAnnotationWarning || annoSet.empty())
@@ -647,7 +645,6 @@ void CircuitLoweringState::processRemainingAnnotations(
                                         "' still remaining after LowerToHW");
   }
 }
-} // end anonymous namespace
 
 namespace {
 struct FIRRTLModuleLowering
@@ -1072,8 +1069,7 @@ static void emitInstanceChoiceIncludeFile(
 
   // Define the global option case macro to avoid conflicts
   // Format: __option__<OptionName>_<CaseName>
-  auto optionCaseMacro = getOptionCaseMacroName(optionName, caseName);
-  auto optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
+  auto optionCaseMacroAttr = getOptionCaseMacroName(optionName, caseName);
   auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
 
   // `ifndef __option__<OptionName>_<CaseName>
@@ -4282,8 +4278,8 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
     // Generate the macro name for this option case
     // Format: __option__<Option>_<Case>
-    auto optionCaseMacro = getOptionCaseMacroName(optionName, caseName);
-    StringAttr optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
+    StringAttr optionCaseMacroAttr =
+        getOptionCaseMacroName(optionName, caseName);
 
     // Register the macro declaration for this case
     // NOTE: LowerLayer/LowerXMR will be necessary to interact with

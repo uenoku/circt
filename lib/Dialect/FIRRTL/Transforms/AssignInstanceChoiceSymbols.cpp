@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Analysis/FIRRTLInstanceInfo.h"
 #include "circt/Dialect/FIRRTL/FIRRTLInstanceGraph.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/Namespace.h"
@@ -50,12 +51,11 @@ FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
     InstanceChoiceOp op, CircuitNamespace &circuitNamespace) {
   // Skip if already has a target symbol
   if (op.getTargetSymAttr())
-    return op.getTargetSymAttr();
+    return nullptr;
 
   // Get the parent module name
   auto parentModule = op->getParentOfType<FModuleLike>();
-  if (!parentModule)
-    return nullptr;
+  assert(parentModule && "instance choice must be inside a module");
 
   // Get the option name
   auto optionName = op.getOptionNameAttr();
@@ -81,6 +81,8 @@ FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
                           << "' to instance choice '" << op.getInstanceName()
                           << "' in module '" << parentModule.getModuleName()
                           << "'\n");
+
+  return targetSym;
 }
 
 void AssignInstanceChoiceSymbolsPass::runOnOperation() {
@@ -97,6 +99,7 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
 
   // Track which symbols we've already created macro declarations for
   llvm::DenseSet<StringAttr> createdMacros;
+  bool changed = false;
 
   // Iterate through all modules in the instance graph
   for (auto *node : instanceGraph) {
@@ -108,7 +111,9 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
     for (auto *record : *node) {
       if (auto op = record->getInstance<InstanceChoiceOp>()) {
         auto targetSym = assignSymbol(op, circuitNamespace);
-        assert(targetSym && "expected target symbol to be assigned");
+        if (!targetSym)
+          continue;
+        changed = true;
         // Create macro declaration only if we haven't created it yet
         if (!createdMacros.insert(targetSym.getAttr()).second)
           continue;
@@ -116,6 +121,10 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
       }
     }
   }
+  if (!changed)
+    return markAllAnalysesPreserved();
+
+  markAnalysesPreserved<InstanceGraph, InstanceInfo>();
 }
 
 namespace circt {

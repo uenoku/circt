@@ -478,11 +478,11 @@ static LogicalResult checkLayerCompatibility(
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
-std::string getOptionCaseMacroName(StringAttr optionName, StringAttr caseName) {
-  std::string macroName;
-  llvm::raw_string_ostream os(macroName);
+StringAttr circt::firrtl::getOptionCaseMacroName(StringAttr optionName, StringAttr caseName) {
+  SmallString<128> macroName;
+  llvm::raw_svector_ostream os(macroName);
   os << "__option__" << optionName.getValue() << "_" << caseName.getValue();
-  return os.str();
+  return StringAttr::get(optionName.getContext(), os.str());
 }
 
 //===----------------------------------------------------------------------===//
