@@ -88,7 +88,6 @@ FlatSymbolRefAttr AssignInstanceChoiceSymbolsPass::assignSymbol(
 void AssignInstanceChoiceSymbolsPass::runOnOperation() {
   auto circuit = getOperation();
   auto &instanceGraph = getAnalysis<InstanceGraph>();
-  auto &symbolTable = getAnalysis<SymbolTable>();
 
   // Create a circuit namespace for global uniqueness
   CircuitNamespace circuitNamespace(circuit);
@@ -115,9 +114,9 @@ void AssignInstanceChoiceSymbolsPass::runOnOperation() {
           continue;
         changed = true;
         // Create macro declaration only if we haven't created it yet
-        if (!createdMacros.insert(targetSym.getAttr()).second)
-          continue;
-        builder.create<sv::MacroDeclOp>(circuit.getLoc(), targetSym.getAttr());
+        if (createdMacros.insert(targetSym.getAttr()).second)
+          sv::MacroDeclOp::create(builder, circuit.getLoc(),
+                                  targetSym.getAttr());
       }
     }
   }
