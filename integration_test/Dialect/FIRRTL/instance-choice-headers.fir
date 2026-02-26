@@ -3,6 +3,7 @@
 
 ; RUN: rm -rf %t && mkdir -p %t
 ; RUN: firtool %s --split-verilog -o=%t
+; Check it errors when including both headers.
 ; RUN: not verilator %t/targets_top_Platform_ASIC.svh %t/targets_top_Platform_FPGA.svh %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --lint-only --top-module top 2>&1 | FileCheck %s --check-prefix=ERROR
 ; RUN: verilator %driver %t/targets_top_Platform_ASIC.svh %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --cc --sv --exe --build -o %t.asic.exe --top-module top
 ; RUN: %t.asic.exe --cycles 1 2>&1 | FileCheck %s --check-prefix=ASIC

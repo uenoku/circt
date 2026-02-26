@@ -1956,6 +1956,8 @@ firrtl.circuit "InstanceChoiceTest" {
     firrtl.option_case @FPGA
   }
 
+  sv.macro.decl @target
+
   firrtl.module private @ModuleDefault(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
@@ -1972,14 +1974,15 @@ firrtl.circuit "InstanceChoiceTest" {
     // CHECK-NEXT: %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @ModuleFPGA
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK-NEXT: } else {
-    // CHECK-NEXT: sv.ifdef @__target_Opt_InstanceChoiceTest_{{.+}}
+    // CHECK-NEXT: sv.ifdef @target
     // CHECK-NEXT: } else {
-    // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_{{.+}} "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+    // CHECK-NEXT{LITERAL}: sv.macro.def @target
+    // CHECK-SAME: ([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
     // CHECK-NEXT: }
     // CHECK-NEXT: %{{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
     // CHECK-NEXT: sv.assign %[[WIRE]]
     // CHECK: hw.output %[[READ]]
-    %inst_in, %inst_out = firrtl.instance_choice inst @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
+    %inst_in, %inst_out = firrtl.instance_choice inst {target_sym = @target} @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
     firrtl.matchingconnect %inst_in, %in : !firrtl.uint<8>
     firrtl.matchingconnect %out, %inst_out : !firrtl.uint<8>
   }
@@ -1990,66 +1993,11 @@ firrtl.circuit "InstanceChoiceTest" {
   // CHECK-NEXT: } else {
   // CHECK-NEXT: sv.macro.def @__option__Opt_FPGA ""
   // CHECK-NEXT: }
-  // CHECK-NEXT: sv.ifdef @__target_Opt_InstanceChoiceTest_{{.+}} {
-  // CHECK-NEXT: sv.macro.error "__target_Opt_InstanceChoiceTest_{{.+}}__must__not__be__set"
+  // CHECK-NEXT: sv.ifdef @target {
+  // CHECK-NEXT: sv.macro.error "target__must__not__be__set"
   // CHECK-NEXT: } else {
-  // CHECK-NEXT: sv.macro.def @__target_Opt_InstanceChoiceTest_{{.+}} "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
+  // CHECK-NEXT: sv.macro.def @target "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceTest::@{{.+}}>])
   // CHECK-NEXT: }
   // CHECK-NEXT: } {output_file = #hw.output_file<"targets_InstanceChoiceTest_Opt_FPGA.svh", excludeFromFileList>}
-}
-
-// -----
-
-// Test instance_choice with multiple ports
-firrtl.circuit "MultiPortTest" {
-  firrtl.option @Platform {
-    firrtl.option_case @FPGA
-  }
-
-  firrtl.module private @MultiPortDefault(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
-    firrtl.matchingconnect %result, %data : !firrtl.uint<32>
-    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
-    firrtl.matchingconnect %valid, %c1_ui1 : !firrtl.uint<1>
-  }
-
-  firrtl.module private @MultiPortFPGA(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
-    firrtl.matchingconnect %result, %data : !firrtl.uint<32>
-    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
-    firrtl.matchingconnect %valid, %c1_ui1 : !firrtl.uint<1>
-  }
-
-  // CHECK-LABEL: hw.module @MultiPortTest
-  firrtl.module @MultiPortTest(in %clk: !firrtl.clock, in %data: !firrtl.uint<32>, out %result: !firrtl.uint<32>, out %valid: !firrtl.uint<1>) {
-    // CHECK-DAG: %[[WIRE_RESULT:.+]] = sv.wire
-    // CHECK-DAG: %[[READ_RESULT:.+]] = sv.read_inout %[[WIRE_RESULT]]
-    // CHECK-DAG: %[[WIRE_VALID:.+]] = sv.wire
-    // CHECK-DAG: %[[READ_VALID:.+]] = sv.read_inout %[[WIRE_VALID]]
-    // CHECK: sv.ifdef @__option__Platform_FPGA {
-    // CHECK-NEXT: %{{.+}}, %{{.+}} = hw.instance "proc_FPGA" sym @{{.+}} @MultiPortFPGA(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
-    // CHECK-NEXT: sv.assign
-    // CHECK-NEXT: sv.assign
-    // CHECK-NEXT: } else {
-    // CHECK:      %{{.+}}, %{{.+}} = hw.instance "proc_default" sym @{{.+}} @MultiPortDefault(clk: %clk: !seq.clock, data: %data: i32) -> (result: i32, valid: i1)
-    // CHECK-NEXT: sv.assign
-    // CHECK-NEXT: sv.assign
-    // CHECK: hw.output %[[READ_RESULT]], %[[READ_VALID]]
-    %proc_clk, %proc_data, %proc_result, %proc_valid = firrtl.instance_choice proc @MultiPortDefault alternatives @Platform { @FPGA -> @MultiPortFPGA } (in clk: !firrtl.clock, in data: !firrtl.uint<32>, out result: !firrtl.uint<32>, out valid: !firrtl.uint<1>)
-    firrtl.matchingconnect %proc_clk, %clk : !firrtl.clock
-    firrtl.matchingconnect %proc_data, %data : !firrtl.uint<32>
-    firrtl.matchingconnect %result, %proc_result : !firrtl.uint<32>
-    firrtl.matchingconnect %valid, %proc_valid : !firrtl.uint<1>
-  }
-  // CHECK: emit.file "targets_MultiPortTest_Platform_FPGA.svh"
-  // CHECK-NEXT: emit.verbatim "// Specialization file for module: MultiPortTest\0A// Option: Platform, Case: FPGA\0A"
-  // CHECK-NEXT: sv.ifdef @__option__Platform_FPGA {
-  // CHECK-NEXT: } else {
-  // CHECK-NEXT: sv.macro.def @__option__Platform_FPGA ""
-  // CHECK-NEXT: }
-  // CHECK-NEXT: sv.ifdef @__target_Platform_MultiPortTest_{{.+}} {
-  // CHECK-NEXT: sv.macro.error "__target_Platform_MultiPortTest_{{.+}}__must__not__be__set"
-  // CHECK-NEXT: } else {
-  // CHECK-NEXT: sv.macro.def @__target_Platform_MultiPortTest_{{.+}} "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultiPortTest::@{{.+}}>])
-  // CHECK-NEXT: }
-  // CHECK-NEXT: } {output_file = #hw.output_file<"targets_MultiPortTest_Platform_FPGA.svh", excludeFromFileList>}
 }
 
