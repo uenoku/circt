@@ -594,7 +594,6 @@ private:
   llvm::sys::SmartMutex<true> emitFilesMutex;
 };
 
-
 void CircuitLoweringState::processRemainingAnnotations(
     Operation *op, const AnnotationSet &annoSet) {
   if (!enableAnnotationWarning || annoSet.empty())
@@ -658,7 +657,7 @@ struct FIRRTLModuleLowering
 
 private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
-  void emitInstanceChoiceIncludes(CircuitOp op,
+  void emitInstanceChoiceIncludes(CircuitOp circuit,
                                   CircuitLoweringState &loweringState);
   LogicalResult lowerPorts(ArrayRef<PortInfo> firrtlPorts,
                            SmallVectorImpl<hw::PortInfo> &ports,
@@ -1098,7 +1097,7 @@ static void emitInstanceChoiceIncludeFile(
     // `ifdef <instanceMacroName>
     //  `ERROR<instanceMacroName>__must__not__be__set
     // `else
-    //  `define <instanceMacroName> <InnerRefAttr>
+    //  `define <instanceMacroName> <InnerRef to instance>
     // `endif
     SmallString<256> errorMessage;
     {
@@ -1137,9 +1136,6 @@ static void emitInstanceChoiceIncludeFile(
 /// Creates one include file per public module and option case following the
 /// FIRRTL ABI spec.
 /// Filename format: targets_<PublicModule>_<Option>_<Case>.svh
-/// Macro format: __target_<Option>_<module>_<instance>
-/// Macros are generated here with global scope awareness using
-/// CircuitNamespace.
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &loweringState) {
   if (loweringState.instanceChoicesByModuleAndCase.empty())
