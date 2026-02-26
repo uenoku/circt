@@ -1186,10 +1186,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     LLVM_DEBUG(llvm::dbgs() << "\nProcessing public module: "
                             << publicModule.getModuleName() << "\n");
     auto *rootNode = loweringState.getInstanceGraph().lookup(publicModule);
-    if (!rootNode) {
-      LLVM_DEBUG(llvm::dbgs() << "  No instance graph node found\n");
-      continue;
-    }
+    assert(rootNode && "Public module not found in instance graph");
 
     auto publicModuleName = publicModule.getNameAttr();
 
@@ -1201,13 +1198,9 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
     // Walk all modules reachable from this public module
     for (auto *node : llvm::post_order(rootNode)) {
-      auto module = dyn_cast<FModuleOp>(node->getModule().getOperation());
-      if (!module)
-        continue;
-
       // Check if this module has any instance choices
       auto it = loweringState.instanceChoicesByModuleAndCase.find(
-          module.getNameAttr());
+          node->getModule().getModuleNameAttr());
       if (it == loweringState.instanceChoicesByModuleAndCase.end())
         continue;
 
@@ -1223,9 +1216,6 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       for (auto &info : instances) {
         // Only process default instances (caseName is null)
         if (info.caseName)
-          continue;
-
-        if (!info.hwInstance || !info.hwInstance.getInnerSymAttr())
           continue;
 
         // Use the target symbol directly from the InstanceChoiceInfo

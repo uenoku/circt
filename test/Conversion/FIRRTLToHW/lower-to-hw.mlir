@@ -1988,7 +1988,7 @@ firrtl.circuit "InstanceChoiceTest" {
   }
 
   // CHECK-LABEL: emit.file "targets_InstanceChoiceTest_Opt_FPGA.svh"
-  // CHECK-NEXT: emit.verbatim "// Specialization file for module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
+  // CHECK-NEXT: emit.verbatim "// Specialization file for public module: InstanceChoiceTest\0A// Option: Opt, Case: FPGA\0A"
   // CHECK-NEXT: sv.ifdef @__option__Opt_FPGA {
   // CHECK-NEXT: } else {
   // CHECK-NEXT: sv.macro.def @__option__Opt_FPGA ""
