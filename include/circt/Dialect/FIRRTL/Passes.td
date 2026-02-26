@@ -929,7 +929,8 @@ def AssignInstanceChoiceSymbols : Pass<"firrtl-assign-instance-choice-symbols",
     operations. These symbols will be used as macro names when lowering to
     SystemVerilog.
 
-    The macro symbol can be used as a "real" instance verilog name for the given choice.
+    The macro symbol can be used as a "real" instance verilog name for the
+    given choice.
   }];
   let dependentDialects = ["sv::SVDialect"];
 }
