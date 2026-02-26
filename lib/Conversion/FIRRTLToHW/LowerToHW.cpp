@@ -1134,7 +1134,6 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
 /// Emit global include files for instance choice options.
 /// Creates one include file per public module and option case following the
 /// FIRRTL ABI spec.
-/// Filename format: targets_<PublicModule>_<Option>_<Case>.svh
 void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     CircuitOp circuit, CircuitLoweringState &loweringState) {
   if (loweringState.instanceChoicesByModuleAndCase.empty())
