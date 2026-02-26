@@ -1072,12 +1072,7 @@ static void emitInstanceChoiceIncludeFile(
 
   // Define the global option case macro to avoid conflicts
   // Format: __option__<OptionName>_<CaseName>
-  SmallString<128> optionCaseMacro;
-  {
-    llvm::raw_svector_ostream mos(optionCaseMacro);
-    mos << "__option__" << optionName.getValue() << "_" << caseName.getValue();
-  }
-
+  auto optionCaseMacro = getOptionCaseMacroName(optionName, caseName);
   auto optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
   auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
 
@@ -4285,18 +4280,10 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                                ->getModule();
     altModules.push_back(altModule);
 
-    StringAttr optionCaseMacroAttr;
-    {
-      // Generate the macro name for this option case
-      // Format: __option__<Option>_<Case>
-      SmallString<128> optionCaseMacro;
-      {
-        llvm::raw_svector_ostream os(optionCaseMacro);
-        os << "__option__" << optionName.getValue() << "_"
-           << caseName.getValue();
-      }
-      optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
-    }
+    // Generate the macro name for this option case
+    // Format: __option__<Option>_<Case>
+    auto optionCaseMacro = getOptionCaseMacroName(optionName, caseName);
+    StringAttr optionCaseMacroAttr = builder.getStringAttr(optionCaseMacro);
 
     // Register the macro declaration for this case
     // NOTE: LowerLayer/LowerXMR will be necessary to interact with
