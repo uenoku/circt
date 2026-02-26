@@ -39,7 +39,6 @@
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Path.h"
@@ -244,7 +243,6 @@ struct FIRRTLModuleLowering;
 
 /// This is state shared across the parallel module lowering logic.
 struct CircuitLoweringState {
-
   // Flags indicating whether the circuit uses certain header fragments.
   std::atomic<bool> usedPrintf{false};
   std::atomic<bool> usedAssertVerboseCond{false};
@@ -1169,7 +1167,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     // Grouped by (optionName, caseName)
     DenseMap<CircuitLoweringState::OptionAndCase,
              SmallVector<CircuitLoweringState::LoweredInstanceChoice>>
-        infos;
+        choicesInHierarchy;
 
     // Walk all modules reachable from this public module
     for (auto *node : llvm::post_order(rootNode)) {
@@ -1181,14 +1179,14 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
 
       // Accumulate all instance choices from this module
       for (auto &[innerKey, instances] : it->second)
-        infos[innerKey].append(instances.begin(), instances.end());
+        choicesInHierarchy[innerKey].append(instances.begin(), instances.end());
     }
 
     // Create header files for each option case combination
     // Sort keys to ensure deterministic output order
     SmallVector<std::pair<StringAttr, StringAttr>> sortedKeys;
     // Insert inline macro definitions into module bodies for default instances
-    for (auto &[key, instances] : infos)
+    for (auto &[key, instances] : choicesInHierarchy)
       sortedKeys.push_back(key);
 
     llvm::sort(sortedKeys, [](const auto &a, const auto &b) {
@@ -1201,8 +1199,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
     for (auto key : sortedKeys)
       emitInstanceChoiceIncludeFile(builder, circuit, publicModuleName,
                                     /*optionName=*/key.first,
-                                    /*caseName=*/key.second, infos[key],
-                                    circuitNamespace);
+                                    /*caseName=*/key.second,
+                                    choicesInHierarchy[key], circuitNamespace);
   }
 }
 
