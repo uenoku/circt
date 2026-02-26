@@ -594,7 +594,6 @@ private:
   llvm::sys::SmartMutex<true> emitFilesMutex;
 };
 
-} // namespace
 
 void CircuitLoweringState::processRemainingAnnotations(
     Operation *op, const AnnotationSet &annoSet) {
@@ -645,6 +644,8 @@ void CircuitLoweringState::processRemainingAnnotations(
                                         "' still remaining after LowerToHW");
   }
 }
+
+} // namespace
 
 namespace {
 struct FIRRTLModuleLowering
@@ -873,14 +874,15 @@ void FIRRTLModuleLowering::runOnOperation() {
   for (auto oldNew : state.oldToNewModuleMap)
     oldNew.first->erase();
 
-  // Emit global include files for instance choice options.
-  emitInstanceChoiceIncludes(circuit, state);
   if (!state.macroDeclNames.empty()) {
     ImplicitLocOpBuilder b(UnknownLoc::get(&getContext()), circuit);
     for (auto name : state.macroDeclNames) {
       sv::MacroDeclOp::create(b, name);
     }
   }
+
+  // Emit global include files for instance choice options.
+  emitInstanceChoiceIncludes(circuit, state);
 
   // Emit all the macros and preprocessor gunk at the start of the file.
   lowerFileHeader(circuit, state);
