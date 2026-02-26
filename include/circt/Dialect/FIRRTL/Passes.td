@@ -921,14 +921,15 @@ def CheckInstanceChoice : Pass<"firrtl-check-instance-choice", "firrtl::CircuitO
   ];
 }
 
-def AssignInstanceChoiceSymbols : Pass<"firrtl-assign-instance-choice-symbols", "firrtl::CircuitOp"> {
+def AssignInstanceChoiceSymbols : Pass<"firrtl-assign-instance-choice-symbols",
+                                       "firrtl::CircuitOp"> {
   let summary = "Assign target symbols to instance choices";
   let description = [{
     This pass assigns globally unique target symbols to all instance choice
     operations. These symbols will be used as macro names when lowering to
-    SystemVerilog. The pass generates macro names in the format:
-    `__target_<Option>_<module>_<instance>` and ensures global uniqueness
-    using the circuit namespace.
+    SystemVerilog.
+
+    The macro symbol can be used as a "real" instance verilog name for the given choice.
   }];
   let dependentDialects = ["sv::SVDialect"];
 }
