@@ -140,7 +140,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     dataFlowClasses = &eq;
 
     InstanceGraph &instanceGraph = getAnalysis<InstanceGraph>();
-    SymbolTable &symTable = getAnalysis<SymbolTable>();
     SmallVector<RefResolveOp> resolveOps;
     SmallVector<RefSubOp> indexingOps;
     SmallVector<Operation *> forceAndReleaseOps;
@@ -256,7 +255,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           .Case<InstanceOp>(
               [&](auto inst) { return handleInstanceOp(inst, instanceGraph); })
           .Case<InstanceChoiceOp>([&](auto inst) {
-            return handleInstanceChoiceOp(inst, instanceGraph, symTable);
+            return handleInstanceChoiceOp(inst, instanceGraph);
           })
           .Case<FConnectLike>([&](FConnectLike connect) {
             // Ignore BaseType.
@@ -780,8 +779,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.r
   ///   `endif
   LogicalResult handleInstanceChoiceOp(InstanceChoiceOp inst,
-                                       InstanceGraph &instanceGraph,
-                                       SymbolTable &symTable) {
+                                       InstanceGraph &instanceGraph) {
     auto parentModule = inst->getParentOfType<FModuleOp>();
 
     // This should have been set by the PopulateInstanceChoiceSymbols pass.
