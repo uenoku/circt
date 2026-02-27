@@ -126,7 +126,7 @@ private:
 class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   /// Information about an instance choice ref port for header generation.
   struct InstanceChoiceRefPortInfo {
-    StringAttr macroName;  // e.g., ref_Top_inst_probe
+    StringAttr macroName; // e.g., ref_Top_inst_probe
     size_t portNum;
     FlatSymbolRefAttr instanceMacro;
     StringAttr optionName;
@@ -692,7 +692,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     }
 
     // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
-    if (auto iter = xmrPathSuffix.find(lastIndex); iter != xmrPathSuffix.end()) {
+    if (auto iter = xmrPathSuffix.find(lastIndex);
+        iter != xmrPathSuffix.end()) {
       if (!refSendPath.empty())
         suffix.append(".");
       suffix.append(iter->getSecond());
@@ -801,9 +802,10 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
   /// Generate ifdef-guarded macro definition for an instance choice ref port.
   /// This creates nested ifdef/elsif/else structure inline in the file builder.
-  LogicalResult generateInstanceChoiceRefPortMacro(
-      ImplicitLocOpBuilder &fileBuilder, InstanceChoiceRefPortInfo &info,
-      InstanceGraph &instanceGraph) {
+  LogicalResult
+  generateInstanceChoiceRefPortMacro(ImplicitLocOpBuilder &fileBuilder,
+                                     InstanceChoiceRefPortInfo &info,
+                                     InstanceGraph &instanceGraph) {
     // Path information for a module's ref port.
     struct PathInfo {
       FlatSymbolRefAttr hierPath;
@@ -974,24 +976,21 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     SmallVector<InstanceChoiceRefPortInfo> instanceChoiceRefPorts;
     collectInstanceChoiceRefPorts(module, instanceGraph,
                                   instanceChoiceRefPorts);
-    bool hasInstanceChoicePorts = !instanceChoiceRefPorts.empty();
 
     // Create a file only if the module has at least one ref port.
-    if (ports.empty() && !hasInstanceChoicePorts)
+    if (ports.empty() && instanceChoiceRefPorts.empty())
       return success();
 
     // The macros will be exported to a `ref_<module-name>.sv` file.
     // In the IR, the file is inserted before the module.
     auto fileBuilder = ImplicitLocOpBuilder(module.getLoc(), module);
-    SmallString<128> fileName;
-    if (!ports.empty()) {
-      fileName = circuitRefPrefix;
-    } else {
-      // Use module name for instance choice only case.
-      fileName = "ref_";
-      fileName.append(module.getName());
-    }
+    // Insert a macro with the format:
+    // ref_<module-name>_<ref-name> <path>
+    if (circuitRefPrefix.empty())
+      getRefABIPrefix(module, circuitRefPrefix);
+    SmallString<128> fileName = circuitRefPrefix;
     fileName.append(".sv");
+    bool encounteredError = false;
 
     emit::FileOp::create(fileBuilder, fileName, [&] {
       // Generate macro definitions for module ref ports.
@@ -1001,16 +1000,16 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       }
 
       // Generate ifdef-guarded macro definitions for instance choice ref ports.
-      if (hasInstanceChoicePorts) {
-        for (auto &info : instanceChoiceRefPorts) {
-          if (failed(generateInstanceChoiceRefPortMacro(fileBuilder, info,
-                                                        instanceGraph)))
-            return;
+      for (auto &info : instanceChoiceRefPorts) {
+        if (failed(generateInstanceChoiceRefPortMacro(fileBuilder, info,
+                                                      instanceGraph))) {
+          encounteredError = true;
+          return;
         }
       }
     });
 
-    return success();
+    return success(!encounteredError);
   }
 
   /// Get the cached namespace for a module.
