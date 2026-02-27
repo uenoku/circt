@@ -893,8 +893,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     auto fileBuilder = ImplicitLocOpBuilder(inst.getLoc(), parentModule);
     emit::FileOp::create(fileBuilder, fileName, [&] {
       for (auto [macroNameAttr, portNum] : refPorts) {
-        // Build the ifdef structure with macro definitions.
-        // Format:
+        // Build the ifdef structure with macro definitions using SV dialect ops.
+        // Structure:
         //   `ifdef __option__<Option>_<Case1>
         //     `define ref_<parent>_<instance>_<port> `__target_<Option>_<Parent>_<Instance>.<path1>
         //   `elsif __option__<Option>_<Case2>
@@ -902,82 +902,87 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         //   `else
         //     `define ref_<parent>_<instance>_<port> `__target_<Option>_<Parent>_<Instance>.<default_path>
         //   `endif
-        SmallString<512> macroBody;
-        llvm::raw_svector_ostream os(macroBody);
 
-        // Collect all HierPath symbols and build the macro body.
-        // Each case gets its own symbol index.
+        // Collect all HierPath symbols for this macro.
         SmallVector<Attribute> symbols;
         DenseMap<Attribute, size_t> symbolIndices;
 
-        bool first = true;
-        for (auto [caseRef, moduleRef] : targetChoices) {
-          // Get the leaf case name (e.g., "FPGA" from "@Platform::@FPGA")
-          auto caseName = caseRef.getLeafReference().getValue();
-
-          if (first) {
-            os << "`ifdef __option__" << optionName.getValue() << "_"
-               << caseName << "\n";
-            first = false;
-          } else {
-            os << "`elsif __option__" << optionName.getValue() << "_"
-               << caseName << "\n";
-          }
-
-          // Get the XMR path for this target module's ref port.
-          auto pathInfo = getModuleXMRPath(moduleRef, portNum);
-          os << "  `define " << macroNameAttr.getValue() << " `"
-             << instanceMacro.getValue();
-          if (pathInfo) {
-            if (pathInfo->hierPath) {
-              // Get or assign a symbol index for this HierPath.
-              auto it = symbolIndices.find(pathInfo->hierPath);
-              if (it == symbolIndices.end()) {
-                size_t idx = symbols.size();
-                symbols.push_back(pathInfo->hierPath);
-                symbolIndices[pathInfo->hierPath] = idx;
-                os << ".{{" << idx << "}}";
-              } else {
-                os << ".{{" << it->second << "}}";
-              }
-            }
-            if (!pathInfo->suffix.empty())
-              os << (pathInfo->hierPath ? "" : ".") << pathInfo->suffix;
-          }
-          os << "\n";
-        }
-
-        // Default case.
-        os << "`else\n";
-        auto defaultPathInfo = getModuleXMRPath(defaultTarget, portNum);
-        os << "  `define " << macroNameAttr.getValue() << " `"
-           << instanceMacro.getValue();
-        if (defaultPathInfo) {
-          if (defaultPathInfo->hierPath) {
+        // Helper to build the macro value string with HierPath substitution.
+        auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
+          SmallString<128> value;
+          value.append("`");
+          value.append(instanceMacro.getValue());
+          if (pathInfo.hierPath) {
             // Get or assign a symbol index for this HierPath.
-            auto it = symbolIndices.find(defaultPathInfo->hierPath);
+            auto it = symbolIndices.find(pathInfo.hierPath);
+            size_t idx;
             if (it == symbolIndices.end()) {
-              size_t idx = symbols.size();
-              symbols.push_back(defaultPathInfo->hierPath);
-              symbolIndices[defaultPathInfo->hierPath] = idx;
-              os << ".{{" << idx << "}}";
+              idx = symbols.size();
+              symbols.push_back(pathInfo.hierPath);
+              symbolIndices[pathInfo.hierPath] = idx;
             } else {
-              os << ".{{" << it->second << "}}";
+              idx = it->second;
             }
+            value.append(".{{");
+            value.append(std::to_string(idx));
+            value.append("}}");
           }
-          if (!defaultPathInfo->suffix.empty())
-            os << (defaultPathInfo->hierPath ? "" : ".")
-               << defaultPathInfo->suffix;
-        }
-        os << "\n";
-        os << "`endif";
+          if (!pathInfo.suffix.empty()) {
+            if (!pathInfo.hierPath)
+              value.append(".");
+            value.append(pathInfo.suffix);
+          }
+          return value.str().str();
+        };
 
-        // Create the verbatim op with symbols for substitution.
-        auto symbolsAttr = symbols.empty()
-                               ? ArrayAttr{}
-                               : fileBuilder.getArrayAttr(symbols);
-        sv::VerbatimOp::create(fileBuilder, macroBody, ValueRange{},
-                               symbolsAttr);
+        // Build option macro names for each case.
+        SmallVector<StringRef> macroNames;
+        SmallVector<std::string> macroNameStorage;
+        for (auto [caseRef, moduleRef] : targetChoices) {
+          auto caseName = caseRef.getLeafReference().getValue();
+          SmallString<64> optionMacro;
+          llvm::raw_svector_ostream(optionMacro)
+              << "__option__" << optionName.getValue() << "_" << caseName;
+          macroNameStorage.push_back(optionMacro.str().str());
+          macroNames.push_back(macroNameStorage.back());
+        }
+
+        // Use createNestedIfDefs to build the ifdef chain.
+        sv::createNestedIfDefs(
+            macroNames,
+            /*ifdefCtor=*/
+            [&](StringRef macro, std::function<void()> thenCtor,
+                std::function<void()> elseCtor) {
+              sv::IfDefOp::create(fileBuilder, macro, std::move(thenCtor),
+                                  std::move(elseCtor));
+            },
+            /*thenCtor=*/
+            [&](size_t index) {
+              auto [caseRef, moduleRef] = targetChoices[index];
+              auto pathInfo = getModuleXMRPath(moduleRef, portNum);
+              std::string macroValue =
+                  pathInfo ? buildMacroValue(*pathInfo)
+                           : ("`" + instanceMacro.getValue().str());
+
+              sv::MacroDefOp::create(
+                  fileBuilder, macroNameAttr,
+                  fileBuilder.getStringAttr(macroValue),
+                  symbols.empty() ? ArrayAttr{}
+                                  : fileBuilder.getArrayAttr(symbols));
+            },
+            /*defaultCtor=*/
+            [&]() {
+              auto defaultPathInfo = getModuleXMRPath(defaultTarget, portNum);
+              std::string macroValue =
+                  defaultPathInfo ? buildMacroValue(*defaultPathInfo)
+                                  : ("`" + instanceMacro.getValue().str());
+
+              sv::MacroDefOp::create(
+                  fileBuilder, macroNameAttr,
+                  fileBuilder.getStringAttr(macroValue),
+                  symbols.empty() ? ArrayAttr{}
+                                  : fileBuilder.getArrayAttr(symbols));
+            });
       }
     });
 
