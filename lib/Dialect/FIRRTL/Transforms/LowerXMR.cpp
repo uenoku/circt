@@ -471,6 +471,69 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                               "_" + mod.getPortName(portIndex));
   }
 
+  /// Resolve the XMR path for a ref value.
+  /// Returns the HierPath symbol and suffix string for the path.
+  /// If errorIfNotFound is false, returns failure silently if path not found.
+  LogicalResult resolveRefPath(mlir::TypedValue<RefType> refVal,
+                               ImplicitLocOpBuilder &builder,
+                               FlatSymbolRefAttr &hierPathRef,
+                               SmallString<128> &suffix,
+                               bool errorIfNotFound = true) {
+    auto remoteOpPath = getRemoteRefSend(refVal, errorIfNotFound);
+    if (!remoteOpPath)
+      return failure();
+
+    // Collect InnerRefAttrs and indexing operations from the path.
+    SmallVector<Attribute> refSendPath;
+    SmallVector<RefSubOp> indexing;
+    size_t lastIndex = *remoteOpPath;
+
+    while (remoteOpPath) {
+      lastIndex = *remoteOpPath;
+      auto entr = refSendPathList[*remoteOpPath];
+      if (entr.info) {
+        TypeSwitch<XMRNode::SymOrIndexOp>(entr.info)
+            .Case<Attribute>([&](auto attr) {
+              // If the path is a singular verbatim expression, the attribute
+              // may be null.
+              if (attr)
+                refSendPath.push_back(attr);
+            })
+            .Case<Operation *>(
+                [&](auto *op) { indexing.push_back(cast<RefSubOp>(op)); });
+      }
+      remoteOpPath = entr.next;
+    }
+
+    // Create HierPath from the collected InnerRefAttrs.
+    if (!refSendPath.empty()) {
+      auto hierPath = hierPathCache->getOrCreatePath(
+          builder.getArrayAttr(refSendPath), builder.getLoc());
+      hierPathRef = FlatSymbolRefAttr::get(hierPath.getSymNameAttr());
+    }
+
+    // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
+    if (auto iter = xmrPathSuffix.find(lastIndex);
+        iter != xmrPathSuffix.end()) {
+      if (!refSendPath.empty())
+        suffix.append(".");
+      suffix.append(iter->getSecond());
+    }
+
+    // Append indexing operations to the suffix.
+    for (auto subOp : llvm::reverse(indexing)) {
+      TypeSwitch<FIRRTLBaseType>(subOp.getInput().getType().getType())
+          .Case<FVectorType, OpenVectorType>([&](auto) {
+            (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(suffix);
+          })
+          .Case<BundleType, OpenBundleType>([&](auto bundleType) {
+            suffix.append({".", bundleType.getElementName(subOp.getIndex())});
+          });
+    }
+
+    return success();
+  }
+
   LogicalResult resolveReferencePath(mlir::TypedValue<RefType> refVal,
                                      ImplicitLocOpBuilder builder,
                                      mlir::FlatSymbolRefAttr &ref,
@@ -647,69 +710,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
             dataFlowClasses->getOrInsertLeaderValue(instanceResult));
       }
     }
-    return success();
-  }
-
-  /// Resolve the XMR path for a ref value.
-  /// Returns the HierPath symbol and suffix string for the path.
-  /// If errorIfNotFound is false, returns failure silently if path not found.
-  LogicalResult resolveRefPath(mlir::TypedValue<RefType> refVal,
-                               ImplicitLocOpBuilder &builder,
-                               FlatSymbolRefAttr &hierPathRef,
-                               SmallString<128> &suffix,
-                               bool errorIfNotFound = true) {
-    auto remoteOpPath = getRemoteRefSend(refVal, errorIfNotFound);
-    if (!remoteOpPath)
-      return failure();
-
-    // Collect InnerRefAttrs and indexing operations from the path.
-    SmallVector<Attribute> refSendPath;
-    SmallVector<RefSubOp> indexing;
-    size_t lastIndex = *remoteOpPath;
-
-    while (remoteOpPath) {
-      lastIndex = *remoteOpPath;
-      auto entr = refSendPathList[*remoteOpPath];
-      if (entr.info) {
-        TypeSwitch<XMRNode::SymOrIndexOp>(entr.info)
-            .Case<Attribute>([&](auto attr) {
-              // If the path is a singular verbatim expression, the attribute
-              // may be null.
-              if (attr)
-                refSendPath.push_back(attr);
-            })
-            .Case<Operation *>(
-                [&](auto *op) { indexing.push_back(cast<RefSubOp>(op)); });
-      }
-      remoteOpPath = entr.next;
-    }
-
-    // Create HierPath from the collected InnerRefAttrs.
-    if (!refSendPath.empty()) {
-      auto hierPath = hierPathCache->getOrCreatePath(
-          builder.getArrayAttr(refSendPath), builder.getLoc());
-      hierPathRef = FlatSymbolRefAttr::get(hierPath.getSymNameAttr());
-    }
-
-    // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
-    if (auto iter = xmrPathSuffix.find(lastIndex);
-        iter != xmrPathSuffix.end()) {
-      if (!refSendPath.empty())
-        suffix.append(".");
-      suffix.append(iter->getSecond());
-    }
-
-    // Append indexing operations to the suffix.
-    for (auto subOp : llvm::reverse(indexing)) {
-      TypeSwitch<FIRRTLBaseType>(subOp.getInput().getType().getType())
-          .Case<FVectorType, OpenVectorType>([&](auto) {
-            (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(suffix);
-          })
-          .Case<BundleType, OpenBundleType>([&](auto bundleType) {
-            suffix.append({".", bundleType.getElementName(subOp.getIndex())});
-          });
-    }
-
     return success();
   }
 
