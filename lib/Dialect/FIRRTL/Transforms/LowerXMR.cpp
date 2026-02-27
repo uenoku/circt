@@ -126,8 +126,7 @@ private:
 class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   /// Information about an instance choice ref port for header generation.
   struct InstanceChoiceRefPortInfo {
-    StringAttr publicMacroName;   // e.g., ref_Top_inst_probe
-    StringAttr internalMacroName; // e.g., _ref_Top_inst_probe_internal
+    StringAttr macroName;  // e.g., ref_Top_inst_probe
     size_t portNum;
     FlatSymbolRefAttr instanceMacro;
     StringAttr optionName;
@@ -773,18 +772,16 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   /// Handle XMR lowering for InstanceChoiceOp.
   /// Collects ref port information for later header generation.
   ///
-  /// Creates internal reference macros that will be defined in target-specific
-  /// header files, and public macros that reference the internal ones.
+  /// Creates public macros with ifdef guards inlined in ref_<module>.sv.
   ///
-  /// Example output:
-  ///   In targets_Platform_FPGA.svh:
-  ///     `define _ref_Top_inst_probe_internal
-  ///     `__target_Platform_Top_inst.inner.r
-  ///   In targets_Platform_ASIC.svh:
-  ///     `define _ref_Top_inst_probe_internal
-  ///     `__target_Platform_Top_inst.middle.deep.r
-  ///   In ref_Top.sv:
-  ///     `define ref_Top_inst_probe `_ref_Top_inst_probe_internal
+  /// Example output in ref_Top.sv:
+  ///   `ifdef __option__Platform_FPGA
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.inner.r
+  ///   `elsif __option__Platform_ASIC
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.middle.deep.r
+  ///   `else
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.r
+  ///   `endif
   LogicalResult handleInstanceChoiceOp(InstanceChoiceOp inst,
                                        InstanceGraph &instanceGraph) {
     auto parentModule = inst->getParentOfType<FModuleOp>();
@@ -817,26 +814,17 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           isZeroWidth(type_cast<RefType>(instanceResult.getType()).getType()))
         continue;
 
-      // Generate public macro name: ref_<parent>_<instance>_<port>
-      SmallString<128> publicMacroName;
-      llvm::raw_svector_ostream(publicMacroName)
-          << "ref_" << parentModule.getName() << "_" << inst.getInstanceName()
-          << "_" << inst.getPortName(portNum);
-
       // Generate internal macro name: _ref_<parent>_<instance>_<port>_internal
+      // This is what the code actually uses
       SmallString<128> internalMacroName;
       llvm::raw_svector_ostream(internalMacroName)
           << "_ref_" << parentModule.getName() << "_" << inst.getInstanceName()
           << "_" << inst.getPortName(portNum) << "_internal";
 
-      auto publicMacroNameAttr =
-          StringAttr::get(&getContext(), publicMacroName);
       auto internalMacroNameAttr =
           StringAttr::get(&getContext(), internalMacroName);
 
-      // Declare both public and internal macros
-      sv::MacroDeclOp::create(declBuilder, publicMacroNameAttr, ArrayAttr(),
-                              StringAttr());
+      // Declare the internal macro
       sv::MacroDeclOp::create(declBuilder, internalMacroNameAttr, ArrayAttr(),
                               StringAttr());
 
@@ -849,18 +837,18 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       // Store information for header generation.
       // We'll collect these later when processing public modules.
       allInstanceChoiceRefPorts[parentModule].push_back(
-          {publicMacroNameAttr, internalMacroNameAttr, portNum, instanceMacro,
-           optionName, targetChoices, defaultTarget, inst});
+          {internalMacroNameAttr, portNum, instanceMacro, optionName,
+           targetChoices, defaultTarget, inst});
     }
 
     return success();
   }
 
-  /// Populate target-specific header files with internal macro definitions
-  /// for an instance choice ref port.
-  LogicalResult populateInstanceChoiceRefPortHeaders(
-      InstanceChoiceRefPortInfo &info, InstanceGraph &instanceGraph,
-      DenseMap<StringAttr, emit::FileOp> &headerFileMap) {
+  /// Generate ifdef-guarded macro definition for an instance choice ref port.
+  /// This creates nested ifdef/elsif/else structure inline in the file builder.
+  LogicalResult generateInstanceChoiceRefPortMacro(
+      ImplicitLocOpBuilder &fileBuilder, InstanceChoiceRefPortInfo &info,
+      InstanceGraph &instanceGraph) {
     // Path information for a module's ref port.
     struct PathInfo {
       FlatSymbolRefAttr hierPath;
@@ -897,13 +885,16 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       return pathInfo;
     };
 
+    SmallVector<Attribute> symbols;
+    DenseMap<Attribute, size_t> symbolIndices;
+
+    // Add instance macro to symbols array (always at index 0).
+    symbols.push_back(info.instanceMacro);
+
     // Build macro value with symbol substitution.
     // {{0}} = instance macro, {{1+}} = HierPaths
-    auto buildMacroValue =
-        [&](const PathInfo &pathInfo,
-            SmallVectorImpl<Attribute> &symbols) -> std::string {
+    auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
       SmallString<128> value("{{0}}");
-      DenseMap<Attribute, size_t> symbolIndices;
 
       if (pathInfo.hierPath) {
         auto [it, inserted] =
@@ -923,38 +914,40 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       return value.str().str();
     };
 
-    // Populate each target-specific header file
+    // Build option macro names for ifdef chain.
+    SmallVector<StringRef> macroNames;
+    SmallVector<std::string> macroNameStorage;
     for (auto [caseRef, moduleRef] : info.targetChoices) {
-      auto caseName = caseRef.getLeafReference();
-
-      // Find the corresponding header file: targets_<option>_<case>.svh
-      SmallString<128> fileName;
-      llvm::raw_svector_ostream(fileName)
-          << "targets_" << info.optionName.getValue() << "_"
-          << caseName.getValue() << ".svh";
-
-      auto fileNameAttr = StringAttr::get(&getContext(), fileName);
-      auto it = headerFileMap.find(fileNameAttr);
-      if (it == headerFileMap.end())
-        return info.inst.emitError("could not find header file: ") << fileName;
-
-      emit::FileOp targetFile = it->second;
-
-      // Add the internal macro definition to this file
-      auto pathInfo = getModuleXMRPath(moduleRef, info.portNum);
-      if (!pathInfo)
-        continue;
-
-      SmallVector<Attribute> symbols;
-      symbols.push_back(info.instanceMacro);
-      std::string macroValue = buildMacroValue(*pathInfo, symbols);
-
-      auto builder = ImplicitLocOpBuilder::atBlockEnd(
-          info.inst.getLoc(), &targetFile.getBodyRegion().front());
-      sv::MacroDefOp::create(builder, info.internalMacroName,
-                             builder.getStringAttr(macroValue),
-                             builder.getArrayAttr(symbols));
+      SmallString<64> optionMacro("__option__");
+      optionMacro.append(info.optionName.getValue());
+      optionMacro.append("_");
+      optionMacro.append(caseRef.getLeafReference().getValue());
+      macroNameStorage.push_back(optionMacro.str().str());
+      macroNames.push_back(macroNameStorage.back());
     }
+
+    // Create nested ifdef structure for each target choice.
+    auto createMacroDef = [&](std::optional<PathInfo> pathInfo) {
+      std::string macroValue = pathInfo ? buildMacroValue(*pathInfo) : "{{0}}";
+      sv::MacroDefOp::create(fileBuilder, info.macroName,
+                             fileBuilder.getStringAttr(macroValue),
+                             fileBuilder.getArrayAttr(symbols));
+    };
+
+    sv::createNestedIfDefs(
+        macroNames,
+        [&](StringRef macro, std::function<void()> thenCtor,
+            std::function<void()> elseCtor) {
+          sv::IfDefOp::create(fileBuilder, macro, std::move(thenCtor),
+                              std::move(elseCtor));
+        },
+        [&](size_t index) {
+          createMacroDef(
+              getModuleXMRPath(info.targetChoices[index].second, info.portNum));
+        },
+        [&]() {
+          createMacroDef(getModuleXMRPath(info.defaultTarget, info.portNum));
+        });
 
     return success();
   }
@@ -1045,22 +1038,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     }
     fileName.append(".sv");
 
-    // Populate target-specific header files with internal macros first
-    if (hasInstanceChoicePorts) {
-      // Build a map from header file name to emit::FileOp
-      DenseMap<StringAttr, emit::FileOp> headerFileMap;
-      auto circuit = getOperation();
-      for (auto fileOp : circuit.getOps<emit::FileOp>()) {
-        headerFileMap[fileOp.getFileNameAttr()] = fileOp;
-      }
-
-      for (auto &info : instanceChoiceRefPorts) {
-        if (failed(populateInstanceChoiceRefPortHeaders(info, instanceGraph,
-                                                        headerFileMap)))
-          return failure();
-      }
-    }
-
     emit::FileOp::create(fileBuilder, fileName, [&] {
       // Generate macro definitions for module ref ports.
       for (auto [macroName, formatString, symbols] : ports) {
@@ -1068,16 +1045,12 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                formatString, symbols);
       }
 
-      // Generate public macro definitions for instance choice ref ports.
-      // These reference the internal macros defined in target-specific headers.
+      // Generate ifdef-guarded macro definitions for instance choice ref ports.
       if (hasInstanceChoicePorts) {
         for (auto &info : instanceChoiceRefPorts) {
-          // Define: `define ref_Top_inst_probe `_ref_Top_inst_probe_internal
-          SmallString<128> macroValue("`");
-          macroValue.append(info.internalMacroName.getValue());
-          sv::MacroDefOp::create(fileBuilder, info.publicMacroName,
-                                 fileBuilder.getStringAttr(macroValue),
-                                 ArrayAttr{});
+          if (failed(generateInstanceChoiceRefPortMacro(fileBuilder, info,
+                                                        instanceGraph)))
+            return;
         }
       }
     });

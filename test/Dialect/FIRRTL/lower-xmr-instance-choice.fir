@@ -98,21 +98,64 @@ circuit Top :
     define probe = probe(r) @[test_instance_choice_xmr.mlir 82:5]
     define rwprobe = rwprobe(r) @[test_instance_choice_xmr.mlir 83:5]
 
+  module OptDefaultTarget : @[test_instance_choice_xmr.mlir 60:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 60:40]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 60:57]
+    output data : UInt<8> @[test_instance_choice_xmr.mlir 60:65]
+    output probe : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 60:93]
+
+    reg r : UInt<8>, clk @[test_instance_choice_xmr.mlir 61:10]
+    connect r, in @[test_instance_choice_xmr.mlir 63:5]
+    connect data, r @[test_instance_choice_xmr.mlir 64:5]
+    define probe = probe(r) @[test_instance_choice_xmr.mlir 66:5]
+
+  module OptFastTarget : @[test_instance_choice_xmr.mlir 71:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 71:40]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 71:57]
+    output data : UInt<8> @[test_instance_choice_xmr.mlir 71:65]
+    output probe : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 71:93]
+
+    reg r : UInt<8>, clk @[test_instance_choice_xmr.mlir 72:10]
+    connect r, in @[test_instance_choice_xmr.mlir 74:5]
+    connect data, r @[test_instance_choice_xmr.mlir 75:5]
+    define probe = probe(r) @[test_instance_choice_xmr.mlir 77:5]
+
+  module OptSlowTarget : @[test_instance_choice_xmr.mlir 82:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 82:40]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 82:57]
+    output data : UInt<8> @[test_instance_choice_xmr.mlir 82:65]
+    output probe : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 82:93]
+
+    reg r : UInt<8>, clk @[test_instance_choice_xmr.mlir 83:10]
+    connect r, in @[test_instance_choice_xmr.mlir 85:5]
+    connect data, r @[test_instance_choice_xmr.mlir 86:5]
+    define probe = probe(r) @[test_instance_choice_xmr.mlir 88:5]
+
   module InstanceChoiceProbe : @[test_instance_choice_xmr.mlir 90:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 90:41]
     input in: UInt<8> @[test_instance_choice_xmr.mlir 90:58]
     output data : UInt<8> @[test_instance_choice_xmr.mlir 90:66]
-    output out : UInt<8> @[test_instance_choice_xmr.mlir 90:94]
-    output probe : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 90:122]
+    output out1 : UInt<8> @[test_instance_choice_xmr.mlir 90:94]
+    output out2 : UInt<8> @[test_instance_choice_xmr.mlir 90:122]
+    output probe1 : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 90:150]
+    output probe2 : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 90:178]
 
-    instchoice inst of DefaultTarget, Platform : @[test_instance_choice_xmr.mlir 63:42]
+    instchoice inst1 of DefaultTarget, Platform : @[test_instance_choice_xmr.mlir 63:42]
       FPGA => FPGATarget
       ASIC => ASICTarget
-    connect inst.clk, clk @[test_instance_choice_xmr.mlir 68:5]
-    connect inst.in, in @[test_instance_choice_xmr.mlir 68:5]
-    connect data, inst.data @[test_instance_choice_xmr.mlir 69:5]
-    connect out, read(inst.probe) @[test_instance_choice_xmr.mlir 72:5]
-    define probe = inst.probe @[test_instance_choice_xmr.mlir 73:5]
+    connect inst1.clk, clk @[test_instance_choice_xmr.mlir 68:5]
+    connect inst1.in, in @[test_instance_choice_xmr.mlir 68:5]
+    connect data, inst1.data @[test_instance_choice_xmr.mlir 69:5]
+    connect out1, read(inst1.probe) @[test_instance_choice_xmr.mlir 72:5]
+    define probe1 = inst1.probe @[test_instance_choice_xmr.mlir 73:5]
+
+    instchoice inst2 of OptDefaultTarget, Optimization : @[test_instance_choice_xmr.mlir 80:42]
+      Fast => OptFastTarget
+      Slow => OptSlowTarget
+    connect inst2.clk, clk @[test_instance_choice_xmr.mlir 85:5]
+    connect inst2.in, read(inst1.probe) @[test_instance_choice_xmr.mlir 86:5]
+    connect out2, read(inst2.probe) @[test_instance_choice_xmr.mlir 88:5]
+    define probe2 = inst2.probe @[test_instance_choice_xmr.mlir 89:5]
 
   public module Top : @[test_instance_choice_xmr.mlir 110:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 110:41]
@@ -120,12 +163,14 @@ circuit Top :
     output data1 : UInt<8> @[test_instance_choice_xmr.mlir 110:66]
     output data2 : UInt<8> @[test_instance_choice_xmr.mlir 110:94]
     output out1 : UInt<8> @[test_instance_choice_xmr.mlir 110:122]
+    output out2 : UInt<8> @[test_instance_choice_xmr.mlir 110:150]
 
     inst sub1 of InstanceChoiceProbe @[test_instance_choice_xmr.mlir 111:42]
     connect sub1.clk, clk @[test_instance_choice_xmr.mlir 112:5]
     connect sub1.in, in @[test_instance_choice_xmr.mlir 112:5]
     connect data1, sub1.data @[test_instance_choice_xmr.mlir 113:5]
-    connect out1, sub1.out @[test_instance_choice_xmr.mlir 114:5]
+    connect out1, sub1.out1 @[test_instance_choice_xmr.mlir 114:5]
+    connect out2, sub1.out2 @[test_instance_choice_xmr.mlir 115:5]
 
     inst sub2 of InstanceChoiceRWProbe @[test_instance_choice_xmr.mlir 116:42]
     connect sub2.clk, clk @[test_instance_choice_xmr.mlir 117:5]
@@ -147,6 +192,28 @@ circuit Top :
     define rwprobe = inst.rwprobe @[test_instance_choice_xmr.mlir 108:5]
 
 ; CHECK-LABEL: module InstanceChoiceProbe
-; CHECK: assign out = `ref_InstanceChoiceProbe_inst_probe;
+; CHECK: assign out1 = _ref_InstanceChoiceProbe_inst1_probe_internal;
+; CHECK: assign out2 = `_ref_InstanceChoiceProbe_inst2_probe_internal;
 
-; CHECK-LABEL: module Top
+; Verify that ref_Top.sv contains ifdef guards for both Platform and Optimization options
+; This demonstrates that multiple instance choices with different options work correctly
+; and all ifdef logic is inlined in a single ref_Top.sv file
+; CHECK-LABEL: FILE "ref_Top.sv"
+; CHECK: `ifdef __option__Platform_FPGA
+; CHECK: `define _ref_InstanceChoiceProbe_inst1_probe_internal
+; CHECK: `else
+; CHECK: `ifdef __option__Platform_ASIC
+; CHECK: `define _ref_InstanceChoiceProbe_inst1_probe_internal
+; CHECK: `else
+; CHECK: `define _ref_InstanceChoiceProbe_inst1_probe_internal
+; CHECK: `endif
+; CHECK: `endif
+; CHECK: `ifdef __option__Optimization_Fast
+; CHECK: `define _ref_InstanceChoiceProbe_inst2_probe_internal
+; CHECK: `else
+; CHECK: `ifdef __option__Optimization_Slow
+; CHECK: `define _ref_InstanceChoiceProbe_inst2_probe_internal
+; CHECK: `else
+; CHECK: `define _ref_InstanceChoiceProbe_inst2_probe_internal
+; CHECK: `endif
+; CHECK: `endif
