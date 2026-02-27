@@ -476,72 +476,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                      mlir::FlatSymbolRefAttr &ref,
                                      SmallString<128> &stringLeaf) {
     assert(stringLeaf.empty());
-
-    auto remoteOpPath = getRemoteRefSend(refVal);
-    if (!remoteOpPath)
-      return failure();
-    SmallVector<Attribute> refSendPath;
-    SmallVector<RefSubOp> indexing;
-    size_t lastIndex;
-    while (remoteOpPath) {
-      lastIndex = *remoteOpPath;
-      auto entr = refSendPathList[*remoteOpPath];
-      if (entr.info)
-        TypeSwitch<XMRNode::SymOrIndexOp>(entr.info)
-            .Case<Attribute>([&](auto attr) {
-              // If the path is a singular verbatim expression, the attribute of
-              // the send path list entry will be null.
-              if (attr)
-                refSendPath.push_back(attr);
-            })
-            .Case<Operation *>(
-                [&](auto *op) { indexing.push_back(cast<RefSubOp>(op)); });
-      remoteOpPath = entr.next;
-    }
-    auto iter = xmrPathSuffix.find(lastIndex);
-
-    // If this xmr has a suffix string (internal path into a module, that is not
-    // yet generated).
-    if (iter != xmrPathSuffix.end()) {
-      if (!refSendPath.empty())
-        stringLeaf.append(".");
-      stringLeaf.append(iter->getSecond());
-    }
-
-    assert(!(refSendPath.empty() && stringLeaf.empty()) &&
-           "nothing to index through");
-
-    // All indexing done as the ref is plumbed around indexes through
-    // the target/referent, not the current point of the path which
-    // describes how to access the referent we're indexing through.
-    // Above we gathered all indexing operations, so now append them
-    // to the path (after any relevant `xmrPathSuffix`) to reach
-    // the target element.
-    // Generating these strings here (especially if ref is sent
-    // out from a different design) is fragile but should get this
-    // working well enough while sorting out how to do this better.
-    // Some discussion of this can be found here:
-    // https://github.com/llvm/circt/pull/5551#discussion_r1258908834
-    for (auto subOp : llvm::reverse(indexing)) {
-      TypeSwitch<FIRRTLBaseType>(subOp.getInput().getType().getType())
-          .Case<FVectorType, OpenVectorType>([&](auto vecType) {
-            (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(stringLeaf);
-          })
-          .Case<BundleType, OpenBundleType>([&](auto bundleType) {
-            auto fieldName = bundleType.getElementName(subOp.getIndex());
-            stringLeaf.append({".", fieldName});
-          });
-    }
-
-    if (!refSendPath.empty())
-      // Compute the HierPathOp that stores the path.
-      ref = FlatSymbolRefAttr::get(
-          hierPathCache
-              ->getOrCreatePath(builder.getArrayAttr(refSendPath),
-                                builder.getLoc())
-              .getSymNameAttr());
-
-    return success();
+    return resolveRefPath(refVal, builder, ref, stringLeaf);
   }
 
   LogicalResult resolveReference(mlir::TypedValue<RefType> refVal,
@@ -715,15 +650,15 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     return success();
   }
 
-  /// Resolve the XMR path for a target module's ref port.
+  /// Resolve the XMR path for a ref value.
   /// Returns the HierPath symbol and suffix string for the path.
-  LogicalResult resolveModuleRefPortPath(FModuleOp targetMod, size_t portNum,
-                                         ImplicitLocOpBuilder &builder,
-                                         FlatSymbolRefAttr &hierPathRef,
-                                         SmallString<128> &suffix) {
-    auto refModuleArg = targetMod.getArgument(portNum);
-    auto remoteOpPath =
-        getRemoteRefSend(refModuleArg, /*errorIfNotFound=*/false);
+  /// If errorIfNotFound is false, returns failure silently if path not found.
+  LogicalResult resolveRefPath(mlir::TypedValue<RefType> refVal,
+                               ImplicitLocOpBuilder &builder,
+                               FlatSymbolRefAttr &hierPathRef,
+                               SmallString<128> &suffix,
+                               bool errorIfNotFound = true) {
+    auto remoteOpPath = getRemoteRefSend(refVal, errorIfNotFound);
     if (!remoteOpPath)
       return failure();
 
@@ -736,10 +671,15 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       lastIndex = *remoteOpPath;
       auto entr = refSendPathList[*remoteOpPath];
       if (entr.info) {
-        if (auto attr = dyn_cast<Attribute>(entr.info))
-          refSendPath.push_back(attr);
-        else if (auto *op = dyn_cast<Operation *>(entr.info))
-          indexing.push_back(cast<RefSubOp>(op));
+        TypeSwitch<XMRNode::SymOrIndexOp>(entr.info)
+            .Case<Attribute>([&](auto attr) {
+              // If the path is a singular verbatim expression, the attribute
+              // may be null.
+              if (attr)
+                refSendPath.push_back(attr);
+            })
+            .Case<Operation *>(
+                [&](auto *op) { indexing.push_back(cast<RefSubOp>(op)); });
       }
       remoteOpPath = entr.next;
     }
@@ -752,8 +692,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     }
 
     // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
-    if (auto iter = xmrPathSuffix.find(lastIndex); iter != xmrPathSuffix.end())
+    if (auto iter = xmrPathSuffix.find(lastIndex); iter != xmrPathSuffix.end()) {
+      if (!refSendPath.empty())
+        suffix.append(".");
       suffix.append(iter->getSecond());
+    }
 
     // Append indexing operations to the suffix.
     for (auto subOp : llvm::reverse(indexing)) {
@@ -767,6 +710,18 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     }
 
     return success();
+  }
+
+  /// Resolve the XMR path for a target module's ref port.
+  /// Returns the HierPath symbol and suffix string for the path.
+  LogicalResult resolveModuleRefPortPath(FModuleOp targetMod, size_t portNum,
+                                         ImplicitLocOpBuilder &builder,
+                                         FlatSymbolRefAttr &hierPathRef,
+                                         SmallString<128> &suffix) {
+    auto refModuleArg =
+        cast<mlir::TypedValue<RefType>>(targetMod.getArgument(portNum));
+    return resolveRefPath(refModuleArg, builder, hierPathRef, suffix,
+                          /*errorIfNotFound=*/false);
   }
 
   /// Handle XMR lowering for InstanceChoiceOp.
