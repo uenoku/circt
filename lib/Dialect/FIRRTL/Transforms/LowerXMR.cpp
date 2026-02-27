@@ -569,10 +569,16 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
               if (failed(resolveReference(op.getDest(), builder, ref, str)))
                 return failure();
 
-              Value xmr =
-                  moduleStates.find(op->template getParentOfType<FModuleOp>())
-                      ->getSecond()
-                      .getOrCreateXMRRefOp(destType, ref, str, builder);
+              if (!ref) {
+                // No hierpath (e.g., InstanceChoiceOp): force/release not supported
+                return op.emitError(
+                    "force/release operations on instance choice ref ports are "
+                    "not yet supported");
+              }
+
+              Value xmr = moduleStates.find(op->template getParentOfType<FModuleOp>())
+                          ->getSecond()
+                          .getOrCreateXMRRefOp(destType, ref, str, builder);
               op.getDestMutable().assign(xmr);
               return success();
             })
