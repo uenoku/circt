@@ -1087,21 +1087,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
                              builder.getStringAttr(headerComment));
   }
 
-  // Define the global option case macro to avoid conflicts
-  // Format: __option__<OptionName>_<CaseName>
-  auto optionCaseMacroAttr = getOptionCaseMacroName(optionName, caseName);
-  auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
-
-  // `ifndef __option__<OptionName>_<CaseName>
-  //  `define __option__<OptionName>_<CaseName>
-  // `endif
-  sv::IfDefOp::create(
-      builder, circuit.getLoc(), optionCaseMacroRef,
-      /*thenCtor=*/[&]() {},
-      /*elseCtor=*/
-      [&]() {
-        sv::MacroDefOp::create(builder, circuit.getLoc(), optionCaseMacroRef);
-      });
+  // The option case macro (__option__<OptionName>_<CaseName>) should have been
+  // declared by the PopulateInstanceChoiceSymbols pass.
 
   // Emit instance name macros for all instances in this module
   for (auto info : instances) {
@@ -4293,7 +4280,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     // NOTE: LowerLayer/LowerXMR will be necessary to interact with
     //       these macro so will be necessary not to generate duplicate
     //       macro declarations.
-    circuitState.addMacroDecl(optionCaseMacroAttr);
     macroNames.push_back(optionCaseMacroAttr.getValue());
   }
 
