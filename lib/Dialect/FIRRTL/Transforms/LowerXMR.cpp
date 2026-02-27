@@ -471,75 +471,75 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                               "_" + mod.getPortName(portIndex));
   }
 
-  /// Resolve the XMR path for a ref value.
-  /// Returns the HierPath symbol and suffix string for the path.
-  /// If errorIfNotFound is false, returns failure silently if path not found.
-  LogicalResult resolveRefPath(mlir::TypedValue<RefType> refVal,
-                               ImplicitLocOpBuilder &builder,
-                               FlatSymbolRefAttr &hierPathRef,
-                               SmallString<128> &suffix,
-                               bool errorIfNotFound = true) {
+  LogicalResult resolveReferencePath(mlir::TypedValue<RefType> refVal,
+                                     ImplicitLocOpBuilder builder,
+                                     mlir::FlatSymbolRefAttr &ref,
+                                     SmallString<128> &stringLeaf,
+                                     bool errorIfNotFound = true) {
+    assert(stringLeaf.empty());
+
     auto remoteOpPath = getRemoteRefSend(refVal, errorIfNotFound);
     if (!remoteOpPath)
       return failure();
-
-    // Collect InnerRefAttrs and indexing operations from the path.
     SmallVector<Attribute> refSendPath;
     SmallVector<RefSubOp> indexing;
-    size_t lastIndex = *remoteOpPath;
-
+    size_t lastIndex;
     while (remoteOpPath) {
       lastIndex = *remoteOpPath;
       auto entr = refSendPathList[*remoteOpPath];
-      if (entr.info) {
+      if (entr.info)
         TypeSwitch<XMRNode::SymOrIndexOp>(entr.info)
             .Case<Attribute>([&](auto attr) {
-              // If the path is a singular verbatim expression, the attribute
-              // may be null.
+              // If the path is a singular verbatim expression, the attribute of
+              // the send path list entry will be null.
               if (attr)
                 refSendPath.push_back(attr);
             })
             .Case<Operation *>(
                 [&](auto *op) { indexing.push_back(cast<RefSubOp>(op)); });
-      }
       remoteOpPath = entr.next;
     }
+    auto iter = xmrPathSuffix.find(lastIndex);
 
-    // Create HierPath from the collected InnerRefAttrs.
-    if (!refSendPath.empty()) {
-      auto hierPath = hierPathCache->getOrCreatePath(
-          builder.getArrayAttr(refSendPath), builder.getLoc());
-      hierPathRef = FlatSymbolRefAttr::get(hierPath.getSymNameAttr());
-    }
-
-    // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
-    if (auto iter = xmrPathSuffix.find(lastIndex);
-        iter != xmrPathSuffix.end()) {
+    // If this xmr has a suffix string (internal path into a module, that is not
+    // yet generated).
+    if (iter != xmrPathSuffix.end()) {
       if (!refSendPath.empty())
-        suffix.append(".");
-      suffix.append(iter->getSecond());
+        stringLeaf.append(".");
+      stringLeaf.append(iter->getSecond());
     }
 
-    // Append indexing operations to the suffix.
+    // All indexing done as the ref is plumbed around indexes through
+    // the target/referent, not the current point of the path which
+    // describes how to access the referent we're indexing through.
+    // Above we gathered all indexing operations, so now append them
+    // to the path (after any relevant `xmrPathSuffix`) to reach
+    // the target element.
+    // Generating these strings here (especially if ref is sent
+    // out from a different design) is fragile but should get this
+    // working well enough while sorting out how to do this better.
+    // Some discussion of this can be found here:
+    // https://github.com/llvm/circt/pull/5551#discussion_r1258908834
     for (auto subOp : llvm::reverse(indexing)) {
       TypeSwitch<FIRRTLBaseType>(subOp.getInput().getType().getType())
-          .Case<FVectorType, OpenVectorType>([&](auto) {
-            (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(suffix);
+          .Case<FVectorType, OpenVectorType>([&](auto vecType) {
+            (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(stringLeaf);
           })
           .Case<BundleType, OpenBundleType>([&](auto bundleType) {
-            suffix.append({".", bundleType.getElementName(subOp.getIndex())});
+            auto fieldName = bundleType.getElementName(subOp.getIndex());
+            stringLeaf.append({".", fieldName});
           });
     }
 
-    return success();
-  }
+    if (!refSendPath.empty())
+      // Compute the HierPathOp that stores the path.
+      ref = FlatSymbolRefAttr::get(
+          hierPathCache
+              ->getOrCreatePath(builder.getArrayAttr(refSendPath),
+                                builder.getLoc())
+              .getSymNameAttr());
 
-  LogicalResult resolveReferencePath(mlir::TypedValue<RefType> refVal,
-                                     ImplicitLocOpBuilder builder,
-                                     mlir::FlatSymbolRefAttr &ref,
-                                     SmallString<128> &stringLeaf) {
-    assert(stringLeaf.empty());
-    return resolveRefPath(refVal, builder, ref, stringLeaf);
+    return success();
   }
 
   LogicalResult resolveReference(mlir::TypedValue<RefType> refVal,
@@ -721,8 +721,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                          SmallString<128> &suffix) {
     auto refModuleArg =
         cast<mlir::TypedValue<RefType>>(targetMod.getArgument(portNum));
-    return resolveRefPath(refModuleArg, builder, hierPathRef, suffix,
-                          /*errorIfNotFound=*/false);
+    return resolveReferencePath(refModuleArg, builder, hierPathRef, suffix,
+                                /*errorIfNotFound=*/false);
   }
 
   /// Handle XMR lowering for InstanceChoiceOp.
@@ -801,18 +801,15 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   }
 
   /// Generate ifdef-guarded macro definition for an instance choice ref port.
-  /// This creates nested ifdef/elsif/else structure inline in the file builder.
   LogicalResult
   generateInstanceChoiceRefPortMacro(ImplicitLocOpBuilder &fileBuilder,
                                      InstanceChoiceRefPortInfo &info,
                                      InstanceGraph &instanceGraph) {
-    // Path information for a module's ref port.
     struct PathInfo {
       FlatSymbolRefAttr hierPath;
       std::string suffix;
     };
     DenseMap<std::pair<StringRef, size_t>, PathInfo> pathCache;
-
     auto *body = getOperation().getBodyBlock();
     auto declBuilder =
         ImplicitLocOpBuilder::atBlockBegin(info.inst.getLoc(), body);
@@ -844,15 +841,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
     SmallVector<Attribute> symbols;
     DenseMap<Attribute, size_t> symbolIndices;
-
-    // Add instance macro to symbols array (always at index 0).
     symbols.push_back(info.instanceMacro);
 
     // Build macro value with symbol substitution.
-    // {{0}} = instance macro (with backtick prefix), {{1+}} = HierPaths
     auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
       SmallString<128> value("`{{0}}");
-
       if (pathInfo.hierPath) {
         auto [it, inserted] =
             symbolIndices.try_emplace(pathInfo.hierPath, symbols.size());
@@ -862,7 +855,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         value.append(std::to_string(it->second));
         value.append("}}");
       }
-
       if (!pathInfo.suffix.empty()) {
         if (!pathInfo.hierPath)
           value.append(".");

@@ -917,7 +917,7 @@ def PopulateInstanceChoiceSymbols : Pass<"firrtl-populate-instance-choice-symbol
     The instance macro can be used as a "real" instance verilog name for the
     given choice.
   }];
-  let dependentDialects = ["emit::EmitDialect", "sv::SVDialect"];
+  let dependentDialects = ["sv::SVDialect"];
 }
 
 def InferDomains : Pass<"firrtl-infer-domains", "firrtl::CircuitOp"> {
