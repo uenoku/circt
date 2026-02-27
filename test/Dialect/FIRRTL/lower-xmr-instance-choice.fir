@@ -82,6 +82,19 @@ circuit InstanceChoiceProbe :
     connect data, middle.data @[test_instance_choice_xmr.mlir 57:5]
     define probe = middle.probe @[test_instance_choice_xmr.mlir 58:5]
 
+  module TargetWithRWProbe : @[test_instance_choice_xmr.mlir 76:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 76:39]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 76:56]
+    output data : UInt<8> @[test_instance_choice_xmr.mlir 76:64]
+    output probe : Probe<UInt<8>> @[test_instance_choice_xmr.mlir 76:92]
+    output rwprobe : RWProbe<UInt<8>> @[test_instance_choice_xmr.mlir 76:120]
+
+    reg r : UInt<8>, clk @[test_instance_choice_xmr.mlir 77:10]
+    connect r, in @[test_instance_choice_xmr.mlir 79:5]
+    connect data, r @[test_instance_choice_xmr.mlir 80:5]
+    define probe = probe(r) @[test_instance_choice_xmr.mlir 82:5]
+    define rwprobe = rwprobe(r) @[test_instance_choice_xmr.mlir 83:5]
+
   public module InstanceChoiceProbe : @[test_instance_choice_xmr.mlir 90:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 90:41]
     input in: UInt<8> @[test_instance_choice_xmr.mlir 90:58]
@@ -98,6 +111,20 @@ circuit InstanceChoiceProbe :
     connect out, read(inst.probe) @[test_instance_choice_xmr.mlir 72:5]
     define probe = inst.probe @[test_instance_choice_xmr.mlir 73:5]
 
+  public module InstanceChoiceRWProbe : @[test_instance_choice_xmr.mlir 100:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 100:41]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 100:58]
+    output data : UInt<8> @[test_instance_choice_xmr.mlir 100:66]
+    output rwprobe : RWProbe<UInt<8>> @[test_instance_choice_xmr.mlir 100:94]
+
+    instchoice inst of TargetWithRWProbe, Platform : @[test_instance_choice_xmr.mlir 101:42]
+      FPGA => TargetWithRWProbe
+      ASIC => TargetWithRWProbe
+    connect inst.clk, clk @[test_instance_choice_xmr.mlir 106:5]
+    connect inst.in, in @[test_instance_choice_xmr.mlir 106:5]
+    connect data, inst.data @[test_instance_choice_xmr.mlir 107:5]
+    define rwprobe = inst.rwprobe @[test_instance_choice_xmr.mlir 108:5]
+
 ; CHECK-LABEL: module InstanceChoiceProbe
 ; CHECK: assign out = `ref_InstanceChoiceProbe_inst_probe;
 
@@ -112,3 +139,15 @@ circuit InstanceChoiceProbe :
 ; CHECK:   `endif
 ; CHECK: `endif
 ; CHECK: `define ref_InstanceChoiceProbe_probe `ref_InstanceChoiceProbe_inst_probe
+
+; CHECK-LABEL: FILE "ref_InstanceChoiceRWProbe.sv"
+; CHECK: `ifdef __option__Platform_FPGA
+; CHECK:   `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
+; CHECK: `else
+; CHECK:   `ifdef __option__Platform_ASIC
+; CHECK:     `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
+; CHECK:   `else
+; CHECK:     `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
+; CHECK:   `endif
+; CHECK: `endif
+; CHECK: `define ref_InstanceChoiceRWProbe_rwprobe `ref_InstanceChoiceRWProbe_inst_rwprobe

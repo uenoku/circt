@@ -755,6 +755,14 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
   /// Handle XMR lowering for InstanceChoiceOp.
   /// Generates macro-based XMR paths with ifdef guards for each target choice.
+  ///
+  /// Note: This function generates emit::FileOp directly rather than deferring
+  /// to handlePublicModuleRefPorts because:
+  /// 1. Instance choice ref ports require complex ifdef-guarded macro definitions
+  /// 2. The path resolution logic needs access to the instance choice's target
+  ///    choices and option information
+  /// 3. Generating files here keeps all instance choice XMR logic localized
+  ///
   /// Example output:
   ///   `ifdef __option__Platform_FPGA
   ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.inner.r
