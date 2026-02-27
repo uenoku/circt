@@ -700,10 +700,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
 
   /// Resolve the XMR path for a target module's ref port.
-  /// This traces the dataflow from the module's ref port argument to the
-  /// RefSendOp and returns the HierPath reference and suffix string.
-  /// The returned values can be used to construct a verbatim path with {{0}} placeholders.
-  /// Returns failure if the path cannot be resolved.
+  /// Returns the HierPath symbol and suffix string for the path.
   LogicalResult resolveModuleRefPortPath(FModuleOp targetMod, size_t portNum,
                                          ImplicitLocOpBuilder &builder,
                                          FlatSymbolRefAttr &hierPathRef,
@@ -714,7 +711,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     if (!remoteOpPath)
       return failure();
 
-    // Collect the InnerRefAttrs that form the path.
+    // Collect InnerRefAttrs and indexing operations from the path.
     SmallVector<Attribute> refSendPath;
     SmallVector<RefSubOp> indexing;
     size_t lastIndex = *remoteOpPath;
@@ -723,66 +720,54 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       lastIndex = *remoteOpPath;
       auto entr = refSendPathList[*remoteOpPath];
       if (entr.info) {
-        if (auto attr = dyn_cast<Attribute>(entr.info)) {
-          if (attr)
-            refSendPath.push_back(attr);
-        } else if (auto *op = dyn_cast<Operation *>(entr.info)) {
+        if (auto attr = dyn_cast<Attribute>(entr.info))
+          refSendPath.push_back(attr);
+        else if (auto *op = dyn_cast<Operation *>(entr.info))
           indexing.push_back(cast<RefSubOp>(op));
-        }
       }
       remoteOpPath = entr.next;
     }
 
-    // Create the HierPath if we have a path.
+    // Create HierPath from the collected InnerRefAttrs.
     if (!refSendPath.empty()) {
       auto hierPath = hierPathCache->getOrCreatePath(
           builder.getArrayAttr(refSendPath), builder.getLoc());
       hierPathRef = FlatSymbolRefAttr::get(hierPath.getSymNameAttr());
     }
 
-    // Check for suffix (e.g., internal path into a memory or external module).
-    auto iter = xmrPathSuffix.find(lastIndex);
-    if (iter != xmrPathSuffix.end()) {
+    // Append suffix from xmrPathSuffix map (e.g., memory/extmodule paths).
+    if (auto iter = xmrPathSuffix.find(lastIndex); iter != xmrPathSuffix.end())
       suffix.append(iter->getSecond());
-    }
 
-    // Append any indexing operations.
+    // Append indexing operations to the suffix.
     for (auto subOp : llvm::reverse(indexing)) {
       TypeSwitch<FIRRTLBaseType>(subOp.getInput().getType().getType())
-          .Case<FVectorType, OpenVectorType>([&](auto vecType) {
+          .Case<FVectorType, OpenVectorType>([&](auto) {
             (Twine("[") + Twine(subOp.getIndex()) + "]").toVector(suffix);
           })
           .Case<BundleType, OpenBundleType>([&](auto bundleType) {
-            auto fieldName = bundleType.getElementName(subOp.getIndex());
-            suffix.append({".", fieldName});
+            suffix.append({".", bundleType.getElementName(subOp.getIndex())});
           });
     }
 
     return success();
   }
 
-  // Propagate the reachable RefSendOp across modules for InstanceChoiceOp.
-  // For InstanceChoiceOp, since the actual target module is selected at runtime,
-  // we generate a macro-based XMR path for each probe signal using ifdef guards.
-  // The macro format is: ref_<parent>_<instance>_<port>
-  // The XMR path uses the __target_<Option>_<Parent>_<Instance> macro as the
-  // instance prefix, followed by the internal path to the probe.
-  // Example output:
-  //   `ifdef __option__Platform_FPGA
-  //     `define ref_Top_inst_probe `__target_Platform_Top_inst.inner.r
-  //   `elsif __option__Platform_ASIC
-  //     `define ref_Top_inst_probe `__target_Platform_Top_inst.middle.deep.r
-  //   `else
-  //     `define ref_Top_inst_probe `__target_Platform_Top_inst.r
-  //   `endif
+  /// Handle XMR lowering for InstanceChoiceOp.
+  /// Generates macro-based XMR paths with ifdef guards for each target choice.
+  /// Example output:
+  ///   `ifdef __option__Platform_FPGA
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.inner.r
+  ///   `elsif __option__Platform_ASIC
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.middle.deep.r
+  ///   `else
+  ///     `define ref_Top_inst_probe `__target_Platform_Top_inst.r
+  ///   `endif
   LogicalResult handleInstanceChoiceOp(InstanceChoiceOp inst,
                                        InstanceGraph &instanceGraph,
                                        SymbolTable &symTable) {
     auto parentModule = inst->getParentOfType<FModuleOp>();
-    if (!parentModule)
-      return inst.emitOpError("must be within an FModuleOp");
 
-    // Get the instance macro name from the attribute.
     // This should have been set by the PopulateInstanceChoiceSymbols pass.
     auto instanceMacro = inst.getInstanceMacroAttr();
     if (!instanceMacro)
@@ -799,22 +784,20 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     auto targetChoices = inst.getTargetChoices();
     auto defaultTarget = inst.getDefaultTargetAttr();
 
-    // Cache for XMR paths: (moduleRef, portNum) -> (HierPath, suffix)
+    // Path information for a module's ref port.
     struct PathInfo {
       FlatSymbolRefAttr hierPath;
       std::string suffix;
     };
-    DenseMap<std::pair<StringRef, size_t>, PathInfo> moduleRefPathCache;
+    DenseMap<std::pair<StringRef, size_t>, PathInfo> pathCache;
 
-    // Helper lambda to get or compute XMR path for a module's ref port.
+    // Get or compute XMR path for a module's ref port.
     auto getModuleXMRPath = [&](FlatSymbolRefAttr moduleRef,
                                 size_t portNum) -> std::optional<PathInfo> {
       auto key = std::make_pair(moduleRef.getValue(), portNum);
-      auto it = moduleRefPathCache.find(key);
-      if (it != moduleRefPathCache.end())
+      if (auto it = pathCache.find(key); it != pathCache.end())
         return it->second;
 
-      // Look up the target module in the instance graph.
       auto *node = instanceGraph.lookup(moduleRef.getAttr());
       if (!node)
         return std::nullopt;
@@ -822,7 +805,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       if (!targetMod)
         return std::nullopt;
 
-      // Resolve the XMR path for this module's ref port.
       FlatSymbolRefAttr hierPathRef;
       SmallString<128> suffix;
       if (failed(resolveModuleRefPortPath(targetMod, portNum, declBuilder,
@@ -830,107 +812,72 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         return std::nullopt;
 
       PathInfo pathInfo{hierPathRef, suffix.str().str()};
-      moduleRefPathCache[key] = pathInfo;
+      pathCache[key] = pathInfo;
       return pathInfo;
     };
 
-    // Collect ref port info for macro generation.
+    // Process ref ports and create macros.
     SmallVector<std::tuple<StringAttr, size_t>> refPorts;
-
     for (size_t portNum = 0; portNum < numPorts; ++portNum) {
       auto instanceResult = inst.getResult(portNum);
       if (!isa<RefType>(instanceResult.getType()))
         continue;
 
-      // Reference ports must be removed.
       setPortToRemove(inst, portNum, numPorts);
 
-      // Drop the dead-instance-ports.
+      // Skip dead or zero-width ports.
       if (instanceResult.use_empty() ||
           isZeroWidth(type_cast<RefType>(instanceResult.getType()).getType()))
         continue;
 
       // Generate macro name: ref_<parent>_<instance>_<port>
-      auto portName = inst.getPortName(portNum);
       SmallString<128> macroName;
-      {
-        llvm::raw_svector_ostream os(macroName);
-        os << "ref_" << parentModule.getName() << "_" << inst.getInstanceName()
-           << "_" << portName;
-      }
+      llvm::raw_svector_ostream(macroName)
+          << "ref_" << parentModule.getName() << "_" << inst.getInstanceName()
+          << "_" << inst.getPortName(portNum);
 
-      // Declare the macro.
       auto macroNameAttr = StringAttr::get(&getContext(), macroName);
       sv::MacroDeclOp::create(declBuilder, macroNameAttr, ArrayAttr(),
                               StringAttr());
-
       refPorts.emplace_back(macroNameAttr, portNum);
 
-      // Create the path with backtick to reference the macro.
-      // For InstanceChoiceOp, we cannot create an inner symbol because the
-      // operation is lowered to a form that doesn't preserve symbols.
-      // Instead, the macro itself represents the complete XMR path.
-      SmallString<128> macroPath;
-      macroPath.append("`");
+      // Register the macro as the XMR path for this port.
+      SmallString<128> macroPath("`");
       macroPath.append(macroName);
-
-      // Use empty InnerRefAttr since we can't reference InstanceChoiceOp.
-      // The macro is the complete XMR path.
       auto ind = addReachingSendsEntry(instanceResult, InnerRefAttr());
       xmrPathSuffix[ind] = macroPath;
     }
 
-    if (refPorts.empty())
+    // Only generate header file for public modules with ref ports.
+    if (refPorts.empty() || !parentModule.isPublic())
       return success();
 
-    // Only generate the macro definition file for public modules.
-    if (!parentModule.isPublic())
-      return success();
-
-    // Generate the macro definition file with ifdef guards.
-    // The file is named ref_<parent>.sv and contains macro definitions.
-    SmallString<128> fileName;
-    fileName.append("ref_");
+    // Generate ref_<module>.sv file with macro definitions.
+    SmallString<128> fileName("ref_");
     fileName.append(parentModule.getName());
     fileName.append(".sv");
 
     auto fileBuilder = ImplicitLocOpBuilder(inst.getLoc(), parentModule);
     emit::FileOp::create(fileBuilder, fileName, [&] {
       for (auto [macroNameAttr, portNum] : refPorts) {
-        // Build the ifdef structure with macro definitions using SV dialect ops.
-        // Structure:
-        //   `ifdef __option__<Option>_<Case1>
-        //     `define ref_<parent>_<instance>_<port> `__target_<Option>_<Parent>_<Instance>.<path1>
-        //   `elsif __option__<Option>_<Case2>
-        //     `define ref_<parent>_<instance>_<port> `__target_<Option>_<Parent>_<Instance>.<path2>
-        //   `else
-        //     `define ref_<parent>_<instance>_<port> `__target_<Option>_<Parent>_<Instance>.<default_path>
-        //   `endif
-
-        // Collect all HierPath symbols for this macro.
         SmallVector<Attribute> symbols;
         DenseMap<Attribute, size_t> symbolIndices;
 
-        // Helper to build the macro value string with HierPath substitution.
+        // Build macro value with HierPath symbol substitution.
         auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
-          SmallString<128> value;
-          value.append("`");
+          SmallString<128> value("`");
           value.append(instanceMacro.getValue());
+
           if (pathInfo.hierPath) {
-            // Get or assign a symbol index for this HierPath.
-            auto it = symbolIndices.find(pathInfo.hierPath);
-            size_t idx;
-            if (it == symbolIndices.end()) {
-              idx = symbols.size();
+            auto [it, inserted] = symbolIndices.try_emplace(
+                pathInfo.hierPath, symbols.size());
+            if (inserted)
               symbols.push_back(pathInfo.hierPath);
-              symbolIndices[pathInfo.hierPath] = idx;
-            } else {
-              idx = it->second;
-            }
             value.append(".{{");
-            value.append(std::to_string(idx));
+            value.append(std::to_string(it->second));
             value.append("}}");
           }
+
           if (!pathInfo.suffix.empty()) {
             if (!pathInfo.hierPath)
               value.append(".");
@@ -939,54 +886,38 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           return value.str().str();
         };
 
-        // Build option macro names for each case.
+        // Build option macro names for ifdef chain.
         SmallVector<StringRef> macroNames;
         SmallVector<std::string> macroNameStorage;
         for (auto [caseRef, moduleRef] : targetChoices) {
-          auto caseName = caseRef.getLeafReference().getValue();
-          SmallString<64> optionMacro;
-          llvm::raw_svector_ostream(optionMacro)
-              << "__option__" << optionName.getValue() << "_" << caseName;
+          SmallString<64> optionMacro("__option__");
+          optionMacro.append(optionName.getValue());
+          optionMacro.append("_");
+          optionMacro.append(caseRef.getLeafReference().getValue());
           macroNameStorage.push_back(optionMacro.str().str());
           macroNames.push_back(macroNameStorage.back());
         }
 
-        // Use createNestedIfDefs to build the ifdef chain.
+        // Create nested ifdef structure for each target choice.
+        auto createMacroDef = [&](std::optional<PathInfo> pathInfo) {
+          std::string macroValue = pathInfo ? buildMacroValue(*pathInfo)
+                                            : ("`" + instanceMacro.getValue().str());
+          sv::MacroDefOp::create(
+              fileBuilder, macroNameAttr, fileBuilder.getStringAttr(macroValue),
+              symbols.empty() ? ArrayAttr{} : fileBuilder.getArrayAttr(symbols));
+        };
+
         sv::createNestedIfDefs(
             macroNames,
-            /*ifdefCtor=*/
             [&](StringRef macro, std::function<void()> thenCtor,
                 std::function<void()> elseCtor) {
               sv::IfDefOp::create(fileBuilder, macro, std::move(thenCtor),
                                   std::move(elseCtor));
             },
-            /*thenCtor=*/
             [&](size_t index) {
-              auto [caseRef, moduleRef] = targetChoices[index];
-              auto pathInfo = getModuleXMRPath(moduleRef, portNum);
-              std::string macroValue =
-                  pathInfo ? buildMacroValue(*pathInfo)
-                           : ("`" + instanceMacro.getValue().str());
-
-              sv::MacroDefOp::create(
-                  fileBuilder, macroNameAttr,
-                  fileBuilder.getStringAttr(macroValue),
-                  symbols.empty() ? ArrayAttr{}
-                                  : fileBuilder.getArrayAttr(symbols));
+              createMacroDef(getModuleXMRPath(targetChoices[index].second, portNum));
             },
-            /*defaultCtor=*/
-            [&]() {
-              auto defaultPathInfo = getModuleXMRPath(defaultTarget, portNum);
-              std::string macroValue =
-                  defaultPathInfo ? buildMacroValue(*defaultPathInfo)
-                                  : ("`" + instanceMacro.getValue().str());
-
-              sv::MacroDefOp::create(
-                  fileBuilder, macroNameAttr,
-                  fileBuilder.getStringAttr(macroValue),
-                  symbols.empty() ? ArrayAttr{}
-                                  : fileBuilder.getArrayAttr(symbols));
-            });
+            [&]() { createMacroDef(getModuleXMRPath(defaultTarget, portNum)); });
       }
     });
 
