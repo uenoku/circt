@@ -12,6 +12,9 @@ circuit Top :
   option Platform : @[test_instance_choice_xmr.mlir 2:3]
     FPGA @[test_instance_choice_xmr.mlir 3:5]
     ASIC @[test_instance_choice_xmr.mlir 4:5]
+  option Optimization : @[test_instance_choice_xmr.mlir 2:3]
+    Fast @[test_instance_choice_xmr.mlir 3:5]
+    Slow @[test_instance_choice_xmr.mlir 4:5]
 
   module DefaultTarget : @[test_instance_choice_xmr.mlir 8:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 8:43]

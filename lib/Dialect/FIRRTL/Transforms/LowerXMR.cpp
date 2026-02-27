@@ -778,9 +778,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   ///
   /// Example output:
   ///   In targets_Platform_FPGA.svh:
-  ///     `define _ref_Top_inst_probe_internal `__target_Platform_Top_inst.inner.r
+  ///     `define _ref_Top_inst_probe_internal
+  ///     `__target_Platform_Top_inst.inner.r
   ///   In targets_Platform_ASIC.svh:
-  ///     `define _ref_Top_inst_probe_internal `__target_Platform_Top_inst.middle.deep.r
+  ///     `define _ref_Top_inst_probe_internal
+  ///     `__target_Platform_Top_inst.middle.deep.r
   ///   In ref_Top.sv:
   ///     `define ref_Top_inst_probe `_ref_Top_inst_probe_internal
   LogicalResult handleInstanceChoiceOp(InstanceChoiceOp inst,
@@ -827,8 +829,10 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           << "_ref_" << parentModule.getName() << "_" << inst.getInstanceName()
           << "_" << inst.getPortName(portNum) << "_internal";
 
-      auto publicMacroNameAttr = StringAttr::get(&getContext(), publicMacroName);
-      auto internalMacroNameAttr = StringAttr::get(&getContext(), internalMacroName);
+      auto publicMacroNameAttr =
+          StringAttr::get(&getContext(), publicMacroName);
+      auto internalMacroNameAttr =
+          StringAttr::get(&getContext(), internalMacroName);
 
       // Declare both public and internal macros
       sv::MacroDeclOp::create(declBuilder, publicMacroNameAttr, ArrayAttr(),
@@ -842,12 +846,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       auto ind = addReachingSendsEntry(instanceResult, InnerRefAttr());
       xmrPathSuffix[ind] = macroPath;
 
-      // Store information for header generation in handlePublicModuleRefPorts.
-      if (parentModule.isPublic()) {
-        instanceChoiceRefPorts[parentModule].push_back(
-            {publicMacroNameAttr, internalMacroNameAttr, portNum, instanceMacro,
-             optionName, targetChoices, defaultTarget, inst});
-      }
+      // Store information for header generation.
+      // We'll collect these later when processing public modules.
+      allInstanceChoiceRefPorts[parentModule].push_back(
+          {publicMacroNameAttr, internalMacroNameAttr, portNum, instanceMacro,
+           optionName, targetChoices, defaultTarget, inst});
     }
 
     return success();
@@ -896,9 +899,9 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
     // Build macro value with symbol substitution.
     // {{0}} = instance macro, {{1+}} = HierPaths
-    auto buildMacroValue = [&](const PathInfo &pathInfo,
-                               SmallVectorImpl<Attribute> &symbols)
-        -> std::string {
+    auto buildMacroValue =
+        [&](const PathInfo &pathInfo,
+            SmallVectorImpl<Attribute> &symbols) -> std::string {
       SmallString<128> value("{{0}}");
       DenseMap<Attribute, size_t> symbolIndices;
 
@@ -956,6 +959,30 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     return success();
   }
 
+  /// Collect all instance choice ref ports from a module and its hierarchy
+  /// in post-order.
+  void collectInstanceChoiceRefPorts(
+      FModuleOp module, InstanceGraph &instanceGraph,
+      SmallVectorImpl<InstanceChoiceRefPortInfo> &collected) {
+    auto *node = instanceGraph.lookup(module);
+    if (!node)
+      return;
+
+    // Walk in post-order to collect from children first
+    for (auto *instRecord : *node) {
+      auto *targetNode = instRecord->getTarget();
+      if (auto targetModule = dyn_cast<FModuleOp>(*targetNode->getModule())) {
+        collectInstanceChoiceRefPorts(targetModule, instanceGraph, collected);
+      }
+    }
+
+    // Add instance choice ref ports from this module
+    auto it = allInstanceChoiceRefPorts.find(module);
+    if (it != allInstanceChoiceRefPorts.end()) {
+      collected.append(it->second.begin(), it->second.end());
+    }
+  }
+
   LogicalResult handlePublicModuleRefPorts(FModuleOp module) {
     auto *body = getOperation().getBodyBlock();
 
@@ -994,9 +1021,12 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                          ref ? declBuilder.getArrayAttr({ref}) : ArrayAttr{});
     }
 
-    // Check if there are any instance choice ref ports for this module.
-    auto instChoiceIt = instanceChoiceRefPorts.find(module);
-    bool hasInstanceChoicePorts = instChoiceIt != instanceChoiceRefPorts.end();
+    // Collect all instance choice ref ports from this module's hierarchy
+    InstanceGraph &instanceGraph = getAnalysis<InstanceGraph>();
+    SmallVector<InstanceChoiceRefPortInfo> instanceChoiceRefPorts;
+    collectInstanceChoiceRefPorts(module, instanceGraph,
+                                  instanceChoiceRefPorts);
+    bool hasInstanceChoicePorts = !instanceChoiceRefPorts.empty();
 
     // Create a file only if the module has at least one ref port.
     if (ports.empty() && !hasInstanceChoicePorts)
@@ -1017,8 +1047,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
     // Populate target-specific header files with internal macros first
     if (hasInstanceChoicePorts) {
-      InstanceGraph &instanceGraph = getAnalysis<InstanceGraph>();
-
       // Build a map from header file name to emit::FileOp
       DenseMap<StringAttr, emit::FileOp> headerFileMap;
       auto circuit = getOperation();
@@ -1026,7 +1054,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         headerFileMap[fileOp.getFileNameAttr()] = fileOp;
       }
 
-      for (auto &info : instChoiceIt->second) {
+      for (auto &info : instanceChoiceRefPorts) {
         if (failed(populateInstanceChoiceRefPortHeaders(info, instanceGraph,
                                                         headerFileMap)))
           return failure();
@@ -1043,7 +1071,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       // Generate public macro definitions for instance choice ref ports.
       // These reference the internal macros defined in target-specific headers.
       if (hasInstanceChoicePorts) {
-        for (auto &info : instChoiceIt->second) {
+        for (auto &info : instanceChoiceRefPorts) {
           // Define: `define ref_Top_inst_probe `_ref_Top_inst_probe_internal
           SmallString<128> macroValue("`");
           macroValue.append(info.internalMacroName.getValue());
@@ -1207,7 +1235,8 @@ private:
   /// Per-module helpers for creating operations within modules.
   DenseMap<FModuleOp, ModuleState> moduleStates;
 
-  /// Map from module to its instance choice ref ports.
+  /// Map from module to its instance choice ref ports (directly in that
+  /// module).
   DenseMap<FModuleOp, SmallVector<InstanceChoiceRefPortInfo>>
-      instanceChoiceRefPorts;
+      allInstanceChoiceRefPorts;
 };
