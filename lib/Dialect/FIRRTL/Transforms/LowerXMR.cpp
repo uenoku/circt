@@ -892,9 +892,9 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     symbols.push_back(info.instanceMacro);
 
     // Build macro value with symbol substitution.
-    // {{0}} = instance macro, {{1+}} = HierPaths
+    // {{0}} = instance macro (with backtick prefix), {{1+}} = HierPaths
     auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
-      SmallString<128> value("{{0}}");
+      SmallString<128> value("`{{0}}");
 
       if (pathInfo.hierPath) {
         auto [it, inserted] =
