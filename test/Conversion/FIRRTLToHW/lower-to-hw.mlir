@@ -1963,6 +1963,10 @@ firrtl.circuit "InstanceChoiceTest" {
   sv.macro.decl @InstanceChoiceUnit_inst
   sv.macro.decl @InstanceChoiceTop_inst
 
+  sv.macro.decl @__option__Power_Low
+  sv.macro.decl @__option__Opt_FPGA
+  sv.macro.decl @__option__Opt_ASIC
+
   firrtl.module private @ModuleDefault(in %in: !firrtl.uint<8>, out %out: !firrtl.uint<8>) {
     firrtl.matchingconnect %out, %in : !firrtl.uint<8>
   }
