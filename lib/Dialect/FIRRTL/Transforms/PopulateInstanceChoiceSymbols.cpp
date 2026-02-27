@@ -100,7 +100,8 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
   OpBuilder builder(circuit.getContext());
   builder.setInsertionPointToStart(circuit.getBodyBlock());
 
-  llvm::DenseSet<StringAttr> createdMacros;
+  llvm::DenseSet<StringAttr> createdInstanceMacros;
+  llvm::DenseSet<StringAttr> createdOptionMacros;
   bool changed = false;
 
   // Iterate through all instance choices.
@@ -118,10 +119,21 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
       if (!instanceMacro)
         continue;
       changed = true;
-      // Create macro declaration only if we haven't created it yet.
-      if (createdMacros.insert(instanceMacro.getAttr()).second)
+
+      // Create instance macro declaration only if we haven't created it yet.
+      if (createdInstanceMacros.insert(instanceMacro.getAttr()).second)
         sv::MacroDeclOp::create(builder, circuit.getLoc(),
                                 instanceMacro.getAttr());
+
+      // Create option case macro declarations for each case.
+      // Format: __option__<OptionName>_<CaseName>
+      auto optionName = op.getOptionNameAttr();
+      for (auto [caseRef, moduleRef] : op.getTargetChoices()) {
+        auto caseName = caseRef.getLeafReference();
+        auto optionMacroName = getOptionCaseMacroName(optionName, caseName);
+        if (createdOptionMacros.insert(optionMacroName).second)
+          sv::MacroDeclOp::create(builder, circuit.getLoc(), optionMacroName);
+      }
     }
   });
 

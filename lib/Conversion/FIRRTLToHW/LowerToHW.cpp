@@ -4293,7 +4293,6 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     // NOTE: LowerLayer/LowerXMR will be necessary to interact with
     //       these macro so will be necessary not to generate duplicate
     //       macro declarations.
-    circuitState.addMacroDecl(optionCaseMacroAttr);
     macroNames.push_back(optionCaseMacroAttr.getValue());
   }
 

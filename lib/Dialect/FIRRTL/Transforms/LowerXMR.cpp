@@ -124,6 +124,18 @@ private:
 } // end anonymous namespace
 
 class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
+  /// Information about an instance choice ref port for header generation.
+  /// This stores metadata needed to generate ifdef-guarded macro definitions
+  /// in the ref_<module>.sv header file for each instance choice ref port.
+  struct InstanceChoiceRefPortInfo {
+    StringAttr macroName;        // Internal macro name (e.g., __targetref_Top_inst_probe)
+    size_t portNum;              // Port index in the target module
+    FlatSymbolRefAttr instanceMacro; // Instance macro (e.g., __target_Platform_Top_inst)
+    StringAttr optionName;       // Option name (e.g., Platform)
+    SmallVector<std::pair<SymbolRefAttr, FlatSymbolRefAttr>, 1> targetChoices; // Case -> Module mappings
+    FlatSymbolRefAttr defaultTarget; // Default target module
+    InstanceChoiceOp inst;       // The instance choice operation
+  };
 
   void runOnOperation() override {
     // Populate a CircuitNamespace that can be used to generate unique
@@ -254,6 +266,9 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           })
           .Case<InstanceOp>(
               [&](auto inst) { return handleInstanceOp(inst, instanceGraph); })
+          .Case<InstanceChoiceOp>([&](auto inst) {
+            return handleInstanceChoiceOp(inst, instanceGraph);
+          })
           .Case<FConnectLike>([&](FConnectLike connect) {
             // Ignore BaseType.
             if (!isa<RefType>(connect.getSrc().getType()))
@@ -461,10 +476,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   LogicalResult resolveReferencePath(mlir::TypedValue<RefType> refVal,
                                      ImplicitLocOpBuilder builder,
                                      mlir::FlatSymbolRefAttr &ref,
-                                     SmallString<128> &stringLeaf) {
+                                     SmallString<128> &stringLeaf,
+                                     bool errorIfNotFound = true) {
     assert(stringLeaf.empty());
 
-    auto remoteOpPath = getRemoteRefSend(refVal);
+    auto remoteOpPath = getRemoteRefSend(refVal, errorIfNotFound);
     if (!remoteOpPath)
       return failure();
     SmallVector<Attribute> refSendPath;
@@ -494,9 +510,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         stringLeaf.append(".");
       stringLeaf.append(iter->getSecond());
     }
-
-    assert(!(refSendPath.empty() && stringLeaf.empty()) &&
-           "nothing to index through");
 
     // All indexing done as the ref is plumbed around indexes through
     // the target/referent, not the current point of the path which
@@ -565,6 +578,15 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
               if (failed(resolveReference(op.getDest(), builder, ref, str)))
                 return failure();
 
+              if (!ref) {
+                // No hierpath (e.g., InstanceChoiceOp): force/release not
+                // supported yet.
+                op.emitError(
+                    "force/release operations on instance choice ref ports are "
+                    "not yet supported");
+                return failure();
+              }
+
               Value xmr =
                   moduleStates.find(op->template getParentOfType<FModuleOp>())
                       ->getSecond()
@@ -597,7 +619,18 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     if (failed(resolveReference(resolve.getRef(), builder, ref, str)))
       return failure();
 
-    Value result = XMRDerefOp::create(builder, resolve.getType(), ref, str);
+    Value result;
+    if (ref) {
+      // Standard case: hierpath with optional suffix
+      result = XMRDerefOp::create(builder, resolve.getType(), ref, str);
+    } else {
+      // No hierpath (e.g., InstanceChoiceOp): the suffix contains the complete
+      // XMR as a macro reference (e.g., `__targetref_Module_inst_port).
+      // Use VerbatimExprOp to emit the macro directly. VerbatimExprOp is pure
+      // and can be duplicated, avoiding the wire declaration issue.
+      result = VerbatimExprOp::create(builder, resolve.getType(),
+                                      str ? str.getValue() : "");
+    }
     resolve.getResult().replaceAllUsesWith(result);
     return success();
   }
@@ -684,6 +717,223 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     return success();
   }
 
+  /// Resolve the XMR path for a target module's ref port.
+  /// Returns the HierPath symbol and suffix string for the path.
+  LogicalResult resolveModuleRefPortPath(FModuleOp targetMod, size_t portNum,
+                                         ImplicitLocOpBuilder &builder,
+                                         FlatSymbolRefAttr &hierPathRef,
+                                         SmallString<128> &suffix) {
+    auto refModuleArg =
+        cast<mlir::TypedValue<RefType>>(targetMod.getArgument(portNum));
+    return resolveReferencePath(refModuleArg, builder, hierPathRef, suffix,
+                                /*errorIfNotFound=*/false);
+  }
+
+  /// Handle XMR lowering for InstanceChoiceOp.
+  ///
+  /// For each ref port in an instance choice:
+  /// 1. Creates an internal macro declaration (e.g., __targetref_Module_inst_port)
+  /// 2. Registers the macro as the XMR path for the port (with backtick prefix)
+  /// 3. Stores metadata for later header generation in ref_<module>.sv
+  ///
+  /// The internal macro will be defined in the ref_<module>.sv header file with
+  /// ifdef guards that select the appropriate XMR path based on the option value.
+  ///
+  /// Example output in ref_Top.sv:
+  ///   `ifdef __option__Platform_FPGA
+  ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.inner.r
+  ///   `elsif __option__Platform_ASIC
+  ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.middle.deep.r
+  ///   `else
+  ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.r
+  ///   `endif
+  LogicalResult handleInstanceChoiceOp(InstanceChoiceOp inst,
+                                       InstanceGraph &instanceGraph) {
+    auto parentModule = inst->getParentOfType<FModuleOp>();
+
+    // This should have been set by the PopulateInstanceChoiceSymbols pass.
+    auto instanceMacro = inst.getInstanceMacroAttr();
+    if (!instanceMacro)
+      return inst.emitOpError("missing instanceMacro attribute - ensure "
+                              "PopulateInstanceChoiceSymbols pass has run");
+
+    auto optionName = inst.getOptionNameAttr();
+    auto numPorts = inst.getNumResults();
+    auto *body = getOperation().getBodyBlock();
+    auto declBuilder = ImplicitLocOpBuilder::atBlockBegin(inst.getLoc(), body);
+
+    // Get all target choices (case -> module mappings).
+    auto targetChoices = inst.getTargetChoices();
+    auto defaultTarget = inst.getDefaultTargetAttr();
+
+    // Process ref ports and create macro declarations.
+    for (size_t portNum = 0; portNum < numPorts; ++portNum) {
+      auto instanceResult = inst.getResult(portNum);
+      if (!isa<RefType>(instanceResult.getType()))
+        continue;
+
+      setPortToRemove(inst, portNum, numPorts);
+
+      // Skip dead or zero-width ports.
+      if (instanceResult.use_empty() ||
+          isZeroWidth(type_cast<RefType>(instanceResult.getType()).getType()))
+        continue;
+
+      // Generate internal macro name: __targetref_<parent>_<instance>_<port>
+      // This macro will be used in the generated Verilog to reference the probe.
+      SmallString<128> internalMacroName;
+      llvm::raw_svector_ostream(internalMacroName)
+          << "__targetref_" << parentModule.getName() << "_"
+          << inst.getInstanceName() << "_" << inst.getPortName(portNum);
+
+      auto internalMacroNameAttr =
+          StringAttr::get(&getContext(), internalMacroName);
+
+      // Declare the internal macro
+      sv::MacroDeclOp::create(declBuilder, internalMacroNameAttr, ArrayAttr(),
+                              StringAttr());
+
+      // Register the internal macro as the XMR path for this port.
+      SmallString<128> macroPath("`");
+      macroPath.append(internalMacroName);
+      auto ind = addReachingSendsEntry(instanceResult, InnerRefAttr());
+      xmrPathSuffix[ind] = macroPath;
+
+      // Store information for header generation.
+      // We'll collect these later when processing public modules.
+      allInstanceChoiceRefPorts[parentModule].push_back(
+          {internalMacroNameAttr, portNum, instanceMacro, optionName,
+           targetChoices, defaultTarget, inst});
+    }
+
+    return success();
+  }
+
+  /// Generate ifdef-guarded macro definition for an instance choice ref port.
+  LogicalResult
+  generateInstanceChoiceRefPortMacro(ImplicitLocOpBuilder &fileBuilder,
+                                     InstanceChoiceRefPortInfo &info,
+                                     InstanceGraph &instanceGraph) {
+    struct PathInfo {
+      FlatSymbolRefAttr hierPath;
+      std::string suffix;
+    };
+    DenseMap<std::pair<StringRef, size_t>, PathInfo> pathCache;
+    auto *body = getOperation().getBodyBlock();
+    auto declBuilder =
+        ImplicitLocOpBuilder::atBlockBegin(info.inst.getLoc(), body);
+
+    // Get or compute XMR path for a module's ref port.
+    auto getModuleXMRPath = [&](FlatSymbolRefAttr moduleRef,
+                                size_t portNum) -> std::optional<PathInfo> {
+      auto key = std::make_pair(moduleRef.getValue(), portNum);
+      if (auto it = pathCache.find(key); it != pathCache.end())
+        return it->second;
+
+      auto *node = instanceGraph.lookup(moduleRef.getAttr());
+      if (!node)
+        return std::nullopt;
+      auto targetMod = dyn_cast<FModuleOp>(*node->getModule());
+      if (!targetMod)
+        return std::nullopt;
+
+      FlatSymbolRefAttr hierPathRef;
+      SmallString<128> suffix;
+      if (failed(resolveModuleRefPortPath(targetMod, portNum, declBuilder,
+                                          hierPathRef, suffix)))
+        return std::nullopt;
+
+      PathInfo pathInfo{hierPathRef, suffix.str().str()};
+      pathCache[key] = pathInfo;
+      return pathInfo;
+    };
+
+    SmallVector<Attribute> symbols;
+    DenseMap<Attribute, size_t> symbolIndices;
+    symbols.push_back(info.instanceMacro);
+
+    // Build macro value with symbol substitution.
+    auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
+      SmallString<128> value("`{{0}}");
+      if (pathInfo.hierPath) {
+        auto [it, inserted] =
+            symbolIndices.try_emplace(pathInfo.hierPath, symbols.size());
+        if (inserted)
+          symbols.push_back(pathInfo.hierPath);
+        value.append(".{{");
+        value.append(std::to_string(it->second));
+        value.append("}}");
+      }
+      if (!pathInfo.suffix.empty()) {
+        if (!pathInfo.hierPath)
+          value.append(".");
+        value.append(pathInfo.suffix);
+      }
+      return value.str().str();
+    };
+
+    // Build option macro names for ifdef chain.
+    SmallVector<StringRef> macroNames;
+    SmallVector<std::string> macroNameStorage;
+    for (auto [caseRef, moduleRef] : info.targetChoices) {
+      SmallString<64> optionMacro("__option__");
+      optionMacro.append(info.optionName.getValue());
+      optionMacro.append("_");
+      optionMacro.append(caseRef.getLeafReference().getValue());
+      macroNameStorage.push_back(optionMacro.str().str());
+      macroNames.push_back(macroNameStorage.back());
+    }
+
+    // Create nested ifdef structure for each target choice.
+    auto createMacroDef = [&](std::optional<PathInfo> pathInfo) {
+      std::string macroValue = pathInfo ? buildMacroValue(*pathInfo) : "{{0}}";
+      sv::MacroDefOp::create(fileBuilder, info.macroName,
+                             fileBuilder.getStringAttr(macroValue),
+                             fileBuilder.getArrayAttr(symbols));
+    };
+
+    sv::createNestedIfDefs(
+        macroNames,
+        [&](StringRef macro, std::function<void()> thenCtor,
+            std::function<void()> elseCtor) {
+          sv::IfDefOp::create(fileBuilder, macro, std::move(thenCtor),
+                              std::move(elseCtor));
+        },
+        [&](size_t index) {
+          createMacroDef(
+              getModuleXMRPath(info.targetChoices[index].second, info.portNum));
+        },
+        [&]() {
+          createMacroDef(getModuleXMRPath(info.defaultTarget, info.portNum));
+        });
+
+    return success();
+  }
+
+  /// Collect all instance choice ref ports from a module and its hierarchy
+  /// in post-order.
+  void collectInstanceChoiceRefPorts(
+      FModuleOp module, InstanceGraph &instanceGraph,
+      SmallVectorImpl<InstanceChoiceRefPortInfo> &collected) {
+    auto *node = instanceGraph.lookup(module);
+    if (!node)
+      return;
+
+    // Walk in post-order to collect from children first
+    for (auto *instRecord : *node) {
+      auto *targetNode = instRecord->getTarget();
+      if (auto targetModule = dyn_cast<FModuleOp>(*targetNode->getModule())) {
+        collectInstanceChoiceRefPorts(targetModule, instanceGraph, collected);
+      }
+    }
+
+    // Add instance choice ref ports from this module
+    auto it = allInstanceChoiceRefPorts.find(module);
+    if (it != allInstanceChoiceRefPorts.end()) {
+      collected.append(it->second.begin(), it->second.end());
+    }
+  }
+
   LogicalResult handlePublicModuleRefPorts(FModuleOp module) {
     auto *body = getOperation().getBodyBlock();
 
@@ -722,21 +972,45 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                          ref ? declBuilder.getArrayAttr({ref}) : ArrayAttr{});
     }
 
+    // Collect all instance choice ref ports from this module's hierarchy
+    InstanceGraph &instanceGraph = getAnalysis<InstanceGraph>();
+    SmallVector<InstanceChoiceRefPortInfo> instanceChoiceRefPorts;
+    collectInstanceChoiceRefPorts(module, instanceGraph,
+                                  instanceChoiceRefPorts);
+
     // Create a file only if the module has at least one ref port.
-    if (ports.empty())
+    if (ports.empty() && instanceChoiceRefPorts.empty())
       return success();
 
     // The macros will be exported to a `ref_<module-name>.sv` file.
     // In the IR, the file is inserted before the module.
     auto fileBuilder = ImplicitLocOpBuilder(module.getLoc(), module);
-    emit::FileOp::create(fileBuilder, circuitRefPrefix + ".sv", [&] {
+    // Insert a macro with the format:
+    // ref_<module-name>_<ref-name> <path>
+    if (circuitRefPrefix.empty())
+      getRefABIPrefix(module, circuitRefPrefix);
+    SmallString<128> fileName = circuitRefPrefix;
+    fileName.append(".sv");
+    bool encounteredError = false;
+
+    emit::FileOp::create(fileBuilder, fileName, [&] {
+      // Generate macro definitions for module ref ports.
       for (auto [macroName, formatString, symbols] : ports) {
         sv::MacroDefOp::create(fileBuilder, FlatSymbolRefAttr::get(macroName),
                                formatString, symbols);
       }
+
+      // Generate ifdef-guarded macro definitions for instance choice ref ports.
+      for (auto &info : instanceChoiceRefPorts) {
+        if (failed(generateInstanceChoiceRefPortMacro(fileBuilder, info,
+                                                      instanceGraph))) {
+          encounteredError = true;
+          return;
+        }
+      }
     });
 
-    return success();
+    return success(!encounteredError);
   }
 
   /// Get the cached namespace for a module.
@@ -811,6 +1085,10 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       else if (auto inst = dyn_cast<InstanceOp>(iter.getFirst())) {
         inst.cloneWithErasedPortsAndReplaceUses(iter.getSecond());
         inst.erase();
+      } else if (auto instChoice =
+                     dyn_cast<InstanceChoiceOp>(iter.getFirst())) {
+        instChoice.cloneWithErasedPortsAndReplaceUses(iter.getSecond());
+        instChoice.erase();
       } else if (auto mem = dyn_cast<MemOp>(iter.getFirst())) {
         // Remove all debug ports of the memory.
         ImplicitLocOpBuilder builder(mem.getLoc(), mem);
@@ -884,4 +1162,9 @@ private:
 
   /// Per-module helpers for creating operations within modules.
   DenseMap<FModuleOp, ModuleState> moduleStates;
+
+  /// Map from module to its instance choice ref ports (directly in that
+  /// module).
+  DenseMap<FModuleOp, SmallVector<InstanceChoiceRefPortInfo>>
+      allInstanceChoiceRefPorts;
 };
