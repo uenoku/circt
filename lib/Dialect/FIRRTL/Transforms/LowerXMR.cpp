@@ -570,15 +570,18 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                 return failure();
 
               if (!ref) {
-                // No hierpath (e.g., InstanceChoiceOp): force/release not supported
-                return op.emitError(
+                // No hierpath (e.g., InstanceChoiceOp): force/release not
+                // supported yet.
+                op.emitError(
                     "force/release operations on instance choice ref ports are "
                     "not yet supported");
+                return failure();
               }
 
-              Value xmr = moduleStates.find(op->template getParentOfType<FModuleOp>())
-                          ->getSecond()
-                          .getOrCreateXMRRefOp(destType, ref, str, builder);
+              Value xmr =
+                  moduleStates.find(op->template getParentOfType<FModuleOp>())
+                      ->getSecond()
+                      .getOrCreateXMRRefOp(destType, ref, str, builder);
               op.getDestMutable().assign(xmr);
               return success();
             })
@@ -703,8 +706,6 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     return success();
   }
 
-
-
   /// Resolve the XMR path for a target module's ref port.
   /// Returns the HierPath symbol and suffix string for the path.
   LogicalResult resolveModuleRefPortPath(FModuleOp targetMod, size_t portNum,
@@ -764,7 +765,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   ///
   /// Note: This function generates emit::FileOp directly rather than deferring
   /// to handlePublicModuleRefPorts because:
-  /// 1. Instance choice ref ports require complex ifdef-guarded macro definitions
+  /// 1. Instance choice ref ports require complex ifdef-guarded macro
+  /// definitions
   /// 2. The path resolution logic needs access to the instance choice's target
   ///    choices and option information
   /// 3. Generating files here keeps all instance choice XMR logic localized
@@ -785,9 +787,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     // This should have been set by the PopulateInstanceChoiceSymbols pass.
     auto instanceMacro = inst.getInstanceMacroAttr();
     if (!instanceMacro)
-      return inst.emitOpError(
-          "missing instanceMacro attribute - ensure "
-          "PopulateInstanceChoiceSymbols pass has run");
+      return inst.emitOpError("missing instanceMacro attribute - ensure "
+                              "PopulateInstanceChoiceSymbols pass has run");
 
     auto optionName = inst.getOptionNameAttr();
     auto numPorts = inst.getNumResults();
@@ -886,8 +887,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           SmallString<128> value("{{0}}");
 
           if (pathInfo.hierPath) {
-            auto [it, inserted] = symbolIndices.try_emplace(
-                pathInfo.hierPath, symbols.size());
+            auto [it, inserted] =
+                symbolIndices.try_emplace(pathInfo.hierPath, symbols.size());
             if (inserted)
               symbols.push_back(pathInfo.hierPath);
             value.append(".{{");
@@ -917,10 +918,11 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
         // Create nested ifdef structure for each target choice.
         auto createMacroDef = [&](std::optional<PathInfo> pathInfo) {
-          std::string macroValue = pathInfo ? buildMacroValue(*pathInfo) : "{{0}}";
-          sv::MacroDefOp::create(
-              fileBuilder, macroNameAttr, fileBuilder.getStringAttr(macroValue),
-              fileBuilder.getArrayAttr(symbols));
+          std::string macroValue =
+              pathInfo ? buildMacroValue(*pathInfo) : "{{0}}";
+          sv::MacroDefOp::create(fileBuilder, macroNameAttr,
+                                 fileBuilder.getStringAttr(macroValue),
+                                 fileBuilder.getArrayAttr(symbols));
         };
 
         sv::createNestedIfDefs(
@@ -931,9 +933,12 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
                                   std::move(elseCtor));
             },
             [&](size_t index) {
-              createMacroDef(getModuleXMRPath(targetChoices[index].second, portNum));
+              createMacroDef(
+                  getModuleXMRPath(targetChoices[index].second, portNum));
             },
-            [&]() { createMacroDef(getModuleXMRPath(defaultTarget, portNum)); });
+            [&]() {
+              createMacroDef(getModuleXMRPath(defaultTarget, portNum));
+            });
       }
     });
 
@@ -1067,7 +1072,8 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       else if (auto inst = dyn_cast<InstanceOp>(iter.getFirst())) {
         inst.cloneWithErasedPortsAndReplaceUses(iter.getSecond());
         inst.erase();
-      } else if (auto instChoice = dyn_cast<InstanceChoiceOp>(iter.getFirst())) {
+      } else if (auto instChoice =
+                     dyn_cast<InstanceChoiceOp>(iter.getFirst())) {
         instChoice.cloneWithErasedPortsAndReplaceUses(iter.getSecond());
         instChoice.erase();
       } else if (auto mem = dyn_cast<MemOp>(iter.getFirst())) {
