@@ -12,11 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Analysis/FIRRTLInstanceInfo.h"
+#include "circt/Dialect/Emit/EmitOps.h"
 #include "circt/Dialect/FIRRTL/FIRRTLInstanceGraph.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
+#include "circt/Dialect/FIRRTL/FIRRTLTypes.h"
 #include "circt/Dialect/FIRRTL/Namespace.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "circt/Dialect/SV/SVOps.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Debug.h"
@@ -45,6 +48,9 @@ private:
   /// operation. Returns the assigned symbol, or nullptr if the operation
   /// already has a symbol.
   FlatSymbolRefAttr assignSymbol(InstanceChoiceOp op);
+
+  /// Generate header files for each option case.
+  void generateHeaderFilesForOptions();
 
   /// The namespace associated with the circuit.  This is lazily constructed
   /// using `getNamespace`.
@@ -93,6 +99,42 @@ PopulateInstanceChoiceSymbolsPass::assignSymbol(InstanceChoiceOp op) {
   return instanceMacro;
 }
 
+void PopulateInstanceChoiceSymbolsPass::generateHeaderFilesForOptions() {
+  auto circuit = getOperation();
+
+  // Iterate through all OptionOps in the circuit
+  for (auto optionOp : circuit.getOps<OptionOp>()) {
+    auto optionName = optionOp.getSymName();
+
+    // Iterate through all OptionCaseOps within this option
+    for (auto caseOp : optionOp.getOps<OptionCaseOp>()) {
+      auto caseName = caseOp.getSymName();
+
+      // Generate filename: targets_<option>_<case>.svh
+      SmallString<128> fileName;
+      llvm::raw_svector_ostream(fileName)
+          << "targets_" << optionName << "_" << caseName << ".svh";
+
+      // Create the header file
+      // The actual macro definitions will be added by LowerXMR pass
+      mlir::ImplicitLocOpBuilder builder(caseOp.getLoc(), circuit.getBodyBlock(),
+                                         circuit.getBodyBlock()->begin());
+
+      emit::FileOp::create(builder, fileName, [&] {
+        // Add a comment indicating this file will be populated by LowerXMR
+        SmallString<256> comment;
+        llvm::raw_svector_ostream(comment)
+            << "// Header file for " << optionName << " " << caseName
+            << " target\n"
+            << "// Probe macros will be populated by LowerXMR pass\n";
+        sv::VerbatimOp::create(builder, comment);
+      });
+
+      LLVM_DEBUG(llvm::dbgs() << "Created header file: " << fileName << "\n");
+    }
+  }
+}
+
 void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
   auto circuit = getOperation();
   auto &instanceGraph = getAnalysis<InstanceGraph>();
@@ -136,6 +178,9 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
       }
     }
   });
+
+  // Generate header files for each option case
+  generateHeaderFilesForOptions();
 
   circuitNamespace.reset();
   if (!changed)
