@@ -871,10 +871,13 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         SmallVector<Attribute> symbols;
         DenseMap<Attribute, size_t> symbolIndices;
 
-        // Build macro value with HierPath symbol substitution.
+        // Add instance macro to symbols array (always at index 0).
+        symbols.push_back(instanceMacro);
+
+        // Build macro value with symbol substitution.
+        // {{0}} = instance macro, {{1+}} = HierPaths
         auto buildMacroValue = [&](const PathInfo &pathInfo) -> std::string {
-          SmallString<128> value("`");
-          value.append(instanceMacro.getValue());
+          SmallString<128> value("{{0}}");
 
           if (pathInfo.hierPath) {
             auto [it, inserted] = symbolIndices.try_emplace(
@@ -908,11 +911,10 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
 
         // Create nested ifdef structure for each target choice.
         auto createMacroDef = [&](std::optional<PathInfo> pathInfo) {
-          std::string macroValue = pathInfo ? buildMacroValue(*pathInfo)
-                                            : ("`" + instanceMacro.getValue().str());
+          std::string macroValue = pathInfo ? buildMacroValue(*pathInfo) : "{{0}}";
           sv::MacroDefOp::create(
               fileBuilder, macroNameAttr, fileBuilder.getStringAttr(macroValue),
-              symbols.empty() ? ArrayAttr{} : fileBuilder.getArrayAttr(symbols));
+              fileBuilder.getArrayAttr(symbols));
         };
 
         sv::createNestedIfDefs(

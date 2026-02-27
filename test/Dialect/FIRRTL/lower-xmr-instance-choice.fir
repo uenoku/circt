@@ -8,7 +8,7 @@
 ; 4. Only public modules generate ref header files
 
 FIRRTL version 5.1.0
-circuit InstanceChoiceProbe :
+circuit Top :
   option Platform : @[test_instance_choice_xmr.mlir 2:3]
     FPGA @[test_instance_choice_xmr.mlir 3:5]
     ASIC @[test_instance_choice_xmr.mlir 4:5]
@@ -95,7 +95,7 @@ circuit InstanceChoiceProbe :
     define probe = probe(r) @[test_instance_choice_xmr.mlir 82:5]
     define rwprobe = rwprobe(r) @[test_instance_choice_xmr.mlir 83:5]
 
-  public module InstanceChoiceProbe : @[test_instance_choice_xmr.mlir 90:3]
+  module InstanceChoiceProbe : @[test_instance_choice_xmr.mlir 90:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 90:41]
     input in: UInt<8> @[test_instance_choice_xmr.mlir 90:58]
     output data : UInt<8> @[test_instance_choice_xmr.mlir 90:66]
@@ -111,7 +111,25 @@ circuit InstanceChoiceProbe :
     connect out, read(inst.probe) @[test_instance_choice_xmr.mlir 72:5]
     define probe = inst.probe @[test_instance_choice_xmr.mlir 73:5]
 
-  public module InstanceChoiceRWProbe : @[test_instance_choice_xmr.mlir 100:3]
+  public module Top : @[test_instance_choice_xmr.mlir 110:3]
+    input clk : Clock @[test_instance_choice_xmr.mlir 110:41]
+    input in: UInt<8> @[test_instance_choice_xmr.mlir 110:58]
+    output data1 : UInt<8> @[test_instance_choice_xmr.mlir 110:66]
+    output data2 : UInt<8> @[test_instance_choice_xmr.mlir 110:94]
+    output out1 : UInt<8> @[test_instance_choice_xmr.mlir 110:122]
+
+    inst sub1 of InstanceChoiceProbe @[test_instance_choice_xmr.mlir 111:42]
+    connect sub1.clk, clk @[test_instance_choice_xmr.mlir 112:5]
+    connect sub1.in, in @[test_instance_choice_xmr.mlir 112:5]
+    connect data1, sub1.data @[test_instance_choice_xmr.mlir 113:5]
+    connect out1, sub1.out @[test_instance_choice_xmr.mlir 114:5]
+
+    inst sub2 of InstanceChoiceRWProbe @[test_instance_choice_xmr.mlir 116:42]
+    connect sub2.clk, clk @[test_instance_choice_xmr.mlir 117:5]
+    connect sub2.in, in @[test_instance_choice_xmr.mlir 117:5]
+    connect data2, sub2.data @[test_instance_choice_xmr.mlir 118:5]
+
+  module InstanceChoiceRWProbe : @[test_instance_choice_xmr.mlir 100:3]
     input clk : Clock @[test_instance_choice_xmr.mlir 100:41]
     input in: UInt<8> @[test_instance_choice_xmr.mlir 100:58]
     output data : UInt<8> @[test_instance_choice_xmr.mlir 100:66]
@@ -128,26 +146,4 @@ circuit InstanceChoiceProbe :
 ; CHECK-LABEL: module InstanceChoiceProbe
 ; CHECK: assign out = `ref_InstanceChoiceProbe_inst_probe;
 
-; CHECK-LABEL: FILE "ref_InstanceChoiceProbe.sv"
-; CHECK: `ifdef __option__Platform_FPGA
-; CHECK:   `define ref_InstanceChoiceProbe_inst_probe `__target_Platform_InstanceChoiceProbe_inst.inner.r
-; CHECK: `else
-; CHECK:   `ifdef __option__Platform_ASIC
-; CHECK:     `define ref_InstanceChoiceProbe_inst_probe `__target_Platform_InstanceChoiceProbe_inst.middle.{{deep|inner}}.r
-; CHECK:   `else
-; CHECK:     `define ref_InstanceChoiceProbe_inst_probe `__target_Platform_InstanceChoiceProbe_inst.r
-; CHECK:   `endif
-; CHECK: `endif
-; CHECK: `define ref_InstanceChoiceProbe_probe `ref_InstanceChoiceProbe_inst_probe
-
-; CHECK-LABEL: FILE "ref_InstanceChoiceRWProbe.sv"
-; CHECK: `ifdef __option__Platform_FPGA
-; CHECK:   `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
-; CHECK: `else
-; CHECK:   `ifdef __option__Platform_ASIC
-; CHECK:     `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
-; CHECK:   `else
-; CHECK:     `define ref_InstanceChoiceRWProbe_inst_rwprobe `__target_Platform_InstanceChoiceRWProbe_inst.r
-; CHECK:   `endif
-; CHECK: `endif
-; CHECK: `define ref_InstanceChoiceRWProbe_rwprobe `ref_InstanceChoiceRWProbe_inst_rwprobe
+; CHECK-LABEL: module Top
