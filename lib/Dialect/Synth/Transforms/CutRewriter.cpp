@@ -112,6 +112,17 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
   indexToValue.reserve(estimatedSize);
   gates.reserve(estimatedSize);
 
+  auto handleSingleInputGate = [&](Operation *op, Value result,
+                                   const Signal &inputSignal) {
+    if (!inputSignal.isInverted()) {
+      // Non-inverted buffer: directly alias the result to the input
+      valueToIndex[result] = inputSignal.getIndex();
+      return;
+    }
+    // Inverted operation: create a NOT gate
+    addGate(op, LogicNetworkGate::Identity, result, {inputSignal});
+  };
+
   // Ensure all block arguments are indexed as primary inputs first
   for (Value arg : block->getArguments()) {
     if (!hasIndex(arg))
@@ -133,16 +144,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
 
       if (inputs.size() == 1) {
         // Single-input AND is a buffer or NOT gate
-        if (!edges[0].isInverted()) {
-          // Non-inverted buffer: directly alias the result to the input
-          Value result = andOp.getResult();
-          const uint32_t inputIdx = edges[0].getIndex();
-          valueToIndex[result] = inputIdx;
-        } else {
-          // Inverted operation: create a NOT gate
-          addGate(&op, LogicNetworkGate::Identity, andOp.getResult(),
-                  {edges[0]});
-        }
+        handleSingleInputGate(&op, andOp.getResult(), edges[0]);
       } else if (inputs.size() == 2) {
         addGate(&op, LogicNetworkGate::And2, {edges[0], edges[1]});
       }
@@ -170,13 +172,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
         // Single input = inverter
         const Signal inputSignal =
             getOrCreateSignal(majOp.getOperand(0), majOp.isInverted(0));
-        if (!majOp.isInverted(0)) {
-          // Non-inverted buffer: directly alias the result to the input
-          valueToIndex[majOp.getResult()] = inputSignal.getIndex();
-          continue;
-        }
-        addGate(&op, LogicNetworkGate::Identity, majOp.getResult(),
-                {inputSignal});
+        handleSingleInputGate(&op, majOp.getResult(), inputSignal);
         continue;
       }
       if (majOp->getNumOperands() != 3) {
