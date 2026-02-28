@@ -1,4 +1,5 @@
 add_circt_unittest(CIRCTSynthTests
+  CutRewriterTest.cpp
   LongestPathTest.cpp
 )
 

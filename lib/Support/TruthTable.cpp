@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 
 using namespace circt;
@@ -143,6 +144,197 @@ void BinaryTruthTable::dump(llvm::raw_ostream &os) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Truth Table Utilities
+//===----------------------------------------------------------------------===//
+
+llvm::APInt
+circt::detail::expandTruthTableForMergedInputs(const llvm::APInt &tt,
+                                               ArrayRef<unsigned> inputMapping,
+                                               unsigned numMergedInputs) {
+  unsigned numOrigInputs = inputMapping.size();
+  unsigned mergedSize = 1U << numMergedInputs;
+
+  // Fast path: identity mapping with same size
+  if (numOrigInputs == numMergedInputs) {
+    bool isIdentity = true;
+    for (unsigned i = 0; i < numOrigInputs && isIdentity; ++i)
+      isIdentity = (inputMapping[i] == i);
+    if (isIdentity)
+      return tt.zext(mergedSize);
+  }
+
+  // For small truth tables (N <= 6), use efficient 64-bit operations
+  if (numMergedInputs <= 6) {
+    uint64_t origTT = tt.getZExtValue();
+    uint64_t result = 0;
+
+    // Precompute variable masks using bit manipulation.
+    // varMask[i] has bit j set iff (j >> i) & 1 == 1
+    // This is the standard "variable i" mask for truth tables.
+    //
+    // Pattern for variable i (0-indexed):
+    //   var 0: 0xAAAAAAAAAAAAAAAA (alternating 0,1)
+    //   var 1: 0xCCCCCCCCCCCCCCCC (alternating 00,11)
+    //   var 2: 0xF0F0F0F0F0F0F0F0 (alternating 0000,1111)
+    //   var i: repeating pattern of 2^i zeros followed by 2^i ones
+    //
+    // Formula: varMask[i] = (0xFFFF...F / ((1 << (1 << i)) + 1)) << (1 << i)
+    // But easier to just use the known constants for N <= 6:
+    static constexpr uint64_t kVarMasks[6] = {
+        0xAAAAAAAAAAAAAAAAULL, // var 0: 10101010...
+        0xCCCCCCCCCCCCCCCCULL, // var 1: 11001100...
+        0xF0F0F0F0F0F0F0F0ULL, // var 2: 11110000...
+        0xFF00FF00FF00FF00ULL, // var 3
+        0xFFFF0000FFFF0000ULL, // var 4
+        0xFFFFFFFF00000000ULL  // var 5
+    };
+
+    // Mask to limit to mergedSize bits
+    uint64_t sizeMask = (mergedSize == 64) ? ~0ULL : ((1ULL << mergedSize) - 1);
+
+    // For each original truth table entry that is 1
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (!((origTT >> origIdx) & 1))
+        continue;
+
+      // Compute pattern: all mergedIdx that map to origIdx
+      // Start with all 1s, then constrain for each original variable
+      uint64_t pattern = sizeMask;
+
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = (origIdx >> i) & 1;
+        uint64_t varMask = kVarMasks[mergedPos] & sizeMask;
+
+        if (origBit)
+          pattern &= varMask;
+        else
+          pattern &= ~varMask;
+      }
+
+      result |= pattern;
+    }
+
+    return llvm::APInt(mergedSize, result);
+  }
+
+  // Fast path for 7/8-input merged truth tables (128/256 bits): use packed
+  // 64-bit words and avoid per-bit APInt setBit operations.
+  if (numMergedInputs <= 8) {
+    constexpr unsigned kMaxFastInputs = 8;
+    constexpr unsigned kMaxFastWords = (1U << kMaxFastInputs) / 64; // 4 words
+
+    struct FastMaskCache {
+      bool initialized = false;
+      // [numInputs][var][word]
+      std::array<
+          std::array<std::array<uint64_t, kMaxFastWords>, kMaxFastInputs>,
+          kMaxFastInputs + 1>
+          masks{};
+    };
+
+    static FastMaskCache fastMaskCache;
+    if (!fastMaskCache.initialized) {
+      for (unsigned n = 0; n <= kMaxFastInputs; ++n) {
+        if (n == 0)
+          continue;
+        unsigned size = 1U << n;
+        for (unsigned var = 0; var < n; ++var) {
+          for (unsigned idx = 0; idx < size; ++idx) {
+            if (((idx >> var) & 1U) == 0)
+              continue;
+            unsigned word = idx >> 6;
+            unsigned bit = idx & 63;
+            fastMaskCache.masks[n][var][word] |= (1ULL << bit);
+          }
+        }
+      }
+      fastMaskCache.initialized = true;
+    }
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxFastWords> fullMask{};
+    for (unsigned w = 0; w < numWords; ++w)
+      fullMask[w] = ~0ULL;
+    if (unsigned tail = mergedSize & 63)
+      fullMask[numWords - 1] = (1ULL << tail) - 1;
+
+    std::array<uint64_t, kMaxFastWords> result{};
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (!tt[origIdx])
+        continue;
+
+      auto pattern = fullMask;
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = ((origIdx >> i) & 1U) != 0;
+        const auto &varMask = fastMaskCache.masks[numMergedInputs][mergedPos];
+        for (unsigned w = 0; w < numWords; ++w)
+          pattern[w] &= origBit ? varMask[w] : ~varMask[w];
+      }
+
+      for (unsigned w = 0; w < numWords; ++w)
+        result[w] |= pattern[w];
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
+  // Fast path for 9/10-input merged truth tables (512/1024 bits): use packed
+  // 64-bit words and avoid APInt::setBit in the inner loop.
+  if (numMergedInputs <= 10) {
+    constexpr unsigned kMaxMergedInputs = 10;
+    constexpr unsigned kMaxWords = (1U << kMaxMergedInputs) / 64; // 16 words
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxWords> result{};
+
+    std::array<uint32_t, kMaxMergedInputs> mergedBitMasks{};
+    std::array<unsigned, kMaxMergedInputs> origBitMasks{};
+    for (unsigned i = 0; i < numOrigInputs; ++i) {
+      // Precompute masks once so the per-entry loop only does cheap AND/OR.
+      mergedBitMasks[i] = 1U << inputMapping[i];
+      origBitMasks[i] = 1U << i;
+    }
+
+    // Read source bits as packed 64-bit words instead of tt[bit] to avoid
+    // repeated APInt helper overhead on this hot path.
+    const uint64_t *srcWords = tt.getRawData();
+    for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+      unsigned origIdx = 0;
+      for (unsigned i = 0; i < numOrigInputs; ++i)
+        if (mergedIdx & mergedBitMasks[i])
+          origIdx |= origBitMasks[i];
+
+      if (((srcWords[origIdx >> 6] >> (origIdx & 63)) & 1ULL) == 0)
+        continue;
+
+      result[mergedIdx >> 6] |= (1ULL << (mergedIdx & 63));
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
+  // Fallback for larger truth tables
+  llvm::APInt result = llvm::APInt::getZero(mergedSize);
+  for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+    unsigned origIdx = 0;
+    for (unsigned i = 0; i < numOrigInputs; ++i) {
+      if ((mergedIdx >> inputMapping[i]) & 1)
+        origIdx |= (1U << i);
+    }
+    if (tt[origIdx])
+      result.setBit(mergedIdx);
+  }
+
+  return result;
+}
+
+//===----------------------------------------------------------------------===//
 // NPNClass
 //===----------------------------------------------------------------------===//
 
@@ -165,9 +357,12 @@ llvm::SmallVector<unsigned> identityPermutation(unsigned size) {
 unsigned permuteNegationMask(unsigned negationMask,
                              ArrayRef<unsigned> permutation) {
   unsigned result = 0;
-  for (unsigned i = 0; i < permutation.size(); ++i) {
-    if (negationMask & (1u << i)) {
-      result |= (1u << permutation[i]);
+  for (unsigned j = 0; j < permutation.size(); ++j) {
+    // Canonical variable j corresponds to original variable perm[j].
+    // If original variable perm[j] was negated, canonical variable j is
+    // negated.
+    if (negationMask & (1u << permutation[j])) {
+      result |= (1u << j);
     }
   }
   return result;
