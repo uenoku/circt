@@ -806,9 +806,6 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
 
   switch (rootGate.getKind()) {
   case LogicNetworkGate::And2:
-    return BinaryTruthTable(
-        numMergedInputs, 1,
-        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
   case LogicNetworkGate::Xor2:
     return BinaryTruthTable(
         numMergedInputs, 1,
