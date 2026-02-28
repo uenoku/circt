@@ -140,7 +140,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           valueToIndex[result] = inputIdx;
         } else {
           // Inverted operation: create a NOT gate
-          addGate(&op, LogicNetworkGate::Identity, andOp.getResult(), {edges[0]});
+          addGate(&op, LogicNetworkGate::Identity, andOp.getResult(),
+                  {edges[0]});
         }
       } else if (inputs.size() == 2) {
         addGate(&op, LogicNetworkGate::And2, {edges[0], edges[1]});
@@ -174,7 +175,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           valueToIndex[majOp.getResult()] = inputSignal.getIndex();
           continue;
         }
-        addGate(&op, LogicNetworkGate::Identity, majOp.getResult(), {inputSignal});
+        addGate(&op, LogicNetworkGate::Identity, majOp.getResult(),
+                {inputSignal});
         continue;
       }
       if (majOp->getNumOperands() != 3) {
@@ -196,7 +198,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     if (auto constOp = dyn_cast<hw::ConstantOp>(&op)) {
       Value result = constOp.getResult();
       if (result.getType().isInteger(1)) {
-        uint32_t constIdx = constOp.getValue().isZero() ? kConstant0 : kConstant1;
+        uint32_t constIdx =
+            constOp.getValue().isZero() ? kConstant0 : kConstant1;
         valueToIndex[result] = constIdx;
         continue;
       }
@@ -461,6 +464,13 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
   const auto &gate = network.getGate(index);
   llvm::APInt result;
 
+  auto getEdgeTT = [&](const Signal &edge) {
+    auto tt = simulateGate(network, edge.getIndex(), cache, numInputs);
+    if (edge.isInverted())
+      tt.flipAllBits();
+    return tt;
+  };
+
   switch (gate.getKind()) {
   case LogicNetworkGate::Constant:
     // Constant 0 or 1 - return all zeros or all ones
@@ -477,47 +487,25 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
 
   case LogicNetworkGate::And2: {
     // Get children truth tables
-    auto lhs =
-        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
-    auto rhs =
-        simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
-
-    // Apply inversions
-    if (gate.edges[0].isInverted())
-      lhs.flipAllBits();
-    if (gate.edges[1].isInverted())
-      rhs.flipAllBits();
+    auto lhs = getEdgeTT(gate.edges[0]);
+    auto rhs = getEdgeTT(gate.edges[1]);
 
     result = lhs & rhs;
     break;
   }
 
   case LogicNetworkGate::Xor2: {
-    auto lhs =
-        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
-    auto rhs =
-        simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
-
-    if (gate.edges[0].isInverted())
-      lhs.flipAllBits();
-    if (gate.edges[1].isInverted())
-      rhs.flipAllBits();
+    auto lhs = getEdgeTT(gate.edges[0]);
+    auto rhs = getEdgeTT(gate.edges[1]);
 
     result = lhs ^ rhs;
     break;
   }
 
   case LogicNetworkGate::Maj3: {
-    auto a = simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
-    auto b = simulateGate(network, gate.edges[1].getIndex(), cache, numInputs);
-    auto c = simulateGate(network, gate.edges[2].getIndex(), cache, numInputs);
-
-    if (gate.edges[0].isInverted())
-      a.flipAllBits();
-    if (gate.edges[1].isInverted())
-      b.flipAllBits();
-    if (gate.edges[2].isInverted())
-      c.flipAllBits();
+    auto a = getEdgeTT(gate.edges[0]);
+    auto b = getEdgeTT(gate.edges[1]);
+    auto c = getEdgeTT(gate.edges[2]);
 
     // MAJ(a,b,c) = (a & b) | (a & c) | (b & c)
     result = (a & b) | (a & c) | (b & c);
@@ -526,12 +514,7 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
 
   case LogicNetworkGate::Identity: {
     // Get input truth table
-    auto input =
-        simulateGate(network, gate.edges[0].getIndex(), cache, numInputs);
-
-    // Apply inversion from the edge (should always be inverted for NOT gates)
-    if (gate.edges[0].isInverted())
-      input.flipAllBits();
+    auto input = getEdgeTT(gate.edges[0]);
 
     result = input;
     break;
@@ -1398,8 +1381,8 @@ void CutEnumerator::dump() const {
         llvm::outs() << getTestVariableName(inputVal, opCounter);
       });
       auto &pattern = cut->getMatchedPattern();
-      llvm::outs() << "}" << "@t" << cut->getTruthTable()->table.getZExtValue()
-                   << "d";
+      llvm::outs() << "}"
+                   << "@t" << cut->getTruthTable()->table.getZExtValue() << "d";
       if (pattern) {
         llvm::outs() << *std::max_element(pattern->getArrivalTimes().begin(),
                                           pattern->getArrivalTimes().end());
