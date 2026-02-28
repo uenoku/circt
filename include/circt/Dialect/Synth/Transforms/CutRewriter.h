@@ -652,9 +652,6 @@ public:
   ArrayRef<uint32_t> getProcessingOrder() const { return processingOrder; }
 
 private:
-  /// Visit a single operation and generate cuts for it.
-  LogicalResult visit(Operation *op);
-
   /// Visit a combinational logic operation and generate cuts.
   /// This handles the core cut enumeration logic for operations
   /// like AND, OR, XOR, etc.

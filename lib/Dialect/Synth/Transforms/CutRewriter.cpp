@@ -892,21 +892,6 @@ static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {
   return cut;
 }
 
-[[maybe_unused]] static bool
-isCutDerivedFromOperand(const Cut &cut, uint32_t opIndex,
-                        const LogicNetwork &network) {
-  const auto &gate = network.getGate(opIndex);
-  uint32_t cutOutputIndex =
-      cut.isTrivialCut() ? cut.inputs[0] : cut.getRootIndex();
-
-  // Check if any of the gate's fanins match the cut's output
-  for (unsigned i = 0; i < gate.getNumFanins(); ++i) {
-    if (gate.edges[i].getIndex() == cutOutputIndex)
-      return true;
-  }
-  return false;
-}
-
 //===----------------------------------------------------------------------===//
 // MatchedPattern
 //===----------------------------------------------------------------------===//
@@ -1035,7 +1020,7 @@ void CutSet::finalize(
     cut->setMatchedPattern(std::move(*matched));
   }
 
-  // Step 3: Sort cuts by priority to select the best ones
+  // Step 4: Sort cuts by priority to select the best ones
   // Priority is determined by the optimization strategy:
   // - Trivial cuts (direct connections) have highest priority
   // - Among matched cuts, compare by area/delay based on the strategy
@@ -1073,7 +1058,7 @@ void CutSet::finalize(
                      return a->getInputSize() < b->getInputSize();
                    });
 
-  // Step 4: Limit the number of cuts to prevent exponential growth
+  // Step 5: Limit the number of cuts to prevent exponential growth
   // After sorting, keep only the best cuts up to the specified limit
   if (cuts.size() > options.maxCutSizePerRoot)
     cuts.resize(options.maxCutSizePerRoot);
@@ -1166,24 +1151,6 @@ void CutEnumerator::clear() {
   processingOrder.clear();
   logicNetwork.clear();
   allocator.Reset();
-}
-
-LogicalResult CutEnumerator::visit(Operation *op) {
-  // Check if this is a supported logic operation
-  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-    // Skip non-inverted single-input operations (buffers) - they're aliased
-    // NOT gates (inverted single-input) are processed as logic gates
-    if (andOp.getInputs().size() == 1 && !andOp.isInverted(0))
-      return success();
-
-    // Process multi-input AND operations and NOT gates
-    uint32_t index = logicNetwork.getIndex(op->getResult(0));
-    return visitLogicOp(index);
-  }
-
-  // Skip other operations. If the operation is not a supported logic
-  // operation, we create a trivial cut lazily.
-  return success();
 }
 
 LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
@@ -1385,16 +1352,6 @@ LogicalResult CutEnumerator::enumerateCuts(
       return failure();
   }
 
-  // // Walk through all operations in the module in a topological manner
-  // auto result = topOp->walk([&](Operation *op) {
-  //   if (failed(visit(op)))
-  //     return mlir::WalkResult::interrupt();
-  //   return mlir::WalkResult::advance();
-  // });
-
-  // if (result.wasInterrupted())
-  //   return failure();
-
   LLVM_DEBUG(llvm::dbgs() << "Cut enumeration completed successfully\n");
   return success();
 }
@@ -1505,10 +1462,9 @@ LogicalResult CutRewriter::run(Operation *topOp) {
                  << "\n";
     llvm::dbgs() << "Max input size: " << options.maxCutInputSize << "\n";
     llvm::dbgs() << "Max cut size: " << options.maxCutSizePerRoot << "\n";
-    llvm::dbgs() << "Max cuts per node: " << options.maxCutSizePerRoot << "\n";
   });
 
-  // Currrently we don't support patterns with multiple outputs.
+  // Currently we don't support patterns with multiple outputs.
   // So check that.
   // TODO: This must be removed when we support multiple outputs.
   for (auto &pattern : patterns.patterns) {
