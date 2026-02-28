@@ -120,8 +120,7 @@ struct LogicNetworkGate {
     And2 = 2,         ///< AND gate (2-input, aig::AndInverterOp)
     Xor2 = 3,         ///< XOR gate (2-input)
     Maj3 = 4,         ///< Majority gate (3-input, mig::MajOp)
-    Identity = 5,     ///< Identity gate (used for 1-input inverter)
-    Other = 6 ///< Other/variadic operation (supports variadic and/xor/or/maj)
+    Identity = 5      ///< Identity gate (used for 1-input inverter)
   };
 
   /// Operation pointer and kind packed together.
@@ -131,8 +130,8 @@ struct LogicNetworkGate {
   /// Fanin edges (up to 3 inputs). For AND gates, only edges[0] and edges[1]
   /// are used. For MAJ gates, all three are used. For PrimaryInput/Constant,
   /// none are used. The inversion bit is encoded in each edge.
-  /// For "Other" (variadic) gates, edges store the first 3 inputs; remaining
-  /// inputs must be retrieved from the operation.
+  /// For gates with more than 3 inputs, remaining inputs must be retrieved from
+  /// the operation.
   Signal edges[3];
 
   LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
@@ -151,7 +150,6 @@ struct LogicNetworkGate {
   Operation *getOperation() const { return opAndKind.getPointer(); }
 
   /// Get the number of fanin edges based on kind.
-  /// For Other (variadic) gates, uses op->getNumOperands().
   unsigned getNumFanins() const {
     switch (getKind()) {
     case Constant:
@@ -164,11 +162,6 @@ struct LogicNetworkGate {
       return 3;
     case Identity:
       return 1;
-    case Other:
-      // For variadic ops, get the actual operand count from the operation
-      if (auto *op = getOperation())
-        return op->getNumOperands();
-      return 0;
     }
     llvm_unreachable("Unknown gate kind");
   }
@@ -176,7 +169,7 @@ struct LogicNetworkGate {
   /// Check if this is a logic gate that can be part of a cut.
   bool isLogicGate() const {
     Kind k = getKind();
-    return k == And2 || k == Xor2 || k == Maj3 || k == Identity || k == Other;
+    return k == And2 || k == Xor2 || k == Maj3 || k == Identity;
   }
 
   /// Check if this should always be a cut input (PI or constant).
@@ -184,9 +177,6 @@ struct LogicNetworkGate {
     Kind k = getKind();
     return k == PrimaryInput || k == Constant;
   }
-
-  /// Check if this is a variadic gate that needs special handling.
-  bool isVariadic() const { return getKind() == Other; }
 };
 
 /// Flat logic network representation for efficient cut enumeration.
@@ -452,6 +442,15 @@ public:
   /// Uses input indices directly (no ValueNumbering needed).
   void computeSignature();
 
+  /// Check if this cut dominates another (i.e., this cut's inputs are a subset
+  /// of the other's inputs). Uses signature pre-filtering for speed.
+  /// Both cuts must have sorted inputs.
+  bool dominates(const Cut &other) const;
+
+  /// Check if this cut dominates a set of sorted inputs with the given
+  /// signature.
+  bool dominates(ArrayRef<uint32_t> otherInputs, uint64_t otherSig) const;
+
   /// Estimate the size of merging this cut with another using signatures.
   /// Returns the estimated number of unique inputs in the merged cut.
   unsigned estimateMergedSize(const Cut &other) const;
@@ -555,9 +554,8 @@ public:
   /// Re-select the best cut from already-matched cuts.
   /// When requiredTime is set and strategy is Area, picks the minimum-area-flow
   /// cut whose arrival time does not exceed requiredTime.
-  void selectBestCut(
-      OptimizationStrategy strategy,
-      std::optional<DelayType> requiredTime = std::nullopt);
+  void selectBestCut(OptimizationStrategy strategy,
+                     std::optional<DelayType> requiredTime = std::nullopt);
 
   /// Finalize the cut set by removing duplicates and selecting the best
   /// pattern.

@@ -85,6 +85,35 @@ def parse_abc_print_stats(stdout: str) -> dict[str, int | None]:
     return {"lut_depth": depth}
 
 
+def parse_abc_time(stdout: str) -> dict[str, float | str | None]:
+    """Parse ABC `time` command output.
+
+    Expected format includes a line like:
+      elapse: 1.27 seconds, total: 1.27 seconds
+    """
+    elapsed_seconds = None
+    total_seconds = None
+    raw_line = None
+
+    for line in stdout.splitlines():
+        match = re.search(
+            r"\belapse\s*:\s*([+-]?\d+(?:\.\d+)?)\s+seconds\s*,\s*"
+            r"total\s*:\s*([+-]?\d+(?:\.\d+)?)\s+seconds\b",
+            line,
+        )
+        if match:
+            elapsed_seconds = float(match.group(1))
+            total_seconds = float(match.group(2))
+            raw_line = line.strip()
+            break
+
+    return {
+        "abc_time_elapsed_s": elapsed_seconds,
+        "abc_time_total_s": total_seconds,
+        "abc_time_raw": raw_line,
+    }
+
+
 def run_benchmark(
     max_lut_size: int,
     max_cuts_per_root: int,
@@ -151,6 +180,7 @@ def run_benchmark(
     )
     abc_pass_timings = parse_mlir_timing(stderr)
     abc_print_stats = parse_abc_print_stats(stdout)
+    abc_time = parse_abc_time(stdout)
     log_content = stdout
     if stderr:
         log_content += "\n=== stderr ===\n" + stderr
@@ -176,6 +206,7 @@ def run_benchmark(
             "pass_timings_s": abc_pass_timings,
             "pipeline": abc_pipeline,
             **abc_print_stats,
+            **abc_time,
             **abc_analysis,
         },
         "lut": {
@@ -457,8 +488,11 @@ def main() -> int:
                 f"{k}: {v * 1000:.1f}ms" for k, v in lut_timings.items()
             )
             abc_depth = result["abc"].get("lut_depth")
+            abc_time_raw = result["abc"].get("abc_time_raw")
             lut_depth = result["lut"].get("longest_delay")
             print(f"  ABC  [{abc_str}]")
+            if abc_time_raw is not None:
+                print(f"       ABC time: {abc_time_raw}")
             if abc_depth is not None:
                 print(f"       LUT depth: {abc_depth}")
             print(f"  LUT  [{lut_str}]")

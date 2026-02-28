@@ -49,3 +49,14 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MLIRPass
   MLIRTransforms
 )
+
+if(CIRCT_MOCKTURTLE_ENABLED)
+add_subdirectory(MockturtleIntegration)
+target_link_libraries(CIRCTSynthTransforms PRIVATE
+  CIRCTSynthMockturtleIntegration
+) 
+endif()
+
+if(CIRCT_CADICAL_ENABLED)
+  target_link_libraries(CIRCTSynthTransforms PRIVATE CaDiCaL)
+endif()
