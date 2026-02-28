@@ -82,16 +82,16 @@ struct GenericLUT : public CutRewritePattern {
     // Reverse the inputs to match the LUT input order
     // Convert indices to Values first
     SmallVector<Value> lutInputs;
-    lutInputs.reserve(cut.inputs.size());
-    for (auto it = cut.inputs.rbegin(); it != cut.inputs.rend(); ++it)
-      lutInputs.push_back(network.getValue(*it));
+    SmallVector<uint32_t, 6> reversedInputs(cut.inputs.rbegin(),
+                                            cut.inputs.rend());
+    network.getValues(reversedInputs, lutInputs);
 
     // Get the root operation location
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
-    
+
     // Generate comb.truth table operation.
-    auto truthTableOp = comb::TruthTableOp::create(
-        rewriter, rootOp->getLoc(), lutInputs, lutTable);
+    auto truthTableOp = comb::TruthTableOp::create(rewriter, rootOp->getLoc(),
+                                                   lutInputs, lutTable);
 
     // Replace the root operation with the truth table operation
     return truthTableOp.getOperation();

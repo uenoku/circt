@@ -148,11 +148,11 @@ struct TechLibraryPattern : public CutRewritePattern {
     // Get permuted input indices and convert to Values
     SmallVector<unsigned> permutedIndices;
     cut.getPermutatedInputIndices(npnClass, permutedIndices);
-    for (auto idx : permutedIndices) {
-      auto inputIndex = cut.inputs[idx];
-      auto inputValue = network.getValue(inputIndex);
-      inputs.push_back(inputValue);
-    }
+    SmallVector<uint32_t, 6> mappedInputs;
+    mappedInputs.reserve(permutedIndices.size());
+    for (auto idx : permutedIndices)
+      mappedInputs.push_back(cut.inputs[idx]);
+    network.getValues(mappedInputs, inputs);
 
     // Get the root operation location
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();

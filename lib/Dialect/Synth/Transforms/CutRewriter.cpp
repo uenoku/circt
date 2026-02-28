@@ -93,6 +93,14 @@ Value LogicNetwork::getValue(uint32_t index) const {
   return indexToValue[index];
 }
 
+void LogicNetwork::getValues(ArrayRef<uint32_t> indices,
+                             SmallVectorImpl<Value> &values) const {
+  values.clear();
+  values.reserve(indices.size());
+  for (uint32_t idx : indices)
+    values.push_back(getValue(idx));
+}
+
 uint32_t LogicNetwork::addPrimaryInput(Value value) {
   const uint32_t index = getOrCreateIndex(value);
   gates[index] = LogicNetworkGate(nullptr, LogicNetworkGate::PrimaryInput);

@@ -225,13 +225,11 @@ struct SOPBalancingPattern : public CutRewritePattern {
     SmallVector<DelayType, expectedISOPInputs> arrivalTimes;
     if (failed(cut.getInputArrivalTimes(enumerator, arrivalTimes)))
       return failure();
-    
+
     // Convert indices to Values for building the operation
     SmallVector<Value, 6> inputValues;
-    inputValues.reserve(cut.inputs.size());
-    for (auto idx : cut.inputs)
-      inputValues.push_back(network.getValue(idx));
-    
+    network.getValues(cut.inputs, inputValues);
+
     // Construct the fused location.
     SetVector<Location> inputLocs;
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
@@ -241,8 +239,8 @@ struct SOPBalancingPattern : public CutRewritePattern {
 
     auto loc = builder.getFusedLoc(inputLocs.getArrayRef());
 
-    Value result = buildBalancedSOP(builder, loc, sop, inputValues,
-                                    arrivalTimes);
+    Value result =
+        buildBalancedSOP(builder, loc, sop, inputValues, arrivalTimes);
 
     auto *op = result.getDefiningOp();
     if (!op)

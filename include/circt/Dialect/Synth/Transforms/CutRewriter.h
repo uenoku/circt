@@ -241,6 +241,10 @@ public:
   /// Returns null Value for constant indices (0 and 1).
   Value getValue(uint32_t index) const;
 
+  /// Fill values for the given raw indices.
+  void getValues(ArrayRef<uint32_t> indices,
+                 SmallVectorImpl<Value> &values) const;
+
   /// Get a Signal for a value.
   /// Asserts if value not found - use hasIndex() first if unsure.
   Signal getSignal(Value value, bool inverted) const {
@@ -526,7 +530,7 @@ public:
 /// results.
 class CutSet {
 private:
-  llvm::SmallVector<Cut *, 4> cuts; ///< Collection of cuts for this node
+  llvm::SmallVector<Cut *, 16> cuts; ///< Collection of cuts for this node
   Cut *bestCut = nullptr;
   bool isFrozen = false; ///< Whether cut set is finalized
 
