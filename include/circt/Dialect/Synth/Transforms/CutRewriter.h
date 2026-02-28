@@ -135,15 +135,18 @@ struct LogicNetworkGate {
   Signal edges[3];
 
   LogicNetworkGate() : opAndKind(nullptr, Constant) {}
+  LogicNetworkGate(Operation *op, Kind kind)
+      : opAndKind(op, kind), edges{} {}
+  LogicNetworkGate(Operation *op, Kind kind, Signal e0, Signal e1)
+      : opAndKind(op, kind), edges{e0, e1, {}} {}
+  LogicNetworkGate(Operation *op, Kind kind, Signal e0, Signal e1, Signal e2)
+      : opAndKind(op, kind), edges{e0, e1, e2} {}
 
   /// Get the kind of this gate.
   Kind getKind() const { return opAndKind.getInt(); }
 
   /// Get the operation pointer (nullptr for constants).
   Operation *getOperation() const { return opAndKind.getPointer(); }
-
-  /// Set the kind and operation.
-  void set(Operation *op, Kind kind) { opAndKind.setPointerAndInt(op, kind); }
 
   /// Get the number of fanin edges based on kind.
   /// For Other (variadic) gates, uses op->getNumOperands().
@@ -208,10 +211,8 @@ public:
 
   LogicNetwork() {
     // Reserve index 0 for constant 0 and index 1 for constant 1
-    gates.emplace_back();
-    gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
-    gates.emplace_back();
-    gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+    gates.emplace_back(nullptr, LogicNetworkGate::Constant);
+    gates.emplace_back(nullptr, LogicNetworkGate::Constant);
     // indexToValue needs placeholders for constants
     indexToValue.push_back(Value()); // const0
     indexToValue.push_back(Value()); // const1

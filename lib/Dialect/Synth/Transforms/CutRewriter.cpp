@@ -94,43 +94,31 @@ Value LogicNetwork::getValue(uint32_t index) const {
 
 uint32_t LogicNetwork::addPrimaryInput(Value value) {
   const uint32_t index = getOrCreateIndex(value);
-  auto &gate = gates[index];
-  gate.set(nullptr, LogicNetworkGate::PrimaryInput);
+  gates[index] = LogicNetworkGate(nullptr, LogicNetworkGate::PrimaryInput);
   return index;
 }
 
 uint32_t LogicNetwork::addAndGate(Operation *op, Signal lhs, Signal rhs) {
   const uint32_t index = getOrCreateIndex(op->getResult(0));
-  auto &gate = gates[index];
-  gate.set(op, LogicNetworkGate::And2);
-  gate.edges[0] = lhs;
-  gate.edges[1] = rhs;
+  gates[index] = LogicNetworkGate(op, LogicNetworkGate::And2, lhs, rhs);
   return index;
 }
 
 uint32_t LogicNetwork::addXorGate(Operation *op, Signal lhs, Signal rhs) {
   const uint32_t index = getOrCreateIndex(op->getResult(0));
-  auto &gate = gates[index];
-  gate.set(op, LogicNetworkGate::Xor2);
-  gate.edges[0] = lhs;
-  gate.edges[1] = rhs;
+  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Xor2, lhs, rhs);
   return index;
 }
 
 uint32_t LogicNetwork::addMajGate(Operation *op, Signal a, Signal b, Signal c) {
   const uint32_t index = getOrCreateIndex(op->getResult(0));
-  auto &gate = gates[index];
-  gate.set(op, LogicNetworkGate::Maj3);
-  gate.edges[0] = a;
-  gate.edges[1] = b;
-  gate.edges[2] = c;
+  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Maj3, a, b, c);
   return index;
 }
 
 uint32_t LogicNetwork::addOtherGate(Operation *op, Value result) {
   const uint32_t index = getOrCreateIndex(result);
-  auto &gate = gates[index];
-  gate.set(op, LogicNetworkGate::Other);
+  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Other);
   return index;
 }
 
@@ -170,9 +158,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
         } else {
           // Inverted operation: create a NOT gate
           const uint32_t index = getOrCreateIndex(andOp.getResult());
-          auto &gate = gates[index];
-          gate.set(&op, LogicNetworkGate::Identity);
-          gate.edges[0] = edges[0];
+          gates[index] = LogicNetworkGate(&op, LogicNetworkGate::Identity, edges[0], {});
         }
       } else if (inputs.size() == 2) {
         addAndGate(&op, edges[0], edges[1]);
@@ -207,9 +193,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           continue;
         }
         const uint32_t index = getOrCreateIndex(majOp.getResult());
-        auto &gate = gates[index];
-        gate.set(&op, LogicNetworkGate::Identity);
-        gate.edges[0] = inputSignal;
+        gates[index] = LogicNetworkGate(&op, LogicNetworkGate::Identity, inputSignal, {});
         continue;
       }
       if (majOp->getNumOperands() != 3) {
@@ -252,10 +236,8 @@ void LogicNetwork::clear() {
   indexToValue.clear();
   gates.clear();
   // Re-add the constant nodes (index 0 = const0, index 1 = const1)
-  gates.emplace_back();
-  gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
-  gates.emplace_back();
-  gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+  gates.emplace_back(nullptr, LogicNetworkGate::Constant);
+  gates.emplace_back(nullptr, LogicNetworkGate::Constant);
   // Placeholders for constants in indexToValue
   indexToValue.push_back(Value()); // const0
   indexToValue.push_back(Value()); // const1
