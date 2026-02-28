@@ -931,7 +931,7 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
 void CutSet::finalize(
     const CutRewriterOptions &options,
     llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
-    llvm::BumpPtrAllocator &allocator, const LogicNetwork &logicNetwork) {
+    const LogicNetwork &logicNetwork) {
 
   // Step 1: Remove duplicate and non-minimal cuts to reduce the search space
   // This eliminates cuts that are strictly dominated by others
@@ -1071,8 +1071,7 @@ CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
     : options(options) {}
 
 CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
-  void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));
-  CutSet *cutSet = new (mem) CutSet();
+  CutSet *cutSet = new (cutSetAllocator.Allocate()) CutSet();
   auto [cutSetPtr, inserted] = cutSets.try_emplace(index, cutSet);
   assert(inserted && "Cut set already exists for this index");
   return cutSetPtr->second;
@@ -1091,7 +1090,8 @@ void CutEnumerator::clear() {
   cutSets.clear();
   processingOrder.clear();
   logicNetwork.clear();
-  allocator.Reset();
+  cutAllocator.DestroyAll();
+  cutSetAllocator.DestroyAll();
 }
 
 LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
@@ -1128,7 +1128,7 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   }
 
   // Create the singleton cut (just this operation as a trivial cut)
-  Cut *primaryInputCut = new (allocator.Allocate(sizeof(Cut), alignof(Cut)))
+  Cut *primaryInputCut = new (cutAllocator.Allocate())
       Cut(getAsTrivialCut(nodeIndex, logicNetwork));
 
   auto *resultCutSet = createNewCutSet(nodeIndex);
@@ -1140,11 +1140,11 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
     // Finalize cut set: remove duplicates, limit size, and match patterns
-    resultCutSet->finalize(options, matchCut, allocator, logicNetwork);
+    resultCutSet->finalize(options, matchCut, logicNetwork);
   });
 
   // Cache maxCutInputSize to avoid repeated access
-  const unsigned maxInputSize = options.maxCutInputSize;
+  uint64_t maxInputSize = options.maxCutInputSize;
 
   // This lambda generates nested loops at runtime to iterate over all
   // combinations of cuts from N operands
@@ -1228,8 +1228,7 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         return;
 
       // Create the merged cut
-      Cut *mergedCut =
-          new (allocator.Allocate(sizeof(Cut), alignof(Cut))) Cut();
+      Cut *mergedCut = new (cutAllocator.Allocate()) Cut();
       mergedCut->setRootIndex(nodeIndex);
       mergedCut->inputs = std::move(mergedInputs);
       mergedCut->computeSignature();
@@ -1302,10 +1301,9 @@ const CutSet *CutEnumerator::getCutSet(uint32_t index) {
   auto it = cutSets.find(index);
   if (it == cutSets.end()) {
     // Create new cut set for an unprocessed value (primary input or other)
-    void *mem = allocator.Allocate(sizeof(CutSet), alignof(CutSet));
-    CutSet *cutSet = new (mem) CutSet();
-    Cut *trivialCut = new (allocator.Allocate(sizeof(Cut), alignof(Cut)))
-        Cut(getAsTrivialCut(index, logicNetwork));
+    CutSet *cutSet = new (cutSetAllocator.Allocate()) CutSet();
+    Cut *trivialCut =
+        new (cutAllocator.Allocate()) Cut(getAsTrivialCut(index, logicNetwork));
     cutSet->addCut(trivialCut);
     auto [newIt, inserted] = cutSets.insert({index, cutSet});
     assert(inserted && "Cut set already exists for this index");

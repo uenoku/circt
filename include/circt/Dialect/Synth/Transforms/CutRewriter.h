@@ -295,7 +295,6 @@ private:
   llvm::SmallVector<LogicNetworkGate> gates;
 };
 
-
 /// Result of matching a cut against a pattern.
 ///
 /// This structure contains the area and per-input delay information
@@ -550,7 +549,7 @@ public:
   void finalize(
       const CutRewriterOptions &options,
       llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
-      llvm::BumpPtrAllocator &allocator, const LogicNetwork &logicNetwork);
+      const LogicNetwork &logicNetwork);
 
   /// Get the number of cuts in this set.
   unsigned size() const;
@@ -661,8 +660,9 @@ private:
   /// CutSets are allocated from the bump allocator.
   llvm::DenseMap<uint32_t, CutSet *> cutSets;
 
-  /// Bump allocator for fast allocation of CutSet objects.
-  llvm::BumpPtrAllocator allocator;
+  /// Typed bump allocators for fast allocation with destructors.
+  llvm::SpecificBumpPtrAllocator<Cut> cutAllocator;
+  llvm::SpecificBumpPtrAllocator<CutSet> cutSetAllocator;
 
   /// Indices in processing order (topological).
   llvm::SmallVector<uint32_t> processingOrder;
