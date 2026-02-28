@@ -40,6 +40,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/bit.h"
 #include "llvm/ADT/iterator.h"
@@ -614,112 +615,6 @@ unsigned Cut::estimateMergedSize(const Cut &other) const {
   return llvm::popcount(mergedSig);
 }
 
-/// Expand a truth table to a larger input set by mapping original inputs to
-/// new positions. This is used during cut merging to align truth tables to the
-/// merged input set.
-///
-/// Example: f(a,b) with mapping [2,4] means variable 'a' at position 2,
-/// 'b' at position 4 in the merged space. The result is f(..., x2, ..., x4,
-/// ...) which equals the original function value, independent of other
-/// variables.
-///
-/// Efficient algorithm for N <= 6:
-/// For each original truth table entry that is 1, compute the "subcube" of
-/// merged indices that map to it and OR them together.
-///
-/// Complexity: O(2^numOrigInputs * numOrigInputs) instead of
-/// O(2^numMergedInputs * numOrigInputs).
-///
-/// @param tt The original truth table
-/// @param inputMapping Maps original input index -> merged input position
-/// @param numMergedInputs Number of inputs in the merged cut
-static llvm::APInt expandTruthTable(const llvm::APInt &tt,
-                                    ArrayRef<unsigned> inputMapping,
-                                    unsigned numMergedInputs) {
-  unsigned numOrigInputs = inputMapping.size();
-  unsigned mergedSize = 1U << numMergedInputs;
-
-  // Fast path: identity mapping with same size
-  if (numOrigInputs == numMergedInputs) {
-    bool isIdentity = true;
-    for (unsigned i = 0; i < numOrigInputs && isIdentity; ++i)
-      isIdentity = (inputMapping[i] == i);
-    if (isIdentity)
-      return tt.zext(mergedSize);
-  }
-
-  // For small truth tables (N <= 6), use efficient 64-bit operations
-  if (numMergedInputs <= 6) {
-    uint64_t origTT = tt.getZExtValue();
-    uint64_t result = 0;
-
-    // Precompute variable masks using bit manipulation.
-    // varMask[i] has bit j set iff (j >> i) & 1 == 1
-    // This is the standard "variable i" mask for truth tables.
-    //
-    // Pattern for variable i (0-indexed):
-    //   var 0: 0xAAAAAAAAAAAAAAAA (alternating 0,1)
-    //   var 1: 0xCCCCCCCCCCCCCCCC (alternating 00,11)
-    //   var 2: 0xF0F0F0F0F0F0F0F0 (alternating 0000,1111)
-    //   var i: repeating pattern of 2^i zeros followed by 2^i ones
-    //
-    // Formula: varMask[i] = (0xFFFF...F / ((1 << (1 << i)) + 1)) << (1 << i)
-    // But easier to just use the known constants for N <= 6:
-    static constexpr uint64_t kVarMasks[6] = {
-        0xAAAAAAAAAAAAAAAAULL, // var 0: 10101010...
-        0xCCCCCCCCCCCCCCCCULL, // var 1: 11001100...
-        0xF0F0F0F0F0F0F0F0ULL, // var 2: 11110000...
-        0xFF00FF00FF00FF00ULL, // var 3
-        0xFFFF0000FFFF0000ULL, // var 4
-        0xFFFFFFFF00000000ULL  // var 5
-    };
-
-    // Mask to limit to mergedSize bits
-    uint64_t sizeMask = (mergedSize == 64) ? ~0ULL : ((1ULL << mergedSize) - 1);
-
-    // For each original truth table entry that is 1
-    unsigned origSize = 1U << numOrigInputs;
-    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
-      if (!((origTT >> origIdx) & 1))
-        continue;
-
-      // Compute pattern: all mergedIdx that map to origIdx
-      // Start with all 1s, then constrain for each original variable
-      uint64_t pattern = sizeMask;
-
-      for (unsigned i = 0; i < numOrigInputs; ++i) {
-        unsigned mergedPos = inputMapping[i];
-        bool origBit = (origIdx >> i) & 1;
-        uint64_t varMask = kVarMasks[mergedPos] & sizeMask;
-
-        if (origBit)
-          pattern &= varMask;
-        else
-          pattern &= ~varMask;
-      }
-
-      result |= pattern;
-    }
-
-    return llvm::APInt(mergedSize, result);
-  }
-
-  // Fallback for larger truth tables
-  llvm::APInt result = llvm::APInt::getZero(mergedSize);
-
-  for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
-    unsigned origIdx = 0;
-    for (unsigned i = 0; i < numOrigInputs; ++i) {
-      if ((mergedIdx >> inputMapping[i]) & 1)
-        origIdx |= (1U << i);
-    }
-    if (tt[origIdx])
-      result.setBit(mergedIdx);
-  }
-
-  return result;
-}
-
 /// Helper to get and expand a truth table for an operand in the merged space.
 /// The operand can be:
 /// 1. A cut input (returns variable mask)
@@ -768,7 +663,8 @@ static llvm::APInt getExpandedTruthTable(
       for (auto idx : cuts[i]->inputs)
         mapping.push_back(indexToMergedPos.lookup(idx));
 
-      auto result = expandTruthTable(cutTT.table, mapping, numMergedInputs);
+      auto result = circt::detail::expandTruthTableForMergedInputs(
+          cutTT.table, mapping, numMergedInputs);
       if (isInverted)
         result.flipAllBits();
       return result;
@@ -873,6 +769,12 @@ ArrayRef<Cut *> CutSet::getCuts() const { return cuts; }
 // exists another cut that is a subset of it. We use the signature for efficient
 // subset checking since inputs are now indices.
 static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
+  auto dumpInputs = [](llvm::raw_ostream &os,
+                       const llvm::SmallVectorImpl<uint32_t> &inputs) {
+    os << "{";
+    llvm::interleaveComma(inputs, os);
+    os << "}";
+  };
   // First sort the cuts by input size (ascending). This ensures that when we
   // iterate through the cuts, we always encounter smaller cuts first, allowing
   // us to efficiently check for non-minimality. Stable sort to maintain
@@ -893,17 +795,27 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
 
     // Check if any existing cut is a subset of this cut
     // If so, this cut is dominated and should be filtered out
-    bool isSubset = llvm::any_of(keptCuts, [cutSig,
-                                            &cut](const Cut *existingCut) {
+    bool isSubset = llvm::any_of(keptCuts, [cutSig, &cut, &dumpInputs](
+                                               const Cut *existingCut) {
       // Quick signature check
       // Check if existingCut's signature is a subset of cut's signature
       if ((existingCut->getSignature() & cutSig) != existingCut->getSignature())
         return false;
 
       // Perform detailed subset check
-      return std::includes(cut->inputs.begin(), cut->inputs.end(),
-                           existingCut->inputs.begin(),
-                           existingCut->inputs.end());
+      if (!std::includes(cut->inputs.begin(), cut->inputs.end(),
+                         existingCut->inputs.begin(),
+                         existingCut->inputs.end()))
+        return false;
+
+      LLVM_DEBUG({
+        llvm::dbgs() << "Dropping non-minimal cut ";
+        dumpInputs(llvm::dbgs(), cut->inputs);
+        llvm::dbgs() << " due to subset ";
+        dumpInputs(llvm::dbgs(), existingCut->inputs);
+        llvm::dbgs() << "\n";
+      });
+      return true;
     });
 
     if (isSubset)
@@ -1234,6 +1146,17 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
       // incremental method (after duplicate removal in finalize)
       mergedCut->setOperandCuts(cutPtrs);
       resultCutSet->addCut(mergedCut);
+
+      LLVM_DEBUG({
+        if (mergedCut->inputs.size() >= 4) {
+          llvm::dbgs() << "Generated cut for node " << nodeIndex;
+          if (logicOp)
+            llvm::dbgs() << " (" << logicOp->getName() << ")";
+          llvm::dbgs() << " inputs=";
+          llvm::interleaveComma(mergedCut->inputs, llvm::dbgs());
+          llvm::dbgs() << "\n";
+        }
+      });
       return;
     }
 
@@ -1550,7 +1473,37 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
         }
       };
 
-  for (auto &[patternNPN, pattern] : getMatchingPatternsFromTruthTable(cut)) {
+  auto matchingPatterns = getMatchingPatternsFromTruthTable(cut);
+  if (matchingPatterns.empty()) {
+    LLVM_DEBUG({
+      if (cut.getInputSize() >= 4) {
+        llvm::dbgs() << "No NPN match for cut with " << cut.getInputSize()
+                     << " inputs\n";
+        cut.dump(llvm::dbgs(), network);
+        llvm::SmallString<64> cutTableStr;
+        cut.getNPNClass().truthTable.table.toString(cutTableStr, 10, false);
+        llvm::dbgs() << "NPN key: table=" << cutTableStr
+                     << " inputs=" << cut.getNPNClass().truthTable.numInputs
+                     << "\n";
+        llvm::dbgs() << "Available NPN patterns for " << cut.getInputSize()
+                     << " inputs:\n";
+        for (const auto &entry : patterns.npnToPatternMap) {
+          if (entry.first.second != cut.getInputSize())
+            continue;
+          llvm::SmallString<64> patternTableStr;
+          entry.first.first.toString(patternTableStr, 10, false);
+          llvm::dbgs() << "  table=" << patternTableStr << " patterns=";
+          llvm::interleaveComma(entry.second, llvm::dbgs(),
+                                [](const auto &pair) {
+                                  llvm::dbgs() << pair.second->getPatternName();
+                                });
+          llvm::dbgs() << "\n";
+        }
+      }
+    });
+  }
+
+  for (auto &[patternNPN, pattern] : matchingPatterns) {
     assert(patternNPN.truthTable.numInputs == cut.getInputSize() &&
            "Pattern input size must match cut input size");
     auto matchResult = pattern->match(cutEnumerator, cut);

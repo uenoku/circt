@@ -24,6 +24,7 @@
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -81,6 +82,15 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   if (failed(truthTable))
     return failure();
 
+  LLVM_DEBUG({
+    llvm::SmallString<64> tableStr;
+    truthTable->table.toString(tableStr, 10, false);
+    llvm::dbgs() << "Techlib module " << module.getModuleName()
+                 << " raw TT: table=" << tableStr
+                 << " inputs=" << truthTable->numInputs << "\n";
+    truthTable->dump(llvm::dbgs());
+  });
+
   return NPNClass::computeNPNCanonicalForm(*truthTable);
 }
 
@@ -92,9 +102,12 @@ struct TechLibraryPattern : public CutRewritePattern {
         delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
 
     LLVM_DEBUG({
+      llvm::SmallString<64> tableStr;
+      this->npnClass.truthTable.table.toString(tableStr, 10, false);
       llvm::dbgs() << "Created Tech Library Pattern for module: "
                    << module.getModuleName() << "\n"
-                   << "NPN Class: " << this->npnClass.truthTable.table << "\n"
+                   << "NPN key: table=" << tableStr
+                   << " inputs=" << this->npnClass.truthTable.numInputs << "\n"
                    << "Inputs: " << this->npnClass.inputPermutation.size()
                    << "\n"
                    << "Input Negation: " << this->npnClass.inputNegation << "\n"
