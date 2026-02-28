@@ -187,6 +187,15 @@ struct NPNClass {
 /// Returns: APInt mask with numBits = 2^numVars
 llvm::APInt createVarMask(unsigned numVars, unsigned varIndex, bool positive);
 
+namespace detail {
+/// Expand a truth table to a larger input set by mapping original inputs to new
+/// positions. This is used during cut merging to align truth tables to the
+/// merged input set.
+llvm::APInt expandTruthTableForMergedInputs(const llvm::APInt &tt,
+                                            ArrayRef<unsigned> inputMapping,
+                                            unsigned numMergedInputs);
+} // namespace detail
+
 /// Compute cofactor of a Boolean function for a given variable.
 ///
 /// A cofactor of a function f with respect to variable x is the function

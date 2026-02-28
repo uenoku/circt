@@ -28,6 +28,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -134,16 +135,20 @@ struct LogicNetworkGate {
   /// inputs must be retrieved from the operation.
   Signal edges[3];
 
-  LogicNetworkGate() : opAndKind(nullptr, Constant) {}
+  LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
+  LogicNetworkGate(Operation *op, Kind kind,
+                   llvm::ArrayRef<Signal> operands = {})
+      : opAndKind(op, kind), edges{} {
+    assert(operands.size() <= 3 && "Too many operands for LogicNetworkGate");
+    for (size_t i = 0; i < operands.size(); ++i)
+      edges[i] = operands[i];
+  }
 
   /// Get the kind of this gate.
   Kind getKind() const { return opAndKind.getInt(); }
 
   /// Get the operation pointer (nullptr for constants).
   Operation *getOperation() const { return opAndKind.getPointer(); }
-
-  /// Set the kind and operation.
-  void set(Operation *op, Kind kind) { opAndKind.setPointerAndInt(op, kind); }
 
   /// Get the number of fanin edges based on kind.
   /// For Other (variadic) gates, uses op->getNumOperands().
@@ -208,10 +213,8 @@ public:
 
   LogicNetwork() {
     // Reserve index 0 for constant 0 and index 1 for constant 1
-    gates.emplace_back();
-    gates[kConstant0].set(nullptr, LogicNetworkGate::Constant);
-    gates.emplace_back();
-    gates[kConstant1].set(nullptr, LogicNetworkGate::Constant);
+    gates.emplace_back(nullptr, LogicNetworkGate::Constant);
+    gates.emplace_back(nullptr, LogicNetworkGate::Constant);
     // indexToValue needs placeholders for constants
     indexToValue.push_back(Value()); // const0
     indexToValue.push_back(Value()); // const1
@@ -239,6 +242,10 @@ public:
   /// Returns null Value for constant indices (0 and 1).
   Value getValue(uint32_t index) const;
 
+  /// Fill values for the given raw indices.
+  void getValues(ArrayRef<uint32_t> indices,
+                 SmallVectorImpl<Value> &values) const;
+
   /// Get a Signal for a value.
   /// Asserts if value not found - use hasIndex() first if unsure.
   Signal getSignal(Value value, bool inverted) const {
@@ -265,17 +272,15 @@ public:
   /// Add a primary input to the network.
   uint32_t addPrimaryInput(Value value);
 
-  /// Add an AND gate to the network.
-  uint32_t addAndGate(Operation *op, Signal lhs, Signal rhs);
+  /// Add a gate with explicit result value and operand signals.
+  uint32_t addGate(Operation *op, LogicNetworkGate::Kind kind, Value result,
+                   llvm::ArrayRef<Signal> operands = {});
 
-  /// Add a XOR gate to the network.
-  uint32_t addXorGate(Operation *op, Signal lhs, Signal rhs);
-
-  /// Add a MAJ gate to the network.
-  uint32_t addMajGate(Operation *op, Signal a, Signal b, Signal c);
-
-  /// Add a gate that is treated as "other" (not simulatable, acts as PI).
-  uint32_t addOtherGate(Operation *op, Value result);
+  /// Add a gate using op->getResult(0) as the result value.
+  uint32_t addGate(Operation *op, LogicNetworkGate::Kind kind,
+                   llvm::ArrayRef<Signal> operands = {}) {
+    return addGate(op, kind, op->getResult(0), operands);
+  }
 
   /// Build the logic network from a region/block in topological order.
   /// Returns failure if the IR is not in a valid form.
@@ -294,7 +299,6 @@ private:
   /// Vector of all gates in the network.
   llvm::SmallVector<LogicNetworkGate> gates;
 };
-
 
 /// Result of matching a cut against a pattern.
 ///
@@ -527,16 +531,33 @@ public:
 /// results.
 class CutSet {
 private:
-  llvm::SmallVector<Cut *, 4> cuts; ///< Collection of cuts for this node
+  llvm::SmallVector<Cut *, 16> cuts; ///< Collection of cuts for this node
   Cut *bestCut = nullptr;
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
+  /// Required time constraint (set during required time computation).
+  DelayType requiredTime = std::numeric_limits<DelayType>::max();
+
+  /// Best arrival time (updated during area flow re-selection to reflect
+  /// current input bestCuts, since MatchedPattern arrival times become stale).
+  DelayType bestArrivalTime = 0;
+
+  /// Area flow metric for the best cut (used during area flow re-selection).
+  double areaFlow = 0.0;
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
   /// Get the cut associated with the best matched pattern.
   Cut *getBestMatchedCut() const;
+
+  /// Re-select the best cut from already-matched cuts.
+  /// When requiredTime is set and strategy is Area, picks the minimum-area-flow
+  /// cut whose arrival time does not exceed requiredTime.
+  void selectBestCut(
+      OptimizationStrategy strategy,
+      std::optional<DelayType> requiredTime = std::nullopt);
 
   /// Finalize the cut set by removing duplicates and selecting the best
   /// pattern.
@@ -550,7 +571,7 @@ public:
   void finalize(
       const CutRewriterOptions &options,
       llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
-      llvm::BumpPtrAllocator &allocator, const LogicNetwork &logicNetwork);
+      const LogicNetwork &logicNetwork);
 
   /// Get the number of cuts in this set.
   unsigned size() const;
@@ -561,6 +582,9 @@ public:
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut *> getCuts() const;
+
+  /// Directly set the best cut (used by area flow re-selection).
+  void setBestCut(Cut *cut) { bestCut = cut; }
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
@@ -583,6 +607,11 @@ struct CutRewriterOptions {
 
   /// Fail if there is a root operation that has no matching pattern.
   bool allowNoMatch = false;
+
+  /// Enable area recovery pass after delay-optimal cut selection.
+  /// Computes required times and re-selects cuts using area flow metric
+  /// to minimize area while preserving timing.
+  bool enableAreaRecovery = false;
 
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;
@@ -651,10 +680,15 @@ public:
   /// Get the processing order (indices in topological order).
   ArrayRef<uint32_t> getProcessingOrder() const { return processingOrder; }
 
-private:
-  /// Visit a single operation and generate cuts for it.
-  LogicalResult visit(Operation *op);
+  /// Compute required times for all nodes by propagating timing constraints
+  /// from outputs backward through the network.
+  void computeRequiredTimes();
 
+  /// Re-select best cuts using area flow metric, subject to required time
+  /// constraints. This implements ABC's "Mode 1" area recovery pass.
+  void reselectCutsForAreaFlow();
+
+private:
   /// Visit a combinational logic operation and generate cuts.
   /// This handles the core cut enumeration logic for operations
   /// like AND, OR, XOR, etc.
@@ -664,8 +698,9 @@ private:
   /// CutSets are allocated from the bump allocator.
   llvm::DenseMap<uint32_t, CutSet *> cutSets;
 
-  /// Bump allocator for fast allocation of CutSet objects.
-  llvm::BumpPtrAllocator allocator;
+  /// Typed bump allocators for fast allocation with destructors.
+  llvm::SpecificBumpPtrAllocator<Cut> cutAllocator;
+  llvm::SpecificBumpPtrAllocator<CutSet> cutSetAllocator;
 
   /// Indices in processing order (topological).
   llvm::SmallVector<uint32_t> processingOrder;

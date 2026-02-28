@@ -24,6 +24,7 @@
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -81,6 +82,15 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   if (failed(truthTable))
     return failure();
 
+  LLVM_DEBUG({
+    llvm::SmallString<64> tableStr;
+    truthTable->table.toString(tableStr, 10, false);
+    llvm::dbgs() << "Techlib module " << module.getModuleName()
+                 << " raw TT: table=" << tableStr
+                 << " inputs=" << truthTable->numInputs << "\n";
+    truthTable->dump(llvm::dbgs());
+  });
+
   return NPNClass::computeNPNCanonicalForm(*truthTable);
 }
 
@@ -92,9 +102,12 @@ struct TechLibraryPattern : public CutRewritePattern {
         delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
 
     LLVM_DEBUG({
+      llvm::SmallString<64> tableStr;
+      this->npnClass.truthTable.table.toString(tableStr, 10, false);
       llvm::dbgs() << "Created Tech Library Pattern for module: "
                    << module.getModuleName() << "\n"
-                   << "NPN Class: " << this->npnClass.truthTable.table << "\n"
+                   << "NPN key: table=" << tableStr
+                   << " inputs=" << this->npnClass.truthTable.numInputs << "\n"
                    << "Inputs: " << this->npnClass.inputPermutation.size()
                    << "\n"
                    << "Input Negation: " << this->npnClass.inputNegation << "\n"
@@ -135,11 +148,11 @@ struct TechLibraryPattern : public CutRewritePattern {
     // Get permuted input indices and convert to Values
     SmallVector<unsigned> permutedIndices;
     cut.getPermutatedInputIndices(npnClass, permutedIndices);
-    for (auto idx : permutedIndices) {
-      auto inputIndex = cut.inputs[idx];
-      auto inputValue = network.getValue(inputIndex);
-      inputs.push_back(inputValue);
-    }
+    SmallVector<uint32_t, 6> mappedInputs;
+    mappedInputs.reserve(permutedIndices.size());
+    for (auto idx : permutedIndices)
+      mappedInputs.push_back(cut.inputs[idx]);
+    network.getValues(mappedInputs, inputs);
 
     // Get the root operation location
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
@@ -250,6 +263,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = test;
+    options.enableAreaRecovery = true;
     auto result = mlir::failableParallelForEach(
         module.getContext(), nonLibraryModules, [&](hw::HWModuleOp hwModule) {
           LLVM_DEBUG(llvm::dbgs() << "Processing non-library module: "
