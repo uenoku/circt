@@ -629,10 +629,19 @@ unsigned Cut::estimateMergedSize(const Cut &other) const {
 /// The operand can be:
 /// 1. A cut input (returns variable mask)
 /// 2. A specific cut's output (returns that cut's truth table, expanded)
-static llvm::APInt getExpandedTruthTable(
-    uint32_t operandIdx, bool isInverted,
-    const llvm::SmallDenseMap<uint32_t, unsigned, 8> &indexToMergedPos,
-    unsigned numMergedInputs, const Cut *const *cuts, unsigned numCuts) {
+static llvm::APInt
+getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
+                      const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
+                      unsigned numMergedInputs, const Cut *const *cuts,
+                      unsigned numCuts) {
+
+  auto lookupMergedPos = [&](uint32_t idx) -> std::optional<unsigned> {
+    for (auto [pos, mergedIdx] : llvm::enumerate(mergedInputs)) {
+      if (mergedIdx == idx)
+        return pos;
+    }
+    return std::nullopt;
+  };
 
   // Handle constants directly: they are not cut inputs but may appear as
   // operands of gates inside a cut.
@@ -650,10 +659,9 @@ static llvm::APInt getExpandedTruthTable(
   }
 
   // Check if operand is one of the merged inputs
-  auto it = indexToMergedPos.find(operandIdx);
-  if (it != indexToMergedPos.end()) {
+  if (auto pos = lookupMergedPos(operandIdx)) {
     // It's a cut input - return variable mask (inverted if needed)
-    return circt::createVarMask(numMergedInputs, it->second, !isInverted);
+    return circt::createVarMask(numMergedInputs, *pos, !isInverted);
   }
 
   // Otherwise, find which cut produces this operand
@@ -670,8 +678,11 @@ static llvm::APInt getExpandedTruthTable(
 
       // Build mapping for this cut's inputs to merged positions
       SmallVector<unsigned, 6> mapping;
-      for (auto idx : cuts[i]->inputs)
-        mapping.push_back(indexToMergedPos.lookup(idx));
+      for (auto idx : cuts[i]->inputs) {
+        auto pos = lookupMergedPos(idx);
+        assert(pos && "cut input must exist in merged inputs");
+        mapping.push_back(*pos);
+      }
 
       auto result = circt::detail::expandTruthTableForMergedInputs(
           cutTT.table, mapping, numMergedInputs);
@@ -693,18 +704,10 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
 
   unsigned numMergedInputs = mergedInputs.size();
 
-  // Build index map: LogicNetwork index -> position in mergedInputs
-  // SmallDenseMap stores inline for small N, avoiding heap allocation
-  // Reserve buckets for expected size to reduce grow() overhead
-  llvm::SmallDenseMap<uint32_t, unsigned, 8> indexToMergedPos(numMergedInputs);
-  for (auto [pos, idx] : llvm::enumerate(mergedInputs))
-    indexToMergedPos[idx] = pos;
-
   auto getEdgeTT = [&](unsigned edgeIdx) {
     const auto &edge = rootGate.edges[edgeIdx];
     return getExpandedTruthTable(edge.getIndex(), edge.isInverted(),
-                                 indexToMergedPos, numMergedInputs, cuts,
-                                 numCuts);
+                                 mergedInputs, numMergedInputs, cuts, numCuts);
   };
 
   BinaryTruthTable result;

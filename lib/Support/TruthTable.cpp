@@ -285,7 +285,6 @@ circt::detail::expandTruthTableForMergedInputs(const llvm::APInt &tt,
 
   // Fallback for larger truth tables
   llvm::APInt result = llvm::APInt::getZero(mergedSize);
-
   for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
     unsigned origIdx = 0;
     for (unsigned i = 0; i < numOrigInputs; ++i) {
