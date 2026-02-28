@@ -98,27 +98,10 @@ uint32_t LogicNetwork::addPrimaryInput(Value value) {
   return index;
 }
 
-uint32_t LogicNetwork::addAndGate(Operation *op, Signal lhs, Signal rhs) {
-  const uint32_t index = getOrCreateIndex(op->getResult(0));
-  gates[index] = LogicNetworkGate(op, LogicNetworkGate::And2, lhs, rhs);
-  return index;
-}
-
-uint32_t LogicNetwork::addXorGate(Operation *op, Signal lhs, Signal rhs) {
-  const uint32_t index = getOrCreateIndex(op->getResult(0));
-  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Xor2, lhs, rhs);
-  return index;
-}
-
-uint32_t LogicNetwork::addMajGate(Operation *op, Signal a, Signal b, Signal c) {
-  const uint32_t index = getOrCreateIndex(op->getResult(0));
-  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Maj3, a, b, c);
-  return index;
-}
-
-uint32_t LogicNetwork::addOtherGate(Operation *op, Value result) {
+uint32_t LogicNetwork::addGate(Operation *op, LogicNetworkGate::Kind kind,
+                               Value result, ArrayRef<Signal> operands) {
   const uint32_t index = getOrCreateIndex(result);
-  gates[index] = LogicNetworkGate(op, LogicNetworkGate::Other);
+  gates[index] = LogicNetworkGate(op, kind, operands);
   return index;
 }
 
@@ -157,11 +140,10 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           valueToIndex[result] = inputIdx;
         } else {
           // Inverted operation: create a NOT gate
-          const uint32_t index = getOrCreateIndex(andOp.getResult());
-          gates[index] = LogicNetworkGate(&op, LogicNetworkGate::Identity, edges[0], {});
+          addGate(&op, LogicNetworkGate::Identity, andOp.getResult(), {edges[0]});
         }
       } else if (inputs.size() == 2) {
-        addAndGate(&op, edges[0], edges[1]);
+        addGate(&op, LogicNetworkGate::And2, {edges[0], edges[1]});
       }
       // Variadic AND gates with >2 inputs are delegated to "Other" handling
       continue;
@@ -178,7 +160,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       }
       const Signal lhsSignal = getOrCreateSignal(xorOp.getOperand(0), false);
       const Signal rhsSignal = getOrCreateSignal(xorOp.getOperand(1), false);
-      addXorGate(&op, lhsSignal, rhsSignal);
+      addGate(&op, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
       continue;
     }
     if (auto majOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
@@ -192,13 +174,12 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           valueToIndex[majOp.getResult()] = inputSignal.getIndex();
           continue;
         }
-        const uint32_t index = getOrCreateIndex(majOp.getResult());
-        gates[index] = LogicNetworkGate(&op, LogicNetworkGate::Identity, inputSignal, {});
+        addGate(&op, LogicNetworkGate::Identity, majOp.getResult(), {inputSignal});
         continue;
       }
       if (majOp->getNumOperands() != 3) {
         // Delegate variadic MAJ to "Other" gate handling
-        addOtherGate(&op, majOp.getResult());
+        addGate(&op, LogicNetworkGate::Other, majOp.getResult());
         continue;
       }
       const Signal aSignal =
@@ -207,7 +188,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
           getOrCreateSignal(majOp.getOperand(1), majOp.isInverted(1));
       const Signal cSignal =
           getOrCreateSignal(majOp.getOperand(2), majOp.isInverted(2));
-      addMajGate(&op, aSignal, bSignal, cSignal);
+      addGate(&op, LogicNetworkGate::Maj3, {aSignal, bSignal, cSignal});
       continue;
     }
 

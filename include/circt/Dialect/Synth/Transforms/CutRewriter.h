@@ -134,13 +134,14 @@ struct LogicNetworkGate {
   /// inputs must be retrieved from the operation.
   Signal edges[3];
 
-  LogicNetworkGate() : opAndKind(nullptr, Constant) {}
-  LogicNetworkGate(Operation *op, Kind kind)
-      : opAndKind(op, kind), edges{} {}
-  LogicNetworkGate(Operation *op, Kind kind, Signal e0, Signal e1)
-      : opAndKind(op, kind), edges{e0, e1, {}} {}
-  LogicNetworkGate(Operation *op, Kind kind, Signal e0, Signal e1, Signal e2)
-      : opAndKind(op, kind), edges{e0, e1, e2} {}
+  LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
+  LogicNetworkGate(Operation *op, Kind kind,
+                   llvm::ArrayRef<Signal> operands = {})
+      : opAndKind(op, kind), edges{} {
+    assert(operands.size() <= 3 && "Too many operands for LogicNetworkGate");
+    for (size_t i = 0; i < operands.size(); ++i)
+      edges[i] = operands[i];
+  }
 
   /// Get the kind of this gate.
   Kind getKind() const { return opAndKind.getInt(); }
@@ -266,17 +267,15 @@ public:
   /// Add a primary input to the network.
   uint32_t addPrimaryInput(Value value);
 
-  /// Add an AND gate to the network.
-  uint32_t addAndGate(Operation *op, Signal lhs, Signal rhs);
+  /// Add a gate with explicit result value and operand signals.
+  uint32_t addGate(Operation *op, LogicNetworkGate::Kind kind, Value result,
+                   llvm::ArrayRef<Signal> operands = {});
 
-  /// Add a XOR gate to the network.
-  uint32_t addXorGate(Operation *op, Signal lhs, Signal rhs);
-
-  /// Add a MAJ gate to the network.
-  uint32_t addMajGate(Operation *op, Signal a, Signal b, Signal c);
-
-  /// Add a gate that is treated as "other" (not simulatable, acts as PI).
-  uint32_t addOtherGate(Operation *op, Value result);
+  /// Add a gate using op->getResult(0) as the result value.
+  uint32_t addGate(Operation *op, LogicNetworkGate::Kind kind,
+                   llvm::ArrayRef<Signal> operands = {}) {
+    return addGate(op, kind, op->getResult(0), operands);
+  }
 
   /// Build the logic network from a region/block in topological order.
   /// Returns failure if the IR is not in a valid form.
