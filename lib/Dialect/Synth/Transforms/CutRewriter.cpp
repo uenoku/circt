@@ -612,8 +612,10 @@ void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
 void Cut::computeSignature() {
   signature = 0;
   for (auto index : inputs) {
-    if (index < 64) // Only use first 64 indices for signature
-      signature |= (1ULL << index);
+    // Use a folded 64-bit signature so high node indices also contribute.
+    // This keeps signature checks useful in large networks while remaining a
+    // conservative prefilter (exact checks still decide correctness).
+    signature |= (1ULL << (index & 63));
   }
 }
 
@@ -705,23 +707,30 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
                                  numCuts);
   };
 
+  BinaryTruthTable result;
   switch (rootGate.getKind()) {
   case LogicNetworkGate::And2:
   case LogicNetworkGate::Xor2:
-    return BinaryTruthTable(
+    result = BinaryTruthTable(
         numMergedInputs, 1,
         applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
+    break;
   case LogicNetworkGate::Maj3:
-    return BinaryTruthTable(numMergedInputs, 1,
-                            applyGateSemantics(rootGate.getKind(), getEdgeTT(0),
-                                               getEdgeTT(1), getEdgeTT(2)));
+    result =
+        BinaryTruthTable(numMergedInputs, 1,
+                         applyGateSemantics(rootGate.getKind(), getEdgeTT(0),
+                                            getEdgeTT(1), getEdgeTT(2)));
+    break;
   case LogicNetworkGate::Identity:
-    return BinaryTruthTable(
-        numMergedInputs, 1,
-        applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
+    result =
+        BinaryTruthTable(numMergedInputs, 1,
+                         applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
+    break;
   default:
     llvm_unreachable("Unsupported operation for truth table computation");
   }
+
+  return result;
 }
 
 static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {
@@ -871,8 +880,19 @@ void CutSet::finalize(
   // deduplication This avoids wasting cycles computing TTs for duplicate cuts
   // Use fast incremental method when operand cuts are available
   for (Cut *cut : cuts) {
-    if (!cut->getTruthTable().has_value())
-      cut->computeTruthTableFromOperands(logicNetwork);
+    if (cut->getTruthTable().has_value())
+      continue;
+
+    auto operandCuts = cut->getOperandCuts();
+    if (!operandCuts.empty() && !cut->isTrivialCut()) {
+      const auto &gate = logicNetwork.getGate(cut->getRootIndex());
+      BinaryTruthTable tt = computeTruthTableForGate(
+          gate, cut->inputs, operandCuts.data(), operandCuts.size());
+      cut->setTruthTable(std::move(tt));
+      continue;
+    }
+
+    cut->computeTruthTableFromOperands(logicNetwork);
   }
 
   // Step 3: Match each remaining cut against available patterns

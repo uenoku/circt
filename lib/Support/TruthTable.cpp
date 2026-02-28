@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 
 using namespace circt;
@@ -218,6 +219,70 @@ circt::detail::expandTruthTableForMergedInputs(const llvm::APInt &tt,
     return llvm::APInt(mergedSize, result);
   }
 
+  // Fast path for 7/8-input merged truth tables (128/256 bits): use packed
+  // 64-bit words and avoid per-bit APInt setBit operations.
+  if (numMergedInputs <= 8) {
+    constexpr unsigned kMaxFastInputs = 8;
+    constexpr unsigned kMaxFastWords = (1U << kMaxFastInputs) / 64; // 4 words
+
+    struct FastMaskCache {
+      bool initialized = false;
+      // [numInputs][var][word]
+      std::array<
+          std::array<std::array<uint64_t, kMaxFastWords>, kMaxFastInputs>,
+          kMaxFastInputs + 1>
+          masks{};
+    };
+
+    static FastMaskCache fastMaskCache;
+    if (!fastMaskCache.initialized) {
+      for (unsigned n = 0; n <= kMaxFastInputs; ++n) {
+        if (n == 0)
+          continue;
+        unsigned size = 1U << n;
+        for (unsigned var = 0; var < n; ++var) {
+          for (unsigned idx = 0; idx < size; ++idx) {
+            if (((idx >> var) & 1U) == 0)
+              continue;
+            unsigned word = idx >> 6;
+            unsigned bit = idx & 63;
+            fastMaskCache.masks[n][var][word] |= (1ULL << bit);
+          }
+        }
+      }
+      fastMaskCache.initialized = true;
+    }
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxFastWords> fullMask{};
+    for (unsigned w = 0; w < numWords; ++w)
+      fullMask[w] = ~0ULL;
+    if (unsigned tail = mergedSize & 63)
+      fullMask[numWords - 1] = (1ULL << tail) - 1;
+
+    std::array<uint64_t, kMaxFastWords> result{};
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (!tt[origIdx])
+        continue;
+
+      auto pattern = fullMask;
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = ((origIdx >> i) & 1U) != 0;
+        const auto &varMask = fastMaskCache.masks[numMergedInputs][mergedPos];
+        for (unsigned w = 0; w < numWords; ++w)
+          pattern[w] &= origBit ? varMask[w] : ~varMask[w];
+      }
+
+      for (unsigned w = 0; w < numWords; ++w)
+        result[w] |= pattern[w];
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
   // Fallback for larger truth tables
   llvm::APInt result = llvm::APInt::getZero(mergedSize);
 
@@ -259,7 +324,8 @@ unsigned permuteNegationMask(unsigned negationMask,
   unsigned result = 0;
   for (unsigned j = 0; j < permutation.size(); ++j) {
     // Canonical variable j corresponds to original variable perm[j].
-    // If original variable perm[j] was negated, canonical variable j is negated.
+    // If original variable perm[j] was negated, canonical variable j is
+    // negated.
     if (negationMask & (1u << permutation[j])) {
       result |= (1u << j);
     }
