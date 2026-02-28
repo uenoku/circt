@@ -636,11 +636,10 @@ getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
                       unsigned numCuts) {
 
   auto lookupMergedPos = [&](uint32_t idx) -> std::optional<unsigned> {
-    for (auto [pos, mergedIdx] : llvm::enumerate(mergedInputs)) {
-      if (mergedIdx == idx)
-        return pos;
-    }
-    return std::nullopt;
+    auto it = llvm::lower_bound(mergedInputs, idx);
+    if (it == mergedInputs.end() || *it != idx)
+      return std::nullopt;
+    return static_cast<unsigned>(std::distance(mergedInputs.begin(), it));
   };
 
   // Handle constants directly: they are not cut inputs but may appear as
@@ -678,10 +677,15 @@ getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
 
       // Build mapping for this cut's inputs to merged positions
       SmallVector<unsigned, 6> mapping;
+      mapping.reserve(cuts[i]->inputs.size());
+      unsigned mergedPos = 0;
       for (auto idx : cuts[i]->inputs) {
-        auto pos = lookupMergedPos(idx);
-        assert(pos && "cut input must exist in merged inputs");
-        mapping.push_back(*pos);
+        while (mergedPos < mergedInputs.size() && mergedInputs[mergedPos] < idx)
+          ++mergedPos;
+        assert(mergedPos < mergedInputs.size() &&
+               mergedInputs[mergedPos] == idx &&
+               "cut input must exist in merged inputs");
+        mapping.push_back(mergedPos);
       }
 
       auto result = circt::detail::expandTruthTableForMergedInputs(

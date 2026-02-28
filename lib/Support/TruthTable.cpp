@@ -283,6 +283,39 @@ circt::detail::expandTruthTableForMergedInputs(const llvm::APInt &tt,
                        llvm::ArrayRef<uint64_t>(result.data(), numWords));
   }
 
+  // Fast path for 9/10-input merged truth tables (512/1024 bits): use packed
+  // 64-bit words and avoid APInt::setBit in the inner loop.
+  if (numMergedInputs <= 10) {
+    constexpr unsigned kMaxMergedInputs = 10;
+    constexpr unsigned kMaxWords = (1U << kMaxMergedInputs) / 64; // 16 words
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxWords> result{};
+
+    std::array<uint32_t, kMaxMergedInputs> mergedBitMasks{};
+    std::array<unsigned, kMaxMergedInputs> origBitMasks{};
+    for (unsigned i = 0; i < numOrigInputs; ++i) {
+      mergedBitMasks[i] = 1U << inputMapping[i];
+      origBitMasks[i] = 1U << i;
+    }
+
+    const uint64_t *srcWords = tt.getRawData();
+    for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+      unsigned origIdx = 0;
+      for (unsigned i = 0; i < numOrigInputs; ++i)
+        if (mergedIdx & mergedBitMasks[i])
+          origIdx |= origBitMasks[i];
+
+      if (((srcWords[origIdx >> 6] >> (origIdx & 63)) & 1ULL) == 0)
+        continue;
+
+      result[mergedIdx >> 6] |= (1ULL << (mergedIdx & 63));
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
   // Fallback for larger truth tables
   llvm::APInt result = llvm::APInt::getZero(mergedSize);
   for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
