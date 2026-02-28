@@ -1087,8 +1087,10 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   auto *resultCutSet = createNewCutSet(nodeIndex);
   processingOrder.push_back(nodeIndex);
 
-  // Add the singleton cut first
-  resultCutSet->addCut(primaryInputCut);
+  // Keep a local candidate list and perform dominance pruning during
+  // generation to reduce finalize-time work.
+  SmallVector<Cut *, 32> candidateCuts;
+  candidateCuts.push_back(primaryInputCut);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
@@ -1180,7 +1182,27 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         }
       }
 
-      // Create the merged cut
+      // Dominance check against already kept candidates.
+      uint64_t mergedSig = 0;
+      for (uint32_t idx : mergedInputs)
+        mergedSig |= (1ULL << (idx & 63));
+
+      auto isSubsetOf = [](ArrayRef<uint32_t> a, ArrayRef<uint32_t> b) -> bool {
+        return std::includes(b.begin(), b.end(), a.begin(), a.end());
+      };
+
+      for (const Cut *existing : candidateCuts) {
+        // existing dominates merged (existing is subset of merged)
+        if (existing->getInputSize() > mergedInputs.size())
+          continue;
+        uint64_t existingSig = existing->getSignature();
+        if ((existingSig & mergedSig) != existingSig)
+          continue;
+        if (isSubsetOf(existing->inputs, mergedInputs))
+          return;
+      }
+
+      // Create the merged cut.
       Cut *mergedCut = new (cutAllocator.Allocate()) Cut();
       mergedCut->setRootIndex(nodeIndex);
       mergedCut->inputs = std::move(mergedInputs);
@@ -1189,7 +1211,18 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
       // Store operand cuts for lazy truth table computation using fast
       // incremental method (after duplicate removal in finalize)
       mergedCut->setOperandCuts(cutPtrs);
-      resultCutSet->addCut(mergedCut);
+
+      // Remove candidates dominated by the new cut.
+      llvm::erase_if(candidateCuts, [&](const Cut *existing) {
+        if (existing->getInputSize() < mergedCut->getInputSize())
+          return false;
+        uint64_t existingSig = existing->getSignature();
+        uint64_t newSig = mergedCut->getSignature();
+        if ((newSig & existingSig) != newSig)
+          return false;
+        return isSubsetOf(mergedCut->inputs, existing->inputs);
+      });
+      candidateCuts.push_back(mergedCut);
 
       LLVM_DEBUG({
         if (mergedCut->inputs.size() >= 4) {
@@ -1225,6 +1258,9 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   SmallVector<const Cut *, 3> cutPtrs;
   cutPtrs.reserve(numFanins);
   enumerateCutCombinations(enumerateCutCombinations, 0, cutPtrs, 0ULL);
+
+  for (Cut *cut : candidateCuts)
+    resultCutSet->addCut(cut);
 
   return success();
 }
