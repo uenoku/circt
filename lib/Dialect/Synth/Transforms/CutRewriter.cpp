@@ -783,65 +783,78 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
     llvm::interleaveComma(inputs, os);
     os << "}";
   };
-  // First sort the cuts by input size (ascending). This ensures that when we
-  // iterate through the cuts, we always encounter smaller cuts first, allowing
-  // us to efficiently check for non-minimality. Stable sort to maintain
-  // relative order of cuts with the same input size.
-  // NOTE: Sorting pointers is much faster than sorting Cut objects
-  std::stable_sort(cuts.begin(), cuts.end(), [](const Cut *a, const Cut *b) {
-    return a->getInputSize() < b->getInputSize();
+  // Sort by size, then lexicographically by inputs. This enables cheap exact
+  // duplicate elimination and tighter candidate filtering for subset checks.
+  std::sort(cuts.begin(), cuts.end(), [](const Cut *a, const Cut *b) {
+    if (a->getInputSize() != b->getInputSize())
+      return a->getInputSize() < b->getInputSize();
+    return std::lexicographical_compare(a->inputs.begin(), a->inputs.end(),
+                                        b->inputs.begin(), b->inputs.end());
   });
 
-  // Track kept cuts for proper subset checking
-  llvm::SmallVector<Cut *, 4> keptCuts;
-  keptCuts.reserve(cuts.size()); // Reserve to avoid reallocations
+  // Group kept cuts by input size so subset checks only visit smaller cuts.
+  unsigned maxCutSize = cuts.empty() ? 0 : cuts.back()->getInputSize();
+  llvm::SmallVector<llvm::SmallVector<Cut *, 4>, 16> keptBySize(maxCutSize + 1);
 
-  // Ok, now filter out non-minimal cuts
-  for (unsigned i = 0; i < cuts.size(); ++i) {
-    const Cut *cut = cuts[i];
-    uint64_t cutSig = cut->getSignature(); // Cache signature
+  // Compact kept cuts in-place.
+  unsigned uniqueCount = 0;
+  for (Cut *cut : cuts) {
+    unsigned cutSize = cut->getInputSize();
+    uint64_t cutSig = cut->getSignature();
 
-    // Check if any existing cut is a subset of this cut
-    // If so, this cut is dominated and should be filtered out
-    bool isSubset = llvm::any_of(keptCuts, [cutSig, &cut, &dumpInputs](
-                                               const Cut *existingCut) {
-      // Quick signature check
-      // Check if existingCut's signature is a subset of cut's signature
-      if ((existingCut->getSignature() & cutSig) != existingCut->getSignature())
-        return false;
+    // Fast exact duplicate check: with lexicographic sort, duplicates are
+    // adjacent among cuts with equal size.
+    if (uniqueCount > 0) {
+      Cut *lastKept = cuts[uniqueCount - 1];
+      if (lastKept->getInputSize() == cutSize &&
+          lastKept->inputs == cut->inputs)
+        continue;
+    }
 
-      // Perform detailed subset check
-      if (!std::includes(cut->inputs.begin(), cut->inputs.end(),
-                         existingCut->inputs.begin(),
-                         existingCut->inputs.end()))
-        return false;
+    bool isDominated = false;
+    for (unsigned existingSize = 1; existingSize < cutSize && !isDominated;
+         ++existingSize) {
+      for (const Cut *existingCut : keptBySize[existingSize]) {
+        // Quick interval check on sorted inputs.
+        if (existingCut->inputs.front() < cut->inputs.front())
+          continue;
+        if (existingCut->inputs.back() > cut->inputs.back())
+          continue;
 
-      LLVM_DEBUG({
-        llvm::dbgs() << "Dropping non-minimal cut ";
-        dumpInputs(llvm::dbgs(), cut->inputs);
-        llvm::dbgs() << " due to subset ";
-        dumpInputs(llvm::dbgs(), existingCut->inputs);
-        llvm::dbgs() << "\n";
-      });
-      return true;
-    });
+        // Quick signature subset check.
+        if ((existingCut->getSignature() & cutSig) !=
+            existingCut->getSignature())
+          continue;
 
-    if (isSubset)
+        // Exact subset check.
+        if (!std::includes(cut->inputs.begin(), cut->inputs.end(),
+                           existingCut->inputs.begin(),
+                           existingCut->inputs.end()))
+          continue;
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "Dropping non-minimal cut ";
+          dumpInputs(llvm::dbgs(), cut->inputs);
+          llvm::dbgs() << " due to subset ";
+          dumpInputs(llvm::dbgs(), existingCut->inputs);
+          llvm::dbgs() << "\n";
+        });
+        isDominated = true;
+        break;
+      }
+    }
+
+    if (isDominated)
       continue;
 
-    // If the cut is unique, keep it
-    size_t uniqueCount = keptCuts.size();
-    if (i != uniqueCount)
-      cuts[uniqueCount] = const_cast<Cut *>(cut);
-    keptCuts.push_back(cuts[uniqueCount]);
+    cuts[uniqueCount++] = cut;
+    keptBySize[cutSize].push_back(cut);
   }
-
-  unsigned uniqueCount = keptCuts.size();
 
   LLVM_DEBUG(llvm::dbgs() << "Original cuts: " << cuts.size()
                           << " Unique cuts: " << uniqueCount << "\n");
 
-  // Resize the cuts vector to the number of unique cuts found
+  // Resize the cuts vector to the number of surviving cuts.
   cuts.resize(uniqueCount);
 }
 
@@ -1061,7 +1074,7 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   });
 
   // Cache maxCutInputSize to avoid repeated access
-  uint64_t maxInputSize = options.maxCutInputSize;
+  unsigned maxInputSize = options.maxCutInputSize;
 
   // This lambda generates nested loops at runtime to iterate over all
   // combinations of cuts from N operands
@@ -1070,41 +1083,55 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
                                       uint64_t currentSig) -> void {
     // Base case: all operands processed, create merged cut
     if (operandIdx == numFanins) {
-      // Efficient k-way merge: since all cut inputs are sorted, use merge
-      // with duplicate elimination in a single pass
+      // Efficient k-way merge: inputs are sorted, so dedup and constant
+      // filtering can be done while merging. Abort early once we exceed the
+      // cut-size limit to avoid building doomed merged cuts.
       SmallVector<uint32_t, 6> mergedInputs;
+      auto appendMergedInput = [&](uint32_t value) {
+        if (value == LogicNetwork::kConstant0 ||
+            value == LogicNetwork::kConstant1)
+          return true;
+        if (!mergedInputs.empty() && mergedInputs.back() == value)
+          return true;
+        mergedInputs.push_back(value);
+        return mergedInputs.size() <= maxInputSize;
+      };
 
       if (numFanins == 1) {
-        // Single input: just copy
-        mergedInputs = cutPtrs[0]->inputs;
+        // Single input: copy while filtering constants.
+        mergedInputs.reserve(
+            std::min<size_t>(cutPtrs[0]->inputs.size(), maxInputSize));
+        for (uint32_t value : cutPtrs[0]->inputs)
+          if (!appendMergedInput(value))
+            return;
       } else if (numFanins == 2) {
         // Two-way merge (common case for AND gates)
         const auto &inputs0 = cutPtrs[0]->inputs;
         const auto &inputs1 = cutPtrs[1]->inputs;
-        mergedInputs.reserve(inputs0.size() + inputs1.size());
+        mergedInputs.reserve(
+            std::min<size_t>(inputs0.size() + inputs1.size(), maxInputSize));
 
         unsigned i = 0, j = 0;
-        while (i < inputs0.size() && j < inputs1.size()) {
-          if (inputs0[i] < inputs1[j]) {
-            mergedInputs.push_back(inputs0[i++]);
-          } else if (inputs0[i] > inputs1[j]) {
-            mergedInputs.push_back(inputs1[j++]);
+        while (i < inputs0.size() || j < inputs1.size()) {
+          uint32_t next;
+          if (j == inputs1.size() ||
+              (i < inputs0.size() && inputs0[i] <= inputs1[j])) {
+            next = inputs0[i++];
+            if (j < inputs1.size() && inputs1[j] == next)
+              ++j;
           } else {
-            mergedInputs.push_back(inputs0[i++]);
-            j++; // Skip duplicate
+            next = inputs1[j++];
           }
+          if (!appendMergedInput(next))
+            return;
         }
-        // Append remaining elements
-        while (i < inputs0.size())
-          mergedInputs.push_back(inputs0[i++]);
-        while (j < inputs1.size())
-          mergedInputs.push_back(inputs1[j++]);
       } else {
         // Three-way merge (for MAJ/MUX gates)
         const SmallVectorImpl<uint32_t> &inputs0 = cutPtrs[0]->inputs;
         const SmallVectorImpl<uint32_t> &inputs1 = cutPtrs[1]->inputs;
         const SmallVectorImpl<uint32_t> &inputs2 = cutPtrs[2]->inputs;
-        mergedInputs.reserve(inputs0.size() + inputs1.size() + inputs2.size());
+        mergedInputs.reserve(std::min<size_t>(
+            inputs0.size() + inputs1.size() + inputs2.size(), maxInputSize));
 
         unsigned i = 0, j = 0, k = 0;
         while (i < inputs0.size() || j < inputs1.size() || k < inputs2.size()) {
@@ -1117,8 +1144,6 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
           if (k < inputs2.size())
             minVal = std::min(minVal, inputs2[k]);
 
-          mergedInputs.push_back(minVal);
-
           // Advance all iterators pointing to minVal (handles duplicates)
           if (i < inputs0.size() && inputs0[i] == minVal)
             i++;
@@ -1126,23 +1151,11 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
             j++;
           if (k < inputs2.size() && inputs2[k] == minVal)
             k++;
+
+          if (!appendMergedInput(minVal))
+            return;
         }
       }
-
-      // Filter out constant indices (kConstant0/kConstant1) from cut inputs.
-      // Constants are handled directly in simulateGate without cache entries,
-      // so they should not appear as cut inputs.
-      mergedInputs.erase(
-          std::remove_if(mergedInputs.begin(), mergedInputs.end(),
-                         [](uint32_t idx) {
-                           return idx == LogicNetwork::kConstant0 ||
-                                  idx == LogicNetwork::kConstant1;
-                         }),
-          mergedInputs.end());
-
-      // Double-check after merge
-      if (mergedInputs.size() > maxInputSize)
-        return;
 
       // Create the merged cut
       Cut *mergedCut = new (cutAllocator.Allocate()) Cut();
@@ -1173,7 +1186,7 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
     for (const Cut *cut : currentCutSet->getCuts()) {
       uint64_t cutSig = cut->getSignature();
       uint64_t newSig = currentSig | cutSig;
-      if (llvm::popcount(newSig) > maxInputSize)
+      if (static_cast<unsigned>(llvm::popcount(newSig)) > maxInputSize)
         continue; // Early rejection based on signature
 
       cutPtrs.push_back(cut);

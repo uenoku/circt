@@ -11,8 +11,9 @@
 // LUT6-NEXT: Maximum path delay: 6
 // Don't test detailed reports as they are not stable.
 
-hw.module @counter(in %a: i128, in %b: i128, in %c: i128, out result: i128) {
+hw.module @counter(in %a: i128, in %b: i128, in %c: i128, in %d: i128, out result: i128) {
     %add = comb.mul %a, %b, %c : i128
+    %sub = comb.sub %add, %d : i128
     %mul = comb.add %add, %c, %b : i128
     hw.output %mul : i128
 }
