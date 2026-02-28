@@ -768,6 +768,11 @@ DelayType MatchedPattern::getArrivalTime(unsigned index) const {
   return arrivalTimes[index];
 }
 
+DelayType MatchedPattern::getWorstOutputArrivalTime() const {
+  assert(pattern && "Pattern must be set to get arrival time");
+  return *std::max_element(arrivalTimes.begin(), arrivalTimes.end());
+}
+
 const CutRewritePattern *MatchedPattern::getPattern() const {
   assert(pattern && "Pattern must be set to get the pattern");
   return pattern;
@@ -965,16 +970,8 @@ void CutSet::finalize(
   if (cuts.size() > options.maxCutSizePerRoot)
     cuts.resize(options.maxCutSizePerRoot);
 
-  // Select the best cut from the remaining candidates
-  for (Cut *cut : cuts) {
-    const auto &currentMatch = cut->getMatchedPattern();
-    if (!currentMatch)
-      continue; // Skip cuts without matched patterns
-
-    // This is already sorted, so the first matched cut is the best.
-    bestCut = cut;
-    break;
-  }
+  // Select the best cut using default delay-oriented strategy
+  selectBestCut(options.strategy);
 
   LLVM_DEBUG({
     llvm::dbgs() << "Finalized cut set with " << cuts.size() << " cuts and "
@@ -987,6 +984,27 @@ void CutSet::finalize(
   });
 
   isFrozen = true; // Mark the cut set as frozen
+}
+
+void CutSet::selectBestCut(OptimizationStrategy strategy,
+                           std::optional<DelayType> requiredTime) {
+  bestCut = nullptr;
+  for (Cut *cut : cuts) {
+    const auto &currentMatch = cut->getMatchedPattern();
+    if (!currentMatch)
+      continue;
+
+    // If required time is set, skip cuts that violate the timing constraint
+    if (requiredTime) {
+      if (currentMatch->getWorstOutputArrivalTime() > *requiredTime)
+        continue;
+    }
+
+    // For delay-first strategy (or no requiredTime), the cuts are already
+    // sorted by priority from finalize(), so the first matched cut is best.
+    bestCut = cut;
+    break;
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -1432,6 +1450,200 @@ void CutEnumerator::dump() const {
   llvm::outs() << "Cut enumeration completed successfully\n";
 }
 
+void CutEnumerator::computeRequiredTimes() {
+  // Collect the set of node indices that are in the processing order
+  // (i.e., internal logic nodes). Nodes used by operations outside this set
+  // are primary outputs (POs).
+  DenseSet<uint32_t> logicNodes;
+  for (auto index : processingOrder)
+    logicNodes.insert(index);
+
+  // Step 1: Initialize all required times to infinity.
+  // Then set PO required times to their own worst arrival time.
+  // This preserves each output's delay rather than only the critical path.
+  for (auto &[index, cutSet] : cutSets)
+    cutSet->requiredTime = std::numeric_limits<DelayType>::max();
+
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto *cutSet = it->second;
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut)
+      continue;
+
+    // Check if this node is a primary output: it has uses outside the logic
+    // network (e.g., by hw.output or other non-logic ops).
+    Value value = logicNetwork.getValue(index);
+    bool isPO = false;
+    if (value) {
+      for (auto &use : value.getUses()) {
+        Operation *user = use.getOwner();
+        // If the user has no results, it's a sink (e.g., hw.output) → PO
+        if (user->getNumResults() == 0) {
+          isPO = true;
+          break;
+        }
+        // If the user's result isn't a logic node we process, it's a PO
+        Value userResult = user->getResult(0);
+        if (!logicNetwork.hasIndex(userResult) ||
+            !logicNodes.count(logicNetwork.getIndex(userResult))) {
+          isPO = true;
+          break;
+        }
+      }
+    }
+
+    if (isPO) {
+      const auto &matched = *bestCut->getMatchedPattern();
+      cutSet->requiredTime = matched.getWorstOutputArrivalTime();
+      LLVM_DEBUG(llvm::dbgs()
+                 << "PO node " << index
+                 << " required time: " << cutSet->requiredTime << "\n");
+    }
+  }
+
+  // Step 3: Walk in reverse topo order, propagate required times
+  for (auto it = processingOrder.rbegin(); it != processingOrder.rend(); ++it) {
+    uint32_t index = *it;
+    auto csIt = cutSets.find(index);
+    if (csIt == cutSets.end())
+      continue;
+    auto *cutSet = csIt->second;
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut)
+      continue;
+
+    const auto &matched = *bestCut->getMatchedPattern();
+    auto delays = matched.getPattern()->match(
+        const_cast<CutEnumerator &>(*this), *bestCut);
+    if (!delays)
+      continue;
+
+    auto patternDelays = delays->getDelays();
+    unsigned numInputs = bestCut->getInputSize();
+
+    // For each input of the best cut, propagate required time
+    for (unsigned i = 0; i < numInputs; ++i) {
+      uint32_t inputIndex = bestCut->inputs[i];
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+
+      auto inputIt = cutSets.find(inputIndex);
+      if (inputIt == cutSets.end())
+        continue;
+
+      // requiredTime for input = this node's requiredTime - delay through gate
+      // For single-output patterns, output index is 0
+      DelayType delayThrough = patternDelays[i]; // delay from input i to output
+      DelayType inputRequired = cutSet->requiredTime - delayThrough;
+      inputIt->second->requiredTime =
+          std::min(inputIt->second->requiredTime, inputRequired);
+    }
+  }
+}
+
+void CutEnumerator::reselectCutsForAreaFlow() {
+  LLVM_DEBUG(llvm::dbgs() << "Re-selecting cuts for area flow...\n");
+
+  // Initialize bestArrivalTime from the current delay-optimal mapping
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto *bestCut = it->second->getBestMatchedCut();
+    if (bestCut)
+      it->second->bestArrivalTime =
+          bestCut->getMatchedPattern()->getWorstOutputArrivalTime();
+  }
+
+  // Helper: compute arrival time of a cut based on current input bestCuts.
+  // Uses CutSet::bestArrivalTime which is updated in topo order during
+  // re-selection, so upstream values are always fresh.
+  auto computeArrivalTime = [&](const Cut &cut) -> DelayType {
+    const auto &matched = *cut.getMatchedPattern();
+    auto matchResult =
+        matched.getPattern()->match(const_cast<CutEnumerator &>(*this), cut);
+    if (!matchResult)
+      return std::numeric_limits<DelayType>::max();
+
+    auto patternDelays = matchResult->getDelays();
+    unsigned numInputs = cut.getInputSize();
+    DelayType worstArrival = 0;
+
+    for (unsigned i = 0; i < numInputs; ++i) {
+      uint32_t inputIndex = cut.inputs[i];
+      DelayType inputArrival = 0;
+      if (!isAlwaysCutInput(logicNetwork, inputIndex)) {
+        auto inputIt = cutSets.find(inputIndex);
+        if (inputIt != cutSets.end())
+          inputArrival = inputIt->second->bestArrivalTime;
+      }
+      worstArrival =
+          std::max(worstArrival, patternDelays[i] + inputArrival);
+    }
+    return worstArrival;
+  };
+
+  // Walk in topo order (bottom-up from inputs to outputs)
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto *cutSet = it->second;
+
+    Cut *bestAreaFlowCut = nullptr;
+    double bestFlow = std::numeric_limits<double>::max();
+
+    for (Cut *cut : cutSet->getCuts()) {
+      const auto &matched = cut->getMatchedPattern();
+      if (!matched)
+        continue;
+
+      // Recompute arrival time based on current input bestCuts
+      DelayType arrivalTime = computeArrivalTime(*cut);
+
+      // Skip cuts that violate required time
+      if (arrivalTime > cutSet->requiredTime)
+        continue;
+
+      // Compute area flow for this cut
+      double flow = matched->getArea();
+      for (uint32_t inputIndex : cut->inputs) {
+        if (isAlwaysCutInput(logicNetwork, inputIndex))
+          continue;
+
+        auto inputIt = cutSets.find(inputIndex);
+        if (inputIt == cutSets.end())
+          continue;
+
+        // Estimate fanout using the number of uses of the value
+        Value inputValue = logicNetwork.getValue(inputIndex);
+        unsigned numRefs = 0;
+        if (inputValue)
+          for (auto &use : inputValue.getUses())
+            (void)use, ++numRefs;
+        numRefs = std::max(numRefs, 1u);
+
+        flow += inputIt->second->areaFlow / numRefs;
+      }
+
+      if (flow < bestFlow) {
+        bestFlow = flow;
+        bestAreaFlowCut = cut;
+      }
+    }
+
+    if (bestAreaFlowCut) {
+      cutSet->setBestCut(bestAreaFlowCut);
+      cutSet->areaFlow = bestFlow;
+      // Update arrival time for downstream nodes to use
+      cutSet->bestArrivalTime = computeArrivalTime(*bestAreaFlowCut);
+    }
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // CutRewriter
 //===----------------------------------------------------------------------===//
@@ -1463,7 +1675,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   if (failed(topologicallySortLogicNetwork(topOp)))
     return failure();
 
-  // Enumerate cuts for all nodes
+  // Enumerate cuts for all nodes (initial delay-oriented selection)
   if (failed(enumerateCuts(topOp)))
     return failure();
 
@@ -1471,6 +1683,13 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   if (options.testPriorityCuts) {
     cutEnumerator.dump();
     return success();
+  }
+
+  // Area recovery pass: only for timing strategy, re-select cuts to minimize
+  // area while preserving the optimal delay (required time constraint).
+  if (options.strategy == OptimizationStrategyTiming) {
+    cutEnumerator.computeRequiredTimes();
+    cutEnumerator.reselectCutsForAreaFlow();
   }
 
   // Select best cuts and perform mapping

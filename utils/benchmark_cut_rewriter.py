@@ -86,8 +86,8 @@ def parse_abc_print_stats(stdout: str) -> dict[str, int | None]:
 
 
 def run_benchmark(
-    cut_size: int,
-    max_cuts: int,
+    max_lut_size: int,
+    max_cuts_per_root: int,
     circt_synth: Path,
     circt_opt: Path,
     abc_path: Path,
@@ -96,44 +96,14 @@ def run_benchmark(
     top_module: str,
 ) -> dict[str, Any]:
     """Run a single benchmark configuration."""
-    config_dir = output_dir / f"cut{cut_size}_cuts{max_cuts}"
+    config_dir = output_dir / f"lut{max_lut_size}_cuts{max_cuts_per_root}"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # ABC pipeline
-    abc_mlir = config_dir / "abc_result.mlir"
-    abc_log = config_dir / "abc.log"
-    abc_pipeline = (
-        "builtin.module(hw.module("
-        "synth-structural-hash, "
-        "synth-abc-runner{"
-        f"abc-path={abc_path} "
-        f'abc-commands="if -K {cut_size} -C {max_cuts}; time; print_stats; strash"'
-        "}))"
-    )
-    stdout, stderr, _ = run_command(
-        [
-            str(circt_opt),
-            str(single_module_mlir),
-            "--pass-pipeline",
-            abc_pipeline,
-            "--mlir-timing",
-            "--mlir-timing-display=list",
-            "-o",
-            str(abc_mlir),
-        ]
-    )
-    abc_pass_timings = parse_mlir_timing(stderr)
-    abc_print_stats = parse_abc_print_stats(stdout)
-    log_content = stdout
-    if stderr:
-        log_content += "\n=== stderr ===\n" + stderr
-    abc_log.write_text(log_content)
-
-    # LUT mapper pipeline
+    # LUT mapper pipeline (run first to avoid thermal/cache effects from ABC)
     pipeline = (
         "builtin.module(hw.module(synth-generic-lut-mapper{"
-        f"max-lut-size={cut_size} "
-        f"max-cuts-per-root={max_cuts}"
+        f"max-lut-size={max_lut_size} "
+        f"max-cuts-per-root={max_cuts_per_root}"
         "}))"
     )
     lut_result_mlir = config_dir / "lut_result.mlir"
@@ -156,6 +126,36 @@ def run_benchmark(
         log_content += "\n=== stderr ===\n" + stderr
     lut_log.write_text(log_content)
 
+    # ABC pipeline (abc -K = max LUT inputs, -C = max cuts per node)
+    abc_mlir = config_dir / "abc_result.mlir"
+    abc_log = config_dir / "abc.log"
+    abc_pipeline = (
+        "builtin.module(hw.module("
+        "synth-structural-hash, "
+        "synth-abc-runner{"
+        f"abc-path={abc_path} "
+        f'abc-commands="if -K {max_lut_size} -C {max_cuts_per_root}; time; print_stats; strash"'
+        "}))"
+    )
+    stdout, stderr, _ = run_command(
+        [
+            str(circt_opt),
+            str(single_module_mlir),
+            "--pass-pipeline",
+            abc_pipeline,
+            "--mlir-timing",
+            "--mlir-timing-display=list",
+            "-o",
+            str(abc_mlir),
+        ]
+    )
+    abc_pass_timings = parse_mlir_timing(stderr)
+    abc_print_stats = parse_abc_print_stats(stdout)
+    log_content = stdout
+    if stderr:
+        log_content += "\n=== stderr ===\n" + stderr
+    abc_log.write_text(log_content)
+
     abc_analysis = run_analysis(circt_opt, "abc", abc_mlir, top_module, config_dir)
     lut_analysis = run_analysis(
         circt_opt, "lut", lut_result_mlir, top_module, config_dir
@@ -163,8 +163,8 @@ def run_benchmark(
 
     return {
         "config": {
-            "cut_size": cut_size,
-            "max_cuts": max_cuts,
+            "max_lut_size": max_lut_size,
+            "max_cuts_per_root": max_cuts_per_root,
         },
         "artifacts": {
             "abc_mlir": str(abc_mlir),
@@ -344,26 +344,26 @@ def main() -> int:
         help="Path to the ABC executable (defaults to yosys-abc)",
     )
     parser.add_argument(
-        "--cut-size",
+        "--max-lut-size",
         type=int,
         default=6,
-        help="Cut/input limit for ABC (if -K) and LUT max inputs",
+        help="Maximum number of LUT inputs (ABC -K, LUT mapper max-lut-size)",
     )
     parser.add_argument(
-        "--cut-sizes",
+        "--max-lut-sizes",
         type=parse_int_list,
-        help="Comma-separated list of cut sizes to sweep",
+        help="Comma-separated list of max-lut-size values to sweep",
     )
     parser.add_argument(
-        "--max-cuts",
+        "--max-cuts-per-root",
         type=int,
         default=8,
-        help="Budget shared by ABC if -C and LUT max cuts per root",
+        help="Maximum cuts per node (ABC -C, LUT mapper max-cuts-per-root)",
     )
     parser.add_argument(
-        "--max-cuts-list",
+        "--max-cuts-per-root-list",
         type=parse_int_list,
-        help="Comma-separated list of max-cuts values to sweep",
+        help="Comma-separated list of max-cuts-per-root values to sweep",
     )
     parser.add_argument(
         "--plot",
@@ -374,7 +374,7 @@ def main() -> int:
         "--profile",
         choices=["abc", "lut"],
         help="Profile the specified tool using perf record + flamegraph for "
-        "the first cut_size/max_cuts configuration",
+        "the first max_lut_size/max_cuts_per_root configuration",
     )
     parser.add_argument(
         "--flamegraph-pl",
@@ -385,8 +385,12 @@ def main() -> int:
     args = parser.parse_args()
 
     # Determine which configurations to run
-    cut_sizes = args.cut_sizes if args.cut_sizes else [args.cut_size]
-    max_cuts_list = args.max_cuts_list if args.max_cuts_list else [args.max_cuts]
+    max_lut_sizes = args.max_lut_sizes if args.max_lut_sizes else [args.max_lut_size]
+    max_cuts_per_root_list = (
+        args.max_cuts_per_root_list
+        if args.max_cuts_per_root_list
+        else [args.max_cuts_per_root]
+    )
 
     if not args.input_mlir and not args.post_synth_mlir:
         parser.error(
@@ -427,12 +431,15 @@ def main() -> int:
 
     # Run all configurations
     results = []
-    for cut_size in cut_sizes:
-        for max_cuts in max_cuts_list:
-            print(f"Running benchmark: cut_size={cut_size}, max_cuts={max_cuts}")
+    for max_lut_size in max_lut_sizes:
+        for max_cuts_per_root in max_cuts_per_root_list:
+            print(
+                f"Running benchmark: max_lut_size={max_lut_size}, "
+                f"max_cuts_per_root={max_cuts_per_root}"
+            )
             result = run_benchmark(
-                cut_size=cut_size,
-                max_cuts=max_cuts,
+                max_lut_size=max_lut_size,
+                max_cuts_per_root=max_cuts_per_root,
                 circt_synth=circt_synth,
                 circt_opt=circt_opt,
                 abc_path=abc_path,
@@ -460,11 +467,14 @@ def main() -> int:
 
     # Optional profiling run (first configuration only)
     if args.profile:
-        cut_size = cut_sizes[0]
-        max_cuts = max_cuts_list[0]
-        config_dir = output_dir / f"cut{cut_size}_cuts{max_cuts}"
+        max_lut_size = max_lut_sizes[0]
+        max_cuts_per_root = max_cuts_per_root_list[0]
+        config_dir = output_dir / f"lut{max_lut_size}_cuts{max_cuts_per_root}"
         config_dir.mkdir(parents=True, exist_ok=True)
-        print(f"\nProfiling {args.profile.upper()} (K={cut_size}, C={max_cuts}) ...")
+        print(
+            f"\nProfiling {args.profile.upper()} "
+            f"(max-lut-size={max_lut_size}, max-cuts-per-root={max_cuts_per_root}) ..."
+        )
 
         if args.profile == "abc":
             profile_pipeline = (
@@ -472,7 +482,7 @@ def main() -> int:
                 "synth-structural-hash, "
                 "synth-abc-runner{"
                 f"abc-path={abc_path} "
-                f'abc-commands="if -K {cut_size} -C {max_cuts}; time; print_stats; strash"'
+                f'abc-commands="if -K {max_lut_size} -C {max_cuts_per_root}; time; print_stats; strash"'
                 "}))"
             )
             profile_cmd = [
@@ -486,8 +496,8 @@ def main() -> int:
         else:
             profile_pipeline = (
                 "builtin.module(hw.module(synth-generic-lut-mapper{"
-                f"max-lut-size={cut_size} "
-                f"max-cuts-per-root={max_cuts}"
+                f"max-lut-size={max_lut_size} "
+                f"max-cuts-per-root={max_cuts_per_root}"
                 "}))"
             )
             profile_cmd = [
@@ -503,15 +513,15 @@ def main() -> int:
             profile_cmd,
             out_dir=config_dir,
             flamegraph_pl=args.flamegraph_pl.expanduser().resolve(),
-            label=f"{args.profile}_K{cut_size}_C{max_cuts}",
+            label=f"{args.profile}_lut{max_lut_size}_cuts{max_cuts_per_root}",
         )
         print(f"Flamegraph written to {svg}")
 
     # Write aggregated results
     master_summary = {
         "total_configs": len(results),
-        "cut_sizes": cut_sizes,
-        "max_cuts_values": max_cuts_list,
+        "max_lut_sizes": max_lut_sizes,
+        "max_cuts_per_root_values": max_cuts_per_root_list,
         "results": results,
     }
 

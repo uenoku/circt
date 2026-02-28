@@ -28,6 +28,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -535,11 +536,28 @@ private:
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
+  /// Required time constraint (set during required time computation).
+  DelayType requiredTime = std::numeric_limits<DelayType>::max();
+
+  /// Best arrival time (updated during area flow re-selection to reflect
+  /// current input bestCuts, since MatchedPattern arrival times become stale).
+  DelayType bestArrivalTime = 0;
+
+  /// Area flow metric for the best cut (used during area flow re-selection).
+  double areaFlow = 0.0;
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
   /// Get the cut associated with the best matched pattern.
   Cut *getBestMatchedCut() const;
+
+  /// Re-select the best cut from already-matched cuts.
+  /// When requiredTime is set and strategy is Area, picks the minimum-area-flow
+  /// cut whose arrival time does not exceed requiredTime.
+  void selectBestCut(
+      OptimizationStrategy strategy,
+      std::optional<DelayType> requiredTime = std::nullopt);
 
   /// Finalize the cut set by removing duplicates and selecting the best
   /// pattern.
@@ -564,6 +582,9 @@ public:
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut *> getCuts() const;
+
+  /// Directly set the best cut (used by area flow re-selection).
+  void setBestCut(Cut *cut) { bestCut = cut; }
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
@@ -653,6 +674,14 @@ public:
 
   /// Get the processing order (indices in topological order).
   ArrayRef<uint32_t> getProcessingOrder() const { return processingOrder; }
+
+  /// Compute required times for all nodes by propagating timing constraints
+  /// from outputs backward through the network.
+  void computeRequiredTimes();
+
+  /// Re-select best cuts using area flow metric, subject to required time
+  /// constraints. This implements ABC's "Mode 1" area recovery pass.
+  void reselectCutsForAreaFlow();
 
 private:
   /// Visit a combinational logic operation and generate cuts.
