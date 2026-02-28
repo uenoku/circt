@@ -47,3 +47,4 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MLIRPass
   MLIRTransforms
 )
+
