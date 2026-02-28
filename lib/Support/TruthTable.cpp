@@ -166,8 +166,8 @@ unsigned permuteNegationMask(unsigned negationMask,
                              ArrayRef<unsigned> permutation) {
   unsigned result = 0;
   for (unsigned i = 0; i < permutation.size(); ++i) {
-    if (negationMask & (1u << i)) {
-      result |= (1u << permutation[i]);
+    if (negationMask & (1u << permutation[i])) {
+      result |= (1u << i);
     }
   }
   return result;
