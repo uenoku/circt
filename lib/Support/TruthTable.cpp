@@ -295,10 +295,13 @@ circt::detail::expandTruthTableForMergedInputs(const llvm::APInt &tt,
     std::array<uint32_t, kMaxMergedInputs> mergedBitMasks{};
     std::array<unsigned, kMaxMergedInputs> origBitMasks{};
     for (unsigned i = 0; i < numOrigInputs; ++i) {
+      // Precompute masks once so the per-entry loop only does cheap AND/OR.
       mergedBitMasks[i] = 1U << inputMapping[i];
       origBitMasks[i] = 1U << i;
     }
 
+    // Read source bits as packed 64-bit words instead of tt[bit] to avoid
+    // repeated APInt helper overhead on this hot path.
     const uint64_t *srcWords = tt.getRawData();
     for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
       unsigned origIdx = 0;

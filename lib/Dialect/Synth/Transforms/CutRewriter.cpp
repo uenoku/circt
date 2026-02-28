@@ -636,6 +636,8 @@ getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
                       unsigned numCuts) {
 
   auto lookupMergedPos = [&](uint32_t idx) -> std::optional<unsigned> {
+    // mergedInputs is sorted, so binary search avoids linear scans in the
+    // hot truth-table expansion path.
     auto it = llvm::lower_bound(mergedInputs, idx);
     if (it == mergedInputs.end() || *it != idx)
       return std::nullopt;
@@ -680,6 +682,8 @@ getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
       mapping.reserve(cuts[i]->inputs.size());
       unsigned mergedPos = 0;
       for (auto idx : cuts[i]->inputs) {
+        // Both vectors are sorted. Advance once and never rewind to keep this
+        // mapping build linear in total input count.
         while (mergedPos < mergedInputs.size() && mergedInputs[mergedPos] < idx)
           ++mergedPos;
         assert(mergedPos < mergedInputs.size() &&
@@ -1084,6 +1088,22 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
     operandCutSets.push_back(operandCutSet);
   }
 
+  // Reorder operands to increase early signature-pruning effectiveness during
+  // recursive enumeration. Processing operands with larger cuts first tends to
+  // hit the cut-size bound earlier and prunes subtrees sooner.
+  std::sort(operandCutSets.begin(), operandCutSets.end(),
+            [](const CutSet *a, const CutSet *b) {
+              // Fanin count is <= 3, so recomputing this score in the
+              // comparator is still cheaper than materializing extra arrays.
+              auto maxCutSize = [](const CutSet *set) {
+                unsigned maxSize = 0;
+                for (const Cut *cut : set->getCuts())
+                  maxSize = std::max(maxSize, cut->getInputSize());
+                return maxSize;
+              };
+              return maxCutSize(a) > maxCutSize(b);
+            });
+
   // Create the singleton cut (just this operation as a trivial cut)
   Cut *primaryInputCut = new (cutAllocator.Allocate())
       Cut(getAsTrivialCut(nodeIndex, logicNetwork));
@@ -1095,6 +1115,11 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   // generation to reduce finalize-time work.
   SmallVector<Cut *, 32> candidateCuts;
   candidateCuts.push_back(primaryInputCut);
+  // Soft cap for generation-time candidate pool. Keep it comfortably above the
+  // final per-root limit so we preserve quality, but prevent explosive growth
+  // at larger cut settings (especially 10/8 and above).
+  const unsigned generationCap =
+      std::max(options.maxCutSizePerRoot + 8, options.maxCutSizePerRoot * 3);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
@@ -1227,6 +1252,21 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         return isSubsetOf(mergedCut->inputs, existing->inputs);
       });
       candidateCuts.push_back(mergedCut);
+
+      if (candidateCuts.size() > generationCap) {
+        auto keepBegin = candidateCuts.begin() + 1;
+        // Keep trivial cut at index 0 and retain lexicographically smaller
+        // low-support candidates first when trimming the generation pool.
+        std::sort(keepBegin, candidateCuts.end(),
+                  [](const Cut *a, const Cut *b) {
+                    if (a->getInputSize() != b->getInputSize())
+                      return a->getInputSize() < b->getInputSize();
+                    return std::lexicographical_compare(
+                        a->inputs.begin(), a->inputs.end(), b->inputs.begin(),
+                        b->inputs.end());
+                  });
+        candidateCuts.resize(generationCap);
+      }
 
       LLVM_DEBUG({
         if (mergedCut->inputs.size() >= 4) {
