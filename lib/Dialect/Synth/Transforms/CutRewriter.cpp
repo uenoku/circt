@@ -453,6 +453,44 @@ unsigned Cut::getOutputSize(const LogicNetwork &network) const {
 }
 
 /// Simulate a gate and return its truth table.
+static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
+                                             const llvm::APInt &a) {
+  switch (kind) {
+  case LogicNetworkGate::Identity:
+    return a;
+  default:
+    llvm_unreachable("Unsupported unary operation for truth table computation");
+  }
+}
+
+static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
+                                             const llvm::APInt &a,
+                                             const llvm::APInt &b) {
+  switch (kind) {
+  case LogicNetworkGate::And2:
+    return a & b;
+  case LogicNetworkGate::Xor2:
+    return a ^ b;
+  default:
+    llvm_unreachable(
+        "Unsupported binary operation for truth table computation");
+  }
+}
+
+static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
+                                             const llvm::APInt &a,
+                                             const llvm::APInt &b,
+                                             const llvm::APInt &c) {
+  switch (kind) {
+  case LogicNetworkGate::Maj3:
+    return (a & b) | (a & c) | (b & c);
+  default:
+    llvm_unreachable(
+        "Unsupported ternary operation for truth table computation");
+  }
+}
+
+/// Simulate a gate and return its truth table.
 static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
                                 llvm::DenseMap<uint32_t, llvm::APInt> &cache,
                                 unsigned numInputs) {
@@ -486,37 +524,26 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     llvm_unreachable("Primary input/Other not in cache - not a cut input?");
 
   case LogicNetworkGate::And2: {
-    // Get children truth tables
-    auto lhs = getEdgeTT(gate.edges[0]);
-    auto rhs = getEdgeTT(gate.edges[1]);
-
-    result = lhs & rhs;
+    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
+                                getEdgeTT(gate.edges[1]));
     break;
   }
 
   case LogicNetworkGate::Xor2: {
-    auto lhs = getEdgeTT(gate.edges[0]);
-    auto rhs = getEdgeTT(gate.edges[1]);
-
-    result = lhs ^ rhs;
+    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
+                                getEdgeTT(gate.edges[1]));
     break;
   }
 
   case LogicNetworkGate::Maj3: {
-    auto a = getEdgeTT(gate.edges[0]);
-    auto b = getEdgeTT(gate.edges[1]);
-    auto c = getEdgeTT(gate.edges[2]);
-
-    // MAJ(a,b,c) = (a & b) | (a & c) | (b & c)
-    result = (a & b) | (a & c) | (b & c);
+    result =
+        applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
+                           getEdgeTT(gate.edges[1]), getEdgeTT(gate.edges[2]));
     break;
   }
 
   case LogicNetworkGate::Identity: {
-    // Get input truth table
-    auto input = getEdgeTT(gate.edges[0]);
-
-    result = input;
+    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]));
     break;
   }
   }
@@ -770,62 +797,33 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
   for (auto [pos, idx] : llvm::enumerate(mergedInputs))
     indexToMergedPos[idx] = pos;
 
-  llvm::APInt result;
+  auto getEdgeTT = [&](unsigned edgeIdx) {
+    const auto &edge = rootGate.edges[edgeIdx];
+    return getExpandedTruthTable(edge.getIndex(), edge.isInverted(),
+                                 indexToMergedPos, numMergedInputs, cuts,
+                                 numCuts);
+  };
 
   switch (rootGate.getKind()) {
-  case LogicNetworkGate::And2: {
-    auto lhs = getExpandedTruthTable(
-        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-    auto rhs = getExpandedTruthTable(
-        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-
-    result = lhs & rhs;
-    break;
-  }
-
-  case LogicNetworkGate::Xor2: {
-    auto lhs = getExpandedTruthTable(
-        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-    auto rhs = getExpandedTruthTable(
-        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-
-    result = lhs ^ rhs;
-    break;
-  }
-
-  case LogicNetworkGate::Maj3: {
-    auto a = getExpandedTruthTable(
-        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-    auto b = getExpandedTruthTable(
-        rootGate.edges[1].getIndex(), rootGate.edges[1].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-    auto c = getExpandedTruthTable(
-        rootGate.edges[2].getIndex(), rootGate.edges[2].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-
-    result = (a & b) | (a & c) | (b & c);
-    break;
-  }
-
-  case LogicNetworkGate::Identity: {
-    auto input = getExpandedTruthTable(
-        rootGate.edges[0].getIndex(), rootGate.edges[0].isInverted(),
-        indexToMergedPos, numMergedInputs, cuts, numCuts);
-
-    result = input;
-    break;
-  }
-
+  case LogicNetworkGate::And2:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
+  case LogicNetworkGate::Xor2:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
+  case LogicNetworkGate::Maj3:
+    return BinaryTruthTable(numMergedInputs, 1,
+                            applyGateSemantics(rootGate.getKind(), getEdgeTT(0),
+                                               getEdgeTT(1), getEdgeTT(2)));
+  case LogicNetworkGate::Identity:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
   default:
     llvm_unreachable("Unsupported operation for truth table computation");
   }
-
-  return BinaryTruthTable(numMergedInputs, 1, result);
 }
 
 static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {
