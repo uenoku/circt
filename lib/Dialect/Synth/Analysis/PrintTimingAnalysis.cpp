@@ -60,6 +60,17 @@ static StringRef getRequestedDelayModel(ModuleOp module) {
   return "";
 }
 
+static timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode
+parseAdaptiveMode(StringRef mode) {
+  if (mode == "conservative")
+    return timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::
+        Conservative;
+  if (mode == "aggressive")
+    return timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::
+        Aggressive;
+  return timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled;
+}
+
 static const timing::TimingArc *findArcBetween(const timing::TimingNode *from,
                                                const timing::TimingNode *to) {
   for (auto *arc : from->getFanout())
@@ -112,6 +123,14 @@ struct PrintTimingAnalysisPass
     timing::TimingAnalysisOptions analysisOptions;
     analysisOptions.keepAllArrivals = true;
     analysisOptions.emitSlewConvergenceTable = showConvergenceTable;
+    analysisOptions.emitWaveformDetails = showWaveformDetails;
+    analysisOptions.maxSlewIterations = maxSlewIterations;
+    analysisOptions.slewConvergenceEpsilon = slewConvergenceEpsilon;
+    analysisOptions.slewConvergenceRelativeEpsilon =
+        slewConvergenceRelativeEpsilon;
+    analysisOptions.slewHintDamping = slewHintDamping;
+    analysisOptions.adaptiveSlewHintDampingMode =
+        parseAdaptiveMode(adaptiveSlewHintDampingMode);
 
     std::unique_ptr<timing::DelayModel> configuredModel;
     if (module->hasAttr("synth.liberty.library")) {
@@ -218,13 +237,16 @@ private:
   static void printSlewConvergenceTable(timing::TimingAnalysis &analysis,
                                         llvm::raw_ostream &os) {
     auto deltas = analysis.getLastSlewDeltaHistory();
+    auto dampings = analysis.getLastSlewDampingHistory();
     if (deltas.empty())
       return;
 
     os << "--- Slew Convergence ---\n";
-    os << "Iter | Max Slew Delta\n";
+    os << "Iter | Max Slew Delta | Applied Damping\n";
     for (size_t i = 0, e = deltas.size(); i < e; ++i)
-      os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << "\n";
+      os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << " | "
+         << llvm::format("%.6g", i < dampings.size() ? dampings[i] : 1.0)
+         << "\n";
     os << "\n";
   }
 
@@ -330,7 +352,7 @@ private:
            << analysis.getArrivalTime(node) << ")\n";
       os << "      -> " << formatNodeLabel(ep) << "\n";
     }
-    if (showWaveformDetails)
+    if (analysis.shouldEmitWaveformDetails())
       printWaveformDetails(path, analysis, model, os);
 
     os << "\n";

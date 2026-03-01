@@ -134,6 +134,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
   lastMaxSlewDelta = 0.0;
   lastRelativeSlewDelta = 0.0;
   lastSlewDeltaHistory.clear();
+  lastSlewDampingHistory.clear();
   lastAppliedSlewHintDamping = std::clamp(options.slewHintDamping, 0.0, 1.0);
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
     double damping = lastAppliedSlewHintDamping;
@@ -157,6 +158,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
         maxDelta = std::max(maxDelta, std::abs(current - previousSlews[id]));
       }
       lastSlewDeltaHistory.push_back(maxDelta);
+      lastSlewDampingHistory.push_back(damping);
       lastMaxSlewDelta = maxDelta;
       if (iter == 0)
         firstDelta = maxDelta;
@@ -196,6 +198,8 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
     lastMaxSlewDelta = 0.0;
     lastRelativeSlewDelta = 0.0;
     lastSlewDeltaHistory.push_back(0.0);
+    lastSlewDampingHistory.push_back(
+        std::clamp(options.slewHintDamping, 0.0, 1.0));
     lastAppliedSlewHintDamping = std::clamp(options.slewHintDamping, 0.0, 1.0);
   }
 

@@ -2,6 +2,7 @@
 // RUN: circt-synth %s --timing-report-dir=- --top dut --show-convergence-table -o /dev/null | FileCheck %s --check-prefix=TABLE
 // RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s --check-prefix=STA
 // RUN: circt-sta %s --timing-report-dir=- --top dut --show-convergence-table -o /dev/null | FileCheck %s --check-prefix=STA-TABLE
+// RUN: circt-synth %s --timing-report-dir=- --top dut --max-slew-iterations=4 --slew-epsilon=0.001 --slew-relative-epsilon=0.2 --slew-hint-damping=0.5 --adaptive-slew-damping-mode=conservative -o /dev/null | FileCheck %s --check-prefix=TUNE
 
 // CHECK: === Timing Report ===
 // CHECK: Module: dut
@@ -14,8 +15,8 @@
 
 // TABLE: === Timing Report ===
 // TABLE: --- Slew Convergence ---
-// TABLE: Iter | Max Slew Delta
-// TABLE: 1 | 0
+// TABLE: Iter | Max Slew Delta | Applied Damping
+// TABLE: 1 | 0 | 1
 // TABLE: Path 1: delay = 25
 
 // STA: === Timing Report ===
@@ -24,8 +25,12 @@
 
 // STA-TABLE: === Timing Report ===
 // STA-TABLE: --- Slew Convergence ---
-// STA-TABLE: Iter | Max Slew Delta
-// STA-TABLE: 1 | 0
+// STA-TABLE: Iter | Max Slew Delta | Applied Damping
+// STA-TABLE: 1 | 0 | 1
+
+// TUNE: Slew Hint Damping: 5.000000e-01
+// TUNE: Adaptive Slew Damping Mode: conservative
+// TUNE: Relative Slew Epsilon: 2.000000e-01
 
 module attributes {
   synth.liberty.library = {

@@ -86,6 +86,31 @@ static cl::opt<bool> showWaveformDetails(
     cl::desc("Include per-arc waveform details in timing report"),
     cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<unsigned>
+    maxSlewIterations("max-slew-iterations",
+                      cl::desc("Maximum slew convergence iterations"),
+                      cl::init(6), cl::cat(mainCategory));
+
+static cl::opt<double>
+    slewConvergenceEpsilon("slew-epsilon",
+                           cl::desc("Absolute slew convergence threshold"),
+                           cl::init(1e-6), cl::cat(mainCategory));
+
+static cl::opt<double> slewConvergenceRelativeEpsilon(
+    "slew-relative-epsilon",
+    cl::desc("Relative slew convergence threshold (0 disables)"), cl::init(0.0),
+    cl::cat(mainCategory));
+
+static cl::opt<double>
+    slewHintDamping("slew-hint-damping",
+                    cl::desc("Damping factor for iterative slew-hint updates"),
+                    cl::init(1.0), cl::cat(mainCategory));
+
+static cl::opt<std::string> adaptiveSlewDampingMode(
+    "adaptive-slew-damping-mode",
+    cl::desc("Adaptive damping mode: disabled, conservative, aggressive"),
+    cl::init("disabled"), cl::cat(mainCategory));
+
 static LogicalResult executeSTA(MLIRContext &context) {
   std::string errorMessage;
   auto input = openInputFile(inputFilename, &errorMessage);
@@ -116,6 +141,11 @@ static LogicalResult executeSTA(MLIRContext &context) {
   options.numPaths = numPaths;
   options.showConvergenceTable = showConvergenceTable;
   options.showWaveformDetails = showWaveformDetails;
+  options.maxSlewIterations = maxSlewIterations;
+  options.slewConvergenceEpsilon = slewConvergenceEpsilon;
+  options.slewConvergenceRelativeEpsilon = slewConvergenceRelativeEpsilon;
+  options.slewHintDamping = slewHintDamping;
+  options.adaptiveSlewHintDampingMode = adaptiveSlewDampingMode;
   for (const auto &pat : filterStartPoints)
     options.filterStartPoints.push_back(pat);
   for (const auto &pat : filterEndPoints)

@@ -9,6 +9,7 @@
 #include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <string>
 
 using namespace circt;
@@ -60,14 +61,103 @@ static StringRef formatAdaptiveDampingMode(
 static void printSlewConvergenceTable(const TimingAnalysis &analysis,
                                       llvm::raw_ostream &os) {
   auto deltas = analysis.getLastSlewDeltaHistory();
+  auto dampings = analysis.getLastSlewDampingHistory();
   if (deltas.empty())
     return;
 
   os << "--- Slew Convergence ---\n";
-  os << "Iter | Max Slew Delta\n";
+  os << "Iter | Max Slew Delta | Applied Damping\n";
   for (size_t i = 0, e = deltas.size(); i < e; ++i)
-    os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << "\n";
+    os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << " | "
+       << llvm::format("%.6g", i < dampings.size() ? dampings[i] : 1.0) << "\n";
   os << "\n";
+}
+
+static const TimingArc *findArcBetween(const TimingNode *from,
+                                       const TimingNode *to) {
+  for (auto *arc : from->getFanout())
+    if (arc->getTo() == to)
+      return arc;
+  for (auto *arc : from->getFanout())
+    if (arc->getOp())
+      return arc;
+  return nullptr;
+}
+
+static double getNodeOutputLoad(const TimingNode *node, const DelayModel *model,
+                                const ArrivalAnalysis *arrivals) {
+  if (!model || !arrivals)
+    return 0.0;
+  double slewHint = arrivals->getMaxArrivalSlew(node);
+  double total = 0.0;
+  for (auto *arc : node->getFanout()) {
+    if (!arc->getOp())
+      continue;
+    DelayContext ctx;
+    ctx.op = arc->getOp();
+    ctx.inputValue = arc->getInputValue();
+    ctx.outputValue = arc->getOutputValue();
+    ctx.inputIndex = arc->getInputIndex();
+    ctx.outputIndex = arc->getOutputIndex();
+    ctx.inputSlew = slewHint;
+    total += model->getInputCapacitance(ctx);
+  }
+  return total;
+}
+
+static void printWaveformDetails(const TimingPath &path,
+                                 const DelayModel *model,
+                                 const ArrivalAnalysis *arrivals,
+                                 llvm::raw_ostream &os) {
+  if (!model || !arrivals || !model->usesWaveformPropagation())
+    return;
+
+  SmallVector<TimingNode *> nodes;
+  nodes.push_back(path.getStartPoint());
+  for (auto *node : path.getIntermediateNodes())
+    nodes.push_back(node);
+  nodes.push_back(path.getEndPoint());
+  if (nodes.size() < 2)
+    return;
+
+  os << "  Waveform Details:\n";
+  for (size_t i = 1, e = nodes.size(); i < e; ++i) {
+    auto *from = nodes[i - 1];
+    auto *to = nodes[i];
+    auto *arc = findArcBetween(from, to);
+    auto *arcTo = arc ? arc->getTo() : to;
+    if (!arc || !arc->getOp()) {
+      os << "    " << formatNodeLabel(from) << " -> " << formatNodeLabel(to)
+         << ": unavailable\n";
+      continue;
+    }
+
+    DelayContext ctx;
+    ctx.op = arc->getOp();
+    ctx.inputValue = arc->getInputValue();
+    ctx.outputValue = arc->getOutputValue();
+    ctx.inputIndex = arc->getInputIndex();
+    ctx.outputIndex = arc->getOutputIndex();
+    ctx.inputSlew = arrivals->getMaxArrivalSlew(from);
+    ctx.outputLoad = getNodeOutputLoad(from, model, arrivals);
+
+    SmallVector<WaveformPoint> inputWaveform = {
+        {0.0, 0.0}, {std::max(ctx.inputSlew, 1e-6), 1.0}};
+    SmallVector<WaveformPoint> outputWaveform;
+    if (!model->computeOutputWaveform(ctx, inputWaveform, outputWaveform) ||
+        outputWaveform.empty()) {
+      os << "    " << formatNodeLabel(from) << " -> " << formatNodeLabel(to)
+         << ": unavailable\n";
+      continue;
+    }
+
+    os << "    " << formatNodeLabel(from) << " -> " << formatNodeLabel(arcTo)
+       << ":";
+    for (const auto &pt : outputWaveform)
+      os << " (t=" << llvm::format("%.6g", pt.time)
+         << ", v=" << llvm::format("%.6g", pt.value) << ")";
+    os << "\n";
+  }
 }
 
 void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
@@ -153,6 +243,10 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
       os << llvm::format("    %-30s %8s %8lld\n", endLabel.c_str(), "-",
                          (long long)resolvedDelay);
     }
+
+    if (shouldEmitWaveformDetails())
+      printWaveformDetails(path, options.delayModel, arrivals.get(), os);
+
     os << "\n";
   }
 }

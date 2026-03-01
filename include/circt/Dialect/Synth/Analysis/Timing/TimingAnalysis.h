@@ -88,6 +88,9 @@ struct TimingAnalysisOptions {
   /// Emit per-iteration slew convergence table in textual timing reports.
   bool emitSlewConvergenceTable = false;
 
+  /// Emit per-arc waveform details when the delay model supports it.
+  bool emitWaveformDetails = false;
+
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
 };
@@ -156,6 +159,8 @@ public:
     return options.emitSlewConvergenceTable;
   }
 
+  bool shouldEmitWaveformDetails() const { return options.emitWaveformDetails; }
+
   /// Configured damping factor for iterative load-slew hints.
   double getConfiguredSlewHintDamping() const {
     return options.slewHintDamping;
@@ -189,6 +194,11 @@ public:
   /// Slew-delta residual history across arrival iterations.
   ArrayRef<double> getLastSlewDeltaHistory() const {
     return lastSlewDeltaHistory;
+  }
+
+  /// Applied damping factor history across arrival iterations.
+  ArrayRef<double> getLastSlewDampingHistory() const {
+    return lastSlewDampingHistory;
   }
 
   /// Final damping factor applied in the last full analysis.
@@ -281,6 +291,7 @@ private:
   double lastMaxSlewDelta = 0.0;
   double lastRelativeSlewDelta = 0.0;
   SmallVector<double, 8> lastSlewDeltaHistory;
+  SmallVector<double, 8> lastSlewDampingHistory;
   double lastAppliedSlewHintDamping = 1.0;
 };
 

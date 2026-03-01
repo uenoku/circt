@@ -969,7 +969,39 @@ TEST_F(TimingAnalysisTest, ReportTimingIncludesConvergenceTableWhenEnabled) {
   analysis->reportTiming(os, 5);
 
   EXPECT_NE(report.find("--- Slew Convergence ---"), std::string::npos);
-  EXPECT_NE(report.find("Iter | Max Slew Delta"), std::string::npos);
+  EXPECT_NE(report.find("Iter | Max Slew Delta | Applied Damping"),
+            std::string::npos);
+}
+
+TEST_F(TimingAnalysisTest, ReportTimingIncludesWaveformDetailsWhenEnabled) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  TimingAnalysisOptions opts;
+  opts.delayModel = model.get();
+  opts.initialSlew = 0.5;
+  opts.keepAllArrivals = true;
+  opts.emitWaveformDetails = true;
+
+  auto analysis = TimingAnalysis::create(hwModule, opts);
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+
+  std::string report;
+  llvm::raw_string_ostream os(report);
+  analysis->reportTiming(os, 5);
+
+  EXPECT_NE(report.find("Waveform Details:"), std::string::npos);
+  EXPECT_NE(report.find("(t="), std::string::npos);
+  EXPECT_NE(report.find(", v="), std::string::npos);
 }
 
 TEST_F(TimingAnalysisTest, FullPipeline) {
@@ -1027,6 +1059,8 @@ TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
   EXPECT_TRUE(analysis->didLastArrivalConverge());
   EXPECT_LE(analysis->getLastMaxSlewDelta(), opts.slewConvergenceEpsilon);
   EXPECT_FALSE(analysis->getLastSlewDeltaHistory().empty());
+  EXPECT_EQ(analysis->getLastSlewDeltaHistory().size(),
+            analysis->getLastSlewDampingHistory().size());
   EXPECT_EQ(analysis->getLastSlewDeltaHistory().back(),
             analysis->getLastMaxSlewDelta());
 }

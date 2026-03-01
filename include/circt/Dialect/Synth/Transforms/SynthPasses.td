@@ -419,7 +419,17 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> 
     Option<"showConvergenceTable", "show-convergence-table", "bool",
            "false", "Include per-iteration slew convergence table">,
     Option<"showWaveformDetails", "show-waveform-details", "bool",
-           "false", "Include per-arc waveform details when supported">
+           "false", "Include per-arc waveform details when supported">,
+    Option<"maxSlewIterations", "max-slew-iterations", "unsigned", "6",
+           "Maximum slew convergence iterations">,
+    Option<"slewConvergenceEpsilon", "slew-epsilon", "double", "1e-6",
+           "Absolute slew convergence threshold">,
+    Option<"slewConvergenceRelativeEpsilon", "slew-relative-epsilon", "double", "0.0",
+           "Relative slew convergence threshold (0 disables)">,
+    Option<"slewHintDamping", "slew-hint-damping", "double", "1.0",
+           "Damping factor for iterative slew-hint updates">,
+    Option<"adaptiveSlewHintDampingMode", "adaptive-slew-damping-mode", "std::string", "\"disabled\"",
+           "Adaptive damping mode: disabled, conservative, aggressive">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

@@ -417,8 +417,13 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   Damping`, and `Slew Delta Trend`.
 - Reports optionally include a per-iteration convergence table (`Iter | Max
   Slew Delta`) when `emitSlewConvergenceTable` is enabled.
+- Convergence table now also reports per-iteration applied damping to make
+  adaptive policy behavior observable.
 - Relative convergence tolerance (`slewConvergenceRelativeEpsilon`) is now
   supported, with report diagnostics for normalized residual.
+- `synth-print-timing-analysis` / `circt-synth` / `circt-sta` now expose
+  convergence-tuning knobs (max iterations, absolute/relative epsilon,
+  damping, adaptive mode) for direct report-flow experimentation.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models
