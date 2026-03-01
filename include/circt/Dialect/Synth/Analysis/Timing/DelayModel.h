@@ -26,17 +26,17 @@ namespace timing {
 
 /// Context passed to delay model for each arc computation.
 struct DelayContext {
-  mlir::Operation *op;            // The defining operation
-  mlir::Value inputValue;         // Input driving this arc
-  mlir::Value outputValue;        // Output of this arc
-  double inputSlew = 0.0;   // Input slew (transition time)
-  double outputLoad = 0.0;  // Output load capacitance
+  mlir::Operation *op;     // The defining operation
+  mlir::Value inputValue;  // Input driving this arc
+  mlir::Value outputValue; // Output of this arc
+  double inputSlew = 0.0;  // Input slew (transition time)
+  double outputLoad = 0.0; // Output load capacitance
 };
 
 /// Result of delay computation.
 struct DelayResult {
-  int64_t delay;             // Arc delay
-  double outputSlew = 0.0;   // Output slew to propagate to fanout
+  int64_t delay;           // Arc delay
+  double outputSlew = 0.0; // Output slew to propagate to fanout
 };
 
 /// Abstract base class for delay models.
@@ -69,8 +69,25 @@ public:
   llvm::StringRef getName() const override { return "aig-level"; }
 };
 
+/// Bootstrap NLDM-oriented delay model.
+///
+/// This model consumes per-op/per-arc delay attributes when available and
+/// falls back to AIG-level heuristics otherwise. It is intended as a bridge
+/// until full Liberty LUT interpolation is wired.
+class NLDMDelayModel : public DelayModel {
+public:
+  DelayResult computeDelay(const DelayContext &ctx) const override;
+  llvm::StringRef getName() const override { return "nldm"; }
+
+private:
+  AIGLevelDelayModel fallback;
+};
+
 /// Create the default delay model (AIGLevelDelayModel).
 std::unique_ptr<DelayModel> createDefaultDelayModel();
+
+/// Create the bootstrap NLDM-oriented delay model.
+std::unique_ptr<DelayModel> createNLDMDelayModel();
 
 } // namespace timing
 } // namespace synth

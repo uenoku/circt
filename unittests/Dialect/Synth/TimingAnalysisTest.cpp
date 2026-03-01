@@ -68,6 +68,13 @@ const char *hierarchicalIR = R"MLIR(
     }
 )MLIR";
 
+const char *arcDelayAttrIR = R"MLIR(
+    hw.module private @arc_delay_attr(in %a : i1, in %b : i1, out x : i1) {
+      %y = comb.and %a, %b {synth.liberty.arc_delay_ps = {i0_o0 = 9 : i64, i1_o0 = 2 : i64}} : i1
+      hw.output %y : i1
+    }
+)MLIR";
+
 class TimingAnalysisTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -213,6 +220,37 @@ TEST_F(TimingAnalysisTest, DelayModelPluggable) {
 
   EXPECT_GE(maxUnit, 1);
   EXPECT_GE(maxAIG, 1);
+}
+
+TEST_F(TimingAnalysisTest, NLDMDelayModelPerArcAttr) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(arcDelayAttrIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("arc_delay_attr");
+  ASSERT_TRUE(hwModule);
+
+  NLDMDelayModel nldmModel;
+  TimingGraph graph(hwModule);
+  ASSERT_TRUE(succeeded(graph.build(&nldmModel)));
+
+  ArrivalAnalysis::Options opts;
+  opts.keepAllArrivals = true;
+  ArrivalAnalysis arrivals(graph, opts, &nldmModel);
+  ASSERT_TRUE(succeeded(arrivals.run()));
+
+  ASSERT_EQ(graph.getEndPoints().size(), 1u);
+  auto *endPoint = graph.getEndPoints().front();
+
+  EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 9);
+
+  auto infos = arrivals.getArrivals(endPoint->getId());
+  ASSERT_EQ(infos.size(), 2u);
+  int64_t minArrival = std::min(infos[0].arrivalTime, infos[1].arrivalTime);
+  int64_t maxArrival = std::max(infos[0].arrivalTime, infos[1].arrivalTime);
+  EXPECT_EQ(minArrival, 2);
+  EXPECT_EQ(maxArrival, 9);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
