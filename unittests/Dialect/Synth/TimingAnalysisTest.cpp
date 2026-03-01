@@ -258,6 +258,33 @@ const char *ccsPilotWaveformIR = R"MLIR(
     }
 )MLIR";
 
+const char *ccsPilotWaveformDelayIR = R"MLIR(
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>,
+      synth.ccs.pilot.waveform_delay = true
+    } {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.5 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], [], [], [], [], [], [], []>
+          ],
+          synth.ccs.pilot.arcs = [
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %s0 = hw.instance "u0" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %s0 : i1
+      }
+    }
+)MLIR";
+
 class TimingAnalysisTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -878,6 +905,64 @@ TEST_F(TimingAnalysisTest, CCSPilotWaveformStretchesWithOutputLoad) {
   ASSERT_EQ(lowWaveform.size(), 2u);
   ASSERT_EQ(highWaveform.size(), 2u);
   EXPECT_LT(lowWaveform[1].time, highWaveform[1].time);
+}
+
+TEST_F(TimingAnalysisTest, CCSPilotDelayUsesWaveformThresholdWhenEnabled) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotWaveformDelayIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.5;
+  ctx.outputLoad = 0.5;
+
+  auto delay = model->computeDelay(ctx);
+  EXPECT_EQ(delay.delay, 200);
+  EXPECT_NEAR(delay.outputSlew, 320.0, 1e-9);
+}
+
+TEST_F(TimingAnalysisTest, CCSPilotDelayFallsBackToNLDMDelayWhenDisabled) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotWaveformIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.5;
+  ctx.outputLoad = 0.5;
+
+  auto delay = model->computeDelay(ctx);
+  EXPECT_EQ(delay.delay, 25);
+  EXPECT_NEAR(delay.outputSlew, 320.0, 1e-9);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {

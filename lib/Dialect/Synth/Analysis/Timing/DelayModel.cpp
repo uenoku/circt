@@ -316,6 +316,82 @@ static double getCCSPilotLoadStretchFactor(double outputLoad) {
   return std::max(0.5, 1.0 + 0.5 * (clamped - 0.5));
 }
 
+static std::optional<double> interpolateCrossing(ArrayRef<double> times,
+                                                 ArrayRef<double> values,
+                                                 double target) {
+  if (times.empty() || values.empty() || times.size() != values.size())
+    return std::nullopt;
+  for (size_t i = 1, e = times.size(); i < e; ++i) {
+    double v0 = values[i - 1], v1 = values[i];
+    double t0 = times[i - 1], t1 = times[i];
+    if (v0 == target)
+      return t0;
+    bool brackets =
+        (v0 <= target && target <= v1) || (v1 <= target && target <= v0);
+    if (!brackets || v0 == v1)
+      continue;
+    double alpha = (target - v0) / (v1 - v0);
+    return t0 + alpha * (t1 - t0);
+  }
+  if (values.back() == target)
+    return times.back();
+  return std::nullopt;
+}
+
+static bool shouldUseCCSPilotWaveformDelay(Operation *op) {
+  if (!op)
+    return false;
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!module)
+    return false;
+  auto attr = module->getAttr("synth.ccs.pilot.waveform_delay");
+  if (!attr)
+    return false;
+  if (auto b = dyn_cast<BoolAttr>(attr))
+    return b.getValue();
+  if (auto i = dyn_cast<IntegerAttr>(attr))
+    return i.getInt() != 0;
+  if (auto s = dyn_cast<StringAttr>(attr))
+    return s.getValue().equals_insensitive("true") || s.getValue() == "1";
+  return false;
+}
+
+static bool extractCCSPilotThresholdMetrics(const DelayContext &ctx,
+                                            const LibertyLibrary *liberty,
+                                            bool preferFall, double &t50Ps,
+                                            double &slew10to90Ps) {
+  if (!liberty || ctx.inputIndex < 0 || ctx.outputIndex < 0)
+    return false;
+  auto cellName = getMappedCellName(ctx.op);
+  if (!cellName)
+    return false;
+
+  auto arc = liberty->getTypedCCSPilotArc(
+      *cellName, static_cast<unsigned>(ctx.inputIndex),
+      static_cast<unsigned>(ctx.outputIndex));
+  if (!arc)
+    return false;
+
+  SmallVector<double> times, values;
+  if (!decodeCCSPilotWaveform(*arc, preferFall, times, values))
+    return false;
+
+  double scale = getTimeScalePs(ctx.op);
+  double stretch = getCCSPilotLoadStretchFactor(ctx.outputLoad);
+  for (double &t : times)
+    t = t * scale * stretch;
+
+  auto t50 = interpolateCrossing(times, values, 0.5);
+  auto t10 = interpolateCrossing(times, values, 0.1);
+  auto t90 = interpolateCrossing(times, values, 0.9);
+  if (!t50 || !t10 || !t90)
+    return false;
+
+  t50Ps = *t50;
+  slew10to90Ps = std::abs(*t90 - *t10);
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 // UnitDelayModel
 //===----------------------------------------------------------------------===//
@@ -431,7 +507,19 @@ CCSPilotDelayModel::CCSPilotDelayModel(std::unique_ptr<LibertyLibrary> liberty)
 CCSPilotDelayModel::~CCSPilotDelayModel() = default;
 
 DelayResult CCSPilotDelayModel::computeDelay(const DelayContext &ctx) const {
-  return nldmDelegate.computeDelay(ctx);
+  auto base = nldmDelegate.computeDelay(ctx);
+
+  double t50Ps = 0.0;
+  double slew10to90Ps = 0.0;
+  if (extractCCSPilotThresholdMetrics(ctx, nldmDelegate.getLibertyLibrary(),
+                                      /*preferFall=*/false, t50Ps,
+                                      slew10to90Ps)) {
+    base.outputSlew = slew10to90Ps;
+    if (shouldUseCCSPilotWaveformDelay(ctx.op))
+      base.delay = static_cast<int64_t>(std::llround(t50Ps));
+  }
+
+  return base;
 }
 
 double CCSPilotDelayModel::getInputCapacitance(const DelayContext &ctx) const {

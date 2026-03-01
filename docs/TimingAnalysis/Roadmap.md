@@ -2,6 +2,8 @@
 
 For implementation details of slew propagation, damping, and convergence
 diagnostics, see `docs/TimingAnalysis/SlewConvergence.md`.
+For CCS pilot waveform-derived metrics and delay mode details, see
+`docs/TimingAnalysis/CCSPilotWaveformDerived.md`.
 
 ## Current State
 
@@ -523,6 +525,9 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   approximating receiver/load-aware waveform behavior.
 - Waveform report details now include extracted `t50` delay proxy and
   `slew10-90` transition proxy per arc.
+- CCS pilot now supports opt-in waveform-derived delay
+  (`synth.ccs.pilot.waveform_delay`) using extracted `t50`, while preserving
+  NLDM-delegate delay as the default fallback behavior.
 
 ---
 
