@@ -10,6 +10,7 @@
 // CHECK: Delay Model: nldm
 // CHECK: Arrival Iterations:
 // CHECK: Slew Converged:
+// CHECK: Slew Trend Class:
 // CHECK: Path 1: delay = 25
 // CHECK: Startpoint:
 // CHECK: Endpoint:

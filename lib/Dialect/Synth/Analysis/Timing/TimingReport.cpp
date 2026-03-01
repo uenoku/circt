@@ -45,6 +45,33 @@ static std::string formatDeltaTrend(ArrayRef<double> deltas) {
   return os.str();
 }
 
+static StringRef classifyDeltaTrend(ArrayRef<double> deltas) {
+  if (deltas.size() < 2)
+    return "insufficient";
+
+  bool nonIncreasing = true;
+  bool nonDecreasing = true;
+  for (size_t i = 1, e = deltas.size(); i < e; ++i) {
+    nonIncreasing &= deltas[i] <= deltas[i - 1];
+    nonDecreasing &= deltas[i] >= deltas[i - 1];
+  }
+
+  if (nonIncreasing && !nonDecreasing)
+    return "decreasing";
+  if (nonDecreasing && !nonIncreasing)
+    return "increasing";
+
+  double minV = deltas.front();
+  double maxV = deltas.front();
+  for (double v : deltas) {
+    minV = std::min(minV, v);
+    maxV = std::max(maxV, v);
+  }
+  if (maxV - minV <= 1e-12)
+    return "flat";
+  return "oscillating";
+}
+
 static StringRef formatAdaptiveDampingMode(
     TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
   switch (mode) {
@@ -183,6 +210,8 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Relative Slew Epsilon: "
      << getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
   os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())
+     << "\n";
+  os << "Slew Trend Class: " << classifyDeltaTrend(getLastSlewDeltaHistory())
      << "\n";
 
   if (requiredTimeAnalysis)

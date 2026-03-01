@@ -220,6 +220,33 @@ private:
     return os.str();
   }
 
+  static StringRef classifyDeltaTrend(ArrayRef<double> deltas) {
+    if (deltas.size() < 2)
+      return "insufficient";
+
+    bool nonIncreasing = true;
+    bool nonDecreasing = true;
+    for (size_t i = 1, e = deltas.size(); i < e; ++i) {
+      nonIncreasing &= deltas[i] <= deltas[i - 1];
+      nonDecreasing &= deltas[i] >= deltas[i - 1];
+    }
+
+    if (nonIncreasing && !nonDecreasing)
+      return "decreasing";
+    if (nonDecreasing && !nonIncreasing)
+      return "increasing";
+
+    double minV = deltas.front();
+    double maxV = deltas.front();
+    for (double v : deltas) {
+      minV = std::min(minV, v);
+      maxV = std::max(maxV, v);
+    }
+    if (maxV - minV <= 1e-12)
+      return "flat";
+    return "oscillating";
+  }
+
   static StringRef formatAdaptiveDampingMode(
       timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
     switch (mode) {
@@ -407,6 +434,8 @@ private:
        << analysis.getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
     os << "Slew Delta Trend: "
        << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
+    os << "Slew Trend Class: "
+       << classifyDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
 
