@@ -1244,6 +1244,11 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
   auto loc = lexer.translateLocation(group.loc);
   auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
 
+  // Emit cell area as a module attribute for downstream passes.
+  if (auto areaAttr = group.getAttribute("area").first)
+    if (auto areaFloat = dyn_cast<FloatAttr>(areaAttr))
+      moduleOp->setAttr("synth.liberty.area", areaFloat);
+
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(moduleOp.getBodyBlock());
 

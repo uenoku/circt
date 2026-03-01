@@ -314,6 +314,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
   if (!untilReached(UntilMapping)) {
+    // Annotate Liberty-imported modules with hw.techlib.info before mapping.
+    pm.addPass(synth::createAnnotateTechLib());
+
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;

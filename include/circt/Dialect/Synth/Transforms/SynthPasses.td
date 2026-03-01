@@ -437,6 +437,21 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> 
                            "circt::synth::SynthDialect"];
 }
 
+def AnnotateTechLib : Pass<"synth-annotate-techlib", "mlir::ModuleOp"> {
+  let summary = "Annotate Liberty-imported modules with hw.techlib.info";
+  let description = [{
+    This pass reads Liberty metadata (synth.liberty.area, synth.nldm.arcs) from
+    imported library modules and attaches hw.techlib.info attributes compatible
+    with TechMapper. The delay extraction strategy is configurable.
+  }];
+  let options = [
+    Option<"delayExtraction", "delay-extraction", "std::string",
+           "\"worst-case\"",
+           "Delay extraction strategy: worst-case, center, first">
+  ];
+  let dependentDialects = ["circt::hw::HWDialect"];
+}
+
 def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
   let summary = "Preprocessing pass for synthesis IR";
   let description = [{

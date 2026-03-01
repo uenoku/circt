@@ -7,6 +7,7 @@
 ##===----------------------------------------------------------------------===//
 
 add_circt_dialect_library(CIRCTSynthTransforms
+  AnnotateTechLib.cpp
   AIGERRunner.cpp
   CutRewriter.cpp
   FunctionalReduction.cpp
