@@ -15,9 +15,10 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
-static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
+static DelayResult getArcDelay(const TimingArc *arc,
+                               const DelayModel *delayModel, double inputSlew) {
   if (!delayModel || !arc->getOp())
-    return arc->getDelay();
+    return {arc->getDelay(), inputSlew};
 
   DelayContext ctx;
   ctx.op = arc->getOp();
@@ -25,17 +26,25 @@ static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
   ctx.outputValue = arc->getOutputValue();
   ctx.inputIndex = arc->getInputIndex();
   ctx.outputIndex = arc->getOutputIndex();
-  return delayModel->computeDelay(ctx).delay;
+  ctx.inputSlew = inputSlew;
+
+  auto result = delayModel->computeDelay(ctx);
+  if (!delayModel->usesSlewPropagation())
+    result.outputSlew = inputSlew;
+  return result;
 }
 
 //===----------------------------------------------------------------------===//
 // NodeArrivalData Implementation
 //===----------------------------------------------------------------------===//
 
-void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime) {
+void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime,
+                                 double slew) {
   // Update max if this is a new maximum
-  if (arrivals.empty() || arrivalTime > maxArrivalTime) {
+  if (arrivals.empty() || arrivalTime > maxArrivalTime ||
+      (arrivalTime == maxArrivalTime && slew > maxArrivalSlew)) {
     maxArrivalTime = arrivalTime;
+    maxArrivalSlew = slew;
     maxStartPoint = startPoint;
   }
 
@@ -45,18 +54,21 @@ void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime) {
     for (auto &arrival : arrivals) {
       if (arrival.startPoint == startPoint) {
         // Keep the maximum
-        if (arrivalTime > arrival.arrivalTime)
+        if (arrivalTime > arrival.arrivalTime ||
+            (arrivalTime == arrival.arrivalTime && slew > arrival.slew)) {
           arrival.arrivalTime = arrivalTime;
+          arrival.slew = slew;
+        }
         return;
       }
     }
-    arrivals.push_back({startPoint, arrivalTime});
+    arrivals.push_back({startPoint, arrivalTime, slew});
   } else {
     // Just keep the max
     if (arrivals.empty())
-      arrivals.push_back({startPoint, arrivalTime});
+      arrivals.push_back({startPoint, arrivalTime, slew});
     else if (arrivalTime > arrivals[0].arrivalTime)
-      arrivals[0] = {startPoint, arrivalTime};
+      arrivals[0] = {startPoint, arrivalTime, slew};
   }
 }
 
@@ -126,7 +138,7 @@ void ArrivalAnalysis::propagate() {
   // Initialize arrival times at start points
   for (auto *startNode : matchedStartPoints) {
     auto &data = arrivalData[startNode->getId().index];
-    data.addArrival(startNode->getId(), 0);
+    data.addArrival(startNode->getId(), 0, options.initialSlew);
   }
 
   // Forward propagation in topological order
@@ -140,8 +152,9 @@ void ArrivalAnalysis::propagate() {
 
       // Propagate all arrivals from this node
       for (const auto &arrival : nodeData.getAllArrivals()) {
-        int64_t newArrival = arrival.arrivalTime + getArcDelay(arc, delayModel);
-        succData.addArrival(arrival.startPoint, newArrival);
+        auto delay = getArcDelay(arc, delayModel, arrival.slew);
+        int64_t newArrival = arrival.arrivalTime + delay.delay;
+        succData.addArrival(arrival.startPoint, newArrival, delay.outputSlew);
       }
     }
   }

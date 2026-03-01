@@ -36,6 +36,7 @@ namespace timing {
 struct ArrivalInfo {
   TimingNodeId startPoint; // The start point this arrival came from
   int64_t arrivalTime;     // Arrival time from that start point
+  double slew = 0.0;       // Slew at this node for that start point
 
   bool operator<(const ArrivalInfo &other) const {
     return arrivalTime < other.arrivalTime;
@@ -51,13 +52,17 @@ struct ArrivalInfo {
 class NodeArrivalData {
 public:
   /// Add an arrival from a start point.
-  void addArrival(TimingNodeId startPoint, int64_t arrivalTime);
+  void addArrival(TimingNodeId startPoint, int64_t arrivalTime,
+                  double slew = 0.0);
 
   /// Get the maximum arrival time at this node.
   int64_t getMaxArrivalTime() const { return maxArrivalTime; }
 
   /// Get the start point that gives the maximum arrival time.
   TimingNodeId getMaxArrivalStartPoint() const { return maxStartPoint; }
+
+  /// Get the slew associated with maximum arrival time.
+  double getMaxArrivalSlew() const { return maxArrivalSlew; }
 
   /// Get all arrivals (when keepAllArrivals is true).
   ArrayRef<ArrivalInfo> getAllArrivals() const { return arrivals; }
@@ -71,6 +76,7 @@ public:
 private:
   SmallVector<ArrivalInfo, 4> arrivals;
   int64_t maxArrivalTime = 0;
+  double maxArrivalSlew = 0.0;
   TimingNodeId maxStartPoint;
   bool keepAllArrivals = false;
 };
@@ -90,6 +96,9 @@ public:
 
     /// If set, only propagate from start points matching these patterns.
     SmallVector<std::string, 2> startPointPatterns;
+
+    /// Initial slew for matched start points.
+    double initialSlew = 0.0;
 
     Options() = default;
     Options(bool keepAll) : keepAllArrivals(keepAll) {}

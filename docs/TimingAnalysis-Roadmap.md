@@ -102,6 +102,17 @@ The slew fields exist in the data structures but are not propagated through the 
 
 **Files affected:** `ArrivalAnalysis.h`, `ArrivalAnalysis.cpp`
 
+**Status (2026-03): In progress.**
+
+- Arrival propagation now carries a per-startpoint slew value through
+  `ArrivalInfo` and feeds `DelayContext::inputSlew` on each arc.
+- `DelayModel::usesSlewPropagation()` now controls whether returned
+  `outputSlew` is consumed or input slew is forwarded unchanged.
+- A unit regression (`ArrivalAnalysisPropagatesSlewWhenEnabled`) verifies slew
+  increases across a combinational chain for a slew-aware delay model.
+- Remaining work: connect real NLDM output-slew table evaluation and couple
+  with output-load computation and convergence.
+
 ### 2. Output Load Computation
 
 `DelayContext::outputLoad` is always 0 today. For NLDM, delay is a function of `(inputSlew, outputLoad)`, making load computation essential.

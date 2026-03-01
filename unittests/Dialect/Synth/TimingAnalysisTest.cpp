@@ -147,6 +147,14 @@ const char *nldmTimingArcTableIR = R"MLIR(
     }
 )MLIR";
 
+const char *slewPropagationIR = R"MLIR(
+    hw.module @slew_chain(in %a : i1, out y : i1) {
+      %0 = comb.and %a, %a : i1
+      %1 = comb.and %0, %a : i1
+      hw.output %1 : i1
+    }
+)MLIR";
+
 const char *legacyTimingOnlyIR = R"MLIR(
     module attributes {synth.liberty.library = {name = "dummy", time_unit = "1ns"}} {
       hw.module private @BUF(
@@ -175,6 +183,16 @@ protected:
   }
 
   MLIRContext context;
+};
+
+class SlewTestDelayModel final : public DelayModel {
+public:
+  DelayResult computeDelay(const DelayContext &ctx) const override {
+    return {1, ctx.inputSlew + 0.25};
+  }
+
+  llvm::StringRef getName() const override { return "slew-test"; }
+  bool usesSlewPropagation() const override { return true; }
 };
 
 TEST_F(TimingAnalysisTest, TimingGraphConstruction) {
@@ -310,6 +328,33 @@ TEST_F(TimingAnalysisTest, DelayModelPluggable) {
 
   EXPECT_GE(maxUnit, 1);
   EXPECT_GE(maxAIG, 1);
+}
+
+TEST_F(TimingAnalysisTest, ArrivalAnalysisPropagatesSlewWhenEnabled) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(slewPropagationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("slew_chain");
+  ASSERT_TRUE(hwModule);
+
+  SlewTestDelayModel slewModel;
+  TimingGraph graph(hwModule);
+  ASSERT_TRUE(succeeded(graph.build(&slewModel)));
+
+  ArrivalAnalysis::Options opts;
+  opts.keepAllArrivals = true;
+  opts.initialSlew = 0.5;
+
+  ArrivalAnalysis arrivals(graph, opts, &slewModel);
+  ASSERT_TRUE(succeeded(arrivals.run()));
+
+  ASSERT_EQ(graph.getEndPoints().size(), 1u);
+  auto *endPoint = graph.getEndPoints().front();
+  auto infos = arrivals.getArrivals(endPoint->getId());
+  ASSERT_FALSE(infos.empty());
+  EXPECT_GT(infos.front().slew, 0.5);
 }
 
 TEST_F(TimingAnalysisTest, NLDMDelayModelPerArcAttr) {
