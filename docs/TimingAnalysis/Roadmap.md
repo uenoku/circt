@@ -528,6 +528,11 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
 - CCS pilot now supports opt-in waveform-derived delay
   (`synth.ccs.pilot.waveform_delay`) using extracted `t50`, while preserving
   NLDM-delegate delay as the default fallback behavior.
+- Added e2e timing-report coverage for waveform-derived CCS delay mode
+  (`ccs-pilot-waveform-delay-report.mlir`) in both `circt-sta` direct and
+  `circt-synth | circt-sta` pipeline flows.
+- Added multi-input CCS pilot coverage to validate pin-specific arc selection
+  and waveform-derived delay differences.
 
 ---
 

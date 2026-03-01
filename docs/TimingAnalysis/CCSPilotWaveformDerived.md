@@ -49,6 +49,9 @@ When computing propagated waveform:
 
 Waveform edge direction is inferred from input waveform endpoints.
 
+For multi-input cells, arc selection is pin-specific (`relatedPin` / operand
+index), so different inputs can produce different waveform-derived delay/slew.
+
 ## Load-Aware Timing Stretch
 
 Pilot model applies a load stretch to waveform time axis:
@@ -111,11 +114,13 @@ Unit tests (`unittests/Dialect/Synth/TimingAnalysisTest.cpp`):
 - `CCSPilotWaveformStretchesWithOutputLoad`
 - `CCSPilotDelayUsesWaveformThresholdWhenEnabled`
 - `CCSPilotDelayFallsBackToNLDMDelayWhenDisabled`
+- `CCSPilotMultiInputArcsProduceDifferentDelay`
 - `ReportTimingIncludesWaveformDetailsWhenEnabled`
 
 E2E waveform details:
 
 - `test/circt-synth/ccs-pilot-timing-report.mlir`
+- `test/circt-synth/ccs-pilot-waveform-delay-multi-input.mlir`
 
 ## Limitations and Next Steps
 
