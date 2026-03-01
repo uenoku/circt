@@ -21,6 +21,10 @@
 #include <cstdint>
 #include <memory>
 
+namespace mlir {
+class ModuleOp;
+}
+
 namespace circt {
 namespace synth {
 namespace timing {
@@ -79,11 +83,16 @@ public:
 /// until full Liberty LUT interpolation is wired.
 class NLDMDelayModel : public DelayModel {
 public:
+  NLDMDelayModel();
+  explicit NLDMDelayModel(std::unique_ptr<class LibertyLibrary> liberty);
+  ~NLDMDelayModel() override;
+
   DelayResult computeDelay(const DelayContext &ctx) const override;
   llvm::StringRef getName() const override { return "nldm"; }
 
 private:
   AIGLevelDelayModel fallback;
+  std::unique_ptr<class LibertyLibrary> liberty;
 };
 
 /// Create the default delay model (AIGLevelDelayModel).
@@ -91,6 +100,10 @@ std::unique_ptr<DelayModel> createDefaultDelayModel();
 
 /// Create the bootstrap NLDM-oriented delay model.
 std::unique_ptr<DelayModel> createNLDMDelayModel();
+
+/// Create the NLDM-oriented delay model and wire imported Liberty metadata
+/// from `module` when available.
+std::unique_ptr<DelayModel> createNLDMDelayModel(mlir::ModuleOp module);
 
 } // namespace timing
 } // namespace synth

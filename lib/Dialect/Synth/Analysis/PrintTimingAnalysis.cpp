@@ -52,6 +52,12 @@ struct PrintTimingAnalysisPass
     timing::TimingAnalysisOptions analysisOptions;
     analysisOptions.keepAllArrivals = true;
 
+    std::unique_ptr<timing::DelayModel> nldmModel;
+    if (module->hasAttr("synth.liberty.library")) {
+      nldmModel = timing::createNLDMDelayModel(module);
+      analysisOptions.delayModel = nldmModel.get();
+    }
+
     auto analysis =
         timing::TimingAnalysis::create(module, topModuleName, analysisOptions);
     if (!analysis || failed(analysis->runFullAnalysis())) {

@@ -89,6 +89,24 @@ const char *libertyBridgeIR = R"MLIR(
     }
 )MLIR";
 
+const char *nldmCellMapIR = R"MLIR(
+    module attributes {synth.liberty.library = {name = "dummy"}} {
+      hw.module private @INV(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.006 : f64}},
+        out Y : i1 {synth.liberty.pin = {direction = "output"}}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %0 = hw.instance "u_inv" @INV(A: %a: i1) -> (Y: i1) {
+          synth.liberty.cell = "INV",
+          synth.liberty.arc_delay_ps = {A_to_Y = 11 : i64}
+        }
+        hw.output %0 : i1
+      }
+    }
+)MLIR";
+
 class TimingAnalysisTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -294,6 +312,31 @@ TEST_F(TimingAnalysisTest, LibertyBridgePinCapacitance) {
   auto capByIndex = lib.getInputPinCapacitance("INV", 0);
   ASSERT_TRUE(capByIndex.has_value());
   EXPECT_NEAR(*capByIndex, 0.006, 1e-12);
+}
+
+TEST_F(TimingAnalysisTest, NLDMDelayModelResolvesCellPinMapping) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmCellMapIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto delayModel = createNLDMDelayModel(module.get());
+  ASSERT_NE(delayModel, nullptr);
+
+  TimingGraph graph(hwModule);
+  ASSERT_TRUE(succeeded(graph.build(delayModel.get())));
+
+  ArrivalAnalysis::Options opts;
+  opts.keepAllArrivals = true;
+  ArrivalAnalysis arrivals(graph, opts, delayModel.get());
+  ASSERT_TRUE(succeeded(arrivals.run()));
+
+  ASSERT_EQ(graph.getEndPoints().size(), 1u);
+  auto *endPoint = graph.getEndPoints().front();
+  EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 11);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {

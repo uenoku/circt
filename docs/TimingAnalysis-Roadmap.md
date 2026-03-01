@@ -92,6 +92,43 @@ After ECO changes (gate resizing, buffer insertion, net rewiring), avoid full re
 
 **Files affected:** `ArrivalAnalysis.h/.cpp`, `TimingGraph.h` (change tracking)
 
+### 6. Parallelization Opportunities (Deferred)
+
+Parallelism is feasible in the current architecture, but should be staged to
+minimize risk.
+
+**A. Path query parallelism (recommended first):**
+
+- In `PathEnumerator::enumerate()`, endpoint processing is independent:
+  - `buildSuffixTree(endpoint, ...)`
+  - `extractKPaths(endpoint, ...)`
+- Parallelize the per-endpoint loop using thread-local SFXT/work buffers and
+  thread-local path result vectors.
+- Merge all local results, then perform one global sort and final `maxPaths`
+  trim to preserve true global K-worst semantics.
+- This is the highest ROI path because it avoids mutating shared graph state.
+
+**B. Multi-query parallelism:**
+
+- Independent path queries can run concurrently on the same `TimingGraph` +
+  `ArrivalAnalysis` as read-only data.
+- Each query should own its own `PathEnumerator` scratch state/results.
+
+**C. Graph build parallelism (later, higher effort):**
+
+- `TimingGraph::build()` currently mutates shared containers (`nodes`, `arcs`,
+  `valueToNode`, fanin/fanout), so naive threading is unsafe.
+- A safe approach is a two-phase build:
+  1. Parallel collection of per-op/per-instance node/arc intents.
+  2. Serial merge that assigns stable node IDs and wires fanin/fanout.
+- Hierarchical elaboration and deterministic naming/order must be preserved.
+
+**Recommended order:**
+
+1. Parallelize path enumeration by endpoint.
+2. Add optional multi-query parallel execution.
+3. Revisit graph-build parallelization with a two-phase deterministic merge.
+
 ---
 
 ## Path to NLDM Support
