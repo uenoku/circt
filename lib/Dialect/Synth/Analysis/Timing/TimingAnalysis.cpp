@@ -22,6 +22,12 @@ TimingAnalysis::TimingAnalysis(hw::HWModuleOp module,
                                TimingAnalysisOptions options)
     : module(module), options(std::move(options)) {}
 
+TimingAnalysis::TimingAnalysis(mlir::ModuleOp moduleOp,
+                               hw::HWModuleOp topModule,
+                               TimingAnalysisOptions options, bool hierarchical)
+    : moduleOp(moduleOp), module(topModule), hierarchical(hierarchical),
+      options(std::move(options)) {}
+
 TimingAnalysis::~TimingAnalysis() = default;
 
 std::unique_ptr<TimingAnalysis>
@@ -30,10 +36,27 @@ TimingAnalysis::create(hw::HWModuleOp module, TimingAnalysisOptions options) {
       new TimingAnalysis(module, std::move(options)));
 }
 
+std::unique_ptr<TimingAnalysis>
+TimingAnalysis::create(mlir::ModuleOp moduleOp, StringRef topModuleName,
+                       TimingAnalysisOptions options) {
+  if (!moduleOp || topModuleName.empty())
+    return nullptr;
+
+  auto topModule = moduleOp.lookupSymbol<hw::HWModuleOp>(topModuleName);
+  if (!topModule)
+    return nullptr;
+
+  return std::unique_ptr<TimingAnalysis>(new TimingAnalysis(
+      moduleOp, topModule, std::move(options), /*hierarchical=*/true));
+}
+
 LogicalResult TimingAnalysis::buildGraph() {
   LLVM_DEBUG(llvm::dbgs() << "Building timing graph...\n");
 
-  graph = std::make_unique<TimingGraph>(module);
+  if (hierarchical)
+    graph = std::make_unique<TimingGraph>(moduleOp, module);
+  else
+    graph = std::make_unique<TimingGraph>(module);
   return graph->build(options.delayModel);
 }
 
@@ -114,8 +137,7 @@ LogicalResult TimingAnalysis::getPaths(ArrayRef<std::string> fromPatterns,
 }
 
 LogicalResult
-TimingAnalysis::getKWorstPaths(size_t k,
-                               SmallVectorImpl<TimingPath> &results) {
+TimingAnalysis::getKWorstPaths(size_t k, SmallVectorImpl<TimingPath> &results) {
   if (!enumerator) {
     if (failed(runArrivalAnalysis()))
       return failure();
@@ -123,9 +145,8 @@ TimingAnalysis::getKWorstPaths(size_t k,
   return enumerator->getKWorstPaths(k, results);
 }
 
-LogicalResult
-TimingAnalysis::getPathsTo(ArrayRef<std::string> patterns,
-                           SmallVectorImpl<TimingPath> &results) {
+LogicalResult TimingAnalysis::getPathsTo(ArrayRef<std::string> patterns,
+                                         SmallVectorImpl<TimingPath> &results) {
   PathQuery query;
   query.toPatterns.assign(patterns.begin(), patterns.end());
   return enumeratePaths(query, results);

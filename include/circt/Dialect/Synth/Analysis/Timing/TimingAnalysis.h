@@ -1,4 +1,5 @@
-//===- TimingAnalysis.h - Two-Stage Timing Analysis Interface ----*- C++ -*-===//
+//===- TimingAnalysis.h - Two-Stage Timing Analysis Interface ----*- C++
+//-*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -70,6 +71,12 @@ public:
   /// Create a timing analysis for a module.
   static std::unique_ptr<TimingAnalysis>
   create(hw::HWModuleOp module, TimingAnalysisOptions options = {});
+
+  /// Create a hierarchical timing analysis rooted at `topModuleName`.
+  /// Returns nullptr if the top module is missing or invalid.
+  static std::unique_ptr<TimingAnalysis>
+  create(mlir::ModuleOp moduleOp, StringRef topModuleName,
+         TimingAnalysisOptions options = {});
 
   ~TimingAnalysis();
 
@@ -174,8 +181,12 @@ public:
 
 private:
   explicit TimingAnalysis(hw::HWModuleOp module, TimingAnalysisOptions options);
+  TimingAnalysis(mlir::ModuleOp moduleOp, hw::HWModuleOp topModule,
+                 TimingAnalysisOptions options, bool hierarchical);
 
+  mlir::ModuleOp moduleOp;
   hw::HWModuleOp module;
+  bool hierarchical = false;
   TimingAnalysisOptions options;
 
   std::unique_ptr<TimingGraph> graph;

@@ -39,6 +39,11 @@ struct PrintTimingAnalysisPass
   void runOnOperation() override {
     auto module = getOperation();
 
+    if (topModuleName.empty()) {
+      module.emitError("top module name must be specified");
+      return signalPassFailure();
+    }
+
     auto top = findTopModule(module, topModuleName);
     if (!top)
       return signalPassFailure();
@@ -46,7 +51,8 @@ struct PrintTimingAnalysisPass
     timing::TimingAnalysisOptions analysisOptions;
     analysisOptions.keepAllArrivals = true;
 
-    auto analysis = timing::TimingAnalysis::create(top, analysisOptions);
+    auto analysis =
+        timing::TimingAnalysis::create(module, topModuleName, analysisOptions);
     if (!analysis || failed(analysis->runFullAnalysis())) {
       top->emitError("failed to run timing analysis");
       return signalPassFailure();
@@ -85,16 +91,10 @@ struct PrintTimingAnalysisPass
 private:
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
-    if (!topModuleName.empty()) {
-      auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
-      if (!top)
-        module.emitError("top module '") << topModuleName << "' not found";
-      return top;
-    }
-    for (auto top : module.getOps<hw::HWModuleOp>())
-      return top;
-    module.emitError("no hw.module found to run timing analysis");
-    return {};
+    auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
+    if (!top)
+      module.emitError("top module '") << topModuleName << "' not found";
+    return top;
   }
 
   std::string buildReportPath(hw::HWModuleOp top) {

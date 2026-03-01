@@ -9,10 +9,16 @@
 // LUT6: Maximum path delay: 6
 // Don't test detailed reports as they are not stable.
 
-hw.module @counter(in %a: i16, in %clk: !seq.clock, out result: i16) {
-    %reg = seq.compreg %add, %clk : i16
-    %add = comb.mul %reg, %a : i16
+
+hw.module @create_reg(in %a: i16, in %clk: !seq.clock, out result: i16) {
+    %reg = seq.compreg %a, %clk : i16
     hw.output %reg : i16
+}
+
+hw.module @counter(in %a: i16, in %clk: !seq.clock, out result: i16) {
+    %reg = hw.instance "reg" @create_reg(a: %a: i16, clk: %clk: !seq.clock) -> (result: i16)
+    %add = comb.mul %reg, %a : i16
+    hw.output %add : i16
 }
 
 // Make sure json is emitted.

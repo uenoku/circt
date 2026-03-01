@@ -497,8 +497,8 @@ ClockDomain DesignProfilerPass::traceClockSource(ClockDomain clkObj) {
       if (argIdx >= hwInst.getNumOperands()) {
         llvm::errs() << "DEBUG: BlockArg " << blockArg << " at index " << argIdx
                      << ", instance " << hwInst.getInstanceName()
-                     << " (module: " << hwInst.getModuleName() << ")" << " has "
-                     << hwInst.getNumOperands() << " operands\n";
+                     << " (module: " << hwInst.getModuleName() << ")"
+                     << " has " << hwInst.getNumOperands() << " operands\n";
         llvm::errs() << "DEBUG: BlockArg owner module: ";
         if (auto mod = dyn_cast<hw::HWModuleOp>(ownerBlock->getParentOp()))
           llvm::errs() << mod.getModuleName();
@@ -1341,7 +1341,8 @@ void DesignProfilerPass::runOnOperation() {
   std::unique_ptr<timing::TimingAnalysis> localTwoStageAnalysis;
   if (useTwoStageAnalysis) {
     // Use new two-stage TimingAnalysis framework.
-    localTwoStageAnalysis = timing::TimingAnalysis::create(topModule);
+    localTwoStageAnalysis =
+        timing::TimingAnalysis::create(module, topModuleName);
     if (!localTwoStageAnalysis) {
       module.emitError() << "failed to create two-stage timing analysis";
       return signalPassFailure();

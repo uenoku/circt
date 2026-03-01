@@ -384,6 +384,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   }
 
   if (!timingReportDir.empty()) {
+    if (topName.empty()) {
+      llvm::errs() << "error: --top must be specified when "
+                      "--timing-report-dir is used\n";
+      return;
+    }
     circt::synth::PrintTimingAnalysisOptions options;
     options.topModuleName = topName;
     options.reportDir = timingReportDir;

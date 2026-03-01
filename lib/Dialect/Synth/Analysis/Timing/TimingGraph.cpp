@@ -13,8 +13,8 @@
 #include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/SCCIterator.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "timing-graph"
@@ -38,18 +38,42 @@ static bool isSequentialOp(Operation *op) {
              seq::FirMemReadWriteOp>(op);
 }
 
+static std::string makeHierarchicalName(StringRef contextPath,
+                                        StringRef localName) {
+  if (contextPath.empty())
+    return localName.str();
+  return (contextPath + "/" + localName).str();
+}
+
+static std::string makeChildContext(StringRef parent, StringRef childInst) {
+  if (parent.empty())
+    return childInst.str();
+  return (parent + "/" + childInst).str();
+}
+
+static StringAttr getContextAttr(MLIRContext *ctx, StringRef contextPath) {
+  if (contextPath.empty())
+    return {};
+  return StringAttr::get(ctx, contextPath);
+}
+
 //===----------------------------------------------------------------------===//
 // TimingGraph Implementation
 //===----------------------------------------------------------------------===//
 
 TimingGraph::TimingGraph(hw::HWModuleOp module) : module(module) {}
 
+TimingGraph::TimingGraph(mlir::ModuleOp circuit, hw::HWModuleOp topModule)
+    : circuit(circuit), module(topModule), hierarchical(true) {}
+
 TimingGraph::~TimingGraph() = default;
 
 TimingNodeId TimingGraph::createNode(Value value, uint32_t bitPos,
-                                     TimingNodeKind kind, StringRef name) {
+                                     TimingNodeKind kind, StringRef name,
+                                     StringRef contextPath, bool addToLookup) {
   TimingNodeId id{static_cast<uint32_t>(nodes.size())};
-  auto node = std::make_unique<TimingNode>(id, value, bitPos, kind, name);
+  auto node = std::make_unique<TimingNode>(
+      id, value, bitPos, kind, makeHierarchicalName(contextPath, name));
 
   // Track start/end points
   if (node->isStartPoint())
@@ -58,7 +82,9 @@ TimingNodeId TimingGraph::createNode(Value value, uint32_t bitPos,
     endPoints.push_back(node.get());
 
   // Add to lookup map
-  valueToNode[{value, bitPos}] = node.get();
+  if (addToLookup)
+    valueToNode[{getContextAttr(module->getContext(), contextPath), value,
+                 bitPos}] = node.get();
 
   nodes.push_back(std::move(node));
   return id;
@@ -77,33 +103,45 @@ TimingArc *TimingGraph::createArc(TimingNode *from, TimingNode *to,
 }
 
 TimingNode *TimingGraph::findNode(Value value, uint32_t bitPos) const {
-  auto it = valueToNode.find({value, bitPos});
+  return findNode(value, bitPos, "");
+}
+
+TimingNode *TimingGraph::findNode(Value value, uint32_t bitPos,
+                                  StringRef contextPath) const {
+  auto it = valueToNode.find(
+      {getContextAttr(module->getContext(), contextPath), value, bitPos});
   if (it != valueToNode.end())
     return it->second;
   return nullptr;
 }
 
-TimingNode *TimingGraph::getOrCreateNode(Value value, uint32_t bitPos) {
-  if (auto *existing = findNode(value, bitPos))
+TimingNode *TimingGraph::getOrCreateNode(Value value, uint32_t bitPos,
+                                         hw::HWModuleOp currentModule,
+                                         StringRef contextPath,
+                                         bool topContext) {
+  if (auto *existing = findNode(value, bitPos, contextPath))
     return existing;
 
   // Determine the node kind
   TimingNodeKind kind = TimingNodeKind::Combinational;
 
   if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-    if (blockArg.getOwner() == module.getBodyBlock())
+    if (topContext && blockArg.getOwner() == currentModule.getBodyBlock())
       kind = TimingNodeKind::InputPort;
   } else if (auto *defOp = value.getDefiningOp()) {
     if (isSequentialOp(defOp))
       kind = TimingNodeKind::RegisterOutput;
   }
 
-  std::string name = getNameForValue(value);
-  createNode(value, bitPos, kind, name);
-  return findNode(value, bitPos);
+  std::string name = getNameForValue(value, currentModule, contextPath);
+  createNode(value, bitPos, kind, name, contextPath);
+  return findNode(value, bitPos, contextPath);
 }
 
-std::string TimingGraph::getNameForValue(Value value) {
+std::string TimingGraph::getNameForValue(Value value,
+                                         hw::HWModuleOp currentModule,
+                                         StringRef contextPath) const {
+  (void)contextPath;
   // Try to get a name from the defining op
   if (auto *defOp = value.getDefiningOp()) {
     // Check for sv.namehint attribute
@@ -136,9 +174,9 @@ std::string TimingGraph::getNameForValue(Value value) {
 
   // Block argument (port)
   if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-    if (blockArg.getOwner() == module.getBodyBlock()) {
+    if (blockArg.getOwner() == currentModule.getBodyBlock()) {
       size_t argNum = blockArg.getArgNumber();
-      return module.getInputName(argNum).str();
+      return currentModule.getInputName(argNum).str();
     }
   }
 
@@ -146,6 +184,14 @@ std::string TimingGraph::getNameForValue(Value value) {
 }
 
 LogicalResult TimingGraph::build(const DelayModel *delayModel) {
+  nodes.clear();
+  arcs.clear();
+  startPoints.clear();
+  endPoints.clear();
+  topoOrder.clear();
+  reverseTopoOrder.clear();
+  valueToNode.clear();
+
   // Use default model if none provided
   std::unique_ptr<DelayModel> defaultModel;
   if (!delayModel) {
@@ -153,24 +199,15 @@ LogicalResult TimingGraph::build(const DelayModel *delayModel) {
     delayModel = defaultModel.get();
   }
   delayModelName = delayModel->getName().str();
+
   LLVM_DEBUG(llvm::dbgs() << "Building timing graph for module: "
                           << module.getModuleName() << "\n");
 
-  // First pass: create nodes for all values
-  // Process input ports
-  for (auto arg : module.getBodyBlock()->getArguments()) {
-    size_t width = getBitWidth(arg);
-    for (size_t bit = 0; bit < width; ++bit)
-      getOrCreateNode(arg, bit);
-  }
+  LogicalResult result = hierarchical ? buildHierarchicalGraph(*delayModel)
+                                      : buildFlatGraph(*delayModel);
+  if (failed(result))
+    return failure();
 
-  // Process operations
-  for (auto &op : module.getBodyBlock()->getOperations()) {
-    if (failed(processOperation(&op, *delayModel)))
-      return failure();
-  }
-
-  // Compute topological order for traversal
   computeTopologicalOrder();
 
   LLVM_DEBUG(llvm::dbgs() << "Timing graph built: " << nodes.size()
@@ -182,29 +219,33 @@ LogicalResult TimingGraph::build(const DelayModel *delayModel) {
 }
 
 LogicalResult TimingGraph::processOperation(Operation *op,
-                                            const DelayModel &model) {
+                                            const DelayModel &model,
+                                            hw::HWModuleOp currentModule,
+                                            StringRef contextPath,
+                                            bool topContext) {
   // Skip constants
   if (op->hasTrait<OpTrait::ConstantLike>())
     return success();
 
   // Handle output operation - create end points for output ports
   if (auto outputOp = dyn_cast<hw::OutputOp>(op)) {
+    if (!topContext)
+      return success();
     for (auto [idx, operand] : llvm::enumerate(outputOp.getOperands())) {
       size_t width = getBitWidth(operand);
       for (size_t bit = 0; bit < width; ++bit) {
         // Create output port node
-        std::string name = module.getOutputName(idx).str();
-        TimingNodeId id{static_cast<uint32_t>(nodes.size())};
-        auto node = std::make_unique<TimingNode>(
-            id, operand, bit, TimingNodeKind::OutputPort, name);
-        endPoints.push_back(node.get());
+        std::string name = currentModule.getOutputName(idx).str();
+        TimingNodeId id = createNode(operand, bit, TimingNodeKind::OutputPort,
+                                     name, contextPath,
+                                     /*addToLookup=*/false);
+        auto *node = getNode(id);
 
         // Create arc from operand to output.
         // Use getOrCreateNode to handle graph-region use-before-def values.
-        auto *fromNode = getOrCreateNode(operand, bit);
-        createArc(fromNode, node.get(), 0);
-
-        nodes.push_back(std::move(node));
+        auto *fromNode = getOrCreateNode(operand, bit, currentModule,
+                                         contextPath, topContext);
+        createArc(fromNode, node, 0);
       }
     }
     return success();
@@ -216,7 +257,7 @@ LogicalResult TimingGraph::processOperation(Operation *op,
     for (auto result : op->getResults()) {
       size_t width = getBitWidth(result);
       for (size_t bit = 0; bit < width; ++bit)
-        getOrCreateNode(result, bit);
+        getOrCreateNode(result, bit, currentModule, contextPath, topContext);
     }
 
     // The register input is an end point
@@ -229,16 +270,15 @@ LogicalResult TimingGraph::processOperation(Operation *op,
           name = nameAttr.getValue().str() + "_D";
         else
           name = "reg_D";
-        TimingNodeId id{static_cast<uint32_t>(nodes.size())};
-        auto node = std::make_unique<TimingNode>(
-            id, input, bit, TimingNodeKind::RegisterInput, name);
-        endPoints.push_back(node.get());
+        TimingNodeId id = createNode(input, bit, TimingNodeKind::RegisterInput,
+                                     name, contextPath,
+                                     /*addToLookup=*/false);
+        auto *node = getNode(id);
 
         // Use getOrCreateNode to handle graph-region use-before-def values.
-        auto *fromNode = getOrCreateNode(input, bit);
-        createArc(fromNode, node.get(), 0);
-
-        nodes.push_back(std::move(node));
+        auto *fromNode =
+            getOrCreateNode(input, bit, currentModule, contextPath, topContext);
+        createArc(fromNode, node, 0);
       }
     } else if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
       Value input = firreg.getNext();
@@ -249,16 +289,15 @@ LogicalResult TimingGraph::processOperation(Operation *op,
           name = nameAttr.getValue().str() + "_D";
         else
           name = "reg_D";
-        TimingNodeId id{static_cast<uint32_t>(nodes.size())};
-        auto node = std::make_unique<TimingNode>(
-            id, input, bit, TimingNodeKind::RegisterInput, name);
-        endPoints.push_back(node.get());
+        TimingNodeId id = createNode(input, bit, TimingNodeKind::RegisterInput,
+                                     name, contextPath,
+                                     /*addToLookup=*/false);
+        auto *node = getNode(id);
 
         // Use getOrCreateNode to handle graph-region use-before-def values.
-        auto *fromNode = getOrCreateNode(input, bit);
-        createArc(fromNode, node.get(), 0);
-
-        nodes.push_back(std::move(node));
+        auto *fromNode =
+            getOrCreateNode(input, bit, currentModule, contextPath, topContext);
+        createArc(fromNode, node, 0);
       }
     }
     return success();
@@ -272,7 +311,8 @@ LogicalResult TimingGraph::processOperation(Operation *op,
   for (auto result : op->getResults()) {
     size_t resultWidth = getBitWidth(result);
     for (size_t bit = 0; bit < resultWidth; ++bit) {
-      auto *toNode = getOrCreateNode(result, bit);
+      auto *toNode =
+          getOrCreateNode(result, bit, currentModule, contextPath, topContext);
 
       // Create arcs from operands
       for (auto operand : op->getOperands()) {
@@ -280,12 +320,130 @@ LogicalResult TimingGraph::processOperation(Operation *op,
         // For simplicity, connect all operand bits to result bits
         // More sophisticated handling could be added for extract/concat
         size_t srcBit = std::min(bit, operandWidth - 1);
-        if (auto *fromNode = findNode(operand, srcBit))
-          createArc(fromNode, toNode, delay);
+        auto *fromNode = getOrCreateNode(operand, srcBit, currentModule,
+                                         contextPath, topContext);
+        createArc(fromNode, toNode, delay);
       }
     }
   }
 
+  return success();
+}
+
+LogicalResult TimingGraph::buildFlatGraph(const DelayModel &model) {
+  // Process input ports.
+  for (auto arg : module.getBodyBlock()->getArguments()) {
+    size_t width = getBitWidth(arg);
+    for (size_t bit = 0; bit < width; ++bit)
+      getOrCreateNode(arg, bit, module, "", /*topContext=*/true);
+  }
+
+  // Process operations.
+  for (auto &op : module.getBodyBlock()->getOperations())
+    if (failed(processOperation(&op, model, module, "", /*topContext=*/true)))
+      return failure();
+
+  return success();
+}
+
+LogicalResult TimingGraph::buildHierarchicalGraph(const DelayModel &model) {
+  if (!circuit) {
+    module.emitError("hierarchical timing graph requires parent module op");
+    return failure();
+  }
+  llvm::SmallVector<StringAttr> stack;
+  return buildModuleInContext(model, module, "", stack, /*topContext=*/true);
+}
+
+LogicalResult TimingGraph::buildModuleInContext(
+    const DelayModel &model, hw::HWModuleOp currentModule,
+    StringRef contextPath, llvm::SmallVectorImpl<StringAttr> &stack,
+    bool topContext) {
+  auto moduleName = currentModule.getModuleNameAttr();
+  if (llvm::is_contained(stack, moduleName)) {
+    currentModule.emitError("recursive module hierarchy is not supported by "
+                            "timing analysis");
+    return failure();
+  }
+
+  stack.push_back(moduleName);
+
+  for (auto arg : currentModule.getBodyBlock()->getArguments()) {
+    size_t width = getBitWidth(arg);
+    for (size_t bit = 0; bit < width; ++bit)
+      getOrCreateNode(arg, bit, currentModule, contextPath, topContext);
+  }
+
+  for (auto &op : currentModule.getBodyBlock()->getOperations()) {
+    if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
+      auto childName = inst.getReferencedModuleNameAttr();
+      auto childModule = circuit.lookupSymbol<hw::HWModuleOp>(childName);
+      if (!childModule) {
+        // Fall back to flat black-box behavior for unknown/external modules.
+        if (failed(processOperation(&op, model, currentModule, contextPath,
+                                    topContext))) {
+          stack.pop_back();
+          return failure();
+        }
+        continue;
+      }
+
+      std::string childContext =
+          makeChildContext(contextPath, inst.getInstanceName());
+
+      // Connect parent operands to child inputs.
+      auto childArgs = childModule.getBodyBlock()->getArguments();
+      for (auto [idx, operand] : llvm::enumerate(inst.getOperands())) {
+        if (idx >= childArgs.size())
+          continue;
+        auto childArg = childArgs[idx];
+        size_t width = std::min(getBitWidth(operand), getBitWidth(childArg));
+        for (size_t bit = 0; bit < width; ++bit) {
+          auto *from = getOrCreateNode(operand, bit, currentModule, contextPath,
+                                       topContext);
+          auto *to = getOrCreateNode(childArg, bit, childModule, childContext,
+                                     /*topContext=*/false);
+          createArc(from, to, 0);
+        }
+      }
+
+      // Build child internals in this instance context.
+      if (failed(buildModuleInContext(model, childModule, childContext, stack,
+                                      /*topContext=*/false))) {
+        stack.pop_back();
+        return failure();
+      }
+
+      // Connect child outputs to parent instance results.
+      auto outputOp =
+          dyn_cast<hw::OutputOp>(childModule.getBodyBlock()->getTerminator());
+      if (!outputOp)
+        continue;
+      for (auto [idx, instResult] : llvm::enumerate(inst.getResults())) {
+        if (idx >= outputOp.getNumOperands())
+          continue;
+        Value childOutput = outputOp.getOperand(idx);
+        size_t width =
+            std::min(getBitWidth(childOutput), getBitWidth(instResult));
+        for (size_t bit = 0; bit < width; ++bit) {
+          auto *from = getOrCreateNode(childOutput, bit, childModule,
+                                       childContext, /*topContext=*/false);
+          auto *to = getOrCreateNode(instResult, bit, currentModule,
+                                     contextPath, topContext);
+          createArc(from, to, 0);
+        }
+      }
+      continue;
+    }
+
+    if (failed(processOperation(&op, model, currentModule, contextPath,
+                                topContext))) {
+      stack.pop_back();
+      return failure();
+    }
+  }
+
+  stack.pop_back();
   return success();
 }
 

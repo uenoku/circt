@@ -20,11 +20,14 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <memory>
+#include <string>
+#include <tuple>
 
 namespace circt {
 namespace synth {
@@ -141,6 +144,7 @@ private:
 class TimingGraph {
 public:
   explicit TimingGraph(hw::HWModuleOp module);
+  TimingGraph(mlir::ModuleOp circuit, hw::HWModuleOp topModule);
   ~TimingGraph();
 
   // Non-copyable, movable
@@ -193,9 +197,12 @@ public:
   StringRef getDelayModelName() const { return delayModelName; }
 
 private:
+  using ValueKey = std::tuple<StringAttr, Value, uint32_t>;
+
   /// Create a new node and return its ID.
   TimingNodeId createNode(Value value, uint32_t bitPos, TimingNodeKind kind,
-                          StringRef name);
+                          StringRef name, StringRef contextPath,
+                          bool addToLookup = true);
 
   /// Create a new arc between two nodes.
   TimingArc *createArc(TimingNode *from, TimingNode *to, int64_t delay);
@@ -204,15 +211,33 @@ private:
   void computeTopologicalOrder();
 
   /// Get or create a node for a value/bit.
-  TimingNode *getOrCreateNode(Value value, uint32_t bitPos);
+  TimingNode *getOrCreateNode(Value value, uint32_t bitPos,
+                              hw::HWModuleOp currentModule,
+                              StringRef contextPath, bool topContext);
+
+  TimingNode *findNode(Value value, uint32_t bitPos,
+                       StringRef contextPath) const;
 
   /// Process an operation to create nodes and arcs.
-  LogicalResult processOperation(Operation *op, const DelayModel &model);
+  LogicalResult processOperation(Operation *op, const DelayModel &model,
+                                 hw::HWModuleOp currentModule,
+                                 StringRef contextPath, bool topContext);
+
+  LogicalResult buildFlatGraph(const DelayModel &model);
+  LogicalResult buildHierarchicalGraph(const DelayModel &model);
+  LogicalResult buildModuleInContext(const DelayModel &model,
+                                     hw::HWModuleOp currentModule,
+                                     StringRef contextPath,
+                                     llvm::SmallVectorImpl<StringAttr> &stack,
+                                     bool topContext);
 
   /// Get the name for a value.
-  std::string getNameForValue(Value value);
+  std::string getNameForValue(Value value, hw::HWModuleOp currentModule,
+                              StringRef contextPath) const;
 
+  mlir::ModuleOp circuit;
   hw::HWModuleOp module;
+  bool hierarchical = false;
   std::string delayModelName;
   SmallVector<std::unique_ptr<TimingNode>> nodes;
   SmallVector<std::unique_ptr<TimingArc>> arcs;
@@ -222,7 +247,7 @@ private:
   SmallVector<TimingNode *> reverseTopoOrder;
 
   // Lookup map: (Value, bitPos) -> TimingNode*
-  DenseMap<std::pair<Value, uint32_t>, TimingNode *> valueToNode;
+  DenseMap<ValueKey, TimingNode *> valueToNode;
 };
 
 } // namespace timing
@@ -250,4 +275,3 @@ struct DenseMapInfo<circt::synth::timing::TimingNodeId> {
 } // namespace llvm
 
 #endif // CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_TIMINGGRAPH_H
-

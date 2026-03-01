@@ -10,13 +10,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
 #include "circt/Dialect/Synth/Analysis/Timing/RequiredTimeAnalysis.h"
-#include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -49,6 +49,22 @@ const char *deepIR = R"MLIR(
       %and3 = synth.aig.and_inv %and2, %and1 : i1
       %reg2 = seq.firreg %and3 clock %clock : i1
       hw.output %reg2 : i1
+    }
+)MLIR";
+
+// IR with hierarchy and replicated instances.
+const char *hierarchicalIR = R"MLIR(
+    hw.module private @leaf(in %clock : !seq.clock, in %a : i1, out x : i1) {
+      %r = seq.firreg %a clock %clock : i1
+      %c = synth.aig.and_inv %r, %r : i1
+      hw.output %c : i1
+    }
+
+    hw.module @top(in %clock : !seq.clock, in %a : i1, out x : i1) {
+      %x1 = hw.instance "inst1" @leaf(clock: %clock: !seq.clock, a: %a: i1) -> (x: i1)
+      %x2 = hw.instance "inst2" @leaf(clock: %clock: !seq.clock, a: %a: i1) -> (x: i1)
+      %sum = comb.xor %x1, %x2 : i1
+      hw.output %sum : i1
     }
 )MLIR";
 
@@ -410,6 +426,46 @@ TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {
   query.maxPaths = 5;
   SmallVector<TimingPath> paths;
   EXPECT_TRUE(succeeded(analysis->enumeratePaths(query, paths)));
+}
+
+TEST_F(TimingAnalysisTest, HierarchicalTimingAnalysisRequiresTop) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(hierarchicalIR, &context);
+  ASSERT_TRUE(module);
+
+  auto missingTop = TimingAnalysis::create(*module, "");
+  EXPECT_EQ(missingTop, nullptr);
+
+  auto badTop = TimingAnalysis::create(*module, "does_not_exist");
+  EXPECT_EQ(badTop, nullptr);
+}
+
+TEST_F(TimingAnalysisTest, HierarchicalTimingAnalysisElaboratesInstances) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(hierarchicalIR, &context);
+  ASSERT_TRUE(module);
+
+  auto analysis = TimingAnalysis::create(*module, "top");
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+  EXPECT_GT(analysis->getGraph().getStartPoints().size(), 0u);
+  EXPECT_GT(analysis->getGraph().getEndPoints().size(), 0u);
+  EXPECT_EQ(analysis->getGraph().getTopologicalOrder().size(),
+            analysis->getGraph().getNumNodes());
+
+  SmallVector<TimingPath> paths;
+  ASSERT_TRUE(succeeded(analysis->getKWorstPaths(20, paths)));
+  ASSERT_FALSE(paths.empty());
+
+  bool sawInst1 = false;
+  bool sawInst2 = false;
+  for (auto &path : paths) {
+    sawInst1 |= path.getStartPoint()->getName().contains("inst1/");
+    sawInst2 |= path.getStartPoint()->getName().contains("inst2/");
+  }
+
+  EXPECT_TRUE(sawInst1);
+  EXPECT_TRUE(sawInst2);
 }
 
 } // namespace
