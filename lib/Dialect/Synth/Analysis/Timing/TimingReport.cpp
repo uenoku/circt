@@ -72,6 +72,12 @@ static StringRef classifyDeltaTrend(ArrayRef<double> deltas) {
   return "oscillating";
 }
 
+static double getReductionRatio(ArrayRef<double> deltas) {
+  if (deltas.empty() || deltas.front() <= 0.0)
+    return 0.0;
+  return deltas.back() / deltas.front();
+}
+
 static StringRef formatAdaptiveDampingMode(
     TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
   switch (mode) {
@@ -212,6 +218,9 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())
      << "\n";
   os << "Slew Trend Class: " << classifyDeltaTrend(getLastSlewDeltaHistory())
+     << "\n";
+  os << "Slew Reduction Ratio: "
+     << llvm::format("%.6g", getReductionRatio(getLastSlewDeltaHistory()))
      << "\n";
 
   if (requiredTimeAnalysis)

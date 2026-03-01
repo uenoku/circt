@@ -942,6 +942,7 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("Relative Slew Epsilon:"), std::string::npos);
   EXPECT_NE(report.find("Slew Delta Trend:"), std::string::npos);
   EXPECT_NE(report.find("Slew Trend Class:"), std::string::npos);
+  EXPECT_NE(report.find("Slew Reduction Ratio:"), std::string::npos);
   EXPECT_EQ(report.find("--- Slew Convergence ---"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
   EXPECT_NE(report.find("Critical Paths"), std::string::npos);

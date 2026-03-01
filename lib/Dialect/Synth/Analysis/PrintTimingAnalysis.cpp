@@ -247,6 +247,12 @@ private:
     return "oscillating";
   }
 
+  static double getReductionRatio(ArrayRef<double> deltas) {
+    if (deltas.empty() || deltas.front() <= 0.0)
+      return 0.0;
+    return deltas.back() / deltas.front();
+  }
+
   static StringRef formatAdaptiveDampingMode(
       timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
     switch (mode) {
@@ -436,6 +442,10 @@ private:
        << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     os << "Slew Trend Class: "
        << classifyDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
+    os << "Slew Reduction Ratio: "
+       << llvm::format("%.6g",
+                       getReductionRatio(analysis.getLastSlewDeltaHistory()))
+       << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
 

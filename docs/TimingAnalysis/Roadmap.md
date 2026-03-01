@@ -430,6 +430,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   now run as `circt-synth ... -o - | circt-sta ...`.
 - Reports now classify convergence trend (`Slew Trend Class`) as
   decreasing/increasing/flat/oscillating for quick diagnostics.
+- Reports now include `Slew Reduction Ratio` (final residual / first residual)
+  to quantify convergence speed at a glance.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models

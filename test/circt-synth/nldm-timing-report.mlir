@@ -11,6 +11,7 @@
 // CHECK: Arrival Iterations:
 // CHECK: Slew Converged:
 // CHECK: Slew Trend Class:
+// CHECK: Slew Reduction Ratio:
 // CHECK: Path 1: delay = 25
 // CHECK: Startpoint:
 // CHECK: Endpoint:
