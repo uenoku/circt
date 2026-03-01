@@ -178,6 +178,9 @@ private:
     os << "=== Timing Report ===\n";
     os << "Module: " << analysis.getGraph().getModule().getModuleName() << "\n";
     os << "Delay Model: " << analysis.getGraph().getDelayModelName() << "\n";
+    os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
+    os << "Slew Converged: "
+       << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
     os << "--- Critical Paths (Top "

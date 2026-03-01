@@ -920,6 +920,7 @@ TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
   ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
   EXPECT_GE(analysis->getLastArrivalIterations(), 2u);
   EXPECT_LE(analysis->getLastArrivalIterations(), opts.maxSlewIterations);
+  EXPECT_TRUE(analysis->didLastArrivalConverge());
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {

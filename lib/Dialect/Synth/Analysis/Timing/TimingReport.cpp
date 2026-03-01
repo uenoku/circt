@@ -28,6 +28,8 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "=== Timing Report ===\n";
   os << "Module: " << module.getModuleName() << "\n";
   os << "Delay Model: " << graph->getDelayModelName() << "\n";
+  os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
+  os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
 
   if (requiredTimeAnalysis)
     os << "Worst Slack: " << requiredTimeAnalysis->getWorstSlack() << "\n";

@@ -3,6 +3,8 @@
 // CHECK: === Timing Report ===
 // CHECK: Module: dut
 // CHECK: Delay Model: nldm
+// CHECK: Arrival Iterations:
+// CHECK: Slew Converged:
 // CHECK: Path 1: delay = 25
 // CHECK: Startpoint:
 // CHECK: Endpoint:

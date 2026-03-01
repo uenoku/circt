@@ -127,6 +127,9 @@ public:
   /// Number of forward-arrival iterations executed in last full run.
   unsigned getLastArrivalIterations() const { return lastArrivalIterations; }
 
+  /// Whether the slew iteration loop converged in the last full run.
+  bool didLastArrivalConverge() const { return lastArrivalConverged; }
+
   //===--------------------------------------------------------------------===//
   // Stage 2: Path-Based Analysis
   //===--------------------------------------------------------------------===//
@@ -206,6 +209,7 @@ private:
   std::unique_ptr<PathEnumerator> enumerator;
   std::unique_ptr<RequiredTimeAnalysis> requiredTimeAnalysis;
   unsigned lastArrivalIterations = 0;
+  bool lastArrivalConverged = true;
 };
 
 } // namespace timing
