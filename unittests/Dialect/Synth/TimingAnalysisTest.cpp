@@ -232,6 +232,32 @@ const char *nldmTransitionSlewIR = R"MLIR(
     }
 )MLIR";
 
+const char *ccsPilotWaveformIR = R"MLIR(
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>
+    } {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.5 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], [], [], [], [], [], [], []>
+          ],
+          synth.ccs.pilot.arcs = [
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [], []>
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %s0 = hw.instance "u0" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %s0 : i1
+      }
+    }
+)MLIR";
+
 class TimingAnalysisTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -743,7 +769,7 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelInterpolatesOutputSlew) {
 
 TEST_F(TimingAnalysisTest, CCSPilotDelayModelProducesWaveform) {
   OwningOpRef<ModuleOp> module =
-      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+      parseSourceString<ModuleOp>(ccsPilotWaveformIR, &context);
   ASSERT_TRUE(module);
 
   SymbolTable symbolTable(module.get());
@@ -775,7 +801,8 @@ TEST_F(TimingAnalysisTest, CCSPilotDelayModelProducesWaveform) {
   SmallVector<WaveformPoint> outputWaveform;
   EXPECT_TRUE(model->computeOutputWaveform(ctx, inputWaveform, outputWaveform));
   ASSERT_EQ(outputWaveform.size(), 2u);
-  EXPECT_LT(outputWaveform[0].time, outputWaveform[1].time);
+  EXPECT_NEAR(outputWaveform[0].time, 25.0, 1e-9);
+  EXPECT_NEAR(outputWaveform[1].time, 425.0, 1e-9);
   EXPECT_EQ(outputWaveform[0].value, 0.0);
   EXPECT_EQ(outputWaveform[1].value, 1.0);
 }

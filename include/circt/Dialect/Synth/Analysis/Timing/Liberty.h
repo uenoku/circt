@@ -89,6 +89,16 @@ public:
   getTypedTimingArc(llvm::StringRef cellName, unsigned operandIndex,
                     unsigned resultIndex) const;
 
+  /// Look up a typed CCS pilot arc for (input pin -> output pin).
+  std::optional<circt::synth::CCSPilotArcAttr>
+  getTypedCCSPilotArc(llvm::StringRef cellName, llvm::StringRef inputPinName,
+                      llvm::StringRef outputPinName) const;
+
+  /// Index-based typed CCS pilot arc lookup helper.
+  std::optional<circt::synth::CCSPilotArcAttr>
+  getTypedCCSPilotArc(llvm::StringRef cellName, unsigned operandIndex,
+                      unsigned resultIndex) const;
+
 private:
   llvm::StringMap<Cell> cells;
 };

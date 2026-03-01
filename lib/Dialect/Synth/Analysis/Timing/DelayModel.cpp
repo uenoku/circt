@@ -286,6 +286,26 @@ getOutputSlewFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
   return std::nullopt;
 }
 
+static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc,
+                                   SmallVectorImpl<double> &times,
+                                   SmallVectorImpl<double> &values) {
+  if (!arc.getCurrentRiseTimes().empty() &&
+      !arc.getCurrentRiseValues().empty()) {
+    if (!decodeNumericArray(arc.getCurrentRiseTimes(), times) ||
+        !decodeNumericArray(arc.getCurrentRiseValues(), values))
+      return false;
+    return !times.empty() && times.size() == values.size();
+  }
+  if (!arc.getCurrentFallTimes().empty() &&
+      !arc.getCurrentFallValues().empty()) {
+    if (!decodeNumericArray(arc.getCurrentFallTimes(), times) ||
+        !decodeNumericArray(arc.getCurrentFallValues(), values))
+      return false;
+    return !times.empty() && times.size() == values.size();
+  }
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // UnitDelayModel
 //===----------------------------------------------------------------------===//
@@ -415,8 +435,27 @@ bool CCSPilotDelayModel::computeOutputWaveform(
 
   auto result = computeDelay(ctx);
   double delayPs = static_cast<double>(result.delay);
-  double outputSlew = std::max(result.outputSlew, 1e-6);
   double baseTime = inputWaveform.empty() ? 0.0 : inputWaveform.front().time;
+
+  if (auto *liberty = nldmDelegate.getLibertyLibrary()) {
+    if (ctx.inputIndex >= 0 && ctx.outputIndex >= 0) {
+      if (auto cellName = getMappedCellName(ctx.op)) {
+        if (auto arc = liberty->getTypedCCSPilotArc(
+                *cellName, static_cast<unsigned>(ctx.inputIndex),
+                static_cast<unsigned>(ctx.outputIndex))) {
+          SmallVector<double> times, values;
+          if (decodeCCSPilotWaveform(*arc, times, values)) {
+            double scale = getTimeScalePs(ctx.op);
+            for (auto [t, v] : llvm::zip(times, values))
+              outputWaveform.push_back({baseTime + delayPs + t * scale, v});
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  double outputSlew = std::max(result.outputSlew, 1e-6);
 
   outputWaveform.push_back({baseTime + delayPs, 0.0});
   outputWaveform.push_back({baseTime + delayPs + outputSlew, 1.0});

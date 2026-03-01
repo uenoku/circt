@@ -505,6 +505,17 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
    tuned for CCS behavior.
 4. Add dedicated CCS e2e validation suite and mixed NLDM/CCS delegation policy.
 
+**Status update (2026-03): Milestone 1 started.**
+
+- `import-liberty` now emits typed CCS pilot arc metadata
+  (`#synth.ccs_pilot_arc`) on output pins as `synth.ccs.pilot.arcs` when
+  `output_current_rise` / `output_current_fall` tables are present.
+- `LibertyLibrary` now supports typed CCS pilot arc lookup by pin name/index.
+- `CCSPilotDelayModel` now consumes typed CCS pilot waveform metadata before
+  falling back to synthetic two-point ramp generation.
+- Regression coverage now includes ImportLiberty CCS pilot attr emission and
+  CCS pilot waveform consumption in timing unit tests.
+
 ---
 
 ## Suggested Priority Order

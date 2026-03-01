@@ -631,6 +631,42 @@ buildNldmArcAttr(const LibertyGroup &timing, StringRef outputPin,
       fallTransitionIndex1, fallTransitionIndex2, fallTransitionValues);
 }
 
+static std::optional<circt::synth::CCSPilotArcAttr>
+buildCcsPilotArcAttr(const LibertyGroup &timing, StringRef outputPin,
+                     OpBuilder &builder) {
+  StringAttr relatedPin;
+  auto relatedAttr = timing.getAttribute("related_pin").first;
+  if (auto str = dyn_cast<StringAttr>(relatedAttr))
+    relatedPin = str;
+  else if (!timing.args.empty())
+    relatedPin = dyn_cast<StringAttr>(timing.args.front());
+  if (!relatedPin)
+    return std::nullopt;
+
+  auto toPin = builder.getStringAttr(outputPin);
+
+  auto riseTimes =
+      getFirstTableField(timing, "output_current_rise", "index_1", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto riseValues =
+      getFirstTableField(timing, "output_current_rise", "values", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto fallTimes =
+      getFirstTableField(timing, "output_current_fall", "index_1", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto fallValues =
+      getFirstTableField(timing, "output_current_fall", "values", builder)
+          .value_or(builder.getArrayAttr({}));
+
+  if (riseTimes.empty() && riseValues.empty() && fallTimes.empty() &&
+      fallValues.empty())
+    return std::nullopt;
+
+  return circt::synth::CCSPilotArcAttr::get(builder.getContext(), relatedPin,
+                                            toPin, riseTimes, riseValues,
+                                            fallTimes, fallValues);
+}
+
 class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
@@ -956,6 +992,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
     std::optional<hw::ModulePort::Direction> dir;
     SmallVector<NamedAttribute> pinAttrs;
     SmallVector<Attribute> nldmArcs;
+    SmallVector<Attribute> ccsPilotArcs;
 
     for (const auto &attr : sub->attrs) {
       if (attr.name == "direction") {
@@ -987,6 +1024,9 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
         if (auto nldmArc =
                 buildNldmArcAttr(*child, pinName.getValue(), builder))
           nldmArcs.push_back(*nldmArc);
+        if (auto ccsArc =
+                buildCcsPilotArcAttr(*child, pinName.getValue(), builder))
+          ccsPilotArcs.push_back(*ccsArc);
       }
 
       subGroups[child->name].push_back(convertGroupToAttr(*child));
@@ -999,6 +1039,9 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
     if (!nldmArcs.empty())
       pinAttrs.push_back(builder.getNamedAttr("synth.nldm.arcs",
                                               builder.getArrayAttr(nldmArcs)));
+    if (!ccsPilotArcs.empty())
+      pinAttrs.push_back(builder.getNamedAttr(
+          "synth.ccs.pilot.arcs", builder.getArrayAttr(ccsPilotArcs)));
 
     auto libertyAttrs = builder.getDictionaryAttr(pinAttrs);
     auto attrs = builder.getDictionaryAttr(

@@ -231,3 +231,33 @@ LibertyLibrary::getTypedTimingArc(StringRef cellName, unsigned operandIndex,
     return std::nullopt;
   return getTypedTimingArc(cellName, *inputPin, *outputPin);
 }
+
+std::optional<synth::CCSPilotArcAttr>
+LibertyLibrary::getTypedCCSPilotArc(StringRef cellName, StringRef inputPinName,
+                                    StringRef outputPinName) const {
+  auto *outputPin = lookupPin(cellName, outputPinName);
+  if (!outputPin || outputPin->isInput)
+    return std::nullopt;
+
+  auto ccsArcs =
+      dyn_cast_or_null<ArrayAttr>(outputPin->attrs.get("synth.ccs.pilot.arcs"));
+  if (!ccsArcs)
+    return std::nullopt;
+
+  for (auto attr : ccsArcs) {
+    auto typedArc = dyn_cast<synth::CCSPilotArcAttr>(attr);
+    if (typedArc && typedArc.getRelatedPin() == inputPinName)
+      return typedArc;
+  }
+  return std::nullopt;
+}
+
+std::optional<synth::CCSPilotArcAttr>
+LibertyLibrary::getTypedCCSPilotArc(StringRef cellName, unsigned operandIndex,
+                                    unsigned resultIndex) const {
+  auto inputPin = getInputPinName(cellName, operandIndex);
+  auto outputPin = getOutputPinName(cellName, resultIndex);
+  if (!inputPin || !outputPin)
+    return std::nullopt;
+  return getTypedCCSPilotArc(cellName, *inputPin, *outputPin);
+}

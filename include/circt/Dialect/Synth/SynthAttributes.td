@@ -48,4 +48,21 @@ def NLDMArcAttr : AttrDef<Synth_Dialect, "NLDMArc"> {
   }];
 }
 
+def CCSPilotArcAttr : AttrDef<Synth_Dialect, "CCSPilotArc"> {
+  let mnemonic = "ccs_pilot_arc";
+  let summary = "Normalized CCS pilot arc waveform metadata";
+  let parameters = (ins
+    "mlir::StringAttr":$relatedPin,
+    "mlir::StringAttr":$toPin,
+    "mlir::ArrayAttr":$currentRiseTimes,
+    "mlir::ArrayAttr":$currentRiseValues,
+    "mlir::ArrayAttr":$currentFallTimes,
+    "mlir::ArrayAttr":$currentFallValues
+  );
+  let assemblyFormat = [{
+    `<` $relatedPin `,` $toPin `,` $currentRiseTimes `,` $currentRiseValues
+    `,` $currentFallTimes `,` $currentFallValues `>`
+  }];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_SYNTHATTRIBUTES_TD

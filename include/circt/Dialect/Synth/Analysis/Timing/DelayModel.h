@@ -123,6 +123,9 @@ public:
   llvm::StringRef getName() const override { return "nldm"; }
   double getInputCapacitance(const DelayContext &ctx) const override;
   bool usesSlewPropagation() const override { return true; }
+  const class LibertyLibrary *getLibertyLibrary() const {
+    return liberty.get();
+  }
 
 private:
   std::unique_ptr<class LibertyLibrary> liberty;
