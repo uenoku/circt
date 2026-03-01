@@ -8,12 +8,15 @@
 
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 
 using namespace circt;
 using namespace synth;
 
 void SynthDialect::initialize() {
+  registerAttributes();
+
   addOperations<
 #define GET_OP_LIST
 #include "circt/Dialect/Synth/Synth.cpp.inc"

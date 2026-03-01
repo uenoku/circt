@@ -5,6 +5,7 @@
 ##===----------------------------------------------------------------------===//
 
 add_circt_dialect_library(CIRCTSynth
+  SynthAttributes.cpp
   SynthDialect.cpp
   SynthOps.cpp
 
@@ -13,6 +14,7 @@ add_circt_dialect_library(CIRCTSynth
 
   DEPENDS
   MLIRSynthIncGen
+  CIRCTSynthAttributesIncGen
 
   LINK_COMPONENTS
   Support
