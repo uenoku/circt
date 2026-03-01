@@ -282,6 +282,18 @@ TEST_F(TimingAnalysisTest, LibertyBridgePinCapacitance) {
 
   auto invOutCap = lib.getInputPinCapacitance("INV", "Y");
   EXPECT_FALSE(invOutCap.has_value());
+
+  auto inPin0 = lib.getInputPinName("INV", 0);
+  ASSERT_TRUE(inPin0.has_value());
+  EXPECT_EQ(*inPin0, "A");
+
+  auto outPin0 = lib.getOutputPinName("INV", 0);
+  ASSERT_TRUE(outPin0.has_value());
+  EXPECT_EQ(*outPin0, "Y");
+
+  auto capByIndex = lib.getInputPinCapacitance("INV", 0);
+  ASSERT_TRUE(capByIndex.has_value());
+  EXPECT_NEAR(*capByIndex, 0.006, 1e-12);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {

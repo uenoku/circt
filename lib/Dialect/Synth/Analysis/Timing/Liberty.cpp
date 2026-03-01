@@ -54,7 +54,12 @@ FailureOr<LibertyLibrary> LibertyLibrary::fromModule(ModuleOp module) {
       pin.isInput = port.isInput();
       pin.capacitance = parseNumericAttr(pinAttrs.get("capacitance"));
       pin.attrs = pinAttrs;
-      cell.pins[port.name.getValue()] = std::move(pin);
+      auto pinName = port.name.getValue().str();
+      cell.pins[pinName] = std::move(pin);
+      if (port.isInput())
+        cell.inputPinsByIndex.push_back(pinName);
+      else if (port.isOutput())
+        cell.outputPinsByIndex.push_back(pinName);
     }
 
     if (!hasLibertyPinAttrs)
@@ -93,4 +98,31 @@ LibertyLibrary::getInputPinCapacitance(StringRef cellName,
   if (!pin || !pin->isInput || !pin->capacitance)
     return std::nullopt;
   return pin->capacitance;
+}
+
+std::optional<StringRef>
+LibertyLibrary::getInputPinName(StringRef cellName,
+                                unsigned operandIndex) const {
+  auto *cell = lookupCell(cellName);
+  if (!cell || operandIndex >= cell->inputPinsByIndex.size())
+    return std::nullopt;
+  return StringRef(cell->inputPinsByIndex[operandIndex]);
+}
+
+std::optional<StringRef>
+LibertyLibrary::getOutputPinName(StringRef cellName,
+                                 unsigned resultIndex) const {
+  auto *cell = lookupCell(cellName);
+  if (!cell || resultIndex >= cell->outputPinsByIndex.size())
+    return std::nullopt;
+  return StringRef(cell->outputPinsByIndex[resultIndex]);
+}
+
+std::optional<double>
+LibertyLibrary::getInputPinCapacitance(StringRef cellName,
+                                       unsigned operandIndex) const {
+  auto pinName = getInputPinName(cellName, operandIndex);
+  if (!pinName)
+    return std::nullopt;
+  return getInputPinCapacitance(cellName, *pinName);
 }

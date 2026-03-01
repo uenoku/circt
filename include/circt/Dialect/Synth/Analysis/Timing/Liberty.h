@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include <optional>
 #include <string>
@@ -36,6 +37,8 @@ public:
   struct Cell {
     hw::HWModuleOp module;
     llvm::StringMap<Pin> pins;
+    llvm::SmallVector<std::string> inputPinsByIndex;
+    llvm::SmallVector<std::string> outputPinsByIndex;
   };
 
   /// Build a Liberty view from imported attributes in a module.
@@ -50,6 +53,18 @@ public:
   /// Get input pin capacitance for a given cell/pin when available.
   std::optional<double> getInputPinCapacitance(llvm::StringRef cellName,
                                                llvm::StringRef pinName) const;
+
+  /// Resolve the input pin name for a mapped operand index.
+  std::optional<llvm::StringRef> getInputPinName(llvm::StringRef cellName,
+                                                 unsigned operandIndex) const;
+
+  /// Resolve the output pin name for a mapped result index.
+  std::optional<llvm::StringRef> getOutputPinName(llvm::StringRef cellName,
+                                                  unsigned resultIndex) const;
+
+  /// Get input pin capacitance for a mapped operand index.
+  std::optional<double> getInputPinCapacitance(llvm::StringRef cellName,
+                                               unsigned operandIndex) const;
 
 private:
   llvm::StringMap<Cell> cells;
