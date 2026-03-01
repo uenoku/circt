@@ -126,6 +126,12 @@ public:
     return getMaxArrivalTime(node->getId());
   }
 
+  /// Get the slew associated with maximum arrival at a node.
+  double getMaxArrivalSlew(TimingNodeId nodeId) const;
+  double getMaxArrivalSlew(const TimingNode *node) const {
+    return getMaxArrivalSlew(node->getId());
+  }
+
   /// Get all arrivals at a node (only valid if keepAllArrivals=true).
   ArrayRef<ArrivalInfo> getArrivals(TimingNodeId nodeId) const;
 

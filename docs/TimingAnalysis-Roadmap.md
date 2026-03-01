@@ -11,7 +11,9 @@ The two-stage static timing analysis engine at `lib/Dialect/Synth/Analysis/Timin
 - **DelayModel**: Pluggable interface with `UnitDelayModel` and `AIGLevelDelayModel`
 - **TimingAnalysis**: Unified API with `reportTiming()` and `runFullAnalysis()`
 
-The `DelayContext` already carries `inputSlew` and `outputLoad` fields, and `DelayResult` returns `outputSlew`, but these are currently unused (always 0). This infrastructure was designed to enable NLDM and CCS without API changes.
+`DelayContext` now carries active `inputSlew` and `outputLoad` propagation in
+arrival analysis, and `DelayResult::outputSlew` is consumed for
+slew-capable models. This infrastructure is in place for NLDM and CCS.
 
 The `DelayModel` interface now also includes a waveform-propagation hook
 (`usesWaveformPropagation()` + `computeOutputWaveform(...)`) so CCS can be
@@ -275,6 +277,14 @@ may carry timing-oriented attributes, e.g.:
 
 This keeps technology mapping and STA coupled through explicit IR metadata.
 
+**Status (2026-03): In progress.**
+
+- Hierarchical graph construction treats Liberty cell-like `hw.instance`
+  operations as black-box timing arcs (instead of elaborating child internals)
+  when `synth.liberty.cell` or `synth.liberty.pin` metadata is present.
+- This preserves instance-level arc context (`op + inputIndex + outputIndex`)
+  for NLDM/CCS lookup.
+
 ### Step A.2: Typed NLDM Attribute Migration (`#synth`)
 
 Move from ad-hoc dictionary payloads toward typed Synth attributes for NLDM
@@ -298,13 +308,11 @@ metadata, so importer and timing analysis share a stable schema.
 
 **Immediate next steps (active):**
 
-1. Implement proper LUT interpolation over typed NLDM samples instead of
-   first-sample evaluation.
-2. Start propagating non-zero `inputSlew`/`outputSlew` in arrival analysis.
-3. Compute `outputLoad` from fanout pin capacitances through the Liberty bridge.
-4. Add convergence loop in `TimingAnalysis::runFullAnalysis()` for
-   slew/load-dependent delay models.
-5. Implement first CCS pilot model on top of the waveform hook while sharing
+1. Finalize convergence behavior in `TimingAnalysis::runFullAnalysis()` with
+   tuned defaults and diagnostics for slew/load-dependent models.
+2. Add/expand end-to-end `circt-synth` NLDM timing-report tests to guard
+   pass/CLI integration (`--timing-report-dir`, `--top`, model selection).
+3. Implement first CCS pilot model on top of the waveform hook while sharing
    Liberty cell/arc resolution and load modeling infrastructure with NLDM.
 
 ### Step B: NLDMDelayModel Implementation
@@ -350,6 +358,8 @@ picoseconds when returning `DelayResult::delay`.
   present.
 - Transition-table based output-slew interpolation is being wired using typed
   `rise_transition` / `fall_transition` payloads.
+- End-to-end `circt-synth` timing-report coverage now includes NLDM model
+  activation and path-delay checks.
 
 **Files:** `DelayModel.h` (add class), `DelayModel.cpp` (implement)
 
@@ -369,6 +379,15 @@ NLDM creates a circular dependency: output slew depends on load, load depends on
 ```
 
 This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayModel->usesSlewPropagation()`.
+
+**Status (2026-03): Started.**
+
+- `runFullAnalysis()` now performs iterative arrival analysis for models that
+  report `usesSlewPropagation() == true`, with configurable maximum iterations
+  and slew-delta convergence threshold.
+- The last iteration count is tracked for observability.
+- Remaining work: tighten convergence heuristics for models where effective
+  load depends on slew/waveform state and expose optional convergence reporting.
 
 **Files affected:** `TimingAnalysis.cpp`
 

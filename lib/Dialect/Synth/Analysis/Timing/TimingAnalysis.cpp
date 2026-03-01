@@ -8,6 +8,8 @@
 
 #include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
+#include <cmath>
 
 #define DEBUG_TYPE "timing-analysis"
 
@@ -70,6 +72,7 @@ LogicalResult TimingAnalysis::runArrivalAnalysis() {
   arrivalOpts.keepAllArrivals = options.keepAllArrivals;
   arrivalOpts.startPointPatterns.assign(options.startPointPatterns.begin(),
                                         options.startPointPatterns.end());
+  arrivalOpts.initialSlew = options.initialSlew;
 
   arrivals = std::make_unique<ArrivalAnalysis>(*graph, arrivalOpts,
                                                options.delayModel);
@@ -98,8 +101,41 @@ LogicalResult TimingAnalysis::runBackwardAnalysis() {
 LogicalResult TimingAnalysis::runFullAnalysis() {
   if (failed(buildGraph()))
     return failure();
-  if (failed(runArrivalAnalysis()))
-    return failure();
+
+  lastArrivalIterations = 0;
+  if (options.delayModel && options.delayModel->usesSlewPropagation()) {
+    SmallVector<double> previousSlews;
+    previousSlews.assign(graph->getNumNodes(), 0.0);
+    bool havePrevious = false;
+
+    unsigned maxIterations = std::max(1u, options.maxSlewIterations);
+    for (unsigned iter = 0; iter < maxIterations; ++iter) {
+      if (failed(runArrivalAnalysis()))
+        return failure();
+      ++lastArrivalIterations;
+
+      double maxDelta = 0.0;
+      if (havePrevious) {
+        for (const auto &node : graph->getNodes()) {
+          auto id = node->getId().index;
+          double current = arrivals->getMaxArrivalSlew(node.get());
+          maxDelta = std::max(maxDelta, std::abs(current - previousSlews[id]));
+        }
+        if (maxDelta <= options.slewConvergenceEpsilon)
+          break;
+      }
+
+      for (const auto &node : graph->getNodes())
+        previousSlews[node->getId().index] =
+            arrivals->getMaxArrivalSlew(node.get());
+      havePrevious = true;
+    }
+  } else {
+    if (failed(runArrivalAnalysis()))
+      return failure();
+    lastArrivalIterations = 1;
+  }
+
   return runBackwardAnalysis();
 }
 

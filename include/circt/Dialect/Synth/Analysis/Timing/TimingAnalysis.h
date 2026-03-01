@@ -57,6 +57,15 @@ struct TimingAnalysisOptions {
   /// Clock period constraint for backward analysis. 0 = unconstrained.
   int64_t clockPeriod = 0;
 
+  /// Initial slew used for start points during arrival propagation.
+  double initialSlew = 0.0;
+
+  /// Maximum iterations for slew-propagation convergence.
+  unsigned maxSlewIterations = 6;
+
+  /// Convergence threshold for max per-node slew delta.
+  double slewConvergenceEpsilon = 1e-6;
+
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
 };
@@ -114,6 +123,9 @@ public:
 
   /// Get arrival analysis results.
   const ArrivalAnalysis &getArrivals() const { return *arrivals; }
+
+  /// Number of forward-arrival iterations executed in last full run.
+  unsigned getLastArrivalIterations() const { return lastArrivalIterations; }
 
   //===--------------------------------------------------------------------===//
   // Stage 2: Path-Based Analysis
@@ -193,6 +205,7 @@ private:
   std::unique_ptr<ArrivalAnalysis> arrivals;
   std::unique_ptr<PathEnumerator> enumerator;
   std::unique_ptr<RequiredTimeAnalysis> requiredTimeAnalysis;
+  unsigned lastArrivalIterations = 0;
 };
 
 } // namespace timing

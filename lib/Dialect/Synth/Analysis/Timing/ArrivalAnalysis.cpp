@@ -210,6 +210,12 @@ int64_t ArrivalAnalysis::getMaxArrivalTime(TimingNodeId nodeId) const {
   return 0;
 }
 
+double ArrivalAnalysis::getMaxArrivalSlew(TimingNodeId nodeId) const {
+  if (auto *data = getArrivalData(nodeId))
+    return data->getMaxArrivalSlew();
+  return 0.0;
+}
+
 ArrayRef<ArrivalInfo> ArrivalAnalysis::getArrivals(TimingNodeId nodeId) const {
   if (auto *data = getArrivalData(nodeId))
     return data->getAllArrivals();

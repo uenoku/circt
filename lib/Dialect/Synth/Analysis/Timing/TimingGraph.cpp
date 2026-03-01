@@ -57,6 +57,19 @@ static StringAttr getContextAttr(MLIRContext *ctx, StringRef contextPath) {
   return StringAttr::get(ctx, contextPath);
 }
 
+static bool isLibertyCellLikeInstance(hw::InstanceOp inst,
+                                      hw::HWModuleOp childModule) {
+  if (inst->hasAttr("synth.liberty.cell"))
+    return true;
+  if (!childModule)
+    return false;
+
+  for (auto port : childModule.getPortList())
+    if (port.attrs.get("synth.liberty.pin"))
+      return true;
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // TimingGraph Implementation
 //===----------------------------------------------------------------------===//
@@ -392,6 +405,19 @@ LogicalResult TimingGraph::buildModuleInContext(
     if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
       auto childName = inst.getReferencedModuleNameAttr();
       auto childModule = circuit.lookupSymbol<hw::HWModuleOp>(childName);
+
+      // Treat mapped Liberty cells as black-box timing ops, even in
+      // hierarchical mode. Their delay should be computed on the instance arc
+      // itself rather than by elaborating child internals.
+      if (isLibertyCellLikeInstance(inst, childModule)) {
+        if (failed(processOperation(&op, model, currentModule, contextPath,
+                                    topContext))) {
+          stack.pop_back();
+          return failure();
+        }
+        continue;
+      }
+
       if (!childModule) {
         // Fall back to flat black-box behavior for unknown/external modules.
         if (failed(processOperation(&op, model, currentModule, contextPath,

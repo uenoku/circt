@@ -274,6 +274,16 @@ private:
   double capPerInput;
 };
 
+class FixedSlewDelayModel final : public DelayModel {
+public:
+  DelayResult computeDelay(const DelayContext &ctx) const override {
+    return {1, ctx.inputSlew};
+  }
+
+  llvm::StringRef getName() const override { return "fixed-slew"; }
+  bool usesSlewPropagation() const override { return true; }
+};
+
 TEST_F(TimingAnalysisTest, TimingGraphConstruction) {
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(testIR, &context);
   ASSERT_TRUE(module);
@@ -888,6 +898,28 @@ TEST_F(TimingAnalysisTest, FullPipeline) {
   // Get paths
   SmallVector<TimingPath> paths;
   EXPECT_TRUE(succeeded(analysis->getKWorstPaths(5, paths)));
+}
+
+TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(testIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("simple");
+  ASSERT_TRUE(hwModule);
+
+  FixedSlewDelayModel model;
+  TimingAnalysisOptions opts;
+  opts.delayModel = &model;
+  opts.initialSlew = 0.25;
+  opts.maxSlewIterations = 5;
+  opts.slewConvergenceEpsilon = 1e-12;
+
+  auto analysis = TimingAnalysis::create(hwModule, opts);
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+  EXPECT_GE(analysis->getLastArrivalIterations(), 2u);
+  EXPECT_LE(analysis->getLastArrivalIterations(), opts.maxSlewIterations);
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {
