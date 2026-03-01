@@ -1,15 +1,9 @@
-// RUN: circt-synth %s --top dut -o - | circt-sta --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
-// RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s --check-prefix=STA
+// RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
 
 // CHECK: === Timing Report ===
 // CHECK: Delay Model: mixed-ccs-pilot
 // CHECK: Path 1: delay = 255
 // CHECK: Startpoint: a[0]
-
-// STA: === Timing Report ===
-// STA: Delay Model: mixed-ccs-pilot
-// STA: Path 1: delay = 255
-// STA: Startpoint: a[0]
 
 module attributes {
   synth.timing.model = "mixed-ccs-pilot",

@@ -32,6 +32,12 @@ namespace circt {
 namespace synth {
 namespace timing {
 
+/// Transition edge direction for rise/fall-aware timing.
+enum class TransitionEdge : uint8_t { Rise, Fall };
+
+/// Timing sense of a cell arc (from Liberty).
+enum class TimingSense : uint8_t { PositiveUnate, NegativeUnate, NonUnate };
+
 /// Context passed to delay model for each arc computation.
 struct DelayContext {
   mlir::Operation *op;      // The defining operation
@@ -41,6 +47,7 @@ struct DelayContext {
   int32_t outputIndex = -1; // Result index for this arc (if known)
   double inputSlew = 0.0;   // Input slew (transition time)
   double outputLoad = 0.0;  // Output load capacitance
+  TransitionEdge outputEdge = TransitionEdge::Rise; // Target output edge
 };
 
 /// Result of delay computation.
@@ -77,6 +84,14 @@ public:
   virtual double getInputCapacitance(const DelayContext &ctx) const {
     (void)ctx;
     return 0.0;
+  }
+
+  /// Get the timing sense for an arc.
+  ///
+  /// Models that do not have timing sense information return PositiveUnate
+  /// (the conservative default for non-inverting paths).
+  virtual TimingSense getTimingSense(const DelayContext &ctx) const {
+    return TimingSense::PositiveUnate;
   }
 
   /// Whether this model provides waveform-level propagation.
@@ -124,6 +139,7 @@ public:
   llvm::StringRef getName() const override { return "nldm"; }
   double getInputCapacitance(const DelayContext &ctx) const override;
   bool usesSlewPropagation() const override { return true; }
+  TimingSense getTimingSense(const DelayContext &ctx) const override;
   const class LibertyLibrary *getLibertyLibrary() const {
     return liberty.get();
   }

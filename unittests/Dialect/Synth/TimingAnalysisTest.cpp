@@ -765,9 +765,14 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelPerArcAttr) {
   EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 9);
 
   auto infos = arrivals.getArrivals(endPoint->getId());
-  ASSERT_EQ(infos.size(), 2u);
-  int64_t minArrival = std::min(infos[0].arrivalTime, infos[1].arrivalTime);
-  int64_t maxArrival = std::max(infos[0].arrivalTime, infos[1].arrivalTime);
+  // With dual-edge propagation, each start point produces rise+fall arrivals.
+  ASSERT_GE(infos.size(), 2u);
+  int64_t minArrival = infos[0].arrivalTime;
+  int64_t maxArrival = infos[0].arrivalTime;
+  for (const auto &info : infos) {
+    minArrival = std::min(minArrival, info.arrivalTime);
+    maxArrival = std::max(maxArrival, info.arrivalTime);
+  }
   EXPECT_EQ(minArrival, 2);
   EXPECT_EQ(maxArrival, 9);
 }

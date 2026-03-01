@@ -45,12 +45,9 @@ static double getNodeOutputLoad(const TimingNode *node,
   return total;
 }
 
-static DelayResult getArcDelay(const TimingArc *arc,
-                               const DelayModel *delayModel, double inputSlew,
-                               double outputLoad) {
-  if (!delayModel || !arc->getOp())
-    return {arc->getDelay(), inputSlew};
-
+static DelayContext makeDelayContext(const TimingArc *arc, double inputSlew,
+                                    double outputLoad,
+                                    TransitionEdge outputEdge) {
   DelayContext ctx;
   ctx.op = arc->getOp();
   ctx.inputValue = arc->getInputValue();
@@ -59,6 +56,18 @@ static DelayResult getArcDelay(const TimingArc *arc,
   ctx.outputIndex = arc->getOutputIndex();
   ctx.inputSlew = inputSlew;
   ctx.outputLoad = outputLoad;
+  ctx.outputEdge = outputEdge;
+  return ctx;
+}
+
+static DelayResult getArcDelay(const TimingArc *arc,
+                               const DelayModel *delayModel, double inputSlew,
+                               double outputLoad,
+                               TransitionEdge outputEdge = TransitionEdge::Rise) {
+  if (!delayModel || !arc->getOp())
+    return {arc->getDelay(), inputSlew};
+
+  auto ctx = makeDelayContext(arc, inputSlew, outputLoad, outputEdge);
 
   auto result = delayModel->computeDelay(ctx);
   if (!delayModel->usesSlewPropagation())
@@ -66,12 +75,21 @@ static DelayResult getArcDelay(const TimingArc *arc,
   return result;
 }
 
+static TimingSense getArcTimingSense(const TimingArc *arc,
+                                     const DelayModel *delayModel) {
+  if (!delayModel || !arc->getOp())
+    return TimingSense::PositiveUnate;
+
+  auto ctx = makeDelayContext(arc, 0.0, 0.0, TransitionEdge::Rise);
+  return delayModel->getTimingSense(ctx);
+}
+
 //===----------------------------------------------------------------------===//
 // NodeArrivalData Implementation
 //===----------------------------------------------------------------------===//
 
 void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime,
-                                 double slew) {
+                                 double slew, TransitionEdge edge) {
   // Update max if this is a new maximum
   if (arrivals.empty() || arrivalTime > maxArrivalTime ||
       (arrivalTime == maxArrivalTime && slew > maxArrivalSlew)) {
@@ -80,11 +98,26 @@ void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime,
     maxStartPoint = startPoint;
   }
 
+  // Update per-edge max tracking
+  if (edge == TransitionEdge::Rise) {
+    if (!hasRise || arrivalTime > maxRiseArrival) {
+      maxRiseArrival = arrivalTime;
+      maxRiseSlew = slew;
+      hasRise = true;
+    }
+  } else {
+    if (!hasFall || arrivalTime > maxFallArrival) {
+      maxFallArrival = arrivalTime;
+      maxFallSlew = slew;
+      hasFall = true;
+    }
+  }
+
   // Store all arrivals if requested
   if (keepAllArrivals) {
-    // Check if we already have an arrival from this start point
+    // Check if we already have an arrival from this start point with same edge
     for (auto &arrival : arrivals) {
-      if (arrival.startPoint == startPoint) {
+      if (arrival.startPoint == startPoint && arrival.edge == edge) {
         // Keep the maximum
         if (arrivalTime > arrival.arrivalTime ||
             (arrivalTime == arrival.arrivalTime && slew > arrival.slew)) {
@@ -94,13 +127,13 @@ void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime,
         return;
       }
     }
-    arrivals.push_back({startPoint, arrivalTime, slew});
+    arrivals.push_back({startPoint, arrivalTime, slew, edge});
   } else {
     // Just keep the max
     if (arrivals.empty())
-      arrivals.push_back({startPoint, arrivalTime, slew});
+      arrivals.push_back({startPoint, arrivalTime, slew, edge});
     else if (arrivalTime > arrivals[0].arrivalTime)
-      arrivals[0] = {startPoint, arrivalTime, slew};
+      arrivals[0] = {startPoint, arrivalTime, slew, edge};
   }
 }
 
@@ -166,11 +199,29 @@ void ArrivalAnalysis::matchStartPoints() {
   }
 }
 
+/// Determine output edge(s) given input edge and timing sense.
+static SmallVector<TransitionEdge, 2>
+getOutputEdges(TransitionEdge inputEdge, TimingSense sense) {
+  switch (sense) {
+  case TimingSense::PositiveUnate:
+    return {inputEdge};
+  case TimingSense::NegativeUnate:
+    return {inputEdge == TransitionEdge::Rise ? TransitionEdge::Fall
+                                              : TransitionEdge::Rise};
+  case TimingSense::NonUnate:
+    return {TransitionEdge::Rise, TransitionEdge::Fall};
+  }
+  return {inputEdge};
+}
+
 void ArrivalAnalysis::propagate() {
-  // Initialize arrival times at start points
+  // Initialize arrival times at start points with both rise and fall
   for (auto *startNode : matchedStartPoints) {
     auto &data = arrivalData[startNode->getId().index];
-    data.addArrival(startNode->getId(), 0, options.initialSlew);
+    data.addArrival(startNode->getId(), 0, options.initialSlew,
+                    TransitionEdge::Rise);
+    data.addArrival(startNode->getId(), 0, options.initialSlew,
+                    TransitionEdge::Fall);
   }
 
   // Forward propagation in topological order
@@ -184,11 +235,19 @@ void ArrivalAnalysis::propagate() {
       auto *successor = arc->getTo();
       auto &succData = arrivalData[successor->getId().index];
 
+      // Get timing sense for this arc
+      auto sense = getArcTimingSense(arc, delayModel);
+
       // Propagate all arrivals from this node
       for (const auto &arrival : nodeData.getAllArrivals()) {
-        auto delay = getArcDelay(arc, delayModel, arrival.slew, outputLoad);
-        int64_t newArrival = arrival.arrivalTime + delay.delay;
-        succData.addArrival(arrival.startPoint, newArrival, delay.outputSlew);
+        auto outputEdges = getOutputEdges(arrival.edge, sense);
+        for (auto outEdge : outputEdges) {
+          auto delay =
+              getArcDelay(arc, delayModel, arrival.slew, outputLoad, outEdge);
+          int64_t newArrival = arrival.arrivalTime + delay.delay;
+          succData.addArrival(arrival.startPoint, newArrival, delay.outputSlew,
+                              outEdge);
+        }
       }
     }
   }

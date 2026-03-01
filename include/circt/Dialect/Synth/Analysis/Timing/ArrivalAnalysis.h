@@ -20,6 +20,7 @@
 #ifndef CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_ARRIVALANALYSIS_H
 #define CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_ARRIVALANALYSIS_H
 
+#include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
 #include "circt/Dialect/Synth/Analysis/Timing/TimingGraph.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -37,6 +38,7 @@ struct ArrivalInfo {
   TimingNodeId startPoint; // The start point this arrival came from
   int64_t arrivalTime;     // Arrival time from that start point
   double slew = 0.0;       // Slew at this node for that start point
+  TransitionEdge edge = TransitionEdge::Rise; // Transition edge at this node
 
   bool operator<(const ArrivalInfo &other) const {
     return arrivalTime < other.arrivalTime;
@@ -53,7 +55,8 @@ class NodeArrivalData {
 public:
   /// Add an arrival from a start point.
   void addArrival(TimingNodeId startPoint, int64_t arrivalTime,
-                  double slew = 0.0);
+                  double slew = 0.0,
+                  TransitionEdge edge = TransitionEdge::Rise);
 
   /// Get the maximum arrival time at this node.
   int64_t getMaxArrivalTime() const { return maxArrivalTime; }
@@ -70,6 +73,16 @@ public:
   /// Check if this node has any arrivals.
   bool hasArrivals() const { return !arrivals.empty(); }
 
+  /// Get the maximum arrival time for a specific edge.
+  int64_t getMaxArrivalTimeForEdge(TransitionEdge edge) const {
+    return edge == TransitionEdge::Rise ? maxRiseArrival : maxFallArrival;
+  }
+
+  /// Get the maximum slew for a specific edge.
+  double getMaxSlewForEdge(TransitionEdge edge) const {
+    return edge == TransitionEdge::Rise ? maxRiseSlew : maxFallSlew;
+  }
+
   /// Set whether to keep all arrivals or just the max.
   void setKeepAllArrivals(bool keep) { keepAllArrivals = keep; }
 
@@ -78,6 +91,12 @@ private:
   int64_t maxArrivalTime = 0;
   double maxArrivalSlew = 0.0;
   TimingNodeId maxStartPoint;
+  int64_t maxRiseArrival = 0;
+  int64_t maxFallArrival = 0;
+  double maxRiseSlew = 0.0;
+  double maxFallSlew = 0.0;
+  bool hasRise = false;
+  bool hasFall = false;
   bool keepAllArrivals = false;
 };
 

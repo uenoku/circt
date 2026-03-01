@@ -79,10 +79,12 @@ the ongoing `#synth` typed-NLDM attribute work.
   - ~~output-load modeling from fanout pin capacitances~~ done
   - ~~iterative slew/load convergence loop~~ done
   - remaining: output-slew transition-table wiring for full accuracy
-- **Rise/fall edge-aware timing is missing** (see dedicated section below).
-  The timing graph uses a single delay/arrival per arc/node. Timing sense
-  (`positive_unate`, `negative_unate`, `non_unate`) is imported but unused.
-  This can cause significant inaccuracy (rise/fall delays can differ 2-3x).
+- ~~Rise/fall edge-aware timing is missing~~ Done (Phase 1-2).
+  Dual-edge propagation now seeds both rise and fall arrivals at start points
+  and uses `timingSense` to map transitions through cells. Delay/slew lookup
+  selects the correct table (`cellRise`/`cellFall`, `riseTransition`/`fallTransition`)
+  based on output edge. Remaining: dual-edge backward propagation and
+  transition-annotated path reporting.
 - Golden-reference validation against OpenSTA is missing (see new section below).
 - Technology mapping bridge (Step D) needs concrete implementation details for
   how `synth.liberty.cell` annotations are populated by the mapper.
@@ -132,19 +134,25 @@ The slew fields exist in the data structures but are not propagated through the 
 
 ### 1.5. Rise/Fall Edge-Aware Timing (Dual-Edge Analysis)
 
-**Status (2026-03): Not started. This is a major correctness gap.**
+**Status (2026-03): Phase 1-2 complete.**
 
-The timing graph currently tracks a single arrival time per node and a single
-delay per arc. The `timingSense` attribute from Liberty (`positive_unate`,
-`negative_unate`, `non_unate`) is imported but **never consumed** during
-delay computation. This means:
+Dual-edge forward propagation is implemented. Start points seed both rise and
+fall arrivals. `ArrivalInfo` carries a `TransitionEdge` field, and
+`NodeArrivalData` tracks per-edge max arrival/slew. During propagation, each
+arc's `timingSense` determines output edge(s):
 
-- An inverter (`negative_unate`) reports the same delay regardless of input
-  transition direction.
-- Chains of inverters do not alternate between `cellRise` and `cellFall`
-  delays as they should in reality.
-- The wrong transition table may be used for delay and slew lookup
-  (currently `cellRise` is tried first as a heuristic fallback).
+- `positive_unate`: preserves edge (rise→rise, fall→fall)
+- `negative_unate`: inverts edge (rise→fall, fall→rise)
+- `non_unate`: propagates to both edges
+
+`getDelayFromTimingArc()` and `getOutputSlewFromTimingArc()` now accept a
+`TransitionEdge` parameter and try the matching table first (`Rise`→`cellRise`,
+`Fall`→`cellFall`) with fallback to the other table when the primary is empty.
+
+`NLDMDelayModel::getTimingSense()` reads the `timingSense` string from
+`NLDMArcAttr` to return the correct `TimingSense` enum value.
+
+Endpoints report `max(rise, fall)` for backward compatibility.
 
 #### Phase 1: Dual-Edge Data Structures
 
@@ -783,7 +791,8 @@ toward validation, practical usability, and CCS maturation.
 
 | Priority | Enhancement | Unlocks |
 |----------|------------|---------|
-| 1 | Rise/fall edge-aware timing (Section 1.5) | Correct delay through inverting cells |
+| ~~1~~ | ~~Rise/fall edge-aware timing (Section 1.5)~~ | Done (Phase 1-2) |
+| 1 | Dual-edge backward propagation + path reporting | Complete edge-aware STA |
 | 2 | Finish NLDM output-slew transition-table wiring | Complete NLDM accuracy |
 | 3 | Technology mapping bridge (Step D) | Real synthesis-to-STA flow |
 | 4 | Golden-reference validation against OpenSTA (Step E) | Confidence in numerical correctness |
@@ -794,8 +803,6 @@ toward validation, practical usability, and CCS maturation.
 | 9 | Incremental analysis | ECO flows |
 | 10 | Parallelization | Performance at scale |
 
-Item 1 (rise/fall awareness) is now the top priority — without it, delay
-through any inverting cell is incorrect, and slew table selection is
-heuristic. Items 2-4 are the critical path for making NLDM practically
-usable and trustworthy. Item 5 (clock domains) is independently high-value
-since multi-clock designs are the norm. Items 6-10 can be parallelized.
+Items 1-4 are the critical path for making NLDM practically usable and
+trustworthy. Item 5 (clock domains) is independently high-value since
+multi-clock designs are the norm. Items 6-10 can be parallelized.

@@ -7,10 +7,10 @@
 // CHECK: === Timing Report ===
 // CHECK: Module: dut
 // CHECK: Delay Model: nldm
-// CHECK: Path 1: delay = 45
+// CHECK: Path 1: delay = 40
 // CHECK: Startpoint: a[0] (input port)
 // CHECK: Endpoint:   y[0] (output port)
-// CHECK: Path 2: delay = 43
+// CHECK: Path 2: delay = 35
 // CHECK: Startpoint: b[0] (input port)
 // CHECK: Endpoint:   y[0] (output port)
 

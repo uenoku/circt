@@ -258,31 +258,59 @@ static std::optional<double> interpolateTable(double x, double y,
 
 static std::optional<int64_t>
 getDelayFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
-                      double outputLoad, double timeScalePs) {
-  if (auto rise = interpolateTable(
-          inputSlew, outputLoad, timingArc.getCellRiseIndex1(),
-          timingArc.getCellRiseIndex2(), timingArc.getCellRiseValues()))
-    return static_cast<int64_t>(std::llround(*rise * timeScalePs));
-  if (auto fall = interpolateTable(
-          inputSlew, outputLoad, timingArc.getCellFallIndex1(),
-          timingArc.getCellFallIndex2(), timingArc.getCellFallValues()))
-    return static_cast<int64_t>(std::llround(*fall * timeScalePs));
+                      double outputLoad, double timeScalePs,
+                      TransitionEdge edge = TransitionEdge::Rise) {
+  // Try the requested edge first, then fall back to the other.
+  if (edge == TransitionEdge::Rise) {
+    if (auto rise = interpolateTable(
+            inputSlew, outputLoad, timingArc.getCellRiseIndex1(),
+            timingArc.getCellRiseIndex2(), timingArc.getCellRiseValues()))
+      return static_cast<int64_t>(std::llround(*rise * timeScalePs));
+    if (auto fall = interpolateTable(
+            inputSlew, outputLoad, timingArc.getCellFallIndex1(),
+            timingArc.getCellFallIndex2(), timingArc.getCellFallValues()))
+      return static_cast<int64_t>(std::llround(*fall * timeScalePs));
+  } else {
+    if (auto fall = interpolateTable(
+            inputSlew, outputLoad, timingArc.getCellFallIndex1(),
+            timingArc.getCellFallIndex2(), timingArc.getCellFallValues()))
+      return static_cast<int64_t>(std::llround(*fall * timeScalePs));
+    if (auto rise = interpolateTable(
+            inputSlew, outputLoad, timingArc.getCellRiseIndex1(),
+            timingArc.getCellRiseIndex2(), timingArc.getCellRiseValues()))
+      return static_cast<int64_t>(std::llround(*rise * timeScalePs));
+  }
   return std::nullopt;
 }
 
 static std::optional<double>
 getOutputSlewFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
-                           double outputLoad) {
-  if (auto rise = interpolateTable(inputSlew, outputLoad,
-                                   timingArc.getRiseTransitionIndex1(),
-                                   timingArc.getRiseTransitionIndex2(),
-                                   timingArc.getRiseTransitionValues()))
-    return rise;
-  if (auto fall = interpolateTable(inputSlew, outputLoad,
-                                   timingArc.getFallTransitionIndex1(),
-                                   timingArc.getFallTransitionIndex2(),
-                                   timingArc.getFallTransitionValues()))
-    return fall;
+                           double outputLoad,
+                           TransitionEdge edge = TransitionEdge::Rise) {
+  // Try the requested edge first, then fall back to the other.
+  if (edge == TransitionEdge::Rise) {
+    if (auto rise = interpolateTable(inputSlew, outputLoad,
+                                     timingArc.getRiseTransitionIndex1(),
+                                     timingArc.getRiseTransitionIndex2(),
+                                     timingArc.getRiseTransitionValues()))
+      return rise;
+    if (auto fall = interpolateTable(inputSlew, outputLoad,
+                                     timingArc.getFallTransitionIndex1(),
+                                     timingArc.getFallTransitionIndex2(),
+                                     timingArc.getFallTransitionValues()))
+      return fall;
+  } else {
+    if (auto fall = interpolateTable(inputSlew, outputLoad,
+                                     timingArc.getFallTransitionIndex1(),
+                                     timingArc.getFallTransitionIndex2(),
+                                     timingArc.getFallTransitionValues()))
+      return fall;
+    if (auto rise = interpolateTable(inputSlew, outputLoad,
+                                     timingArc.getRiseTransitionIndex1(),
+                                     timingArc.getRiseTransitionIndex2(),
+                                     timingArc.getRiseTransitionValues()))
+      return rise;
+  }
   return std::nullopt;
 }
 
@@ -905,13 +933,14 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
         if (auto timingArc = liberty->getTypedTimingArc(
                 *cellName, ctx.inputIndex, ctx.outputIndex)) {
           double outputSlew = ctx.inputSlew;
-          if (auto slew = getOutputSlewFromTimingArc(*timingArc, ctx.inputSlew,
-                                                     ctx.outputLoad))
+          if (auto slew = getOutputSlewFromTimingArc(
+                  *timingArc, ctx.inputSlew, ctx.outputLoad, ctx.outputEdge))
             outputSlew = *slew;
 
-          if (auto delay =
-                  getDelayFromTimingArc(*timingArc, ctx.inputSlew,
-                                        ctx.outputLoad, getTimeScalePs(ctx.op)))
+          if (auto delay = getDelayFromTimingArc(*timingArc, ctx.inputSlew,
+                                                  ctx.outputLoad,
+                                                  getTimeScalePs(ctx.op),
+                                                  ctx.outputEdge))
             return {*delay, outputSlew};
         }
 
@@ -927,6 +956,27 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
     return {delay, 0.0};
 
   return {0, ctx.inputSlew};
+}
+
+TimingSense NLDMDelayModel::getTimingSense(const DelayContext &ctx) const {
+  if (!liberty || ctx.inputIndex < 0 || ctx.outputIndex < 0)
+    return TimingSense::PositiveUnate;
+
+  auto cellName = getMappedCellName(ctx.op);
+  if (!cellName)
+    return TimingSense::PositiveUnate;
+
+  auto timingArc = liberty->getTypedTimingArc(*cellName, ctx.inputIndex,
+                                              ctx.outputIndex);
+  if (!timingArc)
+    return TimingSense::PositiveUnate;
+
+  StringRef sense = timingArc->getTimingSense().getValue();
+  if (sense == "negative_unate")
+    return TimingSense::NegativeUnate;
+  if (sense == "non_unate")
+    return TimingSense::NonUnate;
+  return TimingSense::PositiveUnate;
 }
 
 double NLDMDelayModel::getInputCapacitance(const DelayContext &ctx) const {

@@ -21,6 +21,7 @@ static std::string formatNodeLabel(const TimingNode *node) {
       .str();
 }
 
+
 static int64_t resolvePathDelay(const TimingPath &path,
                                 const ArrivalAnalysis *arrivals) {
   auto *sp = path.getStartPoint();
