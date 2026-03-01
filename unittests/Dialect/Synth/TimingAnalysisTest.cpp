@@ -1194,6 +1194,42 @@ TEST_F(TimingAnalysisTest, CCSPilotVectorSetInterpolatesAcrossSelectors) {
   EXPECT_NEAR(outputWaveform[1].time, 950.0, 1e-9);
 }
 
+TEST_F(TimingAnalysisTest, CCSPilotVectorSetUsesAxisLinearInterpolation) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotVectorInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.25;
+  ctx.outputLoad = 0.5;
+
+  auto delay = model->computeDelay(ctx);
+  EXPECT_EQ(delay.delay, 225);
+  EXPECT_NEAR(delay.outputSlew, 280.0, 1e-9);
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 0.0}, {1.0, 1.0}};
+  SmallVector<WaveformPoint> outputWaveform;
+  EXPECT_TRUE(model->computeOutputWaveform(ctx, inputWaveform, outputWaveform));
+  ASSERT_EQ(outputWaveform.size(), 2u);
+  EXPECT_NEAR(outputWaveform[0].time, 275.0, 1e-9);
+  EXPECT_NEAR(outputWaveform[1].time, 625.0, 1e-9);
+}
+
 TEST_F(TimingAnalysisTest, CCSPilotVectorGridUsesStructuredBilinearBlend) {
   OwningOpRef<ModuleOp> module =
       parseSourceString<ModuleOp>(ccsPilotVectorGridInterpolationIR, &context);

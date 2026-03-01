@@ -441,6 +441,89 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
     if (tryStructuredBilinearBlend())
       return true;
 
+    auto tryAxisLinearBlend = [&]() {
+      auto blendBetween = [&](const Candidate &a, const Candidate &b,
+                              double alpha) {
+        if (!compatibleShape(a, b))
+          return false;
+        alpha = std::max(0.0, std::min(alpha, 1.0));
+        times.assign(a.times.size(), 0.0);
+        values.assign(a.values.size(), 0.0);
+        referenceTime = (1.0 - alpha) * a.reference + alpha * b.reference;
+        for (size_t i = 0; i < times.size(); ++i)
+          times[i] = (1.0 - alpha) * a.times[i] + alpha * b.times[i];
+        for (size_t i = 0; i < values.size(); ++i)
+          values[i] = (1.0 - alpha) * a.values[i] + alpha * b.values[i];
+        return true;
+      };
+
+      auto interpolateOnAxis = [&](SmallVectorImpl<const Candidate *> &axis,
+                                   bool useX, double target) {
+        if (axis.size() < 2)
+          return false;
+        llvm::sort(axis, [&](const Candidate *lhs, const Candidate *rhs) {
+          return useX ? lhs->selectorX < rhs->selectorX
+                      : lhs->selectorY < rhs->selectorY;
+        });
+
+        auto coord = [&](const Candidate *candidate) {
+          return useX ? candidate->selectorX : candidate->selectorY;
+        };
+
+        if (target <= coord(axis.front()))
+          return blendBetween(*axis.front(), *axis[1], 0.0);
+        if (target >= coord(axis.back()))
+          return blendBetween(*axis[axis.size() - 2], *axis.back(), 1.0);
+
+        for (size_t i = 1; i < axis.size(); ++i) {
+          double c0 = coord(axis[i - 1]);
+          double c1 = coord(axis[i]);
+          if (target > c1)
+            continue;
+          double alpha = nearlyEqual(c0, c1) ? 0.0 : (target - c0) / (c1 - c0);
+          return blendBetween(*axis[i - 1], *axis[i], alpha);
+        }
+        return false;
+      };
+
+      auto nearestSelector = [&](bool useX, double target) {
+        std::optional<double> nearest;
+        double bestDist = 0.0;
+        for (const Candidate &candidate : candidates) {
+          double coord = useX ? candidate.selectorX : candidate.selectorY;
+          double dist = std::abs(coord - target);
+          if (!nearest || dist < bestDist) {
+            nearest = coord;
+            bestDist = dist;
+          }
+        }
+        return nearest;
+      };
+
+      if (auto nearestY = nearestSelector(/*useX=*/false, outputLoad)) {
+        SmallVector<const Candidate *> row;
+        for (const Candidate &candidate : candidates)
+          if (nearlyEqual(candidate.selectorY, *nearestY))
+            row.push_back(&candidate);
+        if (interpolateOnAxis(row, /*useX=*/true, inputSlew))
+          return true;
+      }
+
+      if (auto nearestX = nearestSelector(/*useX=*/true, inputSlew)) {
+        SmallVector<const Candidate *> col;
+        for (const Candidate &candidate : candidates)
+          if (nearlyEqual(candidate.selectorX, *nearestX))
+            col.push_back(&candidate);
+        if (interpolateOnAxis(col, /*useX=*/false, outputLoad))
+          return true;
+      }
+
+      return false;
+    };
+
+    if (tryAxisLinearBlend())
+      return true;
+
     SmallVector<size_t> order(candidates.size());
     for (size_t i = 0; i < candidates.size(); ++i)
       order[i] = i;

@@ -567,8 +567,9 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   into typed CCS pilot arc metadata.
 - Landed: vector-set interpolation by `(inputSlew, outputLoad)` in CCS pilot
   waveform decode, preferring structured bilinear interpolation on regular
-  selector grids and falling back to inverse-distance blend, with interpolated
-  `reference_time` applied as waveform time offset.
+  selector grids, then axis-linear interpolation on sparse row/column slices,
+  and finally inverse-distance blend, with interpolated `reference_time`
+  applied as waveform time offset.
 - Remaining parser follow-up: richer template semantics and policy fidelity
   beyond pilot interpolation.
 

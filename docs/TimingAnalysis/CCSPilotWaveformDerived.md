@@ -58,9 +58,10 @@ For multi-input cells, arc selection is pin-specific (`relatedPin` / operand
 index), so different inputs can produce different waveform-derived delay/slew.
 
 For nested CCS vector sets, current pilot policy prefers structured bilinear
-interpolation on regular `(index_1, index_2)` selector grids, and falls back to
-inverse-distance blending on sparse/non-grid vector sets. Interpolated
-`reference_time` is applied as a time-axis offset before threshold extraction.
+interpolation on regular `(index_1, index_2)` selector grids, then falls back
+to axis-linear interpolation on sparse row/column slices, and finally to
+inverse-distance blending for irregular sets. Interpolated `reference_time` is
+applied as a time-axis offset before threshold extraction.
 
 ## Load-Aware Timing Stretch
 
@@ -157,6 +158,7 @@ E2E waveform details:
 - `test/circt-sta/mixed-ccs-pilot-critical-path-policy.mlir`
 - `test/circt-sta/ccs-pilot-vector-interpolation-report.mlir`
 - `test/circt-sta/ccs-pilot-vector-grid-interpolation-report.mlir`
+- `test/circt-sta/ccs-pilot-vector-axis-linear-report.mlir`
 
 ## Limitations and Next Steps
 
