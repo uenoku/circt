@@ -13,6 +13,10 @@ The two-stage static timing analysis engine at `lib/Dialect/Synth/Analysis/Timin
 
 The `DelayContext` already carries `inputSlew` and `outputLoad` fields, and `DelayResult` returns `outputSlew`, but these are currently unused (always 0). This infrastructure was designed to enable NLDM and CCS without API changes.
 
+The `DelayModel` interface now also includes a waveform-propagation hook
+(`usesWaveformPropagation()` + `computeOutputWaveform(...)`) so CCS can be
+introduced without changing analysis call sites again.
+
 Implementation note (2026-03): the timing flow should reuse the existing
 `import-liberty` translation pipeline instead of adding a second standalone
 Liberty parser under timing analysis.
@@ -278,6 +282,8 @@ metadata, so importer and timing analysis share a stable schema.
 3. Compute `outputLoad` from fanout pin capacitances through the Liberty bridge.
 4. Add convergence loop in `TimingAnalysis::runFullAnalysis()` for
    slew/load-dependent delay models.
+5. Implement first CCS pilot model on top of the waveform hook while sharing
+   Liberty cell/arc resolution and load modeling infrastructure with NLDM.
 
 ### Step B: NLDMDelayModel Implementation
 

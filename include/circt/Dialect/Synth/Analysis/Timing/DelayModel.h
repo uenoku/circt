@@ -17,6 +17,8 @@
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
 #include <memory>
@@ -46,6 +48,12 @@ struct DelayResult {
   double outputSlew = 0.0; // Output slew to propagate to fanout
 };
 
+/// Generic waveform point for waveform-based timing models (e.g. CCS).
+struct WaveformPoint {
+  double time = 0.0;
+  double value = 0.0;
+};
+
 /// Abstract base class for delay models.
 class DelayModel {
 public:
@@ -59,6 +67,21 @@ public:
 
   /// Whether this model uses slew propagation.
   virtual bool usesSlewPropagation() const { return false; }
+
+  /// Whether this model provides waveform-level propagation.
+  ///
+  /// CCS-style models can override this and `computeOutputWaveform` while
+  /// scalar models keep the default behavior.
+  virtual bool usesWaveformPropagation() const { return false; }
+
+  /// Optional waveform propagation hook for waveform-capable models.
+  ///
+  /// Returns true when `outputWaveform` is produced, false when unsupported.
+  virtual bool computeOutputWaveform(
+      const DelayContext &ctx, llvm::ArrayRef<WaveformPoint> inputWaveform,
+      llvm::SmallVectorImpl<WaveformPoint> &outputWaveform) const {
+    return false;
+  }
 };
 
 /// Unit delay model: returns 1 for all logic ops, 0 for wiring ops.
