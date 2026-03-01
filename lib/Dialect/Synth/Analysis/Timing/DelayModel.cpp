@@ -19,6 +19,7 @@
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 using namespace circt;
@@ -288,7 +289,64 @@ getOutputSlewFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
 
 static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
                                    SmallVectorImpl<double> &times,
-                                   SmallVectorImpl<double> &values) {
+                                   SmallVectorImpl<double> &values,
+                                   double inputSlew, double outputLoad,
+                                   double &referenceTime) {
+  referenceTime = 0.0;
+
+  auto selectNearestVector = [&](ArrayAttr selector1,
+                                 ArrayAttr selector2) -> std::optional<size_t> {
+    if (selector1.empty())
+      return std::nullopt;
+
+    double bestDistance = std::numeric_limits<double>::infinity();
+    std::optional<size_t> bestIndex;
+    for (auto [index, attr] : llvm::enumerate(selector1)) {
+      auto x = dyn_cast<FloatAttr>(attr);
+      if (!x)
+        continue;
+      double y = 0.0;
+      if (!selector2.empty() && index < selector2.size())
+        if (auto yAttr = dyn_cast<FloatAttr>(selector2[index]))
+          y = yAttr.getValueAsDouble();
+      double dx = x.getValueAsDouble() - inputSlew;
+      double dy = y - outputLoad;
+      double distance = dx * dx + dy * dy;
+      if (!bestIndex || distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    }
+    return bestIndex;
+  };
+
+  auto decodeVectorSet = [&](ArrayAttr selector1, ArrayAttr selector2,
+                             ArrayAttr refs, ArrayAttr vectorTimes,
+                             ArrayAttr vectorValues) {
+    if (vectorTimes.empty() || vectorValues.empty())
+      return false;
+    size_t selected = selectNearestVector(selector1, selector2).value_or(0);
+    if (selected >= vectorTimes.size() || selected >= vectorValues.size())
+      return false;
+
+    auto selectedTimes = dyn_cast<ArrayAttr>(vectorTimes[selected]);
+    auto selectedValues = dyn_cast<ArrayAttr>(vectorValues[selected]);
+    if (!selectedTimes || !selectedValues)
+      return false;
+
+    if (!decodeNumericArray(selectedTimes, times) ||
+        !decodeNumericArray(selectedValues, values))
+      return false;
+    if (times.empty() || times.size() != values.size())
+      return false;
+
+    if (selected < refs.size())
+      if (auto ref = dyn_cast<FloatAttr>(refs[selected]))
+        referenceTime = ref.getValueAsDouble();
+
+    return true;
+  };
+
   auto decodePair = [&](ArrayAttr t, ArrayAttr v) {
     if (t.empty() || v.empty())
       return false;
@@ -298,12 +356,28 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
   };
 
   if (preferFall) {
+    if (decodeVectorSet(arc.getFallSelectorIndex1(), arc.getFallSelectorIndex2(),
+                        arc.getFallReferenceTimes(), arc.getFallVectorTimes(),
+                        arc.getFallVectorValues()))
+      return true;
     if (decodePair(arc.getCurrentFallTimes(), arc.getCurrentFallValues()))
+      return true;
+    if (decodeVectorSet(arc.getRiseSelectorIndex1(), arc.getRiseSelectorIndex2(),
+                        arc.getRiseReferenceTimes(), arc.getRiseVectorTimes(),
+                        arc.getRiseVectorValues()))
       return true;
     if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
       return true;
   } else {
+    if (decodeVectorSet(arc.getRiseSelectorIndex1(), arc.getRiseSelectorIndex2(),
+                        arc.getRiseReferenceTimes(), arc.getRiseVectorTimes(),
+                        arc.getRiseVectorValues()))
+      return true;
     if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
+      return true;
+    if (decodeVectorSet(arc.getFallSelectorIndex1(), arc.getFallSelectorIndex2(),
+                        arc.getFallReferenceTimes(), arc.getFallVectorTimes(),
+                        arc.getFallVectorValues()))
       return true;
     if (decodePair(arc.getCurrentFallTimes(), arc.getCurrentFallValues()))
       return true;
@@ -446,13 +520,15 @@ static bool extractCCSPilotThresholdMetrics(const DelayContext &ctx,
     return false;
 
   SmallVector<double> times, values;
-  if (!decodeCCSPilotWaveform(*arc, preferFall, times, values))
+  double referenceTime = 0.0;
+  if (!decodeCCSPilotWaveform(*arc, preferFall, times, values, ctx.inputSlew,
+                              ctx.outputLoad, referenceTime))
     return false;
 
   double scale = getTimeScalePs(ctx.op);
   double stretch = getCCSPilotEffectiveStretch(ctx, liberty, preferFall);
   for (double &t : times)
-    t = t * scale * stretch;
+    t = (t + referenceTime) * scale * stretch;
 
   auto t50 = interpolateCrossing(times, values, 0.5);
   auto t10 = interpolateCrossing(times, values, 0.1);
@@ -618,13 +694,17 @@ bool CCSPilotDelayModel::computeOutputWaveform(
           bool preferFall =
               inputWaveform.size() >= 2 &&
               inputWaveform.back().value < inputWaveform.front().value;
-          if (decodeCCSPilotWaveform(*arc, preferFall, times, values)) {
+          double referenceTime = 0.0;
+          if (decodeCCSPilotWaveform(*arc, preferFall, times, values,
+                                     ctx.inputSlew, ctx.outputLoad,
+                                     referenceTime)) {
             double scale = getTimeScalePs(ctx.op);
             double stretch =
                 getCCSPilotEffectiveStretch(ctx, liberty, preferFall);
             for (auto [t, v] : llvm::zip(times, values))
               outputWaveform.push_back(
-                  {baseTime + delayPs + t * scale * stretch, v});
+                  {baseTime + delayPs + (t + referenceTime) * scale * stretch,
+                   v});
             return true;
           }
         }

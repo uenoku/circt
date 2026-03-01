@@ -555,6 +555,22 @@ static std::optional<ArrayAttr> parseValueList(Attribute attr,
   return builder.getArrayAttr(values);
 }
 
+static std::optional<ArrayAttr> getGroupField(const LibertyGroup &group,
+                                              StringRef fieldName,
+                                              OpBuilder &builder) {
+  if (auto value = group.getAttribute(fieldName).first)
+    if (auto parsed = parseValueList(value, builder))
+      return parsed;
+
+  for (const auto &sub : group.subGroups) {
+    if (sub->name != fieldName || sub->args.empty())
+      continue;
+    if (auto parsed = parseValueList(sub->args.front(), builder))
+      return parsed;
+  }
+  return std::nullopt;
+}
+
 static std::optional<ArrayAttr> getFirstTableField(const LibertyGroup &timing,
                                                    StringRef tableName,
                                                    StringRef fieldName,
@@ -562,13 +578,76 @@ static std::optional<ArrayAttr> getFirstTableField(const LibertyGroup &timing,
   for (const auto &sub : timing.subGroups) {
     if (sub->name != tableName)
       continue;
-    auto attrPair = sub->getAttribute(fieldName);
-    if (!attrPair.first)
-      continue;
-    if (auto values = parseValueList(attrPair.first, builder))
+    if (auto values = getGroupField(*sub, fieldName, builder))
       return values;
   }
   return std::nullopt;
+}
+
+static std::optional<double> getFirstNumeric(ArrayAttr values) {
+  if (values.empty())
+    return std::nullopt;
+  auto first = values[0];
+  if (auto f = dyn_cast<FloatAttr>(first))
+    return f.getValueAsDouble();
+  if (auto i = dyn_cast<IntegerAttr>(first))
+    return static_cast<double>(i.getInt());
+  return std::nullopt;
+}
+
+struct CcsVectorTableData {
+  ArrayAttr selectorIndex1;
+  ArrayAttr selectorIndex2;
+  ArrayAttr referenceTimes;
+  ArrayAttr vectorTimes;
+  ArrayAttr vectorValues;
+};
+
+static CcsVectorTableData extractCcsVectorTable(const LibertyGroup &timing,
+                                                StringRef tableName,
+                                                OpBuilder &builder) {
+  SmallVector<Attribute> selector1;
+  SmallVector<Attribute> selector2;
+  SmallVector<Attribute> refs;
+  SmallVector<Attribute> times;
+  SmallVector<Attribute> values;
+
+  for (const auto &table : timing.subGroups) {
+    if (table->name != tableName)
+      continue;
+    for (const auto &vector : table->subGroups) {
+      if (vector->name != "vector")
+        continue;
+      auto vectorTimes = getGroupField(*vector, "index_3", builder);
+      auto vectorValues = getGroupField(*vector, "values", builder);
+      if (!vectorTimes || !vectorValues)
+        continue;
+
+      auto index1 = getGroupField(*vector, "index_1", builder);
+      auto index2 = getGroupField(*vector, "index_2", builder);
+      auto referenceTime = getGroupField(*vector, "reference_time", builder);
+
+      selector1.push_back(builder.getF64FloatAttr(
+          getFirstNumeric(index1.value_or(builder.getArrayAttr({})))
+              .value_or(0.0)));
+      selector2.push_back(builder.getF64FloatAttr(
+          getFirstNumeric(index2.value_or(builder.getArrayAttr({})))
+              .value_or(0.0)));
+      refs.push_back(builder.getF64FloatAttr(
+          getFirstNumeric(referenceTime.value_or(builder.getArrayAttr({})))
+              .value_or(0.0)));
+      times.push_back(*vectorTimes);
+      values.push_back(*vectorValues);
+    }
+  }
+
+  CcsVectorTableData result;
+  result.selectorIndex1 = builder.getArrayAttr(selector1);
+  result.selectorIndex2 = builder.getArrayAttr(selector2);
+  result.referenceTimes = builder.getArrayAttr(refs);
+  result.vectorTimes = builder.getArrayAttr(times);
+  result.vectorValues = builder.getArrayAttr(values);
+  return result;
 }
 
 static std::optional<circt::synth::NLDMArcAttr>
@@ -658,13 +737,38 @@ buildCcsPilotArcAttr(const LibertyGroup &timing, StringRef outputPin,
       getFirstTableField(timing, "output_current_fall", "values", builder)
           .value_or(builder.getArrayAttr({}));
 
+  auto riseVectors =
+      extractCcsVectorTable(timing, "output_current_rise", builder);
+  auto fallVectors =
+      extractCcsVectorTable(timing, "output_current_fall", builder);
+
+  if (riseTimes.empty() && riseValues.empty() &&
+      !riseVectors.vectorTimes.empty() && !riseVectors.vectorValues.empty()) {
+    if (auto firstTimes = dyn_cast<ArrayAttr>(riseVectors.vectorTimes[0]))
+      riseTimes = firstTimes;
+    if (auto firstValues = dyn_cast<ArrayAttr>(riseVectors.vectorValues[0]))
+      riseValues = firstValues;
+  }
+  if (fallTimes.empty() && fallValues.empty() &&
+      !fallVectors.vectorTimes.empty() && !fallVectors.vectorValues.empty()) {
+    if (auto firstTimes = dyn_cast<ArrayAttr>(fallVectors.vectorTimes[0]))
+      fallTimes = firstTimes;
+    if (auto firstValues = dyn_cast<ArrayAttr>(fallVectors.vectorValues[0]))
+      fallValues = firstValues;
+  }
+
   if (riseTimes.empty() && riseValues.empty() && fallTimes.empty() &&
-      fallValues.empty())
+      fallValues.empty() && riseVectors.vectorTimes.empty() &&
+      fallVectors.vectorTimes.empty())
     return std::nullopt;
 
-  return circt::synth::CCSPilotArcAttr::get(builder.getContext(), relatedPin,
-                                            toPin, riseTimes, riseValues,
-                                            fallTimes, fallValues);
+  return circt::synth::CCSPilotArcAttr::get(
+      builder.getContext(), relatedPin, toPin, riseTimes, riseValues, fallTimes,
+      fallValues, riseVectors.selectorIndex1, riseVectors.selectorIndex2,
+      riseVectors.referenceTimes, riseVectors.vectorTimes,
+      riseVectors.vectorValues, fallVectors.selectorIndex1,
+      fallVectors.selectorIndex2, fallVectors.referenceTimes,
+      fallVectors.vectorTimes, fallVectors.vectorValues);
 }
 
 static std::optional<circt::synth::CCSPilotReceiverAttr>

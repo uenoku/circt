@@ -33,6 +33,9 @@ Typed attribute fields:
 - fall: `currentFallTimes`, `currentFallValues`
 - receiver data: `synth.ccs.pilot.receivers = [#synth.ccs_pilot_receiver<...>]`
   carrying `receiver_capacitance{1,2}_{rise,fall}` tables.
+- optional vector-set payload in `#synth.ccs_pilot_arc` for nested
+  `vector(ccs_template)` forms (`selector indices`, `reference times`,
+  `vector times/values`).
 
 Key files:
 
@@ -53,6 +56,10 @@ Waveform edge direction is inferred from input waveform endpoints.
 
 For multi-input cells, arc selection is pin-specific (`relatedPin` / operand
 index), so different inputs can produce different waveform-derived delay/slew.
+
+For nested CCS vector sets, current pilot policy selects the nearest vector in
+`(index_1, index_2)` space to `(inputSlew, outputLoad)` and applies
+`reference_time` as a time-axis offset before threshold extraction.
 
 ## Load-Aware Timing Stretch
 

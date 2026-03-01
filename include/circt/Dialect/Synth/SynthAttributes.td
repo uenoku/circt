@@ -57,11 +57,26 @@ def CCSPilotArcAttr : AttrDef<Synth_Dialect, "CCSPilotArc"> {
     "mlir::ArrayAttr":$currentRiseTimes,
     "mlir::ArrayAttr":$currentRiseValues,
     "mlir::ArrayAttr":$currentFallTimes,
-    "mlir::ArrayAttr":$currentFallValues
+    "mlir::ArrayAttr":$currentFallValues,
+    "mlir::ArrayAttr":$riseSelectorIndex1,
+    "mlir::ArrayAttr":$riseSelectorIndex2,
+    "mlir::ArrayAttr":$riseReferenceTimes,
+    "mlir::ArrayAttr":$riseVectorTimes,
+    "mlir::ArrayAttr":$riseVectorValues,
+    "mlir::ArrayAttr":$fallSelectorIndex1,
+    "mlir::ArrayAttr":$fallSelectorIndex2,
+    "mlir::ArrayAttr":$fallReferenceTimes,
+    "mlir::ArrayAttr":$fallVectorTimes,
+    "mlir::ArrayAttr":$fallVectorValues
   );
   let assemblyFormat = [{
-    `<` $relatedPin `,` $toPin `,` $currentRiseTimes `,` $currentRiseValues
-    `,` $currentFallTimes `,` $currentFallValues `>`
+    `<` $relatedPin `,` $toPin
+    `,` $currentRiseTimes `,` $currentRiseValues
+    `,` $currentFallTimes `,` $currentFallValues
+    `,` $riseSelectorIndex1 `,` $riseSelectorIndex2 `,` $riseReferenceTimes
+    `,` $riseVectorTimes `,` $riseVectorValues
+    `,` $fallSelectorIndex1 `,` $fallSelectorIndex2 `,` $fallReferenceTimes
+    `,` $fallVectorTimes `,` $fallVectorValues `>`
   }];
 }
 

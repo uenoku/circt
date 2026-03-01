@@ -562,14 +562,13 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
 
 **Milestone 1 next parser target (ASAP-style CCS vectors):**
 
-- Support nested Liberty CCS forms under `output_current_rise/fall`, e.g.
-  `vector(ccs_template) { reference_time, index_1, index_2, index_3, values }`.
-- Map `index_3 + values` to waveform samples and preserve `reference_time` as
-  an explicit time offset in typed attrs.
-- Carry `index_1/index_2` selector axes so delay model can choose vectors by
-  `(inputSlew, outputLoad)` conditions.
-- Land nearest-vector selection first for stability, then optional interpolation
-  across vectors as a follow-up refinement.
+- Landed: nested `vector(ccs_template)` parsing for
+  `output_current_rise/fall` (index_1/index_2/index_3/values/reference_time)
+  into typed CCS pilot arc metadata.
+- Landed: nearest-vector selection by `(inputSlew, outputLoad)` in CCS pilot
+  waveform decode, with `reference_time` applied as waveform time offset.
+- Remaining parser follow-up: interpolation across vectors and richer template
+  semantics (beyond nearest-vector pilot policy).
 
 ---
 

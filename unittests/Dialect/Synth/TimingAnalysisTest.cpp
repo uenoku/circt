@@ -245,7 +245,7 @@ const char *ccsPilotWaveformIR = R"MLIR(
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
           ]
         }}) {
         hw.output %A : i1
@@ -271,11 +271,11 @@ const char *ccsPilotReceiverIR = R"MLIR(
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64], [0.0 : f64], [0.025 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.receivers = [
             #synth.ccs_pilot_receiver<"A", "Y", [0.0 : f64, 1.0 : f64], [0.0 : f64], [0.2 : f64, 1.2 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64], [0.2 : f64, 1.2 : f64], [], [], [], [], [], []>
-          ]
+          ]   
         }}) {
         hw.output %A : i1
       }
@@ -301,7 +301,7 @@ const char *ccsPilotWaveformDelayIR = R"MLIR(
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
           ]
         }}) {
         hw.output %A : i1
@@ -330,8 +330,8 @@ const char *ccsPilotMultiInputIR = R"MLIR(
             #synth.nldm_arc<"B", "Y", "positive_unate", [0.0 : f64], [0.0 : f64], [0.025 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.2 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.2 : f64], [1.0 : f64, 0.0 : f64]>,
-            #synth.ccs_pilot_arc<"B", "Y", [0.0 : f64, 0.8 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.8 : f64], [1.0 : f64, 0.0 : f64]>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.2 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.2 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>,
+            #synth.ccs_pilot_arc<"B", "Y", [0.0 : f64, 0.8 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.8 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
           ]
         }}) {
         %y = comb.or %A, %B : i1
@@ -360,7 +360,7 @@ const char *mixedCcsPilotIR = R"MLIR(
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64], [0.0 : f64], [0.025 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
           ]
         }}) {
         hw.output %A : i1

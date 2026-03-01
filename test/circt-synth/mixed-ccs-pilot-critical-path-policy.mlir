@@ -31,7 +31,7 @@ module attributes {
           #synth.nldm_arc<"A", "Y", "positive_unate", [], [], [0.025 : f64], [], [], [], [], [], [], [], [], []>
         ],
         synth.ccs.pilot.arcs = [
-          #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.6 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.6 : f64], [1.0 : f64, 0.0 : f64]>
+          #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.6 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.6 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
         ]
       }}) {
     hw.output %A : i1
@@ -45,7 +45,7 @@ module attributes {
           #synth.nldm_arc<"A", "Y", "positive_unate", [], [], [0.025 : f64], [], [], [], [], [], [], [], [], []>
         ],
         synth.ccs.pilot.arcs = [
-          #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 1.6 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.6 : f64], [1.0 : f64, 0.0 : f64]>
+          #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 1.6 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.6 : f64], [1.0 : f64, 0.0 : f64], [], [], [], [], [], [], [], [], [], []>
         ]
       }}) {
     hw.output %A : i1

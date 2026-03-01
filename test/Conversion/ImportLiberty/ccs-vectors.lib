@@ -1,0 +1,59 @@
+// RUN: circt-translate --import-liberty %s | FileCheck %s
+
+// CHECK: module attributes {
+// CHECK-SAME: synth.nldm.time_unit = #synth.nldm_time_unit<1.000000e+03 : f64>
+// CHECK: hw.module @BUF(
+// CHECK-SAME: synth.ccs.pilot.arcs = [#synth.ccs_pilot_arc<"A", "Y"
+// CHECK-SAME: [1.000000e+00, 2.000000e+00], [1.000000e-01, 2.000000e-01]
+// CHECK-SAME: [1.500000e+00, 2.500000e+00], [8.000000e-01, 2.000000e-01]
+// CHECK-SAME: [1.000000e-01, 9.000000e-01], [2.000000e-01, 8.000000e-01], [1.000000e+00, 2.000000e+00]
+// CHECK-SAME: {{\[\[1\.000000e\+00, 2\.000000e\+00\], \[3\.000000e\+00, 4\.000000e\+00\]\]}}
+// CHECK-SAME: {{\[\[1\.500000e\+00, 2\.500000e\+00\]\], \[\[8\.000000e-01, 2\.000000e-01\]\]>\]}}
+
+library(testlib) {
+  time_unit : "1ns";
+
+  cell(BUF) {
+    pin(A) {
+      direction : input;
+      capacitance : 0.002;
+    }
+
+    pin(Y) {
+      direction : output;
+      function : "A";
+
+      timing() {
+        related_pin : "A";
+        timing_sense : positive_unate;
+
+        output_current_rise() {
+          vector(ccs_template) {
+            reference_time : 1.0;
+            index_1("0.1");
+            index_2("0.2");
+            index_3("1.0, 2.0");
+            values("0.1, 0.2");
+          }
+          vector(ccs_template) {
+            reference_time : 2.0;
+            index_1("0.9");
+            index_2("0.8");
+            index_3("3.0, 4.0");
+            values("0.3, 0.4");
+          }
+        }
+
+        output_current_fall() {
+          vector(ccs_template) {
+            reference_time : 1.5;
+            index_1("0.5");
+            index_2("0.4");
+            index_3("1.5, 2.5");
+            values("0.8, 0.2");
+          }
+        }
+      }
+    }
+  }
+}
