@@ -18,6 +18,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/StringRef.h"
+#include <cstdint>
 #include <memory>
 
 namespace circt {
@@ -26,11 +27,13 @@ namespace timing {
 
 /// Context passed to delay model for each arc computation.
 struct DelayContext {
-  mlir::Operation *op;     // The defining operation
-  mlir::Value inputValue;  // Input driving this arc
-  mlir::Value outputValue; // Output of this arc
-  double inputSlew = 0.0;  // Input slew (transition time)
-  double outputLoad = 0.0; // Output load capacitance
+  mlir::Operation *op;      // The defining operation
+  mlir::Value inputValue;   // Input driving this arc
+  mlir::Value outputValue;  // Output of this arc
+  int32_t inputIndex = -1;  // Operand index for this arc (if known)
+  int32_t outputIndex = -1; // Result index for this arc (if known)
+  double inputSlew = 0.0;   // Input slew (transition time)
+  double outputLoad = 0.0;  // Output load capacitance
 };
 
 /// Result of delay computation.

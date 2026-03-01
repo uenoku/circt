@@ -23,6 +23,8 @@ static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
   ctx.op = arc->getOp();
   ctx.inputValue = arc->getInputValue();
   ctx.outputValue = arc->getOutputValue();
+  ctx.inputIndex = arc->getInputIndex();
+  ctx.outputIndex = arc->getOutputIndex();
   return delayModel->computeDelay(ctx).delay;
 }
 

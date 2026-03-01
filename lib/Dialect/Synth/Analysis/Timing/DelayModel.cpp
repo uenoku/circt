@@ -13,7 +13,6 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MathExtras.h"
-#include <optional>
 
 using namespace circt;
 using namespace circt::synth::timing;
@@ -26,24 +25,8 @@ static int64_t getAttrDelay(Operation *op, StringRef attrName) {
   return -1;
 }
 
-static std::optional<unsigned> getOperandIndex(Operation *op, Value value) {
-  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
-    if (operand == value)
-      return idx;
-  }
-  return std::nullopt;
-}
-
-static std::optional<unsigned> getResultIndex(Operation *op, Value value) {
-  for (auto [idx, result] : llvm::enumerate(op->getResults())) {
-    if (result == value)
-      return idx;
-  }
-  return std::nullopt;
-}
-
-static int64_t getPerArcDelay(Operation *op, Value inputValue,
-                              Value outputValue) {
+static int64_t getPerArcDelay(Operation *op, int32_t inputIndex,
+                              int32_t outputIndex) {
   if (!op)
     return -1;
 
@@ -51,16 +34,14 @@ static int64_t getPerArcDelay(Operation *op, Value inputValue,
   if (!dict)
     return -1;
 
-  auto inIdx = getOperandIndex(op, inputValue);
-  auto outIdx = getResultIndex(op, outputValue);
-  if (!inIdx || !outIdx)
+  if (inputIndex < 0 || outputIndex < 0)
     return -1;
 
   llvm::SmallString<32> key;
   key += "i";
-  key += llvm::utostr(*inIdx);
+  key += llvm::utostr(static_cast<unsigned>(inputIndex));
   key += "_o";
-  key += llvm::utostr(*outIdx);
+  key += llvm::utostr(static_cast<unsigned>(outputIndex));
 
   if (auto attr = dyn_cast_or_null<IntegerAttr>(dict.get(key)))
     return attr.getInt();
@@ -116,7 +97,7 @@ DelayResult AIGLevelDelayModel::computeDelay(const DelayContext &ctx) const {
 //===----------------------------------------------------------------------===//
 
 DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
-  if (int64_t delay = getPerArcDelay(ctx.op, ctx.inputValue, ctx.outputValue);
+  if (int64_t delay = getPerArcDelay(ctx.op, ctx.inputIndex, ctx.outputIndex);
       delay >= 0)
     return {delay, 0.0};
 

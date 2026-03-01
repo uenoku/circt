@@ -26,6 +26,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Allocator.h"
+#include <cassert>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -124,25 +126,41 @@ private:
 class TimingArc {
 public:
   TimingArc(TimingNode *from, TimingNode *to, int64_t delay, Operation *op,
-            Value inputValue, Value outputValue)
-      : from(from), to(to), delay(delay), op(op), inputValue(inputValue),
-        outputValue(outputValue) {}
+            int32_t inputIndex, int32_t outputIndex)
+      : from(from), to(to), delay(delay), op(op), inputIndex(inputIndex),
+        outputIndex(outputIndex) {}
 
   TimingNode *getFrom() const { return from; }
   TimingNode *getTo() const { return to; }
   int64_t getDelay() const { return delay; }
   void setDelay(int64_t value) { delay = value; }
   Operation *getOp() const { return op; }
-  Value getInputValue() const { return inputValue; }
-  Value getOutputValue() const { return outputValue; }
+  Value getInputValue() const {
+    if (!op)
+      return {};
+    assert(inputIndex >= 0 &&
+           static_cast<unsigned>(inputIndex) < op->getNumOperands() &&
+           "invalid input operand index on timing arc");
+    return op->getOperand(inputIndex);
+  }
+  Value getOutputValue() const {
+    if (!op)
+      return {};
+    assert(outputIndex >= 0 &&
+           static_cast<unsigned>(outputIndex) < op->getNumResults() &&
+           "invalid output result index on timing arc");
+    return op->getResult(outputIndex);
+  }
+  int32_t getInputIndex() const { return inputIndex; }
+  int32_t getOutputIndex() const { return outputIndex; }
 
 private:
   TimingNode *from;
   TimingNode *to;
   int64_t delay;
   Operation *op;
-  Value inputValue;
-  Value outputValue;
+  int32_t inputIndex;
+  int32_t outputIndex;
 };
 
 //===----------------------------------------------------------------------===//
@@ -216,8 +234,8 @@ private:
 
   /// Create a new arc between two nodes.
   TimingArc *createArc(TimingNode *from, TimingNode *to, int64_t delay,
-                       Operation *op = nullptr, Value inputValue = {},
-                       Value outputValue = {});
+                       Operation *op = nullptr, int32_t inputIndex = -1,
+                       int32_t outputIndex = -1);
 
   /// Compute topological ordering of nodes.
   void computeTopologicalOrder();

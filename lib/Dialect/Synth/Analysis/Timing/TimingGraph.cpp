@@ -92,9 +92,14 @@ TimingNodeId TimingGraph::createNode(Value value, uint32_t bitPos,
 
 TimingArc *TimingGraph::createArc(TimingNode *from, TimingNode *to,
                                   int64_t delay, Operation *op,
-                                  Value inputValue, Value outputValue) {
+                                  int32_t inputIndex, int32_t outputIndex) {
+  assert((!op || (inputIndex >= 0 && outputIndex >= 0 &&
+                  static_cast<unsigned>(inputIndex) < op->getNumOperands() &&
+                  static_cast<unsigned>(outputIndex) < op->getNumResults())) &&
+         "timing arc with op must have valid operand/result indices");
+
   auto *arcPtr = arcAllocator.Allocate();
-  new (arcPtr) TimingArc(from, to, delay, op, inputValue, outputValue);
+  new (arcPtr) TimingArc(from, to, delay, op, inputIndex, outputIndex);
 
   from->addFanout(arcPtr);
   to->addFanin(arcPtr);
@@ -306,14 +311,14 @@ LogicalResult TimingGraph::processOperation(Operation *op,
   }
 
   // Handle combinational operations
-  for (auto result : op->getResults()) {
+  for (auto [resultIndex, result] : llvm::enumerate(op->getResults())) {
     size_t resultWidth = getBitWidth(result);
     for (size_t bit = 0; bit < resultWidth; ++bit) {
       auto *toNode =
           getOrCreateNode(result, bit, currentModule, contextPath, topContext);
 
       // Create arcs from operands
-      for (auto operand : op->getOperands()) {
+      for (auto [operandIndex, operand] : llvm::enumerate(op->getOperands())) {
         size_t operandWidth = getBitWidth(operand);
         // For simplicity, connect all operand bits to result bits
         // More sophisticated handling could be added for extract/concat
@@ -325,9 +330,13 @@ LogicalResult TimingGraph::processOperation(Operation *op,
         ctx.op = op;
         ctx.inputValue = operand;
         ctx.outputValue = result;
+        ctx.inputIndex = static_cast<int32_t>(operandIndex);
+        ctx.outputIndex = static_cast<int32_t>(resultIndex);
         int64_t delay = model.computeDelay(ctx).delay;
 
-        createArc(fromNode, toNode, delay, op, operand, result);
+        createArc(fromNode, toNode, delay, op,
+                  static_cast<int32_t>(operandIndex),
+                  static_cast<int32_t>(resultIndex));
       }
     }
   }
