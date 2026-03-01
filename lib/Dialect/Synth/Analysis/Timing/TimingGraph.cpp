@@ -92,13 +92,13 @@ TimingNodeId TimingGraph::createNode(Value value, uint32_t bitPos,
 
 TimingArc *TimingGraph::createArc(TimingNode *from, TimingNode *to,
                                   int64_t delay) {
-  auto arc = std::make_unique<TimingArc>(from, to, delay);
-  TimingArc *arcPtr = arc.get();
+  auto *arcPtr = arcAllocator.Allocate();
+  new (arcPtr) TimingArc(from, to, delay);
 
   from->addFanout(arcPtr);
   to->addFanin(arcPtr);
 
-  arcs.push_back(std::move(arc));
+  arcs.push_back(arcPtr);
   return arcPtr;
 }
 
@@ -186,6 +186,7 @@ std::string TimingGraph::getNameForValue(Value value,
 LogicalResult TimingGraph::build(const DelayModel *delayModel) {
   nodes.clear();
   arcs.clear();
+  arcAllocator.DestroyAll();
   startPoints.clear();
   endPoints.clear();
   topoOrder.clear();

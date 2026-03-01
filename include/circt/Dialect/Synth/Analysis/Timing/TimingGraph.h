@@ -25,6 +25,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Allocator.h"
 #include <memory>
 #include <string>
 #include <tuple>
@@ -239,8 +240,14 @@ private:
   hw::HWModuleOp module;
   bool hierarchical = false;
   std::string delayModelName;
+
+  // Keep nodes in std::unique_ptr because TimingNode owns non-trivial members
+  // (SmallVector fanin/fanout and std::string name). Arcs are much lighter and
+  // far more numerous, so they use a bump allocator for lower allocation
+  // overhead while preserving graph-lifetime ownership semantics.
   SmallVector<std::unique_ptr<TimingNode>> nodes;
-  SmallVector<std::unique_ptr<TimingArc>> arcs;
+  SmallVector<TimingArc *> arcs;
+  llvm::SpecificBumpPtrAllocator<TimingArc> arcAllocator;
   SmallVector<TimingNode *> startPoints;
   SmallVector<TimingNode *> endPoints;
   SmallVector<TimingNode *> topoOrder;
