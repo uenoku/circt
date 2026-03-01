@@ -90,75 +90,6 @@ static std::optional<StringRef> getMappedCellName(Operation *op) {
   return std::nullopt;
 }
 
-static std::optional<double> parseFirstNumber(StringRef text) {
-  text = text.trim();
-  if (text.empty())
-    return std::nullopt;
-
-  size_t end = 0;
-  while (end < text.size()) {
-    char c = text[end];
-    if (llvm::isDigit(c) || c == '+' || c == '-' || c == '.' || c == 'e' ||
-        c == 'E') {
-      ++end;
-      continue;
-    }
-    break;
-  }
-  if (end == 0)
-    return std::nullopt;
-
-  double value = 0.0;
-  if (text.take_front(end).getAsDouble(value))
-    return std::nullopt;
-  return value;
-}
-
-static std::optional<double> parseTimeUnitToPs(StringRef unit) {
-  unit = unit.trim();
-  if (unit.empty())
-    return std::nullopt;
-
-  size_t split = 0;
-  while (split < unit.size()) {
-    char c = unit[split];
-    if (llvm::isDigit(c) || c == '+' || c == '-' || c == '.' || c == 'e' ||
-        c == 'E') {
-      ++split;
-      continue;
-    }
-    break;
-  }
-  if (split == 0)
-    return std::nullopt;
-
-  double magnitude = 0.0;
-  if (unit.take_front(split).getAsDouble(magnitude))
-    return std::nullopt;
-
-  llvm::SmallString<8> suffixStorage = unit.drop_front(split).trim();
-  for (char &c : suffixStorage)
-    c = llvm::toLower(c);
-  StringRef suffix = suffixStorage;
-  double unitToPs = 0.0;
-  if (suffix == "s")
-    unitToPs = 1.0e12;
-  else if (suffix == "ms")
-    unitToPs = 1.0e9;
-  else if (suffix == "us")
-    unitToPs = 1.0e6;
-  else if (suffix == "ns")
-    unitToPs = 1.0e3;
-  else if (suffix == "ps")
-    unitToPs = 1.0;
-  else if (suffix == "fs")
-    unitToPs = 1.0e-3;
-  else
-    return std::nullopt;
-
-  return magnitude * unitToPs;
-}
-
 static double getTimeScalePs(Operation *op) {
   if (!op)
     return 1.0;
@@ -170,22 +101,6 @@ static double getTimeScalePs(Operation *op) {
   if (auto unit = module->getAttrOfType<synth::NLDMTimeUnitAttr>(
           "synth.nldm.time_unit"))
     return unit.getPicoseconds().getValueAsDouble();
-
-  if (auto ps = module->getAttrOfType<FloatAttr>("synth.nldm.time_unit_ps"))
-    return ps.getValueAsDouble();
-  if (auto ps = module->getAttrOfType<IntegerAttr>("synth.nldm.time_unit_ps"))
-    return static_cast<double>(ps.getInt());
-
-  auto lib = module->getAttrOfType<DictionaryAttr>("synth.liberty.library");
-  if (!lib)
-    return 1.0;
-
-  auto unitAttr = lib.getAs<StringAttr>("time_unit");
-  if (!unitAttr)
-    return 1.0;
-
-  if (auto scale = parseTimeUnitToPs(unitAttr.getValue()))
-    return *scale;
   return 1.0;
 }
 
@@ -196,8 +111,6 @@ static std::optional<double> getFirstNumericAttr(Attribute attr) {
     return floatAttr.getValueAsDouble();
   if (auto intAttr = dyn_cast<IntegerAttr>(attr))
     return static_cast<double>(intAttr.getInt());
-  if (auto strAttr = dyn_cast<StringAttr>(attr))
-    return parseFirstNumber(strAttr.getValue());
   if (auto arr = dyn_cast<ArrayAttr>(attr)) {
     if (arr.empty())
       return std::nullopt;
@@ -212,25 +125,6 @@ static std::optional<int64_t> getDelayFromTimingArc(DictionaryAttr timingArc,
     return static_cast<int64_t>(std::llround(*rise * timeScalePs));
   if (auto fall = getFirstNumericAttr(timingArc.get("cell_fall_values")))
     return static_cast<int64_t>(std::llround(*fall * timeScalePs));
-
-  auto parseTable = [&](StringRef key) -> std::optional<int64_t> {
-    auto tables = dyn_cast_or_null<ArrayAttr>(timingArc.get(key));
-    if (!tables || tables.empty())
-      return std::nullopt;
-    auto table = dyn_cast<DictionaryAttr>(tables[0]);
-    if (!table)
-      return std::nullopt;
-
-    auto value = getFirstNumericAttr(table.get("values"));
-    if (!value)
-      return std::nullopt;
-    return static_cast<int64_t>(std::llround(*value * timeScalePs));
-  };
-
-  if (auto rise = parseTable("cell_rise"))
-    return rise;
-  if (auto fall = parseTable("cell_fall"))
-    return fall;
   return std::nullopt;
 }
 

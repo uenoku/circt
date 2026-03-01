@@ -135,63 +135,32 @@ LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
   if (!outputPin || outputPin->isInput)
     return std::nullopt;
 
-  if (auto nldmArcs = dyn_cast_or_null<ArrayAttr>(
-          outputPin->attrs.get("synth.nldm.arcs"))) {
-    for (auto attr : nldmArcs) {
-      if (auto typedArc = dyn_cast<synth::NLDMArcAttr>(attr)) {
-        if (typedArc.getRelatedPin() == inputPinName) {
-          MLIRContext *ctx = outputPin->attrs.getContext();
-          SmallVector<NamedAttribute> attrs;
-          attrs.push_back(NamedAttribute(StringAttr::get(ctx, "related_pin"),
-                                         typedArc.getRelatedPin()));
-          attrs.push_back(NamedAttribute(StringAttr::get(ctx, "to_pin"),
-                                         typedArc.getToPin()));
-          if (!typedArc.getTimingSense().getValue().empty())
-            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
-                                           typedArc.getTimingSense()));
-          if (!typedArc.getCellRiseValues().empty())
-            attrs.push_back(
-                NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
-                               typedArc.getCellRiseValues()));
-          if (!typedArc.getCellFallValues().empty())
-            attrs.push_back(
-                NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
-                               typedArc.getCellFallValues()));
-          return DictionaryAttr::get(ctx, attrs);
-        }
-      }
-
-      auto arc = dyn_cast<DictionaryAttr>(attr);
-      if (!arc)
-        continue;
-      if (auto related = arc.getAs<StringAttr>("related_pin")) {
-        if (related.getValue() == inputPinName)
-          return arc;
-      }
-    }
-  }
-
-  auto timingGroups =
-      dyn_cast_or_null<ArrayAttr>(outputPin->attrs.get("timing"));
-  if (!timingGroups)
+  auto nldmArcs =
+      dyn_cast_or_null<ArrayAttr>(outputPin->attrs.get("synth.nldm.arcs"));
+  if (!nldmArcs)
     return std::nullopt;
 
-  for (auto attr : timingGroups) {
-    auto timing = dyn_cast<DictionaryAttr>(attr);
-    if (!timing)
+  for (auto attr : nldmArcs) {
+    auto typedArc = dyn_cast<synth::NLDMArcAttr>(attr);
+    if (!typedArc || typedArc.getRelatedPin() != inputPinName)
       continue;
 
-    if (auto relatedPin = timing.getAs<StringAttr>("related_pin")) {
-      if (relatedPin.getValue() == inputPinName)
-        return timing;
-    }
-
-    auto args = dyn_cast_or_null<ArrayAttr>(timing.get("args"));
-    if (!args || args.empty())
-      continue;
-    if (auto arg0 = dyn_cast<StringAttr>(args[0]))
-      if (arg0.getValue() == inputPinName)
-        return timing;
+    MLIRContext *ctx = outputPin->attrs.getContext();
+    SmallVector<NamedAttribute> attrs;
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "related_pin"),
+                                   typedArc.getRelatedPin()));
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "to_pin"), typedArc.getToPin()));
+    if (!typedArc.getTimingSense().getValue().empty())
+      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
+                                     typedArc.getTimingSense()));
+    if (!typedArc.getCellRiseValues().empty())
+      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
+                                     typedArc.getCellRiseValues()));
+    if (!typedArc.getCellFallValues().empty())
+      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
+                                     typedArc.getCellFallValues()));
+    return DictionaryAttr::get(ctx, attrs);
   }
 
   return std::nullopt;

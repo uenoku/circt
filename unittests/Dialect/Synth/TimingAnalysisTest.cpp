@@ -95,9 +95,9 @@ const char *libertyTimingArcIR = R"MLIR(
       in %B : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.005 : f64}},
       out Y : i1 {synth.liberty.pin = {
         direction = "output",
-        timing = [
-          {related_pin = "A", timing_sense = "negative_unate", cell_rise = [{values = "0.012"}]},
-          {args = ["B"], timing_sense = "negative_unate", cell_fall = [{values = "0.013"}]}
+        synth.nldm.arcs = [
+          #synth.nldm_arc<"A", "Y", "negative_unate", [0.012 : f64], []>,
+          #synth.nldm_arc<"B", "Y", "negative_unate", [], [0.013 : f64]>
         ]
       }}) {
       %0 = comb.and %A, %B : i1
@@ -135,8 +135,7 @@ const char *nldmTimingArcTableIR = R"MLIR(
           direction = "output",
           synth.nldm.arcs = [
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.012 : f64, 0.018 : f64], []>
-          ],
-          timing = [{related_pin = "A", cell_rise = [{values = "999.0"}]}]
+          ]
         }}) {
         hw.output %A : i1
       }
@@ -370,12 +369,9 @@ TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookup) {
 
   auto byNameB = lib.getTimingArc("NAND2", "B", "Y");
   ASSERT_TRUE(byNameB.has_value());
-  auto args = dyn_cast_or_null<ArrayAttr>(byNameB->get("args"));
-  ASSERT_TRUE(args);
-  ASSERT_FALSE(args.empty());
-  auto firstArg = dyn_cast<StringAttr>(args[0]);
-  ASSERT_TRUE(firstArg);
-  EXPECT_EQ(firstArg.getValue(), "B");
+  auto relatedPinB = byNameB->getAs<StringAttr>("related_pin");
+  ASSERT_TRUE(relatedPinB);
+  EXPECT_EQ(relatedPinB.getValue(), "B");
 
   auto byIndex = lib.getTimingArc("NAND2", 1, 0);
   ASSERT_TRUE(byIndex.has_value());
