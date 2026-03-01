@@ -517,6 +517,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   CCS pilot waveform consumption in timing unit tests.
 - CCS pilot waveform selection now prefers fall-vs-rise current tables based on
   input waveform edge direction.
+- Added unit coverage for both rising and falling edge waveform selection in
+  CCS pilot propagation.
 
 ---
 

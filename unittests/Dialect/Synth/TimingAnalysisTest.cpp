@@ -245,7 +245,7 @@ const char *ccsPilotWaveformIR = R"MLIR(
             #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], [], [], [], [], [], [], []>
           ],
           synth.ccs.pilot.arcs = [
-            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [], []>
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
           ]
         }}) {
         hw.output %A : i1
@@ -805,6 +805,40 @@ TEST_F(TimingAnalysisTest, CCSPilotDelayModelProducesWaveform) {
   EXPECT_NEAR(outputWaveform[1].time, 425.0, 1e-9);
   EXPECT_EQ(outputWaveform[0].value, 0.0);
   EXPECT_EQ(outputWaveform[1].value, 1.0);
+}
+
+TEST_F(TimingAnalysisTest, CCSPilotDelayModelUsesFallWaveformForFallingEdge) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotWaveformIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.5;
+  ctx.outputLoad = 0.5;
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 1.0}, {1.0, 0.0}};
+  SmallVector<WaveformPoint> outputWaveform;
+  EXPECT_TRUE(model->computeOutputWaveform(ctx, inputWaveform, outputWaveform));
+  ASSERT_EQ(outputWaveform.size(), 2u);
+  EXPECT_NEAR(outputWaveform[0].time, 25.0, 1e-9);
+  EXPECT_NEAR(outputWaveform[1].time, 425.0, 1e-9);
+  EXPECT_EQ(outputWaveform[0].value, 1.0);
+  EXPECT_EQ(outputWaveform[1].value, 0.0);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
