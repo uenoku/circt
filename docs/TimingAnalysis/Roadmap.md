@@ -432,6 +432,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   decreasing/increasing/flat/oscillating for quick diagnostics.
 - Reports now include `Slew Reduction Ratio` (final residual / first residual)
   to quantify convergence speed at a glance.
+- Reports now include `Slew Advice` to suggest next tuning action based on
+  convergence status and trend class.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models
@@ -490,6 +492,18 @@ class CCSDelayModel : public DelayModel {
 ### Composite Approach
 
 In practice, many tools support mixed NLDM/CCS: use CCS for critical paths and NLDM elsewhere. This could be implemented by having a `CompositeDelayModel` that delegates to CCS or NLDM based on the cell or criticality.
+
+### CCS Remaining Milestones (2026-03)
+
+From the current `CCSPilotDelayModel` state, the remaining major milestones are:
+
+1. Parse CCS-specific Liberty data (current source and receiver data), reusing
+   existing typed metadata plumbing.
+2. Replace pilot waveform generation with receiver/load-aware waveform solving
+   and threshold extraction.
+3. Integrate waveform-coupled convergence controls (damping/tolerance heuristics)
+   tuned for CCS behavior.
+4. Add dedicated CCS e2e validation suite and mixed NLDM/CCS delegation policy.
 
 ---
 

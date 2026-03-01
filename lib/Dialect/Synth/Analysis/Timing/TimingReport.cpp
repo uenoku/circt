@@ -78,6 +78,17 @@ static double getReductionRatio(ArrayRef<double> deltas) {
   return deltas.back() / deltas.front();
 }
 
+static StringRef getConvergenceAdvice(StringRef trendClass,
+                                      double reductionRatio, bool converged) {
+  if (converged && reductionRatio <= 0.1)
+    return "stable and fast convergence";
+  if (converged)
+    return "converged; tighten epsilon if more precision is needed";
+  if (trendClass == "oscillating" || trendClass == "increasing")
+    return "not converged; reduce damping or use aggressive adaptive mode";
+  return "not converged; increase max iterations or relax relative epsilon";
+}
+
 static StringRef formatAdaptiveDampingMode(
     TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
   switch (mode) {
@@ -215,12 +226,16 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Relative Max Slew Delta: " << getLastRelativeSlewDelta() << "\n";
   os << "Relative Slew Epsilon: "
      << getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
+  auto trendClass = classifyDeltaTrend(getLastSlewDeltaHistory());
+  auto reductionRatio = getReductionRatio(getLastSlewDeltaHistory());
   os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())
      << "\n";
-  os << "Slew Trend Class: " << classifyDeltaTrend(getLastSlewDeltaHistory())
+  os << "Slew Trend Class: " << trendClass << "\n";
+  os << "Slew Reduction Ratio: " << llvm::format("%.6g", reductionRatio)
      << "\n";
-  os << "Slew Reduction Ratio: "
-     << llvm::format("%.6g", getReductionRatio(getLastSlewDeltaHistory()))
+  os << "Slew Advice: "
+     << getConvergenceAdvice(trendClass, reductionRatio,
+                             didLastArrivalConverge())
      << "\n";
 
   if (requiredTimeAnalysis)
