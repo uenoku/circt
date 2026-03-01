@@ -417,7 +417,9 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> 
     Option<"numPaths", "num-paths", "unsigned", "10",
            "Maximum number of paths to print">,
     Option<"showConvergenceTable", "show-convergence-table", "bool",
-           "false", "Include per-iteration slew convergence table">
+           "false", "Include per-iteration slew convergence table">,
+    Option<"showWaveformDetails", "show-waveform-details", "bool",
+           "false", "Include per-arc waveform details when supported">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

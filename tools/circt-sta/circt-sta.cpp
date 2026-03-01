@@ -81,6 +81,11 @@ static cl::opt<bool> showConvergenceTable(
     cl::desc("Include per-iteration slew convergence table in timing report"),
     cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<bool> showWaveformDetails(
+    "show-waveform-details",
+    cl::desc("Include per-arc waveform details in timing report"),
+    cl::init(false), cl::cat(mainCategory));
+
 static LogicalResult executeSTA(MLIRContext &context) {
   std::string errorMessage;
   auto input = openInputFile(inputFilename, &errorMessage);
@@ -110,6 +115,7 @@ static LogicalResult executeSTA(MLIRContext &context) {
   options.reportDir = timingReportDir;
   options.numPaths = numPaths;
   options.showConvergenceTable = showConvergenceTable;
+  options.showWaveformDetails = showWaveformDetails;
   for (const auto &pat : filterStartPoints)
     options.filterStartPoints.push_back(pat);
   for (const auto &pat : filterEndPoints)

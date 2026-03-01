@@ -1,5 +1,7 @@
 // RUN: circt-synth %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
 // RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s --check-prefix=STA
+// RUN: circt-synth %s --timing-report-dir=- --top dut --show-waveform-details -o /dev/null | FileCheck %s --check-prefix=WAVE
+// RUN: circt-sta %s --timing-report-dir=- --top dut --show-waveform-details -o /dev/null | FileCheck %s --check-prefix=STA-WAVE
 
 // CHECK: === Timing Report ===
 // CHECK: Module: dut
@@ -9,6 +11,14 @@
 // STA: === Timing Report ===
 // STA: Delay Model: ccs-pilot
 // STA: Path 1: delay = 25
+
+// WAVE: Waveform Details:
+// WAVE: (t=25, v=0)
+// WAVE: (t=25.5, v=1)
+
+// STA-WAVE: Waveform Details:
+// STA-WAVE: (t=25, v=0)
+// STA-WAVE: (t=25.5, v=1)
 
 module attributes {
   synth.timing.model = "ccs-pilot",

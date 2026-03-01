@@ -326,6 +326,9 @@ metadata, so importer and timing analysis share a stable schema.
 - Added timing-flow model selection via module attribute
   `synth.timing.model = "ccs-pilot"` in timing report pass flow.
 - Added unit and e2e coverage for CCS pilot report/model activation.
+- Added optional waveform detail reporting (`--show-waveform-details`) for
+  `circt-synth` / `circt-sta` timing reports when waveform-capable models are
+  active.
 
 ### Step B: NLDMDelayModel Implementation
 
