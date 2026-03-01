@@ -19,6 +19,20 @@ static std::string formatNodeLabel(const TimingNode *node) {
       .str();
 }
 
+static int64_t resolvePathDelay(const TimingPath &path,
+                                const ArrivalAnalysis *arrivals) {
+  auto *sp = path.getStartPoint();
+  auto *ep = path.getEndPoint();
+  if (!arrivals || !sp || !ep)
+    return path.getDelay();
+
+  auto infos = arrivals->getArrivals(ep->getId());
+  for (const auto &info : infos)
+    if (info.startPoint == sp->getId())
+      return info.arrivalTime;
+  return path.getDelay();
+}
+
 void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   if (!graph) {
     os << "Error: timing graph not built.\n";
@@ -28,6 +42,7 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "=== Timing Report ===\n";
   os << "Module: " << module.getModuleName() << "\n";
   os << "Delay Model: " << graph->getDelayModelName() << "\n";
+  os << "Initial Slew: " << getConfiguredInitialSlew() << "\n";
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
   os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
 
@@ -50,7 +65,8 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
     if (requiredTimeAnalysis)
       slack = requiredTimeAnalysis->getSlack(path.getEndPoint());
 
-    os << "Path " << (i + 1) << ": delay = " << path.getDelay();
+    int64_t resolvedDelay = resolvePathDelay(path, arrivals.get());
+    os << "Path " << (i + 1) << ": delay = " << resolvedDelay;
     if (requiredTimeAnalysis)
       os << "  slack = " << slack;
     os << "\n";
@@ -83,7 +99,7 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
       }
       auto endLabel = formatNodeLabel(ep);
       os << llvm::format("    %-30s %8s %8lld\n", endLabel.c_str(), "-",
-                         (long long)path.getDelay());
+                         (long long)resolvedDelay);
     }
     os << "\n";
   }

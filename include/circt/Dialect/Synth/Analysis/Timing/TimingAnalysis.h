@@ -128,6 +128,9 @@ public:
   /// Number of forward-arrival iterations executed in last full run.
   unsigned getLastArrivalIterations() const { return lastArrivalIterations; }
 
+  /// Configured initial slew seed for startpoints.
+  double getConfiguredInitialSlew() const { return options.initialSlew; }
+
   /// Whether the slew iteration loop converged in the last full run.
   bool didLastArrivalConverge() const { return lastArrivalConverged; }
 

@@ -9,12 +9,14 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -32,6 +34,21 @@ namespace synth {
 } // namespace circt
 
 namespace {
+
+static std::optional<double> parseNumericAttr(Attribute attr) {
+  if (!attr)
+    return std::nullopt;
+  if (auto f = dyn_cast<FloatAttr>(attr))
+    return f.getValueAsDouble();
+  if (auto i = dyn_cast<IntegerAttr>(attr))
+    return static_cast<double>(i.getInt());
+  if (auto s = dyn_cast<StringAttr>(attr)) {
+    double value = 0.0;
+    if (!s.getValue().trim().getAsDouble(value))
+      return value;
+  }
+  return std::nullopt;
+}
 
 struct PrintTimingAnalysisPass
     : public impl::PrintTimingAnalysisBase<PrintTimingAnalysisPass> {
@@ -56,6 +73,17 @@ struct PrintTimingAnalysisPass
     if (module->hasAttr("synth.liberty.library")) {
       nldmModel = timing::createNLDMDelayModel(module);
       analysisOptions.delayModel = nldmModel.get();
+
+      if (auto initial = module->getAttr("synth.nldm.default_input_slew"))
+        if (auto value = parseNumericAttr(initial))
+          analysisOptions.initialSlew = *value;
+
+      if (analysisOptions.initialSlew == 0.0)
+        if (auto lib =
+                module->getAttrOfType<DictionaryAttr>("synth.liberty.library"))
+          if (auto value =
+                  parseNumericAttr(lib.get("default_input_transition")))
+            analysisOptions.initialSlew = *value;
     }
 
     auto analysis =
@@ -101,6 +129,20 @@ private:
            "]";
   }
 
+  static int64_t resolvePathDelay(const timing::TimingPath &path,
+                                  timing::TimingAnalysis &analysis) {
+    auto *sp = path.getStartPoint();
+    auto *ep = path.getEndPoint();
+    if (!sp || !ep)
+      return path.getDelay();
+
+    auto arrivals = analysis.getArrivals().getArrivals(ep->getId());
+    for (const auto &arrival : arrivals)
+      if (arrival.startPoint == sp->getId())
+        return arrival.arrivalTime;
+    return path.getDelay();
+  }
+
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
     auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
@@ -130,7 +172,8 @@ private:
                                                            : "output port";
     };
 
-    os << "Path " << rank << ": delay = " << path.getDelay();
+    int64_t resolvedDelay = resolvePathDelay(path, analysis);
+    os << "Path " << rank << ": delay = " << resolvedDelay;
     os << "  slack = " << analysis.getSlack(ep) << "\n";
     os << "  Startpoint: " << formatNodeLabel(sp) << " ("
        << describeStartKind(sp->getKind()) << ")\n";
@@ -157,17 +200,17 @@ private:
       return;
     }
 
-    llvm::sort(paths,
-               [](const timing::TimingPath &a, const timing::TimingPath &b) {
-                 return a.getDelay() > b.getDelay();
-               });
+    llvm::sort(
+        paths, [&](const timing::TimingPath &a, const timing::TimingPath &b) {
+          return resolvePathDelay(a, analysis) > resolvePathDelay(b, analysis);
+        });
 
     SmallVector<timing::TimingPath> uniquePaths;
     std::set<std::tuple<std::string, std::string, int64_t>> seen;
     for (auto &path : paths) {
-      auto key =
-          std::make_tuple(path.getStartPoint()->getName().str(),
-                          path.getEndPoint()->getName().str(), path.getDelay());
+      auto key = std::make_tuple(path.getStartPoint()->getName().str(),
+                                 path.getEndPoint()->getName().str(),
+                                 resolvePathDelay(path, analysis));
       if (seen.insert(key).second)
         uniquePaths.push_back(path);
     }
@@ -178,6 +221,7 @@ private:
     os << "=== Timing Report ===\n";
     os << "Module: " << analysis.getGraph().getModule().getModuleName() << "\n";
     os << "Delay Model: " << analysis.getGraph().getDelayModelName() << "\n";
+    os << "Initial Slew: " << analysis.getConfiguredInitialSlew() << "\n";
     os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
     os << "Slew Converged: "
        << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";

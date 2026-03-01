@@ -391,6 +391,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
 - The last iteration count is tracked and emitted in timing reports as
   `Arrival Iterations` for observability.
 - Convergence status is now emitted in timing reports as `Slew Converged`.
+- NLDM timing-report flow now seeds initial slew from imported Liberty
+  `default_input_transition` when available.
 - Remaining work: tighten convergence heuristics for models where effective
   load depends on slew/waveform state.
 

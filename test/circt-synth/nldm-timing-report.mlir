@@ -10,7 +10,12 @@
 // CHECK: Endpoint:
 
 module attributes {
-  synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+  synth.liberty.library = {
+    name = "dummy",
+    time_unit = "1ns",
+    default_input_transition = "0.5"
+  },
+  synth.nldm.default_input_slew = 0.5 : f64,
   synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>
 } {
   hw.module private @BUF(
