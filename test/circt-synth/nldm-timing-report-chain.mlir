@@ -1,4 +1,4 @@
-// RUN: circt-synth %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
+// RUN: circt-synth %s --top dut -o - | circt-sta --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
 
 // CHECK: === Timing Report ===
 // CHECK: Module: dut

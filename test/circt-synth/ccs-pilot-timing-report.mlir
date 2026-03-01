@@ -1,6 +1,6 @@
-// RUN: circt-synth %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
+// RUN: circt-synth %s --top dut -o - | circt-sta --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
 // RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s --check-prefix=STA
-// RUN: circt-synth %s --timing-report-dir=- --top dut --show-waveform-details -o /dev/null | FileCheck %s --check-prefix=WAVE
+// RUN: circt-synth %s --top dut -o - | circt-sta --timing-report-dir=- --top dut --show-waveform-details -o /dev/null | FileCheck %s --check-prefix=WAVE
 // RUN: circt-sta %s --timing-report-dir=- --top dut --show-waveform-details -o /dev/null | FileCheck %s --check-prefix=STA-WAVE
 
 // CHECK: === Timing Report ===

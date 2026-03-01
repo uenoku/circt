@@ -158,59 +158,6 @@ static cl::opt<int>
                                           "paths in the analysis results"),
                                  cl::init(5), cl::cat(mainCategory));
 
-static cl::opt<std::string> timingReportDir(
-    "timing-report-dir",
-    cl::desc("Directory for timing report output. "
-             "Generates timing report at <dir>/<top>/timing.txt"),
-    cl::init(""), cl::cat(mainCategory));
-
-static cl::opt<bool> showConvergenceTable(
-    "show-convergence-table",
-    cl::desc("Include per-iteration slew convergence table in timing report"),
-    cl::init(false), cl::cat(mainCategory));
-
-static cl::opt<bool> showWaveformDetails(
-    "show-waveform-details",
-    cl::desc("Include per-arc waveform details in timing report"),
-    cl::init(false), cl::cat(mainCategory));
-
-static cl::opt<unsigned>
-    maxSlewIterations("max-slew-iterations",
-                      cl::desc("Maximum slew convergence iterations"),
-                      cl::init(6), cl::cat(mainCategory));
-
-static cl::opt<double>
-    slewConvergenceEpsilon("slew-epsilon",
-                           cl::desc("Absolute slew convergence threshold"),
-                           cl::init(1e-6), cl::cat(mainCategory));
-
-static cl::opt<double> slewConvergenceRelativeEpsilon(
-    "slew-relative-epsilon",
-    cl::desc("Relative slew convergence threshold (0 disables)"), cl::init(0.0),
-    cl::cat(mainCategory));
-
-static cl::opt<double>
-    slewHintDamping("slew-hint-damping",
-                    cl::desc("Damping factor for iterative slew-hint updates"),
-                    cl::init(1.0), cl::cat(mainCategory));
-
-static cl::opt<std::string> adaptiveSlewDampingMode(
-    "adaptive-slew-damping-mode",
-    cl::desc("Adaptive damping mode: disabled, conservative, aggressive"),
-    cl::init("disabled"), cl::cat(mainCategory));
-
-static cl::list<std::string>
-    filterStartPoints("filter-start",
-                      cl::desc("Glob patterns to filter paths by start point "
-                               "names (can specify multiple)"),
-                      cl::cat(mainCategory));
-
-static cl::list<std::string>
-    filterEndPoints("filter-end",
-                    cl::desc("Glob patterns to filter paths by end point "
-                             "names (can specify multiple)"),
-                    cl::cat(mainCategory));
-
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -416,29 +363,6 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       options.topModuleName = topName;
       pm.addPass(circt::synth::createPrintResourceUsageAnalysis(options));
     }
-  }
-
-  if (!timingReportDir.empty()) {
-    if (topName.empty()) {
-      llvm::errs() << "error: --top must be specified when "
-                      "--timing-report-dir is used\n";
-      return;
-    }
-    circt::synth::PrintTimingAnalysisOptions options;
-    options.topModuleName = topName;
-    options.reportDir = timingReportDir;
-    options.showConvergenceTable = showConvergenceTable;
-    options.showWaveformDetails = showWaveformDetails;
-    options.maxSlewIterations = maxSlewIterations;
-    options.slewConvergenceEpsilon = slewConvergenceEpsilon;
-    options.slewConvergenceRelativeEpsilon = slewConvergenceRelativeEpsilon;
-    options.slewHintDamping = slewHintDamping;
-    options.adaptiveSlewHintDampingMode = adaptiveSlewDampingMode;
-    for (const auto &pat : filterStartPoints)
-      options.filterStartPoints.push_back(pat);
-    for (const auto &pat : filterEndPoints)
-      options.filterEndPoints.push_back(pat);
-    pm.addPass(circt::synth::createPrintTimingAnalysis(options));
   }
 
   if (convertToComb)

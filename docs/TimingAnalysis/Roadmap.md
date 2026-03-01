@@ -426,6 +426,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   damping, adaptive mode) for direct report-flow experimentation.
 - End-to-end report tests now validate these tuning controls for both
   `circt-synth` and `circt-sta`.
+- Timing reporting capability has been removed from `circt-synth`; report flows
+  now run as `circt-synth ... -o - | circt-sta ...`.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models
