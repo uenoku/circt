@@ -10,6 +10,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <optional>
 #include <string>
 
 using namespace circt;
@@ -149,6 +150,27 @@ static double getNodeOutputLoad(const TimingNode *node, const DelayModel *model,
   return total;
 }
 
+static std::optional<double>
+interpolateWaveformCrossing(ArrayRef<WaveformPoint> waveform, double target) {
+  if (waveform.empty())
+    return std::nullopt;
+  for (size_t i = 1, e = waveform.size(); i < e; ++i) {
+    auto p0 = waveform[i - 1];
+    auto p1 = waveform[i];
+    if (p0.value == target)
+      return p0.time;
+    bool brackets = (p0.value <= target && target <= p1.value) ||
+                    (p1.value <= target && target <= p0.value);
+    if (!brackets || p0.value == p1.value)
+      continue;
+    double t = (target - p0.value) / (p1.value - p0.value);
+    return p0.time + t * (p1.time - p0.time);
+  }
+  if (waveform.back().value == target)
+    return waveform.back().time;
+  return std::nullopt;
+}
+
 static void printWaveformDetails(const TimingPath &path,
                                  const DelayModel *model,
                                  const ArrivalAnalysis *arrivals,
@@ -200,6 +222,14 @@ static void printWaveformDetails(const TimingPath &path,
     for (const auto &pt : outputWaveform)
       os << " (t=" << llvm::format("%.6g", pt.time)
          << ", v=" << llvm::format("%.6g", pt.value) << ")";
+
+    auto t50 = interpolateWaveformCrossing(outputWaveform, 0.5);
+    auto t10 = interpolateWaveformCrossing(outputWaveform, 0.1);
+    auto t90 = interpolateWaveformCrossing(outputWaveform, 0.9);
+    if (t50)
+      os << " t50=" << llvm::format("%.6g", *t50);
+    if (t10 && t90)
+      os << " slew10-90=" << llvm::format("%.6g", std::abs(*t90 - *t10));
     os << "\n";
   }
 }

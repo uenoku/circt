@@ -521,6 +521,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   CCS pilot propagation.
 - CCS pilot waveform timing now applies load-dependent stretching to begin
   approximating receiver/load-aware waveform behavior.
+- Waveform report details now include extracted `t50` delay proxy and
+  `slew10-90` transition proxy per arc.
 
 ---
 

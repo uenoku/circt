@@ -15,10 +15,14 @@
 // WAVE: Waveform Details:
 // WAVE: (t=25, v=0)
 // WAVE: (t=25.5, v=1)
+// WAVE: t50=25.25
+// WAVE: slew10-90=0.4
 
 // STA-WAVE: Waveform Details:
 // STA-WAVE: (t=25, v=0)
 // STA-WAVE: (t=25.5, v=1)
+// STA-WAVE: t50=25.25
+// STA-WAVE: slew10-90=0.4
 
 module attributes {
   synth.timing.model = "ccs-pilot",

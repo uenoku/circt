@@ -1105,6 +1105,8 @@ TEST_F(TimingAnalysisTest, ReportTimingIncludesWaveformDetailsWhenEnabled) {
   EXPECT_NE(report.find("Waveform Details:"), std::string::npos);
   EXPECT_NE(report.find("(t="), std::string::npos);
   EXPECT_NE(report.find(", v="), std::string::npos);
+  EXPECT_NE(report.find("t50="), std::string::npos);
+  EXPECT_NE(report.find("slew10-90="), std::string::npos);
 }
 
 TEST_F(TimingAnalysisTest, FullPipeline) {
