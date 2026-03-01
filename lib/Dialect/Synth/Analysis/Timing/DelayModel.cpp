@@ -286,22 +286,27 @@ getOutputSlewFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
   return std::nullopt;
 }
 
-static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc,
+static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
                                    SmallVectorImpl<double> &times,
                                    SmallVectorImpl<double> &values) {
-  if (!arc.getCurrentRiseTimes().empty() &&
-      !arc.getCurrentRiseValues().empty()) {
-    if (!decodeNumericArray(arc.getCurrentRiseTimes(), times) ||
-        !decodeNumericArray(arc.getCurrentRiseValues(), values))
+  auto decodePair = [&](ArrayAttr t, ArrayAttr v) {
+    if (t.empty() || v.empty())
+      return false;
+    if (!decodeNumericArray(t, times) || !decodeNumericArray(v, values))
       return false;
     return !times.empty() && times.size() == values.size();
-  }
-  if (!arc.getCurrentFallTimes().empty() &&
-      !arc.getCurrentFallValues().empty()) {
-    if (!decodeNumericArray(arc.getCurrentFallTimes(), times) ||
-        !decodeNumericArray(arc.getCurrentFallValues(), values))
-      return false;
-    return !times.empty() && times.size() == values.size();
+  };
+
+  if (preferFall) {
+    if (decodePair(arc.getCurrentFallTimes(), arc.getCurrentFallValues()))
+      return true;
+    if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
+      return true;
+  } else {
+    if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
+      return true;
+    if (decodePair(arc.getCurrentFallTimes(), arc.getCurrentFallValues()))
+      return true;
   }
   return false;
 }
@@ -444,7 +449,10 @@ bool CCSPilotDelayModel::computeOutputWaveform(
                 *cellName, static_cast<unsigned>(ctx.inputIndex),
                 static_cast<unsigned>(ctx.outputIndex))) {
           SmallVector<double> times, values;
-          if (decodeCCSPilotWaveform(*arc, times, values)) {
+          bool preferFall =
+              inputWaveform.size() >= 2 &&
+              inputWaveform.back().value < inputWaveform.front().value;
+          if (decodeCCSPilotWaveform(*arc, preferFall, times, values)) {
             double scale = getTimeScalePs(ctx.op);
             for (auto [t, v] : llvm::zip(times, values))
               outputWaveform.push_back({baseTime + delayPs + t * scale, v});

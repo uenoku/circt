@@ -515,6 +515,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   falling back to synthetic two-point ramp generation.
 - Regression coverage now includes ImportLiberty CCS pilot attr emission and
   CCS pilot waveform consumption in timing unit tests.
+- CCS pilot waveform selection now prefers fall-vs-rise current tables based on
+  input waveform edge direction.
 
 ---
 
