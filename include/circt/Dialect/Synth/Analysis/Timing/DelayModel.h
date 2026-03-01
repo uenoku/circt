@@ -20,6 +20,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include <cstdint>
 #include <memory>
 
@@ -155,6 +156,31 @@ private:
   NLDMDelayModel nldmDelegate;
 };
 
+/// Composite NLDM/CCS pilot delay model with per-cell delegation.
+class MixedNLDMCCSPilotDelayModel : public DelayModel {
+public:
+  MixedNLDMCCSPilotDelayModel(std::unique_ptr<class LibertyLibrary> nldmLiberty,
+                              std::unique_ptr<class LibertyLibrary> ccsLiberty,
+                              llvm::StringSet<> ccsCells);
+  ~MixedNLDMCCSPilotDelayModel() override;
+
+  DelayResult computeDelay(const DelayContext &ctx) const override;
+  llvm::StringRef getName() const override { return "mixed-ccs-pilot"; }
+  bool usesSlewPropagation() const override { return true; }
+  bool usesWaveformPropagation() const override { return true; }
+  double getInputCapacitance(const DelayContext &ctx) const override;
+  bool computeOutputWaveform(
+      const DelayContext &ctx, llvm::ArrayRef<WaveformPoint> inputWaveform,
+      llvm::SmallVectorImpl<WaveformPoint> &outputWaveform) const override;
+
+private:
+  bool useCCSForCell(mlir::Operation *op) const;
+
+  NLDMDelayModel nldmDelegate;
+  CCSPilotDelayModel ccsDelegate;
+  llvm::StringSet<> ccsPilotCells;
+};
+
 /// Create the default delay model (AIGLevelDelayModel).
 std::unique_ptr<DelayModel> createDefaultDelayModel();
 
@@ -170,6 +196,10 @@ std::unique_ptr<DelayModel> createCCSPilotDelayModel();
 
 /// Create the CCS pilot delay model and wire imported Liberty metadata.
 std::unique_ptr<DelayModel> createCCSPilotDelayModel(mlir::ModuleOp module);
+
+/// Create mixed NLDM/CCS-pilot model and wire imported Liberty metadata.
+std::unique_ptr<DelayModel>
+createMixedNLDMCCSPilotDelayModel(mlir::ModuleOp module);
 
 } // namespace timing
 } // namespace synth

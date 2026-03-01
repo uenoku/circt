@@ -156,8 +156,11 @@ struct PrintTimingAnalysisPass
 
     std::unique_ptr<timing::DelayModel> configuredModel;
     if (module->hasAttr("synth.liberty.library")) {
-      if (getRequestedDelayModel(module) == "ccs-pilot")
+      auto requestedModel = getRequestedDelayModel(module);
+      if (requestedModel == "ccs-pilot")
         configuredModel = timing::createCCSPilotDelayModel(module);
+      else if (requestedModel == "mixed-ccs-pilot")
+        configuredModel = timing::createMixedNLDMCCSPilotDelayModel(module);
       else
         configuredModel = timing::createNLDMDelayModel(module);
       analysisOptions.delayModel = configuredModel.get();

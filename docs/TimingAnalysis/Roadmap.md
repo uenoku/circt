@@ -533,6 +533,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   `circt-synth | circt-sta` pipeline flows.
 - Added multi-input CCS pilot coverage to validate pin-specific arc selection
   and waveform-derived delay differences.
+- Added mixed NLDM/CCS-pilot delegation mode (`mixed-ccs-pilot`) with
+  per-cell policy (`synth.ccs.pilot.cells`) and e2e coverage.
 
 ---
 

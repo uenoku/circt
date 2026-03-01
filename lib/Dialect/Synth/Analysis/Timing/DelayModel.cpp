@@ -566,6 +566,45 @@ bool CCSPilotDelayModel::computeOutputWaveform(
 }
 
 //===----------------------------------------------------------------------===//
+// MixedNLDMCCSPilotDelayModel
+//===----------------------------------------------------------------------===//
+
+MixedNLDMCCSPilotDelayModel::MixedNLDMCCSPilotDelayModel(
+    std::unique_ptr<LibertyLibrary> nldmLiberty,
+    std::unique_ptr<LibertyLibrary> ccsLiberty, llvm::StringSet<> ccsCells)
+    : nldmDelegate(std::move(nldmLiberty)), ccsDelegate(std::move(ccsLiberty)),
+      ccsPilotCells(std::move(ccsCells)) {}
+
+MixedNLDMCCSPilotDelayModel::~MixedNLDMCCSPilotDelayModel() = default;
+
+bool MixedNLDMCCSPilotDelayModel::useCCSForCell(Operation *op) const {
+  auto cellName = getMappedCellName(op);
+  return cellName && ccsPilotCells.contains(*cellName);
+}
+
+DelayResult
+MixedNLDMCCSPilotDelayModel::computeDelay(const DelayContext &ctx) const {
+  if (useCCSForCell(ctx.op))
+    return ccsDelegate.computeDelay(ctx);
+  return nldmDelegate.computeDelay(ctx);
+}
+
+double MixedNLDMCCSPilotDelayModel::getInputCapacitance(
+    const DelayContext &ctx) const {
+  if (useCCSForCell(ctx.op))
+    return ccsDelegate.getInputCapacitance(ctx);
+  return nldmDelegate.getInputCapacitance(ctx);
+}
+
+bool MixedNLDMCCSPilotDelayModel::computeOutputWaveform(
+    const DelayContext &ctx, ArrayRef<WaveformPoint> inputWaveform,
+    SmallVectorImpl<WaveformPoint> &outputWaveform) const {
+  if (!useCCSForCell(ctx.op))
+    return false;
+  return ccsDelegate.computeOutputWaveform(ctx, inputWaveform, outputWaveform);
+}
+
+//===----------------------------------------------------------------------===//
 // Factory
 //===----------------------------------------------------------------------===//
 
@@ -605,4 +644,28 @@ circt::synth::timing::createCCSPilotDelayModel(ModuleOp module) {
 
   return std::make_unique<CCSPilotDelayModel>(
       std::make_unique<LibertyLibrary>(std::move(*libertyOr)));
+}
+
+std::unique_ptr<DelayModel>
+circt::synth::timing::createMixedNLDMCCSPilotDelayModel(ModuleOp module) {
+  if (!module)
+    return std::make_unique<NLDMDelayModel>();
+
+  auto nldmLibertyOr = LibertyLibrary::fromModule(module);
+  auto ccsLibertyOr = LibertyLibrary::fromModule(module);
+  if (failed(nldmLibertyOr) || failed(ccsLibertyOr))
+    return std::make_unique<NLDMDelayModel>();
+
+  llvm::StringSet<> ccsCells;
+  if (auto cellsAttr = dyn_cast_or_null<ArrayAttr>(
+          module->getAttr("synth.ccs.pilot.cells"))) {
+    for (auto attr : cellsAttr)
+      if (auto cell = dyn_cast<StringAttr>(attr))
+        ccsCells.insert(cell.getValue());
+  }
+
+  return std::make_unique<MixedNLDMCCSPilotDelayModel>(
+      std::make_unique<LibertyLibrary>(std::move(*nldmLibertyOr)),
+      std::make_unique<LibertyLibrary>(std::move(*ccsLibertyOr)),
+      std::move(ccsCells));
 }

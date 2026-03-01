@@ -92,6 +92,13 @@ Supported truthy forms:
 - nonzero integer
 - string `"true"` or `"1"`
 
+Mixed delegation mode:
+
+- module attr `synth.timing.model = "mixed-ccs-pilot"`
+- module attr `synth.ccs.pilot.cells = ["CELL_A", ...]`
+- cells listed in `synth.ccs.pilot.cells` use CCS pilot behavior;
+  others use NLDM behavior.
+
 ## Reporting
 
 With waveform details enabled (`--show-waveform-details`), each arc line prints:
@@ -121,6 +128,7 @@ E2E waveform details:
 
 - `test/circt-synth/ccs-pilot-timing-report.mlir`
 - `test/circt-synth/ccs-pilot-waveform-delay-multi-input.mlir`
+- `test/circt-synth/mixed-ccs-pilot-timing-report.mlir`
 
 ## Limitations and Next Steps
 
