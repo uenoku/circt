@@ -13,6 +13,10 @@ The two-stage static timing analysis engine at `lib/Dialect/Synth/Analysis/Timin
 
 The `DelayContext` already carries `inputSlew` and `outputLoad` fields, and `DelayResult` returns `outputSlew`, but these are currently unused (always 0). This infrastructure was designed to enable NLDM and CCS without API changes.
 
+Implementation note (2026-03): the timing flow should reuse the existing
+`import-liberty` translation pipeline instead of adding a second standalone
+Liberty parser under timing analysis.
+
 ---
 
 ## Near-term Enhancements
@@ -94,9 +98,14 @@ After ECO changes (gate resizing, buffer insertion, net rewiring), avoid full re
 
 NLDM (Non-Linear Delay Model) is the standard Liberty timing model. It uses 2D lookup tables indexed by `(inputSlew, outputLoad)` to compute `delay` and `outputSlew` for each timing arc.
 
-### Step A: Liberty Parser
+### Step A: Liberty Data Bridge (Reuse ImportLiberty)
 
-Parse `.lib` files into an in-memory representation. The existing `ImportGENLIB` handles GENLIB format; Liberty is more complex and requires a dedicated parser.
+Reuse `import-liberty` output attributes (for example
+`synth.liberty.library` and `synth.liberty.pin`) as the canonical Liberty
+source for timing analysis.
+
+The timing engine should build an in-memory NLDM view from these attributes,
+rather than introducing another independent Liberty parser.
 
 **Key data structures:**
 
@@ -121,7 +130,21 @@ struct LUT2D {
 };
 ```
 
-**Files:** `include/circt/Dialect/Synth/Analysis/Timing/Liberty.h`, `lib/Dialect/Synth/Analysis/Timing/LibertyParser.cpp`
+**Files:**
+- existing Liberty import: `lib/Conversion/ImportLiberty/ImportLiberty.cpp`
+- timing-side view/bridge:
+  - `include/circt/Dialect/Synth/Analysis/Timing/Liberty.h`
+  - `lib/Dialect/Synth/Analysis/Timing/Liberty.cpp`
+
+### Step A.1: Mapping Attributes for Cell/Arc Resolution
+
+To enable unambiguous arc lookup during timing evaluation, mapped operations
+may carry timing-oriented attributes, e.g.:
+
+- `synth.liberty.cell = "<cell_name>"`
+- optional pin-level hints for non-trivial mappings
+
+This keeps technology mapping and STA coupled through explicit IR metadata.
 
 ### Step B: NLDMDelayModel Implementation
 
@@ -149,7 +172,10 @@ private:
 };
 ```
 
-**Bilinear interpolation** on the LUT handles arbitrary `(slew, load)` points between table entries. Extrapolation beyond table bounds should clamp or use linear extension.
+**Bilinear interpolation** on the LUT handles arbitrary `(slew, load)` points between table entries. Extrapolation beyond table bounds should clamp.
+
+**Delay units:** keep interpolation in `double`, then round to integer
+picoseconds when returning `DelayResult::delay`.
 
 **Files:** `DelayModel.h` (add class), `DelayModel.cpp` (implement)
 
