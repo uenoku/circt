@@ -35,8 +35,8 @@ DelayResult AIGLevelDelayModel::computeDelay(const DelayContext &ctx) const {
   auto *op = ctx.op;
 
   // AIG operations
-  if (isa<aig::AndInverterOp>(op))
-    return {1, 0.0};
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op))
+    return {llvm::Log2_64_Ceil(andOp.getNumOperands()), 0.0};
 
   // Comb operations
   if (isa<comb::MuxOp>(op))

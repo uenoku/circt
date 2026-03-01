@@ -36,8 +36,7 @@ PathEnumerator::PathEnumerator(const TimingGraph &graph,
     : graph(graph), arrivals(arrivals) {}
 
 void PathEnumerator::buildSuffixTree(
-    TimingNode *endpoint,
-    llvm::DenseMap<TimingNode *, SuffixTreeEntry> &sfxt) {
+    TimingNode *endpoint, llvm::DenseMap<TimingNode *, SuffixTreeEntry> &sfxt) {
   sfxt.clear();
 
   // Initialize endpoint
@@ -88,10 +87,12 @@ void PathEnumerator::extractKPaths(
     pq.push({node, entry.dist});
   }
 
-  while (!pq.empty() && (k == 0 || results.size() < k)) {
+  size_t added = 0;
+  while (!pq.empty() && (k == 0 || added < k)) {
     auto [startNode, dist] = pq.top();
     pq.pop();
     results.emplace_back(startNode, endpoint, dist);
+    ++added;
   }
 }
 
@@ -114,8 +115,7 @@ void PathEnumerator::reconstructPathViaSFXT(
 }
 
 bool PathEnumerator::goesThrough(
-    const TimingPath &path,
-    const llvm::DenseSet<TimingNode *> &throughNodes) {
+    const TimingPath &path, const llvm::DenseSet<TimingNode *> &throughNodes) {
   if (throughNodes.empty())
     return true;
   // Check start and end
@@ -159,22 +159,20 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
   }
 
   llvm::DenseSet<TimingNode *> validStartPoints(fromNodes.begin(),
-                                                 fromNodes.end());
+                                                fromNodes.end());
 
   LLVM_DEBUG(llvm::dbgs() << "From nodes: " << fromNodes.size()
                           << ", To nodes: " << toNodes.size() << "\n");
 
-  // For each endpoint, build SFXT and extract K paths
-  size_t remaining = query.maxPaths;
+  // For each endpoint, build SFXT and extract candidate paths.
+  // We sort globally and trim at the end to preserve true global K-worst
+  // ordering across all endpoints.
   for (auto *endpoint : toNodes) {
-    if (query.maxPaths > 0 && results.size() >= query.maxPaths)
-      break;
-
     llvm::DenseMap<TimingNode *, SuffixTreeEntry> sfxt;
     buildSuffixTree(endpoint, sfxt);
 
     size_t prevSize = results.size();
-    size_t k = remaining > 0 ? remaining : 0;
+    size_t k = query.maxPaths;
     extractKPaths(endpoint, k, sfxt, validStartPoints, results);
 
     // Reconstruct and filter paths
@@ -191,9 +189,6 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
         }
       }
     }
-
-    if (remaining > 0)
-      remaining = query.maxPaths - results.size();
   }
 
   // Sort by delay (descending)
@@ -226,8 +221,7 @@ PathEnumerator::getPathsFromNode(TimingNode *startPoint,
 }
 
 LogicalResult
-PathEnumerator::getKWorstPaths(size_t k,
-                               SmallVectorImpl<TimingPath> &results) {
+PathEnumerator::getKWorstPaths(size_t k, SmallVectorImpl<TimingPath> &results) {
   PathQuery query;
   query.maxPaths = k;
   return enumerate(query, results);
