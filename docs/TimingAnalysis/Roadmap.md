@@ -538,6 +538,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
 - Added waveform-coupled convergence heuristics (auto relative epsilon,
   damping cap, minimum iterations) for waveform-capable models, with
   diagnostics for effective settings.
+- CCS e2e suite now includes waveform-delay, multi-input arc asymmetry, and
+  mixed-policy critical-path selection scenarios.
 
 ---
 

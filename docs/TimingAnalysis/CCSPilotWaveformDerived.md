@@ -139,6 +139,8 @@ E2E waveform details:
 - `test/circt-synth/ccs-pilot-timing-report.mlir`
 - `test/circt-synth/ccs-pilot-waveform-delay-multi-input.mlir`
 - `test/circt-synth/mixed-ccs-pilot-timing-report.mlir`
+- `test/circt-synth/ccs-pilot-waveform-delay-report.mlir`
+- `test/circt-synth/mixed-ccs-pilot-critical-path-policy.mlir`
 
 ## Limitations and Next Steps
 
