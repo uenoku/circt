@@ -36,6 +36,7 @@
 #include "circt/Dialect/Synth/Analysis/Timing/PathEnumerator.h"
 #include "circt/Dialect/Synth/Analysis/Timing/RequiredTimeAnalysis.h"
 #include "circt/Dialect/Synth/Analysis/Timing/TimingGraph.h"
+#include "llvm/ADT/ArrayRef.h"
 #include <memory>
 
 namespace circt {
@@ -198,6 +199,8 @@ private:
   explicit TimingAnalysis(hw::HWModuleOp module, TimingAnalysisOptions options);
   TimingAnalysis(mlir::ModuleOp moduleOp, hw::HWModuleOp topModule,
                  TimingAnalysisOptions options, bool hierarchical);
+
+  LogicalResult runArrivalAnalysisWithLoadSlewHints(ArrayRef<double> hints);
 
   mlir::ModuleOp moduleOp;
   hw::HWModuleOp module;

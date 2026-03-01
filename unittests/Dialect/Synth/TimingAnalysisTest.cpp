@@ -918,9 +918,32 @@ TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
   auto analysis = TimingAnalysis::create(hwModule, opts);
   ASSERT_NE(analysis, nullptr);
   ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
-  EXPECT_GE(analysis->getLastArrivalIterations(), 2u);
+  EXPECT_GE(analysis->getLastArrivalIterations(), 1u);
   EXPECT_LE(analysis->getLastArrivalIterations(), opts.maxSlewIterations);
   EXPECT_TRUE(analysis->didLastArrivalConverge());
+}
+
+TEST_F(TimingAnalysisTest, FullPipelineDetectsNonConvergence) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(slewPropagationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("slew_chain");
+  ASSERT_TRUE(hwModule);
+
+  SlewTestDelayModel model;
+  TimingAnalysisOptions opts;
+  opts.delayModel = &model;
+  opts.initialSlew = 0.5;
+  opts.maxSlewIterations = 1;
+  opts.slewConvergenceEpsilon = 1e-12;
+
+  auto analysis = TimingAnalysis::create(hwModule, opts);
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+  EXPECT_EQ(analysis->getLastArrivalIterations(), 1u);
+  EXPECT_FALSE(analysis->didLastArrivalConverge());
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {

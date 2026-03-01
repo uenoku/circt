@@ -100,6 +100,11 @@ public:
     /// Initial slew for matched start points.
     double initialSlew = 0.0;
 
+    /// Optional per-node slew hints used when computing fanout load.
+    ///
+    /// When non-empty, entries are indexed by `TimingNodeId::index`.
+    SmallVector<double> loadSlewHints;
+
     Options() = default;
     Options(bool keepAll) : keepAllArrivals(keepAll) {}
     Options(bool keepAll, ArrayRef<std::string> patterns)

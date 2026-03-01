@@ -63,6 +63,11 @@ LogicalResult TimingAnalysis::buildGraph() {
 }
 
 LogicalResult TimingAnalysis::runArrivalAnalysis() {
+  return runArrivalAnalysisWithLoadSlewHints({});
+}
+
+LogicalResult
+TimingAnalysis::runArrivalAnalysisWithLoadSlewHints(ArrayRef<double> hints) {
   if (!graph) {
     if (failed(buildGraph()))
       return failure();
@@ -73,6 +78,7 @@ LogicalResult TimingAnalysis::runArrivalAnalysis() {
   arrivalOpts.startPointPatterns.assign(options.startPointPatterns.begin(),
                                         options.startPointPatterns.end());
   arrivalOpts.initialSlew = options.initialSlew;
+  arrivalOpts.loadSlewHints.assign(hints.begin(), hints.end());
 
   arrivals = std::make_unique<ArrivalAnalysis>(*graph, arrivalOpts,
                                                options.delayModel);
@@ -105,45 +111,33 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
   lastArrivalIterations = 0;
   lastArrivalConverged = true;
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
-    SmallVector<double> previousSlews;
-    previousSlews.assign(graph->getNumNodes(), 0.0);
-    bool havePrevious = false;
+    SmallVector<double> previousSlews(graph->getNumNodes(),
+                                      options.initialSlew);
+    bool converged = false;
 
     unsigned maxIterations = std::max(1u, options.maxSlewIterations);
     for (unsigned iter = 0; iter < maxIterations; ++iter) {
-      if (failed(runArrivalAnalysis()))
+      if (failed(runArrivalAnalysisWithLoadSlewHints(previousSlews)))
         return failure();
       ++lastArrivalIterations;
 
-      double maxDelta = 0.0;
-      if (havePrevious) {
-        for (const auto &node : graph->getNodes()) {
-          auto id = node->getId().index;
-          double current = arrivals->getMaxArrivalSlew(node.get());
-          maxDelta = std::max(maxDelta, std::abs(current - previousSlews[id]));
-        }
-        if (maxDelta <= options.slewConvergenceEpsilon) {
-          lastArrivalConverged = true;
-          break;
-        }
-      }
-
-      for (const auto &node : graph->getNodes())
-        previousSlews[node->getId().index] =
-            arrivals->getMaxArrivalSlew(node.get());
-      havePrevious = true;
-    }
-
-    if (havePrevious) {
       double maxDelta = 0.0;
       for (const auto &node : graph->getNodes()) {
         auto id = node->getId().index;
         double current = arrivals->getMaxArrivalSlew(node.get());
         maxDelta = std::max(maxDelta, std::abs(current - previousSlews[id]));
       }
-      if (maxDelta > options.slewConvergenceEpsilon)
-        lastArrivalConverged = false;
+      if (maxDelta <= options.slewConvergenceEpsilon) {
+        converged = true;
+        break;
+      }
+
+      for (const auto &node : graph->getNodes())
+        previousSlews[node->getId().index] =
+            arrivals->getMaxArrivalSlew(node.get());
     }
+
+    lastArrivalConverged = converged;
   } else {
     if (failed(runArrivalAnalysis()))
       return failure();

@@ -16,7 +16,8 @@ using namespace circt;
 using namespace circt::synth::timing;
 
 static double getArcInputCapacitance(const TimingArc *arc,
-                                     const DelayModel *delayModel) {
+                                     const DelayModel *delayModel,
+                                     double driverSlewHint) {
   if (!delayModel || !arc->getOp())
     return 0.0;
 
@@ -26,16 +27,21 @@ static double getArcInputCapacitance(const TimingArc *arc,
   ctx.outputValue = arc->getOutputValue();
   ctx.inputIndex = arc->getInputIndex();
   ctx.outputIndex = arc->getOutputIndex();
+  ctx.inputSlew = driverSlewHint;
   return delayModel->getInputCapacitance(ctx);
 }
 
 static double getNodeOutputLoad(const TimingNode *node,
-                                const DelayModel *delayModel) {
+                                const DelayModel *delayModel,
+                                ArrayRef<double> loadSlewHints) {
   if (!delayModel)
     return 0.0;
+  double slewHint = 0.0;
+  if (node->getId().index < loadSlewHints.size())
+    slewHint = loadSlewHints[node->getId().index];
   double total = 0.0;
   for (auto *arc : node->getFanout())
-    total += getArcInputCapacitance(arc, delayModel);
+    total += getArcInputCapacitance(arc, delayModel, slewHint);
   return total;
 }
 
@@ -170,7 +176,8 @@ void ArrivalAnalysis::propagate() {
   // Forward propagation in topological order
   for (auto *node : graph.getTopologicalOrder()) {
     auto &nodeData = arrivalData[node->getId().index];
-    double outputLoad = getNodeOutputLoad(node, delayModel);
+    double outputLoad =
+        getNodeOutputLoad(node, delayModel, options.loadSlewHints);
 
     // For each fanout arc, propagate arrival time
     for (auto *arc : node->getFanout()) {

@@ -385,6 +385,9 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
 - `runFullAnalysis()` now performs iterative arrival analysis for models that
   report `usesSlewPropagation() == true`, with configurable maximum iterations
   and slew-delta convergence threshold.
+- Iterations now feed previous-sweep slew hints into load computation
+  (`DelayModel::getInputCapacitance`) so effective-capacitance style models can
+  participate in convergence.
 - The last iteration count is tracked and emitted in timing reports as
   `Arrival Iterations` for observability.
 - Convergence status is now emitted in timing reports as `Slew Converged`.
