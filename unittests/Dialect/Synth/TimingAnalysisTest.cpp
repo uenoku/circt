@@ -124,6 +124,26 @@ const char *nldmCellMapIR = R"MLIR(
     }
 )MLIR";
 
+const char *nldmTimingArcTableIR = R"MLIR(
+    module attributes {synth.liberty.library = {name = "dummy", time_unit = "1ns"}} {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.002 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          timing = [
+            {related_pin = "A", cell_rise = [{values = "0.012, 0.018"}]}
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %0 = hw.instance "u_buf" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %0 : i1
+      }
+    }
+)MLIR";
+
 class TimingAnalysisTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -381,6 +401,29 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelResolvesCellPinMapping) {
   ASSERT_EQ(graph.getEndPoints().size(), 1u);
   auto *endPoint = graph.getEndPoints().front();
   EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 11);
+}
+
+TEST_F(TimingAnalysisTest, NLDMDelayModelReadsTimingArcTableValue) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmTimingArcTableIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto delayModel = createNLDMDelayModel(module.get());
+  ASSERT_NE(delayModel, nullptr);
+
+  TimingGraph graph(hwModule);
+  ASSERT_TRUE(succeeded(graph.build(delayModel.get())));
+
+  ArrivalAnalysis arrivals(graph, {}, delayModel.get());
+  ASSERT_TRUE(succeeded(arrivals.run()));
+
+  ASSERT_EQ(graph.getEndPoints().size(), 1u);
+  auto *endPoint = graph.getEndPoints().front();
+  EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 12);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
