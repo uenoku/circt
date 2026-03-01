@@ -57,9 +57,10 @@ Waveform edge direction is inferred from input waveform endpoints.
 For multi-input cells, arc selection is pin-specific (`relatedPin` / operand
 index), so different inputs can produce different waveform-derived delay/slew.
 
-For nested CCS vector sets, current pilot policy selects the nearest vector in
-`(index_1, index_2)` space to `(inputSlew, outputLoad)` and applies
-`reference_time` as a time-axis offset before threshold extraction.
+For nested CCS vector sets, current pilot policy interpolates across nearby
+vectors in `(index_1, index_2)` space (inverse-distance blend) for
+`(inputSlew, outputLoad)`, and applies interpolated `reference_time` as a
+time-axis offset before threshold extraction.
 
 ## Load-Aware Timing Stretch
 
@@ -149,11 +150,12 @@ Unit tests (`unittests/Dialect/Synth/TimingAnalysisTest.cpp`):
 
 E2E waveform details:
 
-- `test/circt-synth/ccs-pilot-timing-report.mlir`
-- `test/circt-synth/ccs-pilot-waveform-delay-multi-input.mlir`
-- `test/circt-synth/mixed-ccs-pilot-timing-report.mlir`
-- `test/circt-synth/ccs-pilot-waveform-delay-report.mlir`
-- `test/circt-synth/mixed-ccs-pilot-critical-path-policy.mlir`
+- `test/circt-sta/ccs-pilot-timing-report.mlir`
+- `test/circt-sta/ccs-pilot-waveform-delay-multi-input.mlir`
+- `test/circt-sta/mixed-ccs-pilot-timing-report.mlir`
+- `test/circt-sta/ccs-pilot-waveform-delay-report.mlir`
+- `test/circt-sta/mixed-ccs-pilot-critical-path-policy.mlir`
+- `test/circt-sta/ccs-pilot-vector-interpolation-report.mlir`
 
 ## Limitations and Next Steps
 

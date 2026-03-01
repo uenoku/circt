@@ -149,8 +149,8 @@ Convergence behavior and diagnostics are covered in:
 
 E2E report coverage:
 
-- `test/circt-synth/nldm-timing-report.mlir`
-- `test/circt-synth/nldm-timing-report-chain.mlir`
+- `test/circt-sta/nldm-timing-report.mlir`
+- `test/circt-sta/nldm-timing-report-chain.mlir`
 
 ## Background References
 

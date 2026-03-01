@@ -19,7 +19,6 @@
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <optional>
 
 using namespace circt;
@@ -294,56 +293,134 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
                                    double &referenceTime) {
   referenceTime = 0.0;
 
-  auto selectNearestVector = [&](ArrayAttr selector1,
-                                 ArrayAttr selector2) -> std::optional<size_t> {
-    if (selector1.empty())
-      return std::nullopt;
-
-    double bestDistance = std::numeric_limits<double>::infinity();
-    std::optional<size_t> bestIndex;
-    for (auto [index, attr] : llvm::enumerate(selector1)) {
-      auto x = dyn_cast<FloatAttr>(attr);
-      if (!x)
-        continue;
-      double y = 0.0;
-      if (!selector2.empty() && index < selector2.size())
-        if (auto yAttr = dyn_cast<FloatAttr>(selector2[index]))
-          y = yAttr.getValueAsDouble();
-      double dx = x.getValueAsDouble() - inputSlew;
-      double dy = y - outputLoad;
-      double distance = dx * dx + dy * dy;
-      if (!bestIndex || distance < bestDistance) {
-        bestDistance = distance;
-        bestIndex = index;
-      }
-    }
-    return bestIndex;
-  };
-
   auto decodeVectorSet = [&](ArrayAttr selector1, ArrayAttr selector2,
                              ArrayAttr refs, ArrayAttr vectorTimes,
                              ArrayAttr vectorValues) {
     if (vectorTimes.empty() || vectorValues.empty())
       return false;
-    size_t selected = selectNearestVector(selector1, selector2).value_or(0);
-    if (selected >= vectorTimes.size() || selected >= vectorValues.size())
+
+    struct Candidate {
+      double selectorX = 0.0;
+      double selectorY = 0.0;
+      double reference = 0.0;
+      SmallVector<double> times;
+      SmallVector<double> values;
+    };
+
+    SmallVector<Candidate> candidates;
+    size_t count = std::min(selector1.size(), vectorTimes.size());
+    count = std::min(count, vectorValues.size());
+    if (count == 0)
       return false;
 
-    auto selectedTimes = dyn_cast<ArrayAttr>(vectorTimes[selected]);
-    auto selectedValues = dyn_cast<ArrayAttr>(vectorValues[selected]);
-    if (!selectedTimes || !selectedValues)
+    for (size_t i = 0; i < count; ++i) {
+      auto x = dyn_cast<FloatAttr>(selector1[i]);
+      if (!x)
+        continue;
+
+      auto t = dyn_cast<ArrayAttr>(vectorTimes[i]);
+      auto v = dyn_cast<ArrayAttr>(vectorValues[i]);
+      if (!t || !v)
+        continue;
+
+      Candidate candidate;
+      candidate.selectorX = x.getValueAsDouble();
+      if (!selector2.empty() && i < selector2.size())
+        if (auto y = dyn_cast<FloatAttr>(selector2[i]))
+          candidate.selectorY = y.getValueAsDouble();
+      if (i < refs.size())
+        if (auto ref = dyn_cast<FloatAttr>(refs[i]))
+          candidate.reference = ref.getValueAsDouble();
+
+      if (!decodeNumericArray(t, candidate.times) ||
+          !decodeNumericArray(v, candidate.values))
+        continue;
+      if (candidate.times.empty() ||
+          candidate.times.size() != candidate.values.size())
+        continue;
+
+      candidates.push_back(std::move(candidate));
+    }
+
+    if (candidates.empty())
       return false;
 
-    if (!decodeNumericArray(selectedTimes, times) ||
-        !decodeNumericArray(selectedValues, values))
-      return false;
-    if (times.empty() || times.size() != values.size())
+    auto compatibleShape = [](const Candidate &a, const Candidate &b) {
+      return a.times.size() == b.times.size() &&
+             a.values.size() == b.values.size();
+    };
+
+    SmallVector<size_t> order(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i)
+      order[i] = i;
+    llvm::sort(order, [&](size_t lhs, size_t rhs) {
+      const auto &a = candidates[lhs];
+      const auto &b = candidates[rhs];
+      double adx = a.selectorX - inputSlew;
+      double ady = a.selectorY - outputLoad;
+      double bdx = b.selectorX - inputSlew;
+      double bdy = b.selectorY - outputLoad;
+      double ad = adx * adx + ady * ady;
+      double bd = bdx * bdx + bdy * bdy;
+      return ad < bd;
+    });
+
+    const Candidate &nearest = candidates[order.front()];
+    double nearestDx = nearest.selectorX - inputSlew;
+    double nearestDy = nearest.selectorY - outputLoad;
+    double nearestDist2 = nearestDx * nearestDx + nearestDy * nearestDy;
+
+    if (nearestDist2 <= 1e-20) {
+      times.assign(nearest.times.begin(), nearest.times.end());
+      values.assign(nearest.values.begin(), nearest.values.end());
+      referenceTime = nearest.reference;
+      return true;
+    }
+
+    SmallVector<const Candidate *> blend;
+    blend.push_back(&nearest);
+    for (size_t sortedIndex = 1; sortedIndex < order.size() && blend.size() < 4;
+         ++sortedIndex) {
+      const Candidate &other = candidates[order[sortedIndex]];
+      if (compatibleShape(nearest, other))
+        blend.push_back(&other);
+    }
+
+    if (blend.size() == 1) {
+      times.assign(nearest.times.begin(), nearest.times.end());
+      values.assign(nearest.values.begin(), nearest.values.end());
+      referenceTime = nearest.reference;
+      return true;
+    }
+
+    times.assign(nearest.times.size(), 0.0);
+    values.assign(nearest.values.size(), 0.0);
+    referenceTime = 0.0;
+
+    constexpr double epsilon = 1e-12;
+    double weightSum = 0.0;
+    for (const Candidate *candidate : blend) {
+      double dx = candidate->selectorX - inputSlew;
+      double dy = candidate->selectorY - outputLoad;
+      double dist2 = dx * dx + dy * dy;
+      double weight = 1.0 / std::max(dist2, epsilon);
+      weightSum += weight;
+
+      for (auto [index, t] : llvm::enumerate(candidate->times))
+        times[index] += weight * t;
+      for (auto [index, v] : llvm::enumerate(candidate->values))
+        values[index] += weight * v;
+      referenceTime += weight * candidate->reference;
+    }
+
+    if (weightSum <= 0.0)
       return false;
 
-    if (selected < refs.size())
-      if (auto ref = dyn_cast<FloatAttr>(refs[selected]))
-        referenceTime = ref.getValueAsDouble();
-
+    for (double &t : times)
+      t /= weightSum;
+    for (double &v : values)
+      v /= weightSum;
+    referenceTime /= weightSum;
     return true;
   };
 
@@ -356,26 +433,30 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
   };
 
   if (preferFall) {
-    if (decodeVectorSet(arc.getFallSelectorIndex1(), arc.getFallSelectorIndex2(),
+    if (decodeVectorSet(arc.getFallSelectorIndex1(),
+                        arc.getFallSelectorIndex2(),
                         arc.getFallReferenceTimes(), arc.getFallVectorTimes(),
                         arc.getFallVectorValues()))
       return true;
     if (decodePair(arc.getCurrentFallTimes(), arc.getCurrentFallValues()))
       return true;
-    if (decodeVectorSet(arc.getRiseSelectorIndex1(), arc.getRiseSelectorIndex2(),
+    if (decodeVectorSet(arc.getRiseSelectorIndex1(),
+                        arc.getRiseSelectorIndex2(),
                         arc.getRiseReferenceTimes(), arc.getRiseVectorTimes(),
                         arc.getRiseVectorValues()))
       return true;
     if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
       return true;
   } else {
-    if (decodeVectorSet(arc.getRiseSelectorIndex1(), arc.getRiseSelectorIndex2(),
+    if (decodeVectorSet(arc.getRiseSelectorIndex1(),
+                        arc.getRiseSelectorIndex2(),
                         arc.getRiseReferenceTimes(), arc.getRiseVectorTimes(),
                         arc.getRiseVectorValues()))
       return true;
     if (decodePair(arc.getCurrentRiseTimes(), arc.getCurrentRiseValues()))
       return true;
-    if (decodeVectorSet(arc.getFallSelectorIndex1(), arc.getFallSelectorIndex2(),
+    if (decodeVectorSet(arc.getFallSelectorIndex1(),
+                        arc.getFallSelectorIndex2(),
                         arc.getFallReferenceTimes(), arc.getFallVectorTimes(),
                         arc.getFallVectorValues()))
       return true;
