@@ -519,6 +519,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   input waveform edge direction.
 - Added unit coverage for both rising and falling edge waveform selection in
   CCS pilot propagation.
+- CCS pilot waveform timing now applies load-dependent stretching to begin
+  approximating receiver/load-aware waveform behavior.
 
 ---
 

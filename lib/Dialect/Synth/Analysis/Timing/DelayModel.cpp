@@ -311,6 +311,11 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
   return false;
 }
 
+static double getCCSPilotLoadStretchFactor(double outputLoad) {
+  double clamped = std::max(outputLoad, 0.0);
+  return std::max(0.5, 1.0 + 0.5 * (clamped - 0.5));
+}
+
 //===----------------------------------------------------------------------===//
 // UnitDelayModel
 //===----------------------------------------------------------------------===//
@@ -454,8 +459,10 @@ bool CCSPilotDelayModel::computeOutputWaveform(
               inputWaveform.back().value < inputWaveform.front().value;
           if (decodeCCSPilotWaveform(*arc, preferFall, times, values)) {
             double scale = getTimeScalePs(ctx.op);
+            double stretch = getCCSPilotLoadStretchFactor(ctx.outputLoad);
             for (auto [t, v] : llvm::zip(times, values))
-              outputWaveform.push_back({baseTime + delayPs + t * scale, v});
+              outputWaveform.push_back(
+                  {baseTime + delayPs + t * scale * stretch, v});
             return true;
           }
         }

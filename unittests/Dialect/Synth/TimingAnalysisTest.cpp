@@ -841,6 +841,45 @@ TEST_F(TimingAnalysisTest, CCSPilotDelayModelUsesFallWaveformForFallingEdge) {
   EXPECT_EQ(outputWaveform[1].value, 0.0);
 }
 
+TEST_F(TimingAnalysisTest, CCSPilotWaveformStretchesWithOutputLoad) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotWaveformIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext lowLoad;
+  lowLoad.op = inst;
+  lowLoad.inputValue = inst.getOperand(0);
+  lowLoad.outputValue = inst.getResult(0);
+  lowLoad.inputIndex = 0;
+  lowLoad.outputIndex = 0;
+  lowLoad.inputSlew = 0.5;
+  lowLoad.outputLoad = 0.5;
+
+  DelayContext highLoad = lowLoad;
+  highLoad.outputLoad = 1.5;
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 0.0}, {1.0, 1.0}};
+  SmallVector<WaveformPoint> lowWaveform;
+  SmallVector<WaveformPoint> highWaveform;
+  EXPECT_TRUE(
+      model->computeOutputWaveform(lowLoad, inputWaveform, lowWaveform));
+  EXPECT_TRUE(
+      model->computeOutputWaveform(highLoad, inputWaveform, highWaveform));
+  ASSERT_EQ(lowWaveform.size(), 2u);
+  ASSERT_EQ(highWaveform.size(), 2u);
+  EXPECT_LT(lowWaveform[1].time, highWaveform[1].time);
+}
+
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(deepIR, &context);
   ASSERT_TRUE(module);
