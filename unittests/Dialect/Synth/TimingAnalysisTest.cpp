@@ -89,6 +89,23 @@ const char *libertyBridgeIR = R"MLIR(
     }
 )MLIR";
 
+const char *libertyTimingArcIR = R"MLIR(
+    hw.module private @NAND2(
+      in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.004 : f64}},
+      in %B : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.005 : f64}},
+      out Y : i1 {synth.liberty.pin = {
+        direction = "output",
+        timing = [
+          {related_pin = "A", timing_sense = "negative_unate", cell_rise = [{values = "0.012"}]},
+          {args = ["B"], timing_sense = "negative_unate", cell_fall = [{values = "0.013"}]}
+        ]
+      }}) {
+      %0 = comb.and %A, %B : i1
+      %1 = comb.xor %0, %0 : i1
+      hw.output %1 : i1
+    }
+)MLIR";
+
 const char *nldmCellMapIR = R"MLIR(
     module attributes {synth.liberty.library = {name = "dummy"}} {
       hw.module private @INV(
@@ -312,6 +329,33 @@ TEST_F(TimingAnalysisTest, LibertyBridgePinCapacitance) {
   auto capByIndex = lib.getInputPinCapacitance("INV", 0);
   ASSERT_TRUE(capByIndex.has_value());
   EXPECT_NEAR(*capByIndex, 0.006, 1e-12);
+}
+
+TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookup) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(libertyTimingArcIR, &context);
+  ASSERT_TRUE(module);
+
+  auto libOr = LibertyLibrary::fromModule(module.get());
+  ASSERT_FALSE(failed(libOr));
+  LibertyLibrary lib = *libOr;
+
+  auto byNameA = lib.getTimingArc("NAND2", "A", "Y");
+  ASSERT_TRUE(byNameA.has_value());
+  EXPECT_TRUE(byNameA->getAs<StringAttr>("related_pin"));
+
+  auto byNameB = lib.getTimingArc("NAND2", "B", "Y");
+  ASSERT_TRUE(byNameB.has_value());
+  auto args = dyn_cast_or_null<ArrayAttr>(byNameB->get("args"));
+  ASSERT_TRUE(args);
+  ASSERT_FALSE(args.empty());
+  auto firstArg = dyn_cast<StringAttr>(args[0]);
+  ASSERT_TRUE(firstArg);
+  EXPECT_EQ(firstArg.getValue(), "B");
+
+  auto byIndex = lib.getTimingArc("NAND2", 1, 0);
+  ASSERT_TRUE(byIndex.has_value());
+  EXPECT_TRUE(byIndex->getAs<StringAttr>("timing_sense"));
 }
 
 TEST_F(TimingAnalysisTest, NLDMDelayModelResolvesCellPinMapping) {

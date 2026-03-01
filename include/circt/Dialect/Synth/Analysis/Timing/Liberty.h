@@ -66,6 +66,20 @@ public:
   std::optional<double> getInputPinCapacitance(llvm::StringRef cellName,
                                                unsigned operandIndex) const;
 
+  /// Look up timing arc metadata for (input pin -> output pin).
+  ///
+  /// Returns the first matching `timing` subgroup dictionary found under the
+  /// output pin metadata, matching either `related_pin` or first positional
+  /// argument in imported attributes.
+  std::optional<mlir::DictionaryAttr>
+  getTimingArc(llvm::StringRef cellName, llvm::StringRef inputPinName,
+               llvm::StringRef outputPinName) const;
+
+  /// Index-based timing arc lookup helper.
+  std::optional<mlir::DictionaryAttr> getTimingArc(llvm::StringRef cellName,
+                                                   unsigned operandIndex,
+                                                   unsigned resultIndex) const;
+
 private:
   llvm::StringMap<Cell> cells;
 };

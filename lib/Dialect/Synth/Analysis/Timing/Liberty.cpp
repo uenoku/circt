@@ -126,3 +126,46 @@ LibertyLibrary::getInputPinCapacitance(StringRef cellName,
     return std::nullopt;
   return getInputPinCapacitance(cellName, *pinName);
 }
+
+std::optional<DictionaryAttr>
+LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
+                             StringRef outputPinName) const {
+  auto *outputPin = lookupPin(cellName, outputPinName);
+  if (!outputPin || outputPin->isInput)
+    return std::nullopt;
+
+  auto timingGroups =
+      dyn_cast_or_null<ArrayAttr>(outputPin->attrs.get("timing"));
+  if (!timingGroups)
+    return std::nullopt;
+
+  for (auto attr : timingGroups) {
+    auto timing = dyn_cast<DictionaryAttr>(attr);
+    if (!timing)
+      continue;
+
+    if (auto relatedPin = timing.getAs<StringAttr>("related_pin")) {
+      if (relatedPin.getValue() == inputPinName)
+        return timing;
+    }
+
+    auto args = dyn_cast_or_null<ArrayAttr>(timing.get("args"));
+    if (!args || args.empty())
+      continue;
+    if (auto arg0 = dyn_cast<StringAttr>(args[0]))
+      if (arg0.getValue() == inputPinName)
+        return timing;
+  }
+
+  return std::nullopt;
+}
+
+std::optional<DictionaryAttr>
+LibertyLibrary::getTimingArc(StringRef cellName, unsigned operandIndex,
+                             unsigned resultIndex) const {
+  auto inputPin = getInputPinName(cellName, operandIndex);
+  auto outputPin = getOutputPinName(cellName, resultIndex);
+  if (!inputPin || !outputPin)
+    return std::nullopt;
+  return getTimingArc(cellName, *inputPin, *outputPin);
+}
