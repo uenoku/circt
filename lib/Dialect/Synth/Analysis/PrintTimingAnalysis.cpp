@@ -69,6 +69,7 @@ struct PrintTimingAnalysisPass
 
     timing::TimingAnalysisOptions analysisOptions;
     analysisOptions.keepAllArrivals = true;
+    analysisOptions.emitSlewConvergenceTable = showConvergenceTable;
 
     std::unique_ptr<timing::DelayModel> nldmModel;
     if (module->hasAttr("synth.liberty.library")) {
@@ -169,6 +170,19 @@ private:
     return "disabled";
   }
 
+  static void printSlewConvergenceTable(timing::TimingAnalysis &analysis,
+                                        llvm::raw_ostream &os) {
+    auto deltas = analysis.getLastSlewDeltaHistory();
+    if (deltas.empty())
+      return;
+
+    os << "--- Slew Convergence ---\n";
+    os << "Iter | Max Slew Delta\n";
+    for (size_t i = 0, e = deltas.size(); i < e; ++i)
+      os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << "\n";
+    os << "\n";
+  }
+
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
     auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
@@ -264,6 +278,10 @@ private:
        << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
+
+    if (analysis.shouldEmitSlewConvergenceTable())
+      printSlewConvergenceTable(analysis, os);
+
     os << "--- Critical Paths (Top "
        << (numPaths.getValue() == 0
                ? uniquePaths.size()

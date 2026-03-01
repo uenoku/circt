@@ -400,6 +400,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   iteration-to-iteration using residual trend.
 - Reports now include `Adaptive Slew Damping Mode`, `Applied Slew Hint
   Damping`, and `Slew Delta Trend`.
+- Reports optionally include a per-iteration convergence table (`Iter | Max
+  Slew Delta`) when `emitSlewConvergenceTable` is enabled.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models

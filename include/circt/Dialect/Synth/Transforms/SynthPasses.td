@@ -415,7 +415,9 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> 
     ListOption<"filterEndPoints", "filter-end", "std::string",
                "Glob patterns to filter paths by end point names">,
     Option<"numPaths", "num-paths", "unsigned", "10",
-           "Maximum number of paths to print">
+           "Maximum number of paths to print">,
+    Option<"showConvergenceTable", "show-convergence-table", "bool",
+           "false", "Include per-iteration slew convergence table">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

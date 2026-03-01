@@ -81,6 +81,9 @@ struct TimingAnalysisOptions {
   AdaptiveSlewHintDampingMode adaptiveSlewHintDampingMode =
       AdaptiveSlewHintDampingMode::Disabled;
 
+  /// Emit per-iteration slew convergence table in textual timing reports.
+  bool emitSlewConvergenceTable = false;
+
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
 };
@@ -144,6 +147,10 @@ public:
 
   /// Configured initial slew seed for startpoints.
   double getConfiguredInitialSlew() const { return options.initialSlew; }
+
+  bool shouldEmitSlewConvergenceTable() const {
+    return options.emitSlewConvergenceTable;
+  }
 
   /// Configured damping factor for iterative load-slew hints.
   double getConfiguredSlewHintDamping() const {

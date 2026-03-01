@@ -57,6 +57,19 @@ static StringRef formatAdaptiveDampingMode(
   return "disabled";
 }
 
+static void printSlewConvergenceTable(const TimingAnalysis &analysis,
+                                      llvm::raw_ostream &os) {
+  auto deltas = analysis.getLastSlewDeltaHistory();
+  if (deltas.empty())
+    return;
+
+  os << "--- Slew Convergence ---\n";
+  os << "Iter | Max Slew Delta\n";
+  for (size_t i = 0, e = deltas.size(); i < e; ++i)
+    os << (i + 1) << " | " << llvm::format("%.6g", deltas[i]) << "\n";
+  os << "\n";
+}
+
 void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   if (!graph) {
     os << "Error: timing graph not built.\n";
@@ -83,6 +96,9 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
     os << "Worst Slack: " << requiredTimeAnalysis->getWorstSlack() << "\n";
 
   os << "\n";
+
+  if (shouldEmitSlewConvergenceTable())
+    printSlewConvergenceTable(*this, os);
 
   // Get K worst paths
   SmallVector<TimingPath> paths;

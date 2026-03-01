@@ -900,8 +900,35 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("Applied Slew Hint Damping:"), std::string::npos);
   EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
   EXPECT_NE(report.find("Slew Delta Trend:"), std::string::npos);
+  EXPECT_EQ(report.find("--- Slew Convergence ---"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
   EXPECT_NE(report.find("Critical Paths"), std::string::npos);
+}
+
+TEST_F(TimingAnalysisTest, ReportTimingIncludesConvergenceTableWhenEnabled) {
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(testIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("simple");
+  ASSERT_TRUE(hwModule);
+
+  FixedSlewDelayModel model;
+  TimingAnalysisOptions opts;
+  opts.delayModel = &model;
+  opts.initialSlew = 0.25;
+  opts.emitSlewConvergenceTable = true;
+
+  auto analysis = TimingAnalysis::create(hwModule, opts);
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+
+  std::string report;
+  llvm::raw_string_ostream os(report);
+  analysis->reportTiming(os, 5);
+
+  EXPECT_NE(report.find("--- Slew Convergence ---"), std::string::npos);
+  EXPECT_NE(report.find("Iter | Max Slew Delta"), std::string::npos);
 }
 
 TEST_F(TimingAnalysisTest, FullPipeline) {
