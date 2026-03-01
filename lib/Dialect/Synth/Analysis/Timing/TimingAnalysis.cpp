@@ -133,11 +133,31 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
   lastArrivalConverged = true;
   lastMaxSlewDelta = 0.0;
   lastRelativeSlewDelta = 0.0;
+  lastEffectiveSlewConvergenceRelativeEpsilon =
+      options.slewConvergenceRelativeEpsilon;
+  lastWaveformCoupledConvergence = false;
   lastSlewDeltaHistory.clear();
   lastSlewDampingHistory.clear();
   lastAppliedSlewHintDamping = std::clamp(options.slewHintDamping, 0.0, 1.0);
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
+    bool waveformCoupled = options.enableWaveformCoupledConvergence &&
+                           options.delayModel->usesWaveformPropagation();
+    lastWaveformCoupledConvergence = waveformCoupled;
+
+    auto adaptiveMode = options.adaptiveSlewHintDampingMode;
+    double relativeEpsilon = options.slewConvergenceRelativeEpsilon;
     double damping = lastAppliedSlewHintDamping;
+    if (waveformCoupled) {
+      if (adaptiveMode ==
+          TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled)
+        adaptiveMode =
+            TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Conservative;
+      if (relativeEpsilon <= 0.0)
+        relativeEpsilon = 0.05;
+      damping = std::min(damping, 0.8);
+    }
+    lastEffectiveSlewConvergenceRelativeEpsilon = relativeEpsilon;
+
     double previousDelta = 0.0;
     double firstDelta = 0.0;
     bool hasPreviousDelta = false;
@@ -146,6 +166,8 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
     bool converged = false;
 
     unsigned maxIterations = std::max(1u, options.maxSlewIterations);
+    if (waveformCoupled)
+      maxIterations = std::max(maxIterations, 2u);
     for (unsigned iter = 0; iter < maxIterations; ++iter) {
       if (failed(runArrivalAnalysisWithLoadSlewHints(previousSlews)))
         return failure();
@@ -166,17 +188,16 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
 
       bool convergedAbsolute = maxDelta <= options.slewConvergenceEpsilon;
       bool convergedRelative =
-          options.slewConvergenceRelativeEpsilon > 0.0 &&
-          lastRelativeSlewDelta <= options.slewConvergenceRelativeEpsilon;
-      if (convergedAbsolute || convergedRelative) {
+          relativeEpsilon > 0.0 && lastRelativeSlewDelta <= relativeEpsilon;
+      bool allowConvergenceNow = !waveformCoupled || iter > 0;
+      if (allowConvergenceNow && (convergedAbsolute || convergedRelative)) {
         converged = true;
         lastAppliedSlewHintDamping = damping;
         break;
       }
 
       if (hasPreviousDelta)
-        updateAdaptiveDamping(options.adaptiveSlewHintDampingMode, maxDelta,
-                              previousDelta, damping);
+        updateAdaptiveDamping(adaptiveMode, maxDelta, previousDelta, damping);
       previousDelta = maxDelta;
       hasPreviousDelta = true;
       lastAppliedSlewHintDamping = damping;

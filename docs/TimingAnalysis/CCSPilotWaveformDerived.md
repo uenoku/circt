@@ -99,6 +99,16 @@ Mixed delegation mode:
 - cells listed in `synth.ccs.pilot.cells` use CCS pilot behavior;
   others use NLDM behavior.
 
+Waveform-coupled convergence heuristics:
+
+- enabled by default via `enableWaveformCoupledConvergence`
+- active for waveform-capable models
+- applies:
+  - conservative adaptive damping when explicit mode is disabled
+  - default relative epsilon `0.05` when unset
+  - initial damping cap at `0.8`
+  - minimum of 2 slew iterations
+
 ## Reporting
 
 With waveform details enabled (`--show-waveform-details`), each arc line prints:

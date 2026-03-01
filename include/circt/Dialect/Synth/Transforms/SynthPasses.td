@@ -429,7 +429,9 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> 
     Option<"slewHintDamping", "slew-hint-damping", "double", "1.0",
            "Damping factor for iterative slew-hint updates">,
     Option<"adaptiveSlewHintDampingMode", "adaptive-slew-damping-mode", "std::string", "\"disabled\"",
-           "Adaptive damping mode: disabled, conservative, aggressive">
+           "Adaptive damping mode: disabled, conservative, aggressive">,
+    Option<"enableWaveformCoupledConvergence", "enable-waveform-coupled-convergence", "bool", "true",
+           "Enable waveform-coupled slew convergence heuristics for waveform-capable models">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

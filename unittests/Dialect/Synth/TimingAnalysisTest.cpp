@@ -1279,6 +1279,8 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
   EXPECT_NE(report.find("Relative Max Slew Delta:"), std::string::npos);
   EXPECT_NE(report.find("Relative Slew Epsilon:"), std::string::npos);
+  EXPECT_NE(report.find("Effective Relative Slew Epsilon:"), std::string::npos);
+  EXPECT_NE(report.find("Waveform-Coupled Convergence:"), std::string::npos);
   EXPECT_NE(report.find("Slew Delta Trend:"), std::string::npos);
   EXPECT_NE(report.find("Slew Trend Class:"), std::string::npos);
   EXPECT_NE(report.find("Slew Reduction Ratio:"), std::string::npos);
@@ -1613,6 +1615,48 @@ TEST_F(TimingAnalysisTest, AdaptiveDampingPolicyAffectsAppliedFactor) {
           conservative->getLastArrivalIterations() ||
       aggressive->getLastMaxSlewDelta() != conservative->getLastMaxSlewDelta();
   EXPECT_TRUE(differs);
+}
+
+TEST_F(TimingAnalysisTest, WaveformCoupledConvergenceHeuristicsAdjustDefaults) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotWaveformIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  TimingAnalysisOptions onOpts;
+  onOpts.delayModel = model.get();
+  onOpts.maxSlewIterations = 1;
+  onOpts.slewConvergenceRelativeEpsilon = 0.0;
+  onOpts.slewHintDamping = 1.0;
+  onOpts.enableWaveformCoupledConvergence = true;
+
+  auto on = TimingAnalysis::create(hwModule, onOpts);
+  ASSERT_NE(on, nullptr);
+  ASSERT_TRUE(succeeded(on->runFullAnalysis()));
+  EXPECT_TRUE(on->usedWaveformCoupledConvergence());
+  EXPECT_EQ(on->getLastArrivalIterations(), 2u);
+  EXPECT_NEAR(on->getLastEffectiveSlewConvergenceRelativeEpsilon(), 0.05,
+              1e-12);
+  ASSERT_FALSE(on->getLastSlewDampingHistory().empty());
+  EXPECT_NEAR(on->getLastSlewDampingHistory().front(), 0.8, 1e-12);
+
+  TimingAnalysisOptions offOpts = onOpts;
+  offOpts.enableWaveformCoupledConvergence = false;
+
+  auto off = TimingAnalysis::create(hwModule, offOpts);
+  ASSERT_NE(off, nullptr);
+  ASSERT_TRUE(succeeded(off->runFullAnalysis()));
+  EXPECT_FALSE(off->usedWaveformCoupledConvergence());
+  EXPECT_EQ(off->getLastArrivalIterations(), 1u);
+  EXPECT_EQ(off->getLastEffectiveSlewConvergenceRelativeEpsilon(), 0.0);
+  ASSERT_FALSE(off->getLastSlewDampingHistory().empty());
+  EXPECT_NEAR(off->getLastSlewDampingHistory().front(), 1.0, 1e-12);
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {

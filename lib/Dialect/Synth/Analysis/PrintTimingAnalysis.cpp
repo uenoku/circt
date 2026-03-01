@@ -153,6 +153,8 @@ struct PrintTimingAnalysisPass
     analysisOptions.slewHintDamping = slewHintDamping;
     analysisOptions.adaptiveSlewHintDampingMode =
         parseAdaptiveMode(adaptiveSlewHintDampingMode);
+    analysisOptions.enableWaveformCoupledConvergence =
+        enableWaveformCoupledConvergence;
 
     std::unique_ptr<timing::DelayModel> configuredModel;
     if (module->hasAttr("synth.liberty.library")) {
@@ -482,6 +484,10 @@ private:
        << "\n";
     os << "Relative Slew Epsilon: "
        << analysis.getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
+    os << "Effective Relative Slew Epsilon: "
+       << analysis.getLastEffectiveSlewConvergenceRelativeEpsilon() << "\n";
+    os << "Waveform-Coupled Convergence: "
+       << (analysis.usedWaveformCoupledConvergence() ? "yes" : "no") << "\n";
     os << "Slew Delta Trend: "
        << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     auto trendClass = classifyDeltaTrend(analysis.getLastSlewDeltaHistory());

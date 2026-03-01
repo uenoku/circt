@@ -256,6 +256,10 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Relative Max Slew Delta: " << getLastRelativeSlewDelta() << "\n";
   os << "Relative Slew Epsilon: "
      << getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
+  os << "Effective Relative Slew Epsilon: "
+     << getLastEffectiveSlewConvergenceRelativeEpsilon() << "\n";
+  os << "Waveform-Coupled Convergence: "
+     << (usedWaveformCoupledConvergence() ? "yes" : "no") << "\n";
   auto trendClass = classifyDeltaTrend(getLastSlewDeltaHistory());
   auto reductionRatio = getReductionRatio(getLastSlewDeltaHistory());
   os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())

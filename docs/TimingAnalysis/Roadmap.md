@@ -535,6 +535,9 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   and waveform-derived delay differences.
 - Added mixed NLDM/CCS-pilot delegation mode (`mixed-ccs-pilot`) with
   per-cell policy (`synth.ccs.pilot.cells`) and e2e coverage.
+- Added waveform-coupled convergence heuristics (auto relative epsilon,
+  damping cap, minimum iterations) for waveform-capable models, with
+  diagnostics for effective settings.
 
 ---
 

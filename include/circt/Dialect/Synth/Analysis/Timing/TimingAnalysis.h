@@ -77,6 +77,10 @@ struct TimingAnalysisOptions {
   /// Disabled when set to 0.
   double slewConvergenceRelativeEpsilon = 0.0;
 
+  /// Enable waveform-coupled convergence heuristics for waveform-capable
+  /// delay models (e.g. CCS pilot).
+  bool enableWaveformCoupledConvergence = true;
+
   /// Damping factor for load-slew hint updates across iterations.
   /// 1.0 keeps existing behavior (full update), lower values smooth updates.
   double slewHintDamping = 1.0;
@@ -191,6 +195,16 @@ public:
     return options.slewConvergenceRelativeEpsilon;
   }
 
+  /// Effective relative convergence threshold used in last run.
+  double getLastEffectiveSlewConvergenceRelativeEpsilon() const {
+    return lastEffectiveSlewConvergenceRelativeEpsilon;
+  }
+
+  /// Whether waveform-coupled convergence heuristics were active in last run.
+  bool usedWaveformCoupledConvergence() const {
+    return lastWaveformCoupledConvergence;
+  }
+
   /// Slew-delta residual history across arrival iterations.
   ArrayRef<double> getLastSlewDeltaHistory() const {
     return lastSlewDeltaHistory;
@@ -290,6 +304,8 @@ private:
   bool lastArrivalConverged = true;
   double lastMaxSlewDelta = 0.0;
   double lastRelativeSlewDelta = 0.0;
+  double lastEffectiveSlewConvergenceRelativeEpsilon = 0.0;
+  bool lastWaveformCoupledConvergence = false;
   SmallVector<double, 8> lastSlewDeltaHistory;
   SmallVector<double, 8> lastSlewDampingHistory;
   double lastAppliedSlewHintDamping = 1.0;

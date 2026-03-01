@@ -10,6 +10,8 @@
 // CHECK: Delay Model: nldm
 // CHECK: Arrival Iterations:
 // CHECK: Slew Converged:
+// CHECK: Effective Relative Slew Epsilon:
+// CHECK: Waveform-Coupled Convergence:
 // CHECK: Slew Trend Class:
 // CHECK: Slew Reduction Ratio:
 // CHECK: Slew Advice:

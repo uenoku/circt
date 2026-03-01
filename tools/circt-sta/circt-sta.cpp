@@ -111,6 +111,11 @@ static cl::opt<std::string> adaptiveSlewDampingMode(
     cl::desc("Adaptive damping mode: disabled, conservative, aggressive"),
     cl::init("disabled"), cl::cat(mainCategory));
 
+static cl::opt<bool> enableWaveformCoupledConvergence(
+    "enable-waveform-coupled-convergence",
+    cl::desc("Enable waveform-coupled convergence heuristics"), cl::init(true),
+    cl::cat(mainCategory));
+
 static LogicalResult executeSTA(MLIRContext &context) {
   std::string errorMessage;
   auto input = openInputFile(inputFilename, &errorMessage);
@@ -146,6 +151,7 @@ static LogicalResult executeSTA(MLIRContext &context) {
   options.slewConvergenceRelativeEpsilon = slewConvergenceRelativeEpsilon;
   options.slewHintDamping = slewHintDamping;
   options.adaptiveSlewHintDampingMode = adaptiveSlewDampingMode;
+  options.enableWaveformCoupledConvergence = enableWaveformCoupledConvergence;
   for (const auto &pat : filterStartPoints)
     options.filterStartPoints.push_back(pat);
   for (const auto &pat : filterEndPoints)
