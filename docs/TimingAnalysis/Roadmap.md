@@ -73,11 +73,15 @@ the ongoing `#synth` typed-NLDM attribute work.
 
 ### Remaining Gaps in TimingAnalysis Core (Not About Typed Attr Format)
 
-- Full NLDM numerical behavior is not complete yet:
-  - proper LUT interpolation over `(inputSlew, outputLoad)`
-  - transition/slew propagation through nodes
-  - output-load modeling from fanout pin capacitances
-  - iterative slew/load convergence loop
+- NLDM numerical behavior is nearly complete:
+  - ~~proper LUT interpolation over `(inputSlew, outputLoad)`~~ done
+  - ~~transition/slew propagation through nodes~~ done (infrastructure)
+  - ~~output-load modeling from fanout pin capacitances~~ done
+  - ~~iterative slew/load convergence loop~~ done
+  - remaining: output-slew transition-table wiring for full accuracy
+- Golden-reference validation against OpenSTA is missing (see new section below).
+- Technology mapping bridge (Step D) needs concrete implementation details for
+  how `synth.liberty.cell` annotations are populated by the mapper.
 - Advanced STA features are still pending:
   - multi-clock domain constraints and CDC handling
   - MCMM (multi-corner/multi-mode)
@@ -89,8 +93,8 @@ the ongoing `#synth` typed-NLDM attribute work.
 - `TimingAnalysis` is functionally usable today for graph construction,
   arrival/RAT/slack reporting, and K-worst path reporting in current synth
   flows.
-- Signoff-grade NLDM/CCS accuracy remains a roadmap item and depends on the
-  slew/load/interpolation milestones below.
+- Signoff-grade NLDM/CCS accuracy remains a roadmap item; the primary
+  remaining gap is golden-reference validation rather than missing infrastructure.
 
 ---
 
@@ -442,6 +446,13 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   where effective load depends on slew/waveform state, including CCS waveform
   coupling.
 
+**Review note (2026-03):** The convergence diagnostics surface has grown
+significantly (~15 distinct report fields). Consider gating verbose
+diagnostics (per-iteration table, trend class, reduction ratio, advice)
+behind a `--verbose-convergence` flag and keeping the default report lean
+(iterations, converged, max delta only). This reduces noise for typical
+users while preserving full observability for tuning.
+
 **Files affected:** `TimingAnalysis.cpp`
 
 ### Step D: Technology Mapping Bridge
@@ -451,6 +462,53 @@ To use NLDM, the netlist must be mapped to specific Liberty cells. This bridges 
 - After technology mapping (e.g., in the Synth dialect transforms), annotate operations with their Liberty cell name.
 - `NLDMDelayModel` reads this annotation to look up the correct cell.
 - Alternative: maintain a mapping table from MLIR op types to Liberty cells.
+
+**Status (2026-03): Not started — needs concrete design.**
+
+The current roadmap assumes `synth.liberty.cell` attributes exist on mapped
+operations, but the technology mapper does not yet emit them. Key questions
+to resolve:
+
+- Where in the synthesis pipeline does cell selection happen (before or after
+  AIG optimization)?
+- How are multi-output cells handled (e.g., full adder with sum + carry)?
+- Should unmapped operations (e.g., pre-mapping AIG nodes) fall back to
+  `AIGLevelDelayModel` automatically, or is mapping a hard prerequisite for
+  NLDM?
+
+Without this bridge, NLDM/CCS models can only be exercised on hand-annotated
+test IR, not on real synthesis flows.
+
+### Step E: Golden-Reference Validation
+
+**Status (2026-03): Not started.**
+
+NLDM and CCS accuracy claims require comparison against a reference STA tool.
+Without this, numerical correctness is asserted only by internal unit tests
+with hand-computed expectations.
+
+**Approach:**
+
+1. Select a small but representative benchmark set (e.g., 3-5 mapped designs
+   at a few hundred gates using a public Liberty library like ASAP7 or
+   FreePDK45).
+2. Run the same mapped netlist through OpenSTA and `circt-sta`, both using the
+   same Liberty file.
+3. Compare per-path arrival times, slews, and slack values. Acceptable
+   tolerance: <1% for NLDM, <2% for CCS pilot vs. NLDM-reference.
+4. Automate the comparison as a lit test or script under
+   `test/Dialect/Synth/Timing/golden/`.
+
+**Prerequisites:**
+- Technology mapping bridge (Step D) to produce mapped netlists, OR
+  hand-crafted mapped IR for initial validation.
+- An OpenSTA installation available in CI (or run as a manual validation step
+  initially).
+
+**Benefits:**
+- Catches interpolation bugs, unit-scaling errors, and arc-resolution mistakes
+  that unit tests with synthetic data cannot.
+- Provides confidence for users evaluating `circt-sta` for real flows.
 
 ---
 
@@ -494,6 +552,24 @@ class CCSDelayModel : public DelayModel {
 ### Composite Approach
 
 In practice, many tools support mixed NLDM/CCS: use CCS for critical paths and NLDM elsewhere. This could be implemented by having a `CompositeDelayModel` that delegates to CCS or NLDM based on the cell or criticality.
+
+### CCS Pilot Graduation Decision
+
+**Review note (2026-03):** The CCS pilot has grown well beyond plumbing
+validation — it now includes waveform-derived delay, receiver-cap handling,
+mixed NLDM/CCS delegation, load-aware stretching, and waveform-coupled
+convergence. Consider either:
+
+- **Graduate to `CCSDelayModel`**: rename and treat it as the real CCS
+  implementation, removing the "pilot" qualifier and cleaning up any
+  scaffolding that was meant to be temporary.
+- **Reset scope**: if the pilot approximations (stretch-based waveform
+  shaping) are too coarse for production CCS, freeze the pilot as-is and
+  build a proper `CCSDelayModel` with real current-source simulation from
+  scratch, reusing only the Liberty parsing and arc resolution.
+
+The current in-between state risks accumulating technical debt in a
+component labeled as temporary.
 
 ### CCS Remaining Milestones (2026-03)
 
@@ -579,16 +655,33 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
 
 ## Suggested Priority Order
 
+### Original NLDM critical path (items 1-5): largely complete
+
+| Priority | Enhancement | Status |
+|----------|------------|--------|
+| ~~1~~ | ~~Slew propagation in ArrivalAnalysis~~ | Done |
+| ~~2~~ | ~~Output load computation~~ | Done |
+| ~~3~~ | ~~Liberty data bridge (reuse import-liberty)~~ | Done |
+| ~~4~~ | ~~`NLDMDelayModel` with bilinear interpolation~~ | Done (output-slew table wiring remaining) |
+| ~~5~~ | ~~Iterative slew convergence loop~~ | Done |
+
+### Updated priority order (2026-03)
+
+With the NLDM infrastructure substantially in place, the priority shifts
+toward validation, practical usability, and CCS maturation.
+
 | Priority | Enhancement | Unlocks |
 |----------|------------|---------|
-| 1 | Slew propagation in ArrivalAnalysis | NLDM |
-| 2 | Output load computation | NLDM |
-| 3 | Liberty parser (`.lib` -> in-memory LUTs) | NLDM |
-| 4 | `NLDMDelayModel` with bilinear interpolation | NLDM timing |
-| 5 | Iterative slew convergence loop | Accurate NLDM |
-| 6 | Clock domain awareness | Multi-clock designs |
+| 1 | Finish NLDM output-slew transition-table wiring | Complete NLDM accuracy |
+| 2 | Technology mapping bridge (Step D) | Real synthesis-to-STA flow |
+| 3 | Golden-reference validation against OpenSTA (Step E) | Confidence in numerical correctness |
+| 4 | Clock domain awareness | Multi-clock designs |
+| 5 | CCS pilot graduation decision + real CCS model | Advanced node accuracy |
+| 6 | Convergence diagnostic cleanup (verbose flag) | Cleaner default reports |
 | 7 | Multi-corner support | Signoff-quality analysis |
-| 8 | CCS model | Advanced node accuracy |
-| 9 | Incremental analysis | ECO flows |
+| 8 | Incremental analysis | ECO flows |
+| 9 | Parallelization | Performance at scale |
 
-Items 1-5 form the NLDM critical path. Items 6-9 are independently valuable and can be parallelized.
+Items 1-3 are the immediate critical path for making NLDM practically
+usable and trustworthy. Item 4 (clock domains) is independently high-value
+since multi-clock designs are the norm. Items 5-9 can be parallelized.
