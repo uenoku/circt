@@ -318,6 +318,15 @@ metadata, so importer and timing analysis share a stable schema.
 3. Implement first CCS pilot model on top of the waveform hook while sharing
    Liberty cell/arc resolution and load modeling infrastructure with NLDM.
 
+**Status update (2026-03): Started.**
+
+- Added `CCSPilotDelayModel` that reuses NLDM scalar delay/load behavior and
+  enables waveform propagation via `computeOutputWaveform(...)` for initial
+  CCS-plumbing validation.
+- Added timing-flow model selection via module attribute
+  `synth.timing.model = "ccs-pilot"` in timing report pass flow.
+- Added unit and e2e coverage for CCS pilot report/model activation.
+
 ### Step B: NLDMDelayModel Implementation
 
 ```cpp

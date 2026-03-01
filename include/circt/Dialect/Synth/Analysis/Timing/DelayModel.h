@@ -128,6 +128,30 @@ private:
   std::unique_ptr<class LibertyLibrary> liberty;
 };
 
+/// CCS pilot delay model.
+///
+/// This model reuses NLDM scalar delay/slew lookup for arc delay and load
+/// behavior, and additionally exposes a waveform propagation hook for initial
+/// CCS plumbing validation.
+class CCSPilotDelayModel : public DelayModel {
+public:
+  CCSPilotDelayModel();
+  explicit CCSPilotDelayModel(std::unique_ptr<class LibertyLibrary> liberty);
+  ~CCSPilotDelayModel() override;
+
+  DelayResult computeDelay(const DelayContext &ctx) const override;
+  llvm::StringRef getName() const override { return "ccs-pilot"; }
+  bool usesSlewPropagation() const override { return true; }
+  bool usesWaveformPropagation() const override { return true; }
+  double getInputCapacitance(const DelayContext &ctx) const override;
+  bool computeOutputWaveform(
+      const DelayContext &ctx, llvm::ArrayRef<WaveformPoint> inputWaveform,
+      llvm::SmallVectorImpl<WaveformPoint> &outputWaveform) const override;
+
+private:
+  NLDMDelayModel nldmDelegate;
+};
+
 /// Create the default delay model (AIGLevelDelayModel).
 std::unique_ptr<DelayModel> createDefaultDelayModel();
 
@@ -137,6 +161,12 @@ std::unique_ptr<DelayModel> createNLDMDelayModel();
 /// Create the NLDM-oriented delay model and wire imported Liberty metadata
 /// from `module` when available.
 std::unique_ptr<DelayModel> createNLDMDelayModel(mlir::ModuleOp module);
+
+/// Create the CCS pilot delay model.
+std::unique_ptr<DelayModel> createCCSPilotDelayModel();
+
+/// Create the CCS pilot delay model and wire imported Liberty metadata.
+std::unique_ptr<DelayModel> createCCSPilotDelayModel(mlir::ModuleOp module);
 
 } // namespace timing
 } // namespace synth

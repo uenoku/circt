@@ -17,6 +17,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MathExtras.h"
+#include <algorithm>
 #include <cmath>
 #include <optional>
 
@@ -389,6 +390,40 @@ double NLDMDelayModel::getInputCapacitance(const DelayContext &ctx) const {
 }
 
 //===----------------------------------------------------------------------===//
+// CCSPilotDelayModel
+//===----------------------------------------------------------------------===//
+
+CCSPilotDelayModel::CCSPilotDelayModel() = default;
+
+CCSPilotDelayModel::CCSPilotDelayModel(std::unique_ptr<LibertyLibrary> liberty)
+    : nldmDelegate(std::move(liberty)) {}
+
+CCSPilotDelayModel::~CCSPilotDelayModel() = default;
+
+DelayResult CCSPilotDelayModel::computeDelay(const DelayContext &ctx) const {
+  return nldmDelegate.computeDelay(ctx);
+}
+
+double CCSPilotDelayModel::getInputCapacitance(const DelayContext &ctx) const {
+  return nldmDelegate.getInputCapacitance(ctx);
+}
+
+bool CCSPilotDelayModel::computeOutputWaveform(
+    const DelayContext &ctx, ArrayRef<WaveformPoint> inputWaveform,
+    SmallVectorImpl<WaveformPoint> &outputWaveform) const {
+  outputWaveform.clear();
+
+  auto result = computeDelay(ctx);
+  double delayPs = static_cast<double>(result.delay);
+  double outputSlew = std::max(result.outputSlew, 1e-6);
+  double baseTime = inputWaveform.empty() ? 0.0 : inputWaveform.front().time;
+
+  outputWaveform.push_back({baseTime + delayPs, 0.0});
+  outputWaveform.push_back({baseTime + delayPs + outputSlew, 1.0});
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
 // Factory
 //===----------------------------------------------------------------------===//
 
@@ -410,5 +445,22 @@ circt::synth::timing::createNLDMDelayModel(ModuleOp module) {
     return std::make_unique<NLDMDelayModel>();
 
   return std::make_unique<NLDMDelayModel>(
+      std::make_unique<LibertyLibrary>(std::move(*libertyOr)));
+}
+
+std::unique_ptr<DelayModel> circt::synth::timing::createCCSPilotDelayModel() {
+  return std::make_unique<CCSPilotDelayModel>();
+}
+
+std::unique_ptr<DelayModel>
+circt::synth::timing::createCCSPilotDelayModel(ModuleOp module) {
+  if (!module)
+    return std::make_unique<CCSPilotDelayModel>();
+
+  auto libertyOr = LibertyLibrary::fromModule(module);
+  if (failed(libertyOr))
+    return std::make_unique<CCSPilotDelayModel>();
+
+  return std::make_unique<CCSPilotDelayModel>(
       std::make_unique<LibertyLibrary>(std::move(*libertyOr)));
 }

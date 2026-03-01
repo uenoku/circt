@@ -741,6 +741,45 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelInterpolatesOutputSlew) {
   EXPECT_NEAR(infos.front().slew, 0.25, 1e-9);
 }
 
+TEST_F(TimingAnalysisTest, CCSPilotDelayModelProducesWaveform) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->getName(), "ccs-pilot");
+  EXPECT_TRUE(model->usesSlewPropagation());
+  EXPECT_TRUE(model->usesWaveformPropagation());
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.5;
+  ctx.outputLoad = 0.5;
+
+  auto delay = model->computeDelay(ctx);
+  EXPECT_GT(delay.delay, 0);
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 0.0}, {1.0, 1.0}};
+  SmallVector<WaveformPoint> outputWaveform;
+  EXPECT_TRUE(model->computeOutputWaveform(ctx, inputWaveform, outputWaveform));
+  ASSERT_EQ(outputWaveform.size(), 2u);
+  EXPECT_LT(outputWaveform[0].time, outputWaveform[1].time);
+  EXPECT_EQ(outputWaveform[0].value, 0.0);
+  EXPECT_EQ(outputWaveform[1].value, 1.0);
+}
+
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(deepIR, &context);
   ASSERT_TRUE(module);

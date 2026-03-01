@@ -51,6 +51,14 @@ static std::optional<double> parseNumericAttr(Attribute attr) {
   return std::nullopt;
 }
 
+static StringRef getRequestedDelayModel(ModuleOp module) {
+  if (!module)
+    return "";
+  if (auto attr = module->getAttrOfType<StringAttr>("synth.timing.model"))
+    return attr.getValue();
+  return "";
+}
+
 struct PrintTimingAnalysisPass
     : public impl::PrintTimingAnalysisBase<PrintTimingAnalysisPass> {
   using PrintTimingAnalysisBase::PrintTimingAnalysisBase;
@@ -71,10 +79,13 @@ struct PrintTimingAnalysisPass
     analysisOptions.keepAllArrivals = true;
     analysisOptions.emitSlewConvergenceTable = showConvergenceTable;
 
-    std::unique_ptr<timing::DelayModel> nldmModel;
+    std::unique_ptr<timing::DelayModel> configuredModel;
     if (module->hasAttr("synth.liberty.library")) {
-      nldmModel = timing::createNLDMDelayModel(module);
-      analysisOptions.delayModel = nldmModel.get();
+      if (getRequestedDelayModel(module) == "ccs-pilot")
+        configuredModel = timing::createCCSPilotDelayModel(module);
+      else
+        configuredModel = timing::createNLDMDelayModel(module);
+      analysisOptions.delayModel = configuredModel.get();
 
       if (auto initial = module->getAttr("synth.nldm.default_input_slew"))
         if (auto value = parseNumericAttr(initial))
