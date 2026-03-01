@@ -350,6 +350,97 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
              a.values.size() == b.values.size();
     };
 
+    auto nearlyEqual = [](double a, double b) {
+      return std::abs(a - b) <= 1e-12;
+    };
+
+    auto insertUnique = [&](SmallVectorImpl<double> &axis, double value) {
+      for (double existing : axis)
+        if (nearlyEqual(existing, value))
+          return;
+      axis.push_back(value);
+    };
+
+    auto tryStructuredBilinearBlend = [&]() {
+      SmallVector<double> xs;
+      SmallVector<double> ys;
+      xs.reserve(candidates.size());
+      ys.reserve(candidates.size());
+      for (const Candidate &candidate : candidates) {
+        insertUnique(xs, candidate.selectorX);
+        insertUnique(ys, candidate.selectorY);
+      }
+
+      if (xs.size() < 2 || ys.size() < 2)
+        return false;
+
+      llvm::sort(xs);
+      llvm::sort(ys);
+
+      auto findSegment = [&](double value, ArrayRef<double> axis) {
+        if (value <= axis.front())
+          return std::make_pair<size_t, size_t>(0, 1);
+        if (value >= axis.back())
+          return std::make_pair<size_t, size_t>(axis.size() - 2,
+                                                axis.size() - 1);
+        for (size_t hi = 1; hi < axis.size(); ++hi)
+          if (value <= axis[hi])
+            return std::make_pair(hi - 1, hi);
+        return std::make_pair(axis.size() - 2, axis.size() - 1);
+      };
+
+      auto [x0i, x1i] = findSegment(inputSlew, xs);
+      auto [y0i, y1i] = findSegment(outputLoad, ys);
+
+      double x0 = xs[x0i], x1 = xs[x1i];
+      double y0 = ys[y0i], y1 = ys[y1i];
+
+      auto findCorner = [&](double sx, double sy) -> const Candidate * {
+        for (const Candidate &candidate : candidates)
+          if (nearlyEqual(candidate.selectorX, sx) &&
+              nearlyEqual(candidate.selectorY, sy))
+            return &candidate;
+        return nullptr;
+      };
+
+      const Candidate *c00 = findCorner(x0, y0);
+      const Candidate *c01 = findCorner(x0, y1);
+      const Candidate *c10 = findCorner(x1, y0);
+      const Candidate *c11 = findCorner(x1, y1);
+      if (!c00 || !c01 || !c10 || !c11)
+        return false;
+
+      if (!compatibleShape(*c00, *c01) || !compatibleShape(*c00, *c10) ||
+          !compatibleShape(*c00, *c11))
+        return false;
+
+      double clampedX = std::max(x0, std::min(inputSlew, x1));
+      double clampedY = std::max(y0, std::min(outputLoad, y1));
+      double tx = nearlyEqual(x1, x0) ? 0.0 : (clampedX - x0) / (x1 - x0);
+      double ty = nearlyEqual(y1, y0) ? 0.0 : (clampedY - y0) / (y1 - y0);
+
+      double w00 = (1.0 - tx) * (1.0 - ty);
+      double w01 = (1.0 - tx) * ty;
+      double w10 = tx * (1.0 - ty);
+      double w11 = tx * ty;
+
+      times.assign(c00->times.size(), 0.0);
+      values.assign(c00->values.size(), 0.0);
+      referenceTime = w00 * c00->reference + w01 * c01->reference +
+                      w10 * c10->reference + w11 * c11->reference;
+
+      for (size_t i = 0; i < times.size(); ++i)
+        times[i] = w00 * c00->times[i] + w01 * c01->times[i] +
+                   w10 * c10->times[i] + w11 * c11->times[i];
+      for (size_t i = 0; i < values.size(); ++i)
+        values[i] = w00 * c00->values[i] + w01 * c01->values[i] +
+                    w10 * c10->values[i] + w11 * c11->values[i];
+      return true;
+    };
+
+    if (tryStructuredBilinearBlend())
+      return true;
+
     SmallVector<size_t> order(candidates.size());
     for (size_t i = 0; i < candidates.size(); ++i)
       order[i] = i;

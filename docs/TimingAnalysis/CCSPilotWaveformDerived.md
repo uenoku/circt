@@ -57,10 +57,10 @@ Waveform edge direction is inferred from input waveform endpoints.
 For multi-input cells, arc selection is pin-specific (`relatedPin` / operand
 index), so different inputs can produce different waveform-derived delay/slew.
 
-For nested CCS vector sets, current pilot policy interpolates across nearby
-vectors in `(index_1, index_2)` space (inverse-distance blend) for
-`(inputSlew, outputLoad)`, and applies interpolated `reference_time` as a
-time-axis offset before threshold extraction.
+For nested CCS vector sets, current pilot policy prefers structured bilinear
+interpolation on regular `(index_1, index_2)` selector grids, and falls back to
+inverse-distance blending on sparse/non-grid vector sets. Interpolated
+`reference_time` is applied as a time-axis offset before threshold extraction.
 
 ## Load-Aware Timing Stretch
 
@@ -156,6 +156,7 @@ E2E waveform details:
 - `test/circt-sta/ccs-pilot-waveform-delay-report.mlir`
 - `test/circt-sta/mixed-ccs-pilot-critical-path-policy.mlir`
 - `test/circt-sta/ccs-pilot-vector-interpolation-report.mlir`
+- `test/circt-sta/ccs-pilot-vector-grid-interpolation-report.mlir`
 
 ## Limitations and Next Steps
 
