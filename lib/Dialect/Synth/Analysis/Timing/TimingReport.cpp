@@ -45,6 +45,7 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Initial Slew: " << getConfiguredInitialSlew() << "\n";
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
   os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
+  os << "Max Slew Delta: " << getLastMaxSlewDelta() << "\n";
 
   if (requiredTimeAnalysis)
     os << "Worst Slack: " << requiredTimeAnalysis->getWorstSlack() << "\n";

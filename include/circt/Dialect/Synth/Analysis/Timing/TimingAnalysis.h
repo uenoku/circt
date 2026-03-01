@@ -134,6 +134,9 @@ public:
   /// Whether the slew iteration loop converged in the last full run.
   bool didLastArrivalConverge() const { return lastArrivalConverged; }
 
+  /// Maximum per-node slew delta seen in the final arrival iteration.
+  double getLastMaxSlewDelta() const { return lastMaxSlewDelta; }
+
   //===--------------------------------------------------------------------===//
   // Stage 2: Path-Based Analysis
   //===--------------------------------------------------------------------===//
@@ -216,6 +219,7 @@ private:
   std::unique_ptr<RequiredTimeAnalysis> requiredTimeAnalysis;
   unsigned lastArrivalIterations = 0;
   bool lastArrivalConverged = true;
+  double lastMaxSlewDelta = 0.0;
 };
 
 } // namespace timing

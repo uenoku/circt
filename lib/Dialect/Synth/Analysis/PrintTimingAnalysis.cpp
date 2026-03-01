@@ -225,6 +225,7 @@ private:
     os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
     os << "Slew Converged: "
        << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";
+    os << "Max Slew Delta: " << analysis.getLastMaxSlewDelta() << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
     os << "--- Critical Paths (Top "

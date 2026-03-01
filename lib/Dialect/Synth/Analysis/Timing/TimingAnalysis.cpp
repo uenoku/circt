@@ -110,6 +110,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
 
   lastArrivalIterations = 0;
   lastArrivalConverged = true;
+  lastMaxSlewDelta = 0.0;
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
     SmallVector<double> previousSlews(graph->getNumNodes(),
                                       options.initialSlew);
@@ -127,6 +128,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
         double current = arrivals->getMaxArrivalSlew(node.get());
         maxDelta = std::max(maxDelta, std::abs(current - previousSlews[id]));
       }
+      lastMaxSlewDelta = maxDelta;
       if (maxDelta <= options.slewConvergenceEpsilon) {
         converged = true;
         break;
@@ -143,6 +145,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
       return failure();
     lastArrivalIterations = 1;
     lastArrivalConverged = true;
+    lastMaxSlewDelta = 0.0;
   }
 
   return runBackwardAnalysis();

@@ -284,6 +284,21 @@ public:
   bool usesSlewPropagation() const override { return true; }
 };
 
+class CoupledLoadSlewModel final : public DelayModel {
+public:
+  DelayResult computeDelay(const DelayContext &ctx) const override {
+    int64_t delay = static_cast<int64_t>(std::llround(ctx.outputLoad * 100.0));
+    return {delay, ctx.inputSlew + 0.2};
+  }
+
+  double getInputCapacitance(const DelayContext &ctx) const override {
+    return 0.5 + 0.5 * ctx.inputSlew;
+  }
+
+  llvm::StringRef getName() const override { return "coupled-load-slew"; }
+  bool usesSlewPropagation() const override { return true; }
+};
+
 TEST_F(TimingAnalysisTest, TimingGraphConstruction) {
   OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(testIR, &context);
   ASSERT_TRUE(module);
@@ -864,6 +879,7 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("=== Timing Report ==="), std::string::npos);
   EXPECT_NE(report.find("Module: deep"), std::string::npos);
   EXPECT_NE(report.find("Delay Model:"), std::string::npos);
+  EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
   EXPECT_NE(report.find("Critical Paths"), std::string::npos);
 }
@@ -921,6 +937,7 @@ TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
   EXPECT_GE(analysis->getLastArrivalIterations(), 1u);
   EXPECT_LE(analysis->getLastArrivalIterations(), opts.maxSlewIterations);
   EXPECT_TRUE(analysis->didLastArrivalConverge());
+  EXPECT_LE(analysis->getLastMaxSlewDelta(), opts.slewConvergenceEpsilon);
 }
 
 TEST_F(TimingAnalysisTest, FullPipelineDetectsNonConvergence) {
@@ -944,6 +961,45 @@ TEST_F(TimingAnalysisTest, FullPipelineDetectsNonConvergence) {
   ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
   EXPECT_EQ(analysis->getLastArrivalIterations(), 1u);
   EXPECT_FALSE(analysis->didLastArrivalConverge());
+  EXPECT_GT(analysis->getLastMaxSlewDelta(), opts.slewConvergenceEpsilon);
+}
+
+TEST_F(TimingAnalysisTest, ConvergenceLoopUpdatesLoadFromSlewHints) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(slewPropagationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("slew_chain");
+  ASSERT_TRUE(hwModule);
+
+  CoupledLoadSlewModel model;
+
+  TimingAnalysisOptions oneIterOpts;
+  oneIterOpts.delayModel = &model;
+  oneIterOpts.initialSlew = 0.0;
+  oneIterOpts.maxSlewIterations = 1;
+  oneIterOpts.slewConvergenceEpsilon = 1e-12;
+
+  auto oneIter = TimingAnalysis::create(hwModule, oneIterOpts);
+  ASSERT_NE(oneIter, nullptr);
+  ASSERT_TRUE(succeeded(oneIter->runFullAnalysis()));
+  ASSERT_FALSE(oneIter->didLastArrivalConverge());
+
+  auto *endPointOne = oneIter->getGraph().getEndPoints().front();
+  int64_t delayOneIter = oneIter->getArrivalTime(endPointOne);
+
+  TimingAnalysisOptions convOpts = oneIterOpts;
+  convOpts.maxSlewIterations = 6;
+  auto converged = TimingAnalysis::create(hwModule, convOpts);
+  ASSERT_NE(converged, nullptr);
+  ASSERT_TRUE(succeeded(converged->runFullAnalysis()));
+  ASSERT_TRUE(converged->didLastArrivalConverge());
+
+  auto *endPointConv = converged->getGraph().getEndPoints().front();
+  int64_t delayConverged = converged->getArrivalTime(endPointConv);
+
+  EXPECT_GT(delayConverged, delayOneIter);
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {
