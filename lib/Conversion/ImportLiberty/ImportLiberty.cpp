@@ -604,9 +604,31 @@ buildNldmArcAttr(const LibertyGroup &timing, StringRef outputPin,
   auto fallValues = getFirstTableField(timing, "cell_fall", "values", builder)
                         .value_or(builder.getArrayAttr({}));
 
+  auto riseTransitionIndex1 =
+      getFirstTableField(timing, "rise_transition", "index_1", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto riseTransitionIndex2 =
+      getFirstTableField(timing, "rise_transition", "index_2", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto riseTransitionValues =
+      getFirstTableField(timing, "rise_transition", "values", builder)
+          .value_or(builder.getArrayAttr({}));
+
+  auto fallTransitionIndex1 =
+      getFirstTableField(timing, "fall_transition", "index_1", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto fallTransitionIndex2 =
+      getFirstTableField(timing, "fall_transition", "index_2", builder)
+          .value_or(builder.getArrayAttr({}));
+  auto fallTransitionValues =
+      getFirstTableField(timing, "fall_transition", "values", builder)
+          .value_or(builder.getArrayAttr({}));
+
   return circt::synth::NLDMArcAttr::get(
       builder.getContext(), relatedPin, toPin, timingSense, riseIndex1,
-      riseIndex2, riseValues, fallIndex1, fallIndex2, fallValues);
+      riseIndex2, riseValues, fallIndex1, fallIndex2, fallValues,
+      riseTransitionIndex1, riseTransitionIndex2, riseTransitionValues,
+      fallTransitionIndex1, fallTransitionIndex2, fallTransitionValues);
 }
 
 class LibertyParser {

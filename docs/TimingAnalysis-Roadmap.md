@@ -345,8 +345,11 @@ picoseconds when returning `DelayResult::delay`.
   - bilinear interpolation when both index axes are present,
   - linear interpolation for 1D tables,
   - first-sample fallback for degenerate tables.
-- Current output-slew modeling is still placeholder; transition-table support
-  remains to be added.
+- `NLDMDelayModel` no longer falls back to AIG-level delay for unmapped arcs;
+  unmatched NLDM arcs default to zero delay unless explicit override attrs are
+  present.
+- Transition-table based output-slew interpolation is being wired using typed
+  `rise_transition` / `fall_transition` payloads.
 
 **Files:** `DelayModel.h` (add class), `DelayModel.cpp` (implement)
 

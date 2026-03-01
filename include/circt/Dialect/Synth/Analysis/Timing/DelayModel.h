@@ -111,9 +111,8 @@ public:
 
 /// Bootstrap NLDM-oriented delay model.
 ///
-/// This model consumes per-op/per-arc delay attributes when available and
-/// falls back to AIG-level heuristics otherwise. It is intended as a bridge
-/// until full Liberty LUT interpolation is wired.
+/// This model consumes per-op/per-arc delay attributes when available.
+/// Unknown arcs default to zero delay.
 class NLDMDelayModel : public DelayModel {
 public:
   NLDMDelayModel();
@@ -123,9 +122,9 @@ public:
   DelayResult computeDelay(const DelayContext &ctx) const override;
   llvm::StringRef getName() const override { return "nldm"; }
   double getInputCapacitance(const DelayContext &ctx) const override;
+  bool usesSlewPropagation() const override { return true; }
 
 private:
-  AIGLevelDelayModel fallback;
   std::unique_ptr<class LibertyLibrary> liberty;
 };
 

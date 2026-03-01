@@ -269,6 +269,22 @@ getDelayFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
   return std::nullopt;
 }
 
+static std::optional<double>
+getOutputSlewFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
+                           double outputLoad) {
+  if (auto rise = interpolateTable(inputSlew, outputLoad,
+                                   timingArc.getRiseTransitionIndex1(),
+                                   timingArc.getRiseTransitionIndex2(),
+                                   timingArc.getRiseTransitionValues()))
+    return rise;
+  if (auto fall = interpolateTable(inputSlew, outputLoad,
+                                   timingArc.getFallTransitionIndex1(),
+                                   timingArc.getFallTransitionIndex2(),
+                                   timingArc.getFallTransitionValues()))
+    return fall;
+  return std::nullopt;
+}
+
 //===----------------------------------------------------------------------===//
 // UnitDelayModel
 //===----------------------------------------------------------------------===//
@@ -334,10 +350,15 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
       if (inputPin && outputPin) {
         if (auto timingArc = liberty->getTypedTimingArc(
                 *cellName, ctx.inputIndex, ctx.outputIndex)) {
+          double outputSlew = ctx.inputSlew;
+          if (auto slew = getOutputSlewFromTimingArc(*timingArc, ctx.inputSlew,
+                                                     ctx.outputLoad))
+            outputSlew = *slew;
+
           if (auto delay =
                   getDelayFromTimingArc(*timingArc, ctx.inputSlew,
                                         ctx.outputLoad, getTimeScalePs(ctx.op)))
-            return {*delay, 0.0};
+            return {*delay, outputSlew};
         }
 
         if (int64_t delay = getPerArcDelayByPin(ctx.op, *inputPin, *outputPin);
@@ -351,7 +372,7 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
       delay >= 0)
     return {delay, 0.0};
 
-  return fallback.computeDelay(ctx);
+  return {0, ctx.inputSlew};
 }
 
 double NLDMDelayModel::getInputCapacitance(const DelayContext &ctx) const {

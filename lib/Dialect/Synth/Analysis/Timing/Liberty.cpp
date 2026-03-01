@@ -165,6 +165,30 @@ LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
   if (!typedArc->getCellFallValues().empty())
     attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
                                    typedArc->getCellFallValues()));
+  if (!typedArc->getRiseTransitionIndex1().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "rise_transition_index_1"),
+                       typedArc->getRiseTransitionIndex1()));
+  if (!typedArc->getRiseTransitionIndex2().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "rise_transition_index_2"),
+                       typedArc->getRiseTransitionIndex2()));
+  if (!typedArc->getRiseTransitionValues().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "rise_transition_values"),
+                       typedArc->getRiseTransitionValues()));
+  if (!typedArc->getFallTransitionIndex1().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "fall_transition_index_1"),
+                       typedArc->getFallTransitionIndex1()));
+  if (!typedArc->getFallTransitionIndex2().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "fall_transition_index_2"),
+                       typedArc->getFallTransitionIndex2()));
+  if (!typedArc->getFallTransitionValues().empty())
+    attrs.push_back(
+        NamedAttribute(StringAttr::get(ctx, "fall_transition_values"),
+                       typedArc->getFallTransitionValues()));
   return DictionaryAttr::get(ctx, attrs);
 }
 

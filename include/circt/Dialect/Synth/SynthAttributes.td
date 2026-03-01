@@ -30,12 +30,21 @@ def NLDMArcAttr : AttrDef<Synth_Dialect, "NLDMArc"> {
     "mlir::ArrayAttr":$cellRiseValues,
     "mlir::ArrayAttr":$cellFallIndex1,
     "mlir::ArrayAttr":$cellFallIndex2,
-    "mlir::ArrayAttr":$cellFallValues
+    "mlir::ArrayAttr":$cellFallValues,
+    "mlir::ArrayAttr":$riseTransitionIndex1,
+    "mlir::ArrayAttr":$riseTransitionIndex2,
+    "mlir::ArrayAttr":$riseTransitionValues,
+    "mlir::ArrayAttr":$fallTransitionIndex1,
+    "mlir::ArrayAttr":$fallTransitionIndex2,
+    "mlir::ArrayAttr":$fallTransitionValues
   );
   let assemblyFormat = [{
     `<` $relatedPin `,` $toPin `,` $timingSense `,` $cellRiseIndex1 `,`
     $cellRiseIndex2 `,` $cellRiseValues `,` $cellFallIndex1 `,`
-    $cellFallIndex2 `,` $cellFallValues `>`
+    $cellFallIndex2 `,` $cellFallValues `,` $riseTransitionIndex1 `,`
+    $riseTransitionIndex2 `,` $riseTransitionValues `,`
+    $fallTransitionIndex1 `,` $fallTransitionIndex2 `,`
+    $fallTransitionValues `>`
   }];
 }
 
