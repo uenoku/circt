@@ -395,6 +395,9 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   convergence tuning for load/slew-coupled models.
 - Load-slew hint updates now support damping (`slewHintDamping`) to improve
   stability for strongly coupled models.
+- Optional adaptive damping (`enableAdaptiveSlewHintDamping`) now adjusts
+  applied damping from iteration-to-iteration using residual trend.
+- Reports now include `Applied Slew Hint Damping` and `Slew Delta Trend`.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models

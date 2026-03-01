@@ -13,6 +13,7 @@
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
@@ -143,6 +144,17 @@ private:
     return path.getDelay();
   }
 
+  static std::string formatDeltaTrend(ArrayRef<double> deltas) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    for (size_t i = 0, e = deltas.size(); i < e; ++i) {
+      if (i)
+        os << ", ";
+      os << llvm::format("%.6g", deltas[i]);
+    }
+    return os.str();
+  }
+
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
     auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
@@ -224,10 +236,16 @@ private:
     os << "Initial Slew: " << analysis.getConfiguredInitialSlew() << "\n";
     os << "Slew Hint Damping: " << analysis.getConfiguredSlewHintDamping()
        << "\n";
+    os << "Adaptive Slew Damping: "
+       << (analysis.isAdaptiveSlewHintDampingEnabled() ? "yes" : "no") << "\n";
+    os << "Applied Slew Hint Damping: "
+       << analysis.getLastAppliedSlewHintDamping() << "\n";
     os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
     os << "Slew Converged: "
        << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";
     os << "Max Slew Delta: " << analysis.getLastMaxSlewDelta() << "\n";
+    os << "Slew Delta Trend: "
+       << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
     os << "\n";
     os << "--- Critical Paths (Top "

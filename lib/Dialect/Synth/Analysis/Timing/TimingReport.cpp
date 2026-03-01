@@ -33,6 +33,17 @@ static int64_t resolvePathDelay(const TimingPath &path,
   return path.getDelay();
 }
 
+static std::string formatDeltaTrend(ArrayRef<double> deltas) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  for (size_t i = 0, e = deltas.size(); i < e; ++i) {
+    if (i)
+      os << ", ";
+    os << llvm::format("%.6g", deltas[i]);
+  }
+  return os.str();
+}
+
 void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   if (!graph) {
     os << "Error: timing graph not built.\n";
@@ -44,9 +55,15 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Delay Model: " << graph->getDelayModelName() << "\n";
   os << "Initial Slew: " << getConfiguredInitialSlew() << "\n";
   os << "Slew Hint Damping: " << getConfiguredSlewHintDamping() << "\n";
+  os << "Adaptive Slew Damping: "
+     << (isAdaptiveSlewHintDampingEnabled() ? "yes" : "no") << "\n";
+  os << "Applied Slew Hint Damping: " << getLastAppliedSlewHintDamping()
+     << "\n";
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
   os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
   os << "Max Slew Delta: " << getLastMaxSlewDelta() << "\n";
+  os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())
+     << "\n";
 
   if (requiredTimeAnalysis)
     os << "Worst Slack: " << requiredTimeAnalysis->getWorstSlack() << "\n";

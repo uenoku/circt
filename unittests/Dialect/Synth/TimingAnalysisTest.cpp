@@ -896,7 +896,10 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("Module: deep"), std::string::npos);
   EXPECT_NE(report.find("Delay Model:"), std::string::npos);
   EXPECT_NE(report.find("Slew Hint Damping:"), std::string::npos);
+  EXPECT_NE(report.find("Adaptive Slew Damping:"), std::string::npos);
+  EXPECT_NE(report.find("Applied Slew Hint Damping:"), std::string::npos);
   EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
+  EXPECT_NE(report.find("Slew Delta Trend:"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
   EXPECT_NE(report.find("Critical Paths"), std::string::npos);
 }
@@ -955,6 +958,9 @@ TEST_F(TimingAnalysisTest, FullPipelineRunsSlewConvergenceLoop) {
   EXPECT_LE(analysis->getLastArrivalIterations(), opts.maxSlewIterations);
   EXPECT_TRUE(analysis->didLastArrivalConverge());
   EXPECT_LE(analysis->getLastMaxSlewDelta(), opts.slewConvergenceEpsilon);
+  EXPECT_FALSE(analysis->getLastSlewDeltaHistory().empty());
+  EXPECT_EQ(analysis->getLastSlewDeltaHistory().back(),
+            analysis->getLastMaxSlewDelta());
 }
 
 TEST_F(TimingAnalysisTest, FullPipelineDetectsNonConvergence) {
@@ -1052,6 +1058,33 @@ TEST_F(TimingAnalysisTest, SlewHintDampingChangesConvergenceTrajectory) {
   EXPECT_NE(undamped->getLastArrivalIterations(),
             damped->getLastArrivalIterations());
   EXPECT_NE(undamped->getLastMaxSlewDelta(), damped->getLastMaxSlewDelta());
+}
+
+TEST_F(TimingAnalysisTest, AdaptiveSlewHintDampingAdjustsAppliedFactor) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  OscillatingHintModel model;
+
+  TimingAnalysisOptions opts;
+  opts.delayModel = &model;
+  opts.initialSlew = 0.0;
+  opts.maxSlewIterations = 6;
+  opts.slewConvergenceEpsilon = 1e-9;
+  opts.slewHintDamping = 1.0;
+  opts.enableAdaptiveSlewHintDamping = true;
+
+  auto analysis = TimingAnalysis::create(hwModule, opts);
+  ASSERT_NE(analysis, nullptr);
+  ASSERT_TRUE(succeeded(analysis->runFullAnalysis()));
+
+  EXPECT_LT(analysis->getLastAppliedSlewHintDamping(), opts.slewHintDamping);
+  EXPECT_FALSE(analysis->getLastSlewDeltaHistory().empty());
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {

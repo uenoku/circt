@@ -71,6 +71,9 @@ struct TimingAnalysisOptions {
   /// 1.0 keeps existing behavior (full update), lower values smooth updates.
   double slewHintDamping = 1.0;
 
+  /// If true, adjust slew hint damping based on residual trend.
+  bool enableAdaptiveSlewHintDamping = false;
+
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
 };
@@ -140,11 +143,26 @@ public:
     return options.slewHintDamping;
   }
 
+  /// Whether adaptive slew hint damping is enabled.
+  bool isAdaptiveSlewHintDampingEnabled() const {
+    return options.enableAdaptiveSlewHintDamping;
+  }
+
   /// Whether the slew iteration loop converged in the last full run.
   bool didLastArrivalConverge() const { return lastArrivalConverged; }
 
   /// Maximum per-node slew delta seen in the final arrival iteration.
   double getLastMaxSlewDelta() const { return lastMaxSlewDelta; }
+
+  /// Slew-delta residual history across arrival iterations.
+  ArrayRef<double> getLastSlewDeltaHistory() const {
+    return lastSlewDeltaHistory;
+  }
+
+  /// Final damping factor applied in the last full analysis.
+  double getLastAppliedSlewHintDamping() const {
+    return lastAppliedSlewHintDamping;
+  }
 
   //===--------------------------------------------------------------------===//
   // Stage 2: Path-Based Analysis
@@ -229,6 +247,8 @@ private:
   unsigned lastArrivalIterations = 0;
   bool lastArrivalConverged = true;
   double lastMaxSlewDelta = 0.0;
+  SmallVector<double, 8> lastSlewDeltaHistory;
+  double lastAppliedSlewHintDamping = 1.0;
 };
 
 } // namespace timing
