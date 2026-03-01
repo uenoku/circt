@@ -55,6 +55,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/MathExtras.h"
@@ -1722,6 +1723,12 @@ struct LongestPathAnalysis::Impl {
   /// Compute local open paths to (value, bitPos).
   FailureOr<ArrayRef<OpenPath>> computeLocalPaths(Value value, size_t bitPos);
 
+  /// Get timing paths to any object matching the given glob patterns.
+  LogicalResult getPathsToMatchingObjects(
+      StringAttr moduleName, llvm::ArrayRef<std::string> patterns,
+      SmallVectorImpl<DataflowPath> &results,
+      SmallVectorImpl<std::string> *matchedObjectNames) const;
+
 protected:
   friend class IncrementalLongestPathAnalysis;
 
@@ -2193,6 +2200,140 @@ LongestPathAnalysis::getAllPaths(StringAttr moduleName,
   if (failed(getOpenPathsFromInputToOutputPorts(moduleName, results)))
     return failure();
   return success();
+}
+
+LogicalResult LongestPathAnalysis::Impl::getPathsToMatchingObjects(
+    StringAttr moduleName, llvm::ArrayRef<std::string> patterns,
+    SmallVectorImpl<DataflowPath> &results,
+    SmallVectorImpl<std::string> *matchedObjectNames) const {
+  auto *visitor = ctx.getLocalVisitor(moduleName);
+  if (!visitor)
+    return failure();
+
+  // Compile glob patterns
+  llvm::SmallVector<llvm::GlobPattern, 4> compiledPatterns;
+  for (const auto &patStr : patterns) {
+    if (patStr.empty())
+      continue;
+    auto pat = llvm::GlobPattern::create(patStr);
+    if (!pat) {
+      llvm::consumeError(pat.takeError());
+      continue;
+    }
+    compiledPatterns.push_back(std::move(*pat));
+  }
+
+  // If no valid patterns, return empty
+  if (compiledPatterns.empty())
+    return success();
+
+  // Track which objects we've already matched to avoid duplicates
+  llvm::DenseSet<std::pair<Value, size_t>> matchedValues;
+  hw::HWModuleOp module = visitor->getHWModuleOp();
+
+  // Helper to check if a name matches any pattern
+  auto matchesAnyPattern = [&](StringRef name) {
+    for (const auto &pat : compiledPatterns) {
+      if (pat.match(name))
+        return true;
+    }
+    return false;
+  };
+
+  // Helper to add paths for a value if it matches
+  auto addPathsForValue = [&](Value value, StringRef name) {
+    size_t bitWidth = getBitWidth(value);
+    for (size_t bitPos = 0; bitPos < bitWidth; ++bitPos) {
+      auto key = std::make_pair(value, bitPos);
+      if (matchedValues.contains(key))
+        continue;
+
+      auto paths = visitor->getCachedPaths(value, bitPos);
+      if (paths.empty())
+        continue;
+
+      matchedValues.insert(key);
+
+      // Create DataflowPath for each OpenPath
+      for (const auto &openPath : paths) {
+        Object endPoint({}, value, bitPos);
+        results.emplace_back(endPoint, openPath, module);
+      }
+    }
+  };
+
+  // 1. Check output ports
+  auto moduleType = module.getModuleType();
+  size_t numOutputs = moduleType.getNumOutputs();
+  for (size_t i = 0; i < numOutputs; ++i) {
+    StringRef portName = module.getOutputName(i);
+    if (matchesAnyPattern(portName)) {
+      if (matchedObjectNames)
+        matchedObjectNames->push_back(portName.str());
+
+      // Get the output value
+      auto *outputOp = module.getBodyBlock()->getTerminator();
+      Value outputValue = outputOp->getOperand(i);
+      size_t bitWidth = getBitWidth(outputValue);
+
+      for (size_t bitPos = 0; bitPos < bitWidth; ++bitPos) {
+        auto key = std::make_pair(outputValue, bitPos);
+        if (matchedValues.contains(key))
+          continue;
+
+        auto paths = visitor->getCachedPaths(outputValue, bitPos);
+        matchedValues.insert(key);
+
+        for (const auto &openPath : paths) {
+          // Use OutputPort as endpoint
+          DataflowPath::OutputPort outputPort = {module, i, bitPos};
+          results.emplace_back(outputPort, openPath, module);
+        }
+      }
+    }
+  }
+
+  // 2. Check input ports (block arguments)
+  for (auto arg : module.getBody().getArguments()) {
+    auto portName = module.getArgName(arg.getArgNumber());
+    if (matchesAnyPattern(portName.getValue())) {
+      if (matchedObjectNames)
+        matchedObjectNames->push_back(portName.getValue().str());
+      addPathsForValue(arg, portName.getValue());
+    }
+  }
+
+  // 3. Check all operations in the module for named values
+  module.walk([&](Operation *op) {
+    for (auto result : op->getResults()) {
+      StringAttr nameAttr = getNameImpl(result);
+      if (!nameAttr || nameAttr.getValue().empty())
+        continue;
+
+      if (matchesAnyPattern(nameAttr.getValue())) {
+        if (matchedObjectNames) {
+          // Avoid duplicates in matched names
+          std::string name = nameAttr.getValue().str();
+          if (std::find(matchedObjectNames->begin(), matchedObjectNames->end(),
+                        name) == matchedObjectNames->end())
+            matchedObjectNames->push_back(name);
+        }
+        addPathsForValue(result, nameAttr.getValue());
+      }
+    }
+  });
+
+  return success();
+}
+
+LogicalResult LongestPathAnalysis::getPathsToMatchingObjects(
+    StringAttr moduleName, llvm::ArrayRef<std::string> patterns,
+    SmallVectorImpl<DataflowPath> &results,
+    SmallVectorImpl<std::string> *matchedObjectNames) const {
+  if (!isAnalysisValid)
+    return failure();
+  return impl->getPathsToMatchingObjects(moduleName, patterns, results,
+                                         matchedObjectNames);
 }
 
 LogicalResult LongestPathAnalysis::reconstructPath(

@@ -163,6 +163,12 @@ static cl::list<std::string>
                              "names (can specify multiple)"),
                     cl::cat(mainCategory));
 
+static cl::opt<bool> useTwoStageAnalysis(
+    "two-stage",
+    cl::desc("Use two-stage timing analysis (forward arrival + path "
+             "enumeration) for design profiler"),
+    cl::init(false), cl::cat(mainCategory));
+
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
                                     cl::cat(mainCategory));
@@ -322,6 +328,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       options.filterStartPoints.push_back(pat);
     for (const auto &pat : filterEndPoints)
       options.filterEndPoints.push_back(pat);
+    options.useTwoStageAnalysis = useTwoStageAnalysis;
     pm.addPass(circt::synth::createDesignProfiler(options));
   }
 

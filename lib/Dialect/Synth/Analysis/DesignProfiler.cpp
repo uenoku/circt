@@ -18,6 +18,7 @@
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/Analysis/PathFilter.h"
+#include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
@@ -161,7 +162,7 @@ struct ClockDomainPair {
   }
 };
 
-/// Statistics for a group of paths.
+/// Statistics for a group of paths (LongestPathAnalysis).
 struct PathStats {
   int64_t count = 0;
   int64_t maxDelay = 0;
@@ -180,6 +181,34 @@ struct PathStats {
     topPaths.push_back(path);
     std::sort(topPaths.begin(), topPaths.end(),
               [](const DataflowPath &a, const DataflowPath &b) {
+                return a.getDelay() > b.getDelay();
+              });
+    if (topPaths.size() > 5)
+      topPaths.resize(5);
+  }
+
+  int64_t avgDelay() const { return count > 0 ? totalDelay / count : 0; }
+};
+
+/// Statistics for a group of paths (TimingAnalysis).
+struct PathStatsTwoStage {
+  int64_t count = 0;
+  int64_t maxDelay = 0;
+  int64_t minDelay = std::numeric_limits<int64_t>::max();
+  int64_t totalDelay = 0;
+  std::vector<timing::TimingPath> topPaths;
+
+  void addPath(const timing::TimingPath &path) {
+    int64_t delay = path.getDelay();
+    count++;
+    maxDelay = std::max(maxDelay, delay);
+    minDelay = std::min(minDelay, delay);
+    totalDelay += delay;
+
+    // Keep top 5 paths
+    topPaths.push_back(path);
+    std::sort(topPaths.begin(), topPaths.end(),
+              [](const timing::TimingPath &a, const timing::TimingPath &b) {
                 return a.getDelay() > b.getDelay();
               });
     if (topPaths.size() > 5)
@@ -243,11 +272,24 @@ private:
   /// Get a string name for a clock domain.
   std::string getClockName(ClockDomain clock);
 
-  /// Write the timing report.
+  /// Write the timing report using LongestPathAnalysis.
   LogicalResult writeReport(hw::HWModuleOp top, llvm::raw_ostream &os);
+
+  /// Write the timing report using new TimingAnalysis.
+  LogicalResult writeReportTwoStage(hw::HWModuleOp top, llvm::raw_ostream &os);
+
+  /// Categorize a timing path based on start/end types.
+  PathCategory categorizeTwoStage(const timing::TimingPath &path);
+
+  /// Get clock domain for a TimingNode.
+  ClockDomain getClockForTimingNode(const timing::TimingNode *node);
 
   /// Analysis results, populated during runOnOperation.
   const LongestPathAnalysis *analysis = nullptr;
+
+  /// Two-stage timing analysis (alternative to LongestPathAnalysis).
+  /// Note: Using raw pointer to avoid making pass non-copyable.
+  timing::TimingAnalysis *twoStageAnalysis = nullptr;
 
   /// The module operation being analyzed.
   mlir::ModuleOp moduleOp;
@@ -794,30 +836,63 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
                                               llvm::raw_ostream &os) {
   auto moduleName = top.getModuleNameAttr();
 
-  // Collect all paths.
+  // Collect paths - either all paths or filtered to specific end objects.
   SmallVector<DataflowPath> allPaths;
-  if (failed(analysis->getAllPaths(moduleName, allPaths, /*elaborate=*/true))) {
-    return failure();
-  }
+  SmallVector<std::string> matchedEndObjects;
+  size_t unfilteredCount = 0;
 
-  llvm::dbgs() << "Found " << allPaths.size() << " paths\n";
+  bool useObjectFiltering = pathFilter && !pathFilter->isPassthrough() &&
+                            pathFilter->getNumEndPatterns() > 0;
 
-  // Enumerate output ports and compute matches if filtering by end points.
-  SmallVector<std::string> matchedOutputPorts;
-  if (pathFilter && !pathFilter->isPassthrough() &&
-      pathFilter->getNumEndPatterns() > 0) {
-    matchedOutputPorts = pathFilter->computeMatchingOutputPorts(top);
-    llvm::dbgs() << "Matched " << matchedOutputPorts.size()
-                 << " output ports for end-point filter\n";
-  }
+  if (useObjectFiltering) {
+    // Use getPathsToMatchingObjects for direct object matching.
+    // This allows matching ANY object (not just registers/ports).
+    auto endPatterns = pathFilter->getEndPatternStrings();
+    if (failed(analysis->getPathsToMatchingObjects(
+            moduleName, endPatterns, allPaths, &matchedEndObjects))) {
+      return failure();
+    }
 
-  // Apply path filter if specified.
-  size_t unfilteredCount = allPaths.size();
-  if (pathFilter && !pathFilter->isPassthrough()) {
-    llvm::erase_if(allPaths, [this](const DataflowPath &path) {
-      return !pathFilter->matches(path);
-    });
-    llvm::dbgs() << "After filtering: " << allPaths.size() << " paths\n";
+    llvm::dbgs() << "Found " << allPaths.size()
+                 << " paths to matching objects\n";
+    llvm::dbgs() << "Matched " << matchedEndObjects.size() << " objects: ";
+    for (size_t i = 0; i < matchedEndObjects.size() && i < 5; ++i) {
+      if (i > 0)
+        llvm::dbgs() << ", ";
+      llvm::dbgs() << matchedEndObjects[i];
+    }
+    if (matchedEndObjects.size() > 5)
+      llvm::dbgs() << ", ...";
+    llvm::dbgs() << "\n";
+
+    unfilteredCount = allPaths.size();
+
+    // Apply start point filter if specified.
+    if (pathFilter->getNumStartPatterns() > 0) {
+      llvm::erase_if(allPaths, [this](const DataflowPath &path) {
+        std::string startName = getStartPointFullName(path);
+        return !pathFilter->matchesStartPoint(startName);
+      });
+      llvm::dbgs() << "After start-point filtering: " << allPaths.size()
+                   << " paths\n";
+    }
+  } else {
+    // No end-point filtering - collect all paths.
+    if (failed(
+            analysis->getAllPaths(moduleName, allPaths, /*elaborate=*/true))) {
+      return failure();
+    }
+
+    llvm::dbgs() << "Found " << allPaths.size() << " paths\n";
+    unfilteredCount = allPaths.size();
+
+    // Apply full path filter if specified.
+    if (pathFilter && !pathFilter->isPassthrough()) {
+      llvm::erase_if(allPaths, [this](const DataflowPath &path) {
+        return !pathFilter->matches(path);
+      });
+      llvm::dbgs() << "After filtering: " << allPaths.size() << " paths\n";
+    }
   }
 
   // Group paths by category and clock domain.
@@ -941,14 +1016,18 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
     }
     os << "\n";
 
-    // Print matched output ports if end-point filtering is active.
-    if (!matchedOutputPorts.empty()) {
-      os << "Matched output ports (" << matchedOutputPorts.size() << "): ";
-      for (size_t i = 0; i < matchedOutputPorts.size(); ++i) {
+    // Print matched objects if end-point filtering is active.
+    if (!matchedEndObjects.empty()) {
+      os << "Matched end objects (" << matchedEndObjects.size() << "): ";
+      // Limit output to avoid excessive length
+      size_t showCount = std::min<size_t>(matchedEndObjects.size(), 10);
+      for (size_t i = 0; i < showCount; ++i) {
         if (i > 0)
           os << ", ";
-        os << matchedOutputPorts[i];
+        os << matchedEndObjects[i];
       }
+      if (matchedEndObjects.size() > showCount)
+        os << ", ... (" << (matchedEndObjects.size() - showCount) << " more)";
       os << "\n";
     }
   }
@@ -1022,6 +1101,194 @@ LogicalResult DesignProfilerPass::writeReport(hw::HWModuleOp top,
   return success();
 }
 
+ClockDomain DesignProfilerPass::getClockForTimingNode(
+    const timing::TimingNode *node) {
+  if (!node)
+    return {};
+
+  Value value = node->getValue();
+  if (!value)
+    return {};
+
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp)
+    return {}; // Block argument (port)
+
+  Value clk = nullptr;
+  // Check for register operations with clock.
+  if (auto compreg = dyn_cast<seq::CompRegOp>(defOp))
+    clk = compreg.getClk();
+  else if (auto firreg = dyn_cast<seq::FirRegOp>(defOp))
+    clk = firreg.getClk();
+
+  if (!clk)
+    return {}; // No clock (probably a port)
+
+  Object clkObj({}, clk, 0);
+  return traceClockSource(clkObj);
+}
+
+PathCategory DesignProfilerPass::categorizeTwoStage(
+    const timing::TimingPath &path) {
+  auto *start = path.getStartPoint();
+  auto *end = path.getEndPoint();
+
+  bool startIsReg =
+      start && (start->getKind() == timing::TimingNodeKind::RegisterOutput);
+  bool endIsReg =
+      end && (end->getKind() == timing::TimingNodeKind::RegisterInput);
+
+  if (startIsReg && endIsReg)
+    return PathCategory::RegToReg;
+  if (!startIsReg && endIsReg)
+    return PathCategory::PortToReg;
+  if (startIsReg && !endIsReg)
+    return PathCategory::RegToPort;
+  return PathCategory::PortToPort;
+}
+
+LogicalResult DesignProfilerPass::writeReportTwoStage(hw::HWModuleOp top,
+                                                      llvm::raw_ostream &os) {
+  // Enumerate all paths using the two-stage analysis.
+  timing::PathQuery query;
+
+  // Apply filters from options.
+  if (pathFilter && !pathFilter->isPassthrough()) {
+    for (const auto &pat : pathFilter->getStartPatternStrings())
+      query.fromPatterns.push_back(pat);
+    for (const auto &pat : pathFilter->getEndPatternStrings())
+      query.toPatterns.push_back(pat);
+  }
+
+  query.maxPaths = 0; // No limit
+
+  SmallVector<timing::TimingPath> allPaths;
+  if (failed(twoStageAnalysis->enumeratePaths(query, allPaths))) {
+    return failure();
+  }
+
+  llvm::dbgs() << "Two-stage analysis found " << allPaths.size() << " paths\n";
+
+  // Group paths by category and clock domain.
+  using ClockPairStats =
+      DenseMap<std::pair<ClockDomain, ClockDomain>, PathStatsTwoStage>;
+  ClockPairStats regToRegStats;
+  DenseMap<ClockDomain, PathStatsTwoStage> portToRegStats;
+  DenseMap<ClockDomain, PathStatsTwoStage> regToPortStats;
+  PathStatsTwoStage portToPortStats;
+
+  int64_t totalMaxDelay = 0;
+  llvm::DenseSet<Object> uniqueClocks;
+
+  for (auto &path : allPaths) {
+    int64_t delay = path.getDelay();
+    totalMaxDelay = std::max(totalMaxDelay, delay);
+
+    PathCategory cat = categorizeTwoStage(path);
+    ClockDomain srcClock = getClockForTimingNode(path.getStartPoint());
+    ClockDomain dstClock = getClockForTimingNode(path.getEndPoint());
+
+    if (srcClock.value)
+      uniqueClocks.insert(srcClock);
+    if (dstClock.value)
+      uniqueClocks.insert(dstClock);
+
+    switch (cat) {
+    case PathCategory::RegToReg: {
+      auto key = std::make_pair(srcClock, dstClock);
+      regToRegStats[key].addPath(path);
+      break;
+    }
+    case PathCategory::PortToReg:
+      portToRegStats[dstClock].addPath(path);
+      break;
+    case PathCategory::RegToPort:
+      regToPortStats[srcClock].addPath(path);
+      break;
+    case PathCategory::PortToPort:
+      portToPortStats.addPath(path);
+      break;
+    }
+  }
+
+  // Helper to print stats for two-stage paths.
+  auto printStats = [&](const PathStatsTwoStage &stats) {
+    os << llvm::format("  Paths: %d | Max: %d | Min: %d | Avg: %d\n",
+                       stats.count, stats.maxDelay, stats.minDelay,
+                       stats.avgDelay());
+    os << "  Top 5 Critical Paths:\n";
+    for (const auto &path : stats.topPaths) {
+      os << "    [delay=" << path.getDelay() << "] ";
+      auto *start = path.getStartPoint();
+      auto *end = path.getEndPoint();
+      if (start)
+        os << start->getName();
+      else
+        os << "(unknown)";
+      os << " -> ";
+      if (end)
+        os << end->getName();
+      else
+        os << "(unknown)";
+      os << "\n";
+    }
+  };
+
+  // Write report header.
+  os << "# Design Profile Report (Two-Stage Analysis)\n";
+  os << "Module: " << top.getModuleName() << "\n";
+  os << "Analysis: Two-Stage (Forward Arrival + Path Enumeration)\n\n";
+
+  // Summary.
+  os << "## Summary\n";
+  os << "Total paths analyzed: " << allPaths.size() << "\n";
+  os << "Maximum delay: " << totalMaxDelay << "\n";
+  os << "Unique clocks: " << uniqueClocks.size() << "\n\n";
+
+  // Reg-to-Reg.
+  if (!regToRegStats.empty()) {
+    os << "## Reg-to-Reg Paths\n";
+    for (auto &[clockPair, stats] : regToRegStats) {
+      std::string srcName = getClockName(clockPair.first);
+      std::string dstName = getClockName(clockPair.second);
+      os << "### " << srcName << " -> " << dstName << "\n";
+      printStats(stats);
+    }
+    os << "\n";
+  }
+
+  // Port-to-Reg.
+  if (!portToRegStats.empty()) {
+    os << "## Port-to-Reg Paths\n";
+    for (auto &[clock, stats] : portToRegStats) {
+      std::string name = getClockName(clock);
+      os << "### -> " << name << "\n";
+      printStats(stats);
+    }
+    os << "\n";
+  }
+
+  // Reg-to-Port.
+  if (!regToPortStats.empty()) {
+    os << "## Reg-to-Port Paths\n";
+    for (auto &[clock, stats] : regToPortStats) {
+      std::string name = getClockName(clock);
+      os << "### " << name << " ->\n";
+      printStats(stats);
+    }
+    os << "\n";
+  }
+
+  // Port-to-Port.
+  if (portToPortStats.count > 0) {
+    os << "## Port-to-Port Paths\n";
+    printStats(portToPortStats);
+    os << "\n";
+  }
+
+  return success();
+}
+
 void DesignProfilerPass::runOnOperation() {
   auto module = getOperation();
   moduleOp = module;
@@ -1034,15 +1301,22 @@ void DesignProfilerPass::runOnOperation() {
 
   auto topNameAttr = StringAttr::get(&getContext(), topModuleName);
 
-  // Create analysis.
-  auto am = getAnalysisManager();
-  LongestPathAnalysis localAnalysis(
-      module, am,
-      LongestPathAnalysisOptions(/*lazyComputation=*/false,
-                                 /*keepOnlyMaxDelayPaths=*/true, topNameAttr));
-  analysis = &localAnalysis;
+  // Find the top module first (needed for both analysis paths).
+  hw::HWModuleOp topModule;
+  for (auto hwMod : module.getOps<hw::HWModuleOp>()) {
+    if (hwMod.getModuleNameAttr() == topNameAttr) {
+      topModule = hwMod;
+      break;
+    }
+  }
+
+  if (!topModule) {
+    module.emitError() << "top module '" << topModuleName << "' not found";
+    return signalPassFailure();
+  }
 
   // Get instance graph and create path cache.
+  auto am = getAnalysisManager();
   instanceGraph = &am.getAnalysis<circt::igraph::InstanceGraph>();
   circt::igraph::InstancePathCache localPathCache(*instanceGraph);
   pathCache = &localPathCache;
@@ -1060,18 +1334,34 @@ void DesignProfilerPass::runOnOperation() {
     pathFilter = std::nullopt;
   }
 
-  // Find the top module.
-  hw::HWModuleOp topModule;
-  for (auto hwMod : module.getOps<hw::HWModuleOp>()) {
-    if (hwMod.getModuleNameAttr() == topNameAttr) {
-      topModule = hwMod;
-      break;
+  // Initialize analysis based on the selected backend.
+  std::unique_ptr<LongestPathAnalysis> localAnalysisPtr;
+  std::unique_ptr<timing::TimingAnalysis> localTwoStageAnalysis;
+  if (useTwoStageAnalysis) {
+    // Use new two-stage TimingAnalysis framework.
+    localTwoStageAnalysis = timing::TimingAnalysis::create(topModule);
+    if (!localTwoStageAnalysis) {
+      module.emitError() << "failed to create two-stage timing analysis";
+      return signalPassFailure();
     }
-  }
+    twoStageAnalysis = localTwoStageAnalysis.get();
 
-  if (!topModule) {
-    module.emitError() << "top module '" << topModuleName << "' not found";
-    return signalPassFailure();
+    if (failed(twoStageAnalysis->buildGraph())) {
+      module.emitError() << "failed to build timing graph";
+      return signalPassFailure();
+    }
+
+    if (failed(twoStageAnalysis->runArrivalAnalysis())) {
+      module.emitError() << "failed to run arrival analysis";
+      return signalPassFailure();
+    }
+  } else {
+    // Use traditional LongestPathAnalysis.
+    localAnalysisPtr = std::make_unique<LongestPathAnalysis>(
+        module, am,
+        LongestPathAnalysisOptions(/*lazyComputation=*/false,
+                                   /*keepOnlyMaxDelayPaths=*/true, topNameAttr));
+    analysis = localAnalysisPtr.get();
   }
 
   // Create output directory: <reportDir>/<topModuleName>/
@@ -1094,12 +1384,18 @@ void DesignProfilerPass::runOnOperation() {
     return signalPassFailure();
   }
 
-  if (failed(writeReport(topModule, file->os()))) {
+  LogicalResult reportResult = useTwoStageAnalysis
+                                   ? writeReportTwoStage(topModule, file->os())
+                                   : writeReport(topModule, file->os());
+
+  if (failed(reportResult)) {
     cleanupClocks();
+    twoStageAnalysis = nullptr;
     return signalPassFailure();
   }
 
   file->keep();
   cleanupClocks();
+  twoStageAnalysis = nullptr;
   markAllAnalysesPreserved();
 }

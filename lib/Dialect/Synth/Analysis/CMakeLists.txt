@@ -28,7 +28,10 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   CIRCTSupport
   CIRCTSeq
   CIRCTSynth
+  CIRCTTimingAnalysis
   MLIRIR
   MLIRPass
   MLIRTransforms
 )
+
+add_subdirectory(Timing)

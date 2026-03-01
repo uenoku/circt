@@ -235,6 +235,11 @@ def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
     When both start and end filters are specified, paths must match both
     (AND semantics). Multiple patterns in each filter use OR semantics.
 
+    Two analysis backends are available:
+    - Default (LongestPathAnalysis): Backward tracing from endpoints
+    - Two-Stage (TimingAnalysis): Forward arrival propagation + on-demand path
+      enumeration, similar to commercial EDA tools
+
     Output: <reportDir>/<topModuleName>/timing.txt
   }];
   let options = [
@@ -245,7 +250,9 @@ def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
     ListOption<"filterStartPoints", "filter-start", "std::string",
                "Glob patterns to filter paths by start point names">,
     ListOption<"filterEndPoints", "filter-end", "std::string",
-               "Glob patterns to filter paths by end point names">
+               "Glob patterns to filter paths by end point names">,
+    Option<"useTwoStageAnalysis", "two-stage", "bool", "false",
+           "Use two-stage timing analysis (forward arrival + path enumeration)">
   ];
   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];

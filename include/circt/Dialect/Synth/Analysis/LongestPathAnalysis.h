@@ -379,6 +379,16 @@ public:
                             SmallVectorImpl<DataflowPath> &results,
                             bool elaboratePaths = false) const;
 
+  // Get timing paths to any object matching the given patterns.
+  // This allows querying paths to arbitrary design objects (combinational
+  // nodes, wires, etc.), not just registers and output ports. The patterns
+  // use glob syntax (*, ?, [abc]). Returns DataflowPath entries for each
+  // matched object.
+  LogicalResult getPathsToMatchingObjects(
+      StringAttr moduleName, llvm::ArrayRef<std::string> patterns,
+      SmallVectorImpl<DataflowPath> &results,
+      SmallVectorImpl<std::string> *matchedObjectNames = nullptr) const;
+
   // Reconstruct the path from the given dataflow path.
   LogicalResult reconstructPath(const DataflowPath &path,
                                 SmallVectorImpl<DebugPoint> &result) const;

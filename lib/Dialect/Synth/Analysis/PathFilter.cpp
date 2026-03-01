@@ -23,6 +23,7 @@ PathFilter::create(llvm::ArrayRef<std::string> startPatternStrs,
     if (!pat)
       return pat.takeError();
     filter.startPatterns.push_back(std::move(*pat));
+    filter.startPatternStrings.push_back(patStr);
   }
 
   for (const auto &patStr : endPatternStrs) {
@@ -32,6 +33,7 @@ PathFilter::create(llvm::ArrayRef<std::string> startPatternStrs,
     if (!pat)
       return pat.takeError();
     filter.endPatterns.push_back(std::move(*pat));
+    filter.endPatternStrings.push_back(patStr);
   }
 
   return filter;
@@ -126,5 +128,44 @@ PathFilter::computeMatchingOutputPorts(hw::HWModuleOp module) {
   }
 
   return matchedNames;
+}
+
+llvm::SmallVector<std::string>
+PathFilter::computeMatchingEndObjects(hw::HWModuleOp module,
+                                      const LongestPathAnalysis &analysis) {
+  objectsEnumerated = true;
+
+  // If no end patterns, return empty (match all)
+  if (endPatterns.empty())
+    return {};
+
+  // Use the analysis's getPathsToMatchingObjects to enumerate matching objects
+  llvm::SmallVector<std::string> matchedNames;
+  llvm::SmallVector<DataflowPath> matchedPaths;
+
+  auto result = analysis.getPathsToMatchingObjects(
+      module.getModuleNameAttr(), endPatternStrings, matchedPaths,
+      &matchedNames);
+
+  if (failed(result))
+    return matchedNames;
+
+  return matchedNames;
+}
+
+llvm::SmallVector<std::string> PathFilter::getStartPatternStrings() const {
+  llvm::SmallVector<std::string> result;
+  result.reserve(startPatternStrings.size());
+  for (const auto &s : startPatternStrings)
+    result.push_back(s);
+  return result;
+}
+
+llvm::SmallVector<std::string> PathFilter::getEndPatternStrings() const {
+  llvm::SmallVector<std::string> result;
+  result.reserve(endPatternStrings.size());
+  for (const auto &s : endPatternStrings)
+    result.push_back(s);
+  return result;
 }
 
