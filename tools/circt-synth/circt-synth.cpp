@@ -164,6 +164,11 @@ static cl::opt<std::string> timingReportDir(
              "Generates timing report at <dir>/<top>/timing.txt"),
     cl::init(""), cl::cat(mainCategory));
 
+static cl::opt<bool> showConvergenceTable(
+    "show-convergence-table",
+    cl::desc("Include per-iteration slew convergence table in timing report"),
+    cl::init(false), cl::cat(mainCategory));
+
 static cl::list<std::string>
     filterStartPoints("filter-start",
                       cl::desc("Glob patterns to filter paths by start point "
@@ -392,6 +397,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     circt::synth::PrintTimingAnalysisOptions options;
     options.topModuleName = topName;
     options.reportDir = timingReportDir;
+    options.showConvergenceTable = showConvergenceTable;
     for (const auto &pat : filterStartPoints)
       options.filterStartPoints.push_back(pat);
     for (const auto &pat : filterEndPoints)

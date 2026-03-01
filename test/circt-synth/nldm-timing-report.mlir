@@ -1,4 +1,7 @@
 // RUN: circt-synth %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s
+// RUN: circt-synth %s --timing-report-dir=- --top dut --show-convergence-table -o /dev/null | FileCheck %s --check-prefix=TABLE
+// RUN: circt-sta %s --timing-report-dir=- --top dut -o /dev/null | FileCheck %s --check-prefix=STA
+// RUN: circt-sta %s --timing-report-dir=- --top dut --show-convergence-table -o /dev/null | FileCheck %s --check-prefix=STA-TABLE
 
 // CHECK: === Timing Report ===
 // CHECK: Module: dut
@@ -8,6 +11,21 @@
 // CHECK: Path 1: delay = 25
 // CHECK: Startpoint:
 // CHECK: Endpoint:
+
+// TABLE: === Timing Report ===
+// TABLE: --- Slew Convergence ---
+// TABLE: Iter | Max Slew Delta
+// TABLE: 1 | 0
+// TABLE: Path 1: delay = 25
+
+// STA: === Timing Report ===
+// STA: Delay Model: nldm
+// STA: Path 1: delay = 25
+
+// STA-TABLE: === Timing Report ===
+// STA-TABLE: --- Slew Convergence ---
+// STA-TABLE: Iter | Max Slew Delta
+// STA-TABLE: 1 | 0
 
 module attributes {
   synth.liberty.library = {
