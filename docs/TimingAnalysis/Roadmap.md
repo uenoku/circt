@@ -424,6 +424,8 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
 - `synth-print-timing-analysis` / `circt-synth` / `circt-sta` now expose
   convergence-tuning knobs (max iterations, absolute/relative epsilon,
   damping, adaptive mode) for direct report-flow experimentation.
+- End-to-end report tests now validate these tuning controls for both
+  `circt-synth` and `circt-sta`.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models
