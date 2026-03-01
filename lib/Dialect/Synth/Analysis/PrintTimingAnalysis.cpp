@@ -16,6 +16,7 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 #include <set>
+#include <string>
 #include <tuple>
 
 #define DEBUG_TYPE "synth-print-timing-analysis"
@@ -89,6 +90,11 @@ struct PrintTimingAnalysisPass
   }
 
 private:
+  static std::string formatNodeLabel(const timing::TimingNode *node) {
+    return node->getName().str() + "[" + std::to_string(node->getBitPos()) +
+           "]";
+  }
+
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
     auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
@@ -120,19 +126,19 @@ private:
 
     os << "Path " << rank << ": delay = " << path.getDelay();
     os << "  slack = " << analysis.getSlack(ep) << "\n";
-    os << "  Startpoint: " << sp->getName() << " ("
+    os << "  Startpoint: " << formatNodeLabel(sp) << " ("
        << describeStartKind(sp->getKind()) << ")\n";
-    os << "  Endpoint:   " << ep->getName() << " ("
+    os << "  Endpoint:   " << formatNodeLabel(ep) << " ("
        << describeEndKind(ep->getKind()) << ")\n";
 
     auto intermediates = path.getIntermediateNodes();
     if (!intermediates.empty()) {
       os << "  Path:\n";
-      os << "    " << sp->getName() << "\n";
+      os << "    " << formatNodeLabel(sp) << "\n";
       for (auto *node : intermediates)
-        os << "      -> " << node->getName() << " (arrival "
+        os << "      -> " << formatNodeLabel(node) << " (arrival "
            << analysis.getArrivalTime(node) << ")\n";
-      os << "      -> " << ep->getName() << "\n";
+      os << "      -> " << formatNodeLabel(ep) << "\n";
     }
     os << "\n";
   }
