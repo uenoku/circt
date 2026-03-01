@@ -16,6 +16,7 @@
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
+#include "circt/Dialect/Synth/Analysis/Timing/Liberty.h"
 #include "circt/Dialect/Synth/Analysis/Timing/RequiredTimeAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "mlir/IR/Builders.h"
@@ -72,6 +73,19 @@ const char *arcDelayAttrIR = R"MLIR(
     hw.module private @arc_delay_attr(in %a : i1, in %b : i1, out x : i1) {
       %y = comb.and %a, %b {synth.liberty.arc_delay_ps = {i0_o0 = 9 : i64, i1_o0 = 2 : i64}} : i1
       hw.output %y : i1
+    }
+)MLIR";
+
+const char *libertyBridgeIR = R"MLIR(
+    hw.module private @INV(
+      in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.006 : f64}},
+      out Y : i1 {synth.liberty.pin = {direction = "output"}}) {
+      hw.output %A : i1
+    }
+
+    hw.module @dut(in %a : i1, out y : i1) {
+      %0 = hw.instance "u_inv" @INV(A: %a: i1) -> (Y: i1)
+      hw.output %0 : i1
     }
 )MLIR";
 
@@ -251,6 +265,23 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelPerArcAttr) {
   int64_t maxArrival = std::max(infos[0].arrivalTime, infos[1].arrivalTime);
   EXPECT_EQ(minArrival, 2);
   EXPECT_EQ(maxArrival, 9);
+}
+
+TEST_F(TimingAnalysisTest, LibertyBridgePinCapacitance) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(libertyBridgeIR, &context);
+  ASSERT_TRUE(module);
+
+  auto libOr = LibertyLibrary::fromModule(module.get());
+  ASSERT_FALSE(failed(libOr));
+  LibertyLibrary lib = *libOr;
+
+  auto invInCap = lib.getInputPinCapacitance("INV", "A");
+  ASSERT_TRUE(invInCap.has_value());
+  EXPECT_NEAR(*invInCap, 0.006, 1e-12);
+
+  auto invOutCap = lib.getInputPinCapacitance("INV", "Y");
+  EXPECT_FALSE(invOutCap.has_value());
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {

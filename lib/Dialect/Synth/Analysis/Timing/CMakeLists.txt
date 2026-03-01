@@ -9,6 +9,7 @@
 add_circt_dialect_library(CIRCTTimingAnalysis
   ArrivalAnalysis.cpp
   DelayModel.cpp
+  Liberty.cpp
   ObjectCollection.cpp
   PathEnumerator.cpp
   RequiredTimeAnalysis.cpp
@@ -30,4 +31,3 @@ add_circt_dialect_library(CIRCTTimingAnalysis
   CIRCTSupport
   MLIRIR
 )
-
