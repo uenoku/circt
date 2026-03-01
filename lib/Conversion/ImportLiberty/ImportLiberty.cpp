@@ -14,6 +14,8 @@
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
+#include "circt/Dialect/Synth/SynthDialect.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -27,9 +29,11 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Tools/mlir-translate/Translation.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
+#include <optional>
 
 #define DEBUG_TYPE "import-liberty"
 
@@ -457,6 +461,143 @@ struct LibertyGroup {
   }
 };
 
+static std::optional<double> parseTimeUnitToPs(StringRef unit) {
+  unit = unit.trim();
+  if (unit.empty())
+    return std::nullopt;
+
+  size_t split = 0;
+  while (split < unit.size()) {
+    char c = unit[split];
+    if (llvm::isDigit(c) || c == '+' || c == '-' || c == '.' || c == 'e' ||
+        c == 'E') {
+      ++split;
+      continue;
+    }
+    break;
+  }
+  if (split == 0)
+    return std::nullopt;
+
+  double magnitude = 0.0;
+  if (unit.take_front(split).getAsDouble(magnitude))
+    return std::nullopt;
+
+  llvm::SmallString<8> suffixStorage = unit.drop_front(split).trim();
+  for (char &c : suffixStorage)
+    c = llvm::toLower(c);
+  StringRef suffix = suffixStorage;
+
+  double unitToPs = 0.0;
+  if (suffix == "s")
+    unitToPs = 1.0e12;
+  else if (suffix == "ms")
+    unitToPs = 1.0e9;
+  else if (suffix == "us")
+    unitToPs = 1.0e6;
+  else if (suffix == "ns")
+    unitToPs = 1.0e3;
+  else if (suffix == "ps")
+    unitToPs = 1.0;
+  else if (suffix == "fs")
+    unitToPs = 1.0e-3;
+  else
+    return std::nullopt;
+
+  return magnitude * unitToPs;
+}
+
+static std::optional<ArrayAttr> parseValueList(Attribute attr,
+                                               OpBuilder &builder) {
+  if (!attr)
+    return std::nullopt;
+
+  SmallVector<Attribute> values;
+
+  auto addValue = [&](double value) {
+    values.push_back(builder.getF64FloatAttr(value));
+  };
+
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr)) {
+    addValue(floatAttr.getValueAsDouble());
+    return builder.getArrayAttr(values);
+  }
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+    addValue(static_cast<double>(intAttr.getInt()));
+    return builder.getArrayAttr(values);
+  }
+  if (auto arr = dyn_cast<ArrayAttr>(attr)) {
+    for (auto item : arr) {
+      if (auto f = dyn_cast<FloatAttr>(item))
+        addValue(f.getValueAsDouble());
+      else if (auto i = dyn_cast<IntegerAttr>(item))
+        addValue(static_cast<double>(i.getInt()));
+      else
+        return std::nullopt;
+    }
+    return builder.getArrayAttr(values);
+  }
+
+  auto strAttr = dyn_cast<StringAttr>(attr);
+  if (!strAttr)
+    return std::nullopt;
+
+  SmallVector<StringRef> parts;
+  strAttr.getValue().split(parts, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  for (StringRef part : parts) {
+    double value = 0.0;
+    if (part.trim().getAsDouble(value))
+      return std::nullopt;
+    addValue(value);
+  }
+  if (values.empty())
+    return std::nullopt;
+  return builder.getArrayAttr(values);
+}
+
+static std::optional<ArrayAttr> getFirstTableValues(const LibertyGroup &timing,
+                                                    StringRef tableName,
+                                                    OpBuilder &builder) {
+  for (const auto &sub : timing.subGroups) {
+    if (sub->name != tableName)
+      continue;
+    auto attrPair = sub->getAttribute("values");
+    if (!attrPair.first)
+      continue;
+    if (auto values = parseValueList(attrPair.first, builder))
+      return values;
+  }
+  return std::nullopt;
+}
+
+static std::optional<circt::synth::NLDMArcAttr>
+buildNldmArcAttr(const LibertyGroup &timing, StringRef outputPin,
+                 OpBuilder &builder) {
+  StringAttr relatedPin;
+  auto relatedAttr = timing.getAttribute("related_pin").first;
+  if (auto str = dyn_cast<StringAttr>(relatedAttr))
+    relatedPin = str;
+  else if (!timing.args.empty())
+    relatedPin = dyn_cast<StringAttr>(timing.args.front());
+
+  if (!relatedPin)
+    return std::nullopt;
+
+  auto toPin = builder.getStringAttr(outputPin);
+  auto timingSense =
+      dyn_cast<StringAttr>(timing.getAttribute("timing_sense").first);
+  if (!timingSense)
+    timingSense = builder.getStringAttr("");
+
+  auto rise = getFirstTableValues(timing, "cell_rise", builder)
+                  .value_or(builder.getArrayAttr({}));
+  auto fall = getFirstTableValues(timing, "cell_fall", builder)
+                  .value_or(builder.getArrayAttr({}));
+
+  return circt::synth::NLDMArcAttr::get(builder.getContext(), relatedPin, toPin,
+                                        timingSense, rise, fall);
+}
+
 class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
@@ -718,6 +859,15 @@ ParseResult LibertyParser::parseLibrary() {
       [](const LibertyGroup &group) { return group.name == "cell"; });
   auto attr = convertGroupToAttr(libertyLib);
   module->setAttr("synth.liberty.library", attr);
+
+  if (auto timeUnitAttr =
+          dyn_cast<StringAttr>(libertyLib.getAttribute("time_unit").first)) {
+    if (auto ps = parseTimeUnitToPs(timeUnitAttr.getValue()))
+      module->setAttr("synth.nldm.time_unit",
+                      circt::synth::NLDMTimeUnitAttr::get(
+                          builder.getContext(), builder.getF64FloatAttr(*ps)));
+  }
+
   return success();
 }
 
@@ -772,6 +922,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
 
     std::optional<hw::ModulePort::Direction> dir;
     SmallVector<NamedAttribute> pinAttrs;
+    SmallVector<Attribute> nldmArcs;
 
     for (const auto &attr : sub->attrs) {
       if (attr.name == "direction") {
@@ -799,13 +950,22 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
 
     llvm::StringMap<SmallVector<Attribute>> subGroups;
     for (const auto &child : sub->subGroups) {
-      // TODO: Properly handle timing subgroups etc.
+      if (child->name == "timing") {
+        if (auto nldmArc =
+                buildNldmArcAttr(*child, pinName.getValue(), builder))
+          nldmArcs.push_back(*nldmArc);
+      }
+
       subGroups[child->name].push_back(convertGroupToAttr(*child));
     }
 
     for (auto &it : subGroups)
       pinAttrs.push_back(builder.getNamedAttr(
           it.getKey(), builder.getArrayAttr(it.getValue())));
+
+    if (!nldmArcs.empty())
+      pinAttrs.push_back(builder.getNamedAttr("synth.nldm.arcs",
+                                              builder.getArrayAttr(nldmArcs)));
 
     auto libertyAttrs = builder.getDictionaryAttr(pinAttrs);
     auto attrs = builder.getDictionaryAttr(
@@ -1005,6 +1165,7 @@ void registerImportLibertyTranslation() {
         // Load required dialects
         context->loadDialect<hw::HWDialect>();
         context->loadDialect<comb::CombDialect>();
+        context->loadDialect<synth::SynthDialect>();
         if (failed(parser.parse()))
           return OwningOpRef<ModuleOp>();
         return OwningOpRef<ModuleOp>(module);
@@ -1012,6 +1173,7 @@ void registerImportLibertyTranslation() {
       [](DialectRegistry &registry) {
         registry.insert<HWDialect>();
         registry.insert<comb::CombDialect>();
+        registry.insert<synth::SynthDialect>();
       });
 }
 } // namespace circt::liberty

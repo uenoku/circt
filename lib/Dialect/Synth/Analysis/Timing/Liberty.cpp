@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/Analysis/Timing/Liberty.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace circt;
@@ -133,6 +134,42 @@ LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
   auto *outputPin = lookupPin(cellName, outputPinName);
   if (!outputPin || outputPin->isInput)
     return std::nullopt;
+
+  if (auto nldmArcs = dyn_cast_or_null<ArrayAttr>(
+          outputPin->attrs.get("synth.nldm.arcs"))) {
+    for (auto attr : nldmArcs) {
+      if (auto typedArc = dyn_cast<synth::NLDMArcAttr>(attr)) {
+        if (typedArc.getRelatedPin() == inputPinName) {
+          MLIRContext *ctx = outputPin->attrs.getContext();
+          SmallVector<NamedAttribute> attrs;
+          attrs.push_back(NamedAttribute(StringAttr::get(ctx, "related_pin"),
+                                         typedArc.getRelatedPin()));
+          attrs.push_back(NamedAttribute(StringAttr::get(ctx, "to_pin"),
+                                         typedArc.getToPin()));
+          if (!typedArc.getTimingSense().getValue().empty())
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
+                                           typedArc.getTimingSense()));
+          if (!typedArc.getCellRiseValues().empty())
+            attrs.push_back(
+                NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
+                               typedArc.getCellRiseValues()));
+          if (!typedArc.getCellFallValues().empty())
+            attrs.push_back(
+                NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
+                               typedArc.getCellFallValues()));
+          return DictionaryAttr::get(ctx, attrs);
+        }
+      }
+
+      auto arc = dyn_cast<DictionaryAttr>(attr);
+      if (!arc)
+        continue;
+      if (auto related = arc.getAs<StringAttr>("related_pin")) {
+        if (related.getValue() == inputPinName)
+          return arc;
+      }
+    }
+  }
 
   auto timingGroups =
       dyn_cast_or_null<ArrayAttr>(outputPin->attrs.get("timing"));

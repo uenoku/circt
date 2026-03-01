@@ -125,14 +125,18 @@ const char *nldmCellMapIR = R"MLIR(
 )MLIR";
 
 const char *nldmTimingArcTableIR = R"MLIR(
-    module attributes {synth.liberty.library = {name = "dummy", time_unit = "1ns"}} {
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>
+    } {
       hw.module private @BUF(
         in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.002 : f64}},
         out Y : i1 {synth.liberty.pin = {
           direction = "output",
-          timing = [
-            {related_pin = "A", cell_rise = [{values = "0.012, 0.018"}]}
-          ]
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.012 : f64, 0.018 : f64], []>
+          ],
+          timing = [{related_pin = "A", cell_rise = [{values = "999.0"}]}]
         }}) {
         hw.output %A : i1
       }
@@ -376,6 +380,26 @@ TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookup) {
   auto byIndex = lib.getTimingArc("NAND2", 1, 0);
   ASSERT_TRUE(byIndex.has_value());
   EXPECT_TRUE(byIndex->getAs<StringAttr>("timing_sense"));
+}
+
+TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookupPrefersNldmArcs) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmTimingArcTableIR, &context);
+  ASSERT_TRUE(module);
+
+  auto libOr = LibertyLibrary::fromModule(module.get());
+  ASSERT_FALSE(failed(libOr));
+  LibertyLibrary lib = *libOr;
+
+  auto arc = lib.getTimingArc("BUF", "A", "Y");
+  ASSERT_TRUE(arc.has_value());
+
+  auto rise = dyn_cast_or_null<ArrayAttr>(arc->get("cell_rise_values"));
+  ASSERT_TRUE(rise);
+  ASSERT_FALSE(rise.empty());
+  auto v0 = dyn_cast<FloatAttr>(rise[0]);
+  ASSERT_TRUE(v0);
+  EXPECT_NEAR(v0.getValueAsDouble(), 0.012, 1e-12);
 }
 
 TEST_F(TimingAnalysisTest, NLDMDelayModelResolvesCellPinMapping) {

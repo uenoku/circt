@@ -10,6 +10,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/Timing/Liberty.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -166,6 +167,15 @@ static double getTimeScalePs(Operation *op) {
   if (!module)
     return 1.0;
 
+  if (auto unit = module->getAttrOfType<synth::NLDMTimeUnitAttr>(
+          "synth.nldm.time_unit"))
+    return unit.getPicoseconds().getValueAsDouble();
+
+  if (auto ps = module->getAttrOfType<FloatAttr>("synth.nldm.time_unit_ps"))
+    return ps.getValueAsDouble();
+  if (auto ps = module->getAttrOfType<IntegerAttr>("synth.nldm.time_unit_ps"))
+    return static_cast<double>(ps.getInt());
+
   auto lib = module->getAttrOfType<DictionaryAttr>("synth.liberty.library");
   if (!lib)
     return 1.0;
@@ -198,6 +208,11 @@ static std::optional<double> getFirstNumericAttr(Attribute attr) {
 
 static std::optional<int64_t> getDelayFromTimingArc(DictionaryAttr timingArc,
                                                     double timeScalePs) {
+  if (auto rise = getFirstNumericAttr(timingArc.get("cell_rise_values")))
+    return static_cast<int64_t>(std::llround(*rise * timeScalePs));
+  if (auto fall = getFirstNumericAttr(timingArc.get("cell_fall_values")))
+    return static_cast<int64_t>(std::llround(*fall * timeScalePs));
+
   auto parseTable = [&](StringRef key) -> std::optional<int64_t> {
     auto tables = dyn_cast_or_null<ArrayAttr>(timingArc.get(key));
     if (!tables || tables.empty())

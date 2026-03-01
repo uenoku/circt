@@ -17,6 +17,70 @@ Implementation note (2026-03): the timing flow should reuse the existing
 `import-liberty` translation pipeline instead of adding a second standalone
 Liberty parser under timing analysis.
 
+## TimingAnalysis Status (Excluding Typed NLDM Attribute Migration)
+
+This section tracks the readiness of `TimingAnalysis` itself, independent of
+the ongoing `#synth` typed-NLDM attribute work.
+
+### Completed and Stable
+
+- Core analysis pipeline is implemented and exercised:
+  - `TimingGraph` construction and DAG traversal
+  - `ArrivalAnalysis` forward propagation
+  - `RequiredTimeAnalysis` backward RAT/slack propagation
+  - `PathEnumerator` K-worst path query engine
+- Hierarchical timing flow is active in `TimingAnalysis` (not in
+  `LongestPathAnalysis`).
+- Timing report integration is established through
+  `synth-print-timing-analysis` and `circt-synth`.
+- CLI flow decisions are enforced in practice:
+  - report pass is separate from `DesignProfiler`
+  - report output flag is `--timing-report-dir`
+  - report mode requires explicit `--top`
+  - report labels include bit-level node names
+- Arc context plumbing is in place end-to-end:
+  - timing arcs carry `op + inputIndex + outputIndex`
+  - delay recomputation uses arc context in arrival/RAT/path analysis
+- Graph storage strategy has been updated for scale:
+  - nodes remain `unique_ptr`
+  - arcs use typed bump allocation
+
+### Major Correctness Fixes Already Landed
+
+- Fixed missing graph-region arcs for use-before-def situations by ensuring
+  nodes are materialized via `getOrCreateNode` during arc construction.
+- Fixed global K-worst ordering so results are correctly sorted across all
+  endpoints (not endpoint-local ordering only).
+- Fixed hierarchical endpoint lookup collisions by avoiding insertion of
+  endpoint-only nodes into the value lookup map.
+
+### Validation Baseline
+
+- Timing unit tests in `CIRCTSynthTests` are passing, including full
+  `TimingAnalysisTest.*` coverage.
+- `circt-synth` and timing-report smoke flows build and run successfully.
+
+### Remaining Gaps in TimingAnalysis Core (Not About Typed Attr Format)
+
+- Full NLDM numerical behavior is not complete yet:
+  - proper LUT interpolation over `(inputSlew, outputLoad)`
+  - transition/slew propagation through nodes
+  - output-load modeling from fanout pin capacitances
+  - iterative slew/load convergence loop
+- Advanced STA features are still pending:
+  - multi-clock domain constraints and CDC handling
+  - MCMM (multi-corner/multi-mode)
+  - incremental re-analysis after local netlist edits
+  - parallel path-query execution (documented as deferred)
+
+### Practical Readiness Summary
+
+- `TimingAnalysis` is functionally usable today for graph construction,
+  arrival/RAT/slack reporting, and K-worst path reporting in current synth
+  flows.
+- Signoff-grade NLDM/CCS accuracy remains a roadmap item and depends on the
+  slew/load/interpolation milestones below.
+
 ---
 
 ## Near-term Enhancements
@@ -141,8 +205,10 @@ Reuse `import-liberty` output attributes (for example
 `synth.liberty.library` and `synth.liberty.pin`) as the canonical Liberty
 source for timing analysis.
 
-The timing engine should build an in-memory NLDM view from these attributes,
-rather than introducing another independent Liberty parser.
+The timing engine should consume normalized NLDM metadata emitted by
+`import-liberty` (for example `synth.nldm.time_unit_ps` and
+`synth.nldm.arcs` inside pin attrs), rather than re-parsing nested generic
+dictionary structures or introducing another independent Liberty parser.
 
 **Key data structures:**
 
@@ -182,6 +248,42 @@ may carry timing-oriented attributes, e.g.:
 - optional pin-level hints for non-trivial mappings
 
 This keeps technology mapping and STA coupled through explicit IR metadata.
+
+### Step A.2: Typed NLDM Attribute Migration (`#synth`)
+
+Move from ad-hoc dictionary payloads toward typed Synth attributes for NLDM
+metadata, so importer and timing analysis share a stable schema.
+
+**Original sub-goal:**
+
+- Introduce a typed `#synth` NLDM metadata path emitted by `import-liberty`
+  (instead of reconstructing NLDM tables from generic nested dictionaries in
+  timing analysis), while keeping the timing flow on `TimingAnalysis`.
+
+**Task list (active):**
+
+1. Define typed Synth AttrDefs for normalized NLDM data:
+   - module-level time-unit scale (ps)
+   - per-arc payload (`related_pin`, `to_pin`, `timing_sense`, rise/fall
+     samples)
+2. Register and expose the new AttrDefs in the Synth dialect codegen flow.
+3. Update `import-liberty` to emit typed `#synth...` attrs instead of generic
+   `synth.nldm.*` dictionary keys.
+4. Update timing-side consumers (`LibertyLibrary`, `NLDMDelayModel`) to read
+   typed attrs first, with temporary fallback to dictionary form.
+5. Add tests for importer emission, parser/printer round-trip, and delay-model
+   evaluation from typed attrs.
+6. Document deprecation path for dictionary-form NLDM metadata once migration is
+   complete.
+
+**Immediate next steps:**
+
+1. Land AttrDefs + dialect registration in an isolated commit.
+2. Switch ImportLiberty emission to typed attrs in a follow-up commit.
+3. Migrate timing bridge/model readers and keep fallback during transition.
+4. Add end-to-end regression coverage (`circt-translate` import +
+   `TimingAnalysisTest` NLDM checks).
+5. Remove legacy dictionary fallback after downstream users are migrated.
 
 ### Step B: NLDMDelayModel Implementation
 
