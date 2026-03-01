@@ -361,6 +361,91 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
       axis.push_back(value);
     };
 
+    SmallVector<size_t> order(candidates.size());
+    for (size_t i = 0; i < candidates.size(); ++i)
+      order[i] = i;
+    llvm::sort(order, [&](size_t lhs, size_t rhs) {
+      const auto &a = candidates[lhs];
+      const auto &b = candidates[rhs];
+      double adx = a.selectorX - inputSlew;
+      double ady = a.selectorY - outputLoad;
+      double bdx = b.selectorX - inputSlew;
+      double bdy = b.selectorY - outputLoad;
+      double ad = adx * adx + ady * ady;
+      double bd = bdx * bdx + bdy * bdy;
+      return ad < bd;
+    });
+
+    const Candidate &nearest = candidates[order.front()];
+
+    auto sampleWaveformAt = [&](const Candidate &candidate,
+                                double t) -> std::optional<double> {
+      if (candidate.times.empty() || candidate.values.empty() ||
+          candidate.times.size() != candidate.values.size())
+        return std::nullopt;
+      if (t <= candidate.times.front())
+        return candidate.values.front();
+      if (t >= candidate.times.back())
+        return candidate.values.back();
+
+      for (size_t i = 1, e = candidate.times.size(); i < e; ++i) {
+        double t0 = candidate.times[i - 1];
+        double t1 = candidate.times[i];
+        if (t > t1)
+          continue;
+        double v0 = candidate.values[i - 1];
+        double v1 = candidate.values[i];
+        if (nearlyEqual(t1, t0))
+          return v0;
+        double alpha = (t - t0) / (t1 - t0);
+        return v0 + (v1 - v0) * alpha;
+      }
+      return candidate.values.back();
+    };
+
+    auto blendCandidates = [&](ArrayRef<const Candidate *> blend,
+                               ArrayRef<double> weights) {
+      if (blend.empty() || blend.size() != weights.size())
+        return false;
+
+      bool sameShape = true;
+      for (size_t i = 1; i < blend.size(); ++i)
+        if (!compatibleShape(*blend.front(), *blend[i])) {
+          sameShape = false;
+          break;
+        }
+
+      if (sameShape) {
+        times.assign(blend.front()->times.size(), 0.0);
+        values.assign(blend.front()->values.size(), 0.0);
+        referenceTime = 0.0;
+        for (auto [idx, candidate] : llvm::enumerate(blend)) {
+          double w = weights[idx];
+          referenceTime += w * candidate->reference;
+          for (auto [i, t] : llvm::enumerate(candidate->times))
+            times[i] += w * t;
+          for (auto [i, v] : llvm::enumerate(candidate->values))
+            values[i] += w * v;
+        }
+        return true;
+      }
+
+      times.assign(nearest.times.begin(), nearest.times.end());
+      values.assign(times.size(), 0.0);
+      referenceTime = 0.0;
+      for (auto [idx, candidate] : llvm::enumerate(blend)) {
+        double w = weights[idx];
+        referenceTime += w * candidate->reference;
+        for (auto [i, t] : llvm::enumerate(times)) {
+          auto sampled = sampleWaveformAt(*candidate, t);
+          if (!sampled)
+            return false;
+          values[i] += w * *sampled;
+        }
+      }
+      return true;
+    };
+
     auto tryStructuredBilinearBlend = [&]() {
       SmallVector<double> xs;
       SmallVector<double> ys;
@@ -424,18 +509,9 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
       double w10 = tx * (1.0 - ty);
       double w11 = tx * ty;
 
-      times.assign(c00->times.size(), 0.0);
-      values.assign(c00->values.size(), 0.0);
-      referenceTime = w00 * c00->reference + w01 * c01->reference +
-                      w10 * c10->reference + w11 * c11->reference;
-
-      for (size_t i = 0; i < times.size(); ++i)
-        times[i] = w00 * c00->times[i] + w01 * c01->times[i] +
-                   w10 * c10->times[i] + w11 * c11->times[i];
-      for (size_t i = 0; i < values.size(); ++i)
-        values[i] = w00 * c00->values[i] + w01 * c01->values[i] +
-                    w10 * c10->values[i] + w11 * c11->values[i];
-      return true;
+      SmallVector<const Candidate *> blend = {c00, c01, c10, c11};
+      SmallVector<double> weights = {w00, w01, w10, w11};
+      return blendCandidates(blend, weights);
     };
 
     if (tryStructuredBilinearBlend())
@@ -444,17 +520,10 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
     auto tryAxisLinearBlend = [&]() {
       auto blendBetween = [&](const Candidate &a, const Candidate &b,
                               double alpha) {
-        if (!compatibleShape(a, b))
-          return false;
         alpha = std::max(0.0, std::min(alpha, 1.0));
-        times.assign(a.times.size(), 0.0);
-        values.assign(a.values.size(), 0.0);
-        referenceTime = (1.0 - alpha) * a.reference + alpha * b.reference;
-        for (size_t i = 0; i < times.size(); ++i)
-          times[i] = (1.0 - alpha) * a.times[i] + alpha * b.times[i];
-        for (size_t i = 0; i < values.size(); ++i)
-          values[i] = (1.0 - alpha) * a.values[i] + alpha * b.values[i];
-        return true;
+        SmallVector<const Candidate *> blend = {&a, &b};
+        SmallVector<double> weights = {1.0 - alpha, alpha};
+        return blendCandidates(blend, weights);
       };
 
       auto interpolateOnAxis = [&](SmallVectorImpl<const Candidate *> &axis,
@@ -524,22 +593,6 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
     if (tryAxisLinearBlend())
       return true;
 
-    SmallVector<size_t> order(candidates.size());
-    for (size_t i = 0; i < candidates.size(); ++i)
-      order[i] = i;
-    llvm::sort(order, [&](size_t lhs, size_t rhs) {
-      const auto &a = candidates[lhs];
-      const auto &b = candidates[rhs];
-      double adx = a.selectorX - inputSlew;
-      double ady = a.selectorY - outputLoad;
-      double bdx = b.selectorX - inputSlew;
-      double bdy = b.selectorY - outputLoad;
-      double ad = adx * adx + ady * ady;
-      double bd = bdx * bdx + bdy * bdy;
-      return ad < bd;
-    });
-
-    const Candidate &nearest = candidates[order.front()];
     double nearestDx = nearest.selectorX - inputSlew;
     double nearestDy = nearest.selectorY - outputLoad;
     double nearestDist2 = nearestDx * nearestDx + nearestDy * nearestDy;
@@ -555,9 +608,7 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
     blend.push_back(&nearest);
     for (size_t sortedIndex = 1; sortedIndex < order.size() && blend.size() < 4;
          ++sortedIndex) {
-      const Candidate &other = candidates[order[sortedIndex]];
-      if (compatibleShape(nearest, other))
-        blend.push_back(&other);
+      blend.push_back(&candidates[order[sortedIndex]]);
     }
 
     if (blend.size() == 1) {
@@ -567,35 +618,27 @@ static bool decodeCCSPilotWaveform(synth::CCSPilotArcAttr arc, bool preferFall,
       return true;
     }
 
-    times.assign(nearest.times.size(), 0.0);
-    values.assign(nearest.values.size(), 0.0);
-    referenceTime = 0.0;
-
     constexpr double epsilon = 1e-12;
+    SmallVector<double> rawWeights;
+    rawWeights.reserve(blend.size());
     double weightSum = 0.0;
     for (const Candidate *candidate : blend) {
       double dx = candidate->selectorX - inputSlew;
       double dy = candidate->selectorY - outputLoad;
       double dist2 = dx * dx + dy * dy;
       double weight = 1.0 / std::max(dist2, epsilon);
+      rawWeights.push_back(weight);
       weightSum += weight;
-
-      for (auto [index, t] : llvm::enumerate(candidate->times))
-        times[index] += weight * t;
-      for (auto [index, v] : llvm::enumerate(candidate->values))
-        values[index] += weight * v;
-      referenceTime += weight * candidate->reference;
     }
 
     if (weightSum <= 0.0)
       return false;
 
-    for (double &t : times)
-      t /= weightSum;
-    for (double &v : values)
-      v /= weightSum;
-    referenceTime /= weightSum;
-    return true;
+    SmallVector<double> weights;
+    weights.reserve(rawWeights.size());
+    for (double w : rawWeights)
+      weights.push_back(w / weightSum);
+    return blendCandidates(blend, weights);
   };
 
   auto decodePair = [&](ArrayAttr t, ArrayAttr v) {

@@ -63,6 +63,10 @@ to axis-linear interpolation on sparse row/column slices, and finally to
 inverse-distance blending for irregular sets. Interpolated `reference_time` is
 applied as a time-axis offset before threshold extraction.
 
+When blended vectors use different `index_3` sample grids, pilot decode now
+uses `index_3` as a true time axis and performs linear resampling onto the
+selected template waveform before blending values.
+
 ## Load-Aware Timing Stretch
 
 Pilot model applies a load stretch to waveform time axis:
@@ -159,6 +163,7 @@ E2E waveform details:
 - `test/circt-sta/ccs-pilot-vector-interpolation-report.mlir`
 - `test/circt-sta/ccs-pilot-vector-grid-interpolation-report.mlir`
 - `test/circt-sta/ccs-pilot-vector-axis-linear-report.mlir`
+- `test/circt-sta/ccs-pilot-vector-template-semantics-report.mlir`
 
 ## Limitations and Next Steps
 

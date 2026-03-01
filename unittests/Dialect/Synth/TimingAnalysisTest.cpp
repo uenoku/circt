@@ -368,6 +368,33 @@ const char *ccsPilotVectorGridInterpolationIR = R"MLIR(
     }
 )MLIR";
 
+const char *ccsPilotVectorTemplateSemanticsIR = R"MLIR(
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>,
+      synth.ccs.pilot.waveform_delay = true
+    } {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.5 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64], [0.0 : f64], [0.025 : f64], [], [], [], [], [], [], [], [], []>
+          ],
+          synth.ccs.pilot.arcs = [
+            #synth.ccs_pilot_arc<"A", "Y", [], [], [], [], [0.0 : f64, 1.0 : f64], [0.5 : f64, 0.5 : f64], [0.0 : f64, 0.0 : f64], [[0.0 : f64, 0.8 : f64], [0.0 : f64, 0.2 : f64, 1.2 : f64]], [[0.0 : f64, 1.0 : f64], [0.0 : f64, 0.5 : f64, 1.0 : f64]], [], [], [], [], []>
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %s0 = hw.instance "u0" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %s0 : i1
+      }
+    }
+)MLIR";
+
 const char *ccsPilotMultiInputIR = R"MLIR(
     module attributes {
       synth.liberty.library = {name = "dummy", time_unit = "1ns"},
@@ -1264,6 +1291,43 @@ TEST_F(TimingAnalysisTest, CCSPilotVectorGridUsesStructuredBilinearBlend) {
   ASSERT_EQ(outputWaveform.size(), 2u);
   EXPECT_NEAR(outputWaveform[0].time, 394.0, 1e-9);
   EXPECT_NEAR(outputWaveform[1].time, 1181.5, 1e-9);
+}
+
+TEST_F(TimingAnalysisTest,
+       CCSPilotVectorTemplateAwareBlendHandlesMismatchedIndex3) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotVectorTemplateSemanticsIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext ctx;
+  ctx.op = inst;
+  ctx.inputValue = inst.getOperand(0);
+  ctx.outputValue = inst.getResult(0);
+  ctx.inputIndex = 0;
+  ctx.outputIndex = 0;
+  ctx.inputSlew = 0.25;
+  ctx.outputLoad = 0.5;
+
+  auto delay = model->computeDelay(ctx);
+  EXPECT_EQ(delay.delay, 421);
+  EXPECT_NEAR(delay.outputSlew, 673.6842105263158, 1e-9);
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 0.0}, {1.0, 1.0}};
+  SmallVector<WaveformPoint> outputWaveform;
+  EXPECT_TRUE(model->computeOutputWaveform(ctx, inputWaveform, outputWaveform));
+  ASSERT_EQ(outputWaveform.size(), 2u);
+  EXPECT_NEAR(outputWaveform[0].time, 421.0, 1e-9);
+  EXPECT_NEAR(outputWaveform[1].time, 1221.0, 1e-9);
 }
 
 TEST_F(TimingAnalysisTest, CCSPilotMultiInputArcsProduceDifferentDelay) {

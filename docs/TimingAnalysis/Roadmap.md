@@ -570,6 +570,8 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   selector grids, then axis-linear interpolation on sparse row/column slices,
   and finally inverse-distance blend, with interpolated `reference_time`
   applied as waveform time offset.
+- Landed: template-aware blending for mismatched `index_3` sample grids,
+  resampling by time-axis interpolation before value blending.
 - Remaining parser follow-up: richer template semantics and policy fidelity
   beyond pilot interpolation.
 
