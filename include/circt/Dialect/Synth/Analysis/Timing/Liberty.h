@@ -10,6 +10,7 @@
 #define CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_LIBERTY_H
 
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -67,10 +68,8 @@ public:
                                                unsigned operandIndex) const;
 
   /// Look up timing arc metadata for (input pin -> output pin).
-  ///
-  /// Returns the first matching `timing` subgroup dictionary found under the
-  /// output pin metadata, matching either `related_pin` or first positional
-  /// argument in imported attributes.
+  /// Returns the first matching normalized `synth.nldm.arcs` entry converted
+  /// into a dictionary view.
   std::optional<mlir::DictionaryAttr>
   getTimingArc(llvm::StringRef cellName, llvm::StringRef inputPinName,
                llvm::StringRef outputPinName) const;
@@ -79,6 +78,16 @@ public:
   std::optional<mlir::DictionaryAttr> getTimingArc(llvm::StringRef cellName,
                                                    unsigned operandIndex,
                                                    unsigned resultIndex) const;
+
+  /// Look up a typed NLDM arc for (input pin -> output pin).
+  std::optional<circt::synth::NLDMArcAttr>
+  getTypedTimingArc(llvm::StringRef cellName, llvm::StringRef inputPinName,
+                    llvm::StringRef outputPinName) const;
+
+  /// Index-based typed NLDM arc lookup helper.
+  std::optional<circt::synth::NLDMArcAttr>
+  getTypedTimingArc(llvm::StringRef cellName, unsigned operandIndex,
+                    unsigned resultIndex) const;
 
 private:
   llvm::StringMap<Cell> cells;

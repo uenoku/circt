@@ -394,6 +394,10 @@ TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookup) {
   auto byIndex = lib.getTimingArc("NAND2", 1, 0);
   ASSERT_TRUE(byIndex.has_value());
   EXPECT_TRUE(byIndex->getAs<StringAttr>("timing_sense"));
+
+  auto typed = lib.getTypedTimingArc("NAND2", 1, 0);
+  ASSERT_TRUE(typed.has_value());
+  EXPECT_EQ(typed->getRelatedPin().getValue(), "B");
 }
 
 TEST_F(TimingAnalysisTest, LibertyBridgeTimingArcLookupPrefersNldmArcs) {

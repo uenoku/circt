@@ -206,7 +206,7 @@ Reuse `import-liberty` output attributes (for example
 source for timing analysis.
 
 The timing engine should consume normalized NLDM metadata emitted by
-`import-liberty` (for example `synth.nldm.time_unit_ps` and
+`import-liberty` (for example `synth.nldm.time_unit` and
 `synth.nldm.arcs` inside pin attrs), rather than re-parsing nested generic
 dictionary structures or introducing another independent Liberty parser.
 
@@ -260,30 +260,24 @@ metadata, so importer and timing analysis share a stable schema.
   (instead of reconstructing NLDM tables from generic nested dictionaries in
   timing analysis), while keeping the timing flow on `TimingAnalysis`.
 
-**Task list (active):**
+**Status (2026-03): Completed.**
 
-1. Define typed Synth AttrDefs for normalized NLDM data:
-   - module-level time-unit scale (ps)
-   - per-arc payload (`related_pin`, `to_pin`, `timing_sense`, rise/fall
-     samples)
-2. Register and expose the new AttrDefs in the Synth dialect codegen flow.
-3. Update `import-liberty` to emit typed `#synth...` attrs instead of generic
-   `synth.nldm.*` dictionary keys.
-4. Update timing-side consumers (`LibertyLibrary`, `NLDMDelayModel`) to read
-   typed attrs first, with temporary fallback to dictionary form.
-5. Add tests for importer emission, parser/printer round-trip, and delay-model
-   evaluation from typed attrs.
-6. Document deprecation path for dictionary-form NLDM metadata once migration is
-   complete.
+- Typed Synth AttrDefs are in place and registered:
+  - `#synth.nldm_time_unit<...>`
+  - `#synth.nldm_arc<...>`
+- `import-liberty` emits typed NLDM metadata.
+- Timing-side consumers (`LibertyLibrary`, `NLDMDelayModel`) consume typed attrs
+  and legacy dictionary fallback has been removed.
+- Regression coverage exists for import emission and typed-only timing behavior.
 
-**Immediate next steps:**
+**Immediate next steps (active):**
 
-1. Land AttrDefs + dialect registration in an isolated commit.
-2. Switch ImportLiberty emission to typed attrs in a follow-up commit.
-3. Migrate timing bridge/model readers and keep fallback during transition.
-4. Add end-to-end regression coverage (`circt-translate` import +
-   `TimingAnalysisTest` NLDM checks).
-5. Remove legacy dictionary fallback after downstream users are migrated.
+1. Implement proper LUT interpolation over typed NLDM samples instead of
+   first-sample evaluation.
+2. Start propagating non-zero `inputSlew`/`outputSlew` in arrival analysis.
+3. Compute `outputLoad` from fanout pin capacitances through the Liberty bridge.
+4. Add convergence loop in `TimingAnalysis::runFullAnalysis()` for
+   slew/load-dependent delay models.
 
 ### Step B: NLDMDelayModel Implementation
 

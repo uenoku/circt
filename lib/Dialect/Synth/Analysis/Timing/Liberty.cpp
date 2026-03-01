@@ -131,6 +131,44 @@ LibertyLibrary::getInputPinCapacitance(StringRef cellName,
 std::optional<DictionaryAttr>
 LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
                              StringRef outputPinName) const {
+  auto typedArc = getTypedTimingArc(cellName, inputPinName, outputPinName);
+  if (!typedArc)
+    return std::nullopt;
+
+  auto *outputPin = lookupPin(cellName, outputPinName);
+  assert(outputPin && "typed timing arc implies valid output pin");
+  MLIRContext *ctx = outputPin->attrs.getContext();
+
+  SmallVector<NamedAttribute> attrs;
+  attrs.push_back(NamedAttribute(StringAttr::get(ctx, "related_pin"),
+                                 typedArc->getRelatedPin()));
+  attrs.push_back(
+      NamedAttribute(StringAttr::get(ctx, "to_pin"), typedArc->getToPin()));
+  if (!typedArc->getTimingSense().getValue().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
+                                   typedArc->getTimingSense()));
+  if (!typedArc->getCellRiseValues().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
+                                   typedArc->getCellRiseValues()));
+  if (!typedArc->getCellFallValues().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
+                                   typedArc->getCellFallValues()));
+  return DictionaryAttr::get(ctx, attrs);
+}
+
+std::optional<DictionaryAttr>
+LibertyLibrary::getTimingArc(StringRef cellName, unsigned operandIndex,
+                             unsigned resultIndex) const {
+  auto inputPin = getInputPinName(cellName, operandIndex);
+  auto outputPin = getOutputPinName(cellName, resultIndex);
+  if (!inputPin || !outputPin)
+    return std::nullopt;
+  return getTimingArc(cellName, *inputPin, *outputPin);
+}
+
+std::optional<synth::NLDMArcAttr>
+LibertyLibrary::getTypedTimingArc(StringRef cellName, StringRef inputPinName,
+                                  StringRef outputPinName) const {
   auto *outputPin = lookupPin(cellName, outputPinName);
   if (!outputPin || outputPin->isInput)
     return std::nullopt;
@@ -142,36 +180,18 @@ LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
 
   for (auto attr : nldmArcs) {
     auto typedArc = dyn_cast<synth::NLDMArcAttr>(attr);
-    if (!typedArc || typedArc.getRelatedPin() != inputPinName)
-      continue;
-
-    MLIRContext *ctx = outputPin->attrs.getContext();
-    SmallVector<NamedAttribute> attrs;
-    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "related_pin"),
-                                   typedArc.getRelatedPin()));
-    attrs.push_back(
-        NamedAttribute(StringAttr::get(ctx, "to_pin"), typedArc.getToPin()));
-    if (!typedArc.getTimingSense().getValue().empty())
-      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
-                                     typedArc.getTimingSense()));
-    if (!typedArc.getCellRiseValues().empty())
-      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
-                                     typedArc.getCellRiseValues()));
-    if (!typedArc.getCellFallValues().empty())
-      attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
-                                     typedArc.getCellFallValues()));
-    return DictionaryAttr::get(ctx, attrs);
+    if (typedArc && typedArc.getRelatedPin() == inputPinName)
+      return typedArc;
   }
-
   return std::nullopt;
 }
 
-std::optional<DictionaryAttr>
-LibertyLibrary::getTimingArc(StringRef cellName, unsigned operandIndex,
-                             unsigned resultIndex) const {
+std::optional<synth::NLDMArcAttr>
+LibertyLibrary::getTypedTimingArc(StringRef cellName, unsigned operandIndex,
+                                  unsigned resultIndex) const {
   auto inputPin = getInputPinName(cellName, operandIndex);
   auto outputPin = getOutputPinName(cellName, resultIndex);
   if (!inputPin || !outputPin)
     return std::nullopt;
-  return getTimingArc(cellName, *inputPin, *outputPin);
+  return getTypedTimingArc(cellName, *inputPin, *outputPin);
 }

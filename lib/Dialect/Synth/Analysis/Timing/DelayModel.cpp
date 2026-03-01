@@ -119,11 +119,11 @@ static std::optional<double> getFirstNumericAttr(Attribute attr) {
   return std::nullopt;
 }
 
-static std::optional<int64_t> getDelayFromTimingArc(DictionaryAttr timingArc,
-                                                    double timeScalePs) {
-  if (auto rise = getFirstNumericAttr(timingArc.get("cell_rise_values")))
+static std::optional<int64_t>
+getDelayFromTimingArc(synth::NLDMArcAttr timingArc, double timeScalePs) {
+  if (auto rise = getFirstNumericAttr(timingArc.getCellRiseValues()))
     return static_cast<int64_t>(std::llround(*rise * timeScalePs));
-  if (auto fall = getFirstNumericAttr(timingArc.get("cell_fall_values")))
+  if (auto fall = getFirstNumericAttr(timingArc.getCellFallValues()))
     return static_cast<int64_t>(std::llround(*fall * timeScalePs));
   return std::nullopt;
 }
@@ -191,8 +191,8 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
       auto inputPin = liberty->getInputPinName(*cellName, ctx.inputIndex);
       auto outputPin = liberty->getOutputPinName(*cellName, ctx.outputIndex);
       if (inputPin && outputPin) {
-        if (auto timingArc = liberty->getTimingArc(*cellName, ctx.inputIndex,
-                                                   ctx.outputIndex)) {
+        if (auto timingArc = liberty->getTypedTimingArc(
+                *cellName, ctx.inputIndex, ctx.outputIndex)) {
           if (auto delay =
                   getDelayFromTimingArc(*timingArc, getTimeScalePs(ctx.op)))
             return {*delay, 0.0};
