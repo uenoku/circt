@@ -79,9 +79,15 @@ the ongoing `#synth` typed-NLDM attribute work.
   - ~~output-load modeling from fanout pin capacitances~~ done
   - ~~iterative slew/load convergence loop~~ done
   - remaining: output-slew transition-table wiring for full accuracy
+- **Rise/fall edge-aware timing is missing** (see dedicated section below).
+  The timing graph uses a single delay/arrival per arc/node. Timing sense
+  (`positive_unate`, `negative_unate`, `non_unate`) is imported but unused.
+  This can cause significant inaccuracy (rise/fall delays can differ 2-3x).
 - Golden-reference validation against OpenSTA is missing (see new section below).
 - Technology mapping bridge (Step D) needs concrete implementation details for
   how `synth.liberty.cell` annotations are populated by the mapper.
+  **Update (2026-03):** `synth-annotate-techlib` pass now bridges Liberty
+  metadata to `hw.techlib.info` for TechMapper; see `TechMapping-Roadmap.md`.
 - Advanced STA features are still pending:
   - multi-clock domain constraints and CDC handling
   - MCMM (multi-corner/multi-mode)
@@ -123,6 +129,111 @@ The slew fields exist in the data structures but are not propagated through the 
   increases across a combinational chain for a slew-aware delay model.
 - Remaining work: connect real NLDM output-slew table evaluation and couple
   with output-load computation and convergence.
+
+### 1.5. Rise/Fall Edge-Aware Timing (Dual-Edge Analysis)
+
+**Status (2026-03): Not started. This is a major correctness gap.**
+
+The timing graph currently tracks a single arrival time per node and a single
+delay per arc. The `timingSense` attribute from Liberty (`positive_unate`,
+`negative_unate`, `non_unate`) is imported but **never consumed** during
+delay computation. This means:
+
+- An inverter (`negative_unate`) reports the same delay regardless of input
+  transition direction.
+- Chains of inverters do not alternate between `cellRise` and `cellFall`
+  delays as they should in reality.
+- The wrong transition table may be used for delay and slew lookup
+  (currently `cellRise` is tried first as a heuristic fallback).
+
+#### Phase 1: Dual-Edge Data Structures
+
+Extend `TimingNode` and `TimingArc`:
+
+```cpp
+// TimingNode additions:
+int64_t arrivalRise = 0;   // arrival time for rising output transition
+int64_t arrivalFall = 0;   // arrival time for falling output transition
+double slewRise = 0.0;     // output slew when rising
+double slewFall = 0.0;     // output slew when falling
+
+// TimingArc additions:
+int64_t delayRise;         // delay when output rises (from cellRise table)
+int64_t delayFall;         // delay when output falls (from cellFall table)
+enum TimingSense { PositiveUnate, NegativeUnate, NonUnate };
+TimingSense timingSense;
+```
+
+#### Phase 2: Dual-Edge Propagation Rules
+
+During forward arrival propagation, apply timing-sense-aware rules:
+
+| Timing Sense     | Input Rise →            | Input Fall →            |
+|------------------|-------------------------|-------------------------|
+| positive_unate   | Output Rise (cellRise)  | Output Fall (cellFall)  |
+| negative_unate   | Output Fall (cellFall)  | Output Rise (cellRise)  |
+| non_unate        | Both (use worst-case)   | Both (use worst-case)   |
+
+Pseudocode:
+```
+if timingSense == positive_unate:
+    arrivalRise[to] = max(arrivalRise[to], arrivalRise[from] + cellRiseDelay)
+    arrivalFall[to] = max(arrivalFall[to], arrivalFall[from] + cellFallDelay)
+    slewRise[to] from riseTransition table
+    slewFall[to] from fallTransition table
+elif timingSense == negative_unate:
+    arrivalFall[to] = max(arrivalFall[to], arrivalRise[from] + cellFallDelay)
+    arrivalRise[to] = max(arrivalRise[to], arrivalFall[from] + cellRiseDelay)
+    slewFall[to] from fallTransition table (driven by rising input)
+    slewRise[to] from riseTransition table (driven by falling input)
+elif timingSense == non_unate:
+    worstInput = max(arrivalRise[from], arrivalFall[from])
+    arrivalRise[to] = max(arrivalRise[to], worstInput + cellRiseDelay)
+    arrivalFall[to] = max(arrivalFall[to], worstInput + cellFallDelay)
+```
+
+At endpoints, worst-case arrival = `max(arrivalRise, arrivalFall)`.
+
+Start points (input ports) initialize both `arrivalRise` and `arrivalFall`
+to the port arrival time.
+
+#### Phase 3: Dual-Edge Slew Convergence
+
+The iterative slew convergence loop (Step C) must now converge two slew
+values per node. Input slew for delay lookup is selected based on timing
+sense and transition direction:
+- For `positive_unate` cellRise lookup: use `slewRise` from driving node
+- For `negative_unate` cellRise lookup: use `slewFall` from driving node
+
+#### Phase 4: Transition-Aware Path Reporting
+
+Update path tracing to annotate each arc with its transition:
+```
+Path 1: delay = 150ps  slack = 0
+  Startpoint: a[0] (input port, rise)
+  a[0] (rise) --[inv, neg_unate]--> u0/Y (fall, +30ps)
+  u0/Y (fall) --[nand, neg_unate]--> u1/Y (rise, +45ps)
+  u1/Y (rise) --> y[0]
+```
+
+#### Files to Modify
+
+| File | Change |
+|------|--------|
+| `TimingGraph.h` | Add rise/fall arrivals/slew to `TimingNode`, timing sense to `TimingArc` |
+| `TimingGraph.cpp` | Set timing sense from NLDM arc metadata during graph construction |
+| `DelayModel.h/cpp` | Separate `computeDelay` into rise/fall variants, or return both |
+| `ArrivalAnalysis.cpp` | Dual-edge forward propagation |
+| `RequiredTimeAnalysis.cpp` | Dual-edge backward propagation |
+| `PathEnumerator.cpp` | Track transition along path |
+| `PrintTimingAnalysis.cpp` | Report transition annotations |
+
+#### Interaction with CCS
+
+CCS pilot waveform selection already has partial edge awareness (preferring
+rise/fall current table based on input waveform direction). Dual-edge
+tracking provides the correct input transition context that CCS needs,
+making the two features complementary.
 
 ### 2. Output Load Computation
 
@@ -672,16 +783,19 @@ toward validation, practical usability, and CCS maturation.
 
 | Priority | Enhancement | Unlocks |
 |----------|------------|---------|
-| 1 | Finish NLDM output-slew transition-table wiring | Complete NLDM accuracy |
-| 2 | Technology mapping bridge (Step D) | Real synthesis-to-STA flow |
-| 3 | Golden-reference validation against OpenSTA (Step E) | Confidence in numerical correctness |
-| 4 | Clock domain awareness | Multi-clock designs |
-| 5 | CCS pilot graduation decision + real CCS model | Advanced node accuracy |
-| 6 | Convergence diagnostic cleanup (verbose flag) | Cleaner default reports |
-| 7 | Multi-corner support | Signoff-quality analysis |
-| 8 | Incremental analysis | ECO flows |
-| 9 | Parallelization | Performance at scale |
+| 1 | Rise/fall edge-aware timing (Section 1.5) | Correct delay through inverting cells |
+| 2 | Finish NLDM output-slew transition-table wiring | Complete NLDM accuracy |
+| 3 | Technology mapping bridge (Step D) | Real synthesis-to-STA flow |
+| 4 | Golden-reference validation against OpenSTA (Step E) | Confidence in numerical correctness |
+| 5 | Clock domain awareness | Multi-clock designs |
+| 6 | CCS pilot graduation decision + real CCS model | Advanced node accuracy |
+| 7 | Convergence diagnostic cleanup (verbose flag) | Cleaner default reports |
+| 8 | Multi-corner support | Signoff-quality analysis |
+| 9 | Incremental analysis | ECO flows |
+| 10 | Parallelization | Performance at scale |
 
-Items 1-3 are the immediate critical path for making NLDM practically
-usable and trustworthy. Item 4 (clock domains) is independently high-value
-since multi-clock designs are the norm. Items 5-9 can be parallelized.
+Item 1 (rise/fall awareness) is now the top priority — without it, delay
+through any inverting cell is incorrect, and slew table selection is
+heuristic. Items 2-4 are the critical path for making NLDM practically
+usable and trustworthy. Item 5 (clock domains) is independently high-value
+since multi-clock designs are the norm. Items 6-10 can be parallelized.
