@@ -899,6 +899,8 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("Adaptive Slew Damping Mode:"), std::string::npos);
   EXPECT_NE(report.find("Applied Slew Hint Damping:"), std::string::npos);
   EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
+  EXPECT_NE(report.find("Relative Max Slew Delta:"), std::string::npos);
+  EXPECT_NE(report.find("Relative Slew Epsilon:"), std::string::npos);
   EXPECT_NE(report.find("Slew Delta Trend:"), std::string::npos);
   EXPECT_EQ(report.find("--- Slew Convergence ---"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
@@ -1012,6 +1014,40 @@ TEST_F(TimingAnalysisTest, FullPipelineDetectsNonConvergence) {
   EXPECT_EQ(analysis->getLastArrivalIterations(), 1u);
   EXPECT_FALSE(analysis->didLastArrivalConverge());
   EXPECT_GT(analysis->getLastMaxSlewDelta(), opts.slewConvergenceEpsilon);
+}
+
+TEST_F(TimingAnalysisTest, RelativeSlewConvergenceEpsilonCanTerminateEarly) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(slewPropagationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("slew_chain");
+  ASSERT_TRUE(hwModule);
+
+  SlewTestDelayModel model;
+
+  TimingAnalysisOptions absoluteOnlyOpts;
+  absoluteOnlyOpts.delayModel = &model;
+  absoluteOnlyOpts.initialSlew = 0.0;
+  absoluteOnlyOpts.maxSlewIterations = 1;
+  absoluteOnlyOpts.slewConvergenceEpsilon = 1e-12;
+
+  auto absoluteOnly = TimingAnalysis::create(hwModule, absoluteOnlyOpts);
+  ASSERT_NE(absoluteOnly, nullptr);
+  ASSERT_TRUE(succeeded(absoluteOnly->runFullAnalysis()));
+  EXPECT_FALSE(absoluteOnly->didLastArrivalConverge());
+
+  TimingAnalysisOptions relativeOpts = absoluteOnlyOpts;
+  relativeOpts.slewConvergenceRelativeEpsilon = 1.0;
+
+  auto relative = TimingAnalysis::create(hwModule, relativeOpts);
+  ASSERT_NE(relative, nullptr);
+  ASSERT_TRUE(succeeded(relative->runFullAnalysis()));
+  EXPECT_TRUE(relative->didLastArrivalConverge());
+  EXPECT_LE(relative->getLastRelativeSlewDelta(),
+            relativeOpts.slewConvergenceRelativeEpsilon);
+  EXPECT_GT(relative->getLastSlewDeltaHistory().front(), 0.0);
 }
 
 TEST_F(TimingAnalysisTest, ConvergenceLoopUpdatesLoadFromSlewHints) {

@@ -1,5 +1,8 @@
 # Timing Analysis Engine: Enhancements & NLDM/CCS Roadmap
 
+For implementation details of slew propagation, damping, and convergence
+diagnostics, see `docs/TimingAnalysis/SlewConvergence.md`.
+
 ## Current State
 
 The two-stage static timing analysis engine at `lib/Dialect/Synth/Analysis/Timing/` provides:
@@ -402,10 +405,13 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
   Damping`, and `Slew Delta Trend`.
 - Reports optionally include a per-iteration convergence table (`Iter | Max
   Slew Delta`) when `emitSlewConvergenceTable` is enabled.
+- Relative convergence tolerance (`slewConvergenceRelativeEpsilon`) is now
+  supported, with report diagnostics for normalized residual.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
 - Remaining work: evaluate adaptive damping/tolerance heuristics for models
-  where effective load depends on slew/waveform state.
+  where effective load depends on slew/waveform state, including CCS waveform
+  coupling.
 
 **Files affected:** `TimingAnalysis.cpp`
 

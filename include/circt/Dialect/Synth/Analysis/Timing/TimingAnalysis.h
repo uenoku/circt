@@ -73,6 +73,10 @@ struct TimingAnalysisOptions {
   /// Convergence threshold for max per-node slew delta.
   double slewConvergenceEpsilon = 1e-6;
 
+  /// Optional relative convergence threshold, normalized to iteration-1 delta.
+  /// Disabled when set to 0.
+  double slewConvergenceRelativeEpsilon = 0.0;
+
   /// Damping factor for load-slew hint updates across iterations.
   /// 1.0 keeps existing behavior (full update), lower values smooth updates.
   double slewHintDamping = 1.0;
@@ -174,6 +178,14 @@ public:
   /// Maximum per-node slew delta seen in the final arrival iteration.
   double getLastMaxSlewDelta() const { return lastMaxSlewDelta; }
 
+  /// Final residual normalized to the first iteration residual.
+  double getLastRelativeSlewDelta() const { return lastRelativeSlewDelta; }
+
+  /// Configured relative convergence threshold.
+  double getConfiguredSlewConvergenceRelativeEpsilon() const {
+    return options.slewConvergenceRelativeEpsilon;
+  }
+
   /// Slew-delta residual history across arrival iterations.
   ArrayRef<double> getLastSlewDeltaHistory() const {
     return lastSlewDeltaHistory;
@@ -267,6 +279,7 @@ private:
   unsigned lastArrivalIterations = 0;
   bool lastArrivalConverged = true;
   double lastMaxSlewDelta = 0.0;
+  double lastRelativeSlewDelta = 0.0;
   SmallVector<double, 8> lastSlewDeltaHistory;
   double lastAppliedSlewHintDamping = 1.0;
 };

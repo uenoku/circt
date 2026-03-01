@@ -132,11 +132,13 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
   lastArrivalIterations = 0;
   lastArrivalConverged = true;
   lastMaxSlewDelta = 0.0;
+  lastRelativeSlewDelta = 0.0;
   lastSlewDeltaHistory.clear();
   lastAppliedSlewHintDamping = std::clamp(options.slewHintDamping, 0.0, 1.0);
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
     double damping = lastAppliedSlewHintDamping;
     double previousDelta = 0.0;
+    double firstDelta = 0.0;
     bool hasPreviousDelta = false;
     SmallVector<double> previousSlews(graph->getNumNodes(),
                                       options.initialSlew);
@@ -156,7 +158,15 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
       }
       lastSlewDeltaHistory.push_back(maxDelta);
       lastMaxSlewDelta = maxDelta;
-      if (maxDelta <= options.slewConvergenceEpsilon) {
+      if (iter == 0)
+        firstDelta = maxDelta;
+      lastRelativeSlewDelta = firstDelta > 0.0 ? (maxDelta / firstDelta) : 0.0;
+
+      bool convergedAbsolute = maxDelta <= options.slewConvergenceEpsilon;
+      bool convergedRelative =
+          options.slewConvergenceRelativeEpsilon > 0.0 &&
+          lastRelativeSlewDelta <= options.slewConvergenceRelativeEpsilon;
+      if (convergedAbsolute || convergedRelative) {
         converged = true;
         lastAppliedSlewHintDamping = damping;
         break;
@@ -184,6 +194,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
     lastArrivalIterations = 1;
     lastArrivalConverged = true;
     lastMaxSlewDelta = 0.0;
+    lastRelativeSlewDelta = 0.0;
     lastSlewDeltaHistory.push_back(0.0);
     lastAppliedSlewHintDamping = std::clamp(options.slewHintDamping, 0.0, 1.0);
   }

@@ -274,6 +274,10 @@ private:
     os << "Slew Converged: "
        << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";
     os << "Max Slew Delta: " << analysis.getLastMaxSlewDelta() << "\n";
+    os << "Relative Max Slew Delta: " << analysis.getLastRelativeSlewDelta()
+       << "\n";
+    os << "Relative Slew Epsilon: "
+       << analysis.getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
     os << "Slew Delta Trend: "
        << formatDeltaTrend(analysis.getLastSlewDeltaHistory()) << "\n";
     os << "Worst Slack: " << analysis.getWorstSlack() << "\n";

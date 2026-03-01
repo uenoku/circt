@@ -89,6 +89,9 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
   os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
   os << "Max Slew Delta: " << getLastMaxSlewDelta() << "\n";
+  os << "Relative Max Slew Delta: " << getLastRelativeSlewDelta() << "\n";
+  os << "Relative Slew Epsilon: "
+     << getConfiguredSlewConvergenceRelativeEpsilon() << "\n";
   os << "Slew Delta Trend: " << formatDeltaTrend(getLastSlewDeltaHistory())
      << "\n";
 
