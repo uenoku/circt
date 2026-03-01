@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/Analysis/Timing/TimingGraph.h"
-#include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
+#include "circt/Dialect/Synth/Analysis/Timing/DelayModel.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/PostOrderIterator.h"
@@ -182,7 +182,7 @@ LogicalResult TimingGraph::build(const DelayModel *delayModel) {
 }
 
 LogicalResult TimingGraph::processOperation(Operation *op,
-                                             const DelayModel &model) {
+                                            const DelayModel &model) {
   // Skip constants
   if (op->hasTrait<OpTrait::ConstantLike>())
     return success();
@@ -199,9 +199,10 @@ LogicalResult TimingGraph::processOperation(Operation *op,
             id, operand, bit, TimingNodeKind::OutputPort, name);
         endPoints.push_back(node.get());
 
-        // Create arc from operand to output
-        if (auto *fromNode = findNode(operand, bit))
-          createArc(fromNode, node.get(), 0);
+        // Create arc from operand to output.
+        // Use getOrCreateNode to handle graph-region use-before-def values.
+        auto *fromNode = getOrCreateNode(operand, bit);
+        createArc(fromNode, node.get(), 0);
 
         nodes.push_back(std::move(node));
       }
@@ -233,8 +234,9 @@ LogicalResult TimingGraph::processOperation(Operation *op,
             id, input, bit, TimingNodeKind::RegisterInput, name);
         endPoints.push_back(node.get());
 
-        if (auto *fromNode = findNode(input, bit))
-          createArc(fromNode, node.get(), 0);
+        // Use getOrCreateNode to handle graph-region use-before-def values.
+        auto *fromNode = getOrCreateNode(input, bit);
+        createArc(fromNode, node.get(), 0);
 
         nodes.push_back(std::move(node));
       }
@@ -252,8 +254,9 @@ LogicalResult TimingGraph::processOperation(Operation *op,
             id, input, bit, TimingNodeKind::RegisterInput, name);
         endPoints.push_back(node.get());
 
-        if (auto *fromNode = findNode(input, bit))
-          createArc(fromNode, node.get(), 0);
+        // Use getOrCreateNode to handle graph-region use-before-def values.
+        auto *fromNode = getOrCreateNode(input, bit);
+        createArc(fromNode, node.get(), 0);
 
         nodes.push_back(std::move(node));
       }
@@ -322,4 +325,3 @@ void TimingGraph::computeTopologicalOrder() {
   LLVM_DEBUG(llvm::dbgs() << "Topological order: " << topoOrder.size()
                           << " nodes (out of " << nodes.size() << ")\n");
 }
-

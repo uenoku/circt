@@ -1,0 +1,181 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h"
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "mlir/Support/FileUtilities.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/raw_ostream.h"
+#include <set>
+#include <tuple>
+
+#define DEBUG_TYPE "synth-print-timing-analysis"
+
+using namespace circt;
+using namespace synth;
+
+namespace circt {
+namespace synth {
+#define GEN_PASS_DEF_PRINTTIMINGANALYSIS
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
+} // namespace synth
+} // namespace circt
+
+namespace {
+
+struct PrintTimingAnalysisPass
+    : public impl::PrintTimingAnalysisBase<PrintTimingAnalysisPass> {
+  using PrintTimingAnalysisBase::PrintTimingAnalysisBase;
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    auto top = findTopModule(module, topModuleName);
+    if (!top)
+      return signalPassFailure();
+
+    timing::TimingAnalysisOptions analysisOptions;
+    analysisOptions.keepAllArrivals = true;
+
+    auto analysis = timing::TimingAnalysis::create(top, analysisOptions);
+    if (!analysis || failed(analysis->runFullAnalysis())) {
+      top->emitError("failed to run timing analysis");
+      return signalPassFailure();
+    }
+
+    std::string error;
+    std::unique_ptr<llvm::ToolOutputFile> file;
+    llvm::raw_ostream *os = nullptr;
+
+    if (reportDir == "-") {
+      os = &llvm::outs();
+    } else {
+      auto reportPath = buildReportPath(top);
+      auto ec = llvm::sys::fs::create_directories(
+          llvm::sys::path::parent_path(reportPath));
+      if (ec) {
+        top->emitError("failed to create report directory '")
+            << llvm::sys::path::parent_path(reportPath)
+            << "': " << ec.message();
+        return signalPassFailure();
+      }
+      file = mlir::openOutputFile(reportPath, &error);
+      if (!file) {
+        top->emitError(error);
+        return signalPassFailure();
+      }
+      os = &file->os();
+    }
+
+    printReport(*analysis, *os);
+
+    if (file)
+      file->keep();
+  }
+
+private:
+  static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
+                                      llvm::StringRef topModuleName) {
+    if (!topModuleName.empty()) {
+      auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
+      if (!top)
+        module.emitError("top module '") << topModuleName << "' not found";
+      return top;
+    }
+    for (auto top : module.getOps<hw::HWModuleOp>())
+      return top;
+    module.emitError("no hw.module found to run timing analysis");
+    return {};
+  }
+
+  std::string buildReportPath(hw::HWModuleOp top) {
+    llvm::SmallString<128> path(reportDir);
+    llvm::sys::path::append(path, top.getModuleName(), "timing.txt");
+    return std::string(path.str());
+  }
+
+  void printPathDetail(const timing::TimingPath &path,
+                       timing::TimingAnalysis &analysis, llvm::raw_ostream &os,
+                       size_t rank) {
+    auto *sp = path.getStartPoint();
+    auto *ep = path.getEndPoint();
+
+    auto describeStartKind = [](timing::TimingNodeKind kind) {
+      return kind == timing::TimingNodeKind::RegisterOutput ? "register output"
+                                                            : "input port";
+    };
+    auto describeEndKind = [](timing::TimingNodeKind kind) {
+      return kind == timing::TimingNodeKind::RegisterInput ? "register input"
+                                                           : "output port";
+    };
+
+    os << "Path " << rank << ": delay = " << path.getDelay();
+    os << "  slack = " << analysis.getSlack(ep) << "\n";
+    os << "  Startpoint: " << sp->getName() << " ("
+       << describeStartKind(sp->getKind()) << ")\n";
+    os << "  Endpoint:   " << ep->getName() << " ("
+       << describeEndKind(ep->getKind()) << ")\n";
+
+    auto intermediates = path.getIntermediateNodes();
+    if (!intermediates.empty()) {
+      os << "  Path:\n";
+      os << "    " << sp->getName() << "\n";
+      for (auto *node : intermediates)
+        os << "      -> " << node->getName() << " (arrival "
+           << analysis.getArrivalTime(node) << ")\n";
+      os << "      -> " << ep->getName() << "\n";
+    }
+    os << "\n";
+  }
+
+  void printReport(timing::TimingAnalysis &analysis, llvm::raw_ostream &os) {
+    SmallVector<timing::TimingPath> paths;
+    if (failed(analysis.getPaths(filterStartPoints, filterEndPoints, paths,
+                                 /*maxPaths=*/0))) {
+      os << "Error: failed to enumerate timing paths.\n";
+      return;
+    }
+
+    llvm::sort(paths,
+               [](const timing::TimingPath &a, const timing::TimingPath &b) {
+                 return a.getDelay() > b.getDelay();
+               });
+
+    SmallVector<timing::TimingPath> uniquePaths;
+    std::set<std::tuple<std::string, std::string, int64_t>> seen;
+    for (auto &path : paths) {
+      auto key =
+          std::make_tuple(path.getStartPoint()->getName().str(),
+                          path.getEndPoint()->getName().str(), path.getDelay());
+      if (seen.insert(key).second)
+        uniquePaths.push_back(path);
+    }
+
+    if (numPaths.getValue() > 0 && uniquePaths.size() > numPaths.getValue())
+      uniquePaths.resize(numPaths.getValue());
+
+    os << "=== Timing Report ===\n";
+    os << "Module: " << analysis.getGraph().getModule().getModuleName() << "\n";
+    os << "Delay Model: " << analysis.getGraph().getDelayModelName() << "\n";
+    os << "Worst Slack: " << analysis.getWorstSlack() << "\n";
+    os << "\n";
+    os << "--- Critical Paths (Top "
+       << (numPaths.getValue() == 0
+               ? uniquePaths.size()
+               : std::min<size_t>(numPaths.getValue(), uniquePaths.size()))
+       << ") ---\n";
+    for (size_t i = 0, e = uniquePaths.size(); i < e; ++i)
+      printPathDetail(uniquePaths[i], analysis, os, i + 1);
+  }
+};
+
+} // namespace

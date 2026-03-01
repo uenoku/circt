@@ -158,9 +158,9 @@ static cl::opt<int>
                                           "paths in the analysis results"),
                                  cl::init(5), cl::cat(mainCategory));
 
-static cl::opt<std::string> designProfileDir(
-    "design-profile-dir",
-    cl::desc("Directory for design profiler output. "
+static cl::opt<std::string> timingReportDir(
+    "timing-report-dir",
+    cl::desc("Directory for timing report output. "
              "Generates timing report at <dir>/<top>/timing.txt"),
     cl::init(""), cl::cat(mainCategory));
 
@@ -175,12 +175,6 @@ static cl::list<std::string>
                     cl::desc("Glob patterns to filter paths by end point "
                              "names (can specify multiple)"),
                     cl::cat(mainCategory));
-
-static cl::opt<bool> useTwoStageAnalysis(
-    "two-stage",
-    cl::desc("Use two-stage timing analysis (forward arrival + path "
-             "enumeration) for design profiler"),
-    cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<std::string> topName("top", cl::desc("Top module name"),
                                     cl::value_desc("name"), cl::init(""),
@@ -389,16 +383,15 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     }
   }
 
-  if (!designProfileDir.empty()) {
-    circt::synth::DesignProfilerOptions options;
+  if (!timingReportDir.empty()) {
+    circt::synth::PrintTimingAnalysisOptions options;
     options.topModuleName = topName;
-    options.reportDir = designProfileDir;
+    options.reportDir = timingReportDir;
     for (const auto &pat : filterStartPoints)
       options.filterStartPoints.push_back(pat);
     for (const auto &pat : filterEndPoints)
       options.filterEndPoints.push_back(pat);
-    options.useTwoStageAnalysis = useTwoStageAnalysis;
-    pm.addPass(circt::synth::createDesignProfiler(options));
+    pm.addPass(circt::synth::createPrintTimingAnalysis(options));
   }
 
   if (convertToComb)

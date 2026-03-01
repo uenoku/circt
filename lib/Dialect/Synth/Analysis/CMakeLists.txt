@@ -11,6 +11,7 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   LongestPathAnalysis.cpp
   PathFilter.cpp
   PrintLongestPathAnalysis.cpp
+  PrintTimingAnalysis.cpp
   ResourceUsageAnalysis.cpp
 
   ADDITIONAL_HEADER_DIRS

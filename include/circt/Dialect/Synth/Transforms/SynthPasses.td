@@ -398,6 +398,29 @@ def DesignProfiler : Pass<"synth-design-profiler", "mlir::ModuleOp"> {
                            "circt::synth::SynthDialect"];
 }
 
+def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp"> {
+  let summary = "Print timing analysis report";
+  let description = [{
+    Runs two-stage timing analysis and writes a timing report to
+    <reportDir>/<topModuleName>/timing.txt. Optional start/end glob filters
+    restrict reported paths.
+  }];
+  let options = [
+    Option<"topModuleName", "top", "std::string", "",
+           "Name of the top module to analyze">,
+    Option<"reportDir", "report-dir", "std::string", "\"reports\"",
+           "Directory for output reports, or '-' for stdout">,
+    ListOption<"filterStartPoints", "filter-start", "std::string",
+               "Glob patterns to filter paths by start point names">,
+    ListOption<"filterEndPoints", "filter-end", "std::string",
+               "Glob patterns to filter paths by end point names">,
+    Option<"numPaths", "num-paths", "unsigned", "10",
+           "Maximum number of paths to print">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
   let summary = "Preprocessing pass for synthesis IR";
   let description = [{
