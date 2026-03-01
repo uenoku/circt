@@ -49,6 +49,12 @@ namespace timing {
 
 /// Options for configuring the timing analysis.
 struct TimingAnalysisOptions {
+  enum class AdaptiveSlewHintDampingMode {
+    Disabled,
+    Conservative,
+    Aggressive,
+  };
+
   /// If true, keep arrival times from all start points at each node.
   bool keepAllArrivals = false;
 
@@ -71,8 +77,9 @@ struct TimingAnalysisOptions {
   /// 1.0 keeps existing behavior (full update), lower values smooth updates.
   double slewHintDamping = 1.0;
 
-  /// If true, adjust slew hint damping based on residual trend.
-  bool enableAdaptiveSlewHintDamping = false;
+  /// Optional policy for adaptive slew-hint damping based on residual trend.
+  AdaptiveSlewHintDampingMode adaptiveSlewHintDampingMode =
+      AdaptiveSlewHintDampingMode::Disabled;
 
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
@@ -145,7 +152,13 @@ public:
 
   /// Whether adaptive slew hint damping is enabled.
   bool isAdaptiveSlewHintDampingEnabled() const {
-    return options.enableAdaptiveSlewHintDamping;
+    return options.adaptiveSlewHintDampingMode !=
+           TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled;
+  }
+
+  TimingAnalysisOptions::AdaptiveSlewHintDampingMode
+  getConfiguredAdaptiveSlewHintDampingMode() const {
+    return options.adaptiveSlewHintDampingMode;
   }
 
   /// Whether the slew iteration loop converged in the last full run.

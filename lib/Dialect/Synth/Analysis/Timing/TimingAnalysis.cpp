@@ -16,6 +16,27 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
+static void
+updateAdaptiveDamping(TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode,
+                      double maxDelta, double previousDelta, double &damping) {
+  switch (mode) {
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled:
+    return;
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Conservative:
+    if (maxDelta > previousDelta * 0.99)
+      damping = std::max(0.2, damping * 0.75);
+    else if (maxDelta < previousDelta * 0.7)
+      damping = std::min(1.0, damping * 1.05);
+    return;
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Aggressive:
+    if (maxDelta > previousDelta * 0.97)
+      damping = std::max(0.1, damping * 0.5);
+    else if (maxDelta < previousDelta * 0.6)
+      damping = std::min(1.0, damping * 1.2);
+    return;
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // TimingAnalysis Implementation
 //===----------------------------------------------------------------------===//
@@ -141,12 +162,9 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
         break;
       }
 
-      if (options.enableAdaptiveSlewHintDamping && hasPreviousDelta) {
-        if (maxDelta > previousDelta * 0.98)
-          damping = std::max(0.1, damping * 0.5);
-        else if (maxDelta < previousDelta * 0.5)
-          damping = std::min(1.0, damping * 1.1);
-      }
+      if (hasPreviousDelta)
+        updateAdaptiveDamping(options.adaptiveSlewHintDampingMode, maxDelta,
+                              previousDelta, damping);
       previousDelta = maxDelta;
       hasPreviousDelta = true;
       lastAppliedSlewHintDamping = damping;

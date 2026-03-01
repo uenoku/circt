@@ -44,6 +44,19 @@ static std::string formatDeltaTrend(ArrayRef<double> deltas) {
   return os.str();
 }
 
+static StringRef formatAdaptiveDampingMode(
+    TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
+  switch (mode) {
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled:
+    return "disabled";
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Conservative:
+    return "conservative";
+  case TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Aggressive:
+    return "aggressive";
+  }
+  return "disabled";
+}
+
 void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   if (!graph) {
     os << "Error: timing graph not built.\n";
@@ -55,8 +68,9 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Delay Model: " << graph->getDelayModelName() << "\n";
   os << "Initial Slew: " << getConfiguredInitialSlew() << "\n";
   os << "Slew Hint Damping: " << getConfiguredSlewHintDamping() << "\n";
-  os << "Adaptive Slew Damping: "
-     << (isAdaptiveSlewHintDampingEnabled() ? "yes" : "no") << "\n";
+  os << "Adaptive Slew Damping Mode: "
+     << formatAdaptiveDampingMode(getConfiguredAdaptiveSlewHintDampingMode())
+     << "\n";
   os << "Applied Slew Hint Damping: " << getLastAppliedSlewHintDamping()
      << "\n";
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";

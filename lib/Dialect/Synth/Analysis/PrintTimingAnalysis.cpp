@@ -155,6 +155,20 @@ private:
     return os.str();
   }
 
+  static StringRef formatAdaptiveDampingMode(
+      timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode mode) {
+    switch (mode) {
+    case timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Disabled:
+      return "disabled";
+    case timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::
+        Conservative:
+      return "conservative";
+    case timing::TimingAnalysisOptions::AdaptiveSlewHintDampingMode::Aggressive:
+      return "aggressive";
+    }
+    return "disabled";
+  }
+
   static hw::HWModuleOp findTopModule(mlir::ModuleOp module,
                                       llvm::StringRef topModuleName) {
     auto top = module.lookupSymbol<hw::HWModuleOp>(topModuleName);
@@ -236,8 +250,10 @@ private:
     os << "Initial Slew: " << analysis.getConfiguredInitialSlew() << "\n";
     os << "Slew Hint Damping: " << analysis.getConfiguredSlewHintDamping()
        << "\n";
-    os << "Adaptive Slew Damping: "
-       << (analysis.isAdaptiveSlewHintDampingEnabled() ? "yes" : "no") << "\n";
+    os << "Adaptive Slew Damping Mode: "
+       << formatAdaptiveDampingMode(
+              analysis.getConfiguredAdaptiveSlewHintDampingMode())
+       << "\n";
     os << "Applied Slew Hint Damping: "
        << analysis.getLastAppliedSlewHintDamping() << "\n";
     os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
