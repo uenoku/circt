@@ -359,7 +359,7 @@ picoseconds when returning `DelayResult::delay`.
 - Transition-table based output-slew interpolation is being wired using typed
   `rise_transition` / `fall_transition` payloads.
 - End-to-end `circt-synth` timing-report coverage now includes NLDM model
-  activation and path-delay checks.
+  activation and path-delay checks, including chained cell-instance paths.
 
 **Files:** `DelayModel.h` (add class), `DelayModel.cpp` (implement)
 
