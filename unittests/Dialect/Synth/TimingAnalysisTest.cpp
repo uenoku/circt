@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
 #include "gtest/gtest.h"
+#include <cmath>
 
 using namespace mlir;
 using namespace circt;
@@ -155,6 +156,16 @@ const char *slewPropagationIR = R"MLIR(
     }
 )MLIR";
 
+const char *loadPropagationIR = R"MLIR(
+    hw.module @load_tree(in %a : i1, out y : i1) {
+      %n0 = comb.and %a, %a : i1
+      %n1 = comb.and %n0, %a : i1
+      %n2 = comb.and %n0, %a : i1
+      %y0 = comb.or %n1, %n2 : i1
+      hw.output %y0 : i1
+    }
+)MLIR";
+
 const char *legacyTimingOnlyIR = R"MLIR(
     module attributes {synth.liberty.library = {name = "dummy", time_unit = "1ns"}} {
       hw.module private @BUF(
@@ -193,6 +204,27 @@ public:
 
   llvm::StringRef getName() const override { return "slew-test"; }
   bool usesSlewPropagation() const override { return true; }
+};
+
+class LoadTestDelayModel final : public DelayModel {
+public:
+  explicit LoadTestDelayModel(double capPerInput) : capPerInput(capPerInput) {}
+
+  DelayResult computeDelay(const DelayContext &ctx) const override {
+    (void)ctx;
+    return {static_cast<int64_t>(std::llround(ctx.outputLoad * 100.0)),
+            ctx.inputSlew};
+  }
+
+  llvm::StringRef getName() const override { return "load-test"; }
+
+  double getInputCapacitance(const DelayContext &ctx) const override {
+    (void)ctx;
+    return capPerInput;
+  }
+
+private:
+  double capPerInput;
 };
 
 TEST_F(TimingAnalysisTest, TimingGraphConstruction) {
@@ -355,6 +387,36 @@ TEST_F(TimingAnalysisTest, ArrivalAnalysisPropagatesSlewWhenEnabled) {
   auto infos = arrivals.getArrivals(endPoint->getId());
   ASSERT_FALSE(infos.empty());
   EXPECT_GT(infos.front().slew, 0.5);
+}
+
+TEST_F(TimingAnalysisTest, ArrivalAnalysisPropagatesOutputLoadToDelayModel) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(loadPropagationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("load_tree");
+  ASSERT_TRUE(hwModule);
+
+  LoadTestDelayModel zeroCap(0.0);
+  TimingGraph graphZero(hwModule);
+  ASSERT_TRUE(succeeded(graphZero.build(&zeroCap)));
+  ArrivalAnalysis arrivalsZero(graphZero, {}, &zeroCap);
+  ASSERT_TRUE(succeeded(arrivalsZero.run()));
+  ASSERT_EQ(graphZero.getEndPoints().size(), 1u);
+  int64_t zeroDelay =
+      arrivalsZero.getMaxArrivalTime(graphZero.getEndPoints().front());
+
+  LoadTestDelayModel nonZeroCap(0.5);
+  TimingGraph graphLoad(hwModule);
+  ASSERT_TRUE(succeeded(graphLoad.build(&nonZeroCap)));
+  ArrivalAnalysis arrivalsLoad(graphLoad, {}, &nonZeroCap);
+  ASSERT_TRUE(succeeded(arrivalsLoad.run()));
+  ASSERT_EQ(graphLoad.getEndPoints().size(), 1u);
+  int64_t loadedDelay =
+      arrivalsLoad.getMaxArrivalTime(graphLoad.getEndPoints().front());
+
+  EXPECT_GT(loadedDelay, zeroDelay);
 }
 
 TEST_F(TimingAnalysisTest, NLDMDelayModelPerArcAttr) {

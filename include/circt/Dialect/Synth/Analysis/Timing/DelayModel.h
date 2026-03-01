@@ -68,6 +68,16 @@ public:
   /// Whether this model uses slew propagation.
   virtual bool usesSlewPropagation() const { return false; }
 
+  /// Return effective input capacitance for the arc consumer pin.
+  ///
+  /// This lets analyses compute output load from fanout caps without hardcoding
+  /// Liberty knowledge in graph traversal. Models that do not use load can
+  /// keep the default zero value.
+  virtual double getInputCapacitance(const DelayContext &ctx) const {
+    (void)ctx;
+    return 0.0;
+  }
+
   /// Whether this model provides waveform-level propagation.
   ///
   /// CCS-style models can override this and `computeOutputWaveform` while
@@ -112,6 +122,7 @@ public:
 
   DelayResult computeDelay(const DelayContext &ctx) const override;
   llvm::StringRef getName() const override { return "nldm"; }
+  double getInputCapacitance(const DelayContext &ctx) const override;
 
 private:
   AIGLevelDelayModel fallback;

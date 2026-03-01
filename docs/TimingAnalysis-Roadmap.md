@@ -127,6 +127,17 @@ The slew fields exist in the data structures but are not propagated through the 
 
 **Files affected:** `DelayModel.h`, `TimingGraph.cpp` (annotate nodes with load), `ArrivalAnalysis.cpp`
 
+**Status (2026-03): In progress.**
+
+- Arrival propagation now computes per-node output load as the sum of fanout
+  input capacitances reported by `DelayModel::getInputCapacitance(...)`.
+- `DelayContext::outputLoad` is now populated on arc delay evaluation.
+- `NLDMDelayModel` implements `getInputCapacitance(...)` using typed Liberty
+  pin capacitance metadata through the timing Liberty bridge.
+- This hook-based design is CCS-extensible: CCS models can provide nonlinear
+  effective input capacitance and receiver models without changing analysis
+  traversal logic.
+
 ### 3. Clock Domain Awareness
 
 Currently all endpoints share a single clock period constraint. Real designs have multiple clock domains.

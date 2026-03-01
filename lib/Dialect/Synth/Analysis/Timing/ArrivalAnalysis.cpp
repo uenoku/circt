@@ -15,8 +15,33 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
+static double getArcInputCapacitance(const TimingArc *arc,
+                                     const DelayModel *delayModel) {
+  if (!delayModel || !arc->getOp())
+    return 0.0;
+
+  DelayContext ctx;
+  ctx.op = arc->getOp();
+  ctx.inputValue = arc->getInputValue();
+  ctx.outputValue = arc->getOutputValue();
+  ctx.inputIndex = arc->getInputIndex();
+  ctx.outputIndex = arc->getOutputIndex();
+  return delayModel->getInputCapacitance(ctx);
+}
+
+static double getNodeOutputLoad(const TimingNode *node,
+                                const DelayModel *delayModel) {
+  if (!delayModel)
+    return 0.0;
+  double total = 0.0;
+  for (auto *arc : node->getFanout())
+    total += getArcInputCapacitance(arc, delayModel);
+  return total;
+}
+
 static DelayResult getArcDelay(const TimingArc *arc,
-                               const DelayModel *delayModel, double inputSlew) {
+                               const DelayModel *delayModel, double inputSlew,
+                               double outputLoad) {
   if (!delayModel || !arc->getOp())
     return {arc->getDelay(), inputSlew};
 
@@ -27,6 +52,7 @@ static DelayResult getArcDelay(const TimingArc *arc,
   ctx.inputIndex = arc->getInputIndex();
   ctx.outputIndex = arc->getOutputIndex();
   ctx.inputSlew = inputSlew;
+  ctx.outputLoad = outputLoad;
 
   auto result = delayModel->computeDelay(ctx);
   if (!delayModel->usesSlewPropagation())
@@ -144,6 +170,7 @@ void ArrivalAnalysis::propagate() {
   // Forward propagation in topological order
   for (auto *node : graph.getTopologicalOrder()) {
     auto &nodeData = arrivalData[node->getId().index];
+    double outputLoad = getNodeOutputLoad(node, delayModel);
 
     // For each fanout arc, propagate arrival time
     for (auto *arc : node->getFanout()) {
@@ -152,7 +179,7 @@ void ArrivalAnalysis::propagate() {
 
       // Propagate all arrivals from this node
       for (const auto &arrival : nodeData.getAllArrivals()) {
-        auto delay = getArcDelay(arc, delayModel, arrival.slew);
+        auto delay = getArcDelay(arc, delayModel, arrival.slew, outputLoad);
         int64_t newArrival = arrival.arrivalTime + delay.delay;
         succData.addArrival(arrival.startPoint, newArrival, delay.outputSlew);
       }

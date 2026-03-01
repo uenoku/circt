@@ -212,6 +212,19 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
   return fallback.computeDelay(ctx);
 }
 
+double NLDMDelayModel::getInputCapacitance(const DelayContext &ctx) const {
+  if (!liberty || ctx.inputIndex < 0)
+    return 0.0;
+
+  auto cellName = getMappedCellName(ctx.op);
+  if (!cellName)
+    return 0.0;
+
+  auto cap = liberty->getInputPinCapacitance(
+      *cellName, static_cast<unsigned>(ctx.inputIndex));
+  return cap.value_or(0.0);
+}
+
 //===----------------------------------------------------------------------===//
 // Factory
 //===----------------------------------------------------------------------===//
