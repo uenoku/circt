@@ -43,6 +43,7 @@ void TimingAnalysis::reportTiming(llvm::raw_ostream &os, size_t numPaths) {
   os << "Module: " << module.getModuleName() << "\n";
   os << "Delay Model: " << graph->getDelayModelName() << "\n";
   os << "Initial Slew: " << getConfiguredInitialSlew() << "\n";
+  os << "Slew Hint Damping: " << getConfiguredSlewHintDamping() << "\n";
   os << "Arrival Iterations: " << getLastArrivalIterations() << "\n";
   os << "Slew Converged: " << (didLastArrivalConverge() ? "yes" : "no") << "\n";
   os << "Max Slew Delta: " << getLastMaxSlewDelta() << "\n";

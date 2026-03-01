@@ -23,6 +23,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Parser/Parser.h"
 #include "gtest/gtest.h"
+#include <algorithm>
 #include <cmath>
 
 using namespace mlir;
@@ -296,6 +297,21 @@ public:
   }
 
   llvm::StringRef getName() const override { return "coupled-load-slew"; }
+  bool usesSlewPropagation() const override { return true; }
+};
+
+class OscillatingHintModel final : public DelayModel {
+public:
+  DelayResult computeDelay(const DelayContext &ctx) const override {
+    int64_t delay = static_cast<int64_t>(std::llround(ctx.outputLoad * 100.0));
+    return {delay, ctx.outputLoad};
+  }
+
+  double getInputCapacitance(const DelayContext &ctx) const override {
+    return std::max(0.0, 1.0 - ctx.inputSlew);
+  }
+
+  llvm::StringRef getName() const override { return "oscillating-hint"; }
   bool usesSlewPropagation() const override { return true; }
 };
 
@@ -879,6 +895,7 @@ TEST_F(TimingAnalysisTest, ReportTimingSmoke) {
   EXPECT_NE(report.find("=== Timing Report ==="), std::string::npos);
   EXPECT_NE(report.find("Module: deep"), std::string::npos);
   EXPECT_NE(report.find("Delay Model:"), std::string::npos);
+  EXPECT_NE(report.find("Slew Hint Damping:"), std::string::npos);
   EXPECT_NE(report.find("Max Slew Delta:"), std::string::npos);
   EXPECT_NE(report.find("Worst Slack:"), std::string::npos);
   EXPECT_NE(report.find("Critical Paths"), std::string::npos);
@@ -1000,6 +1017,41 @@ TEST_F(TimingAnalysisTest, ConvergenceLoopUpdatesLoadFromSlewHints) {
   int64_t delayConverged = converged->getArrivalTime(endPointConv);
 
   EXPECT_GT(delayConverged, delayOneIter);
+}
+
+TEST_F(TimingAnalysisTest, SlewHintDampingChangesConvergenceTrajectory) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  OscillatingHintModel model;
+
+  TimingAnalysisOptions undampedOpts;
+  undampedOpts.delayModel = &model;
+  undampedOpts.initialSlew = 0.0;
+  undampedOpts.maxSlewIterations = 6;
+  undampedOpts.slewConvergenceEpsilon = 1e-9;
+  undampedOpts.slewHintDamping = 1.0;
+
+  auto undamped = TimingAnalysis::create(hwModule, undampedOpts);
+  ASSERT_NE(undamped, nullptr);
+  ASSERT_TRUE(succeeded(undamped->runFullAnalysis()));
+
+  TimingAnalysisOptions dampedOpts = undampedOpts;
+  dampedOpts.slewHintDamping = 0.5;
+  dampedOpts.maxSlewIterations = 8;
+
+  auto damped = TimingAnalysis::create(hwModule, dampedOpts);
+  ASSERT_NE(damped, nullptr);
+  ASSERT_TRUE(succeeded(damped->runFullAnalysis()));
+
+  EXPECT_NE(undamped->getLastArrivalIterations(),
+            damped->getLastArrivalIterations());
+  EXPECT_NE(undamped->getLastMaxSlewDelta(), damped->getLastMaxSlewDelta());
 }
 
 TEST_F(TimingAnalysisTest, TimingAnalysisInterface) {

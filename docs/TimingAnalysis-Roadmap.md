@@ -393,10 +393,12 @@ This loop should live in `TimingAnalysis::runFullAnalysis()`, gated on `delayMod
 - Convergence status is now emitted in timing reports as `Slew Converged`.
 - Final-iteration slew residual is now emitted as `Max Slew Delta` to aid
   convergence tuning for load/slew-coupled models.
+- Load-slew hint updates now support damping (`slewHintDamping`) to improve
+  stability for strongly coupled models.
 - NLDM timing-report flow now seeds initial slew from imported Liberty
   `default_input_transition` when available.
-- Remaining work: tighten convergence heuristics for models where effective
-  load depends on slew/waveform state.
+- Remaining work: evaluate adaptive damping/tolerance heuristics for models
+  where effective load depends on slew/waveform state.
 
 **Files affected:** `TimingAnalysis.cpp`
 

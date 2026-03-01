@@ -112,6 +112,7 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
   lastArrivalConverged = true;
   lastMaxSlewDelta = 0.0;
   if (options.delayModel && options.delayModel->usesSlewPropagation()) {
+    double damping = std::clamp(options.slewHintDamping, 0.0, 1.0);
     SmallVector<double> previousSlews(graph->getNumNodes(),
                                       options.initialSlew);
     bool converged = false;
@@ -134,9 +135,12 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
         break;
       }
 
-      for (const auto &node : graph->getNodes())
-        previousSlews[node->getId().index] =
-            arrivals->getMaxArrivalSlew(node.get());
+      for (const auto &node : graph->getNodes()) {
+        auto id = node->getId().index;
+        double current = arrivals->getMaxArrivalSlew(node.get());
+        previousSlews[id] =
+            previousSlews[id] + damping * (current - previousSlews[id]);
+      }
     }
 
     lastArrivalConverged = converged;

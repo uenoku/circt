@@ -67,6 +67,10 @@ struct TimingAnalysisOptions {
   /// Convergence threshold for max per-node slew delta.
   double slewConvergenceEpsilon = 1e-6;
 
+  /// Damping factor for load-slew hint updates across iterations.
+  /// 1.0 keeps existing behavior (full update), lower values smooth updates.
+  double slewHintDamping = 1.0;
+
   /// Custom delay model. If null, uses default AIGLevelDelayModel.
   const DelayModel *delayModel = nullptr;
 };
@@ -130,6 +134,11 @@ public:
 
   /// Configured initial slew seed for startpoints.
   double getConfiguredInitialSlew() const { return options.initialSlew; }
+
+  /// Configured damping factor for iterative load-slew hints.
+  double getConfiguredSlewHintDamping() const {
+    return options.slewHintDamping;
+  }
 
   /// Whether the slew iteration loop converged in the last full run.
   bool didLastArrivalConverge() const { return lastArrivalConverged; }

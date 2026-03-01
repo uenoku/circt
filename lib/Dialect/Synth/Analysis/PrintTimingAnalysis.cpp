@@ -222,6 +222,8 @@ private:
     os << "Module: " << analysis.getGraph().getModule().getModuleName() << "\n";
     os << "Delay Model: " << analysis.getGraph().getDelayModelName() << "\n";
     os << "Initial Slew: " << analysis.getConfiguredInitialSlew() << "\n";
+    os << "Slew Hint Damping: " << analysis.getConfiguredSlewHintDamping()
+       << "\n";
     os << "Arrival Iterations: " << analysis.getLastArrivalIterations() << "\n";
     os << "Slew Converged: "
        << (analysis.didLastArrivalConverge() ? "yes" : "no") << "\n";
