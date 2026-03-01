@@ -1,3 +1,10 @@
+// RUN: circt-translate --import-liberty %s | FileCheck %s
+
+// CHECK: module attributes {
+// CHECK-SAME: synth.nldm.time_unit = #synth.nldm_time_unit<1.000000e+03 : f64>
+// CHECK: hw.module @BUF(
+// CHECK-SAME: synth.nldm.arcs = [#synth.nldm_arc<"A", "Y", "positive_unate", [1.000000e-02, 3.000000e-02], [0.000000e+00, 2.000000e-01], [1.200000e-02, 1.800000e-02, 2.000000e-02, 3.000000e-02], [], [], [2.000000e-02]>]
+
 library(testlib) {
   time_unit : "1ns";
 
@@ -18,7 +25,9 @@ library(testlib) {
         timing_sense : positive_unate;
 
         cell_rise() {
-          values : "0.012, 0.018";
+          index_1 : "0.01, 0.03";
+          index_2 : "0.0, 0.2";
+          values : "0.012, 0.018, 0.020, 0.030";
         }
 
         cell_fall() {

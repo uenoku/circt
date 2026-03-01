@@ -290,7 +290,7 @@ metadata, so importer and timing analysis share a stable schema.
 
 - Typed Synth AttrDefs are in place and registered:
   - `#synth.nldm_time_unit<...>`
-  - `#synth.nldm_arc<...>`
+  - `#synth.nldm_arc<...>` (with optional index vectors + sample arrays)
 - `import-liberty` emits typed NLDM metadata.
 - Timing-side consumers (`LibertyLibrary`, `NLDMDelayModel`) consume typed attrs
   and legacy dictionary fallback has been removed.
@@ -337,6 +337,16 @@ private:
 
 **Delay units:** keep interpolation in `double`, then round to integer
 picoseconds when returning `DelayResult::delay`.
+
+**Status (2026-03): In progress.**
+
+- `NLDMDelayModel` now consumes typed arc index/value arrays and performs
+  clamped interpolation:
+  - bilinear interpolation when both index axes are present,
+  - linear interpolation for 1D tables,
+  - first-sample fallback for degenerate tables.
+- Current output-slew modeling is still placeholder; transition-table support
+  remains to be added.
 
 **Files:** `DelayModel.h` (add class), `DelayModel.cpp` (implement)
 

@@ -147,9 +147,21 @@ LibertyLibrary::getTimingArc(StringRef cellName, StringRef inputPinName,
   if (!typedArc->getTimingSense().getValue().empty())
     attrs.push_back(NamedAttribute(StringAttr::get(ctx, "timing_sense"),
                                    typedArc->getTimingSense()));
+  if (!typedArc->getCellRiseIndex1().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_index_1"),
+                                   typedArc->getCellRiseIndex1()));
+  if (!typedArc->getCellRiseIndex2().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_index_2"),
+                                   typedArc->getCellRiseIndex2()));
   if (!typedArc->getCellRiseValues().empty())
     attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_rise_values"),
                                    typedArc->getCellRiseValues()));
+  if (!typedArc->getCellFallIndex1().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_index_1"),
+                                   typedArc->getCellFallIndex1()));
+  if (!typedArc->getCellFallIndex2().empty())
+    attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_index_2"),
+                                   typedArc->getCellFallIndex2()));
   if (!typedArc->getCellFallValues().empty())
     attrs.push_back(NamedAttribute(StringAttr::get(ctx, "cell_fall_values"),
                                    typedArc->getCellFallValues()));

@@ -555,13 +555,14 @@ static std::optional<ArrayAttr> parseValueList(Attribute attr,
   return builder.getArrayAttr(values);
 }
 
-static std::optional<ArrayAttr> getFirstTableValues(const LibertyGroup &timing,
-                                                    StringRef tableName,
-                                                    OpBuilder &builder) {
+static std::optional<ArrayAttr> getFirstTableField(const LibertyGroup &timing,
+                                                   StringRef tableName,
+                                                   StringRef fieldName,
+                                                   OpBuilder &builder) {
   for (const auto &sub : timing.subGroups) {
     if (sub->name != tableName)
       continue;
-    auto attrPair = sub->getAttribute("values");
+    auto attrPair = sub->getAttribute(fieldName);
     if (!attrPair.first)
       continue;
     if (auto values = parseValueList(attrPair.first, builder))
@@ -589,13 +590,23 @@ buildNldmArcAttr(const LibertyGroup &timing, StringRef outputPin,
   if (!timingSense)
     timingSense = builder.getStringAttr("");
 
-  auto rise = getFirstTableValues(timing, "cell_rise", builder)
-                  .value_or(builder.getArrayAttr({}));
-  auto fall = getFirstTableValues(timing, "cell_fall", builder)
-                  .value_or(builder.getArrayAttr({}));
+  auto riseIndex1 = getFirstTableField(timing, "cell_rise", "index_1", builder)
+                        .value_or(builder.getArrayAttr({}));
+  auto riseIndex2 = getFirstTableField(timing, "cell_rise", "index_2", builder)
+                        .value_or(builder.getArrayAttr({}));
+  auto riseValues = getFirstTableField(timing, "cell_rise", "values", builder)
+                        .value_or(builder.getArrayAttr({}));
 
-  return circt::synth::NLDMArcAttr::get(builder.getContext(), relatedPin, toPin,
-                                        timingSense, rise, fall);
+  auto fallIndex1 = getFirstTableField(timing, "cell_fall", "index_1", builder)
+                        .value_or(builder.getArrayAttr({}));
+  auto fallIndex2 = getFirstTableField(timing, "cell_fall", "index_2", builder)
+                        .value_or(builder.getArrayAttr({}));
+  auto fallValues = getFirstTableField(timing, "cell_fall", "values", builder)
+                        .value_or(builder.getArrayAttr({}));
+
+  return circt::synth::NLDMArcAttr::get(
+      builder.getContext(), relatedPin, toPin, timingSense, riseIndex1,
+      riseIndex2, riseValues, fallIndex1, fallIndex2, fallValues);
 }
 
 class LibertyParser {

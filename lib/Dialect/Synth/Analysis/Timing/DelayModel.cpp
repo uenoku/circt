@@ -119,11 +119,152 @@ static std::optional<double> getFirstNumericAttr(Attribute attr) {
   return std::nullopt;
 }
 
+static bool decodeNumericArray(ArrayAttr array, SmallVectorImpl<double> &out) {
+  out.clear();
+  out.reserve(array.size());
+  for (auto attr : array) {
+    auto value = getFirstNumericAttr(attr);
+    if (!value)
+      return false;
+    out.push_back(*value);
+  }
+  return true;
+}
+
+static double interpolate1D(double x, ArrayRef<double> xs,
+                            ArrayRef<double> ys) {
+  if (xs.empty() || ys.empty())
+    return 0.0;
+  if (xs.size() == 1 || ys.size() == 1)
+    return ys.front();
+
+  size_t n = std::min(xs.size(), ys.size());
+  xs = xs.take_front(n);
+  ys = ys.take_front(n);
+
+  if (x <= xs.front())
+    return ys.front();
+  if (x >= xs.back())
+    return ys.back();
+
+  for (size_t i = 1; i < n; ++i) {
+    if (x > xs[i])
+      continue;
+    double x0 = xs[i - 1];
+    double x1 = xs[i];
+    double y0 = ys[i - 1];
+    double y1 = ys[i];
+    if (x1 == x0)
+      return y0;
+    double t = (x - x0) / (x1 - x0);
+    return y0 + (y1 - y0) * t;
+  }
+  return ys.back();
+}
+
+static double bilinearInterpolate(double x, double y, ArrayRef<double> xs,
+                                  ArrayRef<double> ys,
+                                  ArrayRef<double> values) {
+  if (xs.empty() || ys.empty() || values.empty())
+    return 0.0;
+
+  auto clampToRange = [](double v, ArrayRef<double> axis) {
+    if (axis.empty())
+      return v;
+    if (v < axis.front())
+      return axis.front();
+    if (v > axis.back())
+      return axis.back();
+    return v;
+  };
+
+  x = clampToRange(x, xs);
+  y = clampToRange(y, ys);
+
+  auto findSegment = [](double v, ArrayRef<double> axis) {
+    size_t hi = 1;
+    while (hi < axis.size() && v > axis[hi])
+      ++hi;
+    if (hi >= axis.size())
+      hi = axis.size() - 1;
+    size_t lo = hi - 1;
+    return std::make_pair(lo, hi);
+  };
+
+  if (xs.size() == 1 && ys.size() == 1)
+    return values.front();
+  if (xs.size() == 1) {
+    SmallVector<double> row;
+    row.reserve(ys.size());
+    for (size_t c = 0; c < ys.size(); ++c)
+      row.push_back(values[c]);
+    return interpolate1D(y, ys, row);
+  }
+  if (ys.size() == 1) {
+    SmallVector<double> col;
+    col.reserve(xs.size());
+    for (size_t r = 0; r < xs.size(); ++r)
+      col.push_back(values[r * ys.size()]);
+    return interpolate1D(x, xs, col);
+  }
+
+  auto [x0i, x1i] = findSegment(x, xs);
+  auto [y0i, y1i] = findSegment(y, ys);
+
+  auto at = [&](size_t xi, size_t yi) { return values[xi * ys.size() + yi]; };
+
+  double x0 = xs[x0i], x1 = xs[x1i];
+  double y0 = ys[y0i], y1 = ys[y1i];
+  double q00 = at(x0i, y0i);
+  double q01 = at(x0i, y1i);
+  double q10 = at(x1i, y0i);
+  double q11 = at(x1i, y1i);
+
+  double tx = (x1 == x0) ? 0.0 : (x - x0) / (x1 - x0);
+  double ty = (y1 == y0) ? 0.0 : (y - y0) / (y1 - y0);
+
+  double a = q00 + (q10 - q00) * tx;
+  double b = q01 + (q11 - q01) * tx;
+  return a + (b - a) * ty;
+}
+
+static std::optional<double> interpolateTable(double x, double y,
+                                              ArrayAttr idx1Attr,
+                                              ArrayAttr idx2Attr,
+                                              ArrayAttr valuesAttr) {
+  SmallVector<double> idx1, idx2, values;
+  if (!decodeNumericArray(valuesAttr, values) || values.empty())
+    return std::nullopt;
+
+  if (!idx1Attr.empty() && !decodeNumericArray(idx1Attr, idx1))
+    return std::nullopt;
+  if (!idx2Attr.empty() && !decodeNumericArray(idx2Attr, idx2))
+    return std::nullopt;
+
+  if (!idx1.empty() && !idx2.empty()) {
+    if (values.size() != idx1.size() * idx2.size())
+      return std::nullopt;
+    return bilinearInterpolate(x, y, idx1, idx2, values);
+  }
+
+  if (!idx1.empty() && values.size() == idx1.size())
+    return interpolate1D(x, idx1, values);
+  if (!idx2.empty() && values.size() == idx2.size())
+    return interpolate1D(y, idx2, values);
+
+  return values.front();
+}
+
 static std::optional<int64_t>
-getDelayFromTimingArc(synth::NLDMArcAttr timingArc, double timeScalePs) {
-  if (auto rise = getFirstNumericAttr(timingArc.getCellRiseValues()))
+getDelayFromTimingArc(synth::NLDMArcAttr timingArc, double inputSlew,
+                      double outputLoad, double timeScalePs) {
+  if (auto rise = interpolateTable(
+          inputSlew, outputLoad, timingArc.getCellRiseIndex1(),
+          timingArc.getCellRiseIndex2(), timingArc.getCellRiseValues()))
     return static_cast<int64_t>(std::llround(*rise * timeScalePs));
-  if (auto fall = getFirstNumericAttr(timingArc.getCellFallValues()))
+  if (auto fall = interpolateTable(
+          inputSlew, outputLoad, timingArc.getCellFallIndex1(),
+          timingArc.getCellFallIndex2(), timingArc.getCellFallValues()))
     return static_cast<int64_t>(std::llround(*fall * timeScalePs));
   return std::nullopt;
 }
@@ -194,7 +335,8 @@ DelayResult NLDMDelayModel::computeDelay(const DelayContext &ctx) const {
         if (auto timingArc = liberty->getTypedTimingArc(
                 *cellName, ctx.inputIndex, ctx.outputIndex)) {
           if (auto delay =
-                  getDelayFromTimingArc(*timingArc, getTimeScalePs(ctx.op)))
+                  getDelayFromTimingArc(*timingArc, ctx.inputSlew,
+                                        ctx.outputLoad, getTimeScalePs(ctx.op)))
             return {*delay, 0.0};
         }
 

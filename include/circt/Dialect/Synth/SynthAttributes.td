@@ -25,12 +25,17 @@ def NLDMArcAttr : AttrDef<Synth_Dialect, "NLDMArc"> {
     "mlir::StringAttr":$relatedPin,
     "mlir::StringAttr":$toPin,
     "mlir::StringAttr":$timingSense,
+    "mlir::ArrayAttr":$cellRiseIndex1,
+    "mlir::ArrayAttr":$cellRiseIndex2,
     "mlir::ArrayAttr":$cellRiseValues,
+    "mlir::ArrayAttr":$cellFallIndex1,
+    "mlir::ArrayAttr":$cellFallIndex2,
     "mlir::ArrayAttr":$cellFallValues
   );
   let assemblyFormat = [{
-    `<` $relatedPin `,` $toPin `,` $timingSense `,` $cellRiseValues `,`
-    $cellFallValues `>`
+    `<` $relatedPin `,` $toPin `,` $timingSense `,` $cellRiseIndex1 `,`
+    $cellRiseIndex2 `,` $cellRiseValues `,` $cellFallIndex1 `,`
+    $cellFallIndex2 `,` $cellFallValues `>`
   }];
 }
 

@@ -97,8 +97,8 @@ const char *libertyTimingArcIR = R"MLIR(
       out Y : i1 {synth.liberty.pin = {
         direction = "output",
         synth.nldm.arcs = [
-          #synth.nldm_arc<"A", "Y", "negative_unate", [0.012 : f64], []>,
-          #synth.nldm_arc<"B", "Y", "negative_unate", [], [0.013 : f64]>
+          #synth.nldm_arc<"A", "Y", "negative_unate", [], [], [0.012 : f64], [], [], []>,
+          #synth.nldm_arc<"B", "Y", "negative_unate", [], [], [], [], [], [0.013 : f64]>
         ]
       }}) {
       %0 = comb.and %A, %B : i1
@@ -135,7 +135,7 @@ const char *nldmTimingArcTableIR = R"MLIR(
         out Y : i1 {synth.liberty.pin = {
           direction = "output",
           synth.nldm.arcs = [
-            #synth.nldm_arc<"A", "Y", "positive_unate", [0.012 : f64, 0.018 : f64], []>
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.01 : f64, 0.03 : f64], [0.0 : f64, 0.2 : f64], [0.012 : f64, 0.018 : f64, 0.020 : f64, 0.030 : f64], [], [], []>
           ]
         }}) {
         hw.output %A : i1
@@ -180,6 +180,30 @@ const char *legacyTimingOnlyIR = R"MLIR(
       hw.module @dut(in %a : i1, out y : i1) {
         %0 = hw.instance "u_buf" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
         hw.output %0 : i1
+      }
+    }
+)MLIR";
+
+const char *nldmInterpolationIR = R"MLIR(
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>
+    } {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.5 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64, 1.0 : f64], [0.0 : f64, 1.0 : f64], [0.01 : f64, 0.02 : f64, 0.03 : f64, 0.04 : f64], [], [], []>
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %s0 = hw.instance "u0" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        %s1 = hw.instance "u1" @BUF(A: %s0: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %s1 : i1
       }
     }
 )MLIR";
@@ -596,6 +620,31 @@ TEST_F(TimingAnalysisTest, NLDMDelayModelIgnoresLegacyTimingGroups) {
   ASSERT_EQ(graph.getEndPoints().size(), 1u);
   auto *endPoint = graph.getEndPoints().front();
   EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 1);
+}
+
+TEST_F(TimingAnalysisTest, NLDMDelayModelInterpolatesOverSlewAndLoad) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(nldmInterpolationIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto delayModel = createNLDMDelayModel(module.get());
+  ASSERT_NE(delayModel, nullptr);
+
+  TimingGraph graph(hwModule);
+  ASSERT_TRUE(succeeded(graph.build(delayModel.get())));
+
+  ArrivalAnalysis::Options opts;
+  opts.initialSlew = 0.5;
+  ArrivalAnalysis arrivals(graph, opts, delayModel.get());
+  ASSERT_TRUE(succeeded(arrivals.run()));
+
+  ASSERT_EQ(graph.getEndPoints().size(), 1u);
+  auto *endPoint = graph.getEndPoints().front();
+  EXPECT_EQ(arrivals.getMaxArrivalTime(endPoint), 50);
 }
 
 TEST_F(TimingAnalysisTest, RequiredTimeAnalysisTest) {
