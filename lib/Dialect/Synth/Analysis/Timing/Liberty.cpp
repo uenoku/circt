@@ -261,3 +261,35 @@ LibertyLibrary::getTypedCCSPilotArc(StringRef cellName, unsigned operandIndex,
     return std::nullopt;
   return getTypedCCSPilotArc(cellName, *inputPin, *outputPin);
 }
+
+std::optional<synth::CCSPilotReceiverAttr>
+LibertyLibrary::getTypedCCSPilotReceiver(StringRef cellName,
+                                         StringRef inputPinName,
+                                         StringRef outputPinName) const {
+  auto *outputPin = lookupPin(cellName, outputPinName);
+  if (!outputPin || outputPin->isInput)
+    return std::nullopt;
+
+  auto receivers = dyn_cast_or_null<ArrayAttr>(
+      outputPin->attrs.get("synth.ccs.pilot.receivers"));
+  if (!receivers)
+    return std::nullopt;
+
+  for (auto attr : receivers) {
+    auto typed = dyn_cast<synth::CCSPilotReceiverAttr>(attr);
+    if (typed && typed.getRelatedPin() == inputPinName)
+      return typed;
+  }
+  return std::nullopt;
+}
+
+std::optional<synth::CCSPilotReceiverAttr>
+LibertyLibrary::getTypedCCSPilotReceiver(StringRef cellName,
+                                         unsigned operandIndex,
+                                         unsigned resultIndex) const {
+  auto inputPin = getInputPinName(cellName, operandIndex);
+  auto outputPin = getOutputPinName(cellName, resultIndex);
+  if (!inputPin || !outputPin)
+    return std::nullopt;
+  return getTypedCCSPilotReceiver(cellName, *inputPin, *outputPin);
+}

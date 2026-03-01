@@ -258,6 +258,35 @@ const char *ccsPilotWaveformIR = R"MLIR(
     }
 )MLIR";
 
+const char *ccsPilotReceiverIR = R"MLIR(
+    module attributes {
+      synth.liberty.library = {name = "dummy", time_unit = "1ns"},
+      synth.nldm.time_unit = #synth.nldm_time_unit<1000.0>
+    } {
+      hw.module private @BUF(
+        in %A : i1 {synth.liberty.pin = {direction = "input", capacitance = 0.5 : f64}},
+        out Y : i1 {synth.liberty.pin = {
+          direction = "output",
+          synth.nldm.arcs = [
+            #synth.nldm_arc<"A", "Y", "positive_unate", [0.0 : f64], [0.0 : f64], [0.025 : f64], [], [], [], [], [], [], [], [], []>
+          ],
+          synth.ccs.pilot.arcs = [
+            #synth.ccs_pilot_arc<"A", "Y", [0.0 : f64, 0.4 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64, 0.4 : f64], [1.0 : f64, 0.0 : f64]>
+          ],
+          synth.ccs.pilot.receivers = [
+            #synth.ccs_pilot_receiver<"A", "Y", [0.0 : f64, 1.0 : f64], [0.0 : f64], [0.2 : f64, 1.2 : f64], [0.0 : f64, 1.0 : f64], [0.0 : f64], [0.2 : f64, 1.2 : f64], [], [], [], [], [], []>
+          ]
+        }}) {
+        hw.output %A : i1
+      }
+
+      hw.module @dut(in %a : i1, out y : i1) {
+        %s0 = hw.instance "u0" @BUF(A: %a: i1) -> (Y: i1) {synth.liberty.cell = "BUF"}
+        hw.output %s0 : i1
+      }
+    }
+)MLIR";
+
 const char *ccsPilotWaveformDelayIR = R"MLIR(
     module attributes {
       synth.liberty.library = {name = "dummy", time_unit = "1ns"},
@@ -973,6 +1002,45 @@ TEST_F(TimingAnalysisTest, CCSPilotWaveformStretchesWithOutputLoad) {
       model->computeOutputWaveform(lowLoad, inputWaveform, lowWaveform));
   EXPECT_TRUE(
       model->computeOutputWaveform(highLoad, inputWaveform, highWaveform));
+  ASSERT_EQ(lowWaveform.size(), 2u);
+  ASSERT_EQ(highWaveform.size(), 2u);
+  EXPECT_LT(lowWaveform[1].time, highWaveform[1].time);
+}
+
+TEST_F(TimingAnalysisTest, CCSPilotReceiverDataAffectsWaveformStretch) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(ccsPilotReceiverIR, &context);
+  ASSERT_TRUE(module);
+
+  SymbolTable symbolTable(module.get());
+  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("dut");
+  ASSERT_TRUE(hwModule);
+
+  auto model = createCCSPilotDelayModel(module.get());
+  ASSERT_NE(model, nullptr);
+
+  auto inst = dyn_cast<hw::InstanceOp>(&hwModule.getBodyBlock()->front());
+  ASSERT_TRUE(inst);
+
+  DelayContext lowSlew;
+  lowSlew.op = inst;
+  lowSlew.inputValue = inst.getOperand(0);
+  lowSlew.outputValue = inst.getResult(0);
+  lowSlew.inputIndex = 0;
+  lowSlew.outputIndex = 0;
+  lowSlew.inputSlew = 0.0;
+  lowSlew.outputLoad = 0.5;
+
+  DelayContext highSlew = lowSlew;
+  highSlew.inputSlew = 1.0;
+
+  SmallVector<WaveformPoint> inputWaveform = {{0.0, 0.0}, {1.0, 1.0}};
+  SmallVector<WaveformPoint> lowWaveform;
+  SmallVector<WaveformPoint> highWaveform;
+  EXPECT_TRUE(
+      model->computeOutputWaveform(lowSlew, inputWaveform, lowWaveform));
+  EXPECT_TRUE(
+      model->computeOutputWaveform(highSlew, inputWaveform, highWaveform));
   ASSERT_EQ(lowWaveform.size(), 2u);
   ASSERT_EQ(highWaveform.size(), 2u);
   EXPECT_LT(lowWaveform[1].time, highWaveform[1].time);

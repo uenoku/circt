@@ -65,4 +65,32 @@ def CCSPilotArcAttr : AttrDef<Synth_Dialect, "CCSPilotArc"> {
   }];
 }
 
+def CCSPilotReceiverAttr : AttrDef<Synth_Dialect, "CCSPilotReceiver"> {
+  let mnemonic = "ccs_pilot_receiver";
+  let summary = "Normalized CCS pilot receiver capacitance metadata";
+  let parameters = (ins
+    "mlir::StringAttr":$relatedPin,
+    "mlir::StringAttr":$toPin,
+    "mlir::ArrayAttr":$cap1RiseIndex1,
+    "mlir::ArrayAttr":$cap1RiseIndex2,
+    "mlir::ArrayAttr":$cap1RiseValues,
+    "mlir::ArrayAttr":$cap2RiseIndex1,
+    "mlir::ArrayAttr":$cap2RiseIndex2,
+    "mlir::ArrayAttr":$cap2RiseValues,
+    "mlir::ArrayAttr":$cap1FallIndex1,
+    "mlir::ArrayAttr":$cap1FallIndex2,
+    "mlir::ArrayAttr":$cap1FallValues,
+    "mlir::ArrayAttr":$cap2FallIndex1,
+    "mlir::ArrayAttr":$cap2FallIndex2,
+    "mlir::ArrayAttr":$cap2FallValues
+  );
+  let assemblyFormat = [{
+    `<` $relatedPin `,` $toPin
+    `,` $cap1RiseIndex1 `,` $cap1RiseIndex2 `,` $cap1RiseValues
+    `,` $cap2RiseIndex1 `,` $cap2RiseIndex2 `,` $cap2RiseValues
+    `,` $cap1FallIndex1 `,` $cap1FallIndex2 `,` $cap1FallValues
+    `,` $cap2FallIndex1 `,` $cap2FallIndex2 `,` $cap2FallValues `>`
+  }];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_SYNTHATTRIBUTES_TD

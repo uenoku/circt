@@ -667,6 +667,71 @@ buildCcsPilotArcAttr(const LibertyGroup &timing, StringRef outputPin,
                                             fallTimes, fallValues);
 }
 
+static std::optional<circt::synth::CCSPilotReceiverAttr>
+buildCcsPilotReceiverAttr(const LibertyGroup &timing, StringRef outputPin,
+                          OpBuilder &builder) {
+  StringAttr relatedPin;
+  auto relatedAttr = timing.getAttribute("related_pin").first;
+  if (auto str = dyn_cast<StringAttr>(relatedAttr))
+    relatedPin = str;
+  else if (!timing.args.empty())
+    relatedPin = dyn_cast<StringAttr>(timing.args.front());
+  if (!relatedPin)
+    return std::nullopt;
+
+  auto toPin = builder.getStringAttr(outputPin);
+
+  auto cap1RiseIndex1 = getFirstTableField(timing, "receiver_capacitance1_rise",
+                                           "index_1", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap1RiseIndex2 = getFirstTableField(timing, "receiver_capacitance1_rise",
+                                           "index_2", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap1RiseValues = getFirstTableField(timing, "receiver_capacitance1_rise",
+                                           "values", builder)
+                            .value_or(builder.getArrayAttr({}));
+
+  auto cap2RiseIndex1 = getFirstTableField(timing, "receiver_capacitance2_rise",
+                                           "index_1", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap2RiseIndex2 = getFirstTableField(timing, "receiver_capacitance2_rise",
+                                           "index_2", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap2RiseValues = getFirstTableField(timing, "receiver_capacitance2_rise",
+                                           "values", builder)
+                            .value_or(builder.getArrayAttr({}));
+
+  auto cap1FallIndex1 = getFirstTableField(timing, "receiver_capacitance1_fall",
+                                           "index_1", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap1FallIndex2 = getFirstTableField(timing, "receiver_capacitance1_fall",
+                                           "index_2", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap1FallValues = getFirstTableField(timing, "receiver_capacitance1_fall",
+                                           "values", builder)
+                            .value_or(builder.getArrayAttr({}));
+
+  auto cap2FallIndex1 = getFirstTableField(timing, "receiver_capacitance2_fall",
+                                           "index_1", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap2FallIndex2 = getFirstTableField(timing, "receiver_capacitance2_fall",
+                                           "index_2", builder)
+                            .value_or(builder.getArrayAttr({}));
+  auto cap2FallValues = getFirstTableField(timing, "receiver_capacitance2_fall",
+                                           "values", builder)
+                            .value_or(builder.getArrayAttr({}));
+
+  if (cap1RiseValues.empty() && cap2RiseValues.empty() &&
+      cap1FallValues.empty() && cap2FallValues.empty())
+    return std::nullopt;
+
+  return circt::synth::CCSPilotReceiverAttr::get(
+      builder.getContext(), relatedPin, toPin, cap1RiseIndex1, cap1RiseIndex2,
+      cap1RiseValues, cap2RiseIndex1, cap2RiseIndex2, cap2RiseValues,
+      cap1FallIndex1, cap1FallIndex2, cap1FallValues, cap2FallIndex1,
+      cap2FallIndex2, cap2FallValues);
+}
+
 class LibertyParser {
 public:
   LibertyParser(const llvm::SourceMgr &sourceMgr, MLIRContext *context,
@@ -993,6 +1058,7 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
     SmallVector<NamedAttribute> pinAttrs;
     SmallVector<Attribute> nldmArcs;
     SmallVector<Attribute> ccsPilotArcs;
+    SmallVector<Attribute> ccsPilotReceivers;
 
     for (const auto &attr : sub->attrs) {
       if (attr.name == "direction") {
@@ -1027,6 +1093,9 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
         if (auto ccsArc =
                 buildCcsPilotArcAttr(*child, pinName.getValue(), builder))
           ccsPilotArcs.push_back(*ccsArc);
+        if (auto ccsReceiver =
+                buildCcsPilotReceiverAttr(*child, pinName.getValue(), builder))
+          ccsPilotReceivers.push_back(*ccsReceiver);
       }
 
       subGroups[child->name].push_back(convertGroupToAttr(*child));
@@ -1042,6 +1111,10 @@ ParseResult LibertyParser::lowerCell(const LibertyGroup &group,
     if (!ccsPilotArcs.empty())
       pinAttrs.push_back(builder.getNamedAttr(
           "synth.ccs.pilot.arcs", builder.getArrayAttr(ccsPilotArcs)));
+    if (!ccsPilotReceivers.empty())
+      pinAttrs.push_back(
+          builder.getNamedAttr("synth.ccs.pilot.receivers",
+                               builder.getArrayAttr(ccsPilotReceivers)));
 
     auto libertyAttrs = builder.getDictionaryAttr(pinAttrs);
     auto attrs = builder.getDictionaryAttr(

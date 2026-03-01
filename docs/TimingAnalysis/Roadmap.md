@@ -509,6 +509,22 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
 
 **Status update (2026-03): Milestone 1 started.**
 
+**Current milestone snapshot (latest):**
+
+- **Milestone 1 (CCS data parsing):** in progress
+  - done: typed pilot arc import/lookup + typed receiver-cap import/consumption
+  - next: nested `vector(ccs_template)` parsing (`index_3`, `reference_time`)
+- **Milestone 2 (receiver/load-aware waveform solving):** in progress
+  - done: load-aware stretch, receiver-cap-aware effective stretch,
+    waveform-derived `t50` / `slew10-90`
+  - next: richer waveform solving beyond pilot stretch approximation
+- **Milestone 3 (waveform-coupled convergence):** initial implementation landed
+  - done: waveform-coupled convergence heuristics + diagnostics
+  - next: tune policy for mixed-cell CCS/NLDM designs
+- **Milestone 4 (CCS validation + mixed policy):** substantial progress
+  - done: dedicated CCS e2e scenarios and mixed per-cell delegation
+  - next: broaden corner/scenario matrix and tighten golden expectations
+
 - `import-liberty` now emits typed CCS pilot arc metadata
   (`#synth.ccs_pilot_arc`) on output pins as `synth.ccs.pilot.arcs` when
   `output_current_rise` / `output_current_fall` tables are present.
@@ -540,6 +556,20 @@ From the current `CCSPilotDelayModel` state, the remaining major milestones are:
   diagnostics for effective settings.
 - CCS e2e suite now includes waveform-delay, multi-input arc asymmetry, and
   mixed-policy critical-path selection scenarios.
+- Started receiver-data handling: ImportLiberty now maps
+  `receiver_capacitance{1,2}_{rise,fall}` into typed CCS pilot receiver
+  metadata, and CCS pilot waveform shaping consumes this metadata.
+
+**Milestone 1 next parser target (ASAP-style CCS vectors):**
+
+- Support nested Liberty CCS forms under `output_current_rise/fall`, e.g.
+  `vector(ccs_template) { reference_time, index_1, index_2, index_3, values }`.
+- Map `index_3 + values` to waveform samples and preserve `reference_time` as
+  an explicit time offset in typed attrs.
+- Carry `index_1/index_2` selector axes so delay model can choose vectors by
+  `(inputSlew, outputLoad)` conditions.
+- Land nearest-vector selection first for stability, then optional interpolation
+  across vectors as a follow-up refinement.
 
 ---
 

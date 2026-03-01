@@ -31,6 +31,8 @@ Typed attribute fields:
 - `relatedPin`, `toPin`
 - rise: `currentRiseTimes`, `currentRiseValues`
 - fall: `currentFallTimes`, `currentFallValues`
+- receiver data: `synth.ccs.pilot.receivers = [#synth.ccs_pilot_receiver<...>]`
+  carrying `receiver_capacitance{1,2}_{rise,fall}` tables.
 
 Key files:
 
@@ -63,6 +65,10 @@ Waveform sample times are transformed as:
 `t_ps = arcDelay_ps + sampleTime_lib * timeScale_ps * stretch`
 
 This approximates receiver/load sensitivity while keeping implementation simple.
+
+When receiver tables are available, CCS pilot computes an effective receiver
+capacitance from `receiver_capacitance{1,2}_{rise,fall}` at
+`(inputSlew, outputLoad)` and blends it with output load before stretch.
 
 ## Threshold Extraction
 

@@ -316,6 +316,79 @@ static double getCCSPilotLoadStretchFactor(double outputLoad) {
   return std::max(0.5, 1.0 + 0.5 * (clamped - 0.5));
 }
 
+static std::optional<double>
+getCCSPilotReceiverCapacitance(const DelayContext &ctx,
+                               const LibertyLibrary *liberty, bool preferFall) {
+  if (!liberty || ctx.inputIndex < 0 || ctx.outputIndex < 0)
+    return std::nullopt;
+  auto cellName = getMappedCellName(ctx.op);
+  if (!cellName)
+    return std::nullopt;
+
+  auto receiver = liberty->getTypedCCSPilotReceiver(
+      *cellName, static_cast<unsigned>(ctx.inputIndex),
+      static_cast<unsigned>(ctx.outputIndex));
+  if (!receiver)
+    return std::nullopt;
+
+  auto samplePair = [&](ArrayAttr i1, ArrayAttr i2,
+                        ArrayAttr vals) -> std::optional<double> {
+    return interpolateTable(ctx.inputSlew, ctx.outputLoad, i1, i2, vals);
+  };
+
+  std::optional<double> c1, c2;
+  if (preferFall) {
+    c1 =
+        samplePair(receiver->getCap1FallIndex1(), receiver->getCap1FallIndex2(),
+                   receiver->getCap1FallValues());
+    c2 =
+        samplePair(receiver->getCap2FallIndex1(), receiver->getCap2FallIndex2(),
+                   receiver->getCap2FallValues());
+    if (!c1)
+      c1 = samplePair(receiver->getCap1RiseIndex1(),
+                      receiver->getCap1RiseIndex2(),
+                      receiver->getCap1RiseValues());
+    if (!c2)
+      c2 = samplePair(receiver->getCap2RiseIndex1(),
+                      receiver->getCap2RiseIndex2(),
+                      receiver->getCap2RiseValues());
+  } else {
+    c1 =
+        samplePair(receiver->getCap1RiseIndex1(), receiver->getCap1RiseIndex2(),
+                   receiver->getCap1RiseValues());
+    c2 =
+        samplePair(receiver->getCap2RiseIndex1(), receiver->getCap2RiseIndex2(),
+                   receiver->getCap2RiseValues());
+    if (!c1)
+      c1 = samplePair(receiver->getCap1FallIndex1(),
+                      receiver->getCap1FallIndex2(),
+                      receiver->getCap1FallValues());
+    if (!c2)
+      c2 = samplePair(receiver->getCap2FallIndex1(),
+                      receiver->getCap2FallIndex2(),
+                      receiver->getCap2FallValues());
+  }
+
+  if (c1 && c2)
+    return 0.5 * (*c1 + *c2);
+  if (c1)
+    return c1;
+  if (c2)
+    return c2;
+  return std::nullopt;
+}
+
+static double getCCSPilotEffectiveStretch(const DelayContext &ctx,
+                                          const LibertyLibrary *liberty,
+                                          bool preferFall) {
+  auto receiverCap = getCCSPilotReceiverCapacitance(ctx, liberty, preferFall);
+  if (!receiverCap)
+    return getCCSPilotLoadStretchFactor(ctx.outputLoad);
+
+  double effectiveLoad = 0.5 * (std::max(ctx.outputLoad, 0.0) + *receiverCap);
+  return getCCSPilotLoadStretchFactor(effectiveLoad);
+}
+
 static std::optional<double> interpolateCrossing(ArrayRef<double> times,
                                                  ArrayRef<double> values,
                                                  double target) {
@@ -377,7 +450,7 @@ static bool extractCCSPilotThresholdMetrics(const DelayContext &ctx,
     return false;
 
   double scale = getTimeScalePs(ctx.op);
-  double stretch = getCCSPilotLoadStretchFactor(ctx.outputLoad);
+  double stretch = getCCSPilotEffectiveStretch(ctx, liberty, preferFall);
   for (double &t : times)
     t = t * scale * stretch;
 
@@ -547,7 +620,8 @@ bool CCSPilotDelayModel::computeOutputWaveform(
               inputWaveform.back().value < inputWaveform.front().value;
           if (decodeCCSPilotWaveform(*arc, preferFall, times, values)) {
             double scale = getTimeScalePs(ctx.op);
-            double stretch = getCCSPilotLoadStretchFactor(ctx.outputLoad);
+            double stretch =
+                getCCSPilotEffectiveStretch(ctx, liberty, preferFall);
             for (auto [t, v] : llvm::zip(times, values))
               outputWaveform.push_back(
                   {baseTime + delayPs + t * scale * stretch, v});
