@@ -99,7 +99,8 @@ public:
   };
 
   ArrivalAnalysis(const TimingGraph &graph);
-  ArrivalAnalysis(const TimingGraph &graph, Options options);
+  ArrivalAnalysis(const TimingGraph &graph, Options options,
+                  const DelayModel *delayModel = nullptr);
 
   /// Run the arrival time propagation.
   LogicalResult run();
@@ -139,6 +140,7 @@ private:
 
   const TimingGraph &graph;
   Options options;
+  const DelayModel *delayModel = nullptr;
 
   /// Arrival data for each node, indexed by TimingNodeId.
   SmallVector<NodeArrivalData> arrivalData;
@@ -152,4 +154,3 @@ private:
 } // namespace circt
 
 #endif // CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_ARRIVALANALYSIS_H
-

@@ -46,7 +46,8 @@ public:
 
   RequiredTimeAnalysis(const TimingGraph &graph,
                        const ArrivalAnalysis &arrivals,
-                       Options options = Options());
+                       Options options = Options(),
+                       const DelayModel *delayModel = nullptr);
 
   /// Run the backward propagation.
   LogicalResult run();
@@ -70,6 +71,7 @@ private:
   const TimingGraph &graph;
   const ArrivalAnalysis &arrivals;
   Options options;
+  const DelayModel *delayModel = nullptr;
 
   SmallVector<NodeRequiredData> requiredData;
   int64_t worstSlack = 0;

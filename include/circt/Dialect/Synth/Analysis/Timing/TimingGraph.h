@@ -123,17 +123,26 @@ private:
 /// Represents a timing arc (edge) between two timing nodes.
 class TimingArc {
 public:
-  TimingArc(TimingNode *from, TimingNode *to, int64_t delay)
-      : from(from), to(to), delay(delay) {}
+  TimingArc(TimingNode *from, TimingNode *to, int64_t delay, Operation *op,
+            Value inputValue, Value outputValue)
+      : from(from), to(to), delay(delay), op(op), inputValue(inputValue),
+        outputValue(outputValue) {}
 
   TimingNode *getFrom() const { return from; }
   TimingNode *getTo() const { return to; }
   int64_t getDelay() const { return delay; }
+  void setDelay(int64_t value) { delay = value; }
+  Operation *getOp() const { return op; }
+  Value getInputValue() const { return inputValue; }
+  Value getOutputValue() const { return outputValue; }
 
 private:
   TimingNode *from;
   TimingNode *to;
   int64_t delay;
+  Operation *op;
+  Value inputValue;
+  Value outputValue;
 };
 
 //===----------------------------------------------------------------------===//
@@ -206,7 +215,9 @@ private:
                           bool addToLookup = true);
 
   /// Create a new arc between two nodes.
-  TimingArc *createArc(TimingNode *from, TimingNode *to, int64_t delay);
+  TimingArc *createArc(TimingNode *from, TimingNode *to, int64_t delay,
+                       Operation *op = nullptr, Value inputValue = {},
+                       Value outputValue = {});
 
   /// Compute topological ordering of nodes.
   void computeTopologicalOrder();

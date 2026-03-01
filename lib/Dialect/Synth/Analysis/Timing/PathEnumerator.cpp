@@ -18,6 +18,17 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
+static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
+  if (!delayModel || !arc->getOp())
+    return arc->getDelay();
+
+  DelayContext ctx;
+  ctx.op = arc->getOp();
+  ctx.inputValue = arc->getInputValue();
+  ctx.outputValue = arc->getOutputValue();
+  return delayModel->computeDelay(ctx).delay;
+}
+
 //===----------------------------------------------------------------------===//
 // TimingPath Implementation
 //===----------------------------------------------------------------------===//
@@ -32,8 +43,9 @@ void TimingPath::print(llvm::raw_ostream &os) const {
 //===----------------------------------------------------------------------===//
 
 PathEnumerator::PathEnumerator(const TimingGraph &graph,
-                               const ArrivalAnalysis &arrivals)
-    : graph(graph), arrivals(arrivals) {}
+                               const ArrivalAnalysis &arrivals,
+                               const DelayModel *delayModel)
+    : graph(graph), arrivals(arrivals), delayModel(delayModel) {}
 
 void PathEnumerator::buildSuffixTree(
     TimingNode *endpoint, llvm::DenseMap<TimingNode *, SuffixTreeEntry> &sfxt) {
@@ -52,7 +64,8 @@ void PathEnumerator::buildSuffixTree(
       if (succIt == sfxt.end())
         continue;
 
-      int64_t candidateDist = succIt->second.dist + arc->getDelay();
+      int64_t candidateDist =
+          succIt->second.dist + getArcDelay(arc, delayModel);
       auto &entry = sfxt[node];
       if (entry.dist < candidateDist) {
         entry.dist = candidateDist;

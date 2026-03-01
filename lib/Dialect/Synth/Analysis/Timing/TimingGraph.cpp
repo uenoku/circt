@@ -91,9 +91,10 @@ TimingNodeId TimingGraph::createNode(Value value, uint32_t bitPos,
 }
 
 TimingArc *TimingGraph::createArc(TimingNode *from, TimingNode *to,
-                                  int64_t delay) {
+                                  int64_t delay, Operation *op,
+                                  Value inputValue, Value outputValue) {
   auto *arcPtr = arcAllocator.Allocate();
-  new (arcPtr) TimingArc(from, to, delay);
+  new (arcPtr) TimingArc(from, to, delay, op, inputValue, outputValue);
 
   from->addFanout(arcPtr);
   to->addFanin(arcPtr);
@@ -305,10 +306,6 @@ LogicalResult TimingGraph::processOperation(Operation *op,
   }
 
   // Handle combinational operations
-  DelayContext ctx;
-  ctx.op = op;
-  int64_t delay = model.computeDelay(ctx).delay;
-
   for (auto result : op->getResults()) {
     size_t resultWidth = getBitWidth(result);
     for (size_t bit = 0; bit < resultWidth; ++bit) {
@@ -323,7 +320,14 @@ LogicalResult TimingGraph::processOperation(Operation *op,
         size_t srcBit = std::min(bit, operandWidth - 1);
         auto *fromNode = getOrCreateNode(operand, srcBit, currentModule,
                                          contextPath, topContext);
-        createArc(fromNode, toNode, delay);
+
+        DelayContext ctx;
+        ctx.op = op;
+        ctx.inputValue = operand;
+        ctx.outputValue = result;
+        int64_t delay = model.computeDelay(ctx).delay;
+
+        createArc(fromNode, toNode, delay, op, operand, result);
       }
     }
   }

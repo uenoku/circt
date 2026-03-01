@@ -14,10 +14,23 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
+static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
+  if (!delayModel || !arc->getOp())
+    return arc->getDelay();
+
+  DelayContext ctx;
+  ctx.op = arc->getOp();
+  ctx.inputValue = arc->getInputValue();
+  ctx.outputValue = arc->getOutputValue();
+  return delayModel->computeDelay(ctx).delay;
+}
+
 RequiredTimeAnalysis::RequiredTimeAnalysis(const TimingGraph &graph,
                                            const ArrivalAnalysis &arrivals,
-                                           Options options)
-    : graph(graph), arrivals(arrivals), options(std::move(options)) {
+                                           Options options,
+                                           const DelayModel *delayModel)
+    : graph(graph), arrivals(arrivals), options(std::move(options)),
+      delayModel(delayModel) {
   requiredData.resize(graph.getNumNodes());
 }
 
@@ -52,7 +65,8 @@ LogicalResult RequiredTimeAnalysis::run() {
       if (!succData.isSet())
         continue;
 
-      int64_t candidateRAT = succData.getRequiredTime() - arc->getDelay();
+      int64_t candidateRAT =
+          succData.getRequiredTime() - getArcDelay(arc, delayModel);
       if (!nodeData.isSet() || candidateRAT < nodeData.getRequiredTime()) {
         nodeData.setRequiredTime(candidateRAT);
         nodeData.markSet();

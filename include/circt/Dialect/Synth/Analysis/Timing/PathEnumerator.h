@@ -97,7 +97,8 @@ struct PathQuery {
 /// data from ArrivalAnalysis for efficient enumeration.
 class PathEnumerator {
 public:
-  PathEnumerator(const TimingGraph &graph, const ArrivalAnalysis &arrivals);
+  PathEnumerator(const TimingGraph &graph, const ArrivalAnalysis &arrivals,
+                 const DelayModel *delayModel = nullptr);
 
   /// Enumerate paths matching the query.
   LogicalResult enumerate(const PathQuery &query,
@@ -117,9 +118,9 @@ public:
 private:
   /// Suffix tree entry for backward shortest-path tree.
   struct SuffixTreeEntry {
-    int64_t dist = -1;          // Distance to endpoint (-1 = unreachable)
+    int64_t dist = -1;            // Distance to endpoint (-1 = unreachable)
     TimingNode *parent = nullptr; // Parent in suffix tree
-    TimingArc *arc = nullptr;   // Arc from this node to parent
+    TimingArc *arc = nullptr;     // Arc from this node to parent
   };
 
   /// Build suffix tree (backward shortest-path tree) from endpoint.
@@ -144,6 +145,7 @@ private:
 
   const TimingGraph &graph;
   const ArrivalAnalysis &arrivals;
+  const DelayModel *delayModel = nullptr;
 };
 
 } // namespace timing
@@ -151,4 +153,3 @@ private:
 } // namespace circt
 
 #endif // CIRCT_DIALECT_SYNTH_ANALYSIS_TIMING_PATHENUMERATOR_H
-

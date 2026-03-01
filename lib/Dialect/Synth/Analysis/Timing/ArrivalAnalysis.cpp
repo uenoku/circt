@@ -15,6 +15,17 @@
 using namespace circt;
 using namespace circt::synth::timing;
 
+static int64_t getArcDelay(const TimingArc *arc, const DelayModel *delayModel) {
+  if (!delayModel || !arc->getOp())
+    return arc->getDelay();
+
+  DelayContext ctx;
+  ctx.op = arc->getOp();
+  ctx.inputValue = arc->getInputValue();
+  ctx.outputValue = arc->getOutputValue();
+  return delayModel->computeDelay(ctx).delay;
+}
+
 //===----------------------------------------------------------------------===//
 // NodeArrivalData Implementation
 //===----------------------------------------------------------------------===//
@@ -54,8 +65,9 @@ void NodeArrivalData::addArrival(TimingNodeId startPoint, int64_t arrivalTime) {
 ArrivalAnalysis::ArrivalAnalysis(const TimingGraph &graph)
     : ArrivalAnalysis(graph, Options()) {}
 
-ArrivalAnalysis::ArrivalAnalysis(const TimingGraph &graph, Options options)
-    : graph(graph), options(std::move(options)) {
+ArrivalAnalysis::ArrivalAnalysis(const TimingGraph &graph, Options options,
+                                 const DelayModel *delayModel)
+    : graph(graph), options(std::move(options)), delayModel(delayModel) {
   // Pre-allocate arrival data for all nodes
   arrivalData.resize(graph.getNumNodes());
 
@@ -126,7 +138,7 @@ void ArrivalAnalysis::propagate() {
 
       // Propagate all arrivals from this node
       for (const auto &arrival : nodeData.getAllArrivals()) {
-        int64_t newArrival = arrival.arrivalTime + arc->getDelay();
+        int64_t newArrival = arrival.arrivalTime + getArcDelay(arc, delayModel);
         succData.addArrival(arrival.startPoint, newArrival);
       }
     }
@@ -169,4 +181,3 @@ bool ArrivalAnalysis::hasArrivalFrom(TimingNodeId nodeId,
     return info.startPoint == startPoint;
   });
 }
-

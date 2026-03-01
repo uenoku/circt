@@ -71,11 +71,13 @@ LogicalResult TimingAnalysis::runArrivalAnalysis() {
   arrivalOpts.startPointPatterns.assign(options.startPointPatterns.begin(),
                                         options.startPointPatterns.end());
 
-  arrivals = std::make_unique<ArrivalAnalysis>(*graph, arrivalOpts);
+  arrivals = std::make_unique<ArrivalAnalysis>(*graph, arrivalOpts,
+                                               options.delayModel);
   if (failed(arrivals->run()))
     return failure();
 
-  enumerator = std::make_unique<PathEnumerator>(*graph, *arrivals);
+  enumerator =
+      std::make_unique<PathEnumerator>(*graph, *arrivals, options.delayModel);
   return success();
 }
 
@@ -88,8 +90,8 @@ LogicalResult TimingAnalysis::runBackwardAnalysis() {
   RequiredTimeAnalysis::Options ratOpts;
   ratOpts.clockPeriod = options.clockPeriod;
 
-  requiredTimeAnalysis =
-      std::make_unique<RequiredTimeAnalysis>(*graph, *arrivals, ratOpts);
+  requiredTimeAnalysis = std::make_unique<RequiredTimeAnalysis>(
+      *graph, *arrivals, ratOpts, options.delayModel);
   return requiredTimeAnalysis->run();
 }
 
