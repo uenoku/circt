@@ -3167,6 +3167,18 @@ LogicalResult InstanceChoiceOp::verify() {
     return emitOpError() << "number of referenced modules does not match the "
                             "number of options";
 
+  // Check that ports are not property types or RWProbe types.
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    auto type = result.getType();
+    if (isa<PropertyType>(type))
+      return emitOpError("cannot have property port (port ")
+             << idx << " '" << getPortName(idx) << "')";
+    if (auto refType = type_dyn_cast<RefType>(type))
+      if (refType.getForceable())
+        return emitOpError("cannot have RWProbe port (port ")
+               << idx << " '" << getPortName(idx) << "')";
+  }
+
   // The modules may only be instantiated under their required layers (which
   // are the same for all modules).
   auto ambientLayers = getAmbientLayersAt(getOperation());

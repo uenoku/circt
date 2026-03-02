@@ -2555,6 +2555,43 @@ firrtl.circuit "IntmoduleWithInstanceChoice" {
 
 // -----
 
+firrtl.circuit "InstanceChoiceWithPropertyPort" {
+  firrtl.option @Opt {
+    firrtl.option_case @A
+  }
+
+  firrtl.module private @Target(out %prop: !firrtl.string) {
+    %str = firrtl.string "hello"
+    firrtl.propassign %prop, %str : !firrtl.string
+  }
+
+  firrtl.module @InstanceChoiceWithPropertyPort() {
+    // expected-error @below {{cannot have property port (port 0 'prop')}}
+    %prop = firrtl.instance_choice inst @Target alternatives @Opt { @A -> @Target }(out prop: !firrtl.string)
+  }
+}
+
+// -----
+
+firrtl.circuit "InstanceChoiceWithRWProbe" {
+  firrtl.option @Opt {
+    firrtl.option_case @A
+  }
+
+  firrtl.module private @Target(out %probe: !firrtl.rwprobe<uint<8>>) {
+    %w = firrtl.wire sym @w : !firrtl.uint<8>
+    %p = firrtl.ref.rwprobe <@Target::@w> : !firrtl.rwprobe<uint<8>>
+    firrtl.ref.define %probe, %p : !firrtl.rwprobe<uint<8>>
+  }
+
+  firrtl.module @InstanceChoiceWithRWProbe() {
+    // expected-error @below {{cannot have RWProbe port (port 0 'probe')}}
+    %probe = firrtl.instance_choice inst @Target alternatives @Opt { @A -> @Target }(out probe: !firrtl.rwprobe<uint<8>>)
+  }
+}
+
+// -----
+
 firrtl.circuit "DPI" {
   firrtl.module @DPI(in %clock : !firrtl.clock, in %enable : !firrtl.uint<1>, in %in_0: !firrtl.uint<4>, in %in_1: !firrtl.uint) {
     // expected-error @below {{unknown width is not allowed for DPI}}
