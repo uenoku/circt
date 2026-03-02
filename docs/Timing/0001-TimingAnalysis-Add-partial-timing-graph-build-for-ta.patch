@@ -1,0 +1,455 @@
+From 90354230bf351c4d6c71923ffaad7d4a726b964e Mon Sep 17 00:00:00 2001
+From: Hideto Ueno <uenoku.tokotoko@gmail.com>
+Date: Mon, 2 Mar 2026 01:26:39 -0800
+Subject: [PATCH 1/2] [TimingAnalysis] Add partial timing graph build for
+ targeted path queries
+
+Build only the subgraph needed for from/to path queries by intersecting
+backward cones from endpoints with forward cones from startpoints. This
+avoids constructing the full timing graph when only specific paths are
+requested.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ .../Synth/Analysis/Timing/TimingAnalysis.h    |   7 +
+ .../Synth/Analysis/Timing/TimingGraph.h       |  11 +
+ .../Synth/Analysis/Timing/TimingAnalysis.cpp  |  24 ++
+ .../Synth/Analysis/Timing/TimingGraph.cpp     | 231 ++++++++++++++++++
+ .../Dialect/Synth/TimingAnalysisTest.cpp      |  92 +++++++
+ 5 files changed, 365 insertions(+)
+
+diff --git a/include/circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h b/include/circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h
+index 730f8d495..b9af11300 100644
+--- a/include/circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h
++++ b/include/circt/Dialect/Synth/Analysis/Timing/TimingAnalysis.h
+@@ -224,6 +224,13 @@ public:
+   // Stage 2: Path-Based Analysis
+   //===--------------------------------------------------------------------===//
+ 
++  /// Run a targeted path query using partial graph construction.
++  /// Builds only the subgraph needed for the query, runs arrival analysis on
++  /// it, and enumerates the matching paths. Falls back to full build when
++  /// patterns are empty or in hierarchical mode.
++  LogicalResult runPathQuery(const PathQuery &query,
++                             SmallVectorImpl<TimingPath> &results);
++
+   /// Enumerate paths matching the query.
+   LogicalResult enumeratePaths(const PathQuery &query,
+                                SmallVectorImpl<TimingPath> &results);
+diff --git a/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h b/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
+index 5b21fb6d8..082933991 100644
+--- a/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
++++ b/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
+@@ -221,6 +221,14 @@ public:
+   /// If delayModel is null, uses the default AIGLevelDelayModel.
+   LogicalResult build(const DelayModel *delayModel = nullptr);
+ 
++  /// Build a partial timing graph containing only operations in the
++  /// intersection of the backward cone from endpoints matching \p toPatterns
++  /// and the forward cone from startpoints matching \p fromPatterns.
++  /// This is flat-mode only; hierarchical mode falls back to full build.
++  LogicalResult buildPartial(ArrayRef<std::string> fromPatterns,
++                             ArrayRef<std::string> toPatterns,
++                             const DelayModel *delayModel = nullptr);
++
+   /// Get the name of the delay model used to build this graph.
+   StringRef getDelayModelName() const { return delayModelName; }
+ 
+@@ -254,6 +262,9 @@ private:
+                                  StringRef contextPath, bool topContext);
+ 
+   LogicalResult buildFlatGraph(const DelayModel &model);
++  LogicalResult
++  buildPartialFlatGraph(const DelayModel &model,
++                        const llvm::DenseSet<Operation *> &relevantOps);
+   LogicalResult buildHierarchicalGraph(const DelayModel &model);
+   LogicalResult buildModuleInContext(const DelayModel &model,
+                                      hw::HWModuleOp currentModule,
+diff --git a/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp b/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
+index cd2c99ec5..a0047f605 100644
+--- a/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
++++ b/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
+@@ -227,6 +227,30 @@ LogicalResult TimingAnalysis::runFullAnalysis() {
+   return runBackwardAnalysis();
+ }
+ 
++LogicalResult TimingAnalysis::runPathQuery(const PathQuery &query,
++                                           SmallVectorImpl<TimingPath> &results) {
++  LLVM_DEBUG(llvm::dbgs() << "Running targeted path query\n");
++
++  // Build partial graph if we have from/to patterns and are not hierarchical.
++  if ((!query.fromPatterns.empty() || !query.toPatterns.empty()) &&
++      !hierarchical) {
++    graph = std::make_unique<TimingGraph>(module);
++    if (failed(graph->buildPartial(query.fromPatterns, query.toPatterns,
++                                   options.delayModel)))
++      return failure();
++  } else {
++    if (failed(buildGraph()))
++      return failure();
++  }
++
++  // Run arrival analysis on the (partial) graph.
++  if (failed(runArrivalAnalysis()))
++    return failure();
++
++  // Enumerate paths.
++  return enumerator->enumerate(query, results);
++}
++
+ LogicalResult
+ TimingAnalysis::enumeratePaths(const PathQuery &query,
+                                SmallVectorImpl<TimingPath> &results) {
+diff --git a/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp b/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
+index acb0509a6..31bc83bfe 100644
+--- a/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
++++ b/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
+@@ -16,6 +16,7 @@
+ #include "mlir/IR/SymbolTable.h"
+ #include "llvm/ADT/STLExtras.h"
+ #include "llvm/Support/Debug.h"
++#include "llvm/Support/GlobPattern.h"
+ 
+ #define DEBUG_TYPE "timing-graph"
+ 
+@@ -249,6 +250,236 @@ LogicalResult TimingGraph::build(const DelayModel *delayModel) {
+   return success();
+ }
+ 
++/// Match port/register names against glob patterns on MLIR ops (before the
++/// timing graph exists).
++static void collectMatchingValues(hw::HWModuleOp mod,
++                                  ArrayRef<std::string> patterns, bool wantStart,
++                                  SmallVectorImpl<Value> &out) {
++  SmallVector<llvm::GlobPattern, 4> globs;
++  for (auto &p : patterns) {
++    if (auto g = llvm::GlobPattern::create(p))
++      globs.push_back(std::move(*g));
++  }
++  if (globs.empty())
++    return;
++
++  auto matches = [&](StringRef name) {
++    return llvm::any_of(globs, [&](auto &g) { return g.match(name); });
++  };
++
++  if (wantStart) {
++    // Input ports are start points.
++    for (auto arg : mod.getBodyBlock()->getArguments()) {
++      size_t argNum = cast<BlockArgument>(arg).getArgNumber();
++      if (matches(mod.getInputName(argNum)))
++        out.push_back(arg);
++    }
++    // Sequential op outputs are start points.
++    for (auto &op : mod.getBodyBlock()->getOperations()) {
++      if (!isSequentialOp(&op))
++        continue;
++      for (auto result : op.getResults()) {
++        std::string name;
++        if (auto compreg = dyn_cast<seq::CompRegOp>(op))
++          name = compreg.getNameAttr() ? compreg.getNameAttr().getValue().str()
++                                       : "reg";
++        else if (auto firreg = dyn_cast<seq::FirRegOp>(op))
++          name = firreg.getNameAttr() ? firreg.getNameAttr().getValue().str()
++                                      : "reg";
++        if (matches(name))
++          out.push_back(result);
++      }
++    }
++  } else {
++    // Output ports are end points — match on port names.
++    auto outputOp =
++        dyn_cast<hw::OutputOp>(mod.getBodyBlock()->getTerminator());
++    if (outputOp) {
++      for (auto [idx, operand] : llvm::enumerate(outputOp.getOperands())) {
++        if (matches(mod.getOutputName(idx)))
++          out.push_back(operand);
++      }
++    }
++    // Sequential op inputs (D pins) are end points.
++    for (auto &op : mod.getBodyBlock()->getOperations()) {
++      if (auto compreg = dyn_cast<seq::CompRegOp>(op)) {
++        std::string name =
++            compreg.getNameAttr()
++                ? (compreg.getNameAttr().getValue().str() + "_D")
++                : "reg_D";
++        if (matches(name))
++          out.push_back(compreg.getInput());
++      } else if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
++        std::string name =
++            firreg.getNameAttr()
++                ? (firreg.getNameAttr().getValue().str() + "_D")
++                : "reg_D";
++        if (matches(name))
++          out.push_back(firreg.getNext());
++      }
++    }
++  }
++}
++
++/// Walk backward through MLIR operand chains from seeds, collecting all
++/// operations in the transitive fanin cone. Stops at block arguments
++/// (input ports) and sequential op outputs (register Q pins).
++static DenseSet<Operation *>
++computeBackwardCone(ArrayRef<Value> endpoints) {
++  DenseSet<Operation *> visited;
++  SmallVector<Value, 32> worklist(endpoints.begin(), endpoints.end());
++  while (!worklist.empty()) {
++    Value v = worklist.pop_back_val();
++    auto *defOp = v.getDefiningOp();
++    if (!defOp)
++      continue; // block argument — stop
++    if (!visited.insert(defOp).second)
++      continue;
++    // Sequential ops are boundaries — don't walk through their operands.
++    if (isSequentialOp(defOp))
++      continue;
++    for (auto operand : defOp->getOperands())
++      worklist.push_back(operand);
++  }
++  return visited;
++}
++
++/// Walk forward through MLIR use chains from seeds, collecting all
++/// operations in the transitive fanout cone. Stops at sequential op inputs
++/// and output ops.
++static DenseSet<Operation *>
++computeForwardCone(ArrayRef<Value> startpoints) {
++  DenseSet<Operation *> visited;
++  SmallVector<Value, 32> worklist(startpoints.begin(), startpoints.end());
++  while (!worklist.empty()) {
++    Value v = worklist.pop_back_val();
++    for (auto &use : v.getUses()) {
++      auto *userOp = use.getOwner();
++      if (!visited.insert(userOp).second)
++        continue;
++      // Sequential ops and output ops are boundaries — include them but don't
++      // walk further through their results.
++      if (isSequentialOp(userOp) || isa<hw::OutputOp>(userOp))
++        continue;
++      for (auto result : userOp->getResults())
++        worklist.push_back(result);
++    }
++  }
++  return visited;
++}
++
++LogicalResult TimingGraph::buildPartial(ArrayRef<std::string> fromPatterns,
++                                        ArrayRef<std::string> toPatterns,
++                                        const DelayModel *delayModel) {
++  // Fall back to full build if no patterns or hierarchical mode.
++  if (fromPatterns.empty() && toPatterns.empty())
++    return build(delayModel);
++  if (hierarchical)
++    return build(delayModel);
++
++  nodes.clear();
++  arcs.clear();
++  arcAllocator.DestroyAll();
++  startPoints.clear();
++  endPoints.clear();
++  topoOrder.clear();
++  reverseTopoOrder.clear();
++  valueToNode.clear();
++
++  std::unique_ptr<DelayModel> defaultModel;
++  if (!delayModel) {
++    defaultModel = createDefaultDelayModel();
++    delayModel = defaultModel.get();
++  }
++  delayModelName = delayModel->getName().str();
++
++  // Collect seed values matching the patterns.
++  SmallVector<Value> fromValues, toValues;
++  if (!fromPatterns.empty())
++    collectMatchingValues(module, fromPatterns, /*wantStart=*/true, fromValues);
++  else {
++    // All start points.
++    for (auto arg : module.getBodyBlock()->getArguments())
++      fromValues.push_back(arg);
++    for (auto &op : module.getBodyBlock()->getOperations())
++      if (isSequentialOp(&op))
++        for (auto r : op.getResults())
++          fromValues.push_back(r);
++  }
++  if (!toPatterns.empty())
++    collectMatchingValues(module, toPatterns, /*wantStart=*/false, toValues);
++  else {
++    auto outputOp =
++        dyn_cast<hw::OutputOp>(module.getBodyBlock()->getTerminator());
++    if (outputOp)
++      for (auto operand : outputOp.getOperands())
++        toValues.push_back(operand);
++    for (auto &op : module.getBodyBlock()->getOperations()) {
++      if (auto compreg = dyn_cast<seq::CompRegOp>(op))
++        toValues.push_back(compreg.getInput());
++      else if (auto firreg = dyn_cast<seq::FirRegOp>(op))
++        toValues.push_back(firreg.getNext());
++    }
++  }
++
++  auto backwardCone = computeBackwardCone(toValues);
++  auto forwardCone = computeForwardCone(fromValues);
++
++  // Intersect: only keep ops in both cones.
++  DenseSet<Operation *> relevantOps;
++  for (auto *op : backwardCone)
++    if (forwardCone.contains(op))
++      relevantOps.insert(op);
++
++  LLVM_DEBUG(llvm::dbgs() << "Partial build: backward cone " << backwardCone.size()
++                          << ", forward cone " << forwardCone.size()
++                          << ", intersection " << relevantOps.size() << "\n");
++
++  if (failed(buildPartialFlatGraph(*delayModel, relevantOps)))
++    return failure();
++
++  computeTopologicalOrder();
++
++  LLVM_DEBUG(llvm::dbgs() << "Partial timing graph built: " << nodes.size()
++                          << " nodes, " << arcs.size() << " arcs\n");
++
++  return success();
++}
++
++LogicalResult TimingGraph::buildPartialFlatGraph(
++    const DelayModel &model, const DenseSet<Operation *> &relevantOps) {
++  // Process input ports — only if they feed relevant ops.
++  for (auto arg : module.getBodyBlock()->getArguments()) {
++    bool used = llvm::any_of(arg.getUses(), [&](OpOperand &use) {
++      return relevantOps.contains(use.getOwner());
++    });
++    if (!used)
++      continue;
++    size_t width = getBitWidth(arg);
++    for (size_t bit = 0; bit < width; ++bit)
++      getOrCreateNode(arg, bit, module, "", /*topContext=*/true);
++  }
++
++  // Process only relevant operations.
++  for (auto &op : module.getBodyBlock()->getOperations()) {
++    if (!relevantOps.contains(&op) && !isa<hw::OutputOp>(op))
++      continue;
++    // For OutputOp, only process if at least one operand comes from a
++    // relevant op.
++    if (auto outputOp = dyn_cast<hw::OutputOp>(op)) {
++      bool anyRelevant = llvm::any_of(outputOp.getOperands(), [&](Value v) {
++        return v.getDefiningOp() && relevantOps.contains(v.getDefiningOp());
++      });
++      if (!anyRelevant)
++        continue;
++    }
++    if (failed(processOperation(&op, model, module, "", /*topContext=*/true)))
++      return failure();
++  }
++
++  return success();
++}
++
+ LogicalResult TimingGraph::processOperation(Operation *op,
+                                             const DelayModel &model,
+                                             hw::HWModuleOp currentModule,
+diff --git a/unittests/Dialect/Synth/TimingAnalysisTest.cpp b/unittests/Dialect/Synth/TimingAnalysisTest.cpp
+index 501f0de64..3e85376a7 100644
+--- a/unittests/Dialect/Synth/TimingAnalysisTest.cpp
++++ b/unittests/Dialect/Synth/TimingAnalysisTest.cpp
+@@ -2021,4 +2021,96 @@ TEST_F(TimingAnalysisTest, HierarchicalTimingAnalysisElaboratesInstances) {
+   EXPECT_TRUE(sawInst2);
+ }
+ 
++// IR with two independent combinational cones for partial build testing.
++const char *twoConeIR = R"MLIR(
++    hw.module private @two_cones(in %a : i1, in %b : i1, out x : i1, out y : i1) {
++      %c1 = synth.aig.and_inv %a, %a : i1
++      %c2 = synth.aig.and_inv %c1, %a : i1
++      %d1 = synth.aig.and_inv %b, %b : i1
++      %d2 = synth.aig.and_inv %d1, %b : i1
++      hw.output %c2, %d2 : i1, i1
++    }
++)MLIR";
++
++TEST_F(TimingAnalysisTest, PartialBuildFewerNodes) {
++  OwningOpRef<ModuleOp> module =
++      parseSourceString<ModuleOp>(twoConeIR, &context);
++  ASSERT_TRUE(module);
++
++  SymbolTable symbolTable(module.get());
++  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("two_cones");
++  ASSERT_TRUE(hwModule);
++
++  // Full build.
++  auto fullAnalysis = TimingAnalysis::create(hwModule);
++  ASSERT_TRUE(succeeded(fullAnalysis->buildGraph()));
++  size_t fullNodes = fullAnalysis->getGraph().getNumNodes();
++
++  // Partial build targeting only a->x cone.
++  auto partialAnalysis = TimingAnalysis::create(hwModule);
++  PathQuery query;
++  query.fromPatterns = {"a"};
++  query.toPatterns = {"x"};
++  query.reconstructPaths = true;
++  SmallVector<TimingPath> paths;
++  ASSERT_TRUE(succeeded(partialAnalysis->runPathQuery(query, paths)));
++
++  size_t partialNodes = partialAnalysis->getGraph().getNumNodes();
++
++  // The partial graph should have strictly fewer nodes than the full graph.
++  EXPECT_LT(partialNodes, fullNodes);
++  // We should still find at least one path.
++  EXPECT_FALSE(paths.empty());
++}
++
++TEST_F(TimingAnalysisTest, PartialBuildMatchesFullResults) {
++  OwningOpRef<ModuleOp> module =
++      parseSourceString<ModuleOp>(twoConeIR, &context);
++  ASSERT_TRUE(module);
++
++  SymbolTable symbolTable(module.get());
++  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("two_cones");
++  ASSERT_TRUE(hwModule);
++
++  // Full build path query.
++  auto fullAnalysis = TimingAnalysis::create(hwModule);
++  ASSERT_TRUE(succeeded(fullAnalysis->runFullAnalysis()));
++  SmallVector<TimingPath> fullPaths;
++  ASSERT_TRUE(succeeded(fullAnalysis->getPaths({"a"}, {"x"}, fullPaths)));
++
++  // Partial build path query.
++  auto partialAnalysis = TimingAnalysis::create(hwModule);
++  PathQuery query;
++  query.fromPatterns = {"a"};
++  query.toPatterns = {"x"};
++  query.reconstructPaths = true;
++  SmallVector<TimingPath> partialPaths;
++  ASSERT_TRUE(succeeded(partialAnalysis->runPathQuery(query, partialPaths)));
++
++  // Both should produce the same number of paths with the same delays.
++  ASSERT_EQ(fullPaths.size(), partialPaths.size());
++  for (size_t i = 0; i < fullPaths.size(); ++i)
++    EXPECT_EQ(fullPaths[i].getDelay(), partialPaths[i].getDelay());
++}
++
++TEST_F(TimingAnalysisTest, PartialBuildEmptyPatternsFallsBackToFull) {
++  OwningOpRef<ModuleOp> module =
++      parseSourceString<ModuleOp>(twoConeIR, &context);
++  ASSERT_TRUE(module);
++
++  SymbolTable symbolTable(module.get());
++  auto hwModule = symbolTable.lookup<hw::HWModuleOp>("two_cones");
++  ASSERT_TRUE(hwModule);
++
++  // Empty patterns should build the full graph.
++  auto analysis = TimingAnalysis::create(hwModule);
++  PathQuery query;
++  query.reconstructPaths = true;
++  SmallVector<TimingPath> paths;
++  ASSERT_TRUE(succeeded(analysis->runPathQuery(query, paths)));
++
++  // Should find paths from both cones.
++  EXPECT_GE(paths.size(), 2u);
++}
++
+ } // namespace
+-- 
+2.34.1
+

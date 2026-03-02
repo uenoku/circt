@@ -1,0 +1,342 @@
+From df885cc1e753cd439dc5ac8430a7b29c9f7651c6 Mon Sep 17 00:00:00 2001
+From: Hideto Ueno <uenoku.tokotoko@gmail.com>
+Date: Mon, 2 Mar 2026 01:32:01 -0800
+Subject: [PATCH 2/2] [TimingAnalysis] Add hierarchical partial build and
+ circt-sta --partial-build
+
+Extend partial timing graph build to support hierarchical mode by skipping
+irrelevant top-level instances while fully elaborating relevant ones.
+
+Add --partial-build flag to circt-sta and the PrintTimingAnalysis pass. When
+enabled alongside --filter-start/--filter-end, only the subgraph needed for
+the filtered paths is constructed, reducing build time and memory for
+targeted queries on large designs.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+---
+ .../Synth/Analysis/Timing/TimingGraph.h       |   3 +
+ .../Dialect/Synth/Transforms/SynthPasses.td   |   4 +-
+ .../Synth/Analysis/PrintTimingAnalysis.cpp    |  30 ++++-
+ .../Synth/Analysis/Timing/TimingAnalysis.cpp  |  10 +-
+ .../Synth/Analysis/Timing/TimingGraph.cpp     | 118 +++++++++++++++++-
+ tools/circt-sta/circt-sta.cpp                 |   6 +
+ .../Dialect/Synth/TimingAnalysisTest.cpp      |  42 +++++++
+ 7 files changed, 202 insertions(+), 11 deletions(-)
+
+diff --git a/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h b/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
+index 082933991..80a02e952 100644
+--- a/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
++++ b/include/circt/Dialect/Synth/Analysis/Timing/TimingGraph.h
+@@ -266,6 +266,9 @@ private:
+   buildPartialFlatGraph(const DelayModel &model,
+                         const llvm::DenseSet<Operation *> &relevantOps);
+   LogicalResult buildHierarchicalGraph(const DelayModel &model);
++  LogicalResult buildPartialHierarchicalGraph(
++      const DelayModel &model,
++      const llvm::DenseSet<Operation *> &relevantOps);
+   LogicalResult buildModuleInContext(const DelayModel &model,
+                                      hw::HWModuleOp currentModule,
+                                      StringRef contextPath,
+diff --git a/include/circt/Dialect/Synth/Transforms/SynthPasses.td b/include/circt/Dialect/Synth/Transforms/SynthPasses.td
+index fee19e282..b20dc7c5b 100644
+--- a/include/circt/Dialect/Synth/Transforms/SynthPasses.td
++++ b/include/circt/Dialect/Synth/Transforms/SynthPasses.td
+@@ -431,7 +431,9 @@ def PrintTimingAnalysis : Pass<"synth-print-timing-analysis", "mlir::ModuleOp">
+     Option<"adaptiveSlewHintDampingMode", "adaptive-slew-damping-mode", "std::string", "\"disabled\"",
+            "Adaptive damping mode: disabled, conservative, aggressive">,
+     Option<"enableWaveformCoupledConvergence", "enable-waveform-coupled-convergence", "bool", "true",
+-           "Enable waveform-coupled slew convergence heuristics for waveform-capable models">
++           "Enable waveform-coupled slew convergence heuristics for waveform-capable models">,
++    Option<"partialBuild", "partial-build", "bool", "false",
++           "Build only the subgraph needed for filtered start/end points">
+   ];
+   let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                            "circt::synth::SynthDialect"];
+diff --git a/lib/Dialect/Synth/Analysis/PrintTimingAnalysis.cpp b/lib/Dialect/Synth/Analysis/PrintTimingAnalysis.cpp
+index dd63eb193..9e12e0930 100644
+--- a/lib/Dialect/Synth/Analysis/PrintTimingAnalysis.cpp
++++ b/lib/Dialect/Synth/Analysis/PrintTimingAnalysis.cpp
+@@ -203,11 +203,37 @@ struct PrintTimingAnalysisPass
+ 
+     auto analysis =
+         timing::TimingAnalysis::create(module, topModuleName, analysisOptions);
+-    if (!analysis || failed(analysis->runFullAnalysis())) {
+-      top->emitError("failed to run timing analysis");
++    if (!analysis) {
++      top->emitError("failed to create timing analysis");
+       return signalPassFailure();
+     }
+ 
++    // Use partial graph build when explicitly requested or auto-detected from
++    // start/end filters.
++    bool usePartial =
++        partialBuild &&
++        (!filterStartPoints.empty() || !filterEndPoints.empty());
++
++    if (usePartial) {
++      timing::PathQuery query;
++      query.fromPatterns.assign(filterStartPoints.begin(),
++                                filterStartPoints.end());
++      query.toPatterns.assign(filterEndPoints.begin(), filterEndPoints.end());
++      query.reconstructPaths = true;
++
++      // Build partial graph, run arrival analysis, and enumerate paths.
++      SmallVector<timing::TimingPath> unused;
++      if (failed(analysis->runPathQuery(query, unused))) {
++        top->emitError("failed to run partial timing analysis");
++        return signalPassFailure();
++      }
++    } else {
++      if (failed(analysis->runFullAnalysis())) {
++        top->emitError("failed to run timing analysis");
++        return signalPassFailure();
++      }
++    }
++
+     std::string error;
+     std::unique_ptr<llvm::ToolOutputFile> file;
+     llvm::raw_ostream *os = nullptr;
+diff --git a/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp b/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
+index a0047f605..0158e97e5 100644
+--- a/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
++++ b/lib/Dialect/Synth/Analysis/Timing/TimingAnalysis.cpp
+@@ -231,10 +231,12 @@ LogicalResult TimingAnalysis::runPathQuery(const PathQuery &query,
+                                            SmallVectorImpl<TimingPath> &results) {
+   LLVM_DEBUG(llvm::dbgs() << "Running targeted path query\n");
+ 
+-  // Build partial graph if we have from/to patterns and are not hierarchical.
+-  if ((!query.fromPatterns.empty() || !query.toPatterns.empty()) &&
+-      !hierarchical) {
+-    graph = std::make_unique<TimingGraph>(module);
++  // Build partial graph if we have from/to patterns.
++  if (!query.fromPatterns.empty() || !query.toPatterns.empty()) {
++    if (hierarchical)
++      graph = std::make_unique<TimingGraph>(moduleOp, module);
++    else
++      graph = std::make_unique<TimingGraph>(module);
+     if (failed(graph->buildPartial(query.fromPatterns, query.toPatterns,
+                                    options.delayModel)))
+       return failure();
+diff --git a/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp b/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
+index 31bc83bfe..1e90083e2 100644
+--- a/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
++++ b/lib/Dialect/Synth/Analysis/Timing/TimingGraph.cpp
+@@ -371,11 +371,9 @@ computeForwardCone(ArrayRef<Value> startpoints) {
+ LogicalResult TimingGraph::buildPartial(ArrayRef<std::string> fromPatterns,
+                                         ArrayRef<std::string> toPatterns,
+                                         const DelayModel *delayModel) {
+-  // Fall back to full build if no patterns or hierarchical mode.
++  // Fall back to full build if no patterns.
+   if (fromPatterns.empty() && toPatterns.empty())
+     return build(delayModel);
+-  if (hierarchical)
+-    return build(delayModel);
+ 
+   nodes.clear();
+   arcs.clear();
+@@ -435,7 +433,11 @@ LogicalResult TimingGraph::buildPartial(ArrayRef<std::string> fromPatterns,
+                           << ", forward cone " << forwardCone.size()
+                           << ", intersection " << relevantOps.size() << "\n");
+ 
+-  if (failed(buildPartialFlatGraph(*delayModel, relevantOps)))
++  LogicalResult buildResult =
++      hierarchical
++          ? buildPartialHierarchicalGraph(*delayModel, relevantOps)
++          : buildPartialFlatGraph(*delayModel, relevantOps);
++  if (failed(buildResult))
+     return failure();
+ 
+   computeTopologicalOrder();
+@@ -480,6 +482,114 @@ LogicalResult TimingGraph::buildPartialFlatGraph(
+   return success();
+ }
+ 
++LogicalResult TimingGraph::buildPartialHierarchicalGraph(
++    const DelayModel &model, const DenseSet<Operation *> &relevantOps) {
++  if (!circuit) {
++    module.emitError("hierarchical timing graph requires parent module op");
++    return failure();
++  }
++
++  // Process input ports that feed relevant ops.
++  for (auto arg : module.getBodyBlock()->getArguments()) {
++    bool used = llvm::any_of(arg.getUses(), [&](OpOperand &use) {
++      return relevantOps.contains(use.getOwner());
++    });
++    if (!used)
++      continue;
++    size_t width = getBitWidth(arg);
++    for (size_t bit = 0; bit < width; ++bit)
++      getOrCreateNode(arg, bit, module, "", /*topContext=*/true);
++  }
++
++  llvm::SmallVector<StringAttr> stack;
++  stack.push_back(module.getModuleNameAttr());
++
++  for (auto &op : module.getBodyBlock()->getOperations()) {
++    // For instances, only elaborate if the instance is relevant.
++    if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
++      if (!relevantOps.contains(&op))
++        continue;
++
++      auto childName = inst.getReferencedModuleNameAttr();
++      auto childModule = circuit.lookupSymbol<hw::HWModuleOp>(childName);
++
++      if (isLibertyCellLikeInstance(inst, childModule) || !childModule) {
++        if (failed(processOperation(&op, model, module, "",
++                                    /*topContext=*/true))) {
++          stack.pop_back();
++          return failure();
++        }
++        continue;
++      }
++
++      std::string childContext =
++          makeChildContext("", inst.getInstanceName());
++
++      // Connect parent operands to child inputs.
++      auto childArgs = childModule.getBodyBlock()->getArguments();
++      for (auto [idx, operand] : llvm::enumerate(inst.getOperands())) {
++        if (idx >= childArgs.size())
++          continue;
++        auto childArg = childArgs[idx];
++        size_t width = std::min(getBitWidth(operand), getBitWidth(childArg));
++        for (size_t bit = 0; bit < width; ++bit) {
++          auto *from =
++              getOrCreateNode(operand, bit, module, "", /*topContext=*/true);
++          auto *to = getOrCreateNode(childArg, bit, childModule, childContext,
++                                     /*topContext=*/false);
++          createArc(from, to, 0);
++        }
++      }
++
++      // Fully elaborate relevant child instance.
++      if (failed(buildModuleInContext(model, childModule, childContext, stack,
++                                      /*topContext=*/false))) {
++        stack.pop_back();
++        return failure();
++      }
++
++      // Connect child outputs to parent instance results.
++      auto outputOp =
++          dyn_cast<hw::OutputOp>(childModule.getBodyBlock()->getTerminator());
++      if (!outputOp)
++        continue;
++      for (auto [idx, instResult] : llvm::enumerate(inst.getResults())) {
++        if (idx >= outputOp.getNumOperands())
++          continue;
++        Value childOutput = outputOp.getOperand(idx);
++        size_t width =
++            std::min(getBitWidth(childOutput), getBitWidth(instResult));
++        for (size_t bit = 0; bit < width; ++bit) {
++          auto *from = getOrCreateNode(childOutput, bit, childModule,
++                                       childContext, /*topContext=*/false);
++          auto *to =
++              getOrCreateNode(instResult, bit, module, "", /*topContext=*/true);
++          createArc(from, to, 0);
++        }
++      }
++      continue;
++    }
++
++    // For non-instance ops, skip if not relevant (except OutputOp).
++    if (!relevantOps.contains(&op) && !isa<hw::OutputOp>(op))
++      continue;
++    if (auto outputOp = dyn_cast<hw::OutputOp>(op)) {
++      bool anyRelevant = llvm::any_of(outputOp.getOperands(), [&](Value v) {
++        return v.getDefiningOp() && relevantOps.contains(v.getDefiningOp());
++      });
++      if (!anyRelevant)
++        continue;
++    }
++    if (failed(processOperation(&op, model, module, "", /*topContext=*/true))) {
++      stack.pop_back();
++      return failure();
++    }
++  }
++
++  stack.pop_back();
++  return success();
++}
++
+ LogicalResult TimingGraph::processOperation(Operation *op,
+                                             const DelayModel &model,
+                                             hw::HWModuleOp currentModule,
+diff --git a/tools/circt-sta/circt-sta.cpp b/tools/circt-sta/circt-sta.cpp
+index c8d9d8898..c6fa11c88 100644
+--- a/tools/circt-sta/circt-sta.cpp
++++ b/tools/circt-sta/circt-sta.cpp
+@@ -123,6 +123,11 @@ static cl::opt<bool> enableWaveformCoupledConvergence(
+     cl::desc("Enable waveform-coupled convergence heuristics"), cl::init(true),
+     cl::cat(mainCategory));
+ 
++static cl::opt<bool> partialBuild(
++    "partial-build",
++    cl::desc("Build only the subgraph needed for --filter-start/--filter-end"),
++    cl::init(false), cl::cat(mainCategory));
++
+ static LogicalResult executeSTA(MLIRContext &context) {
+   std::string errorMessage;
+   auto input = openInputFile(inputFilename, &errorMessage);
+@@ -159,6 +164,7 @@ static LogicalResult executeSTA(MLIRContext &context) {
+   options.slewHintDamping = slewHintDamping;
+   options.adaptiveSlewHintDampingMode = adaptiveSlewDampingMode;
+   options.enableWaveformCoupledConvergence = enableWaveformCoupledConvergence;
++  options.partialBuild = partialBuild;
+   for (const auto &pat : filterStartPoints)
+     options.filterStartPoints.push_back(pat);
+   for (const auto &pat : filterEndPoints)
+diff --git a/unittests/Dialect/Synth/TimingAnalysisTest.cpp b/unittests/Dialect/Synth/TimingAnalysisTest.cpp
+index 3e85376a7..2ecf257d6 100644
+--- a/unittests/Dialect/Synth/TimingAnalysisTest.cpp
++++ b/unittests/Dialect/Synth/TimingAnalysisTest.cpp
+@@ -2113,4 +2113,46 @@ TEST_F(TimingAnalysisTest, PartialBuildEmptyPatternsFallsBackToFull) {
+   EXPECT_GE(paths.size(), 2u);
+ }
+ 
++// IR with two independent hierarchical cones for partial build testing.
++const char *hierTwoConeIR = R"MLIR(
++    hw.module private @inv(in %a : i1, out x : i1) {
++      %c = synth.aig.and_inv %a, %a : i1
++      hw.output %c : i1
++    }
++
++    hw.module @hier_two_cones(in %a : i1, in %b : i1, out x : i1, out y : i1) {
++      %x0 = hw.instance "u1" @inv(a: %a: i1) -> (x: i1)
++      %y0 = hw.instance "u2" @inv(a: %b: i1) -> (x: i1)
++      hw.output %x0, %y0 : i1, i1
++    }
++)MLIR";
++
++TEST_F(TimingAnalysisTest, HierarchicalPartialBuildFewerNodes) {
++  OwningOpRef<ModuleOp> module =
++      parseSourceString<ModuleOp>(hierTwoConeIR, &context);
++  ASSERT_TRUE(module);
++
++  // Full hierarchical build.
++  auto fullAnalysis = timing::TimingAnalysis::create(
++      module.get(), "hier_two_cones");
++  ASSERT_TRUE(fullAnalysis);
++  ASSERT_TRUE(succeeded(fullAnalysis->buildGraph()));
++  size_t fullNodes = fullAnalysis->getGraph().getNumNodes();
++
++  // Partial hierarchical build targeting only a->x cone.
++  auto partialAnalysis = timing::TimingAnalysis::create(
++      module.get(), "hier_two_cones");
++  ASSERT_TRUE(partialAnalysis);
++  timing::PathQuery query;
++  query.fromPatterns = {"a"};
++  query.toPatterns = {"x"};
++  query.reconstructPaths = true;
++  SmallVector<timing::TimingPath> paths;
++  ASSERT_TRUE(succeeded(partialAnalysis->runPathQuery(query, paths)));
++
++  size_t partialNodes = partialAnalysis->getGraph().getNumNodes();
++  EXPECT_LT(partialNodes, fullNodes);
++  EXPECT_FALSE(paths.empty());
++}
++
+ } // namespace
+-- 
+2.34.1
+
