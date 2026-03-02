@@ -1,24 +1,20 @@
-//===- GenSupergates.cpp - Generate depth-2 supergate library -------------===//
+//===- GenSupergates.cpp - Generate supergate library
+//----------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// This pass generates depth-2 supergates by composing pairs of primitive
-// technology library cells. For each pair (innerCell, outerCell) and each input
-// pin of outerCell, the inner cell's output is connected to that pin. The
-// resulting composite cell is emitted as hw.module with hw.techlib.info.
-//
-//===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "circt/Support/InstanceGraph.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Debug.h"
 
@@ -39,15 +35,17 @@ namespace {
 struct CellInfo {
   hw::HWModuleOp module;
   double area;
-  SmallVector<int64_t> delays; // per-input delay in ps
+  SmallVector<int64_t> delays;
+  unsigned numGates;
 };
 
-/// Collect all primitive cells (modules with hw.techlib.info).
 static void collectBaseCells(ModuleOp topModule,
                              SmallVectorImpl<CellInfo> &cells) {
   for (auto hwModule : topModule.getOps<hw::HWModuleOp>()) {
-    auto techInfo =
-        hwModule->getAttrOfType<DictionaryAttr>("hw.techlib.info");
+    if (hwModule->hasAttr("synth.supergate"))
+      continue;
+
+    auto techInfo = hwModule->getAttrOfType<DictionaryAttr>("hw.techlib.info");
     if (!techInfo)
       continue;
 
@@ -56,41 +54,128 @@ static void collectBaseCells(ModuleOp topModule,
     if (!areaAttr || !delayAttr)
       continue;
 
-    CellInfo cell;
-    cell.module = hwModule;
-    cell.area = areaAttr.getValue().convertToDouble();
-    for (auto delayValue : delayAttr) {
-      auto delayArray = cast<ArrayAttr>(delayValue);
-      for (auto delayElement : delayArray)
-        cell.delays.push_back(
-            cast<IntegerAttr>(delayElement).getValue().getZExtValue());
+    CellInfo info;
+    info.module = hwModule;
+    info.area = areaAttr.getValue().convertToDouble();
+    for (auto perInputAttr : delayAttr) {
+      auto perInput = dyn_cast<ArrayAttr>(perInputAttr);
+      if (!perInput || perInput.empty())
+        continue;
+      auto d = dyn_cast<IntegerAttr>(perInput[0]);
+      if (!d)
+        continue;
+      info.delays.push_back(d.getValue().getSExtValue());
     }
-    cells.push_back(std::move(cell));
+
+    if (info.delays.size() != hwModule.getNumInputPorts())
+      continue;
+    info.numGates = 1;
+    cells.push_back(std::move(info));
   }
 }
 
-/// Compute NPN canonical form for an hw.module body.
-static FailureOr<NPNClass> computeNPN(hw::HWModuleOp module) {
-  auto outputTypes = module.getOutputTypes();
-  if (outputTypes.size() != 1 || !outputTypes[0].isInteger(1))
+static FailureOr<NPNClass> computeNPN(hw::HWModuleOp module,
+                                      igraph::InstanceGraph *instanceGraph) {
+  if (module.getNumOutputPorts() != 1)
     return failure();
-  for (auto type : module.getInputTypes())
-    if (!type.isInteger(1))
-      return failure();
+  if (!module.getOutputTypes()[0].isInteger(1))
+    return failure();
   if (module.getNumInputPorts() > synth::maxTruthTableInputs)
     return failure();
 
-  auto *bodyBlock = module.getBodyBlock();
-  SmallVector<Value> results;
-  for (auto result : bodyBlock->getTerminator()->getOperands())
-    results.push_back(result);
+  for (auto inputType : module.getInputTypes())
+    if (!inputType.isInteger(1))
+      return failure();
 
-  auto truthTable = synth::getTruthTable(results, bodyBlock);
-  if (failed(truthTable))
+  auto *body = module.getBodyBlock();
+  auto *terminator = body->getTerminator();
+  auto outputOp = dyn_cast_or_null<hw::OutputOp>(terminator);
+  if (!outputOp)
     return failure();
 
-  return NPNClass::computeNPNCanonicalForm(*truthTable);
+  auto tt = synth::getTruthTable(outputOp.getOutputs(), body, instanceGraph);
+  if (failed(tt))
+    return failure();
+  return NPNClass::computeNPNCanonicalForm(*tt);
 }
+
+static hw::HWModuleOp createSupergateModule(OpBuilder &builder, Location loc,
+                                            StringAttr name, CellInfo &inner,
+                                            CellInfo &outer, unsigned pin) {
+  auto savedInsertion = builder.saveInsertionPoint();
+  auto *ctx = builder.getContext();
+  auto i1 = builder.getI1Type();
+  SmallVector<hw::PortInfo> ports;
+
+  unsigned portIdx = 0;
+  for (unsigned i = 0, e = inner.module.getNumInputPorts(); i != e; ++i) {
+    auto inName = inner.module.getInputName(i);
+    ports.push_back(
+        {{StringAttr::get(ctx, inName), i1, hw::ModulePort::Direction::Input},
+         portIdx++});
+  }
+  for (unsigned i = 0, e = outer.module.getNumInputPorts(); i != e; ++i) {
+    if (i == pin)
+      continue;
+    auto inName = outer.module.getInputName(i);
+    SmallString<32> unique(inName);
+    unique += "_outer";
+    ports.push_back(
+        {{StringAttr::get(ctx, unique), i1, hw::ModulePort::Direction::Input},
+         portIdx++});
+  }
+
+  ports.push_back(
+      {{StringAttr::get(ctx, "Y"), i1, hw::ModulePort::Direction::Output},
+       portIdx});
+
+  auto sg = hw::HWModuleOp::create(builder, loc, name, ports);
+  sg.setPrivate();
+
+  auto *body = sg.getBodyBlock();
+  if (body->mightHaveTerminator())
+    body->getTerminator()->erase();
+
+  builder.setInsertionPointToEnd(body);
+  SmallVector<Value> innerOperands;
+  for (unsigned i = 0, e = inner.module.getNumInputPorts(); i != e; ++i)
+    innerOperands.push_back(body->getArgument(i));
+
+  auto innerInst = hw::InstanceOp::create(builder, loc, inner.module, "inner",
+                                          innerOperands);
+
+  SmallVector<Value> outerOperands;
+  unsigned nextArg = inner.module.getNumInputPorts();
+  for (unsigned i = 0, e = outer.module.getNumInputPorts(); i != e; ++i) {
+    if (i == pin) {
+      outerOperands.push_back(innerInst.getResult(0));
+      continue;
+    }
+    outerOperands.push_back(body->getArgument(nextArg++));
+  }
+
+  auto outerInst = hw::InstanceOp::create(builder, loc, outer.module, "outer",
+                                          outerOperands);
+  hw::OutputOp::create(builder, loc, ValueRange{outerInst.getResult(0)});
+  builder.restoreInsertionPoint(savedInsertion);
+  return sg;
+}
+
+static ArrayAttr buildDelayAttr(MLIRContext *ctx, ArrayRef<int64_t> delays) {
+  SmallVector<Attribute> delayPerInput;
+  for (int64_t d : delays) {
+    auto delayValue = IntegerAttr::get(IntegerType::get(ctx, 64), d);
+    delayPerInput.push_back(ArrayAttr::get(ctx, delayValue));
+  }
+  return ArrayAttr::get(ctx, delayPerInput);
+}
+
+struct SupergateCandidate {
+  hw::HWModuleOp module;
+  double area;
+  SmallVector<int64_t> delays;
+  unsigned numGates;
+};
 
 struct GenSupergatesPass
     : public circt::synth::impl::GenSupergatesBase<GenSupergatesPass> {
@@ -99,17 +184,19 @@ struct GenSupergatesPass
   void runOnOperation() override {
     auto topModule = getOperation();
     auto *ctx = topModule.getContext();
+    auto &instanceGraph = getAnalysis<igraph::InstanceGraph>();
 
-    // Step 1: Collect base cells.
+    if (maxGates < 2)
+      return;
+
     SmallVector<CellInfo> baseCells;
     collectBaseCells(topModule, baseCells);
     if (baseCells.empty())
-      return markAllAnalysesPreserved();
+      return;
 
-    // Step 2: Compute NPN classes for all base cells.
-    DenseMap<llvm::APInt, double> coveredNPN; // NPN table -> best area
+    DenseMap<llvm::APInt, double> coveredNPN;
     for (auto &cell : baseCells) {
-      auto npn = computeNPN(cell.module);
+      auto npn = computeNPN(cell.module, &instanceGraph);
       if (failed(npn))
         continue;
       auto key = npn->truthTable.table;
@@ -118,211 +205,111 @@ struct GenSupergatesPass
         coveredNPN[key] = cell.area;
     }
 
-    // Step 3: Generate supergates for each (inner, outer, pin) triple.
-    unsigned supergateCount = 0;
     OpBuilder builder(ctx);
-    // Insert before the first module's end.
     builder.setInsertionPointToEnd(topModule.getBody());
+    Location loc = topModule.getLoc();
 
-    struct SupergateCandidate {
-      hw::HWModuleOp module;
-      double area;
-      SmallVector<int64_t> delays;
-      llvm::APInt npnKey;
-    };
+    DenseMap<llvm::APInt, SupergateCandidate> bestByNPN;
+    unsigned supergateOrdinal = 0;
 
-    // Track best supergate per NPN class (only non-primitive ones).
-    DenseMap<llvm::APInt, SupergateCandidate> bestSupergates;
+    SmallVector<CellInfo> frontier = baseCells;
+    for (unsigned depth = 2; depth <= maxGates && !frontier.empty(); ++depth) {
+      for (auto &inner : frontier) {
+        for (auto &outer : baseCells) {
+          unsigned innerInputs = inner.module.getNumInputPorts();
+          unsigned outerInputs = outer.module.getNumInputPorts();
 
-    for (auto &inner : baseCells) {
-      for (auto &outer : baseCells) {
-        unsigned innerInputs = inner.module.getNumInputPorts();
-        unsigned outerInputs = outer.module.getNumInputPorts();
-
-        for (unsigned pin = 0; pin < outerInputs; ++pin) {
-          // Total inputs = innerInputs + (outerInputs - 1).
-          unsigned totalInputs = innerInputs + outerInputs - 1;
-          if (totalInputs > maxInputs)
+          double area = inner.area + outer.area;
+          if (maxArea > 0.0 && area > maxArea)
             continue;
 
-          double totalArea = inner.area + outer.area;
-          if (maxArea > 0.0 && totalArea > maxArea)
-            continue;
-
-          // Build the supergate module.
-          SmallString<32> name;
-          name = "__supergate_";
-          name += std::to_string(supergateCount);
-
-          // Build port list: innerInputs first, then outer inputs (skip pin).
-          SmallVector<hw::PortInfo> ports;
-          auto i1Ty = IntegerType::get(ctx, 1);
-
-          unsigned portIdx = 0;
-          // Inner cell inputs.
-          for (unsigned i = 0; i < innerInputs; ++i) {
-            auto inputName = inner.module.getInputName(i);
-            ports.push_back({{StringAttr::get(ctx, inputName),
-                              i1Ty,
-                              hw::ModulePort::Direction::Input},
-                             portIdx++});
-          }
-          // Outer cell inputs (skip the pin connected to inner output).
-          for (unsigned i = 0; i < outerInputs; ++i) {
-            if (i == pin)
+          for (unsigned pin = 0; pin < outerInputs; ++pin) {
+            unsigned totalInputs = innerInputs + outerInputs - 1;
+            if (totalInputs > maxInputs)
               continue;
-            auto inputName = outer.module.getInputName(i);
-            // Disambiguate names by adding suffix if needed.
-            SmallString<32> portName(inputName);
-            portName += "_o";
-            ports.push_back({{StringAttr::get(ctx, portName),
-                              i1Ty,
-                              hw::ModulePort::Direction::Input},
-                             portIdx++});
-          }
-          // Output.
-          ports.push_back({{StringAttr::get(ctx, "Y"),
-                            i1Ty,
-                            hw::ModulePort::Direction::Output},
-                           portIdx});
 
-          auto sgModule = hw::HWModuleOp::create(
-              builder, builder.getUnknownLoc(),
-              StringAttr::get(ctx, name), ports);
-          sgModule.setPrivate();
+            builder.setInsertionPointToEnd(topModule.getBody());
+            SmallString<32> supergateName("__supergate_");
+            supergateName += std::to_string(supergateOrdinal++);
+            auto sg = createSupergateModule(builder, loc,
+                                            StringAttr::get(ctx, supergateName),
+                                            inner, outer, pin);
+            instanceGraph.addModule(sg);
 
-          // Clone inner cell body ops into supergate body.
-          auto *sgBody = sgModule.getBodyBlock();
-          // Remove the auto-generated output op if present.
-          if (sgBody->mightHaveTerminator())
-            sgBody->getTerminator()->erase();
+            auto npn = computeNPN(sg, &instanceGraph);
+            if (failed(npn))
+              continue;
 
-          IRMapping innerMapping;
-          auto *innerBody = inner.module.getBodyBlock();
-          // Map inner block args to supergate block args [0, innerInputs).
-          for (unsigned i = 0; i < innerInputs; ++i)
-            innerMapping.map(innerBody->getArgument(i),
-                             sgBody->getArgument(i));
+            auto key = npn->truthTable.table;
+            if (coveredNPN.count(key))
+              continue;
 
-          builder.setInsertionPointToEnd(sgBody);
-          // Clone inner body ops (except terminator).
-          Value innerOutput;
-          for (auto &op : innerBody->without_terminator()) {
-            auto *cloned = builder.clone(op, innerMapping);
-            // Track the result that feeds into inner's output.
-            (void)cloned;
-          }
-          // The inner output is whatever the inner terminator references.
-          auto *innerTerm = innerBody->getTerminator();
-          innerOutput = innerMapping.lookup(innerTerm->getOperand(0));
-
-          // Clone outer cell body ops.
-          IRMapping outerMapping;
-          auto *outerBody = outer.module.getBodyBlock();
-          unsigned sgArgIdx = innerInputs;
-          for (unsigned i = 0; i < outerInputs; ++i) {
-            if (i == pin) {
-              // Wire inner output to this pin.
-              outerMapping.map(outerBody->getArgument(i), innerOutput);
-            } else {
-              outerMapping.map(outerBody->getArgument(i),
-                               sgBody->getArgument(sgArgIdx++));
+            SmallVector<int64_t> delays;
+            delays.reserve(totalInputs);
+            int64_t viaInner = outer.delays[pin];
+            for (unsigned i = 0; i < innerInputs; ++i)
+              delays.push_back(inner.delays[i] + viaInner);
+            for (unsigned i = 0; i < outerInputs; ++i) {
+              if (i == pin)
+                continue;
+              delays.push_back(outer.delays[i]);
             }
+
+            auto it = bestByNPN.find(key);
+            if (it == bestByNPN.end() || area < it->second.area)
+              bestByNPN[key] = {sg, area, std::move(delays), depth};
           }
-
-          for (auto &op : outerBody->without_terminator())
-            builder.clone(op, outerMapping);
-
-          // Create output op.
-          auto *outerTerm = outerBody->getTerminator();
-          Value outerOutput = outerMapping.lookup(outerTerm->getOperand(0));
-          hw::OutputOp::create(builder, builder.getUnknownLoc(),
-                               ValueRange{outerOutput});
-
-          // Compute NPN class.
-          auto npn = computeNPN(sgModule);
-          if (failed(npn)) {
-            sgModule.erase();
-            continue;
-          }
-
-          auto npnKey = npn->truthTable.table;
-
-          // Skip if already covered by a primitive cell.
-          if (coveredNPN.count(npnKey)) {
-            sgModule.erase();
-            continue;
-          }
-
-          // Compute delays.
-          SmallVector<int64_t> delays;
-          // Inner inputs: delay = inner_delay[i] + outer_delay[pin].
-          int64_t outerPinDelay =
-              (pin < outer.delays.size()) ? outer.delays[pin] : 0;
-          for (unsigned i = 0; i < innerInputs; ++i) {
-            int64_t innerDelay =
-                (i < inner.delays.size()) ? inner.delays[i] : 0;
-            delays.push_back(innerDelay + outerPinDelay);
-          }
-          // Outer inputs (skip pin).
-          for (unsigned i = 0; i < outerInputs; ++i) {
-            if (i == pin)
-              continue;
-            int64_t d = (i < outer.delays.size()) ? outer.delays[i] : 0;
-            delays.push_back(d);
-          }
-
-          // Check if this NPN class already has a better supergate.
-          auto it = bestSupergates.find(npnKey);
-          if (it != bestSupergates.end()) {
-            if (totalArea >= it->second.area) {
-              sgModule.erase();
-              continue;
-            }
-            // This is better - erase the old one.
-            it->second.module.erase();
-            it->second = {sgModule, totalArea, std::move(delays), npnKey};
-          } else {
-            bestSupergates[npnKey] = {sgModule, totalArea, std::move(delays),
-                                      npnKey};
-          }
-
-          supergateCount++;
         }
       }
+
+      SmallVector<CellInfo> nextFrontier;
+      for (auto &entry : bestByNPN) {
+        auto &candidate = entry.second;
+        if (candidate.numGates != depth)
+          continue;
+        nextFrontier.push_back({candidate.module, candidate.area,
+                                candidate.delays, candidate.numGates});
+      }
+      frontier = std::move(nextFrontier);
     }
 
-    // Step 4: Attach hw.techlib.info and synth.supergate to surviving modules.
-    for (auto &[npnKey, candidate] : bestSupergates) {
-      auto sgModule = candidate.module;
-      // Rename to sequential.
-      // Build delay attr.
-      SmallVector<Attribute> delayPerInput;
-      for (int64_t d : candidate.delays) {
-        SmallVector<Attribute> inner;
-        inner.push_back(IntegerAttr::get(IntegerType::get(ctx, 64), d));
-        delayPerInput.push_back(ArrayAttr::get(ctx, inner));
-      }
-
-      SmallVector<NamedAttribute> techInfoAttrs;
-      techInfoAttrs.push_back(
-          NamedAttribute(StringAttr::get(ctx, "area"),
-                         FloatAttr::get(Float64Type::get(ctx), candidate.area)));
-      techInfoAttrs.push_back(NamedAttribute(StringAttr::get(ctx, "delay"),
-                                             ArrayAttr::get(ctx, delayPerInput)));
-
-      sgModule->setAttr("hw.techlib.info",
-                        DictionaryAttr::get(ctx, techInfoAttrs));
-      sgModule->setAttr("synth.supergate",
-                        BoolAttr::get(ctx, true));
+    for (auto &entry : bestByNPN) {
+      auto &candidate = entry.second;
+      SmallVector<NamedAttribute> techInfo;
+      techInfo.push_back(
+          {StringAttr::get(ctx, "area"),
+           FloatAttr::get(Float64Type::get(ctx), candidate.area)});
+      techInfo.push_back({StringAttr::get(ctx, "delay"),
+                          buildDelayAttr(ctx, candidate.delays)});
+      candidate.module->setAttr("hw.techlib.info",
+                                DictionaryAttr::get(ctx, techInfo));
+      candidate.module->setAttr("synth.supergate", BoolAttr::get(ctx, true));
 
       LLVM_DEBUG(llvm::dbgs() << "Generated supergate: "
-                               << sgModule.getModuleName()
-                               << " area=" << candidate.area << "\n");
+                              << candidate.module.getModuleName() << "\n");
     }
 
-    LLVM_DEBUG(llvm::dbgs() << "Generated " << bestSupergates.size()
-                             << " supergates\n");
+    llvm::SmallPtrSet<Operation *, 16> liveSupergates;
+    for (auto &entry : bestByNPN)
+      liveSupergates.insert(entry.second.module.getOperation());
+
+    llvm::SmallPtrSet<Operation *, 16> erasedModules;
+
+    // Drop generated modules that were not selected as best representatives.
+    // We intentionally do not update InstanceGraph at the end of the pass since
+    // this analysis result is not preserved.
+    for (auto module :
+         llvm::make_early_inc_range(topModule.getOps<hw::HWModuleOp>())) {
+      if (!module.getModuleName().starts_with("__supergate_"))
+        continue;
+      Operation *op = module.getOperation();
+      if (liveSupergates.contains(op) || !erasedModules.insert(op).second)
+        continue;
+      module.erase();
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Generated " << bestByNPN.size() << " supergates\n");
   }
 };
 

@@ -453,13 +453,11 @@ def AnnotateTechLib : Pass<"synth-annotate-techlib", "mlir::ModuleOp"> {
 }
 
 def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
-  let summary = "Generate depth-2 supergate library from primitive cells";
+  let summary = "Generate supergate library from primitive cells";
   let description = [{
-    This pass generates depth-2 supergates by composing pairs of primitive
-    technology library cells. For each pair (innerCell, outerCell) and each
-    input pin of outerCell, the inner cell's output is connected to that pin,
-    producing a new composite cell. The resulting supergate is emitted as an
-    hw.module with hw.techlib.info so TechMapper picks it up transparently.
+    This pass generates supergates by composing primitive technology library
+    cells. Supergates are emitted as hw.modules with hw.techlib.info so
+    TechMapper picks them up transparently.
 
     Only the best-area supergate per NPN equivalence class is kept, and NPN
     classes already covered by primitive cells are skipped.
@@ -467,6 +465,8 @@ def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
   let options = [
     Option<"maxInputs", "max-inputs", "unsigned", "6",
            "Maximum number of primary inputs per supergate">,
+    Option<"maxGates", "max-gates", "unsigned", "2",
+           "Maximum number of primitive gates per supergate">,
     Option<"maxArea", "max-area", "double", "0.0",
            "Maximum area per supergate (0 = unlimited)">
   ];

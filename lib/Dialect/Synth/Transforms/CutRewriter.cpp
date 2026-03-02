@@ -23,9 +23,9 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Support/InstanceGraph.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/TruthTable.h"
-#include "circt/Support/InstanceGraph.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
@@ -41,6 +41,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -291,132 +292,163 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
 FailureOr<BinaryTruthTable>
 circt::synth::getTruthTable(ValueRange values, Block *block,
                             igraph::InstanceGraph *instanceGraph) {
-  // Get the input arguments from the block
-  llvm::SmallSetVector<Value, 4> inputArgs;
-  for (Value arg : block->getArguments())
-    inputArgs.insert(arg);
+  DenseMap<Operation *, BinaryTruthTable> moduleTruthTableCache;
+  llvm::SmallPtrSet<Operation *, 8> activeModules;
 
-  // If there are no inputs, return an empty truth table
-  if (inputArgs.empty())
-    return BinaryTruthTable();
+  std::function<FailureOr<BinaryTruthTable>(ValueRange, Block *)>
+      computeTruthTable =
+          [&](ValueRange computeValues,
+              Block *computeBlock) -> FailureOr<BinaryTruthTable> {
+    llvm::SmallSetVector<Value, 4> inputArgs;
+    for (Value arg : computeBlock->getArguments())
+      inputArgs.insert(arg);
 
-  const int64_t numInputs = inputArgs.size();
-  const int64_t numOutputs = values.size();
-  if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
-    if (numOutputs == 0)
-      return BinaryTruthTable(numInputs, 0);
-    if (numInputs >= maxTruthTableInputs)
-      return mlir::emitError(values.front().getLoc(),
-                             "Truth table is too large");
-    return mlir::emitError(values.front().getLoc(),
-                           "Multiple outputs are not supported yet");
-  }
+    if (inputArgs.empty())
+      return BinaryTruthTable();
 
-  // Create a map to evaluate the operation
-  DenseMap<Value, APInt> eval;
-  for (uint32_t i = 0; i < numInputs; ++i)
-    eval[inputArgs[i]] = circt::createVarMask(numInputs, i, true);
+    const int64_t numInputs = inputArgs.size();
+    const int64_t numOutputs = computeValues.size();
+    if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
+      if (numOutputs == 0)
+        return BinaryTruthTable(numInputs, 0);
+      if (numInputs >= maxTruthTableInputs)
+        return mlir::emitError(computeValues.front().getLoc(),
+                               "Truth table is too large");
+      return mlir::emitError(computeValues.front().getLoc(),
+                             "Multiple outputs are not supported yet");
+    }
 
-  // Simulate the operations in the block
-  for (Operation &op : *block) {
-    if (op.getNumResults() == 0)
-      continue;
+    DenseMap<Value, APInt> eval;
+    for (uint32_t i = 0; i < numInputs; ++i)
+      eval[inputArgs[i]] = circt::createVarMask(numInputs, i, true);
 
-    // Support AIG, XOR, and MIG operations
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
-      SmallVector<llvm::APInt, 2> inputs;
-      inputs.reserve(andOp.getInputs().size());
-      for (auto input : andOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
-          return andOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
-      }
-      eval[andOp.getResult()] = andOp.evaluate(inputs);
-    } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
-      auto it = eval.find(xorOp.getOperand(0));
-      if (it == eval.end())
-        return xorOp.emitError("Input value not found in evaluation map");
-      llvm::APInt result = it->second;
-      for (unsigned i = 1; i < xorOp.getNumOperands(); ++i) {
-        it = eval.find(xorOp.getOperand(i));
+    for (Operation &op : *computeBlock) {
+      if (op.getNumResults() == 0)
+        continue;
+
+      if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+        SmallVector<llvm::APInt, 2> inputs;
+        inputs.reserve(andOp.getInputs().size());
+        for (auto input : andOp.getInputs()) {
+          auto it = eval.find(input);
+          if (it == eval.end())
+            return andOp.emitError("Input value not found in evaluation map");
+          inputs.push_back(it->second);
+        }
+        eval[andOp.getResult()] = andOp.evaluate(inputs);
+      } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
+        auto it = eval.find(xorOp.getOperand(0));
         if (it == eval.end())
           return xorOp.emitError("Input value not found in evaluation map");
-        result ^= it->second;
-      }
-      eval[xorOp.getResult()] = result;
-    } else if (auto migOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
-      SmallVector<llvm::APInt, 3> inputs;
-      inputs.reserve(migOp.getInputs().size());
-      for (auto input : migOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
-          return migOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
-      }
-      eval[migOp.getResult()] = migOp.evaluate(inputs);
-    } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
-      // Simulate through hw.instance by looking up the referenced module's
-      // truth table. This enables supergate modules that compose library cells
-      // via instances rather than inlining primitive ops.
-      if (!instanceGraph)
-        return instanceOp.emitError(
-            "hw.instance encountered but no InstanceGraph provided for truth "
-            "table simulation");
-      auto *moduleNode = instanceGraph->getReferencedModuleImpl(
-          cast<igraph::InstanceOpInterface>(instanceOp.getOperation()));
-      auto refModule = dyn_cast<hw::HWModuleOp>(moduleNode);
-      if (!refModule)
-        return instanceOp.emitError(
-            "Instance references non-HWModuleOp for truth table simulation");
-
-      // Get the truth table of the referenced module.
-      auto *refBody = refModule.getBodyBlock();
-      SmallVector<Value> refOutputs;
-      for (auto result : refBody->getTerminator()->getOperands())
-        refOutputs.push_back(result);
-      auto refTT = getTruthTable(refOutputs, refBody);
-      if (failed(refTT))
-        return instanceOp.emitError(
-            "Failed to compute truth table for referenced module");
-      if (refTT->numOutputs != 1)
-        return instanceOp.emitError(
-            "Multi-output instances not supported in truth table simulation");
-
-      unsigned refNumInputs = refTT->numInputs;
-      unsigned numRows = 1u << numInputs; // simulation vector width
-
-      // Compose: for each simulation pattern, extract the instance input bits,
-      // look up the truth table, and set the output bit.
-      APInt result(numRows, 0);
-      SmallVector<APInt> instInputs;
-      instInputs.reserve(instanceOp.getNumOperands());
-      for (auto input : instanceOp.getOperands()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
+        llvm::APInt result = it->second;
+        for (unsigned i = 1; i < xorOp.getNumOperands(); ++i) {
+          it = eval.find(xorOp.getOperand(i));
+          if (it == eval.end())
+            return xorOp.emitError("Input value not found in evaluation map");
+          result ^= it->second;
+        }
+        eval[xorOp.getResult()] = result;
+      } else if (auto migOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
+        SmallVector<llvm::APInt, 3> inputs;
+        inputs.reserve(migOp.getInputs().size());
+        for (auto input : migOp.getInputs()) {
+          auto it = eval.find(input);
+          if (it == eval.end())
+            return migOp.emitError("Input value not found in evaluation map");
+          inputs.push_back(it->second);
+        }
+        eval[migOp.getResult()] = migOp.evaluate(inputs);
+      } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
+        if (!instanceGraph)
           return instanceOp.emitError(
-              "Input value not found in evaluation map");
-        instInputs.push_back(it->second);
-      }
+              "hw.instance encountered but no InstanceGraph provided for truth "
+              "table simulation");
+        auto *moduleNode = instanceGraph->lookupOrNull(
+            instanceOp.getReferencedModuleNameAttr());
+        if (!moduleNode)
+          return instanceOp.emitError(
+              "Failed to resolve referenced module in InstanceGraph");
 
-      for (unsigned row = 0; row < numRows; ++row) {
-        // Build the index into the referenced module's truth table.
-        unsigned ttIndex = 0;
-        for (unsigned j = 0; j < refNumInputs; ++j)
-          if (instInputs[j][row])
-            ttIndex |= (1u << j);
-        if (refTT->table[ttIndex])
-          result.setBit(row);
-      }
+        auto refModule =
+            dyn_cast<hw::HWModuleOp>(moduleNode->getModule().getOperation());
+        if (!refModule)
+          return instanceOp.emitError(
+              "Instance references non-HWModuleOp for truth table simulation");
 
-      // Map all instance results (only single-output supported).
-      eval[instanceOp.getResult(0)] = result;
-    } else if (!isa<hw::OutputOp>(&op)) {
-      return op.emitError("Unsupported operation for truth table simulation");
+        Operation *refModuleOp = refModule.getOperation();
+        BinaryTruthTable refTT;
+        auto it = moduleTruthTableCache.find(refModuleOp);
+        if (it != moduleTruthTableCache.end()) {
+          refTT = it->second;
+        } else {
+          if (!activeModules.insert(refModuleOp).second)
+            return instanceOp.emitError(
+                "Combinational cycle detected while evaluating module "
+                "instances");
+
+          auto *refBody = refModule.getBodyBlock();
+          auto outputOp =
+              dyn_cast_or_null<hw::OutputOp>(refBody->getTerminator());
+          if (!outputOp) {
+            activeModules.erase(refModuleOp);
+            return instanceOp.emitError(
+                "Referenced module body has no hw.output terminator");
+          }
+
+          auto computed = computeTruthTable(outputOp.getOutputs(), refBody);
+          activeModules.erase(refModuleOp);
+          if (failed(computed))
+            return instanceOp.emitError(
+                "Failed to compute truth table for referenced module");
+
+          refTT = *computed;
+          moduleTruthTableCache[refModuleOp] = refTT;
+        }
+
+        if (refTT.numOutputs != 1)
+          return instanceOp.emitError(
+              "Multi-output instances not supported in truth table simulation");
+        if (instanceOp.getNumResults() != 1)
+          return instanceOp.emitError(
+              "Only single-output instances are supported in truth table "
+              "simulation");
+
+        unsigned refNumInputs = refTT.numInputs;
+        if (instanceOp.getNumOperands() != refNumInputs)
+          return instanceOp.emitError(
+              "Instance input count does not match referenced module");
+        unsigned numRows = 1u << numInputs;
+
+        APInt result(numRows, 0);
+        SmallVector<APInt> instInputs;
+        instInputs.reserve(instanceOp.getNumOperands());
+        for (auto input : instanceOp.getOperands()) {
+          auto it2 = eval.find(input);
+          if (it2 == eval.end())
+            return instanceOp.emitError(
+                "Input value not found in evaluation map");
+          instInputs.push_back(it2->second);
+        }
+
+        for (unsigned row = 0; row < numRows; ++row) {
+          unsigned ttIndex = 0;
+          for (unsigned j = 0; j < refNumInputs; ++j)
+            if (instInputs[j][row])
+              ttIndex |= (1u << j);
+          if (refTT.table[ttIndex])
+            result.setBit(row);
+        }
+
+        eval[instanceOp.getResult(0)] = result;
+      } else if (!isa<hw::OutputOp>(&op)) {
+        return op.emitError("Unsupported operation for truth table simulation");
+      }
     }
-  }
 
-  return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+    return BinaryTruthTable(numInputs, 1, eval[computeValues[0]]);
+  };
+
+  return computeTruthTable(values, block);
 }
 
 //===----------------------------------------------------------------------===//
