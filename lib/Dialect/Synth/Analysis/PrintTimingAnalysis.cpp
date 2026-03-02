@@ -73,13 +73,35 @@ parseAdaptiveMode(StringRef mode) {
 
 static const timing::TimingArc *findArcBetween(const timing::TimingNode *from,
                                                const timing::TimingNode *to) {
-  for (auto *arc : from->getFanout())
-    if (arc->getTo() == to)
+  // Prefer exact match via fanin of destination (avoids wrong-arc selection).
+  for (auto *arc : to->getFanin())
+    if (arc->getFrom() == from)
       return arc;
+  // Fallback: any arc from `from` with an op (legacy behaviour).
   for (auto *arc : from->getFanout())
     if (arc->getOp())
       return arc;
   return nullptr;
+}
+
+/// Return a compact human-readable location string for a timing node.
+/// For combinational nodes the defining op location is used; for ports the
+/// block-argument location (which is usually the module body loc) is used.
+static std::string getNodeLocation(const timing::TimingNode *node) {
+  Value v = node->getValue();
+  if (!v)
+    return "";
+
+  Location loc =
+      isa<BlockArgument>(v)
+          ? cast<BlockArgument>(v).getOwner()->getParentOp()->getLoc()
+          : v.getDefiningOp()->getLoc();
+
+  std::string locStr;
+  llvm::raw_string_ostream os(locStr);
+  // Print only the innermost file/line info to keep reports readable.
+  loc.print(os);
+  return os.str();
 }
 
 static double getNodeOutputLoad(const timing::TimingNode *node,
@@ -422,15 +444,57 @@ private:
     os << "  Endpoint:   " << formatNodeLabel(ep) << " ("
        << describeEndKind(ep->getKind()) << ")\n";
 
-    auto intermediates = path.getIntermediateNodes();
-    if (!intermediates.empty()) {
+    // Build the full ordered node list: start -> intermediates -> end.
+    SmallVector<timing::TimingNode *> nodes;
+    nodes.push_back(sp);
+    for (auto *n : path.getIntermediateNodes())
+      nodes.push_back(n);
+    nodes.push_back(ep);
+
+    if (nodes.size() >= 2) {
+      // Column widths.
+      constexpr int kPointW = 36;
+      constexpr int kDelayW = 10;
+      constexpr int kArrW = 10;
+      constexpr int kSlewW = 10;
+
       os << "  Path:\n";
-      os << "    " << formatNodeLabel(sp) << "\n";
-      for (auto *node : intermediates)
-        os << "      -> " << formatNodeLabel(node) << " (arrival "
-           << analysis.getArrivalTime(node) << ")\n";
-      os << "      -> " << formatNodeLabel(ep) << "\n";
+      os << llvm::format("    %-*s %*s %*s %*s  %s\n", kPointW, "Point",
+                         kDelayW, "ArcDelay", kArrW, "Arrival", kSlewW, "Slew",
+                         "Location");
+      os << "    " << std::string(kPointW + kDelayW + kArrW + kSlewW + 20, '-')
+         << "\n";
+
+      // Startpoint row: no incoming arc.
+      {
+        int64_t at = analysis.getArrivalTime(sp);
+        double slew = analysis.getArrivals().getMaxArrivalSlew(sp);
+        std::string loc = getNodeLocation(sp);
+        os << llvm::format("    %-*s %*s %*lld %*.4g  %s\n", kPointW,
+                           formatNodeLabel(sp).c_str(), kDelayW, "-", kArrW,
+                           (long long)at, kSlewW, slew, loc.c_str());
+      }
+
+      // Intermediate and endpoint rows.
+      for (size_t i = 1; i < nodes.size(); ++i) {
+        auto *prev = nodes[i - 1];
+        auto *cur = nodes[i];
+        auto *arc = findArcBetween(prev, cur);
+
+        int64_t arcDelay = arc ? arc->getDelay() : -1;
+        int64_t at = analysis.getArrivalTime(cur);
+        double slew = analysis.getArrivals().getMaxArrivalSlew(cur);
+        std::string loc = getNodeLocation(cur);
+
+        std::string arcDelayStr =
+            arcDelay >= 0 ? std::to_string(arcDelay) : "-";
+        os << llvm::format("    %-*s %*s %*lld %*.4g  %s\n", kPointW,
+                           formatNodeLabel(cur).c_str(), kDelayW,
+                           arcDelayStr.c_str(), kArrW, (long long)at, kSlewW,
+                           slew, loc.c_str());
+      }
     }
+
     if (analysis.shouldEmitWaveformDetails())
       printWaveformDetails(path, analysis, model, os);
 

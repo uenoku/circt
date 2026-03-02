@@ -6,6 +6,14 @@
 // CHECK: Arrival Iterations:
 // CHECK: Slew Converged:
 // CHECK: Path 1: delay = 50
+// CHECK:   Startpoint:
+// CHECK:   Endpoint:
+// CHECK:   Path:
+// CHECK:     Point{{.*}}ArcDelay{{.*}}Arrival{{.*}}Slew{{.*}}Location
+// CHECK:     a[0]{{.*}}-{{.*}}0{{.*}}loc(
+// CHECK:     hw.instance[0]{{.*}}25{{.*}}25{{.*}}loc(
+// CHECK:     hw.instance[0]{{.*}}25{{.*}}50{{.*}}loc(
+// CHECK:     y[0]{{.*}}50{{.*}}loc(
 
 module attributes {
   synth.liberty.library = {name = "dummy", time_unit = "1ns"},

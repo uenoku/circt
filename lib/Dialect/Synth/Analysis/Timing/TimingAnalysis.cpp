@@ -245,6 +245,7 @@ LogicalResult TimingAnalysis::getPaths(ArrayRef<std::string> fromPatterns,
   query.fromPatterns.assign(fromPatterns.begin(), fromPatterns.end());
   query.toPatterns.assign(toPatterns.begin(), toPatterns.end());
   query.maxPaths = maxPaths;
+  query.reconstructPaths = true;
   return enumeratePaths(query, results);
 }
 
@@ -268,7 +269,10 @@ TimingAnalysis::getKWorstPaths(size_t k, SmallVectorImpl<TimingPath> &results) {
     if (failed(runArrivalAnalysis()))
       return failure();
   }
-  return enumerator->getKWorstPaths(k, results);
+  PathQuery query;
+  query.maxPaths = k;
+  query.reconstructPaths = true;
+  return enumeratePaths(query, results);
 }
 
 LogicalResult TimingAnalysis::getPathsTo(ArrayRef<std::string> patterns,
