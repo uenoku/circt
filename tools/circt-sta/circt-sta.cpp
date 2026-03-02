@@ -7,11 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/Debug/DebugDialect.h"
+#include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/LTL/LTLDialect.h"
+#include "circt/Dialect/OM/OMDialect.h"
+#include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
-#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/Passes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -180,12 +186,14 @@ int main(int argc, char **argv) {
   registerMLIRContextCLOptions();
   registerPassManagerCLOptions();
   registerAsmPrinterCLOptions();
-  circt::synth::registerSynthAnalysisPrerequisitePasses();
   cl::ParseCommandLineOptions(argc, argv,
                               "CIRCT static timing analysis tool\n");
 
   DialectRegistry registry;
-  registry.insert<comb::CombDialect, hw::HWDialect, synth::SynthDialect, seq::SeqDialect>();
+  registry
+      .insert<comb::CombDialect, emit::EmitDialect, hw::HWDialect,
+              ltl::LTLDialect, om::OMDialect, seq::SeqDialect, sim::SimDialect,
+              synth::SynthDialect, sv::SVDialect, verif::VerifDialect>();
   MLIRContext context(registry);
   if (allowUnregisteredDialects)
     context.allowUnregisteredDialects();

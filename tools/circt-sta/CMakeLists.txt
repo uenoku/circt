@@ -6,6 +6,15 @@ target_link_libraries(circt-sta
   CIRCTSynth
   CIRCTSynthAnalysis
   CIRCTSynthTransforms
+  CIRCTDebug
+  CIRCTEmit
+  CIRCTHW
+  CIRCTLTL
+  CIRCTOM
+  CIRCTSeq
+  CIRCTSim
+  CIRCTSV
+  CIRCTVerif
   MLIRIR
   MLIRParser
   LLVMSupport
