@@ -11,8 +11,8 @@
 // CHECK:   Path:
 // CHECK:     Point{{.*}}ArcDelay{{.*}}Arrival{{.*}}Slew{{.*}}Location
 // CHECK:     a[0]{{.*}}-{{.*}}0{{.*}}loc(
-// CHECK:     hw.instance[0]{{.*}}25{{.*}}25{{.*}}loc(
-// CHECK:     hw.instance[0]{{.*}}25{{.*}}50{{.*}}loc(
+// CHECK:     u0/Y[0]{{.*}}25{{.*}}25{{.*}}loc(
+// CHECK:     u1/Y[0]{{.*}}25{{.*}}50{{.*}}loc(
 // CHECK:     y[0]{{.*}}50{{.*}}loc(
 
 module attributes {

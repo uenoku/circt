@@ -187,6 +187,17 @@ std::string TimingGraph::getNameForValue(Value value,
         return nameAttr.getValue().str();
     }
 
+    // For instance outputs, use "instName.portName" to match the convention
+    // used in LongestPathAnalysis and commercial timing tools.
+    if (auto inst = dyn_cast<hw::InstanceOp>(defOp)) {
+      auto resultNum = cast<OpResult>(value).getResultNumber();
+      SmallString<32> str;
+      str += inst.getInstanceName();
+      str += "/";
+      str += cast<StringAttr>(inst.getResultNamesAttr()[resultNum]).getValue();
+      return str.str().str();
+    }
+
     // Default: use op name
     return defOp->getName().getStringRef().str();
   }

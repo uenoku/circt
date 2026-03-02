@@ -179,24 +179,29 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
   LLVM_DEBUG(llvm::dbgs() << "From nodes: " << fromNodes.size()
                           << ", To nodes: " << toNodes.size() << "\n");
 
-  // For each endpoint, build SFXT and extract candidate paths.
-  // We sort globally and trim at the end to preserve true global K-worst
-  // ordering across all endpoints.
-  for (auto *endpoint : toNodes) {
-    llvm::DenseMap<TimingNode *, SuffixTreeEntry> sfxt;
-    buildSuffixTree(endpoint, sfxt);
+  // Strategy depends on whether through-point filtering is needed:
+  //
+  // With throughNodes: reconstruct eagerly (before filter) so that
+  //   goesThrough() can inspect intermediate nodes. The sfxt is consumed
+  //   per-endpoint and can be freed immediately.
+  //
+  // Without throughNodes (common case): keep all sfxts alive, do global
+  //   sort+trim first, then reconstruct only the surviving paths. This avoids
+  //   paying O(depth) reconstruction for paths that get discarded.
 
-    size_t prevSize = results.size();
-    size_t k = query.maxPaths;
-    extractKPaths(endpoint, k, sfxt, validStartPoints, results);
+  if (!throughNodes.empty()) {
+    // Eager path: reconstruct + filter inline.
+    for (auto *endpoint : toNodes) {
+      llvm::DenseMap<TimingNode *, SuffixTreeEntry> sfxt;
+      buildSuffixTree(endpoint, sfxt);
 
-    // Reconstruct and filter paths
-    if (query.reconstructPaths || !throughNodes.empty()) {
+      size_t prevSize = results.size();
+      extractKPaths(endpoint, query.maxPaths, sfxt, validStartPoints, results);
+
       for (size_t i = prevSize; i < results.size();) {
         auto &path = results[i];
         reconstructPathViaSFXT(path.getStartPoint(), endpoint, sfxt, path);
-        if (!throughNodes.empty() && !goesThrough(path, throughNodes)) {
-          // Remove by swapping with last
+        if (!goesThrough(path, throughNodes)) {
           results[i] = std::move(results.back());
           results.pop_back();
         } else {
@@ -204,16 +209,49 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
         }
       }
     }
+
+    llvm::sort(results, [](const TimingPath &a, const TimingPath &b) {
+      return a.getDelay() > b.getDelay();
+    });
+    if (query.maxPaths > 0 && results.size() > query.maxPaths)
+      results.resize(query.maxPaths);
+
+  } else {
+    // Deferred path: extract all candidates, sort+trim, then reconstruct.
+    // Keep sfxts alive so reconstruction can run on survivors.
+    using SfxtMap = llvm::DenseMap<TimingNode *, SuffixTreeEntry>;
+    SmallVector<SfxtMap> sfxts(toNodes.size());
+
+    for (auto [i, endpoint] : llvm::enumerate(toNodes)) {
+      buildSuffixTree(endpoint, sfxts[i]);
+      extractKPaths(endpoint, query.maxPaths, sfxts[i], validStartPoints,
+                    results);
+      // Tag each new path with its sfxt index so we can find it later.
+      // We store this in the path's endpoint — the endpoint ptr is stable and
+      // unique per toNodes entry, so we can use it as an index key.
+    }
+
+    llvm::sort(results, [](const TimingPath &a, const TimingPath &b) {
+      return a.getDelay() > b.getDelay();
+    });
+    if (query.maxPaths > 0 && results.size() > query.maxPaths)
+      results.resize(query.maxPaths);
+
+    if (query.reconstructPaths) {
+      // Build endpoint -> sfxt index map for O(1) lookup.
+      llvm::DenseMap<TimingNode *, unsigned> endpointToSfxt;
+      for (auto [i, endpoint] : llvm::enumerate(toNodes))
+        endpointToSfxt[endpoint] = i;
+
+      for (auto &path : results) {
+        auto it = endpointToSfxt.find(path.getEndPoint());
+        if (it == endpointToSfxt.end())
+          continue;
+        reconstructPathViaSFXT(path.getStartPoint(), path.getEndPoint(),
+                               sfxts[it->second], path);
+      }
+    }
   }
-
-  // Sort by delay (descending)
-  llvm::sort(results, [](const TimingPath &a, const TimingPath &b) {
-    return a.getDelay() > b.getDelay();
-  });
-
-  // Trim to maxPaths
-  if (query.maxPaths > 0 && results.size() > query.maxPaths)
-    results.resize(query.maxPaths);
 
   LLVM_DEBUG(llvm::dbgs() << "Enumerated " << results.size() << " paths\n");
   return success();
