@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/ImportAIGER.h"
-#include "circt/Conversion/ImportLiberty.h"
 #include "circt/Conversion/SynthToComb.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
@@ -471,25 +470,6 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
   if (!module)
     return failure();
 
-  if (!libertyFilenames.empty()) {
-    auto importTimer = ts.nest("Import Liberty");
-    for (const auto &libertyFilename : libertyFilenames) {
-      std::string libertyErrorMessage;
-      auto libertyInput = openInputFile(libertyFilename, &libertyErrorMessage);
-      if (!libertyInput) {
-        llvm::errs() << libertyErrorMessage << "\n";
-        return failure();
-      }
-
-      llvm::SourceMgr libertySourceMgr;
-      libertySourceMgr.AddNewSourceBuffer(std::move(libertyInput),
-                                          llvm::SMLoc());
-      if (failed(circt::liberty::importLiberty(libertySourceMgr, &context,
-                                               module.get())))
-        return failure();
-    }
-  }
-
   // Create the output directory or output file depending on our mode.
   std::optional<std::unique_ptr<llvm::ToolOutputFile>> outputFile;
   std::string errorMessage;
@@ -510,6 +490,17 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
     pm.addInstrumentation(
         std::make_unique<VerbosePassInstrumentation<mlir::ModuleOp>>(
             "circt-synth"));
+
+  // If Liberty files are specified, run the LinkLiberty pass first. It parses
+  // the files in parallel, checks time_unit consistency, and propagates
+  // synth.liberty.library down to individual hw.module cells.
+  if (!libertyFilenames.empty()) {
+    synth::LinkLibertyOptions linkOptions;
+    for (const auto &f : libertyFilenames)
+      linkOptions.libertyFiles.push_back(f);
+    pm.addPass(synth::createLinkLiberty(linkOptions));
+  }
+
   populateCIRCTSynthPipeline(pm);
 
   if (failed(pm.run(module.get())))

@@ -1,0 +1,15 @@
+library ("dummy2") {
+  time_unit : "1ns";
+
+  cell ("LIBBUF") {
+    area : 1;
+    pin ("A") {
+      direction : "input";
+      capacitance : 0.25;
+    }
+    pin ("Y") {
+      direction : "output";
+      function : "A";
+    }
+  }
+}

@@ -24,6 +24,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
@@ -849,6 +850,7 @@ private:
   LibertyLexer lexer;
   ModuleOp module;
   OpBuilder builder;
+  DictionaryAttr currentLibraryAttr;
 
   // Specific group parsers
   ParseResult parseLibrary();
@@ -1079,6 +1081,11 @@ ParseResult LibertyParser::parseLibrary() {
   if (parseGroupBody(libertyLib))
     return failure();
 
+  auto attr = convertGroupToAttr(libertyLib);
+  currentLibraryAttr = dyn_cast<DictionaryAttr>(attr);
+  if (!currentLibraryAttr)
+    return emitError(libertyLib.loc, "expected library to lower to dictionary");
+
   DenseSet<StringAttr> seenCells;
   for (auto &stmt : libertyLib.subGroups) {
     // TODO: Support more group types
@@ -1095,15 +1102,32 @@ ParseResult LibertyParser::parseLibrary() {
 
   libertyLib.eraseSubGroup(
       [](const LibertyGroup &group) { return group.name == "cell"; });
-  auto attr = convertGroupToAttr(libertyLib);
-  module->setAttr("synth.liberty.library", attr);
+  if (!module->hasAttr("synth.liberty.library"))
+    module->setAttr("synth.liberty.library", attr);
 
-  if (auto timeUnitAttr =
-          dyn_cast<StringAttr>(libertyLib.getAttribute("time_unit").first)) {
-    if (auto ps = parseTimeUnitToPs(timeUnitAttr.getValue()))
+  auto timeUnitAttrPair = libertyLib.getAttribute("time_unit");
+  if (timeUnitAttrPair.first) {
+    auto timeUnitAttr = dyn_cast<StringAttr>(timeUnitAttrPair.first);
+    if (!timeUnitAttr)
+      return emitError(timeUnitAttrPair.second,
+                       "time_unit must be a string attribute");
+
+    SmallString<16> unitStorage(timeUnitAttr.getValue());
+    StringRef unit = StringRef(unitStorage).trim();
+    auto ps = parseTimeUnitToPs(unit);
+    if (!ps)
+      return emitError(timeUnitAttrPair.second, "invalid time_unit value");
+
+    if (auto existing = module->getAttrOfType<circt::synth::NLDMTimeUnitAttr>(
+            "synth.nldm.time_unit")) {
+      if (existing.getPicoseconds().getValueAsDouble() != *ps)
+        return emitError(timeUnitAttrPair.second,
+                         "time_unit must match existing library");
+    } else {
       module->setAttr("synth.nldm.time_unit",
                       circt::synth::NLDMTimeUnitAttr::get(
                           builder.getContext(), builder.getF64FloatAttr(*ps)));
+    }
   }
 
   return success();
@@ -1422,6 +1446,91 @@ mlir::LogicalResult importLiberty(llvm::SourceMgr &sourceMgr,
   context->loadDialect<comb::CombDialect>();
   context->loadDialect<synth::SynthDialect>();
   return parser.parse();
+}
+
+mlir::LogicalResult linkLibertyFiles(llvm::ArrayRef<llvm::StringRef> filenames,
+                                     mlir::MLIRContext *context,
+                                     mlir::ModuleOp module) {
+  if (filenames.empty())
+    return success();
+
+  struct ParsedInput {
+    StringRef name;
+    OwningOpRef<ModuleOp> mod;
+    llvm::SourceMgr mgr;
+  };
+
+  struct LeakyInputs {
+    SmallVector<ParsedInput> inputs;
+    LeakyInputs(size_t n) { inputs.resize(n); }
+    ~LeakyInputs() {
+      for (auto &input : inputs)
+        input.mod.release();
+    }
+  };
+
+  LeakyInputs leakyInputs(filenames.size());
+  auto &inputs = leakyInputs.inputs;
+
+  auto loadFile = [&](size_t i) -> LogicalResult {
+    auto &entry = inputs[i];
+    entry.name = filenames[i];
+    std::string libertyErrorMessage;
+    auto libertyInput = openInputFile(entry.name, &libertyErrorMessage);
+    if (!libertyInput) {
+      llvm::errs() << libertyErrorMessage << "\n";
+      return failure();
+    }
+
+    entry.mgr.AddNewSourceBuffer(std::move(libertyInput), llvm::SMLoc());
+    entry.mod =
+        OwningOpRef<ModuleOp>(ModuleOp::create(UnknownLoc::get(context)));
+
+    LibertyParser parser(entry.mgr, context, entry.mod.get());
+
+    context->loadDialect<hw::HWDialect>();
+    context->loadDialect<comb::CombDialect>();
+    context->loadDialect<synth::SynthDialect>();
+    return parser.parse();
+  };
+
+  if (failed(failableParallelForEachN(context, 0, filenames.size(), loadFile)))
+    return failure();
+
+  std::optional<double> mergedTimeUnitPs;
+  for (auto &entry : inputs) {
+    auto timeUnitAttr =
+        entry.mod.get()->getAttrOfType<circt::synth::NLDMTimeUnitAttr>(
+            "synth.nldm.time_unit");
+    if (!timeUnitAttr)
+      continue;
+    double ps = timeUnitAttr.getPicoseconds().getValueAsDouble();
+    if (!mergedTimeUnitPs)
+      mergedTimeUnitPs = ps;
+    else if (*mergedTimeUnitPs != ps)
+      return mlir::emitError(module.getLoc(),
+                             "time_unit must match existing library");
+  }
+
+  if (mergedTimeUnitPs)
+    module->setAttr("synth.nldm.time_unit",
+                    circt::synth::NLDMTimeUnitAttr::get(
+                        context, FloatAttr::get(Float64Type::get(context),
+                                                *mergedTimeUnitPs)));
+
+  for (auto &entry : inputs) {
+    if (auto libAttr = entry.mod.get()->getAttrOfType<mlir::DictionaryAttr>(
+            "synth.liberty.library")) {
+      module->setAttr("synth.liberty.library", libAttr);
+      break;
+    }
+  }
+
+  auto builder = OpBuilder::atBlockEnd(module.getBody());
+  for (auto &entry : inputs)
+    builder.insert(entry.mod.get());
+
+  return success();
 }
 
 void registerImportLibertyTranslation() {

@@ -13,6 +13,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   FunctionalReduction.cpp
   GenSupergates.cpp
   GenericLUTMapper.cpp
+  LinkLiberty.cpp
   LowerVariadic.cpp
   LowerWordToBits.cpp
   MaximumAndCover.cpp
@@ -46,6 +47,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   CIRCTDatapathTransforms
   CIRCTExportAIGER
   CIRCTImportAIGER
+  CIRCTImportLiberty
   CIRCTHWTransforms
   CIRCTSupport
   CIRCTTransforms

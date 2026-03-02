@@ -14,7 +14,10 @@
 #define CIRCT_CONVERSION_IMPORTLIBERTY_H
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/SourceMgr.h"
 
 namespace circt::liberty {
@@ -23,6 +26,11 @@ namespace circt::liberty {
 mlir::LogicalResult importLiberty(llvm::SourceMgr &sourceMgr,
                                   mlir::MLIRContext *context,
                                   mlir::ModuleOp module);
+
+/// Parse and link multiple Liberty files into nested ModuleOps.
+mlir::LogicalResult linkLibertyFiles(llvm::ArrayRef<llvm::StringRef> filenames,
+                                     mlir::MLIRContext *context,
+                                     mlir::ModuleOp module);
 
 /// Register the Liberty importer in the translation registry.
 void registerImportLibertyTranslation();

@@ -479,6 +479,27 @@ def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def LinkLiberty : Pass<"synth-link-liberty", "mlir::ModuleOp"> {
+  let summary = "Link Liberty files into the module and propagate metadata";
+  let description = [{
+    This pass parses one or more Liberty files in parallel (using
+    `linkLibertyFiles`), checks that all `synth.nldm.time_unit` values are
+    consistent, sets the merged value on the top-level module, and copies the
+    `synth.liberty.library` attribute from each nested ModuleOp down to every
+    `hw.module` cell contained within it, so that downstream passes can
+    identify which library a given cell came from.
+  }];
+  let options = [
+    ListOption<"libertyFiles", "liberty-files", "std::string",
+               "Liberty library files to import">
+  ];
+  let dependentDialects = [
+    "circt::hw::HWDialect",
+    "circt::comb::CombDialect",
+    "circt::synth::SynthDialect"
+  ];
+}
+
 def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
   let summary = "Preprocessing pass for synthesis IR";
   let description = [{

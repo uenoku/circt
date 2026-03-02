@@ -13,7 +13,6 @@ target_link_libraries(circt-synth
   CIRCTEmit
   CIRCTHW
   CIRCTImportAIGER
-  CIRCTImportLiberty
   CIRCTLTL
   CIRCTOM
   CIRCTSeq

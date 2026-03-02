@@ -13,6 +13,7 @@
 #ifndef CIRCT_DIALECT_SYNTH_SYNTHOPS_H
 #define CIRCT_DIALECT_SYNTH_SYNTHOPS_H
 
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Support/LLVM.h"
@@ -56,6 +57,35 @@ struct AndInverterVariadicOpConversion
 LogicalResult topologicallySortGraphRegionBlocks(
     mlir::Operation *op,
     llvm::function_ref<bool(mlir::Value, mlir::Operation *)> isOperandReady);
+
+/// Look up the `synth.liberty.library` attribute for a Liberty cell.
+///
+/// The search order is:
+///   1. The `hw::HWModuleOp` cell itself (set by the LinkLiberty pass for
+///      per-cell provenance).
+///   2. Each ancestor `mlir::ModuleOp` walking upward (covers the case where
+///      cells live inside a nested ModuleOp that carries the library attr, or
+///      a top-level ModuleOp with a merged value).
+///
+/// Returns a null `DictionaryAttr` when no attribute is found.
+inline mlir::DictionaryAttr getLibertyLibraryAttr(hw::HWModuleOp cellOp) {
+  // 1. Check the cell itself first.
+  if (auto attr =
+          cellOp->getAttrOfType<mlir::DictionaryAttr>("synth.liberty.library"))
+    return attr;
+
+  // 2. Walk ancestor ModuleOps (nested library module, then top-level).
+  mlir::Operation *parent = cellOp->getParentOp();
+  while (parent) {
+    if (auto mod = mlir::dyn_cast<mlir::ModuleOp>(parent)) {
+      if (auto attr =
+              mod->getAttrOfType<mlir::DictionaryAttr>("synth.liberty.library"))
+        return attr;
+    }
+    parent = parent->getParentOp();
+  }
+  return {};
+}
 
 //===----------------------------------------------------------------------===//
 // Delay-Aware Tree Building Utilities

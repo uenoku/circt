@@ -1,0 +1,16 @@
+library(testlib) {
+  time_unit : "1ns";
+
+  cell(LIBINV) {
+    area : 1.0;
+
+    pin(A) {
+      direction : input;
+    }
+
+    pin(Y) {
+      direction : output;
+      function : "A'";
+    }
+  }
+}
