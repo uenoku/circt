@@ -8,6 +8,7 @@
 
 #include "circt/Dialect/Synth/Analysis/Timing/PathEnumerator.h"
 #include "circt/Dialect/Synth/Analysis/Timing/ObjectCollection.h"
+#include "mlir/IR/Threading.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
 #include <algorithm>
@@ -189,26 +190,40 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
   //   sort+trim first, then reconstruct only the surviving paths. This avoids
   //   paying O(depth) reconstruction for paths that get discarded.
 
+  mlir::MLIRContext *ctx = graph.getModule()->getContext();
+  const size_t numEndpoints = toNodes.size();
+
   if (!throughNodes.empty()) {
-    // Eager path: reconstruct + filter inline.
-    for (auto *endpoint : toNodes) {
-      llvm::DenseMap<TimingNode *, SuffixTreeEntry> sfxt;
-      buildSuffixTree(endpoint, sfxt);
+    // Eager path: reconstruct + filter per endpoint, then merge.
+    // Each endpoint slot is independent so we can build sfxt and collect
+    // candidates in parallel into per-endpoint local vectors.
+    using SfxtMap = llvm::DenseMap<TimingNode *, SuffixTreeEntry>;
+    SmallVector<SfxtMap> sfxts(numEndpoints);
+    SmallVector<SmallVector<TimingPath>> localResults(numEndpoints);
 
-      size_t prevSize = results.size();
-      extractKPaths(endpoint, query.maxPaths, sfxt, validStartPoints, results);
-
-      for (size_t i = prevSize; i < results.size();) {
-        auto &path = results[i];
-        reconstructPathViaSFXT(path.getStartPoint(), endpoint, sfxt, path);
-        if (!goesThrough(path, throughNodes)) {
-          results[i] = std::move(results.back());
-          results.pop_back();
+    mlir::parallelFor(ctx, 0, numEndpoints, [&](size_t i) {
+      auto *endpoint = toNodes[i];
+      buildSuffixTree(endpoint, sfxts[i]);
+      extractKPaths(endpoint, query.maxPaths, sfxts[i], validStartPoints,
+                    localResults[i]);
+      // Reconstruct and filter against throughNodes.
+      auto &local = localResults[i];
+      for (size_t j = 0; j < local.size();) {
+        reconstructPathViaSFXT(local[j].getStartPoint(), endpoint, sfxts[i],
+                               local[j]);
+        if (!goesThrough(local[j], throughNodes)) {
+          local[j] = std::move(local.back());
+          local.pop_back();
         } else {
-          ++i;
+          ++j;
         }
       }
-    }
+    });
+
+    // Merge per-endpoint results.
+    for (auto &local : localResults)
+      for (auto &p : local)
+        results.push_back(std::move(p));
 
     llvm::sort(results, [](const TimingPath &a, const TimingPath &b) {
       return a.getDelay() > b.getDelay();
@@ -217,19 +232,22 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
       results.resize(query.maxPaths);
 
   } else {
-    // Deferred path: extract all candidates, sort+trim, then reconstruct.
-    // Keep sfxts alive so reconstruction can run on survivors.
+    // Deferred path: build sfxts and collect candidates in parallel, then
+    // sort+trim sequentially, then reconstruct only the survivors in parallel.
     using SfxtMap = llvm::DenseMap<TimingNode *, SuffixTreeEntry>;
-    SmallVector<SfxtMap> sfxts(toNodes.size());
+    SmallVector<SfxtMap> sfxts(numEndpoints);
+    SmallVector<SmallVector<TimingPath>> localResults(numEndpoints);
 
-    for (auto [i, endpoint] : llvm::enumerate(toNodes)) {
-      buildSuffixTree(endpoint, sfxts[i]);
-      extractKPaths(endpoint, query.maxPaths, sfxts[i], validStartPoints,
-                    results);
-      // Tag each new path with its sfxt index so we can find it later.
-      // We store this in the path's endpoint — the endpoint ptr is stable and
-      // unique per toNodes entry, so we can use it as an index key.
-    }
+    mlir::parallelFor(ctx, 0, numEndpoints, [&](size_t i) {
+      buildSuffixTree(toNodes[i], sfxts[i]);
+      extractKPaths(toNodes[i], query.maxPaths, sfxts[i], validStartPoints,
+                    localResults[i]);
+    });
+
+    // Merge per-endpoint results.
+    for (auto &local : localResults)
+      for (auto &p : local)
+        results.push_back(std::move(p));
 
     llvm::sort(results, [](const TimingPath &a, const TimingPath &b) {
       return a.getDelay() > b.getDelay();
@@ -243,13 +261,15 @@ LogicalResult PathEnumerator::enumerate(const PathQuery &query,
       for (auto [i, endpoint] : llvm::enumerate(toNodes))
         endpointToSfxt[endpoint] = i;
 
-      for (auto &path : results) {
+      // Reconstruct surviving paths in parallel — each path is independent.
+      mlir::parallelFor(ctx, 0, results.size(), [&](size_t i) {
+        auto &path = results[i];
         auto it = endpointToSfxt.find(path.getEndPoint());
         if (it == endpointToSfxt.end())
-          continue;
+          return;
         reconstructPathViaSFXT(path.getStartPoint(), path.getEndPoint(),
                                sfxts[it->second], path);
-      }
+      });
     }
   }
 
