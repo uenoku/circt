@@ -25,6 +25,7 @@
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/TruthTable.h"
+#include "circt/Support/InstanceGraph.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
@@ -287,8 +288,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
 /// Get the truth table for operations within a block.
 /// This is used for computing truth tables from MLIR operations (e.g., for
 /// technology library patterns), not for LogicNetwork-based cut enumeration.
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
+FailureOr<BinaryTruthTable>
+circt::synth::getTruthTable(ValueRange values, Block *block,
+                            igraph::InstanceGraph *instanceGraph) {
   // Get the input arguments from the block
   llvm::SmallSetVector<Value, 4> inputArgs;
   for (Value arg : block->getArguments())
@@ -353,6 +355,62 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
         inputs.push_back(it->second);
       }
       eval[migOp.getResult()] = migOp.evaluate(inputs);
+    } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
+      // Simulate through hw.instance by looking up the referenced module's
+      // truth table. This enables supergate modules that compose library cells
+      // via instances rather than inlining primitive ops.
+      if (!instanceGraph)
+        return instanceOp.emitError(
+            "hw.instance encountered but no InstanceGraph provided for truth "
+            "table simulation");
+      auto *moduleNode = instanceGraph->getReferencedModuleImpl(
+          cast<igraph::InstanceOpInterface>(instanceOp.getOperation()));
+      auto refModule = dyn_cast<hw::HWModuleOp>(moduleNode);
+      if (!refModule)
+        return instanceOp.emitError(
+            "Instance references non-HWModuleOp for truth table simulation");
+
+      // Get the truth table of the referenced module.
+      auto *refBody = refModule.getBodyBlock();
+      SmallVector<Value> refOutputs;
+      for (auto result : refBody->getTerminator()->getOperands())
+        refOutputs.push_back(result);
+      auto refTT = getTruthTable(refOutputs, refBody);
+      if (failed(refTT))
+        return instanceOp.emitError(
+            "Failed to compute truth table for referenced module");
+      if (refTT->numOutputs != 1)
+        return instanceOp.emitError(
+            "Multi-output instances not supported in truth table simulation");
+
+      unsigned refNumInputs = refTT->numInputs;
+      unsigned numRows = 1u << numInputs; // simulation vector width
+
+      // Compose: for each simulation pattern, extract the instance input bits,
+      // look up the truth table, and set the output bit.
+      APInt result(numRows, 0);
+      SmallVector<APInt> instInputs;
+      instInputs.reserve(instanceOp.getNumOperands());
+      for (auto input : instanceOp.getOperands()) {
+        auto it = eval.find(input);
+        if (it == eval.end())
+          return instanceOp.emitError(
+              "Input value not found in evaluation map");
+        instInputs.push_back(it->second);
+      }
+
+      for (unsigned row = 0; row < numRows; ++row) {
+        // Build the index into the referenced module's truth table.
+        unsigned ttIndex = 0;
+        for (unsigned j = 0; j < refNumInputs; ++j)
+          if (instInputs[j][row])
+            ttIndex |= (1u << j);
+        if (refTT->table[ttIndex])
+          result.setBit(row);
+      }
+
+      // Map all instance results (only single-output supported).
+      eval[instanceOp.getResult(0)] = result;
     } else if (!isa<hw::OutputOp>(&op)) {
       return op.emitError("Unsupported operation for truth table simulation");
     }

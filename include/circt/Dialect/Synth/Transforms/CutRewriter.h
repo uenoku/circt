@@ -33,6 +33,9 @@
 #include <optional>
 
 namespace circt {
+namespace igraph {
+class InstanceGraph;
+} // namespace igraph
 namespace synth {
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (usually
@@ -51,7 +54,11 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 
 // Get the truth table for a specific operation within a block.
 // Block must be a SSACFG or topologically sorted.
-FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
+// If instanceGraph is provided, hw.instance ops are simulated by looking up
+// the referenced module's truth table through the instance graph.
+FailureOr<BinaryTruthTable>
+getTruthTable(ValueRange values, Block *block,
+              igraph::InstanceGraph *instanceGraph = nullptr);
 
 //===----------------------------------------------------------------------===//
 // Cut Data Structures

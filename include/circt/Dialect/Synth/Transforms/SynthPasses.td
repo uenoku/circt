@@ -452,6 +452,27 @@ def AnnotateTechLib : Pass<"synth-annotate-techlib", "mlir::ModuleOp"> {
   let dependentDialects = ["circt::hw::HWDialect"];
 }
 
+def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
+  let summary = "Generate depth-2 supergate library from primitive cells";
+  let description = [{
+    This pass generates depth-2 supergates by composing pairs of primitive
+    technology library cells. For each pair (innerCell, outerCell) and each
+    input pin of outerCell, the inner cell's output is connected to that pin,
+    producing a new composite cell. The resulting supergate is emitted as an
+    hw.module with hw.techlib.info so TechMapper picks it up transparently.
+
+    Only the best-area supergate per NPN equivalence class is kept, and NPN
+    classes already covered by primitive cells are skipped.
+  }];
+  let options = [
+    Option<"maxInputs", "max-inputs", "unsigned", "6",
+           "Maximum number of primary inputs per supergate">,
+    Option<"maxArea", "max-area", "double", "0.0",
+           "Maximum area per supergate (0 = unlimited)">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 def SynthPreprocess : Pass<"synth-preprocess", "hw::HWModuleOp"> {
   let summary = "Preprocessing pass for synthesis IR";
   let description = [{

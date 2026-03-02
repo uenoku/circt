@@ -316,6 +316,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   if (!untilReached(UntilMapping)) {
     // Annotate Liberty-imported modules with hw.techlib.info before mapping.
     pm.addPass(synth::createAnnotateTechLib());
+    pm.addPass(synth::createGenSupergates());
 
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
