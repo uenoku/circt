@@ -20,6 +20,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
+#include "circt/Support/InstanceGraph.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
@@ -44,7 +45,9 @@ using namespace circt::synth;
 // Tech Mapper Pass
 //===----------------------------------------------------------------------===//
 
-static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
+static llvm::FailureOr<NPNClass>
+getNPNClassFromModule(hw::HWModuleOp module,
+                      igraph::InstanceGraph *instanceGraph) {
   // Get input and output ports
   auto inputTypes = module.getInputTypes();
   auto outputTypes = module.getOutputTypes();
@@ -78,7 +81,8 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
     results.push_back(result);
 
   // Create a truth table for the module
-  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
+  FailureOr<BinaryTruthTable> truthTable =
+      getTruthTable(results, bodyBlock, instanceGraph);
   if (failed(truthTable))
     return failure();
 
@@ -189,6 +193,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
   void runOnOperation() override {
     auto module = getOperation();
+    auto &instanceGraph = getAnalysis<igraph::InstanceGraph>();
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
@@ -236,7 +241,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         }
       }
       // Compute NPN Class for the module.
-      auto npnClass = getNPNClassFromModule(hwModule);
+      auto npnClass = getNPNClassFromModule(hwModule, &instanceGraph);
       if (failed(npnClass)) {
         signalPassFailure();
         return;

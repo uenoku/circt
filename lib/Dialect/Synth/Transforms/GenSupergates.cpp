@@ -17,6 +17,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
+#include <limits>
 
 namespace circt {
 namespace synth {
@@ -36,6 +38,7 @@ struct CellInfo {
   hw::HWModuleOp module;
   double area;
   SmallVector<int64_t> delays;
+  int64_t maxDelay;
   unsigned numGates;
 };
 
@@ -69,6 +72,7 @@ static void collectBaseCells(ModuleOp topModule,
 
     if (info.delays.size() != hwModule.getNumInputPorts())
       continue;
+    info.maxDelay = *llvm::max_element(info.delays);
     info.numGates = 1;
     cells.push_back(std::move(info));
   }
@@ -174,6 +178,7 @@ struct SupergateCandidate {
   hw::HWModuleOp module;
   double area;
   SmallVector<int64_t> delays;
+  int64_t maxDelay;
   unsigned numGates;
 };
 
@@ -214,20 +219,54 @@ struct GenSupergatesPass
 
     SmallVector<CellInfo> frontier = baseCells;
     for (unsigned depth = 2; depth <= maxGates && !frontier.empty(); ++depth) {
-      for (auto &inner : frontier) {
-        for (auto &outer : baseCells) {
-          unsigned innerInputs = inner.module.getNumInputPorts();
-          unsigned outerInputs = outer.module.getNumInputPorts();
+      std::sort(frontier.begin(), frontier.end(),
+                [](const CellInfo &a, const CellInfo &b) {
+                  if (a.maxDelay != b.maxDelay)
+                    return a.maxDelay < b.maxDelay;
+                  return a.area < b.area;
+                });
 
-          double area = inner.area + outer.area;
-          if (maxArea > 0.0 && area > maxArea)
-            continue;
+      for (auto &outer : baseCells) {
+        unsigned outerInputs = outer.module.getNumInputPorts();
+        SmallVector<int64_t> outerMaxExcludingPin(outerInputs, 0);
+        for (unsigned pin = 0; pin < outerInputs; ++pin) {
+          int64_t maxBypass = 0;
+          for (unsigned i = 0; i < outerInputs; ++i)
+            if (i != pin)
+              maxBypass = std::max(maxBypass, outer.delays[i]);
+          outerMaxExcludingPin[pin] = maxBypass;
+        }
 
-          for (unsigned pin = 0; pin < outerInputs; ++pin) {
+        for (unsigned pin = 0; pin < outerInputs; ++pin) {
+          unsigned triedForRootPin = 0;
+          int64_t maxInnerDelayBudget =
+              maxDelay == 0
+                  ? std::numeric_limits<int64_t>::max()
+                  : static_cast<int64_t>(maxDelay) - outer.delays[pin];
+
+          for (auto &inner : frontier) {
+            if (inner.maxDelay > maxInnerDelayBudget)
+              break;
+            if (maxCandidatesPerRoot > 0 &&
+                triedForRootPin >= maxCandidatesPerRoot)
+              break;
+
+            unsigned innerInputs = inner.module.getNumInputPorts();
             unsigned totalInputs = innerInputs + outerInputs - 1;
             if (totalInputs > maxInputs)
               continue;
 
+            double area = inner.area + outer.area;
+            if (maxArea > 0.0 && area > maxArea)
+              continue;
+
+            int64_t candidateMaxDelay = std::max(
+                inner.maxDelay + outer.delays[pin], outerMaxExcludingPin[pin]);
+            if (maxDelay > 0 &&
+                candidateMaxDelay > static_cast<int64_t>(maxDelay))
+              continue;
+
+            ++triedForRootPin;
             builder.setInsertionPointToEnd(topModule.getBody());
             SmallString<32> supergateName("__supergate_");
             supergateName += std::to_string(supergateOrdinal++);
@@ -256,8 +295,10 @@ struct GenSupergatesPass
             }
 
             auto it = bestByNPN.find(key);
-            if (it == bestByNPN.end() || area < it->second.area)
-              bestByNPN[key] = {sg, area, std::move(delays), depth};
+            if (it == bestByNPN.end() || area < it->second.area) {
+              bestByNPN[key] = {sg, area, std::move(delays), candidateMaxDelay,
+                                depth};
+            }
           }
         }
       }
@@ -268,7 +309,8 @@ struct GenSupergatesPass
         if (candidate.numGates != depth)
           continue;
         nextFrontier.push_back({candidate.module, candidate.area,
-                                candidate.delays, candidate.numGates});
+                                candidate.delays, candidate.maxDelay,
+                                candidate.numGates});
       }
       frontier = std::move(nextFrontier);
     }

@@ -44,3 +44,17 @@ hw.module @INV2(in %a : i1, out Y : i1) attributes {hw.techlib.info = {area = 0.
 // MAXIN: hw.module @AND2
 // MAXIN: hw.module @INV2
 // MAXIN-NOT: hw.module private @__supergate_
+
+// -----
+
+// RUN: circt-opt --synth-gen-supergates="max-gates=3 max-inputs=6" %s -split-input-file | FileCheck %s --check-prefix=FOURIN
+
+hw.module @AND4_SRC(in %a : i1, in %b : i1, out Y : i1) attributes {hw.techlib.info = {area = 1.0 : f64, delay = [[100], [100]]}} {
+    %0 = synth.aig.and_inv %a, %b : i1
+    hw.output %0 : i1
+}
+
+// FOURIN: hw.module @AND4_SRC
+// FOURIN: hw.module private @__supergate_
+// FOURIN: in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, out Y : i1
+// FOURIN: synth.supergate = true

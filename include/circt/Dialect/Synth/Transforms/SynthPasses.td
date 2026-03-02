@@ -467,6 +467,10 @@ def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
            "Maximum number of primary inputs per supergate">,
     Option<"maxGates", "max-gates", "unsigned", "2",
            "Maximum number of primitive gates per supergate">,
+    Option<"maxDelay", "max-delay", "unsigned", "0",
+           "Maximum pin-to-pin delay per supergate (0 = unlimited)">,
+    Option<"maxCandidatesPerRoot", "max-candidates-per-root", "unsigned",
+           "256", "Maximum inner candidates tried per (root,pin)">,
     Option<"maxArea", "max-area", "double", "0.0",
            "Maximum area per supergate (0 = unlimited)">
   ];
