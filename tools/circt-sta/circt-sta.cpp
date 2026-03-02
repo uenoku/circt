@@ -8,6 +8,7 @@
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
@@ -184,7 +185,7 @@ int main(int argc, char **argv) {
                               "CIRCT static timing analysis tool\n");
 
   DialectRegistry registry;
-  registry.insert<comb::CombDialect, hw::HWDialect, synth::SynthDialect>();
+  registry.insert<comb::CombDialect, hw::HWDialect, synth::SynthDialect, seq::SeqDialect>();
   MLIRContext context(registry);
   if (allowUnregisteredDialects)
     context.allowUnregisteredDialects();

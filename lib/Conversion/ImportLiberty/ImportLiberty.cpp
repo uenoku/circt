@@ -1414,17 +1414,22 @@ ParseResult LibertyParser::parseExpression(Value &result, StringRef expr,
 } // namespace
 
 namespace circt::liberty {
+mlir::LogicalResult importLiberty(llvm::SourceMgr &sourceMgr,
+                                  mlir::MLIRContext *context,
+                                  mlir::ModuleOp module) {
+  LibertyParser parser(sourceMgr, context, module);
+  context->loadDialect<hw::HWDialect>();
+  context->loadDialect<comb::CombDialect>();
+  context->loadDialect<synth::SynthDialect>();
+  return parser.parse();
+}
+
 void registerImportLibertyTranslation() {
   TranslateToMLIRRegistration reg(
       "import-liberty", "Import Liberty file",
       [](llvm::SourceMgr &sourceMgr, MLIRContext *context) {
         ModuleOp module = ModuleOp::create(UnknownLoc::get(context));
-        LibertyParser parser(sourceMgr, context, module);
-        // Load required dialects
-        context->loadDialect<hw::HWDialect>();
-        context->loadDialect<comb::CombDialect>();
-        context->loadDialect<synth::SynthDialect>();
-        if (failed(parser.parse()))
+        if (failed(importLiberty(sourceMgr, context, module)))
           return OwningOpRef<ModuleOp>();
         return OwningOpRef<ModuleOp>(module);
       },

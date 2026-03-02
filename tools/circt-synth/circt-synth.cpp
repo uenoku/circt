@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/ImportAIGER.h"
+#include "circt/Conversion/ImportLiberty.h"
 #include "circt/Conversion/SynthToComb.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
@@ -170,6 +171,10 @@ static cl::opt<std::string> abcPath("abc-path", cl::desc("Path to ABC"),
                                     cl::value_desc("path"), cl::init("abc"),
                                     cl::cat(mainCategory));
 
+static cl::list<std::string> libertyFilenames(
+    "liberty-files", cl::desc("Liberty library files to import"),
+    cl::CommaSeparated, cl::value_desc("filename"), cl::cat(mainCategory));
+
 static cl::opt<bool>
     ignoreAbcFailures("ignore-abc-failures",
                       cl::desc("Continue on ABC failure instead of aborting"),
@@ -234,6 +239,12 @@ static cl::opt<bool> enableMockturtleFunctionalReduction(
     "enable-mockturtle-functional-reduction",
     cl::desc("Enable mockturtle functional reduction."), cl::init(false),
     cl::cat(mainCategory));
+
+static cl::opt<std::string> libertyDelayExtraction(
+    "liberty-delay-extraction",
+    cl::desc("Delay extraction strategy for synth-annotate-techlib: "
+             "worst-case, center, first"),
+    cl::init("worst-case"), cl::cat(mainCategory));
 
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
@@ -315,7 +326,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
 
   if (!untilReached(UntilMapping)) {
     // Annotate Liberty-imported modules with hw.techlib.info before mapping.
-    pm.addPass(synth::createAnnotateTechLib());
+    synth::AnnotateTechLibOptions annotateOptions;
+    annotateOptions.delayExtraction = libertyDelayExtraction;
+    pm.addPass(synth::createAnnotateTechLib(annotateOptions));
     pm.addPass(synth::createGenSupergates());
 
     synth::TechMapperOptions options;
@@ -457,6 +470,26 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
   }
   if (!module)
     return failure();
+
+  if (!libertyFilenames.empty()) {
+    auto importTimer = ts.nest("Import Liberty");
+    for (const auto &libertyFilename : libertyFilenames) {
+      std::string libertyErrorMessage;
+      auto libertyInput = openInputFile(libertyFilename, &libertyErrorMessage);
+      if (!libertyInput) {
+        llvm::errs() << libertyErrorMessage << "\n";
+        return failure();
+      }
+
+      llvm::SourceMgr libertySourceMgr;
+      libertySourceMgr.AddNewSourceBuffer(std::move(libertyInput),
+                                          llvm::SMLoc());
+      if (failed(circt::liberty::importLiberty(libertySourceMgr, &context,
+                                               module.get())))
+        return failure();
+    }
+  }
+
   // Create the output directory or output file depending on our mode.
   std::optional<std::unique_ptr<llvm::ToolOutputFile>> outputFile;
   std::string errorMessage;
@@ -498,6 +531,14 @@ LogicalResult validateOptions() {
     return failure();
   }
 #endif
+
+  if (libertyDelayExtraction != "worst-case" &&
+      libertyDelayExtraction != "center" && libertyDelayExtraction != "first") {
+    llvm::errs() << "Error: -liberty-delay-extraction must be one of "
+                    "{worst-case, center, first}.\n";
+    return failure();
+  }
+
   return success();
 }
 
