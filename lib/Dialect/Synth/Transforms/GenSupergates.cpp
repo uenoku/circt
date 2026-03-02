@@ -19,6 +19,7 @@
 #include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace circt {
 namespace synth {
@@ -103,35 +104,34 @@ static FailureOr<NPNClass> computeNPN(hw::HWModuleOp module,
   return NPNClass::computeNPNCanonicalForm(*tt);
 }
 
-static hw::HWModuleOp createSupergateModule(OpBuilder &builder, Location loc,
-                                            StringAttr name, CellInfo &inner,
-                                            CellInfo &outer, unsigned pin) {
+using NPNKey = std::pair<llvm::APInt, uint64_t>;
+
+static NPNKey makeNPNKey(const NPNClass &npn) {
+  uint64_t negKey =
+      (static_cast<uint64_t>(npn.inputNegation) << 32) | npn.outputNegation;
+  return {npn.truthTable.table, negKey};
+}
+
+static hw::HWModuleOp createSupergateModule(
+    OpBuilder &builder, Location loc, StringAttr name, CellInfo &inner,
+    CellInfo &outer, unsigned pin, ArrayRef<unsigned> innerToInput,
+    ArrayRef<unsigned> outerBypassToInput, unsigned totalInputs) {
   auto savedInsertion = builder.saveInsertionPoint();
   auto *ctx = builder.getContext();
   auto i1 = builder.getI1Type();
   SmallVector<hw::PortInfo> ports;
 
-  unsigned portIdx = 0;
-  for (unsigned i = 0, e = inner.module.getNumInputPorts(); i != e; ++i) {
-    auto inName = inner.module.getInputName(i);
+  for (unsigned i = 0; i < totalInputs; ++i) {
+    SmallString<16> inName("in");
+    inName += std::to_string(i);
     ports.push_back(
         {{StringAttr::get(ctx, inName), i1, hw::ModulePort::Direction::Input},
-         portIdx++});
-  }
-  for (unsigned i = 0, e = outer.module.getNumInputPorts(); i != e; ++i) {
-    if (i == pin)
-      continue;
-    auto inName = outer.module.getInputName(i);
-    SmallString<32> unique(inName);
-    unique += "_outer";
-    ports.push_back(
-        {{StringAttr::get(ctx, unique), i1, hw::ModulePort::Direction::Input},
-         portIdx++});
+         i});
   }
 
   ports.push_back(
       {{StringAttr::get(ctx, "Y"), i1, hw::ModulePort::Direction::Output},
-       portIdx});
+       totalInputs});
 
   auto sg = hw::HWModuleOp::create(builder, loc, name, ports);
   sg.setPrivate();
@@ -142,20 +142,20 @@ static hw::HWModuleOp createSupergateModule(OpBuilder &builder, Location loc,
 
   builder.setInsertionPointToEnd(body);
   SmallVector<Value> innerOperands;
-  for (unsigned i = 0, e = inner.module.getNumInputPorts(); i != e; ++i)
-    innerOperands.push_back(body->getArgument(i));
+  for (unsigned idx : innerToInput)
+    innerOperands.push_back(body->getArgument(idx));
 
   auto innerInst = hw::InstanceOp::create(builder, loc, inner.module, "inner",
                                           innerOperands);
 
   SmallVector<Value> outerOperands;
-  unsigned nextArg = inner.module.getNumInputPorts();
+  unsigned bypassIdx = 0;
   for (unsigned i = 0, e = outer.module.getNumInputPorts(); i != e; ++i) {
     if (i == pin) {
       outerOperands.push_back(innerInst.getResult(0));
       continue;
     }
-    outerOperands.push_back(body->getArgument(nextArg++));
+    outerOperands.push_back(body->getArgument(outerBypassToInput[bypassIdx++]));
   }
 
   auto outerInst = hw::InstanceOp::create(builder, loc, outer.module, "outer",
@@ -199,12 +199,12 @@ struct GenSupergatesPass
     if (baseCells.empty())
       return;
 
-    DenseMap<llvm::APInt, double> coveredNPN;
+    DenseMap<NPNKey, double> coveredNPN;
     for (auto &cell : baseCells) {
       auto npn = computeNPN(cell.module, &instanceGraph);
       if (failed(npn))
         continue;
-      auto key = npn->truthTable.table;
+      auto key = makeNPNKey(*npn);
       auto it = coveredNPN.find(key);
       if (it == coveredNPN.end() || cell.area < it->second)
         coveredNPN[key] = cell.area;
@@ -214,7 +214,7 @@ struct GenSupergatesPass
     builder.setInsertionPointToEnd(topModule.getBody());
     Location loc = topModule.getLoc();
 
-    DenseMap<llvm::APInt, SupergateCandidate> bestByNPN;
+    DenseMap<NPNKey, SupergateCandidate> bestByNPN;
     unsigned supergateOrdinal = 0;
 
     SmallVector<CellInfo> frontier = baseCells;
@@ -228,6 +228,10 @@ struct GenSupergatesPass
 
       for (auto &outer : baseCells) {
         unsigned outerInputs = outer.module.getNumInputPorts();
+        SmallVector<unsigned> bypassPins;
+        bypassPins.reserve(outerInputs > 0 ? outerInputs - 1 : 0);
+        for (unsigned i = 0; i < outerInputs; ++i)
+          bypassPins.push_back(i);
         SmallVector<int64_t> outerMaxExcludingPin(outerInputs, 0);
         for (unsigned pin = 0; pin < outerInputs; ++pin) {
           int64_t maxBypass = 0;
@@ -252,10 +256,6 @@ struct GenSupergatesPass
               break;
 
             unsigned innerInputs = inner.module.getNumInputPorts();
-            unsigned totalInputs = innerInputs + outerInputs - 1;
-            if (totalInputs > maxInputs)
-              continue;
-
             double area = inner.area + outer.area;
             if (maxArea > 0.0 && area > maxArea)
               continue;
@@ -266,39 +266,101 @@ struct GenSupergatesPass
                 candidateMaxDelay > static_cast<int64_t>(maxDelay))
               continue;
 
-            ++triedForRootPin;
-            builder.setInsertionPointToEnd(topModule.getBody());
-            SmallString<32> supergateName("__supergate_");
-            supergateName += std::to_string(supergateOrdinal++);
-            auto sg = createSupergateModule(builder, loc,
-                                            StringAttr::get(ctx, supergateName),
-                                            inner, outer, pin);
-            instanceGraph.addModule(sg);
+            auto tryCandidate = [&](ArrayRef<unsigned> innerToInput,
+                                    ArrayRef<unsigned> outerBypassToInput,
+                                    unsigned totalInputs) {
+              if (totalInputs > maxInputs)
+                return;
 
-            auto npn = computeNPN(sg, &instanceGraph);
-            if (failed(npn))
-              continue;
+              ++triedForRootPin;
+              builder.setInsertionPointToEnd(topModule.getBody());
+              SmallString<32> supergateName("__supergate_");
+              supergateName += std::to_string(supergateOrdinal++);
+              auto sg = createSupergateModule(
+                  builder, loc, StringAttr::get(ctx, supergateName), inner,
+                  outer, pin, innerToInput, outerBypassToInput, totalInputs);
+              instanceGraph.addModule(sg);
 
-            auto key = npn->truthTable.table;
-            if (coveredNPN.count(key))
-              continue;
+              auto npn = computeNPN(sg, &instanceGraph);
+              if (failed(npn))
+                return;
 
-            SmallVector<int64_t> delays;
-            delays.reserve(totalInputs);
-            int64_t viaInner = outer.delays[pin];
+              auto key = makeNPNKey(*npn);
+              if (coveredNPN.count(key))
+                return;
+
+              SmallVector<int64_t> delays(totalInputs, 0);
+              int64_t viaInner = outer.delays[pin];
+              for (unsigned i = 0; i < innerInputs; ++i) {
+                unsigned inputIdx = innerToInput[i];
+                delays[inputIdx] =
+                    std::max(delays[inputIdx], inner.delays[i] + viaInner);
+              }
+
+              unsigned bypassIdx = 0;
+              for (unsigned i = 0; i < outerInputs; ++i) {
+                if (i == pin)
+                  continue;
+                unsigned inputIdx = outerBypassToInput[bypassIdx++];
+                delays[inputIdx] = std::max(delays[inputIdx], outer.delays[i]);
+              }
+
+              auto it = bestByNPN.find(key);
+              if (it == bestByNPN.end() || area < it->second.area) {
+                bestByNPN[key] = {sg, area, std::move(delays),
+                                  candidateMaxDelay, depth};
+              }
+            };
+
+            unsigned baseTotalInputs = innerInputs + outerInputs - 1;
+            SmallVector<unsigned> baseInnerToInput;
+            SmallVector<unsigned> baseOuterBypassToInput;
+            baseInnerToInput.reserve(innerInputs);
+            baseOuterBypassToInput.reserve(outerInputs > 0 ? outerInputs - 1
+                                                           : 0);
+
             for (unsigned i = 0; i < innerInputs; ++i)
-              delays.push_back(inner.delays[i] + viaInner);
+              baseInnerToInput.push_back(i);
+            unsigned nextInput = innerInputs;
             for (unsigned i = 0; i < outerInputs; ++i) {
               if (i == pin)
                 continue;
-              delays.push_back(outer.delays[i]);
+              baseOuterBypassToInput.push_back(nextInput++);
+            }
+            tryCandidate(baseInnerToInput, baseOuterBypassToInput,
+                         baseTotalInputs);
+
+            if (!this->allowDuplicateInputs || baseTotalInputs <= 1)
+              continue;
+
+            for (unsigned innerIdx = 0; innerIdx < innerInputs; ++innerIdx) {
+              unsigned bypassPos = 0;
+              for (unsigned outerInput = 0; outerInput < outerInputs;
+                   ++outerInput) {
+                if (outerInput == pin)
+                  continue;
+
+                SmallVector<unsigned> dupInnerToInput(baseInnerToInput);
+                SmallVector<unsigned> dupOuterBypassToInput(
+                    baseOuterBypassToInput);
+
+                unsigned mergedInput = dupInnerToInput[innerIdx];
+                unsigned removedInput = dupOuterBypassToInput[bypassPos];
+                dupOuterBypassToInput[bypassPos] = mergedInput;
+
+                for (auto &idx : dupOuterBypassToInput)
+                  if (idx > removedInput)
+                    --idx;
+
+                tryCandidate(dupInnerToInput, dupOuterBypassToInput,
+                             baseTotalInputs - 1);
+                ++bypassPos;
+              }
             }
 
-            auto it = bestByNPN.find(key);
-            if (it == bestByNPN.end() || area < it->second.area) {
-              bestByNPN[key] = {sg, area, std::move(delays), candidateMaxDelay,
-                                depth};
-            }
+            if (maxCandidatesPerRoot > 0 &&
+                triedForRootPin >= maxCandidatesPerRoot)
+              break;
           }
         }
       }

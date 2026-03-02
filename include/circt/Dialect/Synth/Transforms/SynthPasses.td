@@ -465,6 +465,8 @@ def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
   let options = [
     Option<"maxInputs", "max-inputs", "unsigned", "6",
            "Maximum number of primary inputs per supergate">,
+    Option<"allowDuplicateInputs", "allow-duplicate-inputs", "bool", "false",
+           "Allow candidates that merge one inner input with one outer bypass input">,
     Option<"maxGates", "max-gates", "unsigned", "2",
            "Maximum number of primitive gates per supergate">,
     Option<"maxDelay", "max-delay", "unsigned", "0",

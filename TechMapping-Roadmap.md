@@ -4,6 +4,19 @@
 
 Liberty-imported modules now get `hw.techlib.info` via the `synth-annotate-techlib` pass, which extracts a single scalar delay per input pin from NLDM tables. TechMapper consumes this as `delay = [[d_per_input], ...]` with one integer (picoseconds) per input.
 
+Supergate generation is now available as `synth-gen-supergates` and is wired into the `circt-synth` flow between `synth-annotate-techlib` and `synth-tech-mapper`.
+
+- Supergates are emitted as `hw.module` definitions with:
+  - `hw.techlib.info` (accumulated area/per-input delay)
+  - `synth.supergate = true`
+  - instance-based bodies (`hw.instance` of library cells), preserving library metadata
+- Generation supports iterative depth expansion (`max-gates`) and practical pruning controls:
+  - `max-inputs`, `max-area`, `max-delay`, `max-candidates-per-root`
+- Optional duplicate-input exploration is supported via `allow-duplicate-inputs=true`:
+  - minimal mode that merges one inner input with one outer bypass input per candidate
+  - enables useful low-input supergates that rely on tied pins
+- NPN dedup/coverage handling is phase-aware (canonical table + negation signature) to avoid dropping phase-distinct candidates too aggressively.
+
 ## Planned Improvements
 
 ### Supergate Generation
@@ -16,12 +29,15 @@ Currently TechMapper matches each cut against **single** library cells via NPN c
 
 **Representation in the pipeline:**
 
-1. **Supergate library generation (new pass: `synth-gen-supergates`)**
+1. **Supergate library generation (`synth-gen-supergates`)**
    - Runs as a preprocessing step before TechMapper, after `synth-annotate-techlib`
-   - Iteratively composes library cells (those with `hw.techlib.info`) up to configurable limits:
-     - `max-inputs`: maximum number of primary inputs (e.g., 6)
-     - `max-gates`: maximum number of gates in a supergate (e.g., 3-4)
-     - `max-area`: area budget per supergate
+    - Iteratively composes library cells (those with `hw.techlib.info`) up to configurable limits:
+      - `max-inputs`: maximum number of primary inputs (e.g., 6)
+      - `max-gates`: maximum number of gates in a supergate (e.g., 3-4)
+      - `max-area`: area budget per supergate
+      - `max-delay`: max per-supergate pin-to-output delay (0 = unlimited)
+      - `max-candidates-per-root`: cap of inner candidates per `(outer,pin)` root
+      - `allow-duplicate-inputs`: optionally allow one merged input pair (tied pins)
    - For each composition, compute the NPN canonical form of the combined truth table
    - Emit the supergate as a new `hw::HWModuleOp` with:
      - Body containing the gate composition (instances of library cells)
@@ -33,10 +49,11 @@ Currently TechMapper matches each cut against **single** library cells via NPN c
    import-liberty → annotate-techlib → gen-supergates → tech-mapper → STA
    ```
 
-2. **TechMapper changes: none required initially**
-   - Since supergates are just additional `hw::HWModuleOp`s with `hw.techlib.info`, TechMapper already picks them up as library patterns via NPN matching
-   - The cut-based algorithm naturally considers supergates alongside primitive cells
-   - Area/delay costs propagate correctly because supergates carry accumulated values
+2. **TechMapper integration**
+    - Since supergates are just additional `hw::HWModuleOp`s with `hw.techlib.info`, TechMapper already picks them up as library patterns via NPN matching
+    - The cut-based algorithm naturally considers supergates alongside primitive cells
+    - Area/delay costs propagate correctly because supergates carry accumulated values
+    - Truth-table extraction in TechMapper is instance-aware, so generated instance-based supergates participate transparently
 
 3. **Delay computation for supergates**
    - Pin-to-pin delay through a supergate DAG is the max delay along any path from input pin to output
