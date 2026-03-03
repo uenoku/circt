@@ -763,8 +763,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
   ///   `ifdef __option__Platform_FPGA
   ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.inner.r
   ///   `elsif __option__Platform_ASIC
-  ///     `define __targetref_Top_inst_probe
-  ///     `__target_Platform_Top_inst.middle.deep.r
+  ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.middle.deep.r
   ///   `else
   ///     `define __targetref_Top_inst_probe `__target_Platform_Top_inst.r
   ///   `endif
@@ -840,7 +839,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       FlatSymbolRefAttr hierPath;
       std::string suffix;
     };
-    DenseMap<std::pair<StringRef, size_t>, PathInfo> pathCache;
+    DenseMap<std::pair<StringAttr, size_t>, PathInfo> pathCache;
     auto *body = getOperation().getBodyBlock();
     auto declBuilder =
         ImplicitLocOpBuilder::atBlockBegin(info.inst.getLoc(), body);
@@ -848,7 +847,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     // Get or compute XMR path for a module's ref port.
     auto getModuleXMRPath = [&](FlatSymbolRefAttr moduleRef,
                                 size_t portNum) -> std::optional<PathInfo> {
-      auto key = std::make_pair(moduleRef.getValue(), portNum);
+      auto key = std::make_pair(moduleRef.getAttr(), portNum);
       if (auto it = pathCache.find(key); it != pathCache.end())
         return it->second;
 

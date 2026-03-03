@@ -766,6 +766,215 @@ firrtl.circuit "Foo" {
 }
 
 // -----
+// Test XMR lowering through instance_choice with probe ports
+// CHECK-LABEL: firrtl.circuit "InstanceChoiceProbe"
+firrtl.circuit "InstanceChoiceProbe" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+
+  // CHECK-DAG: hw.hierpath private @[[PATH_DEFAULT:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM:[a-zA-Z0-9_]+]], @DefaultTarget::@[[TARGET_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: hw.hierpath private @[[PATH_FPGA:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM]], @FPGATarget::@[[FPGA_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: hw.hierpath private @[[PATH_ASIC:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM]], @ASICTarget::@[[ASIC_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @DefaultTarget(out %probe: !firrtl.probe<uint<8>>) {
+    // CHECK: firrtl.module @DefaultTarget() {
+    %r = firrtl.wire : !firrtl.uint<8>
+    // CHECK: %r = firrtl.wire sym @[[TARGET_SYM]]
+    %0 = firrtl.ref.send %r : !firrtl.uint<8>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<8>>
+  }
+
+  firrtl.module @FPGATarget(out %probe: !firrtl.probe<uint<8>>) {
+    // CHECK: firrtl.module @FPGATarget() {
+    %r = firrtl.wire : !firrtl.uint<8>
+    // CHECK: %r = firrtl.wire sym @[[FPGA_SYM]]
+    %0 = firrtl.ref.send %r : !firrtl.uint<8>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<8>>
+  }
+
+  firrtl.module @ASICTarget(out %probe: !firrtl.probe<uint<8>>) {
+    // CHECK: firrtl.module @ASICTarget() {
+    %r = firrtl.wire : !firrtl.uint<8>
+    // CHECK: %r = firrtl.wire sym @[[ASIC_SYM]]
+    %0 = firrtl.ref.send %r : !firrtl.uint<8>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<8>>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceProbe
+  firrtl.module @InstanceChoiceProbe(out %out: !firrtl.uint<8>) {
+    // CHECK: firrtl.instance_choice inst sym @[[INST_SYM]]
+    %inst_probe = firrtl.instance_choice inst @DefaultTarget alternatives @Platform {
+      @FPGA -> @FPGATarget,
+      @ASIC -> @ASICTarget
+    } (out probe: !firrtl.probe<uint<8>>)
+
+    %0 = firrtl.ref.resolve %inst_probe : !firrtl.probe<uint<8>>
+    // CHECK: %[[XMR:.+]] = firrtl.xmr.deref
+    firrtl.matchingconnect %out, %0 : !firrtl.uint<8>
+    // CHECK: firrtl.matchingconnect %out, %[[XMR]]
+  }
+}
+
+// -----
+// Test XMR lowering through instance_choice with rwprobe ports
+// CHECK-LABEL: firrtl.circuit "InstanceChoiceRWProbe"
+firrtl.circuit "InstanceChoiceRWProbe" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+
+  // CHECK-DAG: hw.hierpath private @[[PATH:[a-zA-Z0-9_]+]] [@InstanceChoiceRWProbe::@[[INST_SYM:[a-zA-Z0-9_]+]], @Target::@[[TARGET_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @Target(out %rwprobe: !firrtl.rwprobe<uint<8>>) {
+    // CHECK: firrtl.module @Target() {
+    %r, %r_ref = firrtl.wire forceable : !firrtl.uint<8>, !firrtl.rwprobe<uint<8>>
+    // CHECK: %r, %r_ref = firrtl.wire sym @[[TARGET_SYM]] forceable
+    firrtl.ref.define %rwprobe, %r_ref : !firrtl.rwprobe<uint<8>>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceRWProbe
+  firrtl.module @InstanceChoiceRWProbe(in %c: !firrtl.uint<1>, in %clock: !firrtl.clock, in %x: !firrtl.uint<8>) {
+    // CHECK: %[[REF:.+]] = firrtl.xmr.ref @[[PATH]]
+    // CHECK: firrtl.instance_choice inst sym @[[INST_SYM]]
+    %inst_rwprobe = firrtl.instance_choice inst @Target alternatives @Platform {
+      @FPGA -> @Target,
+      @ASIC -> @Target
+    } (out rwprobe: !firrtl.rwprobe<uint<8>>)
+
+    // CHECK: firrtl.ref.force %clock, %c, %[[REF]], %x
+    firrtl.ref.force %clock, %c, %inst_rwprobe, %x : !firrtl.clock, !firrtl.uint<1>, !firrtl.rwprobe<uint<8>>, !firrtl.uint<8>
+  }
+}
+
+// -----
+// Test XMR lowering through nested instance_choice
+// CHECK-LABEL: firrtl.circuit "NestedInstanceChoice"
+firrtl.circuit "NestedInstanceChoice" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+  }
+
+  // CHECK-DAG: hw.hierpath private @[[PATH:[a-zA-Z0-9_]+]] [@NestedInstanceChoice::@[[OUTER_SYM:[a-zA-Z0-9_]+]], @Outer::@[[INNER_SYM:[a-zA-Z0-9_]+]], @Inner::@[[WIRE_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @Inner(out %probe: !firrtl.probe<uint<4>>) {
+    // CHECK: firrtl.module @Inner() {
+    %w = firrtl.wire : !firrtl.uint<4>
+    // CHECK: %w = firrtl.wire sym @[[WIRE_SYM]]
+    %0 = firrtl.ref.send %w : !firrtl.uint<4>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<4>>
+  }
+
+  firrtl.module @Outer(out %probe: !firrtl.probe<uint<4>>) {
+    // CHECK: firrtl.module @Outer() {
+    // CHECK: firrtl.instance_choice inner sym @[[INNER_SYM]]
+    %inner_probe = firrtl.instance_choice inner @Inner alternatives @Platform {
+      @FPGA -> @Inner
+    } (out probe: !firrtl.probe<uint<4>>)
+    firrtl.ref.define %probe, %inner_probe : !firrtl.probe<uint<4>>
+  }
+
+  // CHECK-LABEL: firrtl.module @NestedInstanceChoice
+  firrtl.module @NestedInstanceChoice(out %out: !firrtl.uint<4>) {
+    // CHECK: firrtl.instance_choice outer sym @[[OUTER_SYM]]
+    %outer_probe = firrtl.instance_choice outer @Outer alternatives @Platform {
+      @FPGA -> @Outer
+    } (out probe: !firrtl.probe<uint<4>>)
+
+    %0 = firrtl.ref.resolve %outer_probe : !firrtl.probe<uint<4>>
+    // CHECK: %[[XMR:.+]] = firrtl.xmr.deref @[[PATH]]
+    firrtl.matchingconnect %out, %0 : !firrtl.uint<4>
+    // CHECK: firrtl.matchingconnect %out, %[[XMR]]
+  }
+}
+
+// -----
+// Test instance_choice with multiple options
+// CHECK-LABEL: firrtl.circuit "MultipleOptions"
+firrtl.circuit "MultipleOptions" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+  firrtl.option @Optimization {
+    firrtl.option_case @Fast
+    firrtl.option_case @Slow
+  }
+
+  // CHECK-DAG: hw.hierpath private @[[PATH1:[a-zA-Z0-9_]+]] [@MultipleOptions::@[[INST1_SYM:[a-zA-Z0-9_]+]], @Target1::@[[T1_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: hw.hierpath private @[[PATH2:[a-zA-Z0-9_]+]] [@MultipleOptions::@[[INST2_SYM:[a-zA-Z0-9_]+]], @Target2::@[[T2_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @Target1(out %probe: !firrtl.probe<uint<2>>) {
+    %w = firrtl.wire : !firrtl.uint<2>
+    %0 = firrtl.ref.send %w : !firrtl.uint<2>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<2>>
+  }
+
+  firrtl.module @Target2(out %probe: !firrtl.probe<uint<2>>) {
+    %w = firrtl.wire : !firrtl.uint<2>
+    %0 = firrtl.ref.send %w : !firrtl.uint<2>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<2>>
+  }
+
+  // CHECK-LABEL: firrtl.module @MultipleOptions
+  firrtl.module @MultipleOptions(out %out1: !firrtl.uint<2>, out %out2: !firrtl.uint<2>) {
+    %inst1_probe = firrtl.instance_choice inst1 @Target1 alternatives @Platform {
+      @FPGA -> @Target1,
+      @ASIC -> @Target1
+    } (out probe: !firrtl.probe<uint<2>>)
+
+    %inst2_probe = firrtl.instance_choice inst2 @Target2 alternatives @Optimization {
+      @Fast -> @Target2,
+      @Slow -> @Target2
+    } (out probe: !firrtl.probe<uint<2>>)
+
+    %0 = firrtl.ref.resolve %inst1_probe : !firrtl.probe<uint<2>>
+    %1 = firrtl.ref.resolve %inst2_probe : !firrtl.probe<uint<2>>
+    // CHECK: %[[XMR1:.+]] = firrtl.xmr.deref @[[PATH1]]
+    // CHECK: %[[XMR2:.+]] = firrtl.xmr.deref @[[PATH2]]
+    firrtl.matchingconnect %out1, %0 : !firrtl.uint<2>
+    firrtl.matchingconnect %out2, %1 : !firrtl.uint<2>
+    // CHECK: firrtl.matchingconnect %out1, %[[XMR1]]
+    // CHECK: firrtl.matchingconnect %out2, %[[XMR2]]
+  }
+}
+
+// -----
+// Test instance_choice with ref.sub
+// CHECK-LABEL: firrtl.circuit "InstanceChoiceRefSub"
+firrtl.circuit "InstanceChoiceRefSub" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+  }
+
+  // CHECK: hw.hierpath private @[[PATH:[a-zA-Z0-9_]+]] [@InstanceChoiceRefSub::@[[INST_SYM:[a-zA-Z0-9_]+]], @Target::@[[TARGET_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @Target(out %probe: !firrtl.probe<bundle<a: uint<1>, b: uint<2>>>) {
+    // CHECK: firrtl.module @Target() {
+    %w = firrtl.wire : !firrtl.bundle<a: uint<1>, b: uint<2>>
+    // CHECK: %w = firrtl.wire sym @[[TARGET_SYM]]
+    %0 = firrtl.ref.send %w : !firrtl.bundle<a: uint<1>, b: uint<2>>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<bundle<a: uint<1>, b: uint<2>>>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceRefSub
+  firrtl.module @InstanceChoiceRefSub(out %out: !firrtl.uint<2>) {
+    // CHECK: firrtl.instance_choice inst sym @[[INST_SYM]]
+    %inst_probe = firrtl.instance_choice inst @Target alternatives @Platform {
+      @FPGA -> @Target
+    } (out probe: !firrtl.probe<bundle<a: uint<1>, b: uint<2>>>)
+
+    %sub = firrtl.ref.sub %inst_probe[1] : !firrtl.probe<bundle<a: uint<1>, b: uint<2>>>
+    %0 = firrtl.ref.resolve %sub : !firrtl.probe<uint<2>>
+    // CHECK: %[[XMR:.+]] = firrtl.xmr.deref @[[PATH]], ".b"
+    firrtl.matchingconnect %out, %0 : !firrtl.uint<2>
+    // CHECK: firrtl.matchingconnect %out, %[[XMR]]
+  }
+}
+
+// -----
 // Test that all modules are reached and updated.
 
 // CHECK-LABEL: firrtl.circuit "PF"
@@ -788,6 +997,78 @@ firrtl.circuit "PF" {
   }
 }
 
+
+// -----
+// Test instance_choice with zero-width probes
+// CHECK-LABEL: firrtl.circuit "InstanceChoiceZeroWidth"
+firrtl.circuit "InstanceChoiceZeroWidth" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+  }
+
+  firrtl.module @Target(out %probe: !firrtl.probe<uint<0>>) {
+    // CHECK: firrtl.module @Target() {
+    %w = firrtl.wire : !firrtl.uint<0>
+    %0 = firrtl.ref.send %w : !firrtl.uint<0>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<0>>
+  }
+
+  // CHECK-LABEL: firrtl.module @InstanceChoiceZeroWidth
+  firrtl.module @InstanceChoiceZeroWidth(out %out: !firrtl.uint<0>) {
+    %inst_probe = firrtl.instance_choice inst @Target alternatives @Platform {
+      @FPGA -> @Target
+    } (out probe: !firrtl.probe<uint<0>>)
+
+    %0 = firrtl.ref.resolve %inst_probe : !firrtl.probe<uint<0>>
+    // CHECK: %[[ZERO:.+]] = firrtl.constant 0 : !firrtl.uint<0>
+    firrtl.matchingconnect %out, %0 : !firrtl.uint<0>
+    // CHECK: firrtl.matchingconnect %out, %[[ZERO]]
+  }
+}
+
+// -----
+// Test instance_choice with public module output probe ports
+// CHECK-LABEL: firrtl.circuit "InstanceChoicePublicProbe"
+firrtl.circuit "InstanceChoicePublicProbe" {
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+    firrtl.option_case @ASIC
+  }
+
+  // CHECK: sv.macro.decl @ref_InstanceChoicePublicProbe_out
+  // CHECK: hw.hierpath private @[[PATH_DEFAULT:[a-zA-Z0-9_]+]] [@InstanceChoicePublicProbe::@[[INST_SYM:[a-zA-Z0-9_]+]], @DefaultTarget::@[[DEFAULT_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK: hw.hierpath private @[[PATH_FPGA:[a-zA-Z0-9_]+]] [@InstanceChoicePublicProbe::@[[INST_SYM]], @FPGATarget::@[[FPGA_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK: hw.hierpath private @[[PATH_ASIC:[a-zA-Z0-9_]+]] [@InstanceChoicePublicProbe::@[[INST_SYM]], @ASICTarget::@[[ASIC_SYM:[a-zA-Z0-9_]+]]]
+
+  firrtl.module @DefaultTarget(out %probe: !firrtl.probe<uint<3>>) {
+    %w = firrtl.wire : !firrtl.uint<3>
+    %0 = firrtl.ref.send %w : !firrtl.uint<3>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<3>>
+  }
+
+  firrtl.module @FPGATarget(out %probe: !firrtl.probe<uint<3>>) {
+    %w = firrtl.wire : !firrtl.uint<3>
+    %0 = firrtl.ref.send %w : !firrtl.uint<3>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<3>>
+  }
+
+  firrtl.module @ASICTarget(out %probe: !firrtl.probe<uint<3>>) {
+    %w = firrtl.wire : !firrtl.uint<3>
+    %0 = firrtl.ref.send %w : !firrtl.uint<3>
+    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<3>>
+  }
+
+  // CHECK: emit.file "ref_InstanceChoicePublicProbe.sv"
+  // CHECK-LABEL: firrtl.module @InstanceChoicePublicProbe
+  firrtl.module @InstanceChoicePublicProbe(out %out: !firrtl.probe<uint<3>>) {
+    %inst_probe = firrtl.instance_choice inst @DefaultTarget alternatives @Platform {
+      @FPGA -> @FPGATarget,
+      @ASIC -> @ASICTarget
+    } (out probe: !firrtl.probe<uint<3>>)
+
+    firrtl.ref.define %out, %inst_probe : !firrtl.probe<uint<3>>
+  }
+}
 
 // -----
 // Test that instance results used in both connects and ref.send preserve
