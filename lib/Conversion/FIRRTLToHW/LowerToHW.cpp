@@ -254,7 +254,8 @@ struct CircuitLoweringState {
                        InstanceGraph &instanceGraph, NLATable *nlaTable)
       : circuitOp(circuitOp), instanceGraph(instanceGraph),
         enableAnnotationWarning(enableAnnotationWarning),
-        verificationFlavor(verificationFlavor), nlaTable(nlaTable) {
+        verificationFlavor(verificationFlavor), nlaTable(nlaTable),
+        macroTable(circuitOp) {
     auto *context = circuitOp.getContext();
 
     // Get the testbench output directory.
@@ -585,6 +586,9 @@ private:
   // emit.files for additional sources for verbatim extmodules
   llvm::StringMap<emit::FileOp> emitFilesByFileName;
   llvm::sys::SmartMutex<true> emitFilesMutex;
+
+  // Instance choice macro table for looking up option case macros
+  InstanceChoiceMacroTable macroTable;
 };
 
 void CircuitLoweringState::processRemainingAnnotations(
@@ -656,7 +660,7 @@ private:
       OpBuilder &builder, CircuitOp circuit, StringAttr publicModuleName,
       StringAttr optionName, StringAttr caseName,
       ArrayRef<CircuitLoweringState::LoweredInstanceChoice> instances,
-      CircuitNamespace &circuitNamespace);
+      CircuitNamespace &circuitNamespace, InstanceChoiceMacroTable &macroTable);
 
   LogicalResult lowerPorts(ArrayRef<PortInfo> firrtlPorts,
                            SmallVectorImpl<hw::PortInfo> &ports,
@@ -1058,7 +1062,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
     OpBuilder &builder, CircuitOp circuit, StringAttr publicModuleName,
     StringAttr optionName, StringAttr caseName,
     ArrayRef<CircuitLoweringState::LoweredInstanceChoice> instances,
-    CircuitNamespace &circuitNamespace) {
+    CircuitNamespace &circuitNamespace, InstanceChoiceMacroTable &macroTable) {
 
   // Filename format: targets_<PublicModule>_<Option>_<Case>.svh
   SmallString<128> includeFileName;
@@ -1088,9 +1092,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
   }
 
   // Define the global option case macro to avoid conflicts
-  // Format: __option__<OptionName>_<CaseName>
-  auto optionCaseMacroAttr = getOptionCaseMacroName(optionName, caseName);
-  auto optionCaseMacroRef = FlatSymbolRefAttr::get(optionCaseMacroAttr);
+  // Use InstanceChoiceMacroTable to get the macro for this option case
+  auto optionCaseMacroRef = macroTable.getMacro(optionName, caseName);
 
   // `ifndef __option__<OptionName>_<CaseName>
   //  `define __option__<OptionName>_<CaseName>
@@ -1219,7 +1222,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludes(
       emitInstanceChoiceIncludeFile(builder, circuit, publicModuleName,
                                     /*optionName=*/key.first,
                                     /*caseName=*/key.second,
-                                    choicesInHierarchy[key], circuitNamespace);
+                                    choicesInHierarchy[key], circuitNamespace,
+                                    loweringState.macroTable);
   }
 }
 
@@ -4285,15 +4289,18 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                                ->getModule();
     altModules.push_back(altModule);
 
-    // Generate the macro name for this option case
-    StringAttr optionCaseMacroAttr =
-        getOptionCaseMacroName(optionName, caseName);
+    // Get the macro name for this option case using InstanceChoiceMacroTable
+    auto optionCaseMacroRef =
+        circuitState.macroTable.getMacro(optionName, caseName);
+    if (!optionCaseMacroRef)
+      return oldInstanceChoice->emitOpError(
+          "failed to get macro for option case");
+    auto optionCaseMacroAttr = optionCaseMacroRef.getAttr();
 
     // Register the macro declaration for this case
     // NOTE: LowerLayer/LowerXMR will be necessary to interact with
     //       these macro so will be necessary not to generate duplicate
     //       macro declarations.
-    circuitState.addMacroDecl(optionCaseMacroAttr);
     macroNames.push_back(optionCaseMacroAttr);
   }
 

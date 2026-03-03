@@ -84,9 +84,8 @@ public:
   FlatSymbolRefAttr getMacro(StringAttr optionName, StringAttr caseName);
 
 private:
-  // Option/Case -> OptionCaseMacro Symbol
-  DenseMap<std::pair<StringAttr, StringAttr>, FlatSymbolRefAttr>
-      cache;
+  // Option/Case -> Macro Symbol
+  DenseMap<std::pair<StringAttr, StringAttr>, FlatSymbolRefAttr> cache;
 };
 
 //===----------------------------------------------------------------------===//

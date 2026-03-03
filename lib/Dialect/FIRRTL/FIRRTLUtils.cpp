@@ -1233,7 +1233,7 @@ circt::firrtl::InstanceChoiceMacroTable::InstanceChoiceMacroTable(
 
 FlatSymbolRefAttr
 circt::firrtl::InstanceChoiceMacroTable::getMacro(StringAttr optionName,
-                                                  StringAttr caseName) {
+                                                  StringAttr caseName) const {
   auto it = cache.find({optionName, caseName});
   if (it == cache.end())
     return {};
