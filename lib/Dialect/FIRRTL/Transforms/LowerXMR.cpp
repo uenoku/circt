@@ -165,6 +165,10 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
     llvm::EquivalenceClasses<Value> eq;
     dataFlowClasses = &eq;
 
+    // Initialize the macro table for looking up option case macros.
+    InstanceChoiceMacroTable &mt = getAnalysis<InstanceChoiceMacroTable>();
+    macroTable = &mt;
+
     InstanceGraph &instanceGraph = getAnalysis<InstanceGraph>();
     SmallVector<RefResolveOp> resolveOps;
     SmallVector<RefSubOp> indexingOps;
@@ -890,16 +894,14 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       return value.str().str();
     };
 
-    // Build option macro names for ifdef chain.
-    SmallVector<StringRef> macroNames;
-    SmallVector<std::string> macroNameStorage;
+    // Build option macro names for ifdef chain using InstanceChoiceMacroTable.
+    SmallVector<StringAttr> macroNames;
     for (auto [caseRef, moduleRef] : info.targetChoices) {
-      SmallString<64> optionMacro("__option__");
-      optionMacro.append(info.optionName.getValue());
-      optionMacro.append("_");
-      optionMacro.append(caseRef.getLeafReference().getValue());
-      macroNameStorage.push_back(optionMacro.str().str());
-      macroNames.push_back(macroNameStorage.back());
+      auto caseName = caseRef.getLeafReference();
+      auto optionCaseMacro = macroTable->getMacro(info.optionName, caseName);
+      if (!optionCaseMacro)
+        return info.inst.emitOpError("failed to get macro for option case");
+      macroNames.push_back(optionCaseMacro.getAttr());
     }
 
     // Create nested ifdef structure for each target choice.
@@ -1184,4 +1186,7 @@ private:
   /// A map from parent module to child instance choice instances.
   DenseMap<FModuleOp, SmallVector<InstanceChoiceRefPortInfo>>
       instanceChoiceInfo;
+
+  /// Table for looking up option case macros.
+  InstanceChoiceMacroTable *macroTable = nullptr;
 };

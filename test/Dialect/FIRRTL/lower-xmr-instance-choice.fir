@@ -199,19 +199,19 @@ circuit Top :
 ; This demonstrates that multiple instance choices with different options work correctly
 ; and all ifdef logic is inlined in a single ref_Top.sv file
 ; CHECK-LABEL: FILE "ref_Top.sv"
-; CHECK: `ifdef __option__Platform_FPGA
+; CHECK: `ifdef __option_Platform_FPGA
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst1_probe
 ; CHECK: `else
-; CHECK: `ifdef __option__Platform_ASIC
+; CHECK: `ifdef __option_Platform_ASIC
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst1_probe
 ; CHECK: `else
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst1_probe
 ; CHECK: `endif
 ; CHECK: `endif
-; CHECK: `ifdef __option__Optimization_Fast
+; CHECK: `ifdef __option_Optimization_Fast
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst2_probe
 ; CHECK: `else
-; CHECK: `ifdef __option__Optimization_Slow
+; CHECK: `ifdef __option_Optimization_Slow
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst2_probe
 ; CHECK: `else
 ; CHECK: `define __targetref_InstanceChoiceProbe_inst2_probe
