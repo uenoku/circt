@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/FIRRTL/FIRRTLUtils.h"
+#include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/InnerSymbolNamespace.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
@@ -1212,4 +1213,29 @@ circt::firrtl::parseFormatString(mlir::OpBuilder &builder, mlir::Location loc,
 
   formatStringResult = builder.getStringAttr(validatedFormatString);
   return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Instance choice option case macro name utilities.
+//===----------------------------------------------------------------------===//
+
+circt::firrtl::InstanceChoiceMacroTable::InstanceChoiceMacroTable(
+    Operation *op) {
+  auto circuit = cast<CircuitOp>(op);
+  for (auto option : circuit.getOps<OptionOp>()) {
+    for (auto optionCase : option.getOps<OptionCaseOp>()) {
+      auto optionName = option.getSymNameAttr();
+      auto caseName = optionCase.getSymNameAttr();
+      cache[{optionName, caseName}] = optionCase.getCaseMacroAttr();
+    }
+  }
+}
+
+FlatSymbolRefAttr
+circt::firrtl::InstanceChoiceMacroTable::getMacro(StringAttr optionName,
+                                                  StringAttr caseName) {
+  auto it = cache.find({optionName, caseName});
+  if (it == cache.end())
+    return {};
+  return it->second;
 }

@@ -14,6 +14,7 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLUTILS_H
 
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
+#include "circt/Support/LLVM.h"
 #include "mlir/IR/BuiltinOps.h"
 
 namespace circt {
@@ -72,6 +73,20 @@ public:
 private:
   ImplicitLocOpBuilder &builder;
   SmallDenseMap<Type, Value, 8> cache;
+};
+
+// Instance choice option case macro name utilities.
+class InstanceChoiceMacroTable {
+public:
+  InstanceChoiceMacroTable(Operation *op);
+
+  // Get the macro for an option case. Return null if it doesn't exist.
+  FlatSymbolRefAttr getMacro(StringAttr optionName, StringAttr caseName);
+
+private:
+  // Option/Case -> OptionCaseMacro Symbol
+  DenseMap<std::pair<StringAttr, StringAttr>, FlatSymbolRefAttr>
+      cache;
 };
 
 //===----------------------------------------------------------------------===//
