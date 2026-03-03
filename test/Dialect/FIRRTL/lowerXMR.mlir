@@ -773,9 +773,10 @@ firrtl.circuit "InstanceChoiceProbe" {
   sv.macro.decl @__option_Platform_ASIC
   sv.macro.decl @__target_Platform_InstanceChoiceProbe_inst
 
-  // CHECK-DAG: hw.hierpath private @[[PATH_DEFAULT:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM:[a-zA-Z0-9_]+]], @DefaultTarget::@[[DEFAULT_SYM:[a-zA-Z0-9_]+]]]
-  // CHECK-DAG: hw.hierpath private @[[PATH_FPGA:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM]], @FPGATarget::@[[FPGA_SYM:[a-zA-Z0-9_]+]]]
-  // CHECK-DAG: hw.hierpath private @[[PATH_ASIC:[a-zA-Z0-9_]+]] [@InstanceChoiceProbe::@[[INST_SYM]], @ASICTarget::@[[ASIC_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: sv.macro.decl @__targetref_InstanceChoiceProbe_inst_probe
+  // CHECK-DAG: hw.hierpath private @[[PATH_DEFAULT:[a-zA-Z0-9_]+]] [@DefaultTarget::@[[DEFAULT_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: hw.hierpath private @[[PATH_FPGA:[a-zA-Z0-9_]+]] [@FPGATarget::@[[FPGA_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: hw.hierpath private @[[PATH_ASIC:[a-zA-Z0-9_]+]] [@ASICTarget::@[[ASIC_SYM:[a-zA-Z0-9_]+]]]
 
   firrtl.option @Platform {
     firrtl.option_case @FPGA {case_macro = @__option_Platform_FPGA}
@@ -806,18 +807,30 @@ firrtl.circuit "InstanceChoiceProbe" {
     firrtl.ref.define %probe, %0 : !firrtl.probe<uint<8>>
   }
 
+  // CHECK: emit.file "ref_InstanceChoiceProbe.sv" {
+  // CHECK:   sv.ifdef @__option_Platform_FPGA {
+  // CHECK:     sv.macro.def @__targetref_InstanceChoiceProbe_inst_probe
+  // CHECK:   } else {
+  // CHECK:     sv.ifdef @__option_Platform_ASIC {
+  // CHECK:       sv.macro.def @__targetref_InstanceChoiceProbe_inst_probe
+  // CHECK:     } else {
+  // CHECK:       sv.macro.def @__targetref_InstanceChoiceProbe_inst_probe
+  // CHECK:     }
+  // CHECK:   }
+  // CHECK: }
+
   // CHECK-LABEL: firrtl.module @InstanceChoiceProbe
   firrtl.module @InstanceChoiceProbe(out %out: !firrtl.uint<8>) {
-    // CHECK: firrtl.instance_choice inst sym @[[INST_SYM]] {instance_macro = @__target_Platform_InstanceChoiceProbe_inst}
+    // CHECK: firrtl.instance_choice inst {instance_macro = @__target_Platform_InstanceChoiceProbe_inst}
     %inst_probe = firrtl.instance_choice inst {instance_macro = @__target_Platform_InstanceChoiceProbe_inst} @DefaultTarget alternatives @Platform {
       @FPGA -> @FPGATarget,
       @ASIC -> @ASICTarget
     } (out probe: !firrtl.probe<uint<8>>)
 
     %0 = firrtl.ref.resolve %inst_probe : !firrtl.probe<uint<8>>
-    // CHECK: %[[XMR:.+]] = firrtl.xmr.deref
+    // CHECK: %[[VERBATIM:.+]] = firrtl.verbatim.expr "`__targetref_InstanceChoiceProbe_inst_probe"
     firrtl.matchingconnect %out, %0 : !firrtl.uint<8>
-    // CHECK: firrtl.matchingconnect %out, %[[XMR]]
+    // CHECK: firrtl.matchingconnect %out, %[[VERBATIM]]
   }
 }
 
@@ -832,8 +845,10 @@ firrtl.circuit "MultipleOptions" {
   sv.macro.decl @__target_Platform_MultipleOptions_inst1
   sv.macro.decl @__target_Optimization_MultipleOptions_inst2
 
-  // CHECK-DAG: hw.hierpath private @[[PATH1:[a-zA-Z0-9_]+]] [@MultipleOptions::@[[INST1_SYM:[a-zA-Z0-9_]+]], @Target1::@[[T1_SYM:[a-zA-Z0-9_]+]]]
-  // CHECK-DAG: hw.hierpath private @[[PATH2:[a-zA-Z0-9_]+]] [@MultipleOptions::@[[INST2_SYM:[a-zA-Z0-9_]+]], @Target2::@[[T2_SYM:[a-zA-Z0-9_]+]]]
+  // CHECK-DAG: sv.macro.decl @__targetref_MultipleOptions_inst1_probe
+  // CHECK-DAG: sv.macro.decl @__targetref_MultipleOptions_inst2_probe
+  // CHECK-DAG: hw.hierpath private @[[PATH1:[a-zA-Z0-9_]+]] [@Target1::@{{.+}}]
+  // CHECK-DAG: hw.hierpath private @[[PATH2:[a-zA-Z0-9_]+]] [@Target2::@{{.+}}]
 
   firrtl.option @Platform {
     firrtl.option_case @FPGA {case_macro = @__option_Platform_FPGA}
@@ -848,7 +863,7 @@ firrtl.circuit "MultipleOptions" {
   // CHECK: firrtl.module @Target1() {
   firrtl.module @Target1(out %probe: !firrtl.probe<uint<2>>) {
     %w = firrtl.wire : !firrtl.uint<2>
-    // CHECK: %w = firrtl.wire sym @[[T1_SYM]]
+    // CHECK: %w = firrtl.wire sym
     %0 = firrtl.ref.send %w : !firrtl.uint<2>
     firrtl.ref.define %probe, %0 : !firrtl.probe<uint<2>>
   }
@@ -856,20 +871,41 @@ firrtl.circuit "MultipleOptions" {
   // CHECK: firrtl.module @Target2() {
   firrtl.module @Target2(out %probe: !firrtl.probe<uint<2>>) {
     %w = firrtl.wire : !firrtl.uint<2>
-    // CHECK: %w = firrtl.wire sym @[[T2_SYM]]
+    // CHECK: %w = firrtl.wire sym
     %0 = firrtl.ref.send %w : !firrtl.uint<2>
     firrtl.ref.define %probe, %0 : !firrtl.probe<uint<2>>
   }
 
+  // CHECK: emit.file "ref_MultipleOptions.sv" {
+  // CHECK:   sv.ifdef @__option_Platform_FPGA {
+  // CHECK:     sv.macro.def @__targetref_MultipleOptions_inst1_probe
+  // CHECK:   } else {
+  // CHECK:     sv.ifdef @__option_Platform_ASIC {
+  // CHECK:       sv.macro.def @__targetref_MultipleOptions_inst1_probe
+  // CHECK:     } else {
+  // CHECK:       sv.macro.def @__targetref_MultipleOptions_inst1_probe
+  // CHECK:     }
+  // CHECK:   }
+  // CHECK:   sv.ifdef @__option_Optimization_Fast {
+  // CHECK:     sv.macro.def @__targetref_MultipleOptions_inst2_probe
+  // CHECK:   } else {
+  // CHECK:     sv.ifdef @__option_Optimization_Slow {
+  // CHECK:       sv.macro.def @__targetref_MultipleOptions_inst2_probe
+  // CHECK:     } else {
+  // CHECK:       sv.macro.def @__targetref_MultipleOptions_inst2_probe
+  // CHECK:     }
+  // CHECK:   }
+  // CHECK: }
+
   // CHECK-LABEL: firrtl.module @MultipleOptions
   firrtl.module @MultipleOptions(out %out1: !firrtl.uint<2>, out %out2: !firrtl.uint<2>) {
-    // CHECK: firrtl.instance_choice inst1 sym @[[INST1_SYM]]
+    // CHECK: firrtl.instance_choice inst1 {instance_macro = @__target_Platform_MultipleOptions_inst1}
     %inst1_probe = firrtl.instance_choice inst1 {instance_macro = @__target_Platform_MultipleOptions_inst1} @Target1 alternatives @Platform {
       @FPGA -> @Target1,
       @ASIC -> @Target1
     } (out probe: !firrtl.probe<uint<2>>)
 
-    // CHECK: firrtl.instance_choice inst2 sym @[[INST2_SYM]]
+    // CHECK: firrtl.instance_choice inst2 {instance_macro = @__target_Optimization_MultipleOptions_inst2}
     %inst2_probe = firrtl.instance_choice inst2 {instance_macro = @__target_Optimization_MultipleOptions_inst2} @Target2 alternatives @Optimization {
       @Fast -> @Target2,
       @Slow -> @Target2
@@ -877,12 +913,12 @@ firrtl.circuit "MultipleOptions" {
 
     %0 = firrtl.ref.resolve %inst1_probe : !firrtl.probe<uint<2>>
     %1 = firrtl.ref.resolve %inst2_probe : !firrtl.probe<uint<2>>
-    // CHECK: %[[XMR1:.+]] = firrtl.xmr.deref @[[PATH1]]
-    // CHECK: %[[XMR2:.+]] = firrtl.xmr.deref @[[PATH2]]
+    // CHECK: %[[VERBATIM1:.+]] = firrtl.verbatim.expr "`__targetref_MultipleOptions_inst1_probe"
+    // CHECK: %[[VERBATIM2:.+]] = firrtl.verbatim.expr "`__targetref_MultipleOptions_inst2_probe"
     firrtl.matchingconnect %out1, %0 : !firrtl.uint<2>
     firrtl.matchingconnect %out2, %1 : !firrtl.uint<2>
-    // CHECK: firrtl.matchingconnect %out1, %[[XMR1]]
-    // CHECK: firrtl.matchingconnect %out2, %[[XMR2]]
+    // CHECK: firrtl.matchingconnect %out1, %[[VERBATIM1]]
+    // CHECK: firrtl.matchingconnect %out2, %[[VERBATIM2]]
   }
 }
 
