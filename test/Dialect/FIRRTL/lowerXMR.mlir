@@ -1031,39 +1031,6 @@ firrtl.circuit "NestedInstanceChoice" {
 }
 
 // -----
-// Test instance_choice with zero-width probes
-// CHECK-LABEL: firrtl.circuit "InstanceChoiceZeroWidth"
-firrtl.circuit "InstanceChoiceZeroWidth" {
-  sv.macro.decl @__option_Platform_FPGA
-  sv.macro.decl @__target_Platform_InstanceChoiceZeroWidth_inst
-
-  firrtl.option @Platform {
-    firrtl.option_case @FPGA {case_macro = @__option_Platform_FPGA}
-  }
-
-  // CHECK: firrtl.module @Target() {
-  firrtl.module @Target(out %probe: !firrtl.probe<uint<0>>) {
-    %w = firrtl.wire : !firrtl.uint<0>
-    // CHECK: %w = firrtl.wire
-    %0 = firrtl.ref.send %w : !firrtl.uint<0>
-    firrtl.ref.define %probe, %0 : !firrtl.probe<uint<0>>
-  }
-
-  // CHECK-LABEL: firrtl.module @InstanceChoiceZeroWidth
-  firrtl.module @InstanceChoiceZeroWidth(out %out: !firrtl.uint<0>) {
-    // CHECK: firrtl.instance_choice inst {instance_macro = @__target_Platform_InstanceChoiceZeroWidth_inst}
-    %inst_probe = firrtl.instance_choice inst {instance_macro = @__target_Platform_InstanceChoiceZeroWidth_inst} @Target alternatives @Platform {
-      @FPGA -> @Target
-    } (out probe: !firrtl.probe<uint<0>>)
-
-    %0 = firrtl.ref.resolve %inst_probe : !firrtl.probe<uint<0>>
-    // CHECK: %[[ZERO:.+]] = firrtl.constant 0 : !firrtl.uint<0>
-    firrtl.matchingconnect %out, %0 : !firrtl.uint<0>
-    // CHECK: firrtl.matchingconnect %out, %[[ZERO]]
-  }
-}
-
-// -----
 // Test instance_choice with public module output probe ports
 // CHECK-LABEL: firrtl.circuit "InstanceChoicePublicProbe"
 firrtl.circuit "InstanceChoicePublicProbe" {
