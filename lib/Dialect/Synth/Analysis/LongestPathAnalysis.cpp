@@ -665,6 +665,8 @@ private:
                                SmallVectorImpl<OpenPath> &results);
 
   // Bit-logical ops.
+  LogicalResult visit(ChoiceOp op, size_t bitPos,
+                      SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(aig::AndInverterOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(mig::MajorityInverterOp op, size_t bitPos,
@@ -871,6 +873,30 @@ LogicalResult LocalVisitor::visit(aig::AndInverterOp op, size_t bitPos,
                                   SmallVectorImpl<OpenPath> &results) {
 
   return addLogicOp(op, bitPos, results);
+}
+
+LogicalResult LocalVisitor::visit(ChoiceOp op, size_t bitPos,
+                                  SmallVectorImpl<OpenPath> &results) {
+  if (op.getInputs().empty())
+    return failure();
+
+  SmallVector<OpenPath> allPaths;
+  for (auto input : op.getInputs()) {
+    if (failed(addEdge(input, bitPos, 0, allPaths)))
+      return failure();
+  }
+
+  DenseMap<Object, OpenPath> minPathByStartPoint;
+  for (auto &path : allPaths) {
+    auto it = minPathByStartPoint.find(path.getStartPoint());
+    if (it == minPathByStartPoint.end() || path.delay < it->second.delay)
+      minPathByStartPoint[path.getStartPoint()] = path;
+  }
+
+  results.reserve(results.size() + minPathByStartPoint.size());
+  for (auto &it : minPathByStartPoint)
+    results.push_back(it.second);
+  return success();
 }
 
 LogicalResult LocalVisitor::visit(mig::MajorityInverterOp op, size_t bitPos,
@@ -1165,7 +1191,7 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
 
   auto result =
       TypeSwitch<Operation *, LogicalResult>(op)
-          .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
+          .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp, ChoiceOp,
                 aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp,
                 comb::OrOp, comb::MuxOp, comb::XorOp, comb::TruthTableOp,
                 seq::FirRegOp, seq::CompRegOp, seq::FirMemReadOp,
@@ -1313,8 +1339,8 @@ LogicalResult LocalVisitor::initializeAndRun() {
               return markRegEndPoint(op.getMemory(), op.getWriteData(), {}, {},
                                      op.getEnable());
             })
-            .Case<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
-                  comb::MuxOp, seq::FirMemReadOp>([&](auto op) {
+            .Case<ChoiceOp, aig::AndInverterOp, comb::AndOp, comb::OrOp,
+                  comb::XorOp, comb::MuxOp, seq::FirMemReadOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               for (size_t i = 0, e = getBitWidth(op); i < e; ++i)

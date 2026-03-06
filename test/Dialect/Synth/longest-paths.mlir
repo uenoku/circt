@@ -132,6 +132,13 @@ hw.module private @mig(in %a : i1, out x : i1, out y : i1) {
   hw.output %p, %q : i1, i1
 }
 
+// expected-remark @below {{root=choice_min, endPoint=Object($root.x[0]), startPoint=Object($root.a[0], delay=0, history=[Object($root.a[0], delay=0, comment="input port")])}}
+hw.module private @choice_min(in %a : i1, out x : i1) {
+  %0 = synth.aig.and_inv %a, %a : i1
+  %1 = synth.choice %0, %a : i1
+  hw.output %1 : i1
+}
+
 
 // Make sure that the parameter doesn't cause crash
 // expected-remark-re @below {{endPoint=Object($root.o1[0]), startPoint=Object($root.a[0], delay=2, history=[{{.+}}])}}
