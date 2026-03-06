@@ -347,17 +347,50 @@ struct Config {
   /// Parse a JSON config file and merge its settings into this config.
   LogicalResult parse(StringRef path, MLIRContext *context);
 };
+
+/// Helper struct for deserializing a runner from JSON.
+struct RunnerSchema {
+  std::string name;
+  std::string binary;
+  std::string kind;
+  bool readsMLIR = false;
+};
+
+/// Helper struct for deserializing the config file from JSON.
+struct ConfigSchema {
+  bool useDefaultRunners = true;
+  std::vector<RunnerSchema> runners;
+};
+
+/// Parse a runner from JSON.
+inline bool fromJSON(const llvm::json::Value &value, RunnerSchema &result,
+                     llvm::json::Path path) {
+  llvm::json::ObjectMapper O(value, path);
+  if (!O || !O.map("name", result.name) || !O.map("binary", result.binary) ||
+      !O.map("kind", result.kind))
+    return false;
+
+  // Optional field: don't fail if we can't parse it.
+  O.map("reads_mlir", result.readsMLIR);
+  return true;
+}
+
+/// Parse the config schema from JSON.
+inline bool fromJSON(const llvm::json::Value &value, ConfigSchema &result,
+                     llvm::json::Path path) {
+  llvm::json::ObjectMapper O(value, path);
+  if (!O)
+    return false;
+
+  O.mapOptional("useDefaultRunners", result.useDefaultRunners);
+  return O.map("runners", result.runners);
+}
 } // namespace
 
 /// Parse a JSON config file and merge its settings into this config. The file
 /// may contain a `runners` array with runner objects and a `useDefaultRunners`
 /// boolean.
 LogicalResult Config::parse(StringRef path, MLIRContext *context) {
-  // Error helper that prints "error: config file '<path>': " as a prefix.
-  auto err = [&]() -> raw_ostream & {
-    return WithColor::error() << "config file '" << path << "': ";
-  };
-
   auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
   if (auto ec = bufferOrErr.getError()) {
     WithColor::error() << "could not open config file '" << path
@@ -372,82 +405,34 @@ LogicalResult Config::parse(StringRef path, MLIRContext *context) {
     return failure();
   }
 
-  auto *root = json->getAsObject();
-  if (!root) {
-    err() << "must be a `{...}` object\n";
+  llvm::json::Path::Root root("config");
+  ConfigSchema schema;
+  if (!fromJSON(*json, schema, root)) {
+    WithColor::error() << toString(root.getError());
     return failure();
   }
 
-  // Handle `useDefaultRunners`.
-  if (auto *val = root->get("useDefaultRunners")) {
-    auto asBool = val->getAsBoolean();
-    if (!asBool) {
-      err() << "`useDefaultRunners` must be a boolean\n";
-      return failure();
-    }
-    if (!*asBool)
-      useDefaultRunners = false;
-  }
+  useDefaultRunners = schema.useDefaultRunners;
 
-  // Handle `runners`.
-  auto *runnersVal = root->get("runners");
-  if (!runnersVal)
-    return success();
-
-  auto *runnersArr = runnersVal->getAsArray();
-  if (!runnersArr) {
-    err() << "`runners` must be an array\n";
-    return failure();
-  }
-
-  for (unsigned i = 0; i < runnersArr->size(); ++i) {
-    auto runnerErr = [&]() -> raw_ostream & {
-      return err() << "runner " << i << ": ";
-    };
-
-    auto *obj = (*runnersArr)[i].getAsObject();
-    if (!obj) {
-      runnerErr() << "must be an object\n";
-      return failure();
-    }
-
-    auto name = obj->getString("name");
-    if (!name) {
-      runnerErr() << "missing required `name` string\n";
-      return failure();
-    }
-
-    auto binary = obj->getString("binary");
-    if (!binary) {
-      runnerErr() << "missing required `binary` string\n";
-      return failure();
-    }
-
-    auto kindStr = obj->getString("kind");
-    if (!kindStr) {
-      runnerErr() << "missing required `kind` string\n";
-      return failure();
-    }
-
+  // Convert runner schemas to actual runners.
+  for (auto &runnerSchema : schema.runners) {
     TestKind kind;
-    if (*kindStr == "formal")
+    if (runnerSchema.kind == "formal")
       kind = TestKind::Formal;
-    else if (*kindStr == "simulation")
+    else if (runnerSchema.kind == "simulation")
       kind = TestKind::Simulation;
     else {
-      runnerErr() << "`" << *kindStr
-                  << "` is not a valid runner kind; expected `formal` or "
-                     "`simulation`\n";
+      WithColor::error() << "config file '" << path
+                         << "': invalid runner kind `" << runnerSchema.kind
+                         << "`; expected `formal` or `simulation`\n";
       return failure();
     }
 
     Runner runner;
-    runner.name = StringAttr::get(context, *name);
-    runner.binary = binary->str();
+    runner.name = StringAttr::get(context, runnerSchema.name);
+    runner.binary = runnerSchema.binary;
     runner.kind = kind;
-
-    if (auto readsMLIR = obj->getBoolean("reads_mlir"))
-      runner.readsMLIR = *readsMLIR;
+    runner.readsMLIR = runnerSchema.readsMLIR;
 
     runners.push_back(std::move(runner));
   }

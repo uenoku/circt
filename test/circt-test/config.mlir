@@ -27,4 +27,4 @@
 
 // Missing required field produces an error.
 // RUN: not circt-test --list-runners -c %S/config-missing.json %s 2>&1 | FileCheck %s --check-prefix=MISSING
-// MISSING: error: config file {{.*}}: runner 0: missing required `binary` string
+// MISSING: error: missing value at config.runners[0].binary
