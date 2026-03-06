@@ -111,6 +111,10 @@ struct Options {
                                 cl::value_desc("name"),
                                 cl::MiscFlags::CommaSeparated, cl::cat(cat)};
 
+  cl::list<std::string> configFiles{
+      "c", cl::desc("Config file (may be specified multiple times)"),
+      cl::value_desc("file"), cl::cat(cat)};
+
   cl::list<std::string> includeFilters{
       "f", cl::desc("Include filter (<glob> or <path>=<glob>)"),
       cl::value_desc("filter"), cl::cat(testCat)};
@@ -242,10 +246,18 @@ public:
   std::vector<Runner> runners;
 
   RunnerSuite(MLIRContext *context) : context(context) {}
+  void addRunner(Runner runner);
   void addDefaultRunners();
   LogicalResult resolve();
 };
 } // namespace
+
+/// Add a runner to the suite. If a runner with the same name already exists, it
+/// is replaced.
+void RunnerSuite::addRunner(Runner runner) {
+  llvm::erase_if(runners, [&](auto &r) { return r.name == runner.name; });
+  runners.push_back(std::move(runner));
+}
 
 /// Add the default runners to the suite. These are the runners that are defined
 /// as part of CIRCT.
@@ -315,6 +327,131 @@ LogicalResult RunnerSuite::resolve() {
     // Check if the program actually exists at that path.
     runner.available = llvm::sys::fs::can_execute(runner.binaryPath);
   });
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Config Files
+//===----------------------------------------------------------------------===//
+
+namespace {
+/// Aggregated configuration from one or more config files. Each call to
+/// `parse` merges a config file's settings into this struct: runners
+/// accumulate, and any `"useDefaultRunners": false` wins.
+struct Config {
+  /// Runners defined in config files.
+  std::vector<Runner> runners;
+  /// Whether to use the built-in default runners.
+  bool useDefaultRunners = true;
+
+  /// Parse a JSON config file and merge its settings into this config.
+  LogicalResult parse(StringRef path, MLIRContext *context);
+};
+} // namespace
+
+/// Parse a JSON config file and merge its settings into this config. The file
+/// may contain a `runners` array with runner objects and a `useDefaultRunners`
+/// boolean.
+LogicalResult Config::parse(StringRef path, MLIRContext *context) {
+  // Error helper that prints "error: config file '<path>': " as a prefix.
+  auto err = [&]() -> raw_ostream & {
+    return WithColor::error() << "config file '" << path << "': ";
+  };
+
+  auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
+  if (auto ec = bufferOrErr.getError()) {
+    WithColor::error() << "could not open config file '" << path
+                       << "': " << ec.message() << "\n";
+    return failure();
+  }
+
+  auto json = llvm::json::parse(bufferOrErr.get()->getBuffer());
+  if (!json) {
+    WithColor::error() << "could not parse config file '" << path
+                       << "': " << toString(json.takeError()) << "\n";
+    return failure();
+  }
+
+  auto *root = json->getAsObject();
+  if (!root) {
+    err() << "must be a `{...}` object\n";
+    return failure();
+  }
+
+  // Handle `useDefaultRunners`.
+  if (auto *val = root->get("useDefaultRunners")) {
+    auto asBool = val->getAsBoolean();
+    if (!asBool) {
+      err() << "`useDefaultRunners` must be a boolean\n";
+      return failure();
+    }
+    if (!*asBool)
+      useDefaultRunners = false;
+  }
+
+  // Handle `runners`.
+  auto *runnersVal = root->get("runners");
+  if (!runnersVal)
+    return success();
+
+  auto *runnersArr = runnersVal->getAsArray();
+  if (!runnersArr) {
+    err() << "`runners` must be an array\n";
+    return failure();
+  }
+
+  for (unsigned i = 0; i < runnersArr->size(); ++i) {
+    auto runnerErr = [&]() -> raw_ostream & {
+      return err() << "runner " << i << ": ";
+    };
+
+    auto *obj = (*runnersArr)[i].getAsObject();
+    if (!obj) {
+      runnerErr() << "must be an object\n";
+      return failure();
+    }
+
+    auto name = obj->getString("name");
+    if (!name) {
+      runnerErr() << "missing required `name` string\n";
+      return failure();
+    }
+
+    auto binary = obj->getString("binary");
+    if (!binary) {
+      runnerErr() << "missing required `binary` string\n";
+      return failure();
+    }
+
+    auto kindStr = obj->getString("kind");
+    if (!kindStr) {
+      runnerErr() << "missing required `kind` string\n";
+      return failure();
+    }
+
+    TestKind kind;
+    if (*kindStr == "formal")
+      kind = TestKind::Formal;
+    else if (*kindStr == "simulation")
+      kind = TestKind::Simulation;
+    else {
+      runnerErr() << "`" << *kindStr
+                  << "` is not a valid runner kind; expected `formal` or "
+                     "`simulation`\n";
+      return failure();
+    }
+
+    Runner runner;
+    runner.name = StringAttr::get(context, *name);
+    runner.binary = binary->str();
+    runner.kind = kind;
+
+    if (auto readsMLIR = obj->getBoolean("reads_mlir"))
+      runner.readsMLIR = *readsMLIR;
+
+    runners.push_back(std::move(runner));
+  }
+
   return success();
 }
 
@@ -1299,9 +1436,22 @@ static LogicalResult executeWithHandler(MLIRContext *context,
 /// available, all dialects have been registered, and all command line options
 /// have been parsed.
 static LogicalResult execute(MLIRContext *context) {
-  // Discover all available test runners.
+  // Parse config files.
+  Config config;
+  for (auto &configFile : opts.configFiles)
+    if (failed(config.parse(configFile, context)))
+      return failure();
+
+  // Build the runner suite from the config. Add built-in default runners
+  // unless suppressed by a config file, then add config-sourced runners.
+  // Config runners with the same name as an earlier runner replace it.
   RunnerSuite runnerSuite(context);
-  runnerSuite.addDefaultRunners();
+  if (config.useDefaultRunners)
+    runnerSuite.addDefaultRunners();
+  for (auto &runner : config.runners)
+    runnerSuite.addRunner(runner);
+
+  // Resolve runner binary paths.
   if (failed(runnerSuite.resolve()))
     return failure();
 
