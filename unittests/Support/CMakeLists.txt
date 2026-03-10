@@ -3,6 +3,7 @@ add_circt_unittest(CIRCTSupportTests
   JSONTest.cpp
   PrettyPrinterTest.cpp
   TruthTableTest.cpp
+  SATSolverTest.cpp
 )
 
 target_link_libraries(CIRCTSupportTests
