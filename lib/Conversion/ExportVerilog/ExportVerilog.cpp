@@ -5698,6 +5698,8 @@ void StmtEmitter::emitInstancePortList(Operation *op,
             ps << "/* Zero width */";
           else
             emitExpression(portVal, ops, LowestPrecedence);
+        } else if (!portVal) {
+          ps << "/* unconnected */";
         } else if (portVal.use_empty()) {
           ps << "/* unused */";
         } else if (portVal.hasOneUse() &&
