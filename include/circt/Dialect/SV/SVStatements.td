@@ -1208,6 +1208,7 @@ def ReturnOp : SVOp<"return",
 def MacroInstanceOp : SVOp<"macro_instance", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
     DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    DeclareOpInterfaceMethods<InstanceGraphInstanceOpInterface>,
     NonProceduralOp
 ]> {
   let summary = "Create an instance of a module selected by a macro";
@@ -1251,6 +1252,11 @@ def MacroInstanceOp : SVOp<"macro_instance", [
 
     /// Return the values for the port in port order.
     void getValues(SmallVectorImpl<Value> &values, const hw::ModulePortInfo &mpi);
+
+    /// InstanceGraphInstanceOpInterface: Return the referenced module names.
+    ArrayAttr getReferencedModuleNamesAttr() {
+      return getModuleNamesAttr();
+    }
   }];
 }
 
