@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Analysis/FIRRTLInstanceInfo.h"
+#include "circt/Dialect/Emit/EmitOps.h"
 #include "circt/Dialect/FIRRTL/FIRRTLInstanceGraph.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/Namespace.h"
@@ -19,7 +20,10 @@
 #include "circt/Dialect/SV/SVOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Debug.h"
+#include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 
 #define DEBUG_TYPE "firrtl-populate-instance-choice-symbols"
 
@@ -110,6 +114,10 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
   llvm::DenseSet<StringAttr> createdInstanceMacros;
   bool changed = false;
 
+  llvm::MapVector<StringAttr, std::pair<llvm::SmallVector<Attribute>,
+                                        llvm::SmallVector<InstanceChoiceOp>>>
+      cases;
+
   // First, walk all OptionOps and assign case macros to OptionCaseOps.
   for (auto optionOp : circuit.getOps<OptionOp>()) {
     auto optionName = optionOp.getSymNameAttr();
@@ -141,6 +149,7 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
   }
 
   // Second, iterate through all instance choices and assign instance macros.
+  SmallVector<InstanceChoiceOp> instanceChoices;
   instanceGraph.walkPostOrder([&](igraph::InstanceGraphNode &node) {
     auto module = dyn_cast<FModuleLike>(node.getModule().getOperation());
     if (!module)
@@ -148,20 +157,78 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
 
     for (auto *record : node) {
       auto op = record->getInstance<InstanceChoiceOp>();
+
       if (!op)
         continue;
+      instanceChoices.push_back(op);
+      cases[op.getOptionNameAttr()].second.push_back(op);
+      for (auto caseName : op.getCaseNamesAttr()) {
+        cases[op.getOptionNameAttr()].first.push_back(caseName);
+      }
 
       auto instanceMacro = assignSymbol(op);
       if (!instanceMacro)
         continue;
       changed = true;
 
-      // Create instance macro declaration only if we haven't created it yet.
+      // Create instance macro declaration only if we haven't created it
+      // yet.
       if (createdInstanceMacros.insert(instanceMacro.getAttr()).second)
         sv::MacroDeclOp::create(builder, circuit.getLoc(),
                                 instanceMacro.getAttr());
     }
   });
+
+  // For each public module generate a header file that enumerate all options.
+  InstancePathCache instancePathCache(instanceGraph);
+  for (auto module : circuit.getOps<FModuleOp>()) {
+    if (!module.isPublic())
+      continue;
+    auto *node = instanceGraph[module];
+
+    OpBuilder buffer(module);
+
+    // Emit "// Include this file to configure following instances:"
+    auto emitFile = emit::FileOp::create(
+        builder, circuit.getLoc(),
+        "example-targets-" + module.getModuleName() + "-cfg.svh");
+    builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
+    for (auto &[optionName, pair] : cases) {
+      auto [caseNames, instanceChoices] = pair;
+      if (instanceChoices.empty())
+        continue;
+      emit::VerbatimOp::create(
+          buffer, circuit.getLoc(),
+          builder.getStringAttr("// ======== Configure option '" +
+                                optionName.getValue() + "':\n"));
+      // List of instances
+      for (auto instanceChoice : instanceChoices) {
+        // Get paths.
+        auto parent = instanceChoice->getParentOfType<FModuleLike>();
+        auto paths = instancePathCache.getRelativePaths(parent, node);
+        for (auto path : paths) {
+          // Construct verilog string for now.
+          SmallString<64> verilogPath;
+          for (auto record : path) {
+            verilogPath.append(record.getInstanceName());
+            verilogPath.append(".");
+          }
+          emit::VerbatimOp::create(
+              buffer, circuit.getLoc(),
+              builder.getStringAttr("  // " + verilogPath.str() + "\n"));
+        }
+      }
+      // Include examples.
+      for (auto caseName : caseNames)
+        emit::VerbatimOp::create(
+            buffer, circuit.getLoc(),
+            builder.getStringAttr(
+                "//   `include \"targets-" + module.getModuleName() + "-" +
+                optionName.getValue() + ".svh\"\n"));
+      emit::VerbatimOp::create(buffer, circuit.getLoc(),
+                               builder.getStringAttr("// ========\n\n"));
+    }
+  }
 
   circuitNamespace.reset();
   if (!changed)

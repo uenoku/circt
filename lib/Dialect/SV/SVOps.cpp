@@ -2879,6 +2879,210 @@ LogicalResult CoverPropertyOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// MacroModuleOp
+//===----------------------------------------------------------------------===//
+
+void MacroModuleOp::build(OpBuilder &builder, OperationState &result,
+                          StringAttr name, FlatSymbolRefAttr macroName,
+                          ArrayRef<hw::PortInfo> ports,
+                          ArrayRef<NamedAttribute> attributes) {
+  result.addAttribute(SymbolTable::getSymbolAttrName(), name);
+  result.addAttribute("macroName", macroName);
+
+  // Build the module type.
+  SmallVector<hw::ModulePort> modulePorts;
+  for (auto port : ports)
+    modulePorts.push_back({port.name, port.type, port.dir});
+  auto type = hw::ModuleType::get(builder.getContext(), modulePorts);
+  result.addAttribute("module_type", TypeAttr::get(type));
+
+  // Record the port locations and attributes.
+  SmallVector<Attribute> portLocs;
+  SmallVector<Attribute> portAttrs;
+  for (auto port : ports) {
+    portLocs.push_back(port.loc ? LocationAttr(port.loc) : LocationAttr(builder.getUnknownLoc()));
+    portAttrs.push_back(port.attrs ? port.attrs : builder.getDictionaryAttr({}));
+  }
+  result.addAttribute("port_locs", builder.getArrayAttr(portLocs));
+  result.addAttribute("per_port_attrs", builder.getArrayAttr(portAttrs));
+
+  result.addAttributes(attributes);
+
+  // Create an empty body region.
+  result.addRegion();
+}
+
+// PortList interface methods
+SmallVector<hw::PortInfo> MacroModuleOp::getPortList() {
+  SmallVector<hw::PortInfo> results;
+  auto locs = getPortLocs();
+  auto attrs = getPerPortAttrs();
+
+  for (auto [index, port] : llvm::enumerate(getModuleType().getPorts())) {
+    LocationAttr loc;
+    if (locs && index < locs->size())
+      loc = cast<LocationAttr>((*locs)[index]);
+
+    DictionaryAttr attr;
+    if (attrs && index < attrs->size())
+      attr = cast<DictionaryAttr>((*attrs)[index]);
+
+    hw::PortInfo portInfo;
+    portInfo.name = port.name;
+    portInfo.dir = port.dir;
+    portInfo.type = port.type;
+    portInfo.loc = loc;
+    portInfo.attrs = attr;
+    results.push_back(portInfo);
+  }
+  return results;
+}
+
+hw::PortInfo MacroModuleOp::getPort(size_t idx) {
+  return getPortList()[idx];
+}
+
+// HWModuleLike interface methods
+hw::ModuleType MacroModuleOp::getHWModuleType() {
+  return getModuleType();
+}
+
+ArrayRef<Attribute> MacroModuleOp::getAllPortAttrs() {
+  if (auto attrs = getPerPortAttrs())
+    return attrs->getValue();
+  return {};
+}
+
+void MacroModuleOp::setAllPortAttrs(ArrayRef<Attribute> attrs) {
+  setPerPortAttrsAttr(ArrayAttr::get(getContext(), attrs));
+}
+
+void MacroModuleOp::removeAllPortAttrs() {
+  removePerPortAttrsAttr();
+}
+
+SmallVector<Location> MacroModuleOp::getAllPortLocs() {
+  SmallVector<Location> locs;
+  if (auto portLocs = getPortLocs()) {
+    for (auto loc : *portLocs)
+      locs.push_back(cast<Location>(loc));
+  } else {
+    locs.resize(getModuleType().getNumPorts(), UnknownLoc::get(getContext()));
+  }
+  return locs;
+}
+
+void MacroModuleOp::setAllPortLocsAttrs(ArrayRef<Attribute> locs) {
+  setPortLocsAttr(ArrayAttr::get(getContext(), locs));
+}
+
+void MacroModuleOp::setHWModuleType(hw::ModuleType type) {
+  setModuleTypeAttr(TypeAttr::get(type));
+}
+
+void MacroModuleOp::setAllPortNames(ArrayRef<Attribute> names) {
+  auto type = getModuleType();
+  SmallVector<hw::ModulePort> ports;
+  for (auto [idx, port] : llvm::enumerate(type.getPorts())) {
+    ports.push_back({cast<StringAttr>(names[idx]), port.type, port.dir});
+  }
+  setHWModuleType(hw::ModuleType::get(getContext(), ports));
+}
+
+LogicalResult
+MacroModuleOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // Verify that the macro exists.
+  auto macro = symbolTable.lookupNearestSymbolFrom<MacroDeclOp>(
+      *this, getMacroNameAttr());
+  if (!macro)
+    return emitError("cannot find macro declaration '")
+           << getMacroName() << "'";
+  return success();
+}
+
+ParseResult MacroModuleOp::parse(OpAsmParser &parser, OperationState &result) {
+  auto &builder = parser.getBuilder();
+
+  // Parse the symbol name.
+  StringAttr nameAttr;
+  if (parser.parseSymbolName(nameAttr, SymbolTable::getSymbolAttrName(),
+                             result.attributes))
+    return failure();
+
+  // Parse "macro" keyword and macro name.
+  FlatSymbolRefAttr macroNameAttr;
+  if (parser.parseKeyword("macro") ||
+      parser.parseAttribute(macroNameAttr, builder.getNoneType(), "macroName",
+                            result.attributes))
+    return failure();
+
+  // Parse the port list using the module_like_impl helper.
+  SmallVector<hw::module_like_impl::PortParse> ports;
+  TypeAttr modType;
+  if (hw::module_like_impl::parseModuleSignature(parser, ports, modType))
+    return failure();
+
+  result.addAttribute("module_type", modType);
+
+  // Extract port attributes and locations.
+  SmallVector<Attribute> portAttrs, portLocs;
+  for (auto &port : ports) {
+    portLocs.push_back(builder.getUnknownLoc());
+    portAttrs.push_back(port.attrs ? port.attrs : builder.getDictionaryAttr({}));
+  }
+  result.addAttribute("per_port_attrs", builder.getArrayAttr(portAttrs));
+  result.addAttribute("port_locs", builder.getArrayAttr(portLocs));
+
+  // Parse optional attributes.
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  // Add an empty body region (like hw.module.extern).
+  result.addRegion();
+
+  return success();
+}
+
+void MacroModuleOp::print(OpAsmPrinter &p) {
+  p << ' ';
+  p.printSymbolName(getSymName());
+  p << " macro ";
+  p.printAttributeWithoutType(getMacroNameAttr());
+
+  // Print the port list manually.
+  auto modType = getModuleType();
+  p << "(";
+  llvm::interleaveComma(modType.getPorts(), p, [&](auto port) {
+    p << (port.dir == hw::ModulePort::Direction::Input ? "in " : "out ");
+    p.printKeywordOrString(port.name.getValue());
+    p << ": ";
+    p.printType(port.type);
+  });
+  p << ")";
+
+  mlir::SmallVector<::llvm::StringRef, 3> omittedAttrs = {
+      SymbolTable::getSymbolAttrName(), "module_type", "per_port_attrs",
+      "port_locs", "macroName"};
+
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), omittedAttrs);
+}
+
+LogicalResult MacroModuleOp::verify() {
+  // Verify that port attributes and locations match the module type.
+  auto modType = getModuleType();
+  auto portLocs = getPortLocs();
+  auto portAttrs = getPerPortAttrs();
+
+  if (portLocs && portLocs->size() != modType.getNumPorts())
+    return emitError("port_locs size doesn't match module type");
+
+  if (portAttrs && portAttrs->size() != modType.getNumPorts())
+    return emitError("per_port_attrs size doesn't match module type");
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // MacroInstanceOp
 //===----------------------------------------------------------------------===//
 

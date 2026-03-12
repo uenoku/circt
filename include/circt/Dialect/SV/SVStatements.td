@@ -1202,6 +1202,82 @@ def ReturnOp : SVOp<"return",
 }
 
 //===----------------------------------------------------------------------===//
+// Macro module operation
+//===----------------------------------------------------------------------===//
+
+def MacroModuleOp : SVOp<"macro.module", [
+    Symbol,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<HWModuleLike>,
+    OpAsmOpInterface,
+    SingleBlock,
+    NoTerminator,
+    NoRegionArguments,
+    HasParent<"mlir::ModuleOp">
+]> {
+  let summary = "External module configurable via macro";
+  let description = [{
+    This represents an external module declaration where the actual module
+    to instantiate is determined by a macro at elaboration time.
+
+    The macro must be defined and point to a module with compatible ports.
+
+    Example:
+    ```mlir
+    sv.macro.decl @WHICH_MODULE
+    sv.macro.module @MyModule macro @WHICH_MODULE(in %a: i1, out c: i1)
+    ```
+
+    When instantiated with hw.instance, the macro value determines the actual
+    module implementation.
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       FlatSymbolRefAttr:$macroName,
+                       TypeAttrOf<ModuleType>:$module_type,
+                       OptionalAttr<DictArrayAttr>:$per_port_attrs,
+                       OptionalAttr<LocationArrayAttr>:$port_locs);
+  let results = (outs);
+  let regions = (region AnyRegion:$body);
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "StringAttr":$name, "FlatSymbolRefAttr":$macroName,
+                   "ArrayRef<hw::PortInfo>":$ports,
+                   CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes)>
+  ];
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    // Get the module's symbolic name as StringAttr.
+    StringAttr getNameAttr() {
+      return (*this)->getAttrOfType<StringAttr>(
+        ::mlir::SymbolTable::getSymbolAttrName());
+    }
+
+    // Get the module name.
+    StringRef getName() {
+      return getNameAttr().getValue();
+    }
+
+    void getAsmBlockArgumentNames(mlir::Region &region,
+                                  mlir::OpAsmSetValueNameFn setNameFn) {}
+
+    // PortList interface methods
+    size_t getNumPorts() { return getModuleType().getNumPorts(); }
+    size_t getNumInputPorts() { return getModuleType().getNumInputs(); }
+    size_t getNumOutputPorts() { return getModuleType().getNumOutputs(); }
+    size_t getPortIdForInputId(size_t idx) { return getModuleType().getPortIdForInputId(idx); }
+    size_t getPortIdForOutputId(size_t idx) { return getModuleType().getPortIdForOutputId(idx); }
+
+    ::circt::hw::PortInfo getPort(size_t idx);
+    SmallVector<::circt::hw::PortInfo> getPortList();
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Macro instance operation
 //===----------------------------------------------------------------------===//
 
