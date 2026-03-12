@@ -4117,22 +4117,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
-  if (oldInstanceChoice.getInnerSymAttr()) {
-    oldInstanceChoice->emitOpError(
-        "instance choice with inner sym cannot be lowered");
-    return failure();
-  }
-
   // Require instance_macro to be set before lowering
   FlatSymbolRefAttr instanceMacro = oldInstanceChoice.getInstanceMacroAttr();
   if (!instanceMacro)
     return oldInstanceChoice->emitOpError(
         "must have instance_macro attribute set before "
         "lowering");
-
-  // Get all the target modules
-  auto moduleNames = oldInstanceChoice.getModuleNamesAttr();
-  auto caseNames = oldInstanceChoice.getCaseNamesAttr();
 
   // Get the default module.
   auto defaultModuleName = oldInstanceChoice.getDefaultTargetAttr();
@@ -4146,109 +4136,57 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   SmallVector<PortInfo, 8> portInfo =
       cast<FModuleLike>(defaultModule).getPorts();
 
+  // Create an sv.macro.module that will be instantiated.
+  // The macro module's name is based on the instance choice name.
+  auto macroModuleName = builder.getStringAttr(
+      (oldInstanceChoice.getInstanceName() + "_choice").str());
+
+  // Convert port information to hw::PortInfo.
+  SmallVector<hw::PortInfo> hwPorts;
+  for (auto &port : portInfo) {
+    auto portType = lowerType(port.type);
+    if (!portType || portType.isInteger(0))
+      continue;
+    hw::PortInfo hwPort;
+    hwPort.name = port.name;
+    hwPort.dir = port.isOutput() ? hw::ModulePort::Direction::Output
+                                  : hw::ModulePort::Direction::Input;
+    hwPort.type = portType;
+    hwPorts.push_back(hwPort);
+  }
+
+  // Create the sv.macro.module at the top level (before the current module).
+  sv::MacroModuleOp macroModule;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(theModule);
+
+    macroModule = sv::MacroModuleOp::create(
+        builder, oldInstanceChoice.getLoc(), macroModuleName, instanceMacro,
+        hwPorts, {});
+  }
+
   // Prepare input operands.
   SmallVector<Value, 8> inputOperands;
   if (failed(
           prepareInstanceOperands(portInfo, oldInstanceChoice, inputOperands)))
     return failure();
 
-  // Create wires for output ports.
-  SmallVector<sv::WireOp, 8> outputWires;
-  StringRef wirePrefix = oldInstanceChoice.getInstanceName();
-  for (size_t portIndex = 0, e = portInfo.size(); portIndex != e; ++portIndex) {
+  // Create a single hw.instance that references the macro module.
+  auto inst = hw::InstanceOp::create(
+      builder, macroModule, builder.getStringAttr(oldInstanceChoice.getInstanceName()),
+      inputOperands, ArrayAttr{}, oldInstanceChoice.getInnerSymAttr());
+
+  // Map the instance results to the original instance choice results.
+  for (size_t portIndex = 0, resultIndex = 0, e = portInfo.size();
+       portIndex != e; ++portIndex) {
     auto &port = portInfo[portIndex];
-    if (port.isInput())
-      continue;
-    auto portType = lowerType(port.type);
-    if (!portType || portType.isInteger(0))
-      continue;
-    auto wire = sv::WireOp::create(
-        builder, portType, wirePrefix.str() + "." + port.getName().str());
-    outputWires.push_back(wire);
-    if (failed(setLowering(oldInstanceChoice.getResult(portIndex), wire)))
-      return failure();
-  }
-
-  auto optionName = oldInstanceChoice.getOptionNameAttr();
-
-  // Lambda to create an instance for a given module and assign outputs to wires
-  auto createInstanceAndAssign = [&](Operation *oldMod,
-                                     StringRef suffix) -> hw::InstanceOp {
-    auto *newMod = circuitState.getNewModule(oldMod);
-
-    ArrayAttr parameters;
-    if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldMod))
-      parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
-
-    // Create instance name with suffix
-    SmallString<64> instName;
-    instName = oldInstanceChoice.getInstanceName();
-    if (!suffix.empty()) {
-      instName += "_";
-      instName += suffix;
+    if (port.isOutput()) {
+      if (failed(setLowering(oldInstanceChoice.getResult(portIndex),
+                            inst.getResult(resultIndex++))))
+        return failure();
     }
-
-    auto inst =
-        hw::InstanceOp::create(builder, newMod, builder.getStringAttr(instName),
-                               inputOperands, parameters, nullptr);
-    (void)getOrAddInnerSym(
-        hw::InnerSymTarget(inst.getOperation()),
-        [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
-
-    // Assign instance outputs to the wires
-    for (unsigned i = 0; i < inst.getNumResults(); ++i)
-      sv::AssignOp::create(builder, outputWires[i], inst.getResult(i));
-
-    return inst;
-  };
-
-  // Build macro names and module list for nested ifdefs.
-  SmallVector<StringAttr> macroNames;
-  SmallVector<Operation *> altModules;
-  for (size_t i = 0, e = caseNames.size(); i < e; ++i) {
-    altModules.push_back(
-        circuitState.getInstanceGraph()
-            .lookup(cast<FlatSymbolRefAttr>(moduleNames[i + 1]).getAttr())
-            ->getModule());
-
-    // Get the macro name for this option case using InstanceChoiceMacroTable.
-    auto optionCaseMacroRef = circuitState.macroTable.getMacro(
-        optionName, cast<SymbolRefAttr>(caseNames[i]).getLeafReference());
-    if (!optionCaseMacroRef)
-      return oldInstanceChoice->emitOpError(
-          "failed to get macro for option case");
-    macroNames.push_back(optionCaseMacroRef.getAttr());
   }
-
-  // Use the helper function to create nested ifdefs and register instances.
-  sv::createNestedIfDefs(
-      macroNames,
-      /*ifdefCtor=*/
-      [&](StringRef macro, std::function<void()> thenCtor,
-          std::function<void()> elseCtor) {
-        addToIfDefBlock(macro, std::move(thenCtor), std::move(elseCtor));
-      },
-      [&](size_t index) {
-        auto caseSymRef =
-            cast<SymbolRefAttr>(caseNames[index]).getLeafReference();
-        circuitState.addInstanceChoiceForCase(
-            optionName, caseSymRef, theModule.getNameAttr(), instanceMacro,
-            createInstanceAndAssign(altModules[index], caseSymRef.getValue()));
-      },
-      [&]() {
-        auto inst = createInstanceAndAssign(defaultModule, "default");
-        // Define the instance macro for the default case.
-        sv::IfDefOp::create(
-            builder, inst.getLoc(), instanceMacro, [&]() {},
-            [&]() {
-              sv::MacroDefOp::create(
-                  builder, inst.getLoc(), instanceMacro,
-                  builder.getStringAttr("{{0}}"),
-                  builder.getArrayAttr({hw::InnerRefAttr::get(
-                      theModule.getNameAttr(),
-                      inst.getInnerSymAttr().getSymName())}));
-            });
-      });
 
   return success();
 }
