@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/FormattedStream.h"
 #include <atomic>
+#include <mlir/IR/SymbolTable.h>
 
 namespace circt {
 struct LoweringOptions;
@@ -460,7 +461,7 @@ void pruneZeroValuedLogic(hw::HWEmittableModuleLike module);
 
 /// Rewrite module names and interfaces to not conflict with each other or with
 /// Verilog keywords.
-GlobalNameTable legalizeGlobalNames(ModuleOp topLevel,
+GlobalNameTable legalizeGlobalNames(ModuleOp topLevel, const mlir::SymbolTable& symTable,
                                     const LoweringOptions &options);
 
 } // namespace ExportVerilog

@@ -108,7 +108,8 @@ class GlobalNameResolver {
 public:
   /// Construct a GlobalNameResolver and perform name legalization of the
   /// module/interfaces, port/parameter and declaration names.
-  GlobalNameResolver(mlir::ModuleOp topLevel, const LoweringOptions &options);
+  GlobalNameResolver(mlir::ModuleOp topLevel, const SymbolTable &symTable,
+                     const LoweringOptions &options);
 
   GlobalNameTable takeGlobalNameTable() { return std::move(globalNameTable); }
 
@@ -134,6 +135,7 @@ private:
 
   // Handle to lowering options.
   const LoweringOptions &options;
+  const SymbolTable &symTable;
 };
 } // namespace ExportVerilog
 } // namespace circt
@@ -244,8 +246,9 @@ static void legalizeModuleLocalNames(HWEmittableModuleLike module,
 /// Construct a GlobalNameResolver and do the initial scan to populate and
 /// unique the module/interfaces and port/parameter names.
 GlobalNameResolver::GlobalNameResolver(mlir::ModuleOp topLevel,
+                                       const SymbolTable &symTable,
                                        const LoweringOptions &options)
-    : globalNameResolver(options), options(options) {
+    : globalNameResolver(options), options(options), symTable(symTable) {
   // Register the names of external modules which we cannot rename. This has to
   // occur in a first pass separate from the modules and interfaces which we are
   // actually allowed to rename, in order to ensure that we don't accidentally
@@ -259,6 +262,20 @@ GlobalNameResolver::GlobalNameResolver(mlir::ModuleOp topLevel,
         op.emitError("name \"")
             << name << "\" is not allowed in Verilog output";
       globalNameResolver.insertUsedName(name);
+    } else if (auto macroModule = dyn_cast<sv::MacroModuleOp>(op)) {
+      // For macro modules, set the verilogName to the macro's name with
+      // backtick.
+      auto *macroDecl =
+          symTable.lookup(macroModule.getMacroNameAttr().getAttr());
+      auto macroDeclOp = dyn_cast<sv::MacroDeclOp>(macroDecl);
+      auto verilogName = macroDeclOp.getVerilogName();
+      StringRef macroName =
+          verilogName ? *verilogName : macroDeclOp.getSymName();
+      // Set the verilogName attribute with backtick prefix.
+      std::string nameWithBacktick = ("`" + macroName).str();
+      macroModule->setAttr("hw.verilogName",
+                           StringAttr::get(op.getContext(), "`" + macroName));
+      globalNameResolver.insertUsedName(nameWithBacktick);
     } else if (auto reservedNamesOp = dyn_cast<sv::ReserveNamesOp>(op)) {
       for (StringAttr name :
            reservedNamesOp.getReservedNames().getAsRange<StringAttr>()) {
@@ -372,7 +389,8 @@ void GlobalNameResolver::legalizeFunctionNames(FuncOp func) {
 /// Verilog keywords.
 GlobalNameTable
 ExportVerilog::legalizeGlobalNames(ModuleOp topLevel,
+                                   const SymbolTable &symTable,
                                    const LoweringOptions &options) {
-  GlobalNameResolver resolver(topLevel, options);
+  GlobalNameResolver resolver(topLevel, symTable, options);
   return resolver.takeGlobalNameTable();
 }

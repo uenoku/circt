@@ -545,8 +545,9 @@ FunctionType hw::getModuleType(Operation *moduleOrInstance) {
 /// here.  This is typically the symbol, but can be overridden with the
 /// verilogName attribute.
 StringAttr hw::getVerilogModuleNameAttr(Operation *module) {
-  auto nameAttr = module->getAttrOfType<StringAttr>("verilogName");
-  if (nameAttr)
+  if (auto nameAttr = module->getAttrOfType<StringAttr>("verilogName"))
+    return nameAttr;
+  if (auto nameAttr = module->getAttrOfType<StringAttr>("hw.verilogName"))
     return nameAttr;
 
   return module->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
