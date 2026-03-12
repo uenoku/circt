@@ -179,56 +179,56 @@ void PopulateInstanceChoiceSymbolsPass::runOnOperation() {
     }
   });
 
-  // For each public module generate a header file that enumerate all options.
-  InstancePathCache instancePathCache(instanceGraph);
-  for (auto module : circuit.getOps<FModuleOp>()) {
-    if (!module.isPublic())
-      continue;
-    auto *node = instanceGraph[module];
+  // // For each public module generate a header file that enumerate all options.
+  // InstancePathCache instancePathCache(instanceGraph);
+  // for (auto module : circuit.getOps<FModuleOp>()) {
+  //   if (!module.isPublic())
+  //     continue;
+  //   auto *node = instanceGraph[module];
 
-    OpBuilder buffer(module);
+  //   OpBuilder buffer(module);
 
-    // Emit "// Include this file to configure following instances:"
-    auto emitFile = emit::FileOp::create(
-        builder, circuit.getLoc(),
-        "example-targets-" + module.getModuleName() + "-cfg.svh");
-    builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
-    for (auto &[optionName, pair] : cases) {
-      auto [caseNames, instanceChoices] = pair;
-      if (instanceChoices.empty())
-        continue;
-      emit::VerbatimOp::create(
-          buffer, circuit.getLoc(),
-          builder.getStringAttr("// ======== Configure option '" +
-                                optionName.getValue() + "':\n"));
-      // List of instances
-      for (auto instanceChoice : instanceChoices) {
-        // Get paths.
-        auto parent = instanceChoice->getParentOfType<FModuleLike>();
-        auto paths = instancePathCache.getRelativePaths(parent, node);
-        for (auto path : paths) {
-          // Construct verilog string for now.
-          SmallString<64> verilogPath;
-          for (auto record : path) {
-            verilogPath.append(record.getInstanceName());
-            verilogPath.append(".");
-          }
-          emit::VerbatimOp::create(
-              buffer, circuit.getLoc(),
-              builder.getStringAttr("  // " + verilogPath.str() + "\n"));
-        }
-      }
-      // Include examples.
-      for (auto caseName : caseNames)
-        emit::VerbatimOp::create(
-            buffer, circuit.getLoc(),
-            builder.getStringAttr(
-                "//   `include \"targets-" + module.getModuleName() + "-" +
-                optionName.getValue() + ".svh\"\n"));
-      emit::VerbatimOp::create(buffer, circuit.getLoc(),
-                               builder.getStringAttr("// ========\n\n"));
-    }
-  }
+  //   // Emit "// Include this file to configure following instances:"
+  //   auto emitFile = emit::FileOp::create(
+  //       builder, circuit.getLoc(),
+  //       "example-targets-" + module.getModuleName() + "-cfg.svh");
+  //   builder.setInsertionPointToStart(&emitFile.getBodyRegion().front());
+  //   for (auto &[optionName, pair] : cases) {
+  //     auto [caseNames, instanceChoices] = pair;
+  //     if (instanceChoices.empty())
+  //       continue;
+  //     emit::VerbatimOp::create(
+  //         buffer, circuit.getLoc(),
+  //         builder.getStringAttr("// ======== Configure option '" +
+  //                               optionName.getValue() + "':\n"));
+  //     // List of instances
+  //     for (auto instanceChoice : instanceChoices) {
+  //       // Get paths.
+  //       auto parent = instanceChoice->getParentOfType<FModuleLike>();
+  //       auto paths = instancePathCache.getRelativePaths(parent, node);
+  //       for (auto path : paths) {
+  //         // Construct verilog string for now.
+  //         SmallString<64> verilogPath;
+  //         for (auto record : path) {
+  //           verilogPath.append(record.getInstanceName());
+  //           verilogPath.append(".");
+  //         }
+  //         emit::VerbatimOp::create(
+  //             buffer, circuit.getLoc(),
+  //             builder.getStringAttr("  // " + verilogPath.str() + "\n"));
+  //       }
+  //     }
+  //     // Include examples.
+  //     for (auto caseName : caseNames)
+  //       emit::VerbatimOp::create(
+  //           buffer, circuit.getLoc(),
+  //           builder.getStringAttr(
+  //               "//   `include \"targets-" + module.getModuleName() + "-" +
+  //               optionName.getValue() + ".svh\"\n"));
+  //     emit::VerbatimOp::create(buffer, circuit.getLoc(),
+  //                              builder.getStringAttr("// ========\n\n"));
+  //   }
+  // }
 
   circuitNamespace.reset();
   if (!changed)
