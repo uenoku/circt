@@ -6915,7 +6915,7 @@ void SharedEmitterState::gatherFiles(bool separateModules) {
           symbolCache.addDefinition(op.getNameAttr(), op);
           separateFile(op, op.getOutputFile().getFilename().getValue());
         })
-        .Case<HWModuleExternOp, sv::SVVerbatimModuleOp>([&](auto op) {
+        .Case<HWModuleExternOp, sv::SVVerbatimModuleOp, sv::MacroModuleOp>([&](auto op) {
           // Build the IR cache.
           symbolCache.addDefinition(op.getNameAttr(), op);
           collectPorts(op);

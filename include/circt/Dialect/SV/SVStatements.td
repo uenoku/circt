@@ -1236,7 +1236,8 @@ def MacroModuleOp : SVOp<"macro.module", [
                        FlatSymbolRefAttr:$macroName,
                        TypeAttrOf<ModuleType>:$module_type,
                        OptionalAttr<DictArrayAttr>:$per_port_attrs,
-                       OptionalAttr<LocationArrayAttr>:$port_locs);
+                       OptionalAttr<LocationArrayAttr>:$port_locs,
+                       ParamDeclArrayAttr:$parameters);
   let results = (outs);
   let regions = (region AnyRegion:$body);
 

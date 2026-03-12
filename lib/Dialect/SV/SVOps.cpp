@@ -2906,6 +2906,9 @@ void MacroModuleOp::build(OpBuilder &builder, OperationState &result,
   result.addAttribute("port_locs", builder.getArrayAttr(portLocs));
   result.addAttribute("per_port_attrs", builder.getArrayAttr(portAttrs));
 
+  // Add empty parameters attribute
+  result.addAttribute("parameters", builder.getArrayAttr({}));
+
   result.addAttributes(attributes);
 
   // Create an empty body region.
@@ -3033,6 +3036,9 @@ ParseResult MacroModuleOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute("per_port_attrs", builder.getArrayAttr(portAttrs));
   result.addAttribute("port_locs", builder.getArrayAttr(portLocs));
 
+  // Add empty parameters attribute
+  result.addAttribute("parameters", builder.getArrayAttr({}));
+
   // Parse optional attributes.
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -3053,16 +3059,16 @@ void MacroModuleOp::print(OpAsmPrinter &p) {
   auto modType = getModuleType();
   p << "(";
   llvm::interleaveComma(modType.getPorts(), p, [&](auto port) {
-    p << (port.dir == hw::ModulePort::Direction::Input ? "in " : "out ");
+    p << (port.dir == hw::ModulePort::Direction::Input ? "in %" : "out ");
     p.printKeywordOrString(port.name.getValue());
-    p << ": ";
+    p << " : ";
     p.printType(port.type);
   });
   p << ")";
 
-  mlir::SmallVector<::llvm::StringRef, 3> omittedAttrs = {
+  mlir::SmallVector<::llvm::StringRef, 4> omittedAttrs = {
       SymbolTable::getSymbolAttrName(), "module_type", "per_port_attrs",
-      "port_locs", "macroName"};
+      "port_locs", "macroName", "parameters"};
 
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), omittedAttrs);
 }
