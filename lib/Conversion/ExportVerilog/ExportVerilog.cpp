@@ -5518,7 +5518,17 @@ LogicalResult StmtEmitter::visitStmt(InstanceOp op) {
   auto *moduleOp =
       state.symbolCache.getDefinition(op.getReferencedModuleNameAttr());
   assert(moduleOp && "Invalid IR");
-  ps << PPExtString(getVerilogModuleName(moduleOp));
+
+  // If the referenced module is a macro module, emit the macro name instead.
+  if (auto macroModule = dyn_cast<sv::MacroModuleOp>(moduleOp)) {
+    auto *macroDecl = state.symbolCache.getDefinition(
+        macroModule.getMacroNameAttr().getAttr());
+    auto macroDeclOp = cast<sv::MacroDeclOp>(macroDecl);
+    auto verilogName = macroDeclOp.getVerilogName();
+    ps << "`" << PPExtString(verilogName ? *verilogName : macroDeclOp.getSymName());
+  } else {
+    ps << PPExtString(getVerilogModuleName(moduleOp));
+  }
 
   // If this is a parameterized module, then emit the parameters.
   if (!op.getParameters().empty()) {

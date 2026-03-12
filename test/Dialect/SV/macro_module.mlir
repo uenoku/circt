@@ -17,7 +17,7 @@ hw.module @Top(in %a: i1, out c: i1) {
 }
 
 // VERILOG-LABEL: module Top
-// VERILOG: MyModule inst (
+// VERILOG: `WHICH_MODULE inst (
 // VERILOG-NEXT: .a (a),
 // VERILOG-NEXT: .c (c)
 // VERILOG-NEXT: );
