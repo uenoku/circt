@@ -42,6 +42,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Path.h"
+#include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributes.h>
 
 #define DEBUG_TYPE "lower-to-hw"
@@ -4198,6 +4199,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     macroModule =
         sv::MacroModuleOp::create(builder, oldInstanceChoice.getLoc(),
                                   macroModuleName, instanceMacro, hwPorts, {});
+    // HACK: Copy case and module names.
+    SmallVector<mlir::NamedAttribute> attributes;
+    attributes.push_back({"cases", oldInstanceChoice.getCaseNamesAttr()});
+    attributes.push_back(
+        {"module_names", oldInstanceChoice.getModuleNamesAttr()});
+
+    macroModule->setAttr(
+        "firrtl.instance_choice",
+        DictionaryAttr::get(oldInstanceChoice.getContext(), attributes));
   }
 
   // Prepare input operands.
