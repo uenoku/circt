@@ -449,6 +449,7 @@ private:
     StringAttr parentModule;
     FlatSymbolRefAttr instanceMacro;
     hw::InstanceOp hwInstance;
+    StringAttr referredModule;
   };
 
   using OptionAndCase = std::pair<StringAttr, StringAttr>;
@@ -461,10 +462,11 @@ private:
   void addInstanceChoiceForCase(StringAttr optionName, StringAttr caseName,
                                 StringAttr parentModule,
                                 FlatSymbolRefAttr instanceMacro,
-                                hw::InstanceOp hwInstance) {
+                                hw::InstanceOp hwInstance,
+                                StringAttr referredModule) {
     OptionAndCase innerKey{optionName, caseName};
     instanceChoicesByModuleAndCase.at(parentModule)[innerKey].push_back(
-        {parentModule, instanceMacro, hwInstance});
+        {parentModule, instanceMacro, hwInstance, referredModule});
   }
 
   /// The list of fragments on which the modules rely. Must be set outside the
@@ -4136,10 +4138,10 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   SmallVector<PortInfo, 8> portInfo =
       cast<FModuleLike>(defaultModule).getPorts();
 
-  // Create an sv.macro.module that will be instantiated.
-  // The macro module's name is based on the instance choice name.
-  auto macroModuleName = builder.getStringAttr(
-      (oldInstanceChoice.getInstanceName() + "_choice").str());
+  // Use the instance macro symbol as the module name.
+  // This allows all instances with the same macro to share the same macro
+  // module.
+  auto macroModuleName = instanceMacro.getAttr();
 
   // Convert port information to hw::PortInfo.
   SmallVector<hw::PortInfo> hwPorts;
@@ -4150,20 +4152,20 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     hw::PortInfo hwPort;
     hwPort.name = port.name;
     hwPort.dir = port.isOutput() ? hw::ModulePort::Direction::Output
-                                  : hw::ModulePort::Direction::Input;
+                                 : hw::ModulePort::Direction::Input;
     hwPort.type = portType;
     hwPorts.push_back(hwPort);
   }
 
-  // Create the sv.macro.module at the top level (before the current module).
   sv::MacroModuleOp macroModule;
+  // Create the sv.macro.module at the top level (before the current module).
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPoint(theModule);
 
-    macroModule = sv::MacroModuleOp::create(
-        builder, oldInstanceChoice.getLoc(), macroModuleName, instanceMacro,
-        hwPorts, {});
+    macroModule =
+        sv::MacroModuleOp::create(builder, oldInstanceChoice.getLoc(),
+                                  macroModuleName, instanceMacro, hwPorts, {});
   }
 
   // Prepare input operands.
@@ -4172,10 +4174,25 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
           prepareInstanceOperands(portInfo, oldInstanceChoice, inputOperands)))
     return failure();
 
+  // Define ifdef for the default module.
+  sv::IfDefOp::create(
+      builder, oldInstanceChoice.getLoc(), instanceMacro, [] {},
+      [&] {
+        sv::MacroDefOp::create(builder, oldInstanceChoice.getLoc(),
+                               instanceMacro, builder.getStringAttr("{{0}}"),
+                               builder.getArrayAttr({defaultModuleName}));
+      });
+
   // Create a single hw.instance that references the macro module.
   auto inst = hw::InstanceOp::create(
-      builder, macroModule, builder.getStringAttr(oldInstanceChoice.getInstanceName()),
-      inputOperands, ArrayAttr{}, oldInstanceChoice.getInnerSymAttr());
+      builder, macroModule,
+      builder.getStringAttr(oldInstanceChoice.getInstanceName()), inputOperands,
+      ArrayAttr{}, oldInstanceChoice.getInnerSymAttr());
+
+  // Add inner symbol to the instance for referencing in header files.
+  (void)getOrAddInnerSym(
+      hw::InnerSymTarget(inst.getOperation()),
+      [&]() -> hw::InnerSymbolNamespace & { return moduleNamespace; });
 
   // Map the instance results to the original instance choice results.
   for (size_t portIndex = 0, resultIndex = 0, e = portInfo.size();
@@ -4183,9 +4200,21 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
     auto &port = portInfo[portIndex];
     if (port.isOutput()) {
       if (failed(setLowering(oldInstanceChoice.getResult(portIndex),
-                            inst.getResult(resultIndex++))))
+                             inst.getResult(resultIndex++))))
         return failure();
     }
+  }
+
+  // Register this instance for each case so header files can be emitted.
+  auto caseNames = oldInstanceChoice.getCaseNamesAttr();
+  auto optionName = oldInstanceChoice.getOptionNameAttr();
+  auto modules = oldInstanceChoice.getModuleNamesAttr();
+
+  for (size_t i = 0, e = caseNames.size(); i < e; ++i) {
+    auto caseSymRef = cast<SymbolRefAttr>(caseNames[i]).getLeafReference();
+    circuitState.addInstanceChoiceForCase(
+        optionName, caseSymRef, theModule.getNameAttr(), instanceMacro, inst,
+        cast<FlatSymbolRefAttr>(modules[i + 1]).getAttr());
   }
 
   return success();
