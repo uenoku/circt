@@ -7417,11 +7417,11 @@ struct ExportSplitVerilogPass
     mlir::OpPassManager preparePM("builtin.module");
     preparePM.addPass(createLegalizeAnonEnums());
     auto &modulePM = preparePM.nest<hw::HWModuleOp>();
-    auto &symTable = getAnalysis<mlir::SymbolTable>();
     modulePM.addPass(createPrepareForEmission());
     if (failed(runPipeline(preparePM, getOperation())))
       return signalPassFailure();
 
+    auto &symTable = getAnalysis<mlir::SymbolTable>();
     if (failed(exportSplitVerilogImpl(getOperation(), directoryName, symTable)))
       return signalPassFailure();
   }
