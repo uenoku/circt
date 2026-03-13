@@ -267,6 +267,7 @@ GlobalNameResolver::GlobalNameResolver(mlir::ModuleOp topLevel,
       // backtick.
       auto *macroDecl =
           symTable.lookup(macroModule.getMacroNameAttr().getAttr());
+      assert(macroDecl && "Macro module must reference a valid macro");
       auto macroDeclOp = dyn_cast<sv::MacroDeclOp>(macroDecl);
       auto verilogName = macroDeclOp.getVerilogName();
       StringRef macroName =
