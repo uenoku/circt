@@ -89,6 +89,8 @@ class CMakeBuild(build_py):
         "-DMLIR_BINDINGS_PYTHON_NB_DOMAIN=circt",
         "-DCIRCT_BINDINGS_PYTHON_ENABLED=ON",
         "-DCIRCT_RELEASE_TAG_ENABLED=ON",
+        "-DCMAKE_CXX_COMPILER=g++",
+        "-DCMAKE_C_COMPILER=gcc",
         "-DCIRCT_RELEASE_TAG=firtool"
     ] + cmake_linker + cmake_generator
 
