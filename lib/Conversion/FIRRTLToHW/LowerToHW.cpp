@@ -42,6 +42,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Path.h"
+#include <mlir/IR/BuiltinAttributes.h>
 
 #define DEBUG_TYPE "lower-to-hw"
 
@@ -910,8 +911,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -1087,7 +1087,7 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
           // `ifdef <instanceMacroName>
           //  `ERROR<instanceMacroName>__must__not__be__set
           // `else
-          //  `define <instanceMacroName> <InnerRef to instance>
+          //  `define <instanceMacroName> <moduleName>
           // `endif
           SmallString<256> errorMessage;
           llvm::raw_svector_ostream os(errorMessage);
@@ -1100,8 +1100,8 @@ void FIRRTLModuleLowering::emitInstanceChoiceIncludeFile(
               builder, circuit.getLoc(), info.instanceMacro,
               builder.getStringAttr("{{0}}"),
               ArrayAttr::get(builder.getContext(),
-                             ArrayRef<Attribute>(hw::InnerRefAttr::get(
-                                 info.parentModule, innerSym.getSymName()))));
+                             ArrayRef<Attribute>(
+                                 FlatSymbolRefAttr::get(info.referredModule))));
         });
   }
 
@@ -3273,8 +3273,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4141,7 +4140,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
   // Use the instance macro symbol as the module name.
   // This allows all instances with the same macro to share the same macro
   // module.
-  auto macroModuleName = instanceMacro.getAttr();
+  llvm::SmallString<16> moduleSymbol;
+  llvm::raw_svector_ostream os(moduleSymbol);
+  // FIXME: Proper symbol uniquification is needed.
+  os << "__ " << instanceMacro.getAttr().getValue();
+
+  auto macroModuleName = builder.getStringAttr(moduleSymbol);
 
   // Convert port information to hw::PortInfo.
   SmallVector<hw::PortInfo> hwPorts;
