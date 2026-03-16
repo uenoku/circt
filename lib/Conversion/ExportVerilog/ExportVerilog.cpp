@@ -6872,12 +6872,13 @@ void SharedEmitterState::gatherFiles(bool separateModules) {
           symbolCache.addDefinition(op.getNameAttr(), op);
           separateFile(op, op.getOutputFile().getFilename().getValue());
         })
-        .Case<HWModuleExternOp, sv::SVVerbatimModuleOp>([&](auto op) {
-          // Build the IR cache.
-          symbolCache.addDefinition(op.getNameAttr(), op);
-          collectPorts(op);
-          // External modules are _not_ emitted.
-        })
+        .Case<HWModuleExternOp, sv::SVVerbatimModuleOp, sv::MacroModuleOp>(
+            [&](auto op) {
+              // Build the IR cache.
+              symbolCache.addDefinition(op.getNameAttr(), op);
+              collectPorts(op);
+              // External modules are _not_ emitted.
+            })
         .Case<VerbatimOp, IfDefOp, MacroDefOp, IncludeOp, FuncDPIImportOp>(
             [&](Operation *op) {
               // Emit into a separate file using the specified file name or
@@ -7124,9 +7125,11 @@ void SharedEmitterState::emitOps(EmissionList &thingsToEmit,
 // Unified Emitter
 //===----------------------------------------------------------------------===//
 
-static LogicalResult exportVerilogImpl(ModuleOp module, llvm::raw_ostream &os) {
+static LogicalResult exportVerilogImpl(ModuleOp module,
+                                       const SymbolTable &symTable,
+                                       llvm::raw_ostream &os) {
   LoweringOptions options(module);
-  GlobalNameTable globalNames = legalizeGlobalNames(module, options);
+  GlobalNameTable globalNames = legalizeGlobalNames(module, symTable, options);
 
   SharedEmitterState emitter(module, options, std::move(globalNames));
   emitter.gatherFiles(false);
@@ -7176,7 +7179,8 @@ LogicalResult circt::exportVerilog(ModuleOp module, llvm::raw_ostream &os) {
           module->getContext(), modulesToPrepare,
           [&](auto op) { return prepareHWModule(op, options); })))
     return failure();
-  return exportVerilogImpl(module, os);
+  mlir::SymbolTable symTable(module);
+  return exportVerilogImpl(module, symTable, os);
 }
 
 namespace {
@@ -7193,7 +7197,8 @@ struct ExportVerilogPass
     if (failed(runPipeline(preparePM, getOperation())))
       return signalPassFailure();
 
-    if (failed(exportVerilogImpl(getOperation(), os)))
+    auto &symTable = getAnalysis<mlir::SymbolTable>();
+    if (failed(exportVerilogImpl(getOperation(), symTable, os)))
       return signalPassFailure();
   }
 
@@ -7279,12 +7284,12 @@ static void createSplitOutputFile(StringAttr fileName, FileInfo &file,
   output->keep();
 }
 
-static LogicalResult exportSplitVerilogImpl(ModuleOp module,
-                                            StringRef dirname) {
+static LogicalResult exportSplitVerilogImpl(ModuleOp module, StringRef dirname,
+                                            const SymbolTable &symTable) {
   // Prepare the ops in the module for emission and legalize the names that will
   // end up in the output.
   LoweringOptions options(module);
-  GlobalNameTable globalNames = legalizeGlobalNames(module, options);
+  GlobalNameTable globalNames = legalizeGlobalNames(module, symTable, options);
 
   SharedEmitterState emitter(module, options, std::move(globalNames));
   emitter.gatherFiles(true);
@@ -7353,7 +7358,8 @@ LogicalResult circt::exportSplitVerilog(ModuleOp module, StringRef dirname) {
           [&](auto op) { return prepareHWModule(op, options); })))
     return failure();
 
-  return exportSplitVerilogImpl(module, dirname);
+  mlir::SymbolTable symTable(module);
+  return exportSplitVerilogImpl(module, dirname, symTable);
 }
 
 namespace {
@@ -7372,7 +7378,8 @@ struct ExportSplitVerilogPass
     if (failed(runPipeline(preparePM, getOperation())))
       return signalPassFailure();
 
-    if (failed(exportSplitVerilogImpl(getOperation(), directoryName)))
+    auto &symTable = getAnalysis<mlir::SymbolTable>();
+    if (failed(exportSplitVerilogImpl(getOperation(), directoryName, symTable)))
       return signalPassFailure();
   }
 };
