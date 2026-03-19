@@ -349,16 +349,6 @@ def FInstanceLike : OpInterface<"FInstanceLike", [
       "ArrayRef<Attribute>", "getPortNames">,
 
     //===------------------------------------------------------------------===//
-    // Port Annotations
-    //===------------------------------------------------------------------===//
-
-    InterfaceMethod<"Get the port annotation for the specified port index",
-      "ArrayAttr", "getPortAnnotation", (ins "unsigned":$portIdx)>,
-
-    InterfaceMethod<"Set all port annotations",
-      "void", "setAllPortAnnotations", (ins "ArrayRef<Attribute>":$annotations)>,
-
-    //===------------------------------------------------------------------===//
     // Inner Symbol
     //===------------------------------------------------------------------===//
 

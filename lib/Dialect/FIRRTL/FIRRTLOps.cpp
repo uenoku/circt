@@ -3368,19 +3368,6 @@ FInstanceLike InstanceChoiceOp::cloneWithErasedPortsAndReplaceUses(
   return clone;
 }
 
-ArrayAttr InstanceChoiceOp::getPortAnnotation(unsigned portIdx) {
-  assert(portIdx < getNumResults() &&
-         "index should be smaller than result number");
-  return cast<ArrayAttr>(getPortAnnotations()[portIdx]);
-}
-
-void InstanceChoiceOp::setAllPortAnnotations(ArrayRef<Attribute> annotations) {
-  assert(annotations.size() == getNumResults() &&
-         "number of annotations is not equal to result number");
-  (*this)->setAttr("portAnnotations",
-                   ArrayAttr::get(getContext(), annotations));
-}
-
 //===----------------------------------------------------------------------===//
 // MemOp
 //===----------------------------------------------------------------------===//

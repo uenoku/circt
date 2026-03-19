@@ -155,6 +155,14 @@ def InstanceOp : HardwareDeclOp<"instance", [
       Operation *moduleOp = node->getModule();
       return dyn_cast_or_null<T>(moduleOp);
     }
+
+    //===------------------------------------------------------------------===//
+    // Port Annotations
+    //===------------------------------------------------------------------===//
+
+    ArrayAttr getPortAnnotation(unsigned portIdx);
+
+    void setAllPortAnnotations(ArrayRef<Attribute> annotations);
   }];
 
   let hasVerifier = true;
