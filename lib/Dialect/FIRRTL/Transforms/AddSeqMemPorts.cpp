@@ -501,7 +501,7 @@ void AddSeqMemPortsPass::runOnOperation() {
           auto &[firstResult, portInfo] = subExtraPorts[i];
           if (portInfo.direction == Direction::Out)
             continue;
-          auto value = inst.getResult(firstResult + i);
+          auto value = inst->getResult(firstResult + i);
           auto type = value.getType();
           auto attr = getIntZerosAttr(type);
           auto zero = ConstantOp::create(builder, portInfo.loc, type, attr);

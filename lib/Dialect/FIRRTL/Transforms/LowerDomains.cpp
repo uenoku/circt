@@ -782,7 +782,7 @@ LogicalResult LowerModule::lowerInstances() {
         OpBuilder builder(inserted);
         builder.setInsertionPointAfter(inserted);
         splicedValue = ObjectSubfieldOp::create(
-            builder, inserted.getLoc(), inserted.getResult(info.outputPort), 1);
+            builder, inserted.getLoc(), inserted->getResult(info.outputPort), 1);
       }
 
       splice(info.temp, splicedValue);

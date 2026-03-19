@@ -759,7 +759,7 @@ static LogicalResult processInstancePorts(const DomainInfo &info,
 
   DenseMap<unsigned, DomainTypeID> domainTypeIDTable;
   for (size_t i = 0; i < numPorts; ++i) {
-    auto port = dyn_cast<DomainValue>(op.getResult(i));
+    auto port = dyn_cast<DomainValue>(op->getResult(i));
     if (!port)
       continue;
 
@@ -770,7 +770,7 @@ static LogicalResult processInstancePorts(const DomainInfo &info,
   }
 
   for (size_t i = 0; i < numPorts; ++i) {
-    Value port = op.getResult(i);
+    Value port = op->getResult(i);
     auto type = type_dyn_cast<FIRRTLBaseType>(port.getType());
     if (!type)
       continue;
@@ -794,7 +794,7 @@ static LogicalResult processInstancePorts(const DomainInfo &info,
       if (!domainPortIndex)
         continue;
       auto domainPortValue =
-          cast<DomainValue>(op.getResult(domainPortIndex.getUInt()));
+          cast<DomainValue>(op->getResult(domainPortIndex.getUInt()));
       elements[domainTypeIndex] =
           getTermForDomain(allocator, table, domainPortValue);
     }
