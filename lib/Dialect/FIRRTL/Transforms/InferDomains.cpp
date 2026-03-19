@@ -1391,10 +1391,10 @@ static LogicalResult checkModuleDomainPortDrivers(const DomainInfo &info,
 }
 
 /// Check that the input domain ports are driven.
-template <typename T>
-static LogicalResult checkInstanceDomainPortDrivers(T op) {
-  for (size_t i = 0, e = op.getNumResults(); i < e; ++i) {
-    auto port = dyn_cast<DomainValue>(op.getResult(i));
+static LogicalResult checkInstanceDomainPortDrivers(FInstanceLike op) {
+  for (size_t i = 0, e = op->getNumResults(); i < e; ++i) {
+    auto port = dyn_cast<DomainValue>(op->getResult(i));
+
     auto type = port.getType();
     if (!isa<DomainType>(type) || op.getPortDirection(i) != Direction::In ||
         isDriven(port))
@@ -1410,18 +1410,11 @@ static LogicalResult checkInstanceDomainPortDrivers(T op) {
   return success();
 }
 
-static LogicalResult checkOp(Operation *op) {
-  if (auto inst = dyn_cast<InstanceOp>(op))
-    return checkInstanceDomainPortDrivers(inst);
-  if (auto inst = dyn_cast<InstanceChoiceOp>(op))
-    return checkInstanceDomainPortDrivers(inst);
-  return success();
-}
-
 /// Check that instances under this module have driven domain input ports.
 static LogicalResult checkModuleBody(FModuleOp moduleOp) {
-  auto result = moduleOp.getBody().walk(
-      [&](Operation *op) -> WalkResult { return checkOp(op); });
+  auto result = moduleOp.getBody().walk([&](FInstanceLike op) -> WalkResult {
+    return checkInstanceDomainPortDrivers(op);
+  });
   return failure(result.wasInterrupted());
 }
 
@@ -1467,7 +1460,7 @@ static LogicalResult stripModule(FModuleLike op) {
                 op->erase();
               return WalkResult::advance();
             })
-            .Case<InstanceOp, InstanceChoiceOp>([](auto op) {
+            .Case<FInstanceLike>([](auto op) {
               auto n = op.getNumPorts();
               BitVector erasures(n);
               for (size_t i = 0; i < n; ++i)
