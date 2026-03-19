@@ -384,7 +384,7 @@ struct SpecializeLayers {
       auto newInstance =
           instance.cloneWithErasedPortsAndReplaceUses(disabledPorts);
       instance->erase();
-      instance = newInstance;
+      instance = cast<InstanceOp>(newInstance);
     }
 
     // Specialize the required enable layers.  Due to the layer verifiers, there
@@ -409,7 +409,7 @@ struct SpecializeLayers {
       auto newInstanceChoice =
           instanceChoice.cloneWithErasedPortsAndReplaceUses(disabledPorts);
       instanceChoice->erase();
-      instanceChoice = newInstanceChoice;
+      instanceChoice = cast<InstanceChoiceOp>(newInstanceChoice);
     }
 
     // Specialize the required enable layers.  Due to the layer verifiers, there

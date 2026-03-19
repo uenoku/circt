@@ -775,7 +775,7 @@ LogicalResult LowerModule::lowerInstances() {
       Value splicedValue;
       if (info.inputPort) {
         // Handle input port.  Just hook it up.
-        splicedValue = inserted.getResult(*info.inputPort);
+        splicedValue = inserted->getResult(*info.inputPort);
       } else {
         // Handle output port.  Splice in the output field that contains the
         // domain object.  This requires creating an object subfield.

@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/FIRRTL/FIRRTLInstanceGraph.h"
+#include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/FIRRTLUtils.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
@@ -24,6 +25,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include <mlir/IR/BuiltinAttributes.h>
 
 #define DEBUG_TYPE "firrtl-infer-domains"
 
@@ -151,8 +153,8 @@ struct ModuleUpdateInfo {
 using ModuleUpdateTable = DenseMap<StringAttr, ModuleUpdateInfo>;
 
 /// Apply the port changes of a moduleOp onto an instance-like op.
-template <typename T>
-static T fixInstancePorts(T op, const ModuleUpdateInfo &update) {
+static FInstanceLike fixInstancePorts(FInstanceLike op,
+                                      const ModuleUpdateInfo &update) {
   auto clone = op.cloneWithInsertedPortsAndReplaceUses(update.portInsertions);
   clone.setDomainInfoAttr(update.portDomainInfo);
   op->erase();
@@ -807,20 +809,10 @@ static LogicalResult processInstancePorts(const DomainInfo &info,
 static LogicalResult processOp(const DomainInfo &info, TermAllocator &allocator,
                                DomainTable &table,
                                const ModuleUpdateTable &updateTable,
-                               InstanceOp op) {
-  auto moduleOp = op.getReferencedModuleNameAttr();
-  auto lookup = updateTable.find(moduleOp);
-  if (lookup != updateTable.end())
-    op = fixInstancePorts(op, lookup->second);
-  return processInstancePorts(info, allocator, table, op);
-}
-
-static LogicalResult processOp(const DomainInfo &info, TermAllocator &allocator,
-                               DomainTable &table,
-                               const ModuleUpdateTable &updateTable,
-                               InstanceChoiceOp op) {
-  auto moduleOp = op.getDefaultTargetAttr().getAttr();
-  auto lookup = updateTable.find(moduleOp);
+                               FInstanceLike op) {
+  auto moduleName =
+      cast<StringAttr>(cast<ArrayAttr>(op.getReferencedModuleNamesAttr())[0]);
+  auto lookup = updateTable.find(moduleName);
   if (lookup != updateTable.end())
     op = fixInstancePorts(op, lookup->second);
   return processInstancePorts(info, allocator, table, op);
@@ -871,9 +863,7 @@ static LogicalResult processOp(const DomainInfo &info, TermAllocator &allocator,
                                DomainTable &table,
                                const ModuleUpdateTable &updateTable,
                                Operation *op) {
-  if (auto instance = dyn_cast<InstanceOp>(op))
-    return processOp(info, allocator, table, updateTable, instance);
-  if (auto instance = dyn_cast<InstanceChoiceOp>(op))
+  if (auto instance = dyn_cast<FInstanceLike>(op))
     return processOp(info, allocator, table, updateTable, instance);
   if (auto cast = dyn_cast<UnsafeDomainCastOp>(op))
     return processOp(info, allocator, table, cast);

@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/FIRRTL/FIRRTLAnnotationHelper.h"
 #include "circt/Dialect/FIRRTL/AnnotationDetails.h"
+#include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.h"
 #include "circt/Dialect/FIRRTL/FIRRTLUtils.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "llvm/Support/Debug.h"
@@ -351,7 +352,7 @@ InstanceOp firrtl::addPortsToModule(FModuleLike mod, InstanceOp instOnPath,
                                     InstancePathCache &instancePathcache,
                                     CircuitTargetCache *targetCaches) {
   // To store the cloned version of `instOnPath`.
-  InstanceOp clonedInstOnPath;
+  FInstanceLike clonedInstOnPath;
   // Get a new port name from the Namespace.
   auto portName = StringAttr::get(mod.getContext(), newName);
   // The port number for the new port.
@@ -360,7 +361,7 @@ InstanceOp firrtl::addPortsToModule(FModuleLike mod, InstanceOp instOnPath,
   mod.insertPorts({{portNo, portInfo}});
   // Now update all the instances of `mod`.
   for (auto *use : instancePathcache.instanceGraph.lookup(mod)->uses()) {
-    InstanceOp useInst = cast<InstanceOp>(use->getInstance());
+    FInstanceLike useInst = cast<FInstanceLike>(*use->getInstance());
     auto clonedInst =
         useInst.cloneWithInsertedPortsAndReplaceUses({{portNo, portInfo}});
     if (useInst == instOnPath)
@@ -371,7 +372,7 @@ InstanceOp firrtl::addPortsToModule(FModuleLike mod, InstanceOp instOnPath,
       targetCaches->replaceOp(useInst, clonedInst);
     useInst->erase();
   }
-  return clonedInstOnPath;
+  return cast<InstanceOp>(clonedInstOnPath);
 }
 
 //===----------------------------------------------------------------------===//

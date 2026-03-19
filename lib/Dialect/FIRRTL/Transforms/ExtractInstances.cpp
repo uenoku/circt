@@ -620,11 +620,13 @@ void ExtractInstancesPass::extractInstances() {
     auto *instParentNode =
         instanceGraph->lookup(cast<igraph::ModuleOpInterface>(*parent));
     for (auto *instRecord : instParentNode->uses()) {
-      auto oldParentInst = cast<InstanceOp>(*instRecord->getInstance());
+      auto oldParentInst = dyn_cast<InstanceOp>(*instRecord->getInstance());
+      if (!oldParentInst)
+        continue;
       auto newParent = oldParentInst->getParentOfType<FModuleLike>();
       LLVM_DEBUG(llvm::dbgs() << "- Updating " << oldParentInst << "\n");
       auto newParentInst =
-          oldParentInst.cloneWithInsertedPortsAndReplaceUses(newPorts);
+          cast<InstanceOp>(oldParentInst.cloneWithInsertedPortsAndReplaceUses(newPorts));
       if (newParentInst.getInnerSymAttr())
         innerRefToInstances[getInnerRefTo(newParentInst)] = newParentInst;
 

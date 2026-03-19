@@ -607,8 +607,8 @@ LogicalResult Visitor::visitDecl(InstanceOp op) {
         if (pmi.identity) {
           // (Just do the RAUW here instead of tracking the mapping for this
           // too.)
-          assert(oldResult.getType() == newInst.getType(newIndex));
-          oldResult.replaceAllUsesWith(newInst.getResult(newIndex));
+          assert(oldResult.getType() == newInst->getResult(newIndex).getType());
+          oldResult.replaceAllUsesWith(newInst->getResult(newIndex));
           return success();
         }
 
