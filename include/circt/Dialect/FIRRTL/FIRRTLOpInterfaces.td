@@ -333,28 +333,6 @@ def FInstanceLike : OpInterface<"FInstanceLike", [
       }]>,
 
     //===------------------------------------------------------------------===//
-    // Result Access
-    //===------------------------------------------------------------------===//
-
-    InterfaceMethod<"Get a specific result",
-      "mlir::OpResult", "getResult", (ins "unsigned":$idx), [{}],
-      /*defaultImplementation=*/[{
-        return $_op->getResult(idx);
-      }]>,
-
-    InterfaceMethod<"Get all results",
-      "mlir::Operation::result_range", "getResults", (ins), [{}],
-      /*defaultImplementation=*/[{
-        return $_op->getResults();
-      }]>,
-
-    InterfaceMethod<"Get the number of results",
-      "unsigned", "getNumResults", (ins), [{}],
-      /*defaultImplementation=*/[{
-        return $_op->getNumResults();
-      }]>,
-
-    //===------------------------------------------------------------------===//
     // Port Attributes
     //===------------------------------------------------------------------===//
 
