@@ -1238,15 +1238,14 @@ static LogicalResult updateModuleDomainInfo(const DomainInfo &info,
   return success();
 }
 
-template <typename T>
 static LogicalResult updateInstance(const DomainInfo &info,
                                     TermAllocator &allocator,
-                                    DomainTable &table, T op) {
+                                    DomainTable &table, FInstanceLike op) {
   OpBuilder builder(op.getContext());
   builder.setInsertionPointAfter(op);
   auto numPorts = op->getNumResults();
   for (size_t i = 0; i < numPorts; ++i) {
-    auto port = dyn_cast<DomainValue>(op.getResult(i));
+    auto port = dyn_cast<DomainValue>(op->getResult(i));
     auto direction = op.getPortDirection(i);
 
     // If the port is an input domain, we may need to drive the input with
@@ -1256,7 +1255,7 @@ static LogicalResult updateInstance(const DomainInfo &info,
       auto loc = port.getLoc();
       auto *term = getTermForDomain(allocator, table, port);
       if (auto *var = dyn_cast<VariableTerm>(term)) {
-        auto domainType = cast<DomainType>(op.getResult(i).getType());
+        auto domainType = cast<DomainType>(op->getResult(i).getType());
         auto domainTypeID = info.getDomainTypeID(domainType);
         auto domainDecl = info.getDomain(domainTypeID);
         auto name = domainDecl.getNameAttr();
@@ -1279,9 +1278,7 @@ static LogicalResult updateInstance(const DomainInfo &info,
 
 static LogicalResult updateOp(const DomainInfo &info, TermAllocator &allocator,
                               DomainTable &table, Operation *op) {
-  if (auto instance = dyn_cast<InstanceOp>(op))
-    return updateInstance(info, allocator, table, instance);
-  if (auto instance = dyn_cast<InstanceChoiceOp>(op))
+  if (auto instance = dyn_cast<FInstanceLike>(op))
     return updateInstance(info, allocator, table, instance);
   return success();
 }
