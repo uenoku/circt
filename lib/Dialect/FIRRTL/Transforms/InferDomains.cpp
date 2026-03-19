@@ -1288,9 +1288,10 @@ static LogicalResult updateOp(const DomainInfo &info, TermAllocator &allocator,
 static LogicalResult updateModuleBody(const DomainInfo &info,
                                       TermAllocator &allocator,
                                       DomainTable &table, FModuleOp moduleOp) {
-  auto result = moduleOp.getBodyBlock()->walk([&](Operation *op) -> WalkResult {
-    return updateOp(info, allocator, table, op);
-  });
+  auto result =
+      moduleOp.getBodyBlock()->walk([&](FInstanceLike op) -> WalkResult {
+        return updateOp(info, allocator, table, op);
+      });
   return failure(result.wasInterrupted());
 }
 
