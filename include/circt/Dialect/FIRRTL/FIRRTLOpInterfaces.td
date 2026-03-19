@@ -385,10 +385,7 @@ def FInstanceLike : OpInterface<"FInstanceLike", [
     //===------------------------------------------------------------------===//
 
     InterfaceMethod<"Get inner symbol attribute",
-      "::circt::hw::InnerSymAttr", "getInnerSymAttr", (ins), [{}],
-      /*defaultImplementation=*/[{
-        return {};
-      }]>,
+      "::circt::hw::InnerSymAttr", "getInnerSymAttr", (ins)>,
 
     //===------------------------------------------------------------------===//
     // Port Manipulation
@@ -409,22 +406,38 @@ def FInstanceLike : OpInterface<"FInstanceLike", [
     InterfaceMethod<"Clone this instance with erased ports, then replace uses",
       "FInstanceLike", "cloneWithErasedPortsAndReplaceUses",
       (ins "const llvm::BitVector &":$erasures)>,
-    
+
     //===------------------------------------------------------------------===//
     // Domain Information
     //===------------------------------------------------------------------===//
+
     InterfaceMethod<"Get domain information attribute",
       "ArrayAttr", "getDomainInfoAttr", (ins), [{}],
       /*defaultImplementation=*/[{
         return $_op.getDomainInfo();
       }]>,
+
     InterfaceMethod<"Set domain information attribute",
-      "void", "setDomainInfoAttr", (ins "ArrayAttr":$domainInfo),
-      [{}], /*defaultImplementation=*/[{
+      "void", "setDomainInfoAttr", (ins "ArrayAttr":$domainInfo), [{}],
+      /*defaultImplementation=*/[{
         $_op.setDomainInfo(domainInfo);
-      }]>
+      }]>,
+
+    //===------------------------------------------------------------------===//
+    // Layer Information
     //===------------------------------------------------------------------===//
 
+    InterfaceMethod<"Get layers attribute",
+      "ArrayAttr", "getLayersAttr", (ins), [{}],
+      /*defaultImplementation=*/[{
+        return $_op.getLayers();
+      }]>,
+
+    InterfaceMethod<"Set layers attribute",
+      "void", "setLayersAttr", (ins "ArrayAttr":$layers), [{}],
+      /*defaultImplementation=*/[{
+        $_op.setLayers(layers);
+      }]>
   ];
 
 }
