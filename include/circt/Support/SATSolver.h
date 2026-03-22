@@ -152,6 +152,15 @@ private:
   llvm::SmallVector<unsigned, 0> positions;
 };
 
+struct SATSolverStats {
+  uint64_t numSolveCalls = 0;
+  uint64_t numConflicts = 0;
+  uint64_t numDecisions = 0;
+  uint64_t numPropagations = 0;
+  uint64_t numRestarts = 0;
+  uint64_t numLearnedClauses = 0;
+};
+
 /// Abstract interface for incremental SAT solvers with an IPASIR-style API.
 class IncrementalSATSolver {
 public:
@@ -184,7 +193,17 @@ public:
       add(lit);
     add(0);
   }
+  virtual void setConflictBudget(uint64_t conflicts) {}
+  virtual void clearConflictBudget() {}
+  virtual const SATSolverStats &stats() const;
 };
+
+struct NativeSATSolverOptions {
+  double variableDecay = 0.95;
+};
+/// Construct a native low-latency incremental SAT solver.
+std::unique_ptr<IncrementalSATSolver>
+createNativeSATSolver(const NativeSATSolverOptions &options = {});
 
 /// Construct a Z3-backed incremental IPASIR-style SAT solver.
 std::unique_ptr<IncrementalSATSolver> createZ3SATSolver();
