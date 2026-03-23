@@ -83,6 +83,23 @@ static_assert(alignof(Lit) == alignof(int),
 static_assert(std::is_trivially_copyable_v<Lit>,
               "Lit should remain a trivial wrapper");
 
+enum class Assignment : int8_t {
+  Unassigned = 0,
+  True = 1,
+  False = -1,
+};
+
+static_assert(sizeof(Assignment) == sizeof(int8_t),
+              "Assignment should remain byte-sized");
+
+inline static Assignment assignmentFor(Lit lit) {
+  return lit.isNegated() ? Assignment::False : Assignment::True;
+}
+
+inline static int assignmentToInt(Assignment assignment) {
+  return static_cast<int>(assignment);
+}
+
 struct Clause final : private llvm::TrailingObjects<Clause, Lit> {
   friend TrailingObjects;
 
@@ -139,8 +156,8 @@ struct VariableState {
   // Decision level at which the current assignment was made.
   int32_t level = 0;
 
-  // 0 = unassigned, +1 = true, -1 = false.
-  int8_t assignment = 0;
+  // Current truth value in the partial assignment.
+  Assignment assignment = Assignment::Unassigned;
 
   // Saved preferred branch polarity.
   int8_t polarity = 1;
@@ -259,7 +276,7 @@ private:
   SearchAction scheduleNextAssignment(llvm::ArrayRef<Lit> assumptions);
 
   // Returns the current value of `lit` under the current partial assignment.
-  int currentAssignment(Lit lit) const;
+  Assignment currentAssignment(Lit lit) const;
 
   // Returns false iff `lit` conflicts with the current assignment.
   bool enqueue(Lit lit, Clause *reason);
@@ -441,12 +458,18 @@ int NativeSATSolver::val(int v) const {
   // trail state intentionally inaccessible through the public API.
   if (lastResult != kSAT || v <= 0 || v > maxVariable)
     return 0;
-  int value = variables[v].assignment;
-  // Zero means unassigned, so the caller can't distinguish that from an
+
+  switch (variables[v].assignment) {
+  // When unassigned, the caller can't distinguish that from an
   // assigned variable with the value false.
-  if (value == 0)
+  case Assignment::Unassigned:
     return 0;
-  return value > 0 ? v : -v;
+  case Assignment::True:
+    return v;
+  case Assignment::False:
+    return -v;
+  }
+  llvm_unreachable("invalid variable assignment");
 }
 
 void NativeSATSolver::reserveVars(int maxVar) {
@@ -547,10 +570,10 @@ bool NativeSATSolver::reduceClauseAtRoot(llvm::SmallVectorImpl<Lit> &clause) {
   // the root.
   size_t out = 0;
   for (Lit lit : clause) {
-    int value = currentAssignment(lit);
-    if (value > 0)
+    Assignment value = currentAssignment(lit);
+    if (value == Assignment::True)
       return false;
-    if (value < 0)
+    if (value == Assignment::False)
       continue;
     clause[out++] = lit;
   }
@@ -611,10 +634,10 @@ bool NativeSATSolver::recordLearnedClause(llvm::ArrayRef<Lit> learntClause) {
 std::optional<NativeSATSolver::SearchAction>
 NativeSATSolver::tryEnqueueNextAssumption(llvm::ArrayRef<Lit> assumptions) {
   for (Lit assumption : assumptions) {
-    int value = currentAssignment(assumption);
-    if (value > 0)
+    Assignment value = currentAssignment(assumption);
+    if (value == Assignment::True)
       continue;
-    if (value < 0) {
+    if (value == Assignment::False) {
       // The current trail already forces the opposite value, so the query is
       // UNSAT under the assumption prefix seen so far.
       finishUnsat(/*makePermanentUnsat=*/false);
@@ -660,28 +683,30 @@ void NativeSATSolver::attachClause(Clause &clause) {
   watches[lits[1].watchIndex()].push_back({&clause, lits[0]});
 }
 
-int NativeSATSolver::currentAssignment(Lit lit) const {
+Assignment NativeSATSolver::currentAssignment(Lit lit) const {
   // Literal truth is derived from the underlying variable assignment and then
   // adjusted for sign, so +1 means satisfied and -1 means falsified.
-  int value = variables[lit.var()].assignment;
-  if (value == 0)
-    return 0;
-  return lit.isNegated() ? -value : value;
+  Assignment value = variables[lit.var()].assignment;
+  if (value == Assignment::Unassigned)
+    return value;
+  if (!lit.isNegated() || value == Assignment::Unassigned)
+    return value;
+  return value == Assignment::True ? Assignment::False : Assignment::True;
 }
 
 bool NativeSATSolver::enqueue(Lit lit, Clause *reason) {
   int var = lit.var();
-  int wanted = lit.isNegated() ? -1 : 1;
+  Assignment wanted = assignmentFor(lit);
   auto &state = variables[var];
-  int current = state.assignment;
+  Assignment current = state.assignment;
   if (current == wanted)
     return true;
-  if (current == -wanted)
+  if (current != Assignment::Unassigned)
     return false;
   // The trail is the single source of truth for assignment order. Backtracking
   // and propagation both replay state from it rather than keeping copies.
   state.assignment = wanted;
-  state.polarity = wanted;
+  state.polarity = assignmentToInt(wanted);
   state.level = decisionLevel();
   state.reason = reason;
   trail.push_back(lit);
@@ -700,7 +725,7 @@ Clause *NativeSATSolver::propagate() {
     for (size_t read = 0; read < watchList.size(); ++read) {
       Watcher watcher = watchList[read];
       Clause *clause = watcher.clause;
-      if (currentAssignment(watcher.blocker) > 0) {
+      if (currentAssignment(watcher.blocker) == Assignment::True) {
         watchList[write++] = watcher;
         continue;
       }
@@ -712,7 +737,7 @@ Clause *NativeSATSolver::propagate() {
              "watched literal must be in second position");
 
       Lit first = lits[0];
-      if (currentAssignment(first) > 0) {
+      if (currentAssignment(first) == Assignment::True) {
         watchList[write++] = {clause, first};
         continue;
       }
@@ -720,7 +745,7 @@ Clause *NativeSATSolver::propagate() {
       bool foundWatch = false;
       for (size_t idx = 2, e = lits.size(); idx != e; ++idx) {
         Lit candidate = lits[idx];
-        if (currentAssignment(candidate) < 0)
+        if (currentAssignment(candidate) == Assignment::False)
           continue;
         // Move the watch away from the falsified literal. The old second watch
         // is swapped into the candidate slot so the first two entries remain
@@ -735,7 +760,7 @@ Clause *NativeSATSolver::propagate() {
         continue;
 
       watchList[write++] = {clause, first};
-      if (currentAssignment(first) < 0) {
+      if (currentAssignment(first) == Assignment::False) {
         watchList.resize(write);
         return clause;
       }
@@ -853,7 +878,7 @@ std::optional<Lit> NativeSATSolver::pickBranchLiteral() {
   // decided.
   while (!variableOrder.empty()) {
     auto var = variableOrder.pop();
-    if (variables[var].assignment != 0)
+    if (variables[var].assignment != Assignment::Unassigned)
       continue;
     return variables[var].polarity >= 0 ? Lit::fromRaw(var)
                                         : Lit::fromRaw(-var);
@@ -863,7 +888,7 @@ std::optional<Lit> NativeSATSolver::pickBranchLiteral() {
   // variable, but a linear scan keeps search robust if that invariant is
   // temporarily violated.
   for (int var = 1; var <= maxVariable; ++var)
-    if (variables[var].assignment == 0)
+    if (variables[var].assignment == Assignment::Unassigned)
       return variables[var].polarity >= 0 ? Lit::fromRaw(var)
                                           : Lit::fromRaw(-var);
   return std::nullopt;
@@ -886,7 +911,7 @@ void NativeSATSolver::cancelUntil(int level) {
   for (size_t i = trail.size(); i > newTrailSize; --i) {
     int var = trail[i - 1].var();
     auto &state = variables[var];
-    state.assignment = 0;
+    state.assignment = Assignment::Unassigned;
     state.level = 0;
     state.reason = nullptr;
     // TODO: Consider batch insertions into the heap if this becomes a
