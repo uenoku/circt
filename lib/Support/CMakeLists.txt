@@ -31,8 +31,6 @@ add_circt_library(CIRCTSupport
   )
 
 if(CIRCT_CADICAL_ENABLED)
-  target_link_libraries(CIRCTSupport PUBLIC cadical)
-  target_compile_definitions(CIRCTSupport PUBLIC CIRCT_CADICAL_ENABLED=1)
   target_link_libraries(obj.CIRCTSupport PUBLIC cadical)
   target_compile_definitions(obj.CIRCTSupport PUBLIC CIRCT_CADICAL_ENABLED=1)
 endif()
