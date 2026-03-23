@@ -35,10 +35,16 @@ namespace {
 
 class CadicalSATSolver : public IncrementalSATSolver {
 public:
-  void add(int lit) override { solver.add(lit); }
-  void assume(int lit) override {
+  void add(int lit) override {
     if (lit != 0)
+      reserveVars(std::abs(lit));
+    solver.add(lit);
+  }
+  void assume(int lit) override {
+    if (lit != 0) {
+      reserveVars(std::abs(lit));
       solver.assume(lit);
+    }
   }
   Result solve() override {
     switch (solver.solve()) {
@@ -50,18 +56,30 @@ public:
       return kUNKNOWN;
     }
   }
-  int val(int v) const override { return solver.val(v); }
+  int val(int v) const override {
+    if (v <= 0 || v > maxVariable)
+      return 0;
+    return solver.val(v);
+  }
+  void reserveVars(int maxVar) override {
+    if (maxVar <= maxVariable)
+      return;
+    solver.declare_more_variables(maxVar - maxVariable);
+    maxVariable = maxVar;
+  }
   void addClause(llvm::ArrayRef<int> lits) override {
     if (lits.empty()) {
       solver.add(0);
       return;
     }
-    llvm::SmallVector<int, 8> clause(lits.begin(), lits.end());
-    solver.clause(clause);
+    for (int lit : lits)
+      reserveVars(std::abs(lit));
+    solver.clause(lits.data(), lits.size());
   }
 
 private:
   mutable CaDiCaL::Solver solver;
+  int maxVariable = 0;
 };
 
 #endif // CIRCT_CADICAL_ENABLED
