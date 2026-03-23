@@ -687,11 +687,14 @@ Assignment NativeSATSolver::currentAssignment(Lit lit) const {
   // Literal truth is derived from the underlying variable assignment and then
   // adjusted for sign, so +1 means satisfied and -1 means falsified.
   Assignment value = variables[lit.var()].assignment;
-  if (value == Assignment::Unassigned)
-    return value;
-  if (!lit.isNegated() || value == Assignment::Unassigned)
-    return value;
-  return value == Assignment::True ? Assignment::False : Assignment::True;
+  switch (value) {
+  case Assignment::Unassigned:
+    return Assignment::Unassigned;
+  case Assignment::True:
+    return lit.isNegated() ? Assignment::False : Assignment::True;
+  case Assignment::False:
+    return lit.isNegated() ? Assignment::True : Assignment::False;
+  }
 }
 
 bool NativeSATSolver::enqueue(Lit lit, Clause *reason) {
@@ -800,7 +803,7 @@ void NativeSATSolver::analyze(Clause *conflict,
       auto &state = variables[var];
       if (state.seen || state.level == 0)
         continue;
-      state.seen = 1;
+      state.seen = true;
       bumpVariableActivity(var);
       if (state.level == currentLevel)
         ++unresolvedAtCurrentLevel;
@@ -816,7 +819,7 @@ void NativeSATSolver::analyze(Clause *conflict,
     } while (!variables[uipLit.var()].seen);
 
     auto &uipState = variables[uipLit.var()];
-    uipState.seen = 0;
+    uipState.seen = false;
     // Continue resolution through the implication reason of `uipLit`.
     conflict = uipState.reason;
     // Stop at the first UIP (no unresolved current-level literals left), or if
@@ -829,7 +832,7 @@ void NativeSATSolver::analyze(Clause *conflict,
   backtrackLevel = computeBacktrackLevel(learntClause);
 
   for (Lit lit : learntClause)
-    variables[lit.var()].seen = 0;
+    variables[lit.var()].seen = false;
 }
 
 int NativeSATSolver::computeBacktrackLevel(
