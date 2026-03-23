@@ -35,6 +35,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace circt {
@@ -45,7 +46,40 @@ static const SATSolverStats kEmptyStats;
 constexpr double kActivityRescaleThreshold = 1e100;
 constexpr double kActivityRescaleFactor = 1e-100;
 
-struct Clause final : private llvm::TrailingObjects<Clause, int> {
+class Lit {
+public:
+  constexpr Lit() = default;
+
+  static constexpr Lit fromRaw(int raw) {
+    assert(raw != 0 && "literal must be non-zero");
+    Lit lit;
+    lit.rawValue = raw;
+    return lit;
+  }
+
+  constexpr int raw() const { return rawValue; }
+  constexpr int var() const { return std::abs(rawValue); }
+  constexpr bool isNegated() const { return rawValue < 0; }
+  constexpr Lit negated() const { return Lit::fromRaw(-rawValue); }
+
+  friend constexpr bool operator==(Lit lhs, Lit rhs) {
+    return lhs.rawValue == rhs.rawValue;
+  }
+  friend constexpr bool operator<(Lit lhs, Lit rhs) {
+    return lhs.rawValue < rhs.rawValue;
+  }
+
+private:
+  int rawValue = 0;
+};
+
+static_assert(sizeof(Lit) == sizeof(int), "Lit should stay register-passable");
+static_assert(alignof(Lit) == alignof(int),
+              "Lit should preserve int alignment");
+static_assert(std::is_trivially_copyable_v<Lit>,
+              "Lit should remain a trivial wrapper");
+
+struct Clause final : private llvm::TrailingObjects<Clause, Lit> {
   friend TrailingObjects;
 
   unsigned numLits = 0;
@@ -54,10 +88,10 @@ struct Clause final : private llvm::TrailingObjects<Clause, int> {
   Clause(unsigned numLits, bool learnt);
 
   static Clause *create(llvm::BumpPtrAllocator &allocator,
-                        llvm::ArrayRef<int> lits, bool learnt);
+                        llvm::ArrayRef<Lit> lits, bool learnt);
 
-  llvm::MutableArrayRef<int> getLits();
-  llvm::ArrayRef<int> getLits() const;
+  llvm::MutableArrayRef<Lit> getLits();
+  llvm::ArrayRef<Lit> getLits() const;
 };
 
 struct Watcher {
@@ -66,7 +100,7 @@ struct Watcher {
   Clause *clause = nullptr;
   // Cached "other watched literal". If it is already true, propagation can
   // skip touching the full clause.
-  int blocker = 0;
+  Lit blocker;
 };
 
 struct VariableState {
@@ -91,16 +125,23 @@ struct VariableActivityScore {
   double operator()(const VariableState &state) const { return state.activity; }
 };
 
-// Helper functions for literal encoding.
-inline static int litToIndex(int lit) {
-  assert(lit != 0 && "literal must be non-zero");
-  int var = std::abs(lit);
-  return lit > 0 ? 2 * (var - 1) : 2 * (var - 1) + 1;
+inline static int litToIndex(Lit lit) {
+  int var = lit.var();
+  return lit.isNegated() ? 2 * (var - 1) + 1 : 2 * (var - 1);
 }
 
-inline static int negateLit(int lit) {
-  assert(lit != 0 && "literal must be non-zero");
-  return -lit;
+inline static Lit negateLit(Lit lit) { return lit.negated(); }
+
+inline static Lit toLit(int lit) { return Lit::fromRaw(lit); }
+
+inline static llvm::SmallVector<Lit, 8> toLits(llvm::ArrayRef<int> lits) {
+  llvm::SmallVector<Lit, 8> result;
+  result.reserve(lits.size());
+  for (int lit : lits) {
+    assert(lit != 0 && "clause/assumption literals must be non-zero");
+    result.push_back(toLit(lit));
+  }
+  return result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -128,6 +169,7 @@ public:
 
 private:
   void addClause(llvm::ArrayRef<int> lits) override;
+  void addClauseInternal(llvm::ArrayRef<Lit> lits);
   void setConflictBudget(uint64_t conflicts) override;
   void clearConflictBudget() override;
   const SATSolverStats &stats() const override;
@@ -144,14 +186,14 @@ private:
   void flushBufferedClause();
 
   // Returns false if the clause is a tautology and should be discarded.
-  bool canonicalizeClause(llvm::SmallVectorImpl<int> &clause);
+  bool canonicalizeClause(llvm::SmallVectorImpl<Lit> &clause);
 
   // Drop literals falsified at level 0 and discard clauses already satisfied
   // by the permanent root assignment.
-  bool reduceClauseAtRoot(llvm::SmallVectorImpl<int> &clause);
+  bool reduceClauseAtRoot(llvm::SmallVectorImpl<Lit> &clause);
 
-  void insertTopLevelClause(llvm::ArrayRef<int> clause);
-  Clause *allocateClause(llvm::ArrayRef<int> lits, bool learnt);
+  void insertTopLevelClause(llvm::ArrayRef<Lit> clause);
+  Clause *allocateClause(llvm::ArrayRef<Lit> lits, bool learnt);
   void attachClause(Clause &clause);
 
   //===--------------------------------------------------------------------===//
@@ -162,7 +204,7 @@ private:
   // Returns std::nullopt when search should continue normally.
   // Returns a terminal result (currently kUNSAT) when root-level propagation
   // already proves the query inconsistent.
-  std::optional<Result> prepareSolve(llvm::ArrayRef<int> assumptions);
+  std::optional<Result> prepareSolve(llvm::ArrayRef<Lit> assumptions);
 
   // Finish an UNSAT result, optionally marking the permanent clause database as
   // inconsistent.
@@ -172,6 +214,7 @@ private:
   // search. This is called at the start of add()/assume() and at the end of
   // solve().
   void resetLastSolveState();
+  Result solveInternal(llvm::ArrayRef<Lit> assumptions);
 
   //===--------------------------------------------------------------------===//
   // Search
@@ -180,32 +223,32 @@ private:
   // Search loop helpers. These implement the MiniSat-style
   // propagate/analyze/backtrack/branch cycle.
   // Returns false if the learned clause immediately causes a contradiction.
-  bool recordLearnedClause(llvm::ArrayRef<int> learntClause);
+  bool recordLearnedClause(llvm::ArrayRef<Lit> learntClause);
 
   // Rebuild the temporary assumption decision prefix one unmet assumption at a
   // time.
   std::optional<SearchAction>
-  tryEnqueueNextAssumption(llvm::ArrayRef<int> assumptions);
+  tryEnqueueNextAssumption(llvm::ArrayRef<Lit> assumptions);
 
   // Chooses whether to continue search, report UNSAT under assumptions, or SAT.
-  SearchAction scheduleNextAssignment(llvm::ArrayRef<int> assumptions);
+  SearchAction scheduleNextAssignment(llvm::ArrayRef<Lit> assumptions);
 
   // Returns the current value of `lit` under the current partial assignment.
-  int valueOfLiteral(int lit) const;
+  int valueOfLiteral(Lit lit) const;
 
   // Returns false iff `lit` conflicts with the current assignment.
-  bool enqueue(int lit, Clause *reason);
+  bool enqueue(Lit lit, Clause *reason);
 
   // Returns a conflicting clause, or nullptr when propagation reaches a fixed
   // point with no conflict.
   Clause *propagate();
-  void analyze(Clause *conflict, llvm::SmallVectorImpl<int> &learntClause,
+  void analyze(Clause *conflict, llvm::SmallVectorImpl<Lit> &learntClause,
                int &backtrackLevel);
 
   // Returns the level to backtrack to for a learnt clause. This is the maximum
   // decision level among the literals in `learntClause` other than the
   // asserting literal at index 0.
-  int computeBacktrackLevel(llvm::SmallVectorImpl<int> &learntClause) const;
+  int computeBacktrackLevel(llvm::SmallVectorImpl<Lit> &learntClause) const;
 
   //===--------------------------------------------------------------------===//
   // Branching And Backtracking
@@ -217,7 +260,7 @@ private:
   // Age all activity scores implicitly by scaling the increment factor.
   void decayVariableActivity();
   // Returns 0 iff no unassigned decision variable remains.
-  int pickBranchLiteral();
+  std::optional<Lit> pickBranchLiteral();
   void newDecisionLevel();
   int decisionLevel() const;
   void cancelUntil(int level);
@@ -244,12 +287,12 @@ private:
   // Standard CDCL trail and per-level cut points.
   // Invariant: `trailLimits[d]` is the trail size at the start of decision
   // level `d + 1`, so `trailLimits.size() == decisionLevel()`.
-  llvm::SmallVector<int> trail;
+  llvm::SmallVector<Lit> trail;
   llvm::SmallVector<size_t> trailLimits;
 
   // Temporary front-end state for IPASIR-style add()/assume() usage.
-  llvm::SmallVector<int> clauseBuffer;
-  llvm::SmallVector<int> pendingAssumptions;
+  llvm::SmallVector<Lit> clauseBuffer;
+  llvm::SmallVector<Lit> pendingAssumptions;
 
   // Search cursors and scalar state.
   // Invariant: `nextPropagateIndex <= trail.size()`.
@@ -266,20 +309,20 @@ Clause::Clause(unsigned numLits, bool learnt)
     : numLits(numLits), learnt(learnt) {}
 
 Clause *Clause::create(llvm::BumpPtrAllocator &allocator,
-                       llvm::ArrayRef<int> lits, bool learnt) {
+                       llvm::ArrayRef<Lit> lits, bool learnt) {
   void *mem =
-      allocator.Allocate(totalSizeToAlloc<int>(lits.size()), alignof(Clause));
+      allocator.Allocate(totalSizeToAlloc<Lit>(lits.size()), alignof(Clause));
   Clause *clause = new (mem) Clause(lits.size(), learnt);
   std::uninitialized_copy(lits.begin(), lits.end(),
                           clause->getTrailingObjects());
   return clause;
 }
 
-llvm::MutableArrayRef<int> Clause::getLits() {
+llvm::MutableArrayRef<Lit> Clause::getLits() {
   return {getTrailingObjects(), numLits};
 }
 
-llvm::ArrayRef<int> Clause::getLits() const {
+llvm::ArrayRef<Lit> Clause::getLits() const {
   return {getTrailingObjects(), numLits};
 }
 
@@ -291,12 +334,12 @@ void NativeSATSolver::add(int lit) {
   if (lit == 0) {
     // The compatibility API terminates one clause with 0, so flush the
     // buffered literals as a permanent clause at that point.
-    addClause(clauseBuffer);
+    addClauseInternal(clauseBuffer);
     clauseBuffer.clear();
     return;
   }
   reserveVars(std::abs(lit));
-  clauseBuffer.push_back(lit);
+  clauseBuffer.push_back(toLit(lit));
 }
 
 void NativeSATSolver::assume(int lit) {
@@ -306,17 +349,22 @@ void NativeSATSolver::assume(int lit) {
   // Assumptions are stored only until the next solve() call. They never enter
   // the permanent clause database.
   reserveVars(std::abs(lit));
-  pendingAssumptions.push_back(lit);
+  pendingAssumptions.push_back(toLit(lit));
 }
 
 IncrementalSATSolver::Result NativeSATSolver::solve() {
   auto assumptions = pendingAssumptions;
   pendingAssumptions.clear();
-  return solve(assumptions);
+  return solveInternal(assumptions);
 }
 
 IncrementalSATSolver::Result
 NativeSATSolver::solve(llvm::ArrayRef<int> assumptions) {
+  return solveInternal(toLits(assumptions));
+}
+
+IncrementalSATSolver::Result
+NativeSATSolver::solveInternal(llvm::ArrayRef<Lit> assumptions) {
   resetLastSolveState();
   ++solverStats.numSolveCalls;
 
@@ -328,9 +376,8 @@ NativeSATSolver::solve(llvm::ArrayRef<int> assumptions) {
 
   // Assumptions can mention variables that have not appeared in any permanent
   // clause yet, so the solver must still allocate state for them.
-  for (int lit : assumptions)
-    if (lit != 0)
-      reserveVars(std::abs(lit));
+  for (Lit lit : assumptions)
+    reserveVars(lit.var());
 
   // Assumptions are modeled as a temporary decision prefix on top of the
   // permanent root assignment. All learned clauses and VSIDS state are reused
@@ -352,7 +399,7 @@ NativeSATSolver::solve(llvm::ArrayRef<int> assumptions) {
       if (decisionLevel() == 0)
         return finishUnsat(assumptions.empty());
 
-      llvm::SmallVector<int, 8> learntClause;
+      llvm::SmallVector<Lit, 8> learntClause;
       int backtrackLevel = 0;
       // Conflict analysis computes one asserting clause, then search
       // backtracks so that clause immediately becomes unit.
@@ -413,6 +460,10 @@ void NativeSATSolver::reserveVars(int maxVar) {
 }
 
 void NativeSATSolver::addClause(llvm::ArrayRef<int> lits) {
+  addClauseInternal(toLits(lits));
+}
+
+void NativeSATSolver::addClauseInternal(llvm::ArrayRef<Lit> lits) {
   resetLastSolveState();
   cancelUntil(0);
   if (permanentUnsat)
@@ -420,7 +471,7 @@ void NativeSATSolver::addClause(llvm::ArrayRef<int> lits) {
 
   // Permanent clauses are normalized in a scratch buffer first so tautologies,
   // duplicates, and root-satisfied literals never enter the watch structure.
-  llvm::SmallVector<int, 8> clause(lits.begin(), lits.end());
+  llvm::SmallVector<Lit, 8> clause(lits.begin(), lits.end());
   if (!canonicalizeClause(clause))
     return;
   if (!reduceClauseAtRoot(clause))
@@ -439,22 +490,21 @@ const SATSolverStats &NativeSATSolver::stats() const { return solverStats; }
 void NativeSATSolver::flushBufferedClause() {
   if (clauseBuffer.empty())
     return;
-  addClause(clauseBuffer);
+  addClauseInternal(clauseBuffer);
   clauseBuffer.clear();
 }
 
-Clause *NativeSATSolver::allocateClause(llvm::ArrayRef<int> lits, bool learnt) {
+Clause *NativeSATSolver::allocateClause(llvm::ArrayRef<Lit> lits, bool learnt) {
   // Clause memory is monotonic today, so a bump allocator is enough and keeps
   // clause headers plus literals contiguous.
   return Clause::create(clauseAllocator, lits, learnt);
 }
 
-bool NativeSATSolver::canonicalizeClause(llvm::SmallVectorImpl<int> &clause) {
+bool NativeSATSolver::canonicalizeClause(llvm::SmallVectorImpl<Lit> &clause) {
   // All literals must refer to existing variables before sorting or root
   // simplification can inspect assignments.
-  for (int lit : clause) {
-    assert(lit != 0 && "addClause expects non-zero literals");
-    reserveVars(std::abs(lit));
+  for (Lit lit : clause) {
+    reserveVars(lit.var());
   }
   if (clause.empty()) {
     permanentUnsat = true;
@@ -463,9 +513,9 @@ bool NativeSATSolver::canonicalizeClause(llvm::SmallVectorImpl<int> &clause) {
 
   // Canonical order groups equal/opposite literals together so one linear
   // pass can remove duplicates and detect tautologies.
-  llvm::sort(clause, [](int lhs, int rhs) {
-    int lhsVar = std::abs(lhs);
-    int rhsVar = std::abs(rhs);
+  llvm::sort(clause, [](Lit lhs, Lit rhs) {
+    int lhsVar = lhs.var();
+    int rhsVar = rhs.var();
     if (lhsVar != rhsVar)
       return lhsVar < rhsVar;
     return lhs < rhs;
@@ -476,7 +526,7 @@ bool NativeSATSolver::canonicalizeClause(llvm::SmallVectorImpl<int> &clause) {
     if (i && clause[i] == clause[i - 1])
       continue;
     // A tautology is detected when a literal and its negation are adjacent.
-    if (i && clause[i] == -clause[i - 1])
+    if (i && clause[i] == clause[i - 1].negated())
       return false;
     clause[out++] = clause[i];
   }
@@ -488,12 +538,12 @@ bool NativeSATSolver::canonicalizeClause(llvm::SmallVectorImpl<int> &clause) {
   return true;
 }
 
-bool NativeSATSolver::reduceClauseAtRoot(llvm::SmallVectorImpl<int> &clause) {
+bool NativeSATSolver::reduceClauseAtRoot(llvm::SmallVectorImpl<Lit> &clause) {
   // New permanent clauses are simplified against the current level-0
   // assignment so propagation never has to revisit literals already fixed at
   // the root.
   size_t out = 0;
-  for (int lit : clause) {
+  for (Lit lit : clause) {
     int value = valueOfLiteral(lit);
     if (value > 0)
       return false;
@@ -508,7 +558,7 @@ bool NativeSATSolver::reduceClauseAtRoot(llvm::SmallVectorImpl<int> &clause) {
   return false;
 }
 
-void NativeSATSolver::insertTopLevelClause(llvm::ArrayRef<int> clause) {
+void NativeSATSolver::insertTopLevelClause(llvm::ArrayRef<Lit> clause) {
   // Root-level units are enqueued immediately; longer clauses are attached to
   // the watch lists and then propagated once to detect any immediate conflict.
   if (clause.size() == 1) {
@@ -524,7 +574,7 @@ void NativeSATSolver::insertTopLevelClause(llvm::ArrayRef<int> clause) {
 }
 
 std::optional<IncrementalSATSolver::Result>
-NativeSATSolver::prepareSolve(llvm::ArrayRef<int> assumptions) {
+NativeSATSolver::prepareSolve(llvm::ArrayRef<Lit> assumptions) {
   // Every solve starts from the root state. Learned clauses and activities
   // survive, but temporary assumption decisions do not.
   cancelUntil(0);
@@ -541,7 +591,7 @@ NativeSATSolver::finishUnsat(bool makePermanentUnsat) {
   return lastResult = kUNSAT;
 }
 
-bool NativeSATSolver::recordLearnedClause(llvm::ArrayRef<int> learntClause) {
+bool NativeSATSolver::recordLearnedClause(llvm::ArrayRef<Lit> learntClause) {
   // A first-UIP analysis may produce a unit clause. In that case there is no
   // need to allocate a watched clause object; the implied literal can be
   // enqueued directly after backtracking.
@@ -556,10 +606,8 @@ bool NativeSATSolver::recordLearnedClause(llvm::ArrayRef<int> learntClause) {
 }
 
 std::optional<NativeSATSolver::SearchAction>
-NativeSATSolver::tryEnqueueNextAssumption(llvm::ArrayRef<int> assumptions) {
-  for (auto assumption : assumptions) {
-    if (assumption == 0)
-      continue;
+NativeSATSolver::tryEnqueueNextAssumption(llvm::ArrayRef<Lit> assumptions) {
+  for (Lit assumption : assumptions) {
     int value = valueOfLiteral(assumption);
     if (value > 0)
       continue;
@@ -580,14 +628,14 @@ NativeSATSolver::tryEnqueueNextAssumption(llvm::ArrayRef<int> assumptions) {
 }
 
 NativeSATSolver::SearchAction
-NativeSATSolver::scheduleNextAssignment(llvm::ArrayRef<int> assumptions) {
+NativeSATSolver::scheduleNextAssignment(llvm::ArrayRef<Lit> assumptions) {
   // Assumptions have priority over free branching: the solver must first
   // rebuild the temporary assumption prefix for this solve call.
   if (auto assumptionAction = tryEnqueueNextAssumption(assumptions))
     return *assumptionAction;
 
-  int decision = pickBranchLiteral();
-  if (decision == 0)
+  auto decision = pickBranchLiteral();
+  if (!decision)
     // No unmet assumptions and no unassigned decision variable remain, so the
     // current assignment is a satisfying model for the permanent clauses and
     // the active assumption frame.
@@ -596,7 +644,7 @@ NativeSATSolver::scheduleNextAssignment(llvm::ArrayRef<int> assumptions) {
   // Otherwise continue ordinary CDCL search with a heuristic branch decision.
   ++solverStats.numDecisions;
   newDecisionLevel();
-  (void)enqueue(decision, nullptr);
+  (void)enqueue(*decision, nullptr);
   return SearchAction::Continue;
 }
 
@@ -609,18 +657,18 @@ void NativeSATSolver::attachClause(Clause &clause) {
   watches[litToIndex(lits[1])].push_back({&clause, lits[0]});
 }
 
-int NativeSATSolver::valueOfLiteral(int lit) const {
+int NativeSATSolver::valueOfLiteral(Lit lit) const {
   // Literal truth is derived from the underlying variable assignment and then
   // adjusted for sign, so +1 means satisfied and -1 means falsified.
-  int value = variables[std::abs(lit)].assignment;
+  int value = variables[lit.var()].assignment;
   if (value == 0)
     return 0;
-  return lit > 0 ? value : -value;
+  return lit.isNegated() ? -value : value;
 }
 
-bool NativeSATSolver::enqueue(int lit, Clause *reason) {
-  int var = std::abs(lit);
-  int wanted = lit > 0 ? 1 : -1;
+bool NativeSATSolver::enqueue(Lit lit, Clause *reason) {
+  int var = lit.var();
+  int wanted = lit.isNegated() ? -1 : 1;
   auto &state = variables[var];
   int current = state.assignment;
   if (current == wanted)
@@ -642,7 +690,7 @@ Clause *NativeSATSolver::propagate() {
     // The trail entry at nextPropagateIndex just became true, so only clauses
     // watching its
     // negation can have changed status.
-    int lit = trail[nextPropagateIndex++];
+    Lit lit = trail[nextPropagateIndex++];
     ++solverStats.numPropagations;
     auto &watchList = watches[litToIndex(negateLit(lit))];
     size_t write = 0;
@@ -660,7 +708,7 @@ Clause *NativeSATSolver::propagate() {
       assert(lits[1] == negateLit(lit) &&
              "watched literal must be in second position");
 
-      int first = lits[0];
+      Lit first = lits[0];
       if (valueOfLiteral(first) > 0) {
         watchList[write++] = {clause, first};
         continue;
@@ -668,7 +716,7 @@ Clause *NativeSATSolver::propagate() {
 
       bool foundWatch = false;
       for (size_t idx = 2, e = lits.size(); idx != e; ++idx) {
-        int candidate = lits[idx];
+        Lit candidate = lits[idx];
         if (valueOfLiteral(candidate) < 0)
           continue;
         // Move the watch away from the falsified literal. The old second watch
@@ -699,15 +747,15 @@ Clause *NativeSATSolver::propagate() {
 }
 
 void NativeSATSolver::analyze(Clause *conflict,
-                              llvm::SmallVectorImpl<int> &learntClause,
+                              llvm::SmallVectorImpl<Lit> &learntClause,
                               int &backtrackLevel) {
   assert(conflict && "analyze requires a non-null conflict clause");
   // `unresolvedAtCurrentLevel` counts literals from the current decision level
   // that still need resolution before reaching the first UIP.
   learntClause.clear();
-  learntClause.push_back(0); // Placeholder for the final asserting literal.
+  learntClause.push_back(Lit()); // Placeholder for the final asserting literal.
   int unresolvedAtCurrentLevel = 0;
-  int uipLit = 0;
+  Lit uipLit;
   size_t trailIndex = trail.size();
   const int currentLevel = decisionLevel();
 
@@ -719,8 +767,8 @@ void NativeSATSolver::analyze(Clause *conflict,
     // Collect literals from the current conflict clause:
     // - literals from the current level increase the unresolved count,
     // - literals from lower levels become part of the learned clause.
-    for (int lit : conflict->getLits()) {
-      int var = std::abs(lit);
+    for (Lit lit : conflict->getLits()) {
+      int var = lit.var();
       auto &state = variables[var];
       if (state.seen || state.level == 0)
         continue;
@@ -737,9 +785,9 @@ void NativeSATSolver::analyze(Clause *conflict,
     do {
       assert(trailIndex > 0 && "expected a seen literal on the trail");
       uipLit = trail[--trailIndex];
-    } while (!variables[std::abs(uipLit)].seen);
+    } while (!variables[uipLit.var()].seen);
 
-    auto &uipState = variables[std::abs(uipLit)];
+    auto &uipState = variables[uipLit.var()];
     uipState.seen = 0;
     // Continue resolution through the implication reason of `uipLit`.
     conflict = uipState.reason;
@@ -752,12 +800,12 @@ void NativeSATSolver::analyze(Clause *conflict,
   learntClause[0] = negateLit(uipLit);
   backtrackLevel = computeBacktrackLevel(learntClause);
 
-  for (int lit : learntClause)
-    variables[std::abs(lit)].seen = 0;
+  for (Lit lit : learntClause)
+    variables[lit.var()].seen = 0;
 }
 
 int NativeSATSolver::computeBacktrackLevel(
-    llvm::SmallVectorImpl<int> &learntClause) const {
+    llvm::SmallVectorImpl<Lit> &learntClause) const {
   // The learned clause is arranged so element 0 is the asserting literal and
   // element 1 is the highest remaining decision level; backtracking there
   // makes the clause unit immediately.
@@ -766,8 +814,8 @@ int NativeSATSolver::computeBacktrackLevel(
 
   size_t bestIndex = 1;
   for (size_t i = 2; i < learntClause.size(); ++i)
-    if (variables[std::abs(learntClause[i])].level >
-        variables[std::abs(learntClause[bestIndex])].level)
+    if (variables[learntClause[i].var()].level >
+        variables[learntClause[bestIndex].var()].level)
       bestIndex = i;
   // Maintain the learned-clause layout invariant:
   // - learntClause[0] is the asserting literal.
@@ -775,7 +823,7 @@ int NativeSATSolver::computeBacktrackLevel(
   // Backtracking to level(learntClause[1]) then makes learntClause[0] unit
   // immediately, and `attachClause` starts with this canonical watched pair.
   std::swap(learntClause[1], learntClause[bestIndex]);
-  return variables[std::abs(learntClause[1])].level;
+  return variables[learntClause[1].var()].level;
 }
 
 void NativeSATSolver::bumpVariableActivity(int var) {
@@ -795,7 +843,7 @@ void NativeSATSolver::decayVariableActivity() {
   variableActivityIncrement /= options.variableDecay;
 }
 
-int NativeSATSolver::pickBranchLiteral() {
+std::optional<Lit> NativeSATSolver::pickBranchLiteral() {
   // The heap can contain stale entries for variables that became assigned
   // after insertion. Pop until an unassigned variable is found, then branch
   // using the saved polarity from the last time that variable was forced or
@@ -804,7 +852,8 @@ int NativeSATSolver::pickBranchLiteral() {
     auto var = variableOrder.pop();
     if (variables[var].assignment != 0)
       continue;
-    return variables[var].polarity >= 0 ? var : -var;
+    return variables[var].polarity >= 0 ? Lit::fromRaw(var)
+                                        : Lit::fromRaw(-var);
   }
 
   // Defensive fallback: the heap should normally contain every unassigned
@@ -812,8 +861,9 @@ int NativeSATSolver::pickBranchLiteral() {
   // temporarily violated.
   for (int var = 1; var <= maxVariable; ++var)
     if (variables[var].assignment == 0)
-      return variables[var].polarity >= 0 ? var : -var;
-  return 0;
+      return variables[var].polarity >= 0 ? Lit::fromRaw(var)
+                                          : Lit::fromRaw(-var);
+  return std::nullopt;
 }
 
 void NativeSATSolver::newDecisionLevel() {
@@ -831,7 +881,7 @@ void NativeSATSolver::cancelUntil(int level) {
   // Unassigned variables are reinserted into the branching heap lazily here
   // instead of rebuilding the heap from scratch after every conflict.
   for (size_t i = trail.size(); i > newTrailSize; --i) {
-    int var = std::abs(trail[i - 1]);
+    int var = trail[i - 1].var();
     auto &state = variables[var];
     state.assignment = 0;
     state.level = 0;
