@@ -30,6 +30,10 @@ add_circt_library(CIRCTSupport
   MLIRTransformUtils
   )
 
+if(CIRCT_CADICAL_ENABLED)
+  target_link_libraries(CIRCTSupport PUBLIC cadical)
+endif()
+
 #-------------------------------------------------------------------------------
 # Generate Version.cpp
 #-------------------------------------------------------------------------------
