@@ -61,6 +61,10 @@ public:
   constexpr int var() const { return std::abs(rawValue); }
   constexpr bool isNegated() const { return rawValue < 0; }
   constexpr Lit negated() const { return Lit::fromRaw(-rawValue); }
+  constexpr int watchIndex() const {
+    int v = var();
+    return isNegated() ? 2 * (v - 1) + 1 : 2 * (v - 1);
+  }
 
   friend constexpr bool operator==(Lit lhs, Lit rhs) {
     return lhs.rawValue == rhs.rawValue;
@@ -125,21 +129,12 @@ struct VariableActivityScore {
   double operator()(const VariableState &state) const { return state.activity; }
 };
 
-inline static int litToIndex(Lit lit) {
-  int var = lit.var();
-  return lit.isNegated() ? 2 * (var - 1) + 1 : 2 * (var - 1);
-}
-
-inline static Lit negateLit(Lit lit) { return lit.negated(); }
-
-inline static Lit toLit(int lit) { return Lit::fromRaw(lit); }
-
 inline static llvm::SmallVector<Lit, 8> toLits(llvm::ArrayRef<int> lits) {
   llvm::SmallVector<Lit, 8> result;
   result.reserve(lits.size());
   for (int lit : lits) {
     assert(lit != 0 && "clause/assumption literals must be non-zero");
-    result.push_back(toLit(lit));
+    result.push_back(Lit::fromRaw(lit));
   }
   return result;
 }
@@ -339,7 +334,7 @@ void NativeSATSolver::add(int lit) {
     return;
   }
   reserveVars(std::abs(lit));
-  clauseBuffer.push_back(toLit(lit));
+  clauseBuffer.push_back(Lit::fromRaw(lit));
 }
 
 void NativeSATSolver::assume(int lit) {
@@ -349,7 +344,7 @@ void NativeSATSolver::assume(int lit) {
   // Assumptions are stored only until the next solve() call. They never enter
   // the permanent clause database.
   reserveVars(std::abs(lit));
-  pendingAssumptions.push_back(toLit(lit));
+  pendingAssumptions.push_back(Lit::fromRaw(lit));
 }
 
 IncrementalSATSolver::Result NativeSATSolver::solve() {
@@ -653,8 +648,8 @@ void NativeSATSolver::attachClause(Clause &clause) {
   assert(lits.size() >= 2 && "cannot watch a unit clause");
   // The first two literals are kept as the watched pair. Propagation may swap
   // these positions later, but attach always starts from the canonical prefix.
-  watches[litToIndex(lits[0])].push_back({&clause, lits[1]});
-  watches[litToIndex(lits[1])].push_back({&clause, lits[0]});
+  watches[lits[0].watchIndex()].push_back({&clause, lits[1]});
+  watches[lits[1].watchIndex()].push_back({&clause, lits[0]});
 }
 
 int NativeSATSolver::valueOfLiteral(Lit lit) const {
@@ -692,7 +687,7 @@ Clause *NativeSATSolver::propagate() {
     // negation can have changed status.
     Lit lit = trail[nextPropagateIndex++];
     ++solverStats.numPropagations;
-    auto &watchList = watches[litToIndex(negateLit(lit))];
+    auto &watchList = watches[lit.negated().watchIndex()];
     size_t write = 0;
     for (size_t read = 0; read < watchList.size(); ++read) {
       Watcher watcher = watchList[read];
@@ -703,9 +698,9 @@ Clause *NativeSATSolver::propagate() {
       }
 
       auto lits = clause->getLits();
-      if (lits[0] == negateLit(lit))
+      if (lits[0] == lit.negated())
         std::swap(lits[0], lits[1]);
-      assert(lits[1] == negateLit(lit) &&
+      assert(lits[1] == lit.negated() &&
              "watched literal must be in second position");
 
       Lit first = lits[0];
@@ -723,8 +718,8 @@ Clause *NativeSATSolver::propagate() {
         // is swapped into the candidate slot so the first two entries remain
         // the watched pair.
         lits[1] = candidate;
-        lits[idx] = negateLit(lit);
-        watches[litToIndex(candidate)].push_back({clause, first});
+        lits[idx] = lit.negated();
+        watches[candidate.watchIndex()].push_back({clause, first});
         foundWatch = true;
         break;
       }
@@ -797,7 +792,7 @@ void NativeSATSolver::analyze(Clause *conflict,
       break;
   }
 
-  learntClause[0] = negateLit(uipLit);
+  learntClause[0] = uipLit.negated();
   backtrackLevel = computeBacktrackLevel(learntClause);
 
   for (Lit lit : learntClause)
