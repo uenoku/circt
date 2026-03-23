@@ -277,6 +277,10 @@ private:
 
   // Returns the current value of `lit` under the current partial assignment.
   Assignment currentAssignment(Lit lit) const;
+  inline VariableState &stateFor(Lit lit) { return variables[lit.var()]; }
+  inline const VariableState &stateFor(Lit lit) const {
+    return variables[lit.var()];
+  }
 
   // Returns false iff `lit` conflicts with the current assignment.
   bool enqueue(Lit lit, Clause *reason);
@@ -686,7 +690,7 @@ void NativeSATSolver::attachClause(Clause &clause) {
 Assignment NativeSATSolver::currentAssignment(Lit lit) const {
   // Literal truth is derived from the underlying variable assignment and then
   // adjusted for sign, so +1 means satisfied and -1 means falsified.
-  Assignment value = variables[lit.var()].assignment;
+  Assignment value = stateFor(lit).assignment;
   switch (value) {
   case Assignment::Unassigned:
     return Assignment::Unassigned;
@@ -816,9 +820,9 @@ void NativeSATSolver::analyze(Clause *conflict,
     do {
       assert(trailIndex > 0 && "expected a seen literal on the trail");
       uipLit = trail[--trailIndex];
-    } while (!variables[uipLit.var()].seen);
+    } while (!stateFor(uipLit).seen);
 
-    auto &uipState = variables[uipLit.var()];
+    auto &uipState = stateFor(uipLit);
     uipState.seen = false;
     // Continue resolution through the implication reason of `uipLit`.
     conflict = uipState.reason;
@@ -832,7 +836,7 @@ void NativeSATSolver::analyze(Clause *conflict,
   backtrackLevel = computeBacktrackLevel(learntClause);
 
   for (Lit lit : learntClause)
-    variables[lit.var()].seen = false;
+    stateFor(lit).seen = false;
 }
 
 int NativeSATSolver::computeBacktrackLevel(
@@ -845,8 +849,8 @@ int NativeSATSolver::computeBacktrackLevel(
 
   size_t bestIndex = 1;
   for (size_t i = 2; i < learntClause.size(); ++i)
-    if (variables[learntClause[i].var()].level >
-        variables[learntClause[bestIndex].var()].level)
+    if (stateFor(learntClause[i]).level >
+        stateFor(learntClause[bestIndex]).level)
       bestIndex = i;
   // Maintain the learned-clause layout invariant:
   // - learntClause[0] is the asserting literal.
@@ -854,7 +858,7 @@ int NativeSATSolver::computeBacktrackLevel(
   // Backtracking to level(learntClause[1]) then makes learntClause[0] unit
   // immediately, and `attachClause` starts with this canonical watched pair.
   std::swap(learntClause[1], learntClause[bestIndex]);
-  return variables[learntClause[1].var()].level;
+  return stateFor(learntClause[1]).level;
 }
 
 void NativeSATSolver::bumpVariableActivity(int var) {
