@@ -701,6 +701,8 @@ if(CIRCT_CADICAL_ENABLED)
   file(GLOB cadical_contrib_sources CONFIGURE_DEPENDS
     "${cadical_SOURCE_DIR}/contrib/*.cpp"
   )
+  # Match upstream libcadical.a, which excludes the standalone solver and
+  # model-based tester frontends from the library.
   list(REMOVE_ITEM cadical_cpp_sources
     "${cadical_SOURCE_DIR}/src/cadical.cpp"
     "${cadical_SOURCE_DIR}/src/mobical.cpp"

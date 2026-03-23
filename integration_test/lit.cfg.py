@@ -250,6 +250,9 @@ if config.arcilator_jit_enabled:
 if config.libfst_enabled:
   config.available_features.add('libfst')
 
+if config.cadical_enabled:
+  config.available_features.add('cadical')
+
 config.substitutions.append(('%driver', f'{config.driver}'))
 config.substitutions.append(('%circt-tools-dir', f'{config.circt_tools_dir}'))
 llvm_config.add_tool_substitutions(tools, tool_dirs)
