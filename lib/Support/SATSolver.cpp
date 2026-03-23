@@ -26,17 +26,9 @@
 #include "llvm/Support/SMTAPI.h"
 #include "llvm/Support/TrailingObjects.h"
 
-#include <cassert>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
-#include <limits>
 #include <memory>
-#include <new>
 #include <optional>
-#include <string>
 #include <type_traits>
-#include <utility>
 
 namespace circt {
 
