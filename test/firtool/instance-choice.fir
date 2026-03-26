@@ -23,14 +23,15 @@ circuit top:
     ; CHECK-NEXT:    FPGATarget proc_FPGA (
     ; CHECK-NEXT:      .result_0 ([[RESULT]])
     ; CHECK-NEXT:    );
-    ; CHECK-NEXT:  `else
+    ; CHECK-NEXT:    `define targets$Platform$top$proc proc_FPGA
+    ; CHECK-NEXT:  `else  // targets$Platform$FPGA
     ; CHECK-NEXT:    DefaultTarget proc_default (
     ; CHECK-NEXT:      .result_0 ([[RESULT]])
     ; CHECK-NEXT:    );
     ; CHECK-NEXT:    `ifndef targets$Platform$top$proc
     ; CHECK-NEXT:      `define targets$Platform$top$proc proc_default
     ; CHECK-NEXT:    `endif
-    ; CHECK-NEXT:  `endif
+    ; CHECK-NEXT:  `endif // targets$Platform$FPGA
     instchoice proc of DefaultTarget, Platform:
       FPGA => FPGATarget
 
@@ -45,6 +46,7 @@ circuit top:
 ; NODEFAULT-NEXT:    FPGATarget proc_FPGA (
 ; NODEFAULT-NEXT:      .result_0 ([[RESULT]])
 ; NODEFAULT-NEXT:    );
+; NODEFAULT-NEXT:    `define targets$Platform$top$proc proc_FPGA
 ; NODEFAULT-NEXT:  `else  // targets$Platform$FPGA
 ; NODEFAULT-NEXT:    $error("No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]");
 ; NODEFAULT-NEXT:  `endif // targets$Platform$FPGA

@@ -1983,6 +1983,8 @@ firrtl.circuit "InstanceChoiceTest" {
     // CHECK:      sv.ifdef @targets$Opt$FPGA {
     // CHECK-NEXT:   %{{.+}} = hw.instance "inst_FPGA" sym @{{.+}} @ModuleFPGA
     // CHECK-NEXT:   sv.assign %[[WIRE]]
+    // CHECK-NEXT:   sv.macro.def @targets$Opt$InstanceChoiceUnit$inst
+    // CHECK-SAME:   ([#hw.innerNameRef<@InstanceChoiceUnit::@{{.+}}>])
     // CHECK-NEXT: } else {
     // CHECK-NEXT:   {{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
     // CHECK-NEXT:   sv.assign %[[WIRE]]
@@ -2032,6 +2034,7 @@ firrtl.circuit "InstanceChoiceNoDefault" {
   firrtl.module @InstanceChoiceNoDefault() {
     // NODEFAULT:      sv.ifdef @targets$Platform$FPGA {
     // NODEFAULT-NEXT:   hw.instance "inst_FPGA" sym @{{.+}} @FPGAMod
+    // NODEFAULT-NEXT:   sv.macro.def @targets$Platform$InstanceChoiceNoDefault$inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceNoDefault::@{{.+}}>])
     // NODEFAULT-NEXT: } else {
     // NODEFAULT-NEXT:   sv.error "No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]"
     // NODEFAULT-NEXT: }
@@ -2062,9 +2065,11 @@ firrtl.circuit "InstanceChoiceNoDefaultMulti" {
   firrtl.module @InstanceChoiceNoDefaultMulti() {
     // NODEFAULT_MULTI:      sv.ifdef @targets$Platform$ASIC {
     // NODEFAULT_MULTI-NEXT:   hw.instance "inst_ASIC" sym @{{.+}} @ASICMod
+    // NODEFAULT_MULTI-NEXT:   sv.macro.def @targets$Platform$InstanceChoiceNoDefaultMulti$inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceNoDefaultMulti::@{{.+}}>])
     // NODEFAULT_MULTI-NEXT: } else {
     // NODEFAULT_MULTI-NEXT:   sv.ifdef @targets$Platform$FPGA {
     // NODEFAULT_MULTI-NEXT:     hw.instance "inst_FPGA" sym @{{.+}} @FPGAMod
+    // NODEFAULT_MULTI-NEXT:     sv.macro.def @targets$Platform$InstanceChoiceNoDefaultMulti$inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@InstanceChoiceNoDefaultMulti::@{{.+}}>])
     // NODEFAULT_MULTI-NEXT:   } else {
     // NODEFAULT_MULTI-NEXT:     sv.error "No valid instance choice case for option Platform, set a macro to one of [targets$Platform$ASIC, targets$Platform$FPGA]"
     // NODEFAULT_MULTI-NEXT:   }

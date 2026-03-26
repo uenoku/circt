@@ -4072,7 +4072,14 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       [&](size_t index) {
         auto caseSymRef =
             cast<SymbolRefAttr>(caseNames[index]).getLeafReference();
-        createInstanceAndAssign(altModules[index], caseSymRef.getValue());
+        auto inst = createInstanceAndAssign(altModules[index], caseSymRef.getValue());
+        // Define the instance macro for this case.
+        sv::MacroDefOp::create(
+            builder, inst.getLoc(), instanceMacro,
+            builder.getStringAttr("{{0}}"),
+            builder.getArrayAttr({hw::InnerRefAttr::get(
+                theModule.getNameAttr(),
+                inst.getInnerSymAttr().getSymName())}));
       },
       [&]() {
         if (circuitState.disallowInstanceChoiceDefault) {
