@@ -46,5 +46,5 @@ circuit top:
 ; NODEFAULT-NEXT:      .result_0 ([[RESULT]])
 ; NODEFAULT-NEXT:    );
 ; NODEFAULT-NEXT:  `else  // targets$Platform$FPGA
-; NODEFAULT-NEXT:    $error("No valid instance choice case for option Platform in instance proc");
+; NODEFAULT-NEXT:    $error("No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]");
 ; NODEFAULT-NEXT:  `endif // targets$Platform$FPGA

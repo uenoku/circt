@@ -4077,10 +4077,13 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       [&]() {
         if (circuitState.disallowInstanceChoiceDefault) {
           // Generate an error instead of using the default module.
-          SmallString<128> errorMessage;
+          SmallString<256> errorMessage;
           llvm::raw_svector_ostream os(errorMessage);
-          os << "No valid instance choice case for option " << optionName.getValue()
-             << " in instance " << oldInstanceChoice.getInstanceName();
+          os << "No valid instance choice case for option "
+             << optionName.getValue() << ", set a macro to one of [";
+          llvm::interleaveComma(macroNames, os,
+                                [&](StringAttr macro) { os << macro.getValue(); });
+          os << "]";
           sv::ErrorOp::create(builder, oldInstanceChoice.getLoc(),
                               builder.getStringAttr(errorMessage));
         } else {

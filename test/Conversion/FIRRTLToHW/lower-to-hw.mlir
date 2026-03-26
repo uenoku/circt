@@ -2033,8 +2033,42 @@ firrtl.circuit "InstanceChoiceNoDefault" {
     // NODEFAULT:      sv.ifdef @targets$Platform$FPGA {
     // NODEFAULT-NEXT:   hw.instance "inst_FPGA" sym @{{.+}} @FPGAMod
     // NODEFAULT-NEXT: } else {
-    // NODEFAULT-NEXT:   sv.error "No valid instance choice case for option Platform in instance inst"
+    // NODEFAULT-NEXT:   sv.error "No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]"
     // NODEFAULT-NEXT: }
     firrtl.instance_choice inst {instance_macro = @targets$Platform$InstanceChoiceNoDefault$inst} @DefaultMod alternatives @Platform { @FPGA -> @FPGAMod } ()
+  }
+}
+
+// -----
+
+// RUN: circt-opt --lower-firrtl-to-hw="disallow-instance-choice-default" -split-input-file %s | FileCheck %s --check-prefix=NODEFAULT_MULTI
+
+// Test that instance_choice generates error with multiple options listed
+// NODEFAULT_MULTI-LABEL: hw.module @InstanceChoiceNoDefaultMulti
+firrtl.circuit "InstanceChoiceNoDefaultMulti" {
+  sv.macro.decl @targets$Platform$ASIC
+  sv.macro.decl @targets$Platform$FPGA
+  firrtl.option @Platform {
+    firrtl.option_case @ASIC { case_macro = @targets$Platform$ASIC }
+    firrtl.option_case @FPGA { case_macro = @targets$Platform$FPGA }
+  }
+
+  sv.macro.decl @targets$Platform$InstanceChoiceNoDefaultMulti$inst
+
+  firrtl.module private @DefaultMod() {}
+  firrtl.module private @ASICMod() {}
+  firrtl.module private @FPGAMod() {}
+
+  firrtl.module @InstanceChoiceNoDefaultMulti() {
+    // NODEFAULT_MULTI:      sv.ifdef @targets$Platform$ASIC {
+    // NODEFAULT_MULTI-NEXT:   hw.instance "inst_ASIC" sym @{{.+}} @ASICMod
+    // NODEFAULT_MULTI-NEXT: } else {
+    // NODEFAULT_MULTI-NEXT:   sv.ifdef @targets$Platform$FPGA {
+    // NODEFAULT_MULTI-NEXT:     hw.instance "inst_FPGA" sym @{{.+}} @FPGAMod
+    // NODEFAULT_MULTI-NEXT:   } else {
+    // NODEFAULT_MULTI-NEXT:     sv.error "No valid instance choice case for option Platform, set a macro to one of [targets$Platform$ASIC, targets$Platform$FPGA]"
+    // NODEFAULT_MULTI-NEXT:   }
+    // NODEFAULT_MULTI-NEXT: }
+    firrtl.instance_choice inst {instance_macro = @targets$Platform$InstanceChoiceNoDefaultMulti$inst} @DefaultMod alternatives @Platform { @ASIC -> @ASICMod, @FPGA -> @FPGAMod } ()
   }
 }
