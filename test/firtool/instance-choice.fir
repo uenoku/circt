@@ -36,3 +36,15 @@ circuit top:
 
     printf(clk, UInt<1>(1), "result: %d\n", proc.result[0])
 ; CHECK-NOT: FILE "targets-top-Platform-FPGA.svh"
+
+; RUN: firtool %s --disallow-instance-choice-default | FileCheck %s --check-prefix=NODEFAULT
+
+; Test that instance_choice generates error when default is disallowed
+; NODEFAULT:       wire [31:0] [[RESULT:.+]];
+; NODEFAULT-NEXT:  `ifdef targets$Platform$FPGA
+; NODEFAULT-NEXT:    FPGATarget proc_FPGA (
+; NODEFAULT-NEXT:      .result_0 ([[RESULT]])
+; NODEFAULT-NEXT:    );
+; NODEFAULT-NEXT:  `else  // targets$Platform$FPGA
+; NODEFAULT-NEXT:    $error("No valid instance choice case for option Platform in instance proc");
+; NODEFAULT-NEXT:  `endif // targets$Platform$FPGA
