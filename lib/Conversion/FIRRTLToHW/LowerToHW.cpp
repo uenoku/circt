@@ -4070,6 +4070,22 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         addToIfDefBlock(macro, std::move(thenCtor), std::move(elseCtor));
       },
       [&](size_t index) {
+        // Add mutual exclusion checks for all other options
+        for (size_t i = index + 1; i < macroNames.size(); ++i) {
+          sv::IfDefOp::create(
+              builder, oldInstanceChoice.getLoc(), macroNames[i],
+              [&]() {
+                SmallString<256> errorMessage;
+                llvm::raw_svector_ostream os(errorMessage);
+                os << "Multiple instance choice options defined for option "
+                   << optionName.getValue() << ": " << macroNames[index].getValue()
+                   << " and " << macroNames[i].getValue();
+                sv::ErrorOp::create(builder, oldInstanceChoice.getLoc(),
+                                    builder.getStringAttr(errorMessage));
+              },
+              [&]() {});
+        }
+
         auto caseSymRef =
             cast<SymbolRefAttr>(caseNames[index]).getLeafReference();
         auto inst = createInstanceAndAssign(altModules[index], caseSymRef.getValue());

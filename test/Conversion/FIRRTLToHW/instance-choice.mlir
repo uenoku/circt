@@ -49,6 +49,10 @@ firrtl.circuit "MultipleOptions" {
 
   firrtl.module @MultipleOptions() {
     // CHECK:      sv.ifdef @targets$Platform$ASIC {
+    // CHECK-NEXT:   sv.ifdef @targets$Platform$FPGA {
+    // CHECK-NEXT:     sv.error "Multiple instance choice options defined for option Platform: targets$Platform$ASIC and targets$Platform$FPGA"
+    // CHECK-NEXT:   } else {
+    // CHECK-NEXT:   }
     // CHECK-NEXT:   hw.instance "inst_ASIC" sym @{{.+}} @ASICMod
     // CHECK-NEXT:   sv.macro.def @targets$Platform$MultipleOptions$inst "{{[{][{]}}0{{[}][}]}}"([#hw.innerNameRef<@MultipleOptions::@{{.+}}>])
     // CHECK-NEXT: } else {

@@ -6,22 +6,26 @@
 ; RUN: rm -rf %t.no-default && mkdir -p %t.no-default
 ; RUN: firtool %s --split-verilog -o=%t.no-default --disallow-instance-choice-default
 
-; -------------------------------------- Test 1: ASIC target
+; -------------------------------------- Multiple options error check
+; RUN: not verilator %driver %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --cc --sv --exe --build -o %t.multi.exe --top-module top -Dtargets\$Platform\$ASIC -Dtargets\$Platform\$FPGA 2>&1 | FileCheck %s --check-prefix=MULTI
+; MULTI: Multiple instance choice options defined for option Platform: targets$Platform$ASIC and targets$Platform$FPGA
+
+; -------------------------------------- ASIC target
 ; RUN: verilator %driver %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --cc --sv --exe --build -o %t.asic.exe --top-module top -Dtargets\$Platform\$ASIC
 ; RUN: %t.asic.exe --cycles 1 2>&1 | FileCheck %s --check-prefix=ASIC
 ; ASIC: result:         10
 
-; -------------------------------------- Test 2: FPGA target
+; -------------------------------------- FPGA target
 ; RUN: verilator %driver %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --cc --sv --exe --build -o %t.fpga.exe --top-module top -Dtargets\$Platform\$FPGA
 ; RUN: %t.fpga.exe --cycles 1 2>&1 | FileCheck %s --check-prefix=FPGA
 ; FPGA: result:         20
 
-; -------------------------------------- Test 3: Default target
+; -------------------------------------- Default fallback
 ; RUN: verilator %driver %t/top.sv %t/ASICTarget.sv %t/FPGATarget.sv %t/DefaultTarget.sv --cc --sv --exe --build -o %t.default.exe --top-module top
 ; RUN: %t.default.exe --cycles 1 2>&1 | FileCheck %s --check-prefix=DEFAULT
 ; DEFAULT: result:       0
 
-; -------------------------------------- Test 4: No default target
+; -------------------------------------- No default target
 ; RUN: not verilator %driver %t.no-default/top.sv %t.no-default/ASICTarget.sv %t.no-default/FPGATarget.sv %t.no-default/DefaultTarget.sv --cc --sv --exe --build -o %t.no-default.exe --top-module top 2>&1 | FileCheck %s --check-prefix=NODEFAULT
 ; NODEFAULT: No valid instance choice case for option Platform, set a macro to one of [targets$Platform$ASIC, targets$Platform$FPGA]
 
