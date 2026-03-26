@@ -4101,7 +4101,7 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
           SmallString<256> errorMessage;
           llvm::raw_svector_ostream os(errorMessage);
           os << "No valid instance choice case for option "
-             << optionName.getValue() << ", set a macro to one of [";
+             << optionName.getValue() << ", set a macro one of [";
           llvm::interleaveComma(macroNames, os, [&](StringAttr macro) {
             os << macro.getValue();
           });

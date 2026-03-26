@@ -30,7 +30,7 @@ circuit top:
     ; DEFAULT-NEXT:      .result_0 ([[RESULT]])
     ; DEFAULT-NEXT:    );
     ; DEFAULT-NEXT:    `define targets$Platform$top$proc proc_default
-    ; NODEFAULT-NEXT:   $error("No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]");
+    ; NODEFAULT-NEXT:   $error("No valid instance choice case for option Platform, set a macro one of [targets$Platform$FPGA]");
     ; CHECK-NEXT:  `endif // targets$Platform$FPGA
     instchoice proc of DefaultTarget, Platform:
       FPGA => FPGATarget

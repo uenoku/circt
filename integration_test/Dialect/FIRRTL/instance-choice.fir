@@ -27,7 +27,7 @@
 
 ; -------------------------------------- Test 5: No default target
 ; RUN: not verilator %driver %t.no-default/top.sv %t.no-default/ASICTarget.sv %t.no-default/FPGATarget.sv %t.no-default/DefaultTarget.sv --cc --sv --exe --build -o %t.no-default.exe --top-module top 2>&1 | FileCheck %s --check-prefix=NODEFAULT
-; NODEFAULT: No valid instance choice case for option Platform, set a macro to one of [targets$Platform$ASIC, targets$Platform$FPGA]
+; NODEFAULT: No valid instance choice case for option Platform, set a macro one of [targets$Platform$ASIC, targets$Platform$FPGA]
 
 FIRRTL version 5.1.0
 circuit top:

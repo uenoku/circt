@@ -1988,11 +1988,8 @@ firrtl.circuit "InstanceChoiceTest" {
     // CHECK-NEXT: } else {
     // CHECK-NEXT:   {{.+}} = hw.instance "inst_default" sym @{{.+}} @ModuleDefault
     // CHECK-NEXT:   sv.assign %[[WIRE]]
-    // CHECK-NEXT:   sv.ifdef @targets$Opt$InstanceChoiceUnit$inst
-    // CHECK-NEXT:   } else {
-    // CHECK-NEXT:     sv.macro.def @targets$Opt$InstanceChoiceUnit$inst
-    // CHECK-SAME:     ([#hw.innerNameRef<@InstanceChoiceUnit::@{{.+}}>])
-    // CHECK-NEXT:   }
+    // CHECK-NEXT:   sv.macro.def @targets$Opt$InstanceChoiceUnit$inst
+    // CHECK-SAME:   ([#hw.innerNameRef<@InstanceChoiceUnit::@{{.+}}>])
     // CHECK-NEXT: }
     // CHECK: hw.output %[[READ]]
     %inst_in, %inst_out = firrtl.instance_choice inst {instance_macro = @targets$Opt$InstanceChoiceUnit$inst} @ModuleDefault alternatives @Opt { @FPGA -> @ModuleFPGA } (in in: !firrtl.uint<8>, out out: !firrtl.uint<8>)
