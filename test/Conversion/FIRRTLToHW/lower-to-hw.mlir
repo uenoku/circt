@@ -2011,3 +2011,30 @@ firrtl.circuit "InstanceChoiceTest" {
   // CHECK-NOT: emit.file "targets-InstanceChoiceTest-Opt-FPGA.svh"
   // CHECK-NOT: emit.file "targets-InstanceChoiceTest-Power-Low.svh"
 }
+
+// -----
+
+// RUN: circt-opt --lower-firrtl-to-hw="disallow-instance-choice-default" -split-input-file %s | FileCheck %s --check-prefix=NODEFAULT
+
+// Test that instance_choice generates error when default is disallowed
+// NODEFAULT-LABEL: hw.module @InstanceChoiceNoDefault
+firrtl.circuit "InstanceChoiceNoDefault" {
+  sv.macro.decl @targets$Platform$FPGA
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA { case_macro = @targets$Platform$FPGA }
+  }
+
+  sv.macro.decl @targets$Platform$InstanceChoiceNoDefault$inst
+
+  firrtl.module private @DefaultMod() {}
+  firrtl.module private @FPGAMod() {}
+
+  firrtl.module @InstanceChoiceNoDefault() {
+    // NODEFAULT:      sv.ifdef @targets$Platform$FPGA {
+    // NODEFAULT-NEXT:   hw.instance "inst_FPGA" sym @{{.+}} @FPGAMod
+    // NODEFAULT-NEXT: } else {
+    // NODEFAULT-NEXT:   sv.error "No valid instance choice case for option Platform in instance inst"
+    // NODEFAULT-NEXT: }
+    firrtl.instance_choice inst {instance_macro = @targets$Platform$InstanceChoiceNoDefault$inst} @DefaultMod alternatives @Platform { @FPGA -> @FPGAMod } ()
+  }
+}

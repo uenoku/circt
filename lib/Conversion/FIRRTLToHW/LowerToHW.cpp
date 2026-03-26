@@ -224,12 +224,14 @@ struct CircuitLoweringState {
 
   CircuitLoweringState(CircuitOp circuitOp, bool enableAnnotationWarning,
                        firrtl::VerificationFlavor verificationFlavor,
+                       bool disallowInstanceChoiceDefault,
                        InstanceGraph &instanceGraph, NLATable *nlaTable,
                        const InstanceChoiceMacroTable &macroTable)
       : circuitOp(circuitOp), instanceGraph(instanceGraph),
         enableAnnotationWarning(enableAnnotationWarning),
-        verificationFlavor(verificationFlavor), nlaTable(nlaTable),
-        macroTable(macroTable) {
+        verificationFlavor(verificationFlavor),
+        disallowInstanceChoiceDefault(disallowInstanceChoiceDefault),
+        nlaTable(nlaTable), macroTable(macroTable) {
     auto *context = circuitOp.getContext();
 
     // Get the testbench output directory.
@@ -409,6 +411,8 @@ private:
   std::mutex annotationPrintingMtx;
 
   const firrtl::VerificationFlavor verificationFlavor;
+
+  const bool disallowInstanceChoiceDefault;
 
   // Records any sv::BindOps that are found during the course of execution.
   // This is unsafe to access directly and should only be used through addBind.
@@ -600,6 +604,7 @@ struct FIRRTLModuleLowering
   void setEnableAnnotationWarning() { enableAnnotationWarning = true; }
 
   using LowerFIRRTLToHWBase<FIRRTLModuleLowering>::verificationFlavor;
+  using LowerFIRRTLToHWBase<FIRRTLModuleLowering>::disallowInstanceChoiceDefault;
 
 private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
@@ -642,11 +647,13 @@ private:
 /// This is the pass constructor.
 std::unique_ptr<mlir::Pass> circt::createLowerFIRRTLToHWPass(
     bool enableAnnotationWarning,
-    firrtl::VerificationFlavor verificationFlavor) {
+    firrtl::VerificationFlavor verificationFlavor,
+    bool disallowInstanceChoiceDefault) {
   auto pass = std::make_unique<FIRRTLModuleLowering>();
   if (enableAnnotationWarning)
     pass->setEnableAnnotationWarning();
   pass->verificationFlavor = verificationFlavor;
+  pass->disallowInstanceChoiceDefault = disallowInstanceChoiceDefault;
   return pass;
 }
 
@@ -673,7 +680,8 @@ void FIRRTLModuleLowering::runOnOperation() {
   // Keep track of the mapping from old to new modules.  The result may be null
   // if lowering failed.
   CircuitLoweringState state(circuit, enableAnnotationWarning,
-                             verificationFlavor, getAnalysis<InstanceGraph>(),
+                             verificationFlavor, disallowInstanceChoiceDefault,
+                             getAnalysis<InstanceGraph>(),
                              &getAnalysis<NLATable>(),
                              getAnalysis<InstanceChoiceMacroTable>());
 
@@ -4067,18 +4075,28 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
         createInstanceAndAssign(altModules[index], caseSymRef.getValue());
       },
       [&]() {
-        auto inst = createInstanceAndAssign(defaultModule, "default");
-        // Define the instance macro for the default case.
-        sv::IfDefOp::create(
-            builder, inst.getLoc(), instanceMacro, [&]() {},
-            [&]() {
-              sv::MacroDefOp::create(
-                  builder, inst.getLoc(), instanceMacro,
-                  builder.getStringAttr("{{0}}"),
-                  builder.getArrayAttr({hw::InnerRefAttr::get(
-                      theModule.getNameAttr(),
-                      inst.getInnerSymAttr().getSymName())}));
-            });
+        if (circuitState.disallowInstanceChoiceDefault) {
+          // Generate an error instead of using the default module.
+          SmallString<128> errorMessage;
+          llvm::raw_svector_ostream os(errorMessage);
+          os << "No valid instance choice case for option " << optionName.getValue()
+             << " in instance " << oldInstanceChoice.getInstanceName();
+          sv::ErrorOp::create(builder, oldInstanceChoice.getLoc(),
+                              builder.getStringAttr(errorMessage));
+        } else {
+          auto inst = createInstanceAndAssign(defaultModule, "default");
+          // Define the instance macro for the default case.
+          sv::IfDefOp::create(
+              builder, inst.getLoc(), instanceMacro, [&]() {},
+              [&]() {
+                sv::MacroDefOp::create(
+                    builder, inst.getLoc(), instanceMacro,
+                    builder.getStringAttr("{{0}}"),
+                    builder.getArrayAttr({hw::InnerRefAttr::get(
+                        theModule.getNameAttr(),
+                        inst.getInnerSymAttr().getSymName())}));
+              });
+        }
       });
 
   return success();
