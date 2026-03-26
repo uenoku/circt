@@ -604,7 +604,8 @@ struct FIRRTLModuleLowering
   void setEnableAnnotationWarning() { enableAnnotationWarning = true; }
 
   using LowerFIRRTLToHWBase<FIRRTLModuleLowering>::verificationFlavor;
-  using LowerFIRRTLToHWBase<FIRRTLModuleLowering>::disallowInstanceChoiceDefault;
+  using LowerFIRRTLToHWBase<
+      FIRRTLModuleLowering>::disallowInstanceChoiceDefault;
 
 private:
   void lowerFileHeader(CircuitOp op, CircuitLoweringState &loweringState);
@@ -645,10 +646,10 @@ private:
 } // end anonymous namespace
 
 /// This is the pass constructor.
-std::unique_ptr<mlir::Pass> circt::createLowerFIRRTLToHWPass(
-    bool enableAnnotationWarning,
-    firrtl::VerificationFlavor verificationFlavor,
-    bool disallowInstanceChoiceDefault) {
+std::unique_ptr<mlir::Pass>
+circt::createLowerFIRRTLToHWPass(bool enableAnnotationWarning,
+                                 firrtl::VerificationFlavor verificationFlavor,
+                                 bool disallowInstanceChoiceDefault) {
   auto pass = std::make_unique<FIRRTLModuleLowering>();
   if (enableAnnotationWarning)
     pass->setEnableAnnotationWarning();
@@ -679,11 +680,10 @@ void FIRRTLModuleLowering::runOnOperation() {
 
   // Keep track of the mapping from old to new modules.  The result may be null
   // if lowering failed.
-  CircuitLoweringState state(circuit, enableAnnotationWarning,
-                             verificationFlavor, disallowInstanceChoiceDefault,
-                             getAnalysis<InstanceGraph>(),
-                             &getAnalysis<NLATable>(),
-                             getAnalysis<InstanceChoiceMacroTable>());
+  CircuitLoweringState state(
+      circuit, enableAnnotationWarning, verificationFlavor,
+      disallowInstanceChoiceDefault, getAnalysis<InstanceGraph>(),
+      &getAnalysis<NLATable>(), getAnalysis<InstanceChoiceMacroTable>());
 
   SmallVector<Operation *, 32> opsToProcess;
 
@@ -878,8 +878,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib) {
@@ -993,7 +992,6 @@ endpackage
     });
   }
 }
-
 
 LogicalResult
 FIRRTLModuleLowering::lowerPorts(ArrayRef<PortInfo> firrtlPorts,
@@ -3112,8 +3110,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4078,8 +4075,9 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
                 SmallString<256> errorMessage;
                 llvm::raw_svector_ostream os(errorMessage);
                 os << "Multiple instance choice options defined for option "
-                   << optionName.getValue() << ": " << macroNames[index].getValue()
-                   << " and " << macroNames[i].getValue();
+                   << optionName.getValue() << ": "
+                   << macroNames[index].getValue() << " and "
+                   << macroNames[i].getValue();
                 sv::ErrorOp::create(builder, oldInstanceChoice.getLoc(),
                                     builder.getStringAttr(errorMessage));
               },
@@ -4088,14 +4086,14 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 
         auto caseSymRef =
             cast<SymbolRefAttr>(caseNames[index]).getLeafReference();
-        auto inst = createInstanceAndAssign(altModules[index], caseSymRef.getValue());
+        auto inst =
+            createInstanceAndAssign(altModules[index], caseSymRef.getValue());
         // Define the instance macro for this case.
-        sv::MacroDefOp::create(
-            builder, inst.getLoc(), instanceMacro,
-            builder.getStringAttr("{{0}}"),
-            builder.getArrayAttr({hw::InnerRefAttr::get(
-                theModule.getNameAttr(),
-                inst.getInnerSymAttr().getSymName())}));
+        sv::MacroDefOp::create(builder, inst.getLoc(), instanceMacro,
+                               builder.getStringAttr("{{0}}"),
+                               builder.getArrayAttr({hw::InnerRefAttr::get(
+                                   theModule.getNameAttr(),
+                                   inst.getInnerSymAttr().getSymName())}));
       },
       [&]() {
         if (circuitState.disallowInstanceChoiceDefault) {
@@ -4104,25 +4102,21 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
           llvm::raw_svector_ostream os(errorMessage);
           os << "No valid instance choice case for option "
              << optionName.getValue() << ", set a macro to one of [";
-          llvm::interleaveComma(macroNames, os,
-                                [&](StringAttr macro) { os << macro.getValue(); });
+          llvm::interleaveComma(macroNames, os, [&](StringAttr macro) {
+            os << macro.getValue();
+          });
           os << "]";
           sv::ErrorOp::create(builder, oldInstanceChoice.getLoc(),
                               builder.getStringAttr(errorMessage));
         } else {
           auto inst = createInstanceAndAssign(defaultModule, "default");
           // Define the instance macro for the default case.
-          sv::IfDefOp::create(
-              builder, inst.getLoc(), instanceMacro, [&]() {},
-              [&]() {
-                sv::MacroDefOp::create(
-                    builder, inst.getLoc(), instanceMacro,
-                    builder.getStringAttr("{{0}}"),
-                    builder.getArrayAttr({hw::InnerRefAttr::get(
-                        theModule.getNameAttr(),
-                        inst.getInnerSymAttr().getSymName())}));
-              });
-        }
+          sv::MacroDefOp::create(builder, inst.getLoc(), instanceMacro,
+                                 builder.getStringAttr("{{0}}"),
+                                 builder.getArrayAttr({hw::InnerRefAttr::get(
+                                     theModule.getNameAttr(),
+                                     inst.getInnerSymAttr().getSymName())}));
+        };
       });
 
   return success();

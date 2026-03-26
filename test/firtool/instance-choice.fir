@@ -1,4 +1,5 @@
-; RUN: firtool %s | FileCheck %s
+; RUN: firtool %s | FileCheck %s --check-prefixes=CHECK,DEFAULT
+; RUN: firtool %s --disallow-instance-choice-default | FileCheck %s --check-prefixes=CHECK,NODEFAULT
 
 FIRRTL version 5.1.0
 circuit top:
@@ -25,28 +26,13 @@ circuit top:
     ; CHECK-NEXT:    );
     ; CHECK-NEXT:    `define targets$Platform$top$proc proc_FPGA
     ; CHECK-NEXT:  `else  // targets$Platform$FPGA
-    ; CHECK-NEXT:    DefaultTarget proc_default (
-    ; CHECK-NEXT:      .result_0 ([[RESULT]])
-    ; CHECK-NEXT:    );
-    ; CHECK-NEXT:    `ifndef targets$Platform$top$proc
-    ; CHECK-NEXT:      `define targets$Platform$top$proc proc_default
-    ; CHECK-NEXT:    `endif
+    ; DEFAULT-NEXT:    DefaultTarget proc_default (
+    ; DEFAULT-NEXT:      .result_0 ([[RESULT]])
+    ; DEFAULT-NEXT:    );
+    ; DEFAULT-NEXT:    `define targets$Platform$top$proc proc_default
+    ; NODEFAULT-NEXT:   $error("No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]");
     ; CHECK-NEXT:  `endif // targets$Platform$FPGA
     instchoice proc of DefaultTarget, Platform:
       FPGA => FPGATarget
 
     printf(clk, UInt<1>(1), "result: %d\n", proc.result[0])
-; CHECK-NOT: FILE "targets-top-Platform-FPGA.svh"
-
-; RUN: firtool %s --disallow-instance-choice-default | FileCheck %s --check-prefix=NODEFAULT
-
-; Test that instance_choice generates error when default is disallowed
-; NODEFAULT:       wire [31:0] [[RESULT:.+]];
-; NODEFAULT-NEXT:  `ifdef targets$Platform$FPGA
-; NODEFAULT-NEXT:    FPGATarget proc_FPGA (
-; NODEFAULT-NEXT:      .result_0 ([[RESULT]])
-; NODEFAULT-NEXT:    );
-; NODEFAULT-NEXT:    `define targets$Platform$top$proc proc_FPGA
-; NODEFAULT-NEXT:  `else  // targets$Platform$FPGA
-; NODEFAULT-NEXT:    $error("No valid instance choice case for option Platform, set a macro to one of [targets$Platform$FPGA]");
-; NODEFAULT-NEXT:  `endif // targets$Platform$FPGA
