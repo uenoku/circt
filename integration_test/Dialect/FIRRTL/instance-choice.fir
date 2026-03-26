@@ -1,8 +1,10 @@
 ; This test verifies that the instance choice macro-based mechanism works correctly:
+; REQUIRES: verilator
 
 ; -------------------------------------- Setup
 ; RUN: rm -rf %t && mkdir -p %t
 ; RUN: firtool %s --split-verilog -o=%t
+; RUN: rm -rf %t.no-default && mkdir -p %t.no-default
 ; RUN: firtool %s --split-verilog -o=%t.no-default --disallow-instance-choice-default
 
 
@@ -22,10 +24,9 @@
 ; DEFAULT: result:       0
 
 ; -------------------------------------- Test 4: No default target
-; RUN: verilator %driver %t.no-default/top.sv %t.no-default/ASICTarget.sv %t.no-default/FPGATarget.sv %t.no-default/DefaultTarget.sv --cc --sv --exe --build -o %t.no-default.exe --top-module top
-; RUN: not %t.no-default.exe --cycles 1 2>&1 | FileCheck %s --check-prefix=NODEFAULT
+; RUN: verilator %driver %t.no-default/top.sv %t.no-default/ASICTarget.sv %t.no-default/FPGATarget.sv %t.no-default/DefaultTarget.sv --cc --sv --exe --build -o %t.no-default.exe --top-module top 2>&1 | FileCheck %s --check-prefix=NODEFAULT
 ; NODEFAULT:      No valid instance choice case for option Platform, set a macro to one of
-; NODEFAULT-SAME: [targets$Platform$ASIC, targets$Platform$FPGA]
+; NODEFAULT-SAME{LITERAL}: [targets$Platform$ASIC, targets$Platform$FPGA]
 
 FIRRTL version 5.1.0
 circuit top:
