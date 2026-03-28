@@ -28,10 +28,14 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 #include <memory>
 #include <optional>
 
 namespace circt {
+namespace igraph {
+class InstanceGraph;
+} // namespace igraph
 namespace synth {
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (usually
@@ -50,7 +54,11 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 
 // Get the truth table for a specific operation within a block.
 // Block must be a SSACFG or topologically sorted.
-FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
+// If instanceGraph is provided, hw.instance ops are simulated by looking up
+// the referenced module's truth table through the instance graph.
+FailureOr<BinaryTruthTable>
+getTruthTable(ValueRange values, Block *block,
+              igraph::InstanceGraph *instanceGraph = nullptr);
 
 //===----------------------------------------------------------------------===//
 // Cut Data Structures
@@ -62,6 +70,7 @@ class CutRewriter;
 class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
+class ValueNumbering;
 class LogicNetwork;
 
 //===----------------------------------------------------------------------===//
@@ -106,9 +115,10 @@ struct Signal {
 /// Special indices:
 ///   - Index 0: Constant 0
 ///   - Index 1: Constant 1
-///
+
 /// It uses 8 bytes for operation pointer + enum, 12 bytes for edges = 20
 /// bytes per gate.
+
 struct LogicNetworkGate {
   /// Kind of logic gate.
   enum Kind : uint8_t {
@@ -127,6 +137,8 @@ struct LogicNetworkGate {
   /// Fanin edges (up to 3 inputs). For AND gates, only edges[0] and edges[1]
   /// are used. For MAJ gates, all three are used. For PrimaryInput/Constant,
   /// none are used. The inversion bit is encoded in each edge.
+  /// For gates with more than 3 inputs, remaining inputs must be retrieved from
+  /// the operation.
   Signal edges[3];
 
   LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
@@ -360,6 +372,7 @@ public:
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
   ArrayRef<DelayType> getArrivalTimes() const;
+  DelayType getWorstOutputArrivalTime() const;
 
   /// Get the library pattern that was matched.
   const CutRewritePattern *getPattern() const;
@@ -375,15 +388,19 @@ public:
 /// can potentially be replaced with a single library gate or pattern.
 ///
 /// The cut contains:
-/// - Input values: The boundary between the cut and the rest of the circuit
-/// - Operations: The logic operations within the cut boundary
-/// - Root operation: The output-driving operation of the cut
+/// - Input indices: LogicNetwork indices of the boundary values
+/// - Root index: LogicNetwork index of the output-driving node
 ///
 /// Cuts are used in combinational logic optimization to identify regions that
 /// can be optimized and replaced with more efficient implementations.
+///
+/// All indices refer to positions in the LogicNetwork, enabling efficient
+/// index-based operations without Value comparisons.
 class Cut {
   /// Cached truth table for this cut.
   /// Computed lazily when first accessed to avoid unnecessary computation.
+  /// Using optional allows us to defer expensive truth table computation
+  /// until after duplicate removal, avoiding wasted work.
   mutable std::optional<BinaryTruthTable> truthTable;
 
   /// Cached NPN canonical form for this cut.
@@ -392,9 +409,14 @@ class Cut {
 
   std::optional<MatchedPattern> matchedPattern;
 
-  /// Root index in LogicNetwork (0 indicates no root for a trivial cut).
+  /// Root index in LogicNetwork (0 for trivial cuts, which use constant index).
   /// The root node produces the output of the cut.
   uint32_t rootIndex = 0;
+
+  /// Signature bitset for fast cut size estimation.
+  /// Bit i is set if value with index i is in the cut's inputs.
+  /// This enables O(1) estimation of merged cut size using popcount.
+  uint64_t signature = 0;
 
   /// Operand cuts used to create this cut (for lazy TT computation).
   /// Stored to enable fast incremental truth table computation after
@@ -417,11 +439,28 @@ public:
   /// Set the root index of this cut.
   void setRootIndex(uint32_t idx) { rootIndex = idx; }
 
-  /// Check if this cut dominates another cut.
+  /// Get the signature of this cut.
+  uint64_t getSignature() const { return signature; }
+
+  /// Set the signature of this cut.
+  void setSignature(uint64_t sig) { signature = sig; }
+
+  /// Compute and set the signature based on current inputs.
+  /// Uses input indices directly (no ValueNumbering needed).
+  void computeSignature();
+
+  /// Check if this cut dominates another (i.e., this cut's inputs are a subset
+  /// of the other's inputs). Uses signature pre-filtering for speed.
+  /// Both cuts must have sorted inputs.
   bool dominates(const Cut &other) const;
 
-  /// Check if this cut dominates another sorted input set.
-  bool dominates(ArrayRef<uint32_t> otherInputs) const;
+  /// Check if this cut dominates a set of sorted inputs with the given
+  /// signature.
+  bool dominates(ArrayRef<uint32_t> otherInputs, uint64_t otherSig) const;
+
+  /// Estimate the size of merging this cut with another using signatures.
+  /// Returns the estimated number of unique inputs in the merged cut.
+  unsigned estimateMergedSize(const Cut &other) const;
 
   void dump(llvm::raw_ostream &os, const LogicNetwork &network) const;
 
@@ -438,6 +477,8 @@ public:
   }
 
   /// Compute and cache the truth table for this cut using the LogicNetwork.
+  /// Uses slow simulation-based approach - prefer computeTruthTableFromOperands
+  /// when operand cuts are available.
   void computeTruthTable(const LogicNetwork &network);
 
   /// Compute truth table using fast incremental method from operand cuts.
@@ -449,6 +490,7 @@ public:
   void setTruthTable(BinaryTruthTable tt) { truthTable.emplace(std::move(tt)); }
 
   /// Set operand cuts for lazy truth table computation.
+  /// These are stored to enable fast incremental TT computation later.
   void setOperandCuts(ArrayRef<const Cut *> cuts) {
     operandCuts.assign(cuts.begin(), cuts.end());
   }
@@ -495,19 +537,42 @@ public:
 /// results.
 class CutSet {
 private:
-  llvm::SmallVector<Cut *, 12> cuts; ///< Collection of cuts for this node
+  llvm::SmallVector<Cut *, 16> cuts; ///< Collection of cuts for this node
   Cut *bestCut = nullptr;
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
+  /// Required time constraint (set during required time computation).
+  DelayType requiredTime = std::numeric_limits<DelayType>::max();
+
+  /// Best arrival time (updated during area flow re-selection to reflect
+  /// current input bestCuts, since MatchedPattern arrival times become stale).
+  DelayType bestArrivalTime = 0;
+
+  /// Area flow metric for the best cut (used during area flow re-selection).
+  double areaFlow = 0.0;
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
   /// Get the cut associated with the best matched pattern.
   Cut *getBestMatchedCut() const;
 
+  /// Re-select the best cut from already-matched cuts.
+  /// When requiredTime is set and strategy is Area, picks the minimum-area-flow
+  /// cut whose arrival time does not exceed requiredTime.
+  void selectBestCut(OptimizationStrategy strategy,
+                     std::optional<DelayType> requiredTime = std::nullopt);
+
   /// Finalize the cut set by removing duplicates and selecting the best
   /// pattern.
+  ///
+  /// This method:
+  /// 1. Removes duplicate cuts based on inputs and root operation
+  /// 2. Computes truth tables for surviving cuts (lazy computation)
+  /// 3. Limits the number of cuts to prevent exponential growth
+  /// 4. Matches each cut against available patterns
+  /// 5. Selects the best pattern based on the optimization strategy
   void finalize(
       const CutRewriterOptions &options,
       llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
@@ -522,6 +587,9 @@ public:
 
   /// Get read-only access to all cuts in this set.
   ArrayRef<Cut *> getCuts() const;
+
+  /// Directly set the best cut (used by area flow re-selection).
+  void setBestCut(Cut *cut) { bestCut = cut; }
 };
 
 /// Configuration options for the cut-based rewriting algorithm.
@@ -545,6 +613,11 @@ struct CutRewriterOptions {
   /// Fail if there is a root operation that has no matching pattern.
   bool allowNoMatch = false;
 
+  /// Enable area recovery pass after delay-optimal cut selection.
+  /// Computes required times and re-selects cuts using area flow metric
+  /// to minimize area while preserving timing.
+  bool enableAreaRecovery = false;
+
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;
 
@@ -563,10 +636,13 @@ struct CutRewriterOptions {
 /// bounded set of promising cuts while avoiding exponential explosion.
 ///
 /// The enumeration process works by:
-/// 1. Visiting nodes in topological order
-/// 2. For each node, combining cuts from its inputs
-/// 3. Matching generated cuts against available patterns
-/// 4. Maintaining only the most promising cuts per node
+/// 1. Building a LogicNetwork representation from the IR
+/// 2. Visiting nodes in topological order
+/// 3. For each node, combining cuts from its inputs
+/// 4. Matching generated cuts against available patterns
+/// 5. Maintaining only the most promising cuts per node
+///
+/// All cut operations use LogicNetwork indices for efficient operations.
 class CutEnumerator {
 public:
   /// Constructor for cut enumerator.
@@ -591,6 +667,11 @@ public:
   /// In that case return a trivial cut set.
   const CutSet *getCutSet(uint32_t index);
 
+  /// Clear all cut sets and return them as a vector.
+  /// Note: CutSets remain owned by the allocator and are invalidated on
+  /// clear().
+  llvm::SmallVector<std::pair<uint32_t, CutSet *>> takeCutSets();
+
   /// Clear all cut sets and reset the enumerator.
   void clear();
 
@@ -601,8 +682,16 @@ public:
     return cutSets;
   }
 
-  /// Get the processing order.
+  /// Get the processing order (indices in topological order).
   ArrayRef<uint32_t> getProcessingOrder() const { return processingOrder; }
+
+  /// Compute required times for all nodes by propagating timing constraints
+  /// from outputs backward through the network.
+  void computeRequiredTimes();
+
+  /// Re-select best cuts using area flow metric, subject to required time
+  /// constraints. This implements ABC's "Mode 1" area recovery pass.
+  void reselectCutsForAreaFlow();
 
 private:
   /// Visit a combinational logic operation and generate cuts.
@@ -618,7 +707,7 @@ private:
   llvm::SpecificBumpPtrAllocator<Cut> cutAllocator;
   llvm::SpecificBumpPtrAllocator<CutSet> cutSetAllocator;
 
-  /// Indices in processing order.
+  /// Indices in processing order (topological).
   llvm::SmallVector<uint32_t> processingOrder;
 
   /// Configuration options for cut enumeration.
@@ -628,7 +717,8 @@ private:
   /// Set during enumeration and used when finalizing cut sets.
   llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut;
 
-  /// Flat logic network representation used during enumeration/rewrite.
+  /// Flat logic network representation for efficient simulation.
+  /// Built during cut enumeration and used for truth table computation.
   LogicNetwork logicNetwork;
 
 public:
