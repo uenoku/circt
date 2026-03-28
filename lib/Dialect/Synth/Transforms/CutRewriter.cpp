@@ -686,30 +686,8 @@ void Cut::computeTruthTable(const LogicNetwork &network) {
   truthTable.emplace(numInputs, 1, result);
 }
 
-// Forward declaration for lazy truth table computation
-static BinaryTruthTable
-computeTruthTableForGate(const LogicNetworkGate &rootGate,
-                         const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
-                         const Cut *const *cuts, unsigned numCuts);
-
 void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
-  // Trivial cuts already have their TT computed
-  if (isTrivialCut()) {
-    computeTruthTable(network);
-    return;
-  }
-
-  // If no operand cuts stored, fall back to simulation
-  if (operandCuts.empty()) {
-    computeTruthTable(network);
-    return;
-  }
-
-  // Use the fast incremental method via computeTruthTableForGate
-  const auto &gate = network.getGate(rootIndex);
-  BinaryTruthTable tt = computeTruthTableForGate(
-      gate, inputs, operandCuts.data(), operandCuts.size());
-  truthTable.emplace(std::move(tt));
+  computeTruthTable(network);
 }
 
 void Cut::computeSignature() {
@@ -742,123 +720,6 @@ unsigned Cut::estimateMergedSize(const Cut &other) const {
   // Use popcount on the OR of signatures to estimate merged size
   uint64_t mergedSig = signature | other.signature;
   return llvm::popcount(mergedSig);
-}
-
-/// Helper to get and expand a truth table for an operand in the merged space.
-/// The operand can be:
-/// 1. A cut input (returns variable mask)
-/// 2. A specific cut's output (returns that cut's truth table, expanded)
-static llvm::APInt
-getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
-                      const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
-                      unsigned numMergedInputs, const Cut *const *cuts,
-                      unsigned numCuts) {
-
-  auto lookupMergedPos = [&](uint32_t idx) -> std::optional<unsigned> {
-    auto *it = llvm::find(mergedInputs, idx);
-    if (it == mergedInputs.end())
-      return std::nullopt;
-    return static_cast<unsigned>(std::distance(mergedInputs.begin(), it));
-  };
-
-  // Handle constants directly: they are not cut inputs but may appear as
-  // operands of gates inside a cut.
-  if (operandIdx == LogicNetwork::kConstant0) {
-    auto result = llvm::APInt::getZero(1U << numMergedInputs);
-    if (isInverted)
-      result.flipAllBits();
-    return result;
-  }
-  if (operandIdx == LogicNetwork::kConstant1) {
-    auto result = llvm::APInt::getAllOnes(1U << numMergedInputs);
-    if (isInverted)
-      result.flipAllBits();
-    return result;
-  }
-
-  // Check if operand is one of the merged inputs
-  if (auto pos = lookupMergedPos(operandIdx)) {
-    // It's a cut input - return variable mask (inverted if needed)
-    return circt::createVarMask(numMergedInputs, *pos, !isInverted);
-  }
-
-  // Otherwise, find which cut produces this operand
-  for (unsigned i = 0; i < numCuts; ++i) {
-    if (!cuts[i])
-      continue;
-
-    uint32_t cutOutput =
-        cuts[i]->isTrivialCut() ? cuts[i]->inputs[0] : cuts[i]->getRootIndex();
-
-    if (cutOutput == operandIdx) {
-      // Found the cut - expand its truth table to merged space
-      const auto &cutTT = *cuts[i]->getTruthTable();
-
-      // Build mapping for this cut's inputs to merged positions
-      SmallVector<unsigned, 8> mapping;
-      mapping.reserve(cuts[i]->inputs.size());
-      unsigned mergedPos = 0;
-      for (auto idx : cuts[i]->inputs) {
-        // Both vectors are sorted. Advance once and never rewind to keep this
-        // mapping build linear in total input count.
-        while (mergedPos < mergedInputs.size() && mergedInputs[mergedPos] < idx)
-          ++mergedPos;
-        assert(mergedPos < mergedInputs.size() &&
-               mergedInputs[mergedPos] == idx &&
-               "cut input must exist in merged inputs");
-        mapping.push_back(mergedPos);
-      }
-
-      auto result = circt::detail::expandTruthTableForMergedInputs(
-          cutTT.table, mapping, numMergedInputs);
-      if (isInverted)
-        result.flipAllBits();
-      return result;
-    }
-  }
-
-  llvm_unreachable("Operand not found in cuts or inputs");
-}
-
-/// Compute the truth table for a gate based on its operand cuts.
-/// This uses incremental computation which is much faster than simulation.
-static BinaryTruthTable
-computeTruthTableForGate(const LogicNetworkGate &rootGate,
-                         const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
-                         const Cut *const *cuts, unsigned numCuts) {
-
-  unsigned numMergedInputs = mergedInputs.size();
-
-  auto getEdgeTT = [&](unsigned edgeIdx) {
-    const auto &edge = rootGate.edges[edgeIdx];
-    return getExpandedTruthTable(edge.getIndex(), edge.isInverted(),
-                                 mergedInputs, numMergedInputs, cuts, numCuts);
-  };
-
-  BinaryTruthTable result;
-  switch (rootGate.getKind()) {
-  case LogicNetworkGate::And2:
-  case LogicNetworkGate::Xor2:
-    result = BinaryTruthTable(
-        numMergedInputs, 1,
-        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
-    break;
-  case LogicNetworkGate::Maj3:
-    result =
-        BinaryTruthTable(numMergedInputs, 1,
-                         applyGateSemantics(rootGate.getKind(), getEdgeTT(0),
-                                            getEdgeTT(1), getEdgeTT(2)));
-    break;
-  case LogicNetworkGate::Identity:
-    result =
-        BinaryTruthTable(numMergedInputs, 1,
-                         applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
-    break;
-  default:
-    llvm_unreachable("Unsupported operation for truth table computation");
-  }
-
-  return result;
 }
 
 static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {

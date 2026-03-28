@@ -477,25 +477,21 @@ public:
   }
 
   /// Compute and cache the truth table for this cut using the LogicNetwork.
-  /// Uses slow simulation-based approach - prefer computeTruthTableFromOperands
-  /// when operand cuts are available.
   void computeTruthTable(const LogicNetwork &network);
 
-  /// Compute truth table using fast incremental method from operand cuts.
-  /// This is much faster than simulation-based computation.
-  /// Requires that operand cuts have already been set via setOperandCuts.
+  /// Compute truth table from operand cuts.
+  /// Currently this falls back to simulation-based computation.
   void computeTruthTableFromOperands(const LogicNetwork &network);
 
   /// Set the truth table directly (used for incremental computation).
   void setTruthTable(BinaryTruthTable tt) { truthTable.emplace(std::move(tt)); }
 
-  /// Set operand cuts for lazy truth table computation.
-  /// These are stored to enable fast incremental TT computation later.
+  /// Set operand cuts associated with this cut.
   void setOperandCuts(ArrayRef<const Cut *> cuts) {
     operandCuts.assign(cuts.begin(), cuts.end());
   }
 
-  /// Get operand cuts (for fast TT computation).
+  /// Get operand cuts.
   ArrayRef<const Cut *> getOperandCuts() const { return operandCuts; }
 
   /// Get the NPN canonical form for this cut.
