@@ -903,8 +903,11 @@ void CutSet::finalize(
   if (cuts.size() > options.maxCutSizePerRoot)
     cuts.resize(options.maxCutSizePerRoot);
 
-  // Select the best cut using default delay-oriented strategy
-  selectBestCut(options.strategy);
+  // Area recovery must start from the timing-optimal mapping so required times
+  // reflect the best achievable delay before we trade slack for area.
+  auto initialStrategy = options.enableAreaRecovery ? OptimizationStrategyTiming
+                                                    : options.strategy;
+  selectBestCut(initialStrategy);
 
   LLVM_DEBUG({
     llvm::dbgs() << "Finalized cut set with " << cuts.size() << " cuts and "

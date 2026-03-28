@@ -611,7 +611,8 @@ struct CutRewriterOptions {
 
   /// Enable area recovery pass after delay-optimal cut selection.
   /// Computes required times and re-selects cuts using area flow metric
-  /// to minimize area while preserving timing.
+  /// to minimize area while preserving timing. The seed mapping is always
+  /// selected with timing priority before required times are computed.
   bool enableAreaRecovery = false;
 
   /// Put arrival times to rewritten operations.

@@ -248,6 +248,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.strategy = strategy;
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
+    options.enableAreaRecovery = strategy == OptimizationStrategyArea;
     options.attachDebugTiming = test;
     auto result = mlir::failableParallelForEach(
         module.getContext(), nonLibraryModules, [&](hw::HWModuleOp hwModule) {
