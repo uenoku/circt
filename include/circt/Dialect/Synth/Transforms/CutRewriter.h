@@ -212,6 +212,10 @@ public:
     // Reserve index 0 for constant 0 and index 1 for constant 1
     gates.emplace_back(nullptr, LogicNetworkGate::Constant);
     gates.emplace_back(nullptr, LogicNetworkGate::Constant);
+    logicFanoutCounts.push_back(0);
+    logicFanoutCounts.push_back(0);
+    externalUseCounts.push_back(0);
+    externalUseCounts.push_back(0);
     // indexToValue needs placeholders for constants
     indexToValue.push_back(Value()); // const0
     indexToValue.push_back(Value()); // const1
@@ -266,6 +270,26 @@ public:
   /// Get the total number of nodes in the network.
   size_t size() const { return gates.size(); }
 
+  /// Get the number of logic-network fanouts of a node.
+  unsigned getLogicFanoutCount(uint32_t index) const {
+    return logicFanoutCounts[index];
+  }
+
+  /// Get the number of uses outside the logic network.
+  unsigned getExternalUseCount(uint32_t index) const {
+    return externalUseCounts[index];
+  }
+
+  /// Get the total reference count for area-flow fanout estimation.
+  unsigned getTotalRefCount(uint32_t index) const {
+    return std::max(logicFanoutCounts[index] + externalUseCounts[index], 1u);
+  }
+
+  /// Check if this node drives an operation outside the logic network.
+  bool isPrimaryOutput(uint32_t index) const {
+    return externalUseCounts[index] != 0;
+  }
+
   /// Add a primary input to the network.
   uint32_t addPrimaryInput(Value value);
 
@@ -287,6 +311,9 @@ public:
   void clear();
 
 private:
+  void recordLogicUse(uint32_t index) { ++logicFanoutCounts[index]; }
+  void recordExternalUse(uint32_t index) { ++externalUseCounts[index]; }
+
   /// Map from MLIR Value to network index.
   llvm::DenseMap<Value, uint32_t> valueToIndex;
 
@@ -295,6 +322,12 @@ private:
 
   /// Vector of all gates in the network.
   llvm::SmallVector<LogicNetworkGate> gates;
+
+  /// Number of uses by logic gates in this network.
+  llvm::SmallVector<unsigned> logicFanoutCounts;
+
+  /// Number of uses by operations outside this logic network.
+  llvm::SmallVector<unsigned> externalUseCounts;
 };
 
 /// Result of matching a cut against a pattern.

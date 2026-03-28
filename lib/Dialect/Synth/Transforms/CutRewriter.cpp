@@ -70,6 +70,8 @@ uint32_t LogicNetwork::getOrCreateIndex(Value value) {
   if (inserted) {
     indexToValue.push_back(value);
     gates.emplace_back(); // Will be filled in later
+    logicFanoutCounts.push_back(0);
+    externalUseCounts.push_back(0);
   }
   return it->second;
 }
@@ -123,6 +125,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       block->getArguments().size() + block->getOperations().size();
   indexToValue.reserve(estimatedSize);
   gates.reserve(estimatedSize);
+  logicFanoutCounts.reserve(estimatedSize);
+  externalUseCounts.reserve(estimatedSize);
 
   auto handleSingleInputGate = [&](Operation *op, Value result,
                                    const Signal &inputSignal) {
@@ -148,6 +152,19 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     }
   };
 
+  auto recordLogicUses = [&](ArrayRef<Signal> signals) {
+    for (Signal signal : signals)
+      recordLogicUse(signal.getIndex());
+  };
+
+  auto recordExternalUses = [&](Operation *op) {
+    for (Value operand : op->getOperands()) {
+      if (!operand.getType().isInteger(1) || !hasIndex(operand))
+        continue;
+      recordExternalUse(getIndex(operand));
+    }
+  };
+
   // Process operations in topological order
   for (Operation &op : block->getOperations()) {
     LogicalResult result =
@@ -158,16 +175,20 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                 // Single-input AND is a buffer or NOT gate
                 const Signal inputSignal =
                     getOrCreateSignal(inputs[0], andOp.isInverted(0));
+                if (inputSignal.isInverted())
+                  recordLogicUses({inputSignal});
                 handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
               } else if (inputs.size() == 2) {
                 const Signal lhsSignal =
                     getOrCreateSignal(inputs[0], andOp.isInverted(0));
                 const Signal rhsSignal =
                     getOrCreateSignal(inputs[1], andOp.isInverted(1));
+                recordLogicUses({lhsSignal, rhsSignal});
                 addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
               } else {
                 // Variadic AND gates with >2 inputs are treated as primary
                 // inputs.
+                recordExternalUses(andOp);
                 handleOtherResults(andOp);
               }
               return success();
@@ -175,6 +196,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
             .Case<comb::XorOp>([&](comb::XorOp xorOp) {
               // Handle comb::XorOp
               if (xorOp->getNumOperands() != 2) {
+                recordExternalUses(xorOp);
                 handleOtherResults(xorOp);
                 return success();
               }
@@ -182,6 +204,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                   getOrCreateSignal(xorOp.getOperand(0), false);
               const Signal rhsSignal =
                   getOrCreateSignal(xorOp.getOperand(1), false);
+              recordLogicUses({lhsSignal, rhsSignal});
               addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
               return success();
             })
@@ -192,12 +215,15 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                     // Single input = inverter
                     const Signal inputSignal = getOrCreateSignal(
                         majOp.getOperand(0), majOp.isInverted(0));
+                    if (inputSignal.isInverted())
+                      recordLogicUses({inputSignal});
                     handleSingleInputGate(majOp, majOp.getResult(),
                                           inputSignal);
                     return success();
                   }
                   if (majOp->getNumOperands() != 3) {
                     // Variadic MAJ is treated as primary inputs.
+                    recordExternalUses(majOp);
                     handleOtherResults(majOp);
                     return success();
                   }
@@ -207,6 +233,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                                                            majOp.isInverted(1));
                   const Signal cSignal = getOrCreateSignal(majOp.getOperand(2),
                                                            majOp.isInverted(2));
+                  recordLogicUses({aSignal, bSignal, cSignal});
                   addGate(majOp, LogicNetworkGate::Maj3,
                           {aSignal, bSignal, cSignal});
                   return success();
@@ -225,6 +252,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               return success();
             })
             .Default([&](Operation *defaultOp) {
+              recordExternalUses(defaultOp);
               handleOtherResults(defaultOp);
               return success();
             });
@@ -240,9 +268,15 @@ void LogicNetwork::clear() {
   valueToIndex.clear();
   indexToValue.clear();
   gates.clear();
+  logicFanoutCounts.clear();
+  externalUseCounts.clear();
   // Re-add the constant nodes (index 0 = const0, index 1 = const1)
   gates.emplace_back(nullptr, LogicNetworkGate::Constant);
   gates.emplace_back(nullptr, LogicNetworkGate::Constant);
+  logicFanoutCounts.push_back(0);
+  logicFanoutCounts.push_back(0);
+  externalUseCounts.push_back(0);
+  externalUseCounts.push_back(0);
   // Placeholders for constants in indexToValue
   indexToValue.push_back(Value()); // const0
   indexToValue.push_back(Value()); // const1
@@ -1371,19 +1405,15 @@ void CutEnumerator::dump() const {
 }
 
 void CutEnumerator::computeRequiredTimes() {
-  // Collect the set of node indices that are in the processing order
-  // (i.e., internal logic nodes). Nodes used by operations outside this set
-  // are primary outputs (POs).
-  DenseSet<uint32_t> logicNodes;
-  for (auto index : processingOrder)
-    logicNodes.insert(index);
-
   // Step 1: Initialize all required times to infinity.
-  // Then set PO required times to their own worst arrival time.
-  // This preserves each output's delay rather than only the critical path.
   for (auto &[index, cutSet] : cutSets)
     cutSet->requiredTime = std::numeric_limits<DelayType>::max();
 
+  // Step 2: Seed all primary outputs with the same global worst arrival time.
+  // This preserves the critical output delay while allowing non-critical
+  // outputs to consume slack during area recovery.
+  DelayType globalWorstArrival = 0;
+  bool hasPrimaryOutput = false;
   for (auto index : processingOrder) {
     auto it = cutSets.find(index);
     if (it == cutSets.end())
@@ -1393,34 +1423,27 @@ void CutEnumerator::computeRequiredTimes() {
     if (!bestCut)
       continue;
 
-    // Check if this node is a primary output: it has uses outside the logic
-    // network (e.g., by hw.output or other non-logic ops).
-    Value value = logicNetwork.getValue(index);
-    bool isPO = false;
-    if (value) {
-      for (auto &use : value.getUses()) {
-        Operation *user = use.getOwner();
-        // If the user has no results, it's a sink (e.g., hw.output) → PO
-        if (user->getNumResults() == 0) {
-          isPO = true;
-          break;
-        }
-        // If the user's result isn't a logic node we process, it's a PO
-        Value userResult = user->getResult(0);
-        if (!logicNetwork.hasIndex(userResult) ||
-            !logicNodes.count(logicNetwork.getIndex(userResult))) {
-          isPO = true;
-          break;
-        }
-      }
-    }
+    if (!logicNetwork.isPrimaryOutput(index))
+      continue;
 
-    if (isPO) {
-      const auto &matched = *bestCut->getMatchedPattern();
-      cutSet->requiredTime = matched.getWorstOutputArrivalTime();
-      LLVM_DEBUG(llvm::dbgs() << "PO node " << index << " required time: "
-                              << cutSet->requiredTime << "\n");
-    }
+    hasPrimaryOutput = true;
+    globalWorstArrival = std::max(
+        globalWorstArrival,
+        bestCut->getMatchedPattern()->getWorstOutputArrivalTime());
+  }
+
+  if (!hasPrimaryOutput)
+    return;
+
+  for (auto index : processingOrder) {
+    if (!logicNetwork.isPrimaryOutput(index))
+      continue;
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    it->second->requiredTime = globalWorstArrival;
+    LLVM_DEBUG(llvm::dbgs() << "PO node " << index << " required time: "
+                            << it->second->requiredTime << "\n");
   }
 
   // Step 3: Walk in reverse topo order, propagate required times
@@ -1513,6 +1536,8 @@ void CutEnumerator::reselectCutsForAreaFlow() {
 
     Cut *bestAreaFlowCut = nullptr;
     double bestFlow = std::numeric_limits<double>::max();
+    DelayType bestFlowArrival = std::numeric_limits<DelayType>::max();
+    double bestLocalArea = std::numeric_limits<double>::max();
 
     for (Cut *cut : cutSet->getCuts()) {
       const auto &matched = cut->getMatchedPattern();
@@ -1536,19 +1561,17 @@ void CutEnumerator::reselectCutsForAreaFlow() {
         if (inputIt == cutSets.end())
           continue;
 
-        // Estimate fanout using the number of uses of the value
-        Value inputValue = logicNetwork.getValue(inputIndex);
-        unsigned numRefs = 0;
-        if (inputValue)
-          for (auto &use : inputValue.getUses())
-            (void)use, ++numRefs;
-        numRefs = std::max(numRefs, 1u);
-
-        flow += inputIt->second->areaFlow / numRefs;
+        flow +=
+            inputIt->second->areaFlow / logicNetwork.getTotalRefCount(inputIndex);
       }
 
-      if (flow < bestFlow) {
+      if (flow < bestFlow ||
+          (flow == bestFlow && arrivalTime < bestFlowArrival) ||
+          (flow == bestFlow && arrivalTime == bestFlowArrival &&
+           matched->getArea() < bestLocalArea)) {
         bestFlow = flow;
+        bestFlowArrival = arrivalTime;
+        bestLocalArea = matched->getArea();
         bestAreaFlowCut = cut;
       }
     }

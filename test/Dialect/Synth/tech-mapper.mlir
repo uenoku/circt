@@ -97,6 +97,34 @@ hw.module @area_flow_test(in %a : i1, in %b : i1, in %c: i1, out result : i1) {
     hw.output %1 : i1
 }
 
+// Global worst-output seeding allows non-critical outputs to consume slack.
+// The first output fixes the global timing bound at 10, so area recovery can
+// remap the second output to the cheaper @area_flow cell without worsening the
+// worst output arrival.
+// CHECK-LABEL: @area_flow_global_slack_test
+hw.module @area_flow_global_slack_test(in %a : i1, in %b : i1, in %c: i1, in %d : i1, in %e : i1, in %f : i1, in %g : i1, in %h : i1, in %i : i1, in %j : i1, in %k : i1, in %l : i1, in %m : i1, in %n : i1, out slow : i1, out small : i1) {
+    // AREA:      %[[slow:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %n: i1, b: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [10]}
+    // AREA-NEXT: %[[small:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @area_flow(a: %a: i1, b: %b: i1, c: %c: i1) -> (result: i1) {test.arrival_times = [10]}
+    // AREA-NEXT: hw.output %[[slow]], %[[small]] : i1, i1
+    // TIMING:      %[[timing_slow:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %n: i1, b: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [10]}
+    // TIMING-NEXT: %[[timing_small_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_nn(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
+    // TIMING-NEXT: %[[timing_small_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %c: i1, b: %[[timing_small_0]]: i1) -> (result: i1) {test.arrival_times = [2]}
+    // TIMING-NEXT: hw.output %[[timing_slow]], %[[timing_small_1]] : i1, i1
+    %0 = synth.aig.and_inv %d, %e : i1
+    %1 = synth.aig.and_inv %0, %f : i1
+    %2 = synth.aig.and_inv %1, %g : i1
+    %3 = synth.aig.and_inv %2, %h : i1
+    %4 = synth.aig.and_inv %3, %i : i1
+    %5 = synth.aig.and_inv %4, %j : i1
+    %6 = synth.aig.and_inv %5, %k : i1
+    %7 = synth.aig.and_inv %6, %l : i1
+    %8 = synth.aig.and_inv %7, %m : i1
+    %9 = synth.aig.and_inv %8, %n : i1
+    %10 = synth.aig.and_inv not %a, not %b : i1
+    %11 = synth.aig.and_inv not %c, %10 : i1
+    hw.output %9, %11 : i1, i1
+}
+
 // Test primary inputs handling
 // CHECK-LABEL: @primary_inputs_test
 hw.module @primary_inputs_test(in %a : i1, in %b : i1, out result : i1) {
