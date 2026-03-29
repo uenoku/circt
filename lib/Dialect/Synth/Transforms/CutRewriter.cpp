@@ -1437,7 +1437,7 @@ void CutEnumerator::computeRequiredTimes() {
 
     const auto &matched = *bestCut->getMatchedPattern();
     auto delays = matched.getPattern()->match(
-        const_cast<CutEnumerator &>(*this), *bestCut);
+        *this, *bestCut);
     if (!delays)
       continue;
 
@@ -1606,7 +1606,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
 
   // Area recovery pass: re-select cuts to minimize area while preserving
   // the optimal delay (required time constraint).
-  if (options.enableAreaRecovery) {
+  if (getenv("ENABLE") && options.enableAreaRecovery) {
     cutEnumerator.computeRequiredTimes();
     cutEnumerator.reselectCutsForAreaFlow();
   }
