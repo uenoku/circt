@@ -396,6 +396,9 @@ class Cut {
   /// The root node produces the output of the cut.
   uint32_t rootIndex = 0;
 
+  /// Folded bitset summary of the cut support used for fast prefiltering.
+  uint64_t signature = 0;
+
   /// Operand cuts used to create this cut (for lazy TT computation).
   /// Stored to enable fast incremental truth table computation after
   /// duplicate removal. Using raw pointers is safe since cuts are allocated
@@ -408,7 +411,7 @@ public:
   llvm::SmallVector<uint32_t, 6> inputs;
 
   /// Check if this cut represents a trivial cut.
-  /// A trivial cut has no root operation and exactly one input.
+  /// A trivial cut has no root operation and exactly one non-constant input.
   bool isTrivialCut() const;
 
   /// Get the root index in the LogicNetwork.
@@ -417,11 +420,26 @@ public:
   /// Set the root index of this cut.
   void setRootIndex(uint32_t idx) { rootIndex = idx; }
 
-  /// Check if this cut dominates another cut.
+  /// Get the signature of this cut.
+  uint64_t getSignature() const { return signature; }
+
+  /// Set the signature of this cut.
+  void setSignature(uint64_t sig) { signature = sig; }
+
+  /// Compute and set the signature based on current inputs.
+  /// Uses input indices directly (no ValueNumbering needed).
+  void computeSignature();
+
+  /// Check if this cut dominates another (i.e., this cut's inputs are a subset
+  /// of the other's inputs).
   bool dominates(const Cut &other) const;
 
-  /// Check if this cut dominates another sorted input set.
-  bool dominates(ArrayRef<uint32_t> otherInputs) const;
+  /// Check if this cut dominates a set of sorted inputs with the given
+  /// signature.
+  bool dominates(ArrayRef<uint32_t> otherInputs, uint64_t otherSig) const;
+
+  /// Estimate the size of merging this cut with another using signatures.
+  unsigned estimateMergedSize(const Cut &other) const;
 
   void dump(llvm::raw_ostream &os, const LogicNetwork &network) const;
 

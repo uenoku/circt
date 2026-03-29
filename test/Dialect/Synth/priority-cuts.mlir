@@ -1,6 +1,7 @@
 // RUN: circt-opt --pass-pipeline='builtin.module(hw.module(synth-test-priority-cuts{max-cuts-per-root=8}))' %s --mlir-disable-threading | FileCheck %s --check-prefixes=CHECK,ROOT8
 // RUN: circt-opt --pass-pipeline='builtin.module(hw.module(synth-test-priority-cuts{max-cuts-per-root=2}))' %s --mlir-disable-threading | FileCheck %s --check-prefixes=CHECK,ROOT2
 // RUN: circt-opt --pass-pipeline='builtin.module(hw.module(synth-test-priority-cuts{max-cuts-per-root=8 max-cut-input-size=2}))' %s --mlir-disable-threading | FileCheck %s --check-prefixes=CHECK,INPUT2
+// RUN: circt-opt --pass-pipeline='builtin.module(hw.module(synth-test-priority-cuts{max-cuts-per-root=8 max-cut-input-size=1}))' %s --mlir-disable-threading | FileCheck %s --check-prefix=INPUT1
 
 //===----------------------------------------------------------------------===//
 // Cut Notation Explanation:
@@ -94,6 +95,9 @@ hw.module @test(in %a : i4, in %b : i2, out result : i3) {
 // primary inputs). AND(a, 0) should produce truth table 0 (always false) and
 // AND(a, 1) should produce truth table 2 (identity), both with only 'a' as
 // the cut input.
+// INPUT1-LABEL: Enumerating cuts for module: hw_constant
+// INPUT1: out0 2 cuts: {out0}@t2d0 {a}@t0d1
+// INPUT1-NEXT: out1 2 cuts: {out1}@t2d0 {a}@t2d1
 hw.module @hw_constant(in %a : i1, out out0 : i1, out out1 : i1) {
     %c0 = hw.constant 0 : i1
     %c1 = hw.constant 1 : i1

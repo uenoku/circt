@@ -357,7 +357,7 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
 
 bool Cut::isTrivialCut() const {
   // A cut is a trivial cut if it has no root (rootIndex == 0 sentinel)
-  // and only one input
+  // and only one non-constant input.
   return rootIndex == 0 && inputs.size() == 1;
 }
 
@@ -586,22 +586,47 @@ void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
   computeTruthTable(network);
 }
 
-bool Cut::dominates(const Cut &other) const { return dominates(other.inputs); }
+void Cut::computeSignature() {
+  signature = 0;
+  for (auto index : inputs) {
+    // Fold support indices into a 64-bit summary.
+    signature |= (1ULL << (index & 63));
+  }
+}
 
-bool Cut::dominates(ArrayRef<uint32_t> otherInputs) const {
+bool Cut::dominates(const Cut &other) const {
+  return dominates(other.inputs, other.signature);
+}
+
+bool Cut::dominates(ArrayRef<uint32_t> otherInputs, uint64_t otherSig) const {
   if (getInputSize() > otherInputs.size())
+    return false;
+
+  // Missing signature bits prove this cut cannot be a subset. A match here is
+  // only a prefilter because folded signatures may collide.
+  if ((signature & otherSig) != signature)
     return false;
 
   return std::includes(otherInputs.begin(), otherInputs.end(), inputs.begin(),
                        inputs.end());
 }
 
+unsigned Cut::estimateMergedSize(const Cut &other) const {
+  uint64_t mergedSig = signature | other.signature;
+  return llvm::popcount(mergedSig);
+}
+
 static Cut getAsTrivialCut(uint32_t index, const LogicNetwork &network) {
-  // Create a trivial cut for a value
+  // Create a singleton support cut for non-constants and a zero-input cut for
+  // constants so constant values never appear in the cut boundary.
   Cut cut;
-  cut.inputs.push_back(index);
+  if (index != LogicNetwork::kConstant0 && index != LogicNetwork::kConstant1)
+    cut.inputs.push_back(index);
+  else
+    cut.setRootIndex(index);
   // Compute truth table eagerly for trivial cut
   cut.computeTruthTable(network);
+  cut.computeSignature();
   return cut;
 }
 
@@ -883,13 +908,39 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
     operandCutSets.push_back(operandCutSet);
   }
 
-  // Create the trivial cut for this node's output
+  // Reorder operands to increase early signature-pruning effectiveness during
+  // recursive enumeration. Processing operands with larger cuts first tends to
+  // hit the cut-size bound earlier and prunes subtrees sooner.
+  std::stable_sort(operandCutSets.begin(), operandCutSets.end(),
+                   [](const CutSet *a, const CutSet *b) {
+                     // Fanin count is <= 3, so recomputing this score in the
+                     // comparator is still cheaper than materializing extra
+                     // arrays.
+                     auto maxCutSize = [](const CutSet *set) {
+                       unsigned maxSize = 0;
+                       for (const Cut *cut : set->getCuts())
+                         maxSize = std::max(maxSize, cut->getInputSize());
+                       return maxSize;
+                     };
+                     return maxCutSize(a) > maxCutSize(b);
+                   });
+
+  // Create the singleton cut (just this operation as a trivial cut)
   Cut *primaryInputCut = new (cutAllocator.Allocate())
       Cut(getAsTrivialCut(nodeIndex, logicNetwork));
 
   auto *resultCutSet = createNewCutSet(nodeIndex);
   processingOrder.push_back(nodeIndex);
-  resultCutSet->addCut(primaryInputCut);
+
+  // Keep a local candidate list and perform dominance pruning during
+  // generation to reduce finalize-time work.
+  SmallVector<Cut *, 32> candidateCuts;
+  candidateCuts.push_back(primaryInputCut);
+  // Soft cap for generation-time candidate pool. Keep it comfortably above the
+  // final per-root limit so we preserve quality, but prevent explosive growth
+  // at larger cut settings (especially 10/8 and above).
+  const unsigned generationCap =
+      std::max(options.maxCutSizePerRoot + 8, options.maxCutSizePerRoot * 3);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
@@ -902,19 +953,16 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
 
   // This lambda generates nested loops at runtime to iterate over all
   // combinations of cuts from N operands
-  auto enumerateCutCombinations =
-      [&](auto &&self, unsigned operandIdx,
-          SmallVector<const Cut *, 3> &cutPtrs) -> void {
+  auto enumerateCutCombinations = [&](auto &&self, unsigned operandIdx,
+                                      SmallVector<const Cut *, 3> &cutPtrs,
+                                      uint64_t currentSig) -> void {
     // Base case: all operands processed, create merged cut
     if (operandIdx == numFanins) {
-      // Efficient k-way merge: inputs are sorted, so dedup and constant
-      // filtering can be done while merging. Abort early once we exceed the
-      // cut-size limit to avoid building doomed merged cuts.
+      // Efficient k-way merge: inputs are sorted, so dedup can be done while
+      // merging. Abort early once we exceed the cut-size limit to avoid
+      // building doomed merged cuts.
       SmallVector<uint32_t, 6> mergedInputs;
       auto appendMergedInput = [&](uint32_t value) {
-        if (value == LogicNetwork::kConstant0 ||
-            value == LogicNetwork::kConstant1)
-          return true;
         if (!mergedInputs.empty() && mergedInputs.back() == value)
           return true;
         mergedInputs.push_back(value);
@@ -922,7 +970,7 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
       };
 
       if (numFanins == 1) {
-        // Single input: copy while filtering constants.
+        // Single input: copy support as-is.
         mergedInputs.reserve(
             std::min<size_t>(cutPtrs[0]->inputs.size(), maxInputSize));
         for (uint32_t value : cutPtrs[0]->inputs)
@@ -981,15 +1029,46 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         }
       }
 
+      // Dominance check against already kept candidates.
+      uint64_t mergedSig = 0;
+      for (uint32_t idx : mergedInputs)
+        mergedSig |= (1ULL << (idx & 63));
+
+      for (const Cut *existing : candidateCuts) {
+        if (existing->dominates(mergedInputs, mergedSig))
+          return;
+      }
+
       // Create the merged cut.
       Cut *mergedCut = new (cutAllocator.Allocate()) Cut();
       mergedCut->setRootIndex(nodeIndex);
       mergedCut->inputs = std::move(mergedInputs);
+      mergedCut->computeSignature();
 
       // Store operand cuts for lazy truth table computation using fast
       // incremental method (after duplicate removal in finalize)
       mergedCut->setOperandCuts(cutPtrs);
-      resultCutSet->addCut(mergedCut);
+
+      // Remove candidates dominated by the new cut.
+      llvm::erase_if(candidateCuts, [&](const Cut *existing) {
+        return mergedCut->dominates(*existing);
+      });
+      candidateCuts.push_back(mergedCut);
+
+      if (candidateCuts.size() > generationCap) {
+        auto keepBegin = candidateCuts.begin() + 1;
+        // Keep trivial cut at index 0 and retain lexicographically smaller
+        // low-support candidates first when trimming the generation pool.
+        std::sort(keepBegin, candidateCuts.end(),
+                  [](const Cut *a, const Cut *b) {
+                    if (a->getInputSize() != b->getInputSize())
+                      return a->getInputSize() < b->getInputSize();
+                    return std::lexicographical_compare(
+                        a->inputs.begin(), a->inputs.end(), b->inputs.begin(),
+                        b->inputs.end());
+                  });
+        candidateCuts.resize(generationCap);
+      }
 
       LLVM_DEBUG({
         if (mergedCut->inputs.size() >= 4) {
@@ -1007,19 +1086,32 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
     // Recursive case: iterate over cuts for current operand
     const CutSet *currentCutSet = operandCutSets[operandIdx];
     for (const Cut *cut : currentCutSet->getCuts()) {
+      uint64_t cutSig = cut->getSignature();
+      uint64_t newSig = currentSig | cutSig;
+      if (static_cast<unsigned>(llvm::popcount(newSig)) > maxInputSize) {
+        llvm::dbgs()
+            << "Pruning cut combination at operand " << operandIdx
+            << " due to input size limit: currentSig=" << currentSig
+            << " cutSig=" << cutSig << " newSig=" << newSig << "\n";
+        continue; // Early rejection based on signature
+      }
+
       cutPtrs.push_back(cut);
 
       // Recurse to next operand
-      self(self, operandIdx + 1, cutPtrs);
+      self(self, operandIdx + 1, cutPtrs, newSig);
 
       cutPtrs.pop_back();
     }
   };
 
-  // Start recursion with an empty cut pointer list.
+  // Start the recursion with empty cut pointer list and zero signature
   SmallVector<const Cut *, 3> cutPtrs;
   cutPtrs.reserve(numFanins);
-  enumerateCutCombinations(enumerateCutCombinations, 0, cutPtrs);
+  enumerateCutCombinations(enumerateCutCombinations, 0, cutPtrs, 0ULL);
+
+  for (Cut *cut : candidateCuts)
+    resultCutSet->addCut(cut);
 
   return success();
 }
