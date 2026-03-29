@@ -590,6 +590,9 @@ public:
   /// Area flow metric for the best cut (used during area flow re-selection).
   double areaFlow = 0.0;
 
+  /// Exact mapped reference count of this node under the current selection.
+  unsigned mappedRefs = 0;
+
   /// Check if this cut set has a valid matched pattern.
   bool isMatched() const { return bestCut; }
 
@@ -731,6 +734,10 @@ public:
   /// Re-select best cuts using area flow metric, subject to required time
   /// constraints. This implements ABC's "Mode 1" area recovery pass.
   void reselectCutsForAreaFlow();
+
+  /// Re-select best cuts using exact mapped area, subject to required time
+  /// constraints. This is a refinement pass after area-flow recovery.
+  void reselectCutsForExactArea();
 
 private:
   /// Visit a combinational logic operation and generate cuts.

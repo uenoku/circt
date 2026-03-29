@@ -50,7 +50,9 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -284,6 +286,44 @@ static bool compareDelayAndArea(OptimizationStrategy strategy, double newArea,
     return newDelay < oldDelay || (newDelay == oldDelay && newArea < oldArea);
   llvm_unreachable("Unknown mapping strategy");
 }
+
+static bool isAreaRecoveryDebugEnabled() { return std::getenv("AREA_DEBUG"); }
+
+static std::string getDebugValueName(const LogicNetwork &logicNetwork,
+                                     uint32_t index) {
+  if (index == LogicNetwork::kConstant0)
+    return "const0";
+  if (index == LogicNetwork::kConstant1)
+    return "const1";
+  Value value = logicNetwork.getValue(index);
+  if (!value)
+    return std::string("node") + std::to_string(index);
+  if (auto opResult = dyn_cast<OpResult>(value)) {
+    Operation *op = opResult.getOwner();
+    if (auto name = op->getAttrOfType<StringAttr>("sv.namehint"))
+      return std::string(name.getValue());
+    if (op->getNumResults() == 1)
+      return std::string(op->getName().getStringRef());
+    return std::string("result") + std::to_string(opResult.getResultNumber());
+  }
+  auto blockArg = cast<BlockArgument>(value);
+  auto hwOp =
+      dyn_cast<circt::hw::HWModuleOp>(blockArg.getOwner()->getParentOp());
+  if (!hwOp)
+    return std::string("arg") + std::to_string(blockArg.getArgNumber());
+  return std::string(hwOp.getInputName(blockArg.getArgNumber()));
+}
+
+static void printDebugCut(raw_ostream &os, const LogicNetwork &logicNetwork,
+                          const Cut &cut) {
+  os << "{";
+  llvm::interleaveComma(cut.inputs, os, [&](uint32_t inputIdx) {
+    os << getDebugValueName(logicNetwork, inputIdx) << "#" << inputIdx;
+  });
+  os << "}";
+}
+
+static raw_ostream &getAreaRecoveryDebugStream() { return llvm::outs(); }
 
 LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   const auto isOperationReady = [](Value value, Operation *op) -> bool {
@@ -1385,6 +1425,7 @@ void CutEnumerator::dump() const {
 }
 
 void CutEnumerator::computeRequiredTimes() {
+  bool debugAreaRecovery = isAreaRecoveryDebugEnabled();
   // Step 1: Initialize all required times to infinity.
   for (auto &[index, cutSet] : cutSets)
     cutSet->requiredTime = std::numeric_limits<DelayType>::max();
@@ -1415,11 +1456,20 @@ void CutEnumerator::computeRequiredTimes() {
   if (!hasPrimaryOutput)
     return;
 
+  if (debugAreaRecovery)
+    getAreaRecoveryDebugStream() << "[area-debug] global worst output arrival = "
+                                 << globalWorstArrival << "\n";
+
   for (uint32_t index : logicNetwork.outputNodes()) {
     auto it = cutSets.find(index);
     if (it == cutSets.end())
       continue;
     it->second->requiredTime = globalWorstArrival;
+    if (debugAreaRecovery)
+      getAreaRecoveryDebugStream()
+          << "[area-debug] seed output "
+          << getDebugValueName(logicNetwork, index) << "#" << index
+          << " required=" << globalWorstArrival << "\n";
     LLVM_DEBUG(llvm::dbgs() << "PO node " << index << " required time: "
                             << it->second->requiredTime << "\n");
   }
@@ -1460,12 +1510,20 @@ void CutEnumerator::computeRequiredTimes() {
       DelayType inputRequired = cutSet->requiredTime - delayThrough;
       inputIt->second->requiredTime =
           std::min(inputIt->second->requiredTime, inputRequired);
+      if (debugAreaRecovery)
+        getAreaRecoveryDebugStream()
+            << "[area-debug] propagate "
+            << getDebugValueName(logicNetwork, index) << "#" << index << " -> "
+            << getDebugValueName(logicNetwork, inputIndex) << "#" << inputIndex
+            << " delay=" << delayThrough
+            << " required=" << inputIt->second->requiredTime << "\n";
     }
   }
 }
 
 void CutEnumerator::reselectCutsForAreaFlow() {
   LLVM_DEBUG(llvm::dbgs() << "Re-selecting cuts for area flow...\n");
+  bool debugAreaRecovery = isAreaRecoveryDebugEnabled();
 
   // Initialize bestArrivalTime from the current delay-optimal mapping
   for (auto index : processingOrder) {
@@ -1505,12 +1563,45 @@ void CutEnumerator::reselectCutsForAreaFlow() {
     return worstArrival;
   };
 
+  auto dumpChosenCut = [&](uint32_t index, const char *label, const Cut *cut,
+                           DelayType arrival, double flow) {
+    if (!debugAreaRecovery || !cut)
+      return;
+    getAreaRecoveryDebugStream()
+        << "[area-debug] " << label << " "
+        << getDebugValueName(logicNetwork, index) << "#" << index
+        << " area=" << cut->getMatchedPattern()->getArea()
+        << " arrival=" << arrival << " flow=" << flow << " cut=";
+    printDebugCut(getAreaRecoveryDebugStream(), logicNetwork, *cut);
+    getAreaRecoveryDebugStream() << "\n";
+  };
+
   // Walk in topo order (bottom-up from inputs to outputs)
   for (auto index : processingOrder) {
     auto it = cutSets.find(index);
     if (it == cutSets.end())
       continue;
     auto *cutSet = it->second;
+    if (debugAreaRecovery) {
+      auto *seedCut = cutSet->getBestMatchedCut();
+      double seedFlow = seedCut ? seedCut->getMatchedPattern()->getArea() : 0.0;
+      if (seedCut) {
+        for (uint32_t inputIndex : seedCut->inputs) {
+          if (isAlwaysCutInput(logicNetwork, inputIndex))
+            continue;
+          auto inputIt = cutSets.find(inputIndex);
+          if (inputIt == cutSets.end())
+            continue;
+          seedFlow += inputIt->second->areaFlow /
+                      logicNetwork.getTotalRefCount(inputIndex);
+        }
+      }
+      getAreaRecoveryDebugStream()
+          << "[area-debug] node " << getDebugValueName(logicNetwork, index)
+          << "#" << index << " required=" << cutSet->requiredTime
+          << " refs=" << logicNetwork.getTotalRefCount(index) << "\n";
+      dumpChosenCut(index, "seed", seedCut, cutSet->bestArrivalTime, seedFlow);
+    }
 
     Cut *bestAreaFlowCut = nullptr;
     double bestFlow = std::numeric_limits<double>::max();
@@ -1531,6 +1622,13 @@ void CutEnumerator::reselectCutsForAreaFlow() {
 
       // Compute area flow for this cut
       double flow = matched->getArea();
+      if (debugAreaRecovery) {
+        getAreaRecoveryDebugStream()
+            << "[area-debug]   candidate area=" << matched->getArea()
+            << " arrival=" << arrivalTime << " cut=";
+        printDebugCut(getAreaRecoveryDebugStream(), logicNetwork, *cut);
+        getAreaRecoveryDebugStream() << "\n";
+      }
       for (uint32_t inputIndex : cut->inputs) {
         if (isAlwaysCutInput(logicNetwork, inputIndex))
           continue;
@@ -1539,9 +1637,20 @@ void CutEnumerator::reselectCutsForAreaFlow() {
         if (inputIt == cutSets.end())
           continue;
 
-        flow +=
+        double contribution =
             inputIt->second->areaFlow / logicNetwork.getTotalRefCount(inputIndex);
+        flow += contribution;
+        if (debugAreaRecovery)
+          getAreaRecoveryDebugStream()
+              << "[area-debug]     input "
+              << getDebugValueName(logicNetwork, inputIndex) << "#"
+              << inputIndex << " areaFlow=" << inputIt->second->areaFlow
+              << " refs=" << logicNetwork.getTotalRefCount(inputIndex)
+              << " contrib=" << contribution << "\n";
       }
+      if (debugAreaRecovery)
+        getAreaRecoveryDebugStream() << "[area-debug]     total flow=" << flow
+                                     << "\n";
 
       if (flow < bestFlow ||
           (flow == bestFlow && arrivalTime < bestFlowArrival) ||
@@ -1559,6 +1668,185 @@ void CutEnumerator::reselectCutsForAreaFlow() {
       cutSet->areaFlow = bestFlow;
       // Update arrival time for downstream nodes to use
       cutSet->bestArrivalTime = computeArrivalTime(*bestAreaFlowCut);
+      dumpChosenCut(index, "chosen", bestAreaFlowCut, cutSet->bestArrivalTime,
+                    bestFlow);
+    }
+  }
+}
+
+void CutEnumerator::reselectCutsForExactArea() {
+  LLVM_DEBUG(llvm::dbgs() << "Re-selecting cuts for exact area...\n");
+  bool debugAreaRecovery = isAreaRecoveryDebugEnabled();
+
+  for (auto &[index, cutSet] : cutSets)
+    cutSet->mappedRefs = 0;
+
+  std::function<double(uint32_t)> referenceNode = [&](uint32_t index) -> double {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      return 0.0;
+    auto *cutSet = it->second;
+    ++cutSet->mappedRefs;
+    if (cutSet->mappedRefs != 1)
+      return 0.0;
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut)
+      return 0.0;
+    double area = bestCut->getMatchedPattern()->getArea();
+    for (uint32_t inputIndex : bestCut->inputs) {
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+      area += referenceNode(inputIndex);
+    }
+    return area;
+  };
+
+  std::function<double(uint32_t)> dereferenceNode =
+      [&](uint32_t index) -> double {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      return 0.0;
+    auto *cutSet = it->second;
+    assert(cutSet->mappedRefs != 0 && "cannot dereference dead node");
+    --cutSet->mappedRefs;
+    if (cutSet->mappedRefs != 0)
+      return 0.0;
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut)
+      return 0.0;
+    double area = bestCut->getMatchedPattern()->getArea();
+    for (uint32_t inputIndex : bestCut->inputs) {
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+      area += dereferenceNode(inputIndex);
+    }
+    return area;
+  };
+
+  auto referenceCutInputs = [&](const Cut &cut) -> double {
+    double area = cut.getMatchedPattern()->getArea();
+    for (uint32_t inputIndex : cut.inputs) {
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+      area += referenceNode(inputIndex);
+    }
+    return area;
+  };
+
+  auto dereferenceCutInputs = [&](const Cut &cut) -> double {
+    double area = cut.getMatchedPattern()->getArea();
+    for (uint32_t inputIndex : cut.inputs) {
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+      area += dereferenceNode(inputIndex);
+    }
+    return area;
+  };
+
+  double totalArea = 0.0;
+  for (uint32_t index : logicNetwork.outputNodes()) {
+    unsigned numRefs = logicNetwork.getExternalUseCount(index);
+    for (unsigned i = 0; i < numRefs; ++i)
+      totalArea += referenceNode(index);
+  }
+
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto *cutSet = it->second;
+    auto *currentCut = cutSet->getBestMatchedCut();
+    if (!currentCut || cutSet->mappedRefs == 0)
+      continue;
+
+    auto computeArrivalTime = [&](const Cut &cut) -> DelayType {
+      const auto &matched = *cut.getMatchedPattern();
+      auto matchResult =
+          matched.getPattern()->match(const_cast<CutEnumerator &>(*this), cut);
+      if (!matchResult)
+        return std::numeric_limits<DelayType>::max();
+
+      auto patternDelays = matchResult->getDelays();
+      DelayType worstArrival = 0;
+      for (unsigned i = 0, e = cut.getInputSize(); i < e; ++i) {
+        uint32_t inputIndex = cut.inputs[i];
+        DelayType inputArrival = 0;
+        if (!isAlwaysCutInput(logicNetwork, inputIndex)) {
+          auto inputIt = cutSets.find(inputIndex);
+          if (inputIt != cutSets.end())
+            inputArrival = inputIt->second->bestArrivalTime;
+        }
+        worstArrival = std::max(worstArrival, patternDelays[i] + inputArrival);
+      }
+      return worstArrival;
+    };
+
+    double removedArea = dereferenceCutInputs(*currentCut);
+    totalArea -= removedArea;
+
+    Cut *bestExactCut = currentCut;
+    double bestAddedArea = std::numeric_limits<double>::max();
+    DelayType bestArrival = std::numeric_limits<DelayType>::max();
+
+    if (debugAreaRecovery)
+      getAreaRecoveryDebugStream()
+          << "[area-debug] exact node " << getDebugValueName(logicNetwork, index)
+          << "#" << index << " currentArea=" << totalArea
+          << " removed=" << removedArea << " refs=" << cutSet->mappedRefs
+          << "\n";
+
+    for (Cut *cut : cutSet->getCuts()) {
+      const auto &matched = cut->getMatchedPattern();
+      if (!matched)
+        continue;
+
+      DelayType arrivalTime = computeArrivalTime(*cut);
+      if (arrivalTime > cutSet->requiredTime)
+        continue;
+
+      double addedArea = referenceCutInputs(*cut);
+      totalArea += addedArea;
+
+      bool isBetter = addedArea < bestAddedArea ||
+                      (addedArea == bestAddedArea && arrivalTime < bestArrival) ||
+                      (addedArea == bestAddedArea && arrivalTime == bestArrival &&
+                       matched->getArea() <
+                           bestExactCut->getMatchedPattern()->getArea());
+
+      if (debugAreaRecovery) {
+        getAreaRecoveryDebugStream()
+            << "[area-debug]   exact candidate area=" << matched->getArea()
+            << " added=" << addedArea << " total=" << totalArea
+            << " arrival=" << arrivalTime << " cut=";
+        printDebugCut(getAreaRecoveryDebugStream(), logicNetwork, *cut);
+        getAreaRecoveryDebugStream() << "\n";
+      }
+
+      totalArea -= addedArea;
+      dereferenceCutInputs(*cut);
+
+      if (isBetter) {
+        bestExactCut = cut;
+        bestAddedArea = addedArea;
+        bestArrival = arrivalTime;
+      }
+    }
+
+    totalArea += referenceCutInputs(*bestExactCut);
+    if (bestExactCut != currentCut) {
+      cutSet->setBestCut(bestExactCut);
+      cutSet->bestArrivalTime = bestArrival;
+      if (debugAreaRecovery) {
+        getAreaRecoveryDebugStream()
+            << "[area-debug] exact chosen "
+            << getDebugValueName(logicNetwork, index) << "#" << index
+            << " added=" << bestAddedArea << " arrival=" << bestArrival
+            << " cut=";
+        printDebugCut(getAreaRecoveryDebugStream(), logicNetwork, *bestExactCut);
+        getAreaRecoveryDebugStream() << "\n";
+      }
+    } else {
+      cutSet->bestArrivalTime = bestArrival;
     }
   }
 }
@@ -1609,6 +1897,7 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   if (getenv("ENABLE") && options.enableAreaRecovery) {
     cutEnumerator.computeRequiredTimes();
     cutEnumerator.reselectCutsForAreaFlow();
+    cutEnumerator.reselectCutsForExactArea();
   }
 
   // Select best cuts and perform mapping

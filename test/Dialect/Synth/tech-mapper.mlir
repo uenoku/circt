@@ -104,8 +104,9 @@ hw.module @area_flow_test(in %a : i1, in %b : i1, in %c: i1, out result : i1) {
 // CHECK-LABEL: @area_flow_global_slack_test
 hw.module @area_flow_global_slack_test(in %a : i1, in %b : i1, in %c: i1, in %d : i1, in %e : i1, in %f : i1, in %g : i1, in %h : i1, in %i : i1, in %j : i1, in %k : i1, in %l : i1, in %m : i1, in %n : i1, out slow : i1, out small : i1) {
     // AREA:      %[[slow:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %n: i1, b: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [10]}
-    // AREA-NEXT: %[[small:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @area_flow(a: %a: i1, b: %b: i1, c: %c: i1) -> (result: i1) {test.arrival_times = [10]}
-    // AREA-NEXT: hw.output %[[slow]], %[[small]] : i1, i1
+    // AREA-NEXT: %[[small_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_nn(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
+    // AREA-NEXT: %[[small_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %c: i1, b: %[[small_0]]: i1) -> (result: i1) {test.arrival_times = [2]}
+    // AREA-NEXT: hw.output %[[slow]], %[[small_1]] : i1, i1
     // TIMING:      %[[timing_slow:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %n: i1, b: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [10]}
     // TIMING-NEXT: %[[timing_small_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_nn(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
     // TIMING-NEXT: %[[timing_small_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %c: i1, b: %[[timing_small_0]]: i1) -> (result: i1) {test.arrival_times = [2]}
