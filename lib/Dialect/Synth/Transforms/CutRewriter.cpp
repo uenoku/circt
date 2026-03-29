@@ -70,8 +70,6 @@ uint32_t LogicNetwork::getOrCreateIndex(Value value) {
   if (inserted) {
     indexToValue.push_back(value);
     gates.emplace_back(); // Will be filled in later
-    logicFanoutCounts.push_back(0);
-    externalUseCounts.push_back(0);
   }
   return it->second;
 }
@@ -125,8 +123,6 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       block->getArguments().size() + block->getOperations().size();
   indexToValue.reserve(estimatedSize);
   gates.reserve(estimatedSize);
-  logicFanoutCounts.reserve(estimatedSize);
-  externalUseCounts.reserve(estimatedSize);
 
   auto handleSingleInputGate = [&](Operation *op, Value result,
                                    const Signal &inputSignal) {
@@ -268,15 +264,9 @@ void LogicNetwork::clear() {
   valueToIndex.clear();
   indexToValue.clear();
   gates.clear();
-  logicFanoutCounts.clear();
-  externalUseCounts.clear();
   // Re-add the constant nodes (index 0 = const0, index 1 = const1)
   gates.emplace_back(nullptr, LogicNetworkGate::Constant);
   gates.emplace_back(nullptr, LogicNetworkGate::Constant);
-  logicFanoutCounts.push_back(0);
-  logicFanoutCounts.push_back(0);
-  externalUseCounts.push_back(0);
-  externalUseCounts.push_back(0);
   // Placeholders for constants in indexToValue
   indexToValue.push_back(Value()); // const0
   indexToValue.push_back(Value()); // const1
@@ -1375,7 +1365,7 @@ getTestVariableName(Value value, DenseMap<OperationName, unsigned> &opCounter) {
 
 void CutEnumerator::dump() const {
   DenseMap<OperationName, unsigned> opCounter;
-  for (auto index : processingOrder) {
+  for (uint32_t index : logicNetwork.outputNodes()) {
     auto it = cutSets.find(index);
     if (it == cutSets.end())
       continue;
@@ -1435,9 +1425,7 @@ void CutEnumerator::computeRequiredTimes() {
   if (!hasPrimaryOutput)
     return;
 
-  for (auto index : processingOrder) {
-    if (!logicNetwork.isPrimaryOutput(index))
-      continue;
+  for (uint32_t index : logicNetwork.outputNodes()) {
     auto it = cutSets.find(index);
     if (it == cutSets.end())
       continue;
