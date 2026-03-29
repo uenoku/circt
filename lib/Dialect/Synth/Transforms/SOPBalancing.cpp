@@ -259,6 +259,58 @@ private:
   mutable SOPCache sopCache;
 };
 
+struct IdentityPattern : public CutRewritePattern {
+  IdentityPattern(MLIRContext *context) : CutRewritePattern(context) {}
+
+  std::optional<MatchResult> match(CutEnumerator &enumerator,
+                                   const Cut &cut) const override {
+    const auto &network = enumerator.getLogicNetwork();
+    if (cut.isTrivialCut() || cut.getInputSize() != 2)
+      return std::nullopt;
+
+    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    auto andOp = dyn_cast_or_null<aig::AndInverterOp>(rootOp);
+    if (!andOp)
+      return std::nullopt;
+
+    Signal lhsSignal =
+        network.getSignal(andOp.getOperand(0), andOp.isInverted(0));
+    Signal rhsSignal =
+        network.getSignal(andOp.getOperand(1), andOp.isInverted(1));
+    if (cut.inputs.size() != 2)
+      return std::nullopt;
+
+    SmallVector<Signal, 2> cutSignals = {lhsSignal, rhsSignal};
+    llvm::sort(cutSignals);
+    SmallVector<uint32_t, 2> sortedInputs(cut.inputs.begin(), cut.inputs.end());
+    llvm::sort(sortedInputs);
+    if (cutSignals[0].getIndex() != sortedInputs[0] ||
+        cutSignals[1].getIndex() != sortedInputs[1])
+      return std::nullopt;
+
+    MatchResult result;
+    result.area = 1.0;
+    result.setOwnedDelays(SmallVector<DelayType, 2>{1, 1});
+    return result;
+  }
+
+  FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
+                                 const Cut &cut) const override {
+    const auto &network = enumerator.getLogicNetwork();
+    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    auto andOp = dyn_cast_or_null<aig::AndInverterOp>(rootOp);
+    if (!andOp)
+      return failure();
+    auto newOp = aig::AndInverterOp::create(
+        builder, andOp.getLoc(), andOp.getOperand(0), andOp.getOperand(1),
+        andOp.isInverted(0), andOp.isInverted(1));
+    return newOp.getOperation();
+  }
+
+  unsigned getNumOutputs() const override { return 1; }
+  StringRef getPatternName() const override { return "identity"; }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -278,7 +330,8 @@ struct SOPBalancingPass
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
 
-    SmallVector<std::unique_ptr<CutRewritePattern>, 1> patterns;
+    SmallVector<std::unique_ptr<CutRewritePattern>, 2> patterns;
+    patterns.push_back(std::make_unique<IdentityPattern>(module->getContext()));
     patterns.push_back(
         std::make_unique<SOPBalancingPattern>(module->getContext()));
 
