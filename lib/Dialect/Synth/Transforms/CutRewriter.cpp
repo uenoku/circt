@@ -112,6 +112,8 @@ uint32_t LogicNetwork::addPrimaryInput(Value value) {
 
 uint32_t LogicNetwork::addGate(Operation *op, LogicNetworkGate::Kind kind,
                                Value result, ArrayRef<Signal> operands) {
+  for (Signal operand : operands)
+    recordLogicUse(operand.getIndex());
   const uint32_t index = getOrCreateIndex(result);
   gates[index] = LogicNetworkGate(op, kind, operands);
   return index;
@@ -148,11 +150,6 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     }
   };
 
-  auto recordLogicUses = [&](ArrayRef<Signal> signals) {
-    for (Signal signal : signals)
-      recordLogicUse(signal.getIndex());
-  };
-
   auto recordExternalUses = [&](Operation *op) {
     for (Value operand : op->getOperands()) {
       if (!operand.getType().isInteger(1) || !hasIndex(operand))
@@ -171,15 +168,12 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                 // Single-input AND is a buffer or NOT gate
                 const Signal inputSignal =
                     getOrCreateSignal(inputs[0], andOp.isInverted(0));
-                if (inputSignal.isInverted())
-                  recordLogicUses({inputSignal});
                 handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
               } else if (inputs.size() == 2) {
                 const Signal lhsSignal =
                     getOrCreateSignal(inputs[0], andOp.isInverted(0));
                 const Signal rhsSignal =
                     getOrCreateSignal(inputs[1], andOp.isInverted(1));
-                recordLogicUses({lhsSignal, rhsSignal});
                 addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
               } else {
                 // Variadic AND gates with >2 inputs are treated as primary
@@ -200,7 +194,6 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                   getOrCreateSignal(xorOp.getOperand(0), false);
               const Signal rhsSignal =
                   getOrCreateSignal(xorOp.getOperand(1), false);
-              recordLogicUses({lhsSignal, rhsSignal});
               addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
               return success();
             })
@@ -211,8 +204,6 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                     // Single input = inverter
                     const Signal inputSignal = getOrCreateSignal(
                         majOp.getOperand(0), majOp.isInverted(0));
-                    if (inputSignal.isInverted())
-                      recordLogicUses({inputSignal});
                     handleSingleInputGate(majOp, majOp.getResult(),
                                           inputSignal);
                     return success();
@@ -229,7 +220,6 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                                                            majOp.isInverted(1));
                   const Signal cSignal = getOrCreateSignal(majOp.getOperand(2),
                                                            majOp.isInverted(2));
-                  recordLogicUses({aSignal, bSignal, cSignal});
                   addGate(majOp, LogicNetworkGate::Maj3,
                           {aSignal, bSignal, cSignal});
                   return success();

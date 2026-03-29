@@ -655,7 +655,7 @@ struct CutRewriterOptions {
   /// Computes required times and re-selects cuts using area flow metric
   /// to minimize area while preserving timing. The seed mapping is always
   /// selected with timing priority before required times are computed.
-  bool enableAreaRecovery = false;
+  bool enableAreaRecovery = true;
 
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;
