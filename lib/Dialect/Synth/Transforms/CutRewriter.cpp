@@ -654,6 +654,96 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   }
 }
 
+static void getSortedGateSupport(const LogicNetworkGate &gate,
+                                 SmallVectorImpl<uint32_t> &support) {
+  support.clear();
+  support.reserve(gate.getNumFanins());
+  for (unsigned i = 0, e = gate.getNumFanins(); i < e; ++i) {
+    uint32_t index = gate.edges[i].getIndex();
+    if (index == LogicNetwork::kConstant0 || index == LogicNetwork::kConstant1)
+      continue;
+    support.push_back(index);
+  }
+  llvm::sort(support);
+  support.erase(std::unique(support.begin(), support.end()), support.end());
+}
+
+static FailureOr<llvm::APInt> getEdgeTruthTable(const Cut &cut,
+                                                const Signal &edge) {
+  unsigned numInputs = cut.getInputSize();
+  uint32_t index = edge.getIndex();
+  if (index == LogicNetwork::kConstant0)
+    return edge.isInverted() ? llvm::APInt::getAllOnes(1U << numInputs)
+                             : llvm::APInt::getZero(1U << numInputs);
+  if (index == LogicNetwork::kConstant1)
+    return edge.isInverted() ? llvm::APInt::getZero(1U << numInputs)
+                             : llvm::APInt::getAllOnes(1U << numInputs);
+
+  auto it = llvm::lower_bound(cut.inputs, index);
+  if (it == cut.inputs.end() || *it != index)
+    return failure();
+  unsigned inputIndex = std::distance(cut.inputs.begin(), it);
+  return circt::createVarMask(numInputs, inputIndex, !edge.isInverted());
+}
+
+static FailureOr<llvm::APInt>
+computeGateTruthTable(const LogicNetworkGate &gate,
+                      llvm::function_ref<FailureOr<llvm::APInt>(const Signal &)>
+                          getEdgeTT) {
+  if (!gate.isLogicGate())
+    return failure();
+
+  switch (gate.getKind()) {
+  case LogicNetworkGate::And2:
+  case LogicNetworkGate::Xor2: {
+    auto a = getEdgeTT(gate.edges[0]);
+    auto b = getEdgeTT(gate.edges[1]);
+    if (failed(a) || failed(b))
+      return failure();
+    return applyGateSemantics(gate.getKind(), *a, *b);
+  }
+  case LogicNetworkGate::Maj3:
+  {
+    auto a = getEdgeTT(gate.edges[0]);
+    auto b = getEdgeTT(gate.edges[1]);
+    auto c = getEdgeTT(gate.edges[2]);
+    if (failed(a) || failed(b) || failed(c))
+      return failure();
+    return applyGateSemantics(gate.getKind(), *a, *b, *c);
+  }
+  case LogicNetworkGate::Identity: {
+    auto a = getEdgeTT(gate.edges[0]);
+    if (failed(a))
+      return failure();
+    return applyGateSemantics(gate.getKind(), *a);
+  }
+  case LogicNetworkGate::Constant:
+  case LogicNetworkGate::PrimaryInput:
+    return failure();
+  }
+  llvm_unreachable("unknown logic network gate kind");
+}
+
+bool LogicNetworkGate::matchesCutExactly(const Cut &cut) const {
+  if (!isLogicGate() || !cut.getTruthTable())
+    return false;
+
+  llvm::SmallVector<uint32_t, 3> support;
+  getSortedGateSupport(*this, support);
+  if (!llvm::equal(support, cut.inputs))
+    return false;
+
+  auto result = computeGateTruthTable(*this,
+                                      [&](const Signal &edge) -> FailureOr<llvm::APInt> {
+                                        return getEdgeTruthTable(cut, edge);
+                                      });
+  if (failed(result))
+    return false;
+
+  return *cut.getTruthTable() ==
+         BinaryTruthTable(cut.getInputSize(), 1, *result);
+}
+
 /// Simulate a gate and return its truth table.
 static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
                                 llvm::DenseMap<uint32_t, llvm::APInt> &cache,
@@ -664,55 +754,29 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     return cacheIt->second;
 
   const auto &gate = network.getGate(index);
-  llvm::APInt result;
-
   auto getEdgeTT = [&](const Signal &edge) {
     auto tt = simulateGate(network, edge.getIndex(), cache, numInputs);
     if (edge.isInverted())
       tt.flipAllBits();
-    return tt;
+    return FailureOr<llvm::APInt>(std::move(tt));
   };
 
-  switch (gate.getKind()) {
-  case LogicNetworkGate::Constant:
+  if (gate.getKind() == LogicNetworkGate::Constant) {
     // Constant 0 or 1 - return all zeros or all ones
     if (index == LogicNetwork::kConstant0)
-      result = llvm::APInt::getZero(1U << numInputs);
+      cache[index] = llvm::APInt::getZero(1U << numInputs);
     else
-      result = llvm::APInt::getAllOnes(1U << numInputs);
-    break;
+      cache[index] = llvm::APInt::getAllOnes(1U << numInputs);
+    return cache[index];
+  }
 
-  case LogicNetworkGate::PrimaryInput:
+  if (gate.getKind() == LogicNetworkGate::PrimaryInput)
     // Should be in cache already as cut input
     llvm_unreachable("Primary input not in cache - not a cut input?");
-
-  case LogicNetworkGate::And2: {
-    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
-                                getEdgeTT(gate.edges[1]));
-    break;
-  }
-
-  case LogicNetworkGate::Xor2: {
-    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
-                                getEdgeTT(gate.edges[1]));
-    break;
-  }
-
-  case LogicNetworkGate::Maj3: {
-    result =
-        applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
-                           getEdgeTT(gate.edges[1]), getEdgeTT(gate.edges[2]));
-    break;
-  }
-
-  case LogicNetworkGate::Identity: {
-    result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]));
-    break;
-  }
-  }
-
-  cache[index] = result;
-  return result;
+  auto result = computeGateTruthTable(gate, getEdgeTT);
+  assert(succeeded(result) && "failed to simulate logic gate");
+  cache[index] = *result;
+  return *result;
 }
 
 void Cut::computeTruthTable(const LogicNetwork &network) {

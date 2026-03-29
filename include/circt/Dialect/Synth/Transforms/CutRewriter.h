@@ -69,6 +69,7 @@ getTruthTable(ValueRange values, Block *block,
 class CutRewritePatternSet;
 class CutRewriter;
 class CutEnumerator;
+class Cut;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 class ValueNumbering;
@@ -197,6 +198,8 @@ struct LogicNetworkGate {
   }
 
   bool isPrimaryOutput() const { return externalUseCount != 0; }
+
+  bool matchesCutExactly(const Cut &cut) const;
 };
 
 /// Flat logic network representation for efficient cut enumeration.

@@ -21,10 +21,12 @@
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/TruthTable.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "synth-sop-balancing"
@@ -259,56 +261,55 @@ private:
   mutable SOPCache sopCache;
 };
 
-struct IdentityPattern : public CutRewritePattern {
-  IdentityPattern(MLIRContext *context) : CutRewritePattern(context) {}
+struct NativeOpPattern : public CutRewritePattern {
+  NativeOpPattern(MLIRContext *context) : CutRewritePattern(context) {}
+  constexpr static DelayType delays[3] = {1, 1, 1};
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
     const auto &network = enumerator.getLogicNetwork();
-    if (cut.isTrivialCut() || cut.getInputSize() != 2)
+    if (cut.isTrivialCut() || cut.getInputSize() >= 4)
       return std::nullopt;
 
-    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
-    auto andOp = dyn_cast_or_null<aig::AndInverterOp>(rootOp);
-    if (!andOp)
+    const auto &gate = network.getGate(cut.getRootIndex());
+    auto *rootOp = gate.getOperation();
+    if (!rootOp || !gate.matchesCutExactly(cut))
       return std::nullopt;
 
-    Signal lhsSignal =
-        network.getSignal(andOp.getOperand(0), andOp.isInverted(0));
-    Signal rhsSignal =
-        network.getSignal(andOp.getOperand(1), andOp.isInverted(1));
-    if (cut.inputs.size() != 2)
-      return std::nullopt;
-
-    SmallVector<Signal, 2> cutSignals = {lhsSignal, rhsSignal};
-    llvm::sort(cutSignals);
-    SmallVector<uint32_t, 2> sortedInputs(cut.inputs.begin(), cut.inputs.end());
-    llvm::sort(sortedInputs);
-    if (cutSignals[0].getIndex() != sortedInputs[0] ||
-        cutSignals[1].getIndex() != sortedInputs[1])
-      return std::nullopt;
-
-    MatchResult result;
-    result.area = 1.0;
-    result.setOwnedDelays(SmallVector<DelayType, 2>{1, 1});
-    return result;
+    return MatchResult(1.0, ArrayRef<DelayType>(delays, cut.getInputSize()));
   }
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
                                  const Cut &cut) const override {
     const auto &network = enumerator.getLogicNetwork();
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
-    auto andOp = dyn_cast_or_null<aig::AndInverterOp>(rootOp);
-    if (!andOp)
+    if (!rootOp)
       return failure();
-    auto newOp = aig::AndInverterOp::create(
-        builder, andOp.getLoc(), andOp.getOperand(0), andOp.getOperand(1),
-        andOp.isInverted(0), andOp.isInverted(1));
-    return newOp.getOperation();
+
+    return llvm::TypeSwitch<Operation *, FailureOr<Operation *>>(rootOp)
+        .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
+          auto newOp = aig::AndInverterOp::create(
+              builder, andOp.getLoc(), andOp.getOperand(0), andOp.getOperand(1),
+              andOp.isInverted(0), andOp.isInverted(1));
+          return FailureOr<Operation *>(newOp.getOperation());
+        })
+        .Case<comb::XorOp>([&](comb::XorOp xorOp) {
+          auto newOp = comb::XorOp::create(builder, xorOp.getLoc(),
+                                           xorOp.getOperands(), false);
+          return FailureOr<Operation *>(newOp.getOperation());
+        })
+        .Case<synth::mig::MajorityInverterOp>(
+            [&](synth::mig::MajorityInverterOp majOp) {
+              auto newOp = synth::mig::MajorityInverterOp::create(
+                  builder, majOp.getLoc(), majOp.getOperands(),
+                  majOp.getInverted());
+              return FailureOr<Operation *>(newOp.getOperation());
+            })
+        .Default([](Operation *) { return failure(); });
   }
 
   unsigned getNumOutputs() const override { return 1; }
-  StringRef getPatternName() const override { return "identity"; }
+  StringRef getPatternName() const override { return "native-op"; }
 };
 
 } // namespace
@@ -331,7 +332,7 @@ struct SOPBalancingPass
     options.allowNoMatch = true;
 
     SmallVector<std::unique_ptr<CutRewritePattern>, 2> patterns;
-    patterns.push_back(std::make_unique<IdentityPattern>(module->getContext()));
+    patterns.push_back(std::make_unique<NativeOpPattern>(module->getContext()));
     patterns.push_back(
         std::make_unique<SOPBalancingPattern>(module->getContext()));
 
