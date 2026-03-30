@@ -353,6 +353,10 @@ private:
 /// 2. As owned dynamic data (e.g., computed SOP delays)
 ///    - Use setOwnedDelays() to transfer ownership
 ///
+struct MatchImplementation {
+  virtual ~MatchImplementation() = default;
+};
+
 struct MatchResult {
   /// Area cost of implementing this cut with the pattern.
   double area = 0.0;
@@ -375,10 +379,20 @@ struct MatchResult {
     borrowedDelays = {};
   }
 
+  /// Attach a pattern-specific implementation object to this match.
+  void setImplementation(std::shared_ptr<const MatchImplementation> impl) {
+    implementation = std::move(impl);
+  }
+
   /// Get all delays as an ArrayRef.
   ArrayRef<DelayType> getDelays() const {
     return ownedDelays.has_value() ? ArrayRef<DelayType>(*ownedDelays)
                                    : borrowedDelays;
+  }
+
+  /// Get the pattern-specific implementation object for this match.
+  const MatchImplementation *getImplementation() const {
+    return implementation.get();
   }
 
 private:
@@ -391,6 +405,9 @@ private:
   /// moving this MatchResult avoids constructing/moving the SmallVector,
   /// achieving zero-cost abstraction for the common case (borrowed delays).
   std::optional<SmallVector<DelayType, 6>> ownedDelays;
+
+  /// Optional pattern-specific implementation selected during matching.
+  std::shared_ptr<const MatchImplementation> implementation;
 };
 
 /// Represents a cut that has been successfully matched to a rewriting pattern.
@@ -403,7 +420,7 @@ private:
   const CutRewritePattern *pattern = nullptr; ///< The matched library pattern
   SmallVector<DelayType, 1>
       arrivalTimes;  ///< Arrival times of outputs from this pattern
-  double area = 0.0; ///< Area cost of this pattern
+  MatchResult matchResult; ///< Stored match data, including implementation
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -411,8 +428,9 @@ public:
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
-                 SmallVector<DelayType, 1> arrivalTimes, double area)
-      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area) {}
+                 SmallVector<DelayType, 1> arrivalTimes, MatchResult matchResult)
+      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)),
+        matchResult(std::move(matchResult)) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
@@ -424,6 +442,12 @@ public:
 
   /// Get the area cost of using this pattern.
   double getArea() const;
+
+  /// Get the per-input delays for this pattern.
+  ArrayRef<DelayType> getDelays() const;
+
+  /// Get the stored pattern-specific implementation object.
+  const MatchImplementation *getImplementation() const;
 };
 
 /// Represents a cut in the combinational logic network.
@@ -826,7 +850,8 @@ struct CutRewritePattern {
   /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          CutEnumerator &enumerator,
-                                         const Cut &cut) const = 0;
+                                         const Cut &cut,
+                                         const MatchedPattern &matched) const = 0;
 
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;
@@ -945,6 +970,15 @@ private:
 
   /// Available rewriting patterns
   const CutRewritePatternSet &patterns;
+
+  struct PatternSelectionStats {
+    unsigned nativeOnly = 0;
+    unsigned sopOnly = 0;
+    unsigned bothMatched = 0;
+    unsigned bothEqualCost = 0;
+    unsigned nativeWins = 0;
+    unsigned sopWins = 0;
+  } patternSelectionStats;
 
   CutEnumerator cutEnumerator;
 };

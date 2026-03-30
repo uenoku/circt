@@ -51,5 +51,8 @@ hw.module @preserve(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out o1: i1, out 
     %z = synth.aig.and_inv not %y : i1
     %1 = synth.mig.maj_inv %a, %b, %c : i1
     %2 = comb.xor %a, %b : i1
+    // CHECK: %[[MAJ:.*]] = synth.mig.maj_inv %a, %b, %c : i1
+    // CHECK: %[[XOR:.*]] = comb.xor bin %a, %b : i1
+    // CHECK: hw.output %{{.*}}, %[[MAJ]], %[[XOR]] : i1, i1, i1
     hw.output %z, %1, %2 : i1, i1, i1
 }

@@ -127,7 +127,8 @@ struct TechLibraryPattern : public CutRewritePattern {
   /// Rewrite the cut set using this library primitive
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                        CutEnumerator &enumerator,
-                                       const Cut &cut) const override {
+                                       const Cut &cut,
+                                       const MatchedPattern &) const override {
     const auto &network = enumerator.getLogicNetwork();
     // Create a new instance of the module
     SmallVector<unsigned> permutedInputIndices;

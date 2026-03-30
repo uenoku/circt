@@ -32,7 +32,8 @@
 
 hw.module private @basic(in %a : i1, in %b : i1, out x : i1) {
   %p = synth.aig.and_inv not %a, %b : i1
-  %q = comb.and %p, %a : i1
+  %c = synth.aig.and_inv not %p : i1
+  %q = comb.and %c, %a : i1
   %r = comb.or %q, %a : i1
   %s = comb.xor %r, %a : i1
   hw.output %s : i1
