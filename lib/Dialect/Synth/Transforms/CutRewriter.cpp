@@ -1954,7 +1954,7 @@ void CutEnumerator::reselectCutsForExactArea() {
     }
 
     totalArea += referenceCutInputs(*bestExactCut, bestExactMatch);
-    bestExactCut->setMatchedPattern(bestExactMatch);
+    bestExactCut->setMatchedPattern(std::move(bestExactMatch));
     if (bestExactCut != currentCut) {
       cutSet->setBestCut(bestExactCut);
       cutSet->bestArrivalTime = bestArrival;

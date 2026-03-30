@@ -111,8 +111,7 @@ struct SOPPlanNode {
 };
 
 static SOPPlanNode combineSOPPlanNodes(const SOPPlanNode &lhs,
-                                       const SOPPlanNode &rhs,
-                                       unsigned numVars,
+                                       const SOPPlanNode &rhs, unsigned numVars,
                                        size_t &valueNumbering,
                                        SOPImplementation &implementation) {
   SOPPlanNode node;
@@ -121,17 +120,17 @@ static SOPPlanNode combineSOPPlanNodes(const SOPPlanNode &lhs,
   node.usedMask = lhs.usedMask | rhs.usedMask;
   node.inputDelays.assign(numVars, 0);
   implementation.nodes.push_back({lhs.signal, rhs.signal});
-  node.signal = SOPSignal{
-      static_cast<unsigned>(implementation.nodes.size() - 1),
-      /*isInput=*/false, /*inverted=*/false};
+  node.signal =
+      SOPSignal{static_cast<unsigned>(implementation.nodes.size() - 1),
+                /*isInput=*/false, /*inverted=*/false};
 
   auto accumulateDelays = [&](const SOPPlanNode &source) {
     for (unsigned i = 0; i < numVars; ++i) {
       if (!(source.usedMask & (uint64_t{1} << i)))
         continue;
       node.inputDelays[i] =
-          std::max(node.inputDelays[i], static_cast<DelayType>(
-                                            source.inputDelays[i] + 1));
+          std::max(node.inputDelays[i],
+                   static_cast<DelayType>(source.inputDelays[i] + 1));
     }
   };
   accumulateDelays(lhs);
@@ -139,12 +138,13 @@ static SOPPlanNode combineSOPPlanNodes(const SOPPlanNode &lhs,
   return node;
 }
 
-static std::shared_ptr<const SOPImplementation>
-buildSOPImplementation(const SOPForm &sop, ArrayRef<DelayType> inputArrivalTimes,
+static std::unique_ptr<const SOPImplementation>
+buildSOPImplementation(const SOPForm &sop,
+                       ArrayRef<DelayType> inputArrivalTimes,
                        SmallVectorImpl<DelayType> &delays) {
   assert(sop.numVars < 64 && "SOP delay model supports at most 63 variables");
 
-  auto implementation = std::make_shared<SOPImplementation>();
+  auto implementation = std::make_unique<SOPImplementation>();
   SmallVector<SOPPlanNode, expectedISOPInputs> productTerms, literals;
   size_t valueNumbering = 0;
   for (const auto &cube : sop.cubes) {
@@ -163,7 +163,8 @@ buildSOPImplementation(const SOPForm &sop, ArrayRef<DelayType> inputArrivalTimes
     if (!literals.empty()) {
       productTerms.push_back(
           buildBalancedTreeWithArrivalTimes<SOPPlanNode>(
-              literals, [&](const SOPPlanNode &lhs, const SOPPlanNode &rhs) {
+              literals,
+              [&](const SOPPlanNode &lhs, const SOPPlanNode &rhs) {
                 return combineSOPPlanNodes(lhs, rhs, sop.numVars,
                                            valueNumbering, *implementation);
               })
@@ -176,14 +177,14 @@ buildSOPImplementation(const SOPForm &sop, ArrayRef<DelayType> inputArrivalTimes
   if (productTerms.empty())
     return implementation;
 
-  auto outputNode = buildBalancedTreeWithArrivalTimes<SOPPlanNode>(
-                        productTerms,
-                        [&](const SOPPlanNode &lhs, const SOPPlanNode &rhs) {
-                          return combineSOPPlanNodes(lhs, rhs, sop.numVars,
-                                                     valueNumbering,
-                                                     *implementation);
-                        })
-                        .flipInversion();
+  auto outputNode =
+      buildBalancedTreeWithArrivalTimes<SOPPlanNode>(
+          productTerms,
+          [&](const SOPPlanNode &lhs, const SOPPlanNode &rhs) {
+            return combineSOPPlanNodes(lhs, rhs, sop.numVars, valueNumbering,
+                                       *implementation);
+          })
+          .flipInversion();
   implementation->output = outputNode.signal;
 
   for (unsigned i = 0; i < sop.numVars; ++i)
@@ -225,18 +226,17 @@ struct SOPBalancingPattern : public CutRewritePattern {
     if (sop.cubes.size() > 1)
       totalGates += sop.cubes.size() - 1;
 
-
     SmallVector<DelayType, expectedISOPInputs> delays;
     auto implementation = buildSOPImplementation(sop, arrivalTimes, delays);
-
-    llvm::errs() << "SOP with " << sop.cubes.size() << " cubes and "
-                 << totalGates << " " << cut.getInputSize() << "-input gates\n";
-    llvm::errs() << "Truth table: " << tt.table << "\n";
-    llvm::errs() << "Extracted SOP:\n";
-    sop.dump(llvm::errs());
-    for (unsigned i = 0; i < cut.getInputSize(); ++i)
-      llvm::errs() << "Input " << i << " arrival time: " << arrivalTimes[i]
-                   << ", delay contribution: " << delays[i] << "\n";
+    // llvm::errs() << "SOP with " << sop.cubes.size() << " cubes and "
+    //              << totalGates << " " << cut.getInputSize() << "-input
+    //              gates\n";
+    // llvm::errs() << "Truth table: " << tt.table << "\n";
+    // llvm::errs() << "Extracted SOP:\n";
+    // sop.dump(llvm::errs());
+    // for (unsigned i = 0; i < cut.getInputSize(); ++i)
+    //   llvm::errs() << "Input " << i << " arrival time: " << arrivalTimes[i]
+    //                << ", delay contribution: " << delays[i] << "\n";
     MatchResult result;
     result.area = static_cast<double>(totalGates);
     result.setOwnedDelays(std::move(delays));
@@ -269,7 +269,8 @@ struct SOPBalancingPattern : public CutRewritePattern {
     SmallVector<Value> nodeValues;
     nodeValues.reserve(implementation->nodes.size());
     auto resolveSignal = [&](const SOPSignal &signal) -> Value {
-      return signal.isInput ? inputValues[signal.index] : nodeValues[signal.index];
+      return signal.isInput ? inputValues[signal.index]
+                            : nodeValues[signal.index];
     };
 
     for (const auto &node : implementation->nodes) {
@@ -395,7 +396,8 @@ struct SOPBalancingPass
 
     SmallVector<std::unique_ptr<CutRewritePattern>, 2> patterns;
     if (!std::getenv("DISABLE_NATIVE_PATTERN"))
-      patterns.push_back(std::make_unique<NativeOpPattern>(module->getContext()));
+      patterns.push_back(
+          std::make_unique<NativeOpPattern>(module->getContext()));
     patterns.push_back(
         std::make_unique<SOPBalancingPattern>(module->getContext()));
 

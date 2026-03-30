@@ -363,6 +363,10 @@ struct MatchResult {
 
   /// Default constructor.
   MatchResult() = default;
+  MatchResult(const MatchResult &) = delete;
+  MatchResult &operator=(const MatchResult &) = delete;
+  MatchResult(MatchResult &&) = default;
+  MatchResult &operator=(MatchResult &&) = default;
 
   /// Constructor with area and delays (by reference).
   MatchResult(double area, ArrayRef<DelayType> delays)
@@ -380,7 +384,7 @@ struct MatchResult {
   }
 
   /// Attach a pattern-specific implementation object to this match.
-  void setImplementation(std::shared_ptr<const MatchImplementation> impl) {
+  void setImplementation(std::unique_ptr<const MatchImplementation> impl) {
     implementation = std::move(impl);
   }
 
@@ -407,7 +411,7 @@ private:
   std::optional<SmallVector<DelayType, 6>> ownedDelays;
 
   /// Optional pattern-specific implementation selected during matching.
-  std::shared_ptr<const MatchImplementation> implementation;
+  std::unique_ptr<const MatchImplementation> implementation;
 };
 
 /// Represents a cut that has been successfully matched to a rewriting pattern.
@@ -425,6 +429,10 @@ private:
 public:
   /// Default constructor creates an invalid matched pattern.
   MatchedPattern() = default;
+  MatchedPattern(const MatchedPattern &) = delete;
+  MatchedPattern &operator=(const MatchedPattern &) = delete;
+  MatchedPattern(MatchedPattern &&) = default;
+  MatchedPattern &operator=(MatchedPattern &&) = default;
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
