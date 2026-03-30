@@ -936,11 +936,6 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   // generation to reduce finalize-time work.
   SmallVector<Cut *, 32> candidateCuts;
   candidateCuts.push_back(primaryInputCut);
-  // Soft cap for generation-time candidate pool. Keep it comfortably above the
-  // final per-root limit so we preserve quality, but prevent explosive growth
-  // at larger cut settings (especially 10/8 and above).
-  const unsigned generationCap =
-      std::max(options.maxCutSizePerRoot + 8, options.maxCutSizePerRoot * 3);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
@@ -1054,21 +1049,6 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         return mergedCut->dominates(*existing);
       });
       candidateCuts.push_back(mergedCut);
-
-      if (candidateCuts.size() > generationCap) {
-        auto keepBegin = candidateCuts.begin() + 1;
-        // Keep trivial cut at index 0 and retain lexicographically smaller
-        // low-support candidates first when trimming the generation pool.
-        std::sort(keepBegin, candidateCuts.end(),
-                  [](const Cut *a, const Cut *b) {
-                    if (a->getInputSize() != b->getInputSize())
-                      return a->getInputSize() < b->getInputSize();
-                    return std::lexicographical_compare(
-                        a->inputs.begin(), a->inputs.end(), b->inputs.begin(),
-                        b->inputs.end());
-                  });
-        candidateCuts.resize(generationCap);
-      }
 
       LLVM_DEBUG({
         if (mergedCut->inputs.size() >= 4) {
