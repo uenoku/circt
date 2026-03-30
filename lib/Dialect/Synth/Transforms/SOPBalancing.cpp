@@ -268,7 +268,8 @@ struct NativeOpPattern : public CutRewritePattern {
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
     const auto &network = enumerator.getLogicNetwork();
-    if (cut.isTrivialCut() || cut.getInputSize() >= 4)
+    auto size = cut.getInputSize();
+    if (cut.isTrivialCut() || size >= 4 || size <= 1)
       return std::nullopt;
 
     const auto &gate = network.getGate(cut.getRootIndex());
@@ -286,32 +287,51 @@ struct NativeOpPattern : public CutRewritePattern {
     if (!rootOp)
       return failure();
 
-    return llvm::TypeSwitch<Operation *, FailureOr<Operation *>>(rootOp)
-        .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
-          auto newOp = aig::AndInverterOp::create(
-              builder, andOp.getLoc(), andOp.getOperand(0), andOp.getOperand(1),
-              andOp.isInverted(0), andOp.isInverted(1));
-          return FailureOr<Operation *>(newOp.getOperation());
-        })
-        .Case<comb::XorOp>([&](comb::XorOp xorOp) {
-          auto newOp = comb::XorOp::create(builder, xorOp.getLoc(),
-                                           xorOp.getOperands(), false);
-          return FailureOr<Operation *>(newOp.getOperation());
-        })
-        .Case<synth::mig::MajorityInverterOp>(
-            [&](synth::mig::MajorityInverterOp majOp) {
-              auto newOp = synth::mig::MajorityInverterOp::create(
-                  builder, majOp.getLoc(), majOp.getOperands(),
-                  majOp.getInverted());
-              return FailureOr<Operation *>(newOp.getOperation());
-            })
-        .Default([](Operation *) { return failure(); });
+    auto gate = network.getGate(cut.getRootIndex());
+    SmallVector<Value> inputValues;
+    network.getValues(cut.inputs, inputValues);
+    auto getEdgeTT = [&](const Signal &edge) -> std::pair<Value, bool> {
+      Value v = network.getValue(edge.getIndex());
+      bool inverted = edge.isInverted();
+      return {v, inverted};
+    };
+    switch (gate.getKind()) {
+    case LogicNetworkGate::And2: {
+      auto [a, aInv] = getEdgeTT(gate.edges[0]);
+      auto [b, bInv] = getEdgeTT(gate.edges[1]);
+      auto newOp = aig::AndInverterOp::create(builder, rootOp->getLoc(), a, b,
+                                              aInv, bInv);
+      return newOp.getOperation();
+    }
+    case LogicNetworkGate::Xor2: {
+      SmallVector<Value> operands;
+      for (unsigned i = 0; i < 2; ++i) {
+        auto [v, inv] = getEdgeTT(gate.edges[i]);
+        if (inv)
+          v = comb::createOrFoldNot(builder, rootOp->getLoc(), v);
+        operands.push_back(v);
+      }
+      auto newOp =
+          comb::XorOp::create(builder, rootOp->getLoc(), operands, true);
+      return newOp.getOperation();
+    }
+    case LogicNetworkGate::Maj3: {
+      auto [a, aInv] = getEdgeTT(gate.edges[0]);
+      auto [b, bInv] = getEdgeTT(gate.edges[1]);
+      auto [c, cInv] = getEdgeTT(gate.edges[2]);
+      auto newOp = synth::mig::MajorityInverterOp::create(
+          builder, rootOp->getLoc(), ArrayRef<Value>{a, b, c},
+          ArrayRef<bool>{aInv, bInv, cInv});
+      return newOp.getOperation();
+    }
+    default:
+      llvm_unreachable("unexpected gate kind for native op pattern");
+    }
   }
 
   unsigned getNumOutputs() const override { return 1; }
   StringRef getPatternName() const override { return "native-op"; }
 };
-
 } // namespace
 
 //===----------------------------------------------------------------------===//

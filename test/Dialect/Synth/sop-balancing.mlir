@@ -41,3 +41,15 @@ hw.module @balance(in %a: i1, in %b: i1, in %c: i1, in %d: i1, in %e: i1, in %f:
     hw.output %5 : i1
 }
 
+
+// Example from ICCAD paper Sec 3.2.
+// CHECK-LABEL: hw.module @preserve
+hw.module @preserve(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out o1: i1, out o2: i1, out o3: i1) {
+    %0 = synth.aig.and_inv %a, not %b : i1
+    %n = synth.aig.and_inv not %a, not %d : i1
+    %y = synth.aig.and_inv not %0, not %n : i1
+    %z = synth.aig.and_inv not %y : i1
+    %1 = synth.mig.maj_inv %a, %b, %c : i1
+    %2 = comb.xor %a, %b : i1
+    hw.output %z, %1, %2 : i1, i1, i1
+}
