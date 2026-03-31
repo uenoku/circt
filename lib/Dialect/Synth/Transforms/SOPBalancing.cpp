@@ -87,6 +87,9 @@ struct SOPAndNode {
 };
 
 struct SOPImplementation : MatchImplementation {
+  ArrayRef<DelayType> getDelays() const override { return delays; }
+
+  SmallVector<DelayType, 6> delays;
   SmallVector<SOPAndNode, 8> nodes;
   SOPSignal output;
 };
@@ -140,8 +143,7 @@ static SOPPlanNode combineSOPPlanNodes(const SOPPlanNode &lhs,
 
 static std::unique_ptr<const SOPImplementation>
 buildSOPImplementation(const SOPForm &sop,
-                       ArrayRef<DelayType> inputArrivalTimes,
-                       SmallVectorImpl<DelayType> &delays) {
+                       ArrayRef<DelayType> inputArrivalTimes) {
   assert(sop.numVars < 64 && "SOP delay model supports at most 63 variables");
 
   auto implementation = std::make_unique<SOPImplementation>();
@@ -173,7 +175,7 @@ buildSOPImplementation(const SOPForm &sop,
     }
   }
 
-  delays.resize(sop.numVars, 0);
+  SmallVector<DelayType, 6> delays(sop.numVars, 0);
   if (productTerms.empty())
     return implementation;
 
@@ -190,6 +192,7 @@ buildSOPImplementation(const SOPForm &sop,
   for (unsigned i = 0; i < sop.numVars; ++i)
     if (outputNode.usedMask & (uint64_t{1} << i))
       delays[i] = outputNode.inputDelays[i];
+  implementation->delays = std::move(delays);
   return implementation;
 }
 
@@ -226,8 +229,7 @@ struct SOPBalancingPattern : public CutRewritePattern {
     if (sop.cubes.size() > 1)
       totalGates += sop.cubes.size() - 1;
 
-    SmallVector<DelayType, expectedISOPInputs> delays;
-    auto implementation = buildSOPImplementation(sop, arrivalTimes, delays);
+    auto implementation = buildSOPImplementation(sop, arrivalTimes);
     // llvm::errs() << "SOP with " << sop.cubes.size() << " cubes and "
     //              << totalGates << " " << cut.getInputSize() << "-input
     //              gates\n";
@@ -236,10 +238,10 @@ struct SOPBalancingPattern : public CutRewritePattern {
     // sop.dump(llvm::errs());
     // for (unsigned i = 0; i < cut.getInputSize(); ++i)
     //   llvm::errs() << "Input " << i << " arrival time: " << arrivalTimes[i]
-    //                << ", delay contribution: " << delays[i] << "\n";
+    //                << ", delay contribution: "
+    //                << implementation->getDelays()[i] << "\n";
     MatchResult result;
-    result.area = static_cast<double>(totalGates);
-    result.setOwnedDelays(std::move(delays));
+    result.setStaticArea(static_cast<double>(totalGates));
     result.setImplementation(std::move(implementation));
     return result;
   }

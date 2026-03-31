@@ -908,7 +908,7 @@ const CutRewritePattern *MatchedPattern::getPattern() const {
 
 double MatchedPattern::getArea() const {
   assert(pattern && "Pattern must be set to get area");
-  return matchResult.area;
+  return matchResult.getArea();
 }
 
 ArrayRef<DelayType> MatchedPattern::getDelays() const {
@@ -2105,7 +2105,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
         info->matched = true;
         info->pattern = pattern;
-        info->area = matchResult.area;
+        info->area = matchResult.getArea();
         info->arrivalTimes.assign(outputArrivalTimes.begin(),
                                   outputArrivalTimes.end());
       };
@@ -2115,7 +2115,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           ArrayRef<DelayType> outputArrivalTimes) {
         // Update the arrival time
         if (!bestPattern ||
-            compareDelayAndArea(options.strategy, matchResult.area,
+            compareDelayAndArea(options.strategy, matchResult.getArea(),
                                 outputArrivalTimes, bestArea,
                                 bestArrivalTimes)) {
           LLVM_DEBUG({
@@ -2124,7 +2124,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
             cut.dump(llvm::dbgs(), network);
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
-            llvm::dbgs() << " with area: " << matchResult.area;
+            llvm::dbgs() << " with area: " << matchResult.getArea();
             llvm::dbgs() << " and input arrival times: ";
             for (unsigned i = 0; i < inputArrivalTimes.size(); ++i) {
               llvm::dbgs() << " " << inputArrivalTimes[i];
@@ -2140,7 +2140,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
           bestArrivalTimes.assign(outputArrivalTimes.begin(),
                                   outputArrivalTimes.end());
-          bestArea = matchResult.area;
+          bestArea = matchResult.getArea();
           bestPattern = pattern;
           bestMatchResult = std::move(matchResult);
         }
@@ -2284,7 +2284,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
         sopPattern) {
       auto nativeMatch = nativePattern->match(cutEnumerator, *bestCut);
       auto sopMatch = sopPattern->match(cutEnumerator, *bestCut);
-      if (nativeMatch && sopMatch && nativeMatch->area == sopMatch->area &&
+      if (nativeMatch && sopMatch &&
+          nativeMatch->getArea() == sopMatch->getArea() &&
           nativeMatch->getDelays() == sopMatch->getDelays()) {
         auto countRewriteOps =
             [&](const CutRewritePattern *pattern, MatchResult match)

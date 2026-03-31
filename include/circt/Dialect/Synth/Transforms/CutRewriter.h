@@ -342,25 +342,18 @@ private:
   llvm::SmallVector<LogicNetworkGate> gates;
 };
 
-/// Result of matching a cut against a pattern.
-///
-/// This structure contains the area and per-input delay information
-/// computed during pattern matching.
-///
-/// The delays can be stored in two ways:
-/// 1. As a reference to static/cached data (e.g., tech library delays)
-///    - Use setDelayRef() for zero-cost reference (no allocation)
-/// 2. As owned dynamic data (e.g., computed SOP delays)
-///    - Use setOwnedDelays() to transfer ownership
-///
 struct MatchImplementation {
   virtual ~MatchImplementation() = default;
+  virtual ArrayRef<DelayType> getDelays() const = 0;
 };
 
+/// Result of matching a cut against a pattern.
+///
+/// Most patterns have static area and delay data, so the common case stores
+/// those by value/reference in this object without allocating. Patterns with
+/// dynamic implementations, such as SOP balancing, attach a MatchImplementation
+/// that owns the selected realization and its delay vector.
 struct MatchResult {
-  /// Area cost of implementing this cut with the pattern.
-  double area = 0.0;
-
   /// Default constructor.
   MatchResult() = default;
   MatchResult(const MatchResult &) = delete;
@@ -368,30 +361,27 @@ struct MatchResult {
   MatchResult(MatchResult &&) = default;
   MatchResult &operator=(MatchResult &&) = default;
 
-  /// Constructor with area and delays (by reference).
+  /// Constructor with static area and delays (by reference).
   MatchResult(double area, ArrayRef<DelayType> delays)
-      : area(area), borrowedDelays(delays) {}
+      : staticArea(area), staticDelays(delays) {}
+
+  /// Set area for static/cached matches.
+  void setStaticArea(double area) { staticArea = area; }
 
   /// Set delays by reference (zero-cost for static/cached delays).
   /// The caller must ensure the referenced data remains valid.
-  void setDelayRef(ArrayRef<DelayType> delays) { borrowedDelays = delays; }
-
-  /// Set delays by transferring ownership (for dynamically computed delays).
-  /// This moves the data into internal storage.
-  void setOwnedDelays(SmallVector<DelayType, 6> delays) {
-    ownedDelays.emplace(std::move(delays));
-    borrowedDelays = {};
-  }
+  void setStaticDelays(ArrayRef<DelayType> delays) { staticDelays = delays; }
 
   /// Attach a pattern-specific implementation object to this match.
   void setImplementation(std::unique_ptr<const MatchImplementation> impl) {
     implementation = std::move(impl);
   }
 
+  double getArea() const { return staticArea; }
+
   /// Get all delays as an ArrayRef.
   ArrayRef<DelayType> getDelays() const {
-    return ownedDelays.has_value() ? ArrayRef<DelayType>(*ownedDelays)
-                                   : borrowedDelays;
+    return implementation ? implementation->getDelays() : staticDelays;
   }
 
   /// Get the pattern-specific implementation object for this match.
@@ -400,15 +390,9 @@ struct MatchResult {
   }
 
 private:
-  /// Borrowed delays (used when ownedDelays is empty).
-  /// Points to external data provided via setDelayRef().
-  ArrayRef<DelayType> borrowedDelays;
-
-  /// Owned delays (used when present).
-  /// Only allocated when setOwnedDelays() is called. When empty (std::nullopt),
-  /// moving this MatchResult avoids constructing/moving the SmallVector,
-  /// achieving zero-cost abstraction for the common case (borrowed delays).
-  std::optional<SmallVector<DelayType, 6>> ownedDelays;
+  /// Static area/delay data used by the common non-stateful matchers.
+  double staticArea = 0.0;
+  ArrayRef<DelayType> staticDelays;
 
   /// Optional pattern-specific implementation selected during matching.
   std::unique_ptr<const MatchImplementation> implementation;
