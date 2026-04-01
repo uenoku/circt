@@ -82,12 +82,6 @@ struct SynthOptimizationPipelineOptions
       llvm::cl::desc("Lower operators in a timing-aware fashion"),
       llvm::cl::init(false)};
 
-  PassOptions::Option<std::string> cutRewriteDB{
-      *this, "cut-rewrite-db",
-      llvm::cl::desc(
-          "Enable generic cut rewriting using the named built-in database"),
-      llvm::cl::init("")};
-
   PassOptions::Option<std::string> cutRewriteDBFile{
       *this, "cut-rewrite-db-file",
       llvm::cl::desc("External cut-rewrite database file in MLIR or MLIR bytecode"),
@@ -102,11 +96,6 @@ struct SynthOptimizationPipelineOptions
       *this, "cut-rewrite-max-cut-input-size",
       llvm::cl::desc("Maximum cut input size for cut rewriting"),
       llvm::cl::init(4)};
-
-  PassOptions::Option<int64_t> cutRewriteConflictLimit{
-      *this, "cut-rewrite-conflict-limit",
-      llvm::cl::desc("Per-SAT-call conflict budget for SAT-backed cut-rewrite databases"),
-      llvm::cl::init(100)};
 };
 
 //===----------------------------------------------------------------------===//

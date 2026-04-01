@@ -86,15 +86,11 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
 }
 
 def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
-  let summary = "Cut rewriting using a built-in or external database";
+  let summary = "Cut rewriting using an external database";
   let description = [{
-    This pass performs cut rewriting using either a built-in optimization
-    database or an external database file.
-
-    The initial supported built-in database is MIG_EXACT, which matches small
-    cuts by NPN-canonical truth table and rewrites them using precomputed exact
-    majority-inverter graphs. External database files are loaded once during
-    pass initialization and reused for each module handled by the pass.
+    This pass performs cut rewriting using an external database file.
+    Database files are loaded once during pass initialization and reused for
+    each module handled by the pass.
   }];
   let options = [
     Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "4",
@@ -111,12 +107,8 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
                         "Optimize for timing")
            )}]>,
     Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
-    Option<"db", "db", "std::string", "\"\"",
-           "Built-in database to use (MIG_EXACT or mig-exact). Ignored when db-file is provided.">,
     Option<"dbFile", "db-file", "std::string", "\"\"",
            "External cut-rewrite database file in MLIR or MLIR bytecode">,
-    Option<"conflictLimit", "conflict-limit", "int64_t", "100",
-           "Per-SAT-call conflict budget for SAT-backed databases. -1 disables the limit.">
   ];
   let statistics = [
     Statistic<"numCutsCreated", "cuts-created",
