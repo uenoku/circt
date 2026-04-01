@@ -190,6 +190,15 @@ static cl::opt<bool> enableSOPBalancing("enable-sop-balancing",
                                         cl::desc("Enable SOP balancing"),
                                         cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<std::string> cutRewriteDB(
+    "cut-rewrite-db",
+    cl::desc("Enable generic cut rewriting using the named database"),
+    cl::value_desc("db"), cl::init(""), cl::cat(mainCategory));
+static cl::opt<int64_t> cutRewriteConflictLimit(
+    "cut-rewrite-conflict-limit",
+    cl::desc("Per-SAT-call conflict budget for SAT-backed cut-rewrite databases"),
+    cl::init(100), cl::cat(mainCategory));
+
 static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
                                       cl::init(6), cl::cat(mainCategory));
@@ -274,6 +283,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
+    optimizationOptions.cutRewriteDB = cutRewriteDB;
+    optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
+    optimizationOptions.cutRewriteConflictLimit = cutRewriteConflictLimit;
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
     if (untilReached(UntilMapping))

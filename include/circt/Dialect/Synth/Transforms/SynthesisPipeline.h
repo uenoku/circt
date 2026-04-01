@@ -81,6 +81,26 @@ struct SynthOptimizationPipelineOptions
       *this, "timing-aware",
       llvm::cl::desc("Lower operators in a timing-aware fashion"),
       llvm::cl::init(false)};
+
+  PassOptions::Option<std::string> cutRewriteDB{
+      *this, "cut-rewrite-db",
+      llvm::cl::desc("Enable generic cut rewriting using the named database"),
+      llvm::cl::init("")};
+
+  PassOptions::Option<unsigned> cutRewriteMaxCutsPerRoot{
+      *this, "cut-rewrite-max-cuts-per-root",
+      llvm::cl::desc("Maximum number of cuts per root for cut rewriting"),
+      llvm::cl::init(4)};
+
+  PassOptions::Option<unsigned> cutRewriteMaxCutInputSize{
+      *this, "cut-rewrite-max-cut-input-size",
+      llvm::cl::desc("Maximum cut input size for cut rewriting"),
+      llvm::cl::init(4)};
+
+  PassOptions::Option<int64_t> cutRewriteConflictLimit{
+      *this, "cut-rewrite-conflict-limit",
+      llvm::cl::desc("Per-SAT-call conflict budget for SAT-backed cut-rewrite databases"),
+      llvm::cl::init(100)};
 };
 
 //===----------------------------------------------------------------------===//

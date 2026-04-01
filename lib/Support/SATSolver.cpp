@@ -41,6 +41,8 @@ public:
       solver.assume(lit);
   }
   Result solve() override {
+    if (conflictLimit >= 0)
+      solver.limit("conflicts", conflictLimit);
     switch (solver.solve()) {
     case CaDiCaL::SATISFIABLE:
       return kSAT;
@@ -55,6 +57,7 @@ public:
       return 0;
     return solver.val(v);
   }
+  void setConflictLimit(int limit) override { conflictLimit = limit; }
   void reserveVars(int maxVar) override {
     if (maxVar <= maxVariable)
       return;
@@ -72,6 +75,7 @@ public:
 private:
   mutable CaDiCaL::Solver solver;
   int maxVariable = 0;
+  int conflictLimit = -1;
 };
 
 #endif // CIRCT_CADICAL_ENABLED

@@ -132,6 +132,16 @@ void circt::synth::buildSynthOptimizationPipeline(
     pm.addPass(createStructuralHash());
   }
 
+  if (!options.cutRewriteDB.empty()) {
+    CutRewriteOptions cutRewriteOptions;
+    cutRewriteOptions.db = options.cutRewriteDB;
+    cutRewriteOptions.maxCutsPerRoot = options.cutRewriteMaxCutsPerRoot;
+    cutRewriteOptions.maxCutInputSize = options.cutRewriteMaxCutInputSize;
+    cutRewriteOptions.conflictLimit = options.cutRewriteConflictLimit;
+    cutRewriteOptions.strategy = OptimizationStrategyArea;
+    pm.addPass(synth::createCutRewrite(cutRewriteOptions));
+  }
+
   if (!options.abcCommands.empty()) {
     synth::ABCRunnerOptions abcOptions;
     abcOptions.abcPath = options.abcPath;

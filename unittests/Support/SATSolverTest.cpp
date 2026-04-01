@@ -125,3 +125,31 @@ TEST(SatSolverTest, AssumptionsAreScopedToSolve) {
   EXPECT_EQ(1, solver->val(1));
   EXPECT_EQ(2, solver->val(2));
 }
+
+TEST(SatSolverTest, CadicalConflictLimitCanBeConfigured) {
+  auto solver = createCadicalSATSolver();
+  if (!solver)
+    GTEST_SKIP() << "CaDiCaL is not available in this build.";
+
+  // Build a small pigeonhole instance that requires search to prove UNSAT:
+  // 5 pigeons placed into 4 holes.
+  constexpr int pigeons = 5;
+  constexpr int holes = 4;
+  auto var = [=](int pigeon, int hole) { return pigeon * holes + hole + 1; };
+
+  solver->reserveVars(pigeons * holes);
+
+  for (int pigeon = 0; pigeon < pigeons; ++pigeon)
+    solver->addClause(
+        {var(pigeon, 0), var(pigeon, 1), var(pigeon, 2), var(pigeon, 3)});
+
+  for (int hole = 0; hole < holes; ++hole)
+    for (int lhs = 0; lhs < pigeons; ++lhs)
+      for (int rhs = lhs + 1; rhs < pigeons; ++rhs)
+        solver->addClause({-var(lhs, hole), -var(rhs, hole)});
+
+  solver->setConflictLimit(0);
+  EXPECT_EQ(IncrementalSATSolver::kUNKNOWN, solver->solve());
+  solver->setConflictLimit(-1);
+  EXPECT_EQ(IncrementalSATSolver::kUNSAT, solver->solve());
+}

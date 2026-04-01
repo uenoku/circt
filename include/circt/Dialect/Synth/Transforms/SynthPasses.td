@@ -85,21 +85,33 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
   let dependentDialects = ["comb::CombDialect"];
 }
 
-def ExactMIG : Pass<"synth-exact-mig", "hw::HWModuleOp"> {
-  let summary = "SAT-based exact synthesis and cut rewriting for MIGs";
+def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
+  let summary = "Cut rewriting using a built-in database";
   let description = [{
-    This pass performs exact synthesis of small single-output Boolean cuts into
-    majority-inverter graphs (MIGs) using a direct SAT encoding. Rewrites are
-    applied only when the synthesized MIG is strictly smaller than the current
-    implementation, or equal-size and locally shallower.
+    This pass performs cut rewriting using a built-in optimization database.
+    The initial supported database is MIG_EXACT, which matches small cuts by
+    NPN-canonical truth table and rewrites them using precomputed exact
+    majority-inverter graphs.
   }];
   let options = [
     Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "4",
            "Maximum number of cuts to maintain per node">,
     Option<"maxCutInputSize", "max-cut-input-size", "unsigned", "4",
            "Maximum number of cut inputs to consider">,
-    Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
-           "SAT solver backend to use (auto, z3, cadical)">
+    Option<"strategy", "strategy", "synth::OptimizationStrategy",
+           /*default=*/"synth::OptimizationStrategyTiming",
+           "Optimization strategy (area vs. timing)",
+           [{::llvm::cl::values(
+             clEnumValN(synth::OptimizationStrategyArea, "area",
+                        "Optimize for area"),
+             clEnumValN(synth::OptimizationStrategyTiming, "timing",
+                        "Optimize for timing")
+           )}]>,
+    Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
+    Option<"db", "db", "std::string", "\"\"",
+           "Built-in database to use (MIG_EXACT or mig-exact)">,
+    Option<"conflictLimit", "conflict-limit", "int64_t", "100",
+           "Per-SAT-call conflict budget for SAT-backed databases. -1 disables the limit.">
   ];
   let statistics = [
     Statistic<"numCutsCreated", "cuts-created",

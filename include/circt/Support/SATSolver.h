@@ -176,6 +176,10 @@ public:
   virtual int val(int v) const = 0;
 
   // These helpers are not part of the standard IPASIR interface.
+  /// Set the per-`solve()` conflict budget. Negative values restore the
+  /// backend default of no explicit conflict limit. The backend may choose to
+  /// ignore this if it does not support conflict limits.
+  virtual void setConflictLimit(int limit) {}
   /// Reserve storage for variables in the range `[1, maxVar]`.
   virtual void reserveVars(int maxVar) {}
   /// Add a complete clause in one call.
