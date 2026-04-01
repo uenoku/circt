@@ -192,7 +192,7 @@ static cl::opt<bool> enableSOPBalancing("enable-sop-balancing",
 
 static cl::opt<std::string> cutRewriteDB(
     "cut-rewrite-db",
-    cl::desc("Enable generic cut rewriting using the named database"),
+    cl::desc("Enable generic cut rewriting using the named built-in database"),
     cl::value_desc("db"), cl::init(""), cl::cat(mainCategory));
 static cl::opt<std::string> cutRewriteDBFile(
     "cut-rewrite-db-file",

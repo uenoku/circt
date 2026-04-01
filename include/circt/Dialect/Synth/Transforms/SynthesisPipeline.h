@@ -84,7 +84,8 @@ struct SynthOptimizationPipelineOptions
 
   PassOptions::Option<std::string> cutRewriteDB{
       *this, "cut-rewrite-db",
-      llvm::cl::desc("Enable generic cut rewriting using the named database"),
+      llvm::cl::desc(
+          "Enable generic cut rewriting using the named built-in database"),
       llvm::cl::init("")};
 
   PassOptions::Option<std::string> cutRewriteDBFile{

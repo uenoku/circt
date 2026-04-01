@@ -1,6 +1,6 @@
 // REQUIRES: z3-integration
 // RUN: circt-synth-dbgen --kind=mig-exact --max-inputs=3 --sat-solver=z3 -o %t.db.mlir
-// RUN: circt-synth %s --cut-rewrite-db=mig-exact --cut-rewrite-db-file=%t.db.mlir --until-before mapping | FileCheck %s
+// RUN: circt-synth %s --cut-rewrite-db-file=%t.db.mlir --until-before mapping | FileCheck %s
 
 // CHECK-LABEL: hw.module @majority_tree
 // CHECK: %[[FALSE:.+]] = hw.constant false

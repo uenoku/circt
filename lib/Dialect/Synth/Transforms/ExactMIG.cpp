@@ -33,6 +33,7 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 
@@ -79,14 +80,6 @@ parseBuiltinCutRewriteDatabase(StringRef db) {
       .Case("MIG_EXACT", BuiltinCutRewriteDatabaseKind::MIGExact)
       .Case("mig-exact", BuiltinCutRewriteDatabaseKind::MIGExact)
       .Default(std::nullopt);
-}
-
-static bool databaseNamesMatch(StringRef requestedDB, StringRef entryDB) {
-  if (requestedDB == entryDB)
-    return true;
-  auto requestedKind = parseBuiltinCutRewriteDatabase(requestedDB);
-  auto entryKind = parseBuiltinCutRewriteDatabase(entryDB);
-  return requestedKind && entryKind && *requestedKind == *entryKind;
 }
 
 struct ExactSignalRef {
@@ -663,7 +656,6 @@ private:
 
 static constexpr unsigned kMaxMIGExactInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
-static constexpr StringLiteral kCutRewriteDBAttr = "synth.cut_rewrite.db";
 static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
     "synth.cut_rewrite.canonical_tt";
 
@@ -811,20 +803,22 @@ public:
     return database;
   }
 
-  LogicalResult validate(unsigned maxInputs, int conflictLimit, Operation *op) {
+  LogicalResult validate(unsigned maxInputs, int conflictLimit,
+                         MLIRContext *context) {
     if (maxInputs > kMaxMIGExactInputs) {
-      op->emitError() << "MIG_EXACT supports at most " << kMaxMIGExactInputs
-                      << " cut inputs";
+      emitError(UnknownLoc::get(context))
+          << "MIG_EXACT supports at most " << kMaxMIGExactInputs
+          << " cut inputs";
       return failure();
     }
     if (conflictLimit < -1) {
-      op->emitError()
+      emitError(UnknownLoc::get(context))
           << "'conflict-limit' must be greater than or equal to -1";
       return failure();
     }
 
     if (!createExactMIGSATSolver("auto", conflictLimit)) {
-      op->emitError()
+      emitError(UnknownLoc::get(context))
           << "MIG_EXACT requires a SAT solver, but none is available in this "
              "build";
       return failure();
@@ -1181,19 +1175,12 @@ parseExactMIGNetworkFromModule(hw::HWModuleOp module) {
 }
 
 static LogicalResult
-loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule, StringRef requestedDB,
+loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule,
                                LoadedExactMIGDatabase &database) {
   database.entries.clear();
   database.maxInputSize = 0;
 
   for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
-    auto dbAttr = hwModule->getAttrOfType<StringAttr>(kCutRewriteDBAttr);
-    if (!requestedDB.empty() &&
-        (!dbAttr || !databaseNamesMatch(requestedDB, dbAttr.getValue())))
-      continue;
-    if (requestedDB.empty() && !dbAttr)
-      continue;
-
     auto canonicalTTAttr =
         hwModule->getAttrOfType<IntegerAttr>(kCutRewriteCanonicalTTAttr);
     if (!canonicalTTAttr)
@@ -1316,6 +1303,40 @@ parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
 struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass> {
   using circt::synth::impl::CutRewriteBase<CutRewritePass>::CutRewriteBase;
 
+  LogicalResult initialize(MLIRContext *context) override {
+    loadedMaxInputSize = maxCutInputSize;
+    loadedFileDatabase.reset();
+    builtinDBKind.reset();
+
+    if (!dbFile.empty()) {
+      auto parsedModule = parseCutRewriteDBFile(dbFile, context);
+      if (failed(parsedModule))
+        return failure();
+
+      auto database = std::make_shared<LoadedExactMIGDatabase>();
+      if (failed(loadExactMIGDatabaseFromModule(**parsedModule, *database)))
+        return failure();
+      loadedMaxInputSize = database->maxInputSize;
+      loadedFileDatabase = std::move(database);
+      return success();
+    }
+
+    builtinDBKind = parseBuiltinCutRewriteDatabase(db);
+    if (!builtinDBKind) {
+      emitError(UnknownLoc::get(context))
+          << "unknown cut rewrite database '" << db << "'";
+      return failure();
+    }
+
+    switch (*builtinDBKind) {
+    case BuiltinCutRewriteDatabaseKind::MIGExact:
+      return MIGExactDatabase::get().validate(maxCutInputSize,
+                                              static_cast<int>(conflictLimit),
+                                              context);
+    }
+    llvm_unreachable("unexpected built-in cut rewrite database kind");
+  }
+
   void runOnOperation() override {
     auto module = getOperation();
     LLVM_DEBUG(llvm::dbgs() << "CutRewrite pass: module=" << module.getName()
@@ -1326,41 +1347,14 @@ struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass
                             << " conflictLimit=" << conflictLimit << "\n");
 
     SmallVector<std::unique_ptr<CutRewritePattern>, 1> patterns;
-    unsigned loadedMaxInputSize = maxCutInputSize;
-    OwningOpRef<mlir::ModuleOp> dbModule;
-    LoadedExactMIGDatabase fileDatabase;
-    if (!dbFile.empty()) {
-      auto dbKind = parseBuiltinCutRewriteDatabase(db);
-      if (!dbKind) {
-        module->emitError() << "unknown cut rewrite database '" << db << "'";
-        return signalPassFailure();
-      }
-      auto parsedModule = parseCutRewriteDBFile(dbFile, module.getContext());
-      if (failed(parsedModule))
-        return signalPassFailure();
-      dbModule = std::move(*parsedModule);
-      switch (*dbKind) {
-      case BuiltinCutRewriteDatabaseKind::MIGExact: {
-        if (failed(loadExactMIGDatabaseFromModule(*dbModule, db, fileDatabase)))
-          return signalPassFailure();
-        loadedMaxInputSize = fileDatabase.maxInputSize;
-        patterns.push_back(std::make_unique<FileMIGExactPattern>(
-            module->getContext(), fileDatabase));
-        break;
-      }
-      }
+    if (loadedFileDatabase) {
+      patterns.push_back(std::make_unique<FileMIGExactPattern>(
+          module->getContext(), *loadedFileDatabase));
     } else {
-      auto dbKind = parseBuiltinCutRewriteDatabase(db);
-      if (!dbKind) {
-        module->emitError() << "unknown cut rewrite database '" << db << "'";
-        return signalPassFailure();
-      }
-      switch (*dbKind) {
+      assert(builtinDBKind && "built-in database kind must be initialized");
+      switch (*builtinDBKind) {
       case BuiltinCutRewriteDatabaseKind::MIGExact: {
         auto &database = MIGExactDatabase::get();
-        if (failed(database.validate(maxCutInputSize,
-                                     static_cast<int>(conflictLimit), module)))
-          return signalPassFailure();
         patterns.push_back(
             std::make_unique<MIGExactPattern>(module->getContext(), database));
         break;
@@ -1391,6 +1385,11 @@ struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass
     numCutSetsCreated += stats.numCutSetsCreated;
     numCutsRewritten += stats.numCutsRewritten;
   }
+
+private:
+  std::optional<BuiltinCutRewriteDatabaseKind> builtinDBKind;
+  std::shared_ptr<LoadedExactMIGDatabase> loadedFileDatabase;
+  unsigned loadedMaxInputSize = 0;
 };
 
 } // namespace
@@ -1486,8 +1485,6 @@ LogicalResult circt::synth::emitExactMIGDatabase(
                                  attrBuilder.getStringAttr(moduleName),
                                  hw::ModulePortInfo(inputs, {output}));
       hwModule->setAttr("hw.techlib.info", createTechInfo(**exactNetwork));
-      hwModule->setAttr(kCutRewriteDBAttr,
-                        attrBuilder.getStringAttr(options.databaseName));
       hwModule->setAttr(
           kCutRewriteCanonicalTTAttr,
           attrBuilder.getIntegerAttr(

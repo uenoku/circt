@@ -87,7 +87,6 @@ int main(int argc, char **argv) {
 
   auto module = ModuleOp::create(UnknownLoc::get(&context));
   ExactMIGDatabaseGenOptions options;
-  options.databaseName = "MIG_EXACT";
   options.maxInputs = maxInputs;
   options.satSolver = satSolver;
   options.conflictLimit = conflictLimit;

@@ -23,7 +23,6 @@ namespace circt {
 namespace synth {
 
 struct ExactMIGDatabaseGenOptions {
-  std::string databaseName = "MIG_EXACT";
   std::string satSolver = "auto";
   unsigned maxInputs = 4;
   int64_t conflictLimit = 100;
