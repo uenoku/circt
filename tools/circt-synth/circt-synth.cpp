@@ -194,6 +194,10 @@ static cl::opt<std::string> cutRewriteDB(
     "cut-rewrite-db",
     cl::desc("Enable generic cut rewriting using the named database"),
     cl::value_desc("db"), cl::init(""), cl::cat(mainCategory));
+static cl::opt<std::string> cutRewriteDBFile(
+    "cut-rewrite-db-file",
+    cl::desc("External cut-rewrite database file in MLIR or MLIR bytecode"),
+    cl::value_desc("filename"), cl::init(""), cl::cat(mainCategory));
 static cl::opt<int64_t> cutRewriteConflictLimit(
     "cut-rewrite-conflict-limit",
     cl::desc("Per-SAT-call conflict budget for SAT-backed cut-rewrite databases"),
@@ -284,6 +288,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
     optimizationOptions.cutRewriteDB = cutRewriteDB;
+    optimizationOptions.cutRewriteDBFile = cutRewriteDBFile;
     optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
     optimizationOptions.cutRewriteConflictLimit = cutRewriteConflictLimit;
 

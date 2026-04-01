@@ -110,6 +110,8 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
     Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
     Option<"db", "db", "std::string", "\"\"",
            "Built-in database to use (MIG_EXACT or mig-exact)">,
+    Option<"dbFile", "db-file", "std::string", "\"\"",
+           "External cut-rewrite database file in MLIR or MLIR bytecode">,
     Option<"conflictLimit", "conflict-limit", "int64_t", "100",
            "Per-SAT-call conflict budget for SAT-backed databases. -1 disables the limit.">
   ];

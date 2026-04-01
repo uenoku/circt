@@ -14,11 +14,14 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
+#include "circt/Dialect/Synth/Transforms/ExactMIGDatabase.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -26,6 +29,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/SourceMgr.h"
 #include <array>
 #include <functional>
 #include <limits>
@@ -75,6 +79,14 @@ parseBuiltinCutRewriteDatabase(StringRef db) {
       .Case("MIG_EXACT", BuiltinCutRewriteDatabaseKind::MIGExact)
       .Case("mig-exact", BuiltinCutRewriteDatabaseKind::MIGExact)
       .Default(std::nullopt);
+}
+
+static bool databaseNamesMatch(StringRef requestedDB, StringRef entryDB) {
+  if (requestedDB == entryDB)
+    return true;
+  auto requestedKind = parseBuiltinCutRewriteDatabase(requestedDB);
+  auto entryKind = parseBuiltinCutRewriteDatabase(entryDB);
+  return requestedKind && entryKind && *requestedKind == *entryKind;
 }
 
 struct ExactSignalRef {
@@ -651,6 +663,9 @@ private:
 
 static constexpr unsigned kMaxMIGExactInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
+static constexpr StringLiteral kCutRewriteDBAttr = "synth.cut_rewrite.db";
+static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
+    "synth.cut_rewrite.canonical_tt";
 
 static ExactMIGNetwork remapExactMIGToCutInputs(ExactMIGNetwork network,
                                                 const NPNClass &npnClass) {
@@ -674,6 +689,119 @@ static ExactMIGNetwork remapExactMIGToCutInputs(ExactMIGNetwork network,
   if (npnClass.outputNegation & 1)
     network = invertExactMIGOutput(std::move(network));
   return network;
+}
+
+static SmallVector<DelayType, 6>
+computeExactMIGInputDelays(const ExactMIGNetwork &network) {
+  static constexpr DelayType kUnreachable =
+      std::numeric_limits<DelayType>::min() / 4;
+  SmallVector<DelayType, 6> delays(network.numInputs, 0);
+
+  if (network.steps.empty()) {
+    if (network.output.source == 0)
+      return delays;
+    unsigned inputPos = network.output.source - 1;
+    if (inputPos < network.numInputs && network.output.inverted)
+      delays[inputPos] = 1;
+    return delays;
+  }
+
+  SmallVector<SmallVector<DelayType, 6>, 4> stepDelays;
+  stepDelays.reserve(network.steps.size());
+  auto getSourceDelays = [&](ExactSignalRef signal) {
+    SmallVector<DelayType, 6> source(network.numInputs, kUnreachable);
+    if (signal.source == 0)
+      return source;
+    if (signal.source <= network.numInputs) {
+      source[signal.source - 1] = 0;
+      return source;
+    }
+    unsigned stepIndex = signal.source - (network.numInputs + 1);
+    assert(stepIndex < stepDelays.size() && "step reference out of order");
+    return stepDelays[stepIndex];
+  };
+
+  for (const auto &step : network.steps) {
+    SmallVector<DelayType, 6> stepDelay(network.numInputs, kUnreachable);
+    for (ExactSignalRef signal : step.fanins) {
+      auto childDelays = getSourceDelays(signal);
+      for (unsigned i = 0; i != network.numInputs; ++i) {
+        if (childDelays[i] == kUnreachable)
+          continue;
+        stepDelay[i] = std::max(stepDelay[i], childDelays[i] + 1);
+      }
+    }
+    stepDelays.push_back(std::move(stepDelay));
+  }
+
+  for (unsigned i = 0; i != network.numInputs; ++i)
+    if (stepDelays.back()[i] != kUnreachable)
+      delays[i] = stepDelays.back()[i];
+  return delays;
+}
+
+static Value materializeExactMIGNetwork(OpBuilder &builder, Location loc,
+                                        ValueRange inputs,
+                                        const ExactMIGNetwork &network) {
+  Value constZero;
+  Value constOne;
+  auto getConstant = [&](bool value) -> Value {
+    if (!value) {
+      if (!constZero)
+        constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
+      return constZero;
+    }
+    if (!constOne)
+      constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
+    return constOne;
+  };
+
+  auto getInput = [&](unsigned inputPosition) -> Value {
+    assert(inputPosition < inputs.size() && "input index out of range");
+    return inputs[inputPosition];
+  };
+
+  auto materializeSignal = [&](ExactSignalRef signal,
+                               ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(false);
+    if (signal.source <= inputs.size())
+      return getInput(signal.source - 1);
+
+    unsigned stepIndex = signal.source - (inputs.size() + 1);
+    assert(stepIndex < stepValues.size() && "invalid synthesized step index");
+    return stepValues[stepIndex];
+  };
+
+  if (network.steps.empty()) {
+    if (network.output.source == 0)
+      return getConstant(network.output.inverted);
+
+    Value input = getInput(network.output.source - 1);
+    if (!network.output.inverted)
+      return hw::WireOp::create(builder, loc, input);
+
+    std::array<Value, 1> operands = {input};
+    std::array<bool, 1> inverted = {true};
+    return synth::mig::MajorityInverterOp::create(builder, loc, operands,
+                                                  inverted);
+  }
+
+  SmallVector<Value, 4> stepValues;
+  stepValues.reserve(network.steps.size());
+  for (const auto &step : network.steps) {
+    std::array<Value, 3> operands = {
+        materializeSignal(step.fanins[0], stepValues),
+        materializeSignal(step.fanins[1], stepValues),
+        materializeSignal(step.fanins[2], stepValues)};
+    std::array<bool, 3> inverted = {step.fanins[0].inverted,
+                                    step.fanins[1].inverted,
+                                    step.fanins[2].inverted};
+    stepValues.push_back(
+        synth::mig::MajorityInverterOp::create(builder, loc, operands,
+                                               inverted));
+  }
+  return stepValues.back();
 }
 
 class MIGExactDatabase {
@@ -935,6 +1063,256 @@ private:
   MIGExactDatabase &database;
 };
 
+struct LoadedExactMIGDatabase {
+  const ExactMIGNetwork *lookup(const BinaryTruthTable &tt) const {
+    auto it = entries.find({tt.table, tt.numInputs});
+    if (it == entries.end())
+      return nullptr;
+    return &it->second;
+  }
+
+  DenseMap<std::pair<APInt, unsigned>, ExactMIGNetwork> entries;
+  unsigned maxInputSize = 0;
+};
+
+static FailureOr<ExactSignalRef>
+lookupExactSignal(Value value, DenseMap<Value, ExactSignalRef> &valueToSignal,
+                  Operation *user) {
+  auto it = valueToSignal.find(value);
+  if (it == valueToSignal.end()) {
+    auto diag = user->emitError(
+        "cut-rewrite MIG database module used an unsupported operand");
+    diag.attachNote() << "operand: " << value;
+    return failure();
+  }
+  return it->second;
+}
+
+static FailureOr<ExactMIGNetwork>
+parseExactMIGNetworkFromModule(hw::HWModuleOp module) {
+  auto inputTypes = module.getInputTypes();
+  auto outputTypes = module.getOutputTypes();
+  if (outputTypes.size() != 1)
+    return module.emitError(
+        "cut-rewrite MIG database modules must have a single output");
+  for (Type type : inputTypes)
+    if (!type.isInteger(1))
+      return module.emitError(
+          "cut-rewrite MIG database module inputs must be i1");
+  for (Type type : outputTypes)
+    if (!type.isInteger(1))
+      return module.emitError(
+          "cut-rewrite MIG database module outputs must be i1");
+
+  ExactMIGNetwork network;
+  network.numInputs = module.getNumInputPorts();
+  auto *bodyBlock = module.getBodyBlock();
+  assert(bodyBlock && "database module must have a body block");
+
+  DenseMap<Value, ExactSignalRef> valueToSignal;
+  for (auto [index, argument] : llvm::enumerate(bodyBlock->getArguments()))
+    valueToSignal[argument] = {static_cast<unsigned>(index + 1), false};
+
+  for (Operation &op : bodyBlock->without_terminator()) {
+    if (auto constant = dyn_cast<hw::ConstantOp>(op)) {
+      if (!constant.getType().isInteger(1))
+        return constant.emitError(
+            "cut-rewrite MIG database constants must be i1");
+      auto value = constant.getValueAttr().getValue();
+      valueToSignal[constant.getResult()] = {0, value[0]};
+      continue;
+    }
+
+    if (auto wire = dyn_cast<hw::WireOp>(op)) {
+      auto signal = lookupExactSignal(wire.getInput(), valueToSignal, wire);
+      if (failed(signal))
+        return failure();
+      valueToSignal[wire.getResult()] = *signal;
+      continue;
+    }
+
+    if (auto majority = dyn_cast<synth::mig::MajorityInverterOp>(op)) {
+      if (!majority.getResult().getType().isInteger(1))
+        return majority.emitError(
+            "cut-rewrite MIG database majority nodes must be i1");
+
+      SmallVector<ExactSignalRef> operands;
+      operands.reserve(majority.getInputs().size());
+      for (auto [index, operand] : llvm::enumerate(majority.getInputs())) {
+        auto signal = lookupExactSignal(operand, valueToSignal, majority);
+        if (failed(signal))
+          return failure();
+        if (majority.isInverted(index))
+          signal->inverted = !signal->inverted;
+        operands.push_back(*signal);
+      }
+
+      if (operands.size() == 1) {
+        valueToSignal[majority.getResult()] = operands.front();
+        continue;
+      }
+      if (operands.size() != 3)
+        return majority.emitError(
+            "cut-rewrite MIG database currently supports only 1-input "
+            "inverters and 3-input majorities");
+
+      network.steps.push_back({{operands[0], operands[1], operands[2]}});
+      valueToSignal[majority.getResult()] = {
+          static_cast<unsigned>(network.numInputs + network.steps.size()),
+          false};
+      continue;
+    }
+
+    return op.emitError("unsupported operation in cut-rewrite MIG database");
+  }
+
+  auto output = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
+  if (!output || output.getNumOperands() != 1)
+    return module.emitError(
+        "cut-rewrite MIG database module must terminate with a single-output "
+        "hw.output");
+
+  auto outputSignal =
+      lookupExactSignal(output.getOperand(0), valueToSignal, output);
+  if (failed(outputSignal))
+    return failure();
+  network.output = *outputSignal;
+  return network;
+}
+
+static LogicalResult
+loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule, StringRef requestedDB,
+                               LoadedExactMIGDatabase &database) {
+  database.entries.clear();
+  database.maxInputSize = 0;
+
+  for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
+    auto dbAttr = hwModule->getAttrOfType<StringAttr>(kCutRewriteDBAttr);
+    if (!requestedDB.empty() &&
+        (!dbAttr || !databaseNamesMatch(requestedDB, dbAttr.getValue())))
+      continue;
+    if (requestedDB.empty() && !dbAttr)
+      continue;
+
+    auto canonicalTTAttr =
+        hwModule->getAttrOfType<IntegerAttr>(kCutRewriteCanonicalTTAttr);
+    if (!canonicalTTAttr)
+      return hwModule.emitError("cut-rewrite MIG database module missing '")
+             << kCutRewriteCanonicalTTAttr << "'";
+
+    auto network = parseExactMIGNetworkFromModule(hwModule);
+    if (failed(network))
+      return failure();
+
+    BinaryTruthTable canonicalTT(hwModule.getNumInputPorts(), 1,
+                                 canonicalTTAttr.getValue());
+    auto [it, inserted] = database.entries.try_emplace(
+        {canonicalTT.table, canonicalTT.numInputs}, std::move(*network));
+    if (!inserted)
+      return hwModule.emitError("duplicate canonical truth table in "
+                                "cut-rewrite MIG database");
+
+    database.maxInputSize =
+        std::max(database.maxInputSize, static_cast<unsigned>(canonicalTT.numInputs));
+  }
+
+  if (database.entries.empty())
+    return dbModule.emitError("cut-rewrite database did not contain any "
+                              "matching library entries");
+  return success();
+}
+
+struct FileMIGExactPattern : public CutRewritePattern {
+  FileMIGExactPattern(MLIRContext *context, LoadedExactMIGDatabase &database)
+      : CutRewritePattern(context), database(database) {}
+
+  std::optional<MatchResult> match(CutEnumerator &enumerator,
+                                   const Cut &cut) const override {
+    const auto &logicNetwork = enumerator.getLogicNetwork();
+    if (cut.isTrivialCut() || cut.getOutputSize(logicNetwork) != 1)
+      return std::nullopt;
+
+    auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
+    if (!rootOp || !rootOp->getResult(0).getType().isInteger(1))
+      return std::nullopt;
+
+    for (uint32_t inputIndex : cut.inputs) {
+      if (logicNetwork.getGate(inputIndex).getKind() ==
+          LogicNetworkGate::Constant)
+        continue;
+      Value inputValue = logicNetwork.getValue(inputIndex);
+      if (!inputValue || !inputValue.getType().isInteger(1))
+        return std::nullopt;
+    }
+
+    const NPNClass &npnClass = cut.getNPNClass();
+    const ExactMIGNetwork *canonicalNetwork = database.lookup(npnClass.truthTable);
+    if (!canonicalNetwork)
+      return std::nullopt;
+
+    ExactMIGNetwork exactNetwork =
+        remapExactMIGToCutInputs(*canonicalNetwork, npnClass);
+    ExactMIGMetrics currentMetrics =
+        computeCurrentCutMetrics(cut, logicNetwork);
+    ExactMIGMetrics exactMetrics =
+        computeExactMIGMetrics(exactNetwork, cut, logicNetwork);
+    if (!(exactMetrics.area < currentMetrics.area ||
+          (exactMetrics.area == currentMetrics.area &&
+           exactMetrics.getMaxDepth() < currentMetrics.getMaxDepth())))
+      return std::nullopt;
+
+    MatchResult result;
+    result.area = exactMetrics.area;
+    result.setOwnedDelays(std::move(exactMetrics.delays));
+    return result;
+  }
+
+  FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
+                                 const Cut &cut) const override {
+    const auto &logicNetwork = enumerator.getLogicNetwork();
+    const NPNClass &npnClass = cut.getNPNClass();
+    const ExactMIGNetwork *canonicalNetwork = database.lookup(npnClass.truthTable);
+    if (!canonicalNetwork)
+      return failure();
+
+    ExactMIGNetwork exactNetwork =
+        remapExactMIGToCutInputs(*canonicalNetwork, npnClass);
+    auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
+    assert(rootOp && "cut root must be a valid operation");
+
+    SmallVector<Value> inputs;
+    inputs.reserve(cut.getInputSize());
+    for (uint32_t inputIndex : cut.inputs)
+      inputs.push_back(logicNetwork.getValue(inputIndex));
+    return materializeExactMIGNetwork(builder, rootOp->getLoc(), inputs,
+                                      exactNetwork)
+        .getDefiningOp();
+  }
+
+  unsigned getNumOutputs() const override { return 1; }
+  StringRef getPatternName() const override { return "MIG_EXACT_FILE_DB"; }
+
+private:
+  LoadedExactMIGDatabase &database;
+};
+
+static FailureOr<OwningOpRef<mlir::ModuleOp>>
+parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
+  std::string errorMessage;
+  auto input = mlir::openInputFile(dbFile, &errorMessage);
+  if (!input) {
+    emitError(UnknownLoc::get(context)) << errorMessage;
+    return failure();
+  }
+
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
+  auto parsedModule = parseSourceFile<mlir::ModuleOp>(sourceMgr, context);
+  if (!parsedModule)
+    return failure();
+  return parsedModule;
+}
+
 struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass> {
   using circt::synth::impl::CutRewriteBase<CutRewritePass>::CutRewriteBase;
 
@@ -942,32 +1320,58 @@ struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass
     auto module = getOperation();
     LLVM_DEBUG(llvm::dbgs() << "CutRewrite pass: module=" << module.getName()
                             << " db=" << db
+                            << " dbFile=" << dbFile
                             << " maxCutInputSize=" << maxCutInputSize
                             << " maxCutsPerRoot=" << maxCutsPerRoot
                             << " conflictLimit=" << conflictLimit << "\n");
 
-    auto dbKind = parseBuiltinCutRewriteDatabase(db);
-    if (!dbKind) {
-      module->emitError() << "unknown cut rewrite database '" << db << "'";
-      return signalPassFailure();
-    }
-
     SmallVector<std::unique_ptr<CutRewritePattern>, 1> patterns;
-    switch (*dbKind) {
-    case BuiltinCutRewriteDatabaseKind::MIGExact: {
-      auto &database = MIGExactDatabase::get();
-      if (failed(database.validate(maxCutInputSize,
-                                   static_cast<int>(conflictLimit), module)))
+    unsigned loadedMaxInputSize = maxCutInputSize;
+    OwningOpRef<mlir::ModuleOp> dbModule;
+    LoadedExactMIGDatabase fileDatabase;
+    if (!dbFile.empty()) {
+      auto dbKind = parseBuiltinCutRewriteDatabase(db);
+      if (!dbKind) {
+        module->emitError() << "unknown cut rewrite database '" << db << "'";
         return signalPassFailure();
-      patterns.push_back(
-          std::make_unique<MIGExactPattern>(module->getContext(), database));
-      break;
-    }
+      }
+      auto parsedModule = parseCutRewriteDBFile(dbFile, module.getContext());
+      if (failed(parsedModule))
+        return signalPassFailure();
+      dbModule = std::move(*parsedModule);
+      switch (*dbKind) {
+      case BuiltinCutRewriteDatabaseKind::MIGExact: {
+        if (failed(loadExactMIGDatabaseFromModule(*dbModule, db, fileDatabase)))
+          return signalPassFailure();
+        loadedMaxInputSize = fileDatabase.maxInputSize;
+        patterns.push_back(std::make_unique<FileMIGExactPattern>(
+            module->getContext(), fileDatabase));
+        break;
+      }
+      }
+    } else {
+      auto dbKind = parseBuiltinCutRewriteDatabase(db);
+      if (!dbKind) {
+        module->emitError() << "unknown cut rewrite database '" << db << "'";
+        return signalPassFailure();
+      }
+      switch (*dbKind) {
+      case BuiltinCutRewriteDatabaseKind::MIGExact: {
+        auto &database = MIGExactDatabase::get();
+        if (failed(database.validate(maxCutInputSize,
+                                     static_cast<int>(conflictLimit), module)))
+          return signalPassFailure();
+        patterns.push_back(
+            std::make_unique<MIGExactPattern>(module->getContext(), database));
+        break;
+      }
+      }
     }
 
     CutRewriterOptions options;
     options.strategy = strategy;
-    options.maxCutInputSize = maxCutInputSize;
+    options.maxCutInputSize =
+        std::min(maxCutInputSize.getValue(), loadedMaxInputSize);
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
     options.attachDebugTiming = test;
@@ -990,3 +1394,114 @@ struct CutRewritePass : public circt::synth::impl::CutRewriteBase<CutRewritePass
 };
 
 } // namespace
+
+LogicalResult circt::synth::emitExactMIGDatabase(
+    mlir::ModuleOp module, const ExactMIGDatabaseGenOptions &options) {
+  if (options.maxInputs > kMaxMIGExactInputs) {
+    module.emitError() << "MIG exact database generation supports at most "
+                       << kMaxMIGExactInputs << " inputs";
+    return failure();
+  }
+  if (options.conflictLimit < -1) {
+    module.emitError()
+        << "'conflict-limit' must be greater than or equal to -1";
+    return failure();
+  }
+  if (!createExactMIGSATSolver(options.satSolver, options.conflictLimit)) {
+    module.emitError()
+        << "Exact MIG database generation requires a SAT solver backend '"
+        << options.satSolver << "'";
+    return failure();
+  }
+
+  auto *context = module.getContext();
+  Builder attrBuilder(context);
+  OpBuilder builder(context);
+  builder.setInsertionPointToStart(module.getBody());
+
+  ExactMIGSynthesizer synthesizer(options.satSolver, options.conflictLimit);
+
+  auto createTechInfo = [&](const ExactMIGNetwork &network) -> DictionaryAttr {
+    auto delays = computeExactMIGInputDelays(network);
+    SmallVector<Attribute> delayRows;
+    delayRows.reserve(delays.size());
+    for (DelayType delay : delays)
+      delayRows.push_back(attrBuilder.getArrayAttr(
+          {attrBuilder.getI64IntegerAttr(delay)}));
+    return attrBuilder.getDictionaryAttr({
+        attrBuilder.getNamedAttr("area",
+                                 attrBuilder.getF64FloatAttr(network.steps.size())),
+        attrBuilder.getNamedAttr("delay",
+                                 attrBuilder.getArrayAttr(delayRows)),
+    });
+  };
+
+  for (unsigned numInputs = 1; numInputs <= options.maxInputs; ++numInputs) {
+    uint64_t numFunctions = 1ULL << (1u << numInputs);
+    DenseSet<APInt> seenCanonicalTruthTables;
+    for (uint64_t value = 0; value != numFunctions; ++value) {
+      BinaryTruthTable tt(numInputs, 1, APInt(1u << numInputs, value));
+      NPNClass npnClass = NPNClass::computeNPNCanonicalForm(tt);
+      if (!seenCanonicalTruthTables.insert(npnClass.truthTable.table).second)
+        continue;
+
+      auto exactNetwork =
+          synthesizer.getOrCompute(npnClass.truthTable, kMaxMIGExactSearchArea);
+      if (failed(exactNetwork) || !*exactNetwork) {
+        SmallString<32> ttString;
+        npnClass.truthTable.table.toStringUnsigned(ttString, 16);
+        module.emitError()
+            << "failed to synthesize exact MIG for canonical truth table "
+            << ttString;
+        return failure();
+      }
+
+      SmallVector<hw::PortInfo> inputs;
+      inputs.reserve(numInputs);
+      for (unsigned i = 0; i != numInputs; ++i) {
+        hw::PortInfo port;
+        port.name = attrBuilder.getStringAttr(("i" + Twine(i)).str());
+        port.type = builder.getI1Type();
+        port.dir = hw::ModulePort::Direction::Input;
+        port.argNum = i;
+        inputs.push_back(port);
+      }
+
+      hw::PortInfo output;
+      output.name = attrBuilder.getStringAttr("y");
+      output.type = builder.getI1Type();
+      output.dir = hw::ModulePort::Direction::Output;
+      output.argNum = 0;
+
+      SmallString<64> moduleName;
+      moduleName += "mig_exact_i";
+      moduleName += Twine(numInputs).str();
+      moduleName += "_tt_";
+      SmallString<32> ttString;
+      npnClass.truthTable.table.toStringUnsigned(ttString, 16);
+      moduleName += ttString;
+
+      hw::HWModuleOp hwModule =
+          hw::HWModuleOp::create(builder, module.getLoc(),
+                                 attrBuilder.getStringAttr(moduleName),
+                                 hw::ModulePortInfo(inputs, {output}));
+      hwModule->setAttr("hw.techlib.info", createTechInfo(**exactNetwork));
+      hwModule->setAttr(kCutRewriteDBAttr,
+                        attrBuilder.getStringAttr(options.databaseName));
+      hwModule->setAttr(
+          kCutRewriteCanonicalTTAttr,
+          attrBuilder.getIntegerAttr(
+              builder.getIntegerType(1u << numInputs),
+              npnClass.truthTable.table));
+
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(hwModule.getBodyBlock());
+      Value result = materializeExactMIGNetwork(
+          builder, hwModule.getLoc(), ValueRange(hwModule.getBodyBlock()->getArguments()),
+          **exactNetwork);
+      hwModule.getBodyBlock()->getTerminator()->setOperands({result});
+    }
+  }
+
+  return success();
+}

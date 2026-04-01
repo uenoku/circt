@@ -87,6 +87,11 @@ struct SynthOptimizationPipelineOptions
       llvm::cl::desc("Enable generic cut rewriting using the named database"),
       llvm::cl::init("")};
 
+  PassOptions::Option<std::string> cutRewriteDBFile{
+      *this, "cut-rewrite-db-file",
+      llvm::cl::desc("External cut-rewrite database file in MLIR or MLIR bytecode"),
+      llvm::cl::init("")};
+
   PassOptions::Option<unsigned> cutRewriteMaxCutsPerRoot{
       *this, "cut-rewrite-max-cuts-per-root",
       llvm::cl::desc("Maximum number of cuts per root for cut rewriting"),

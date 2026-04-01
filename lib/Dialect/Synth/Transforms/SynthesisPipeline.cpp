@@ -132,9 +132,10 @@ void circt::synth::buildSynthOptimizationPipeline(
     pm.addPass(createStructuralHash());
   }
 
-  if (!options.cutRewriteDB.empty()) {
+  if (!options.cutRewriteDB.empty() || !options.cutRewriteDBFile.empty()) {
     CutRewriteOptions cutRewriteOptions;
     cutRewriteOptions.db = options.cutRewriteDB;
+    cutRewriteOptions.dbFile = options.cutRewriteDBFile;
     cutRewriteOptions.maxCutsPerRoot = options.cutRewriteMaxCutsPerRoot;
     cutRewriteOptions.maxCutInputSize = options.cutRewriteMaxCutInputSize;
     cutRewriteOptions.conflictLimit = options.cutRewriteConflictLimit;
