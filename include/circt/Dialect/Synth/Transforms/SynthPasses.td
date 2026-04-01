@@ -85,6 +85,34 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
   let dependentDialects = ["comb::CombDialect"];
 }
 
+def ExactMIG : Pass<"synth-exact-mig", "hw::HWModuleOp"> {
+  let summary = "SAT-based exact synthesis and cut rewriting for MIGs";
+  let description = [{
+    This pass performs exact synthesis of small single-output Boolean cuts into
+    majority-inverter graphs (MIGs) using a direct SAT encoding. Rewrites are
+    applied only when the synthesized MIG is strictly smaller than the current
+    implementation, or equal-size and locally shallower.
+  }];
+  let options = [
+    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "4",
+           "Maximum number of cuts to maintain per node">,
+    Option<"maxCutInputSize", "max-cut-input-size", "unsigned", "4",
+           "Maximum number of cut inputs to consider">,
+    Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
+           "SAT solver backend to use (auto, z3, cadical)">
+  ];
+  let statistics = [
+    Statistic<"numCutsCreated", "cuts-created",
+              "Number of cuts created during cut enumeration">,
+    Statistic<"numCutSetsCreated", "cut-sets-created",
+              "Number of cut sets created during cut enumeration">,
+    Statistic<"numCutsRewritten", "cuts-rewritten",
+              "Number of cuts rewritten">,
+  ];
+  let dependentDialects = ["circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 def LowerVariadic : Pass<"synth-lower-variadic", "hw::HWModuleOp"> {
   let summary = "Lower variadic operations to binary operations";
   let description = [{
