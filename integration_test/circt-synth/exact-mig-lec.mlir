@@ -24,8 +24,9 @@ hw.module @majority_tree(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
 }
 
 // CHECK-LABEL: hw.module @no_change_and
-// CHECK: %[[AND:.+]] = synth.aig.and_inv %a, %b : i1
-// CHECK-NEXT: hw.output %[[AND]] : i1
+// CHECK: %[[FALSE:.+]] = hw.constant false
+// CHECK-NEXT: %[[M0:.+]] = synth.mig.maj_inv %[[FALSE]], %a, %b : i1
+// CHECK-NEXT: hw.output %[[M0]] : i1
 hw.module @no_change_and(in %a : i1, in %b : i1, out y : i1) {
   %y = synth.aig.and_inv %a, %b : i1
   hw.output %y : i1

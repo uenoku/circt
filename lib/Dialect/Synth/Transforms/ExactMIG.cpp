@@ -130,148 +130,6 @@ static ExactMIGNetwork invertExactMIGOutput(ExactMIGNetwork network) {
   return network;
 }
 
-struct ExactMIGMetrics {
-  unsigned area = 0;
-  SmallVector<DelayType, 6> delays;
-
-  DelayType getMaxDepth() const {
-    DelayType maxDepth = 0;
-    for (DelayType delay : delays)
-      maxDepth = std::max(maxDepth, delay);
-    return maxDepth;
-  }
-};
-
-static ExactMIGMetrics computeCurrentCutMetrics(const Cut &cut,
-                                                const LogicNetwork &network) {
-  static constexpr DelayType kUnreachable =
-      std::numeric_limits<DelayType>::min() / 4;
-
-  ExactMIGMetrics metrics;
-  metrics.delays.assign(cut.getInputSize(), 0);
-
-  DenseMap<uint32_t, unsigned> boundaryPositions;
-  boundaryPositions.reserve(cut.inputs.size());
-  for (auto [index, input] : llvm::enumerate(cut.inputs))
-    boundaryPositions[input] = index;
-
-  DenseSet<uint32_t> internalNodes;
-  std::function<void(uint32_t)> collect = [&](uint32_t index) {
-    if (boundaryPositions.contains(index))
-      return;
-    const auto &gate = network.getGate(index);
-    if (gate.isAlwaysCutInput())
-      return;
-    if (!internalNodes.insert(index).second)
-      return;
-    for (unsigned operand = 0, e = gate.getNumFanins(); operand != e; ++operand)
-      collect(gate.edges[operand].getIndex());
-  };
-  collect(cut.getRootIndex());
-  metrics.area = internalNodes.size();
-
-  DenseMap<uint32_t, SmallVector<DelayType, 6>> delayCache;
-  std::function<const SmallVector<DelayType, 6> &(uint32_t)> computeDelays =
-      [&](uint32_t index) -> const SmallVector<DelayType, 6> & {
-    auto it = delayCache.find(index);
-    if (it != delayCache.end())
-      return it->second;
-
-    SmallVector<DelayType, 6> delays(cut.getInputSize(), kUnreachable);
-    if (auto boundaryIt = boundaryPositions.find(index);
-        boundaryIt != boundaryPositions.end()) {
-      delays[boundaryIt->second] = 0;
-      return delayCache.try_emplace(index, std::move(delays)).first->second;
-    }
-
-    const auto &gate = network.getGate(index);
-    if (gate.isAlwaysCutInput())
-      return delayCache.try_emplace(index, std::move(delays)).first->second;
-
-    for (unsigned operand = 0, e = gate.getNumFanins(); operand != e;
-         ++operand) {
-      const auto &childDelays = computeDelays(gate.edges[operand].getIndex());
-      for (unsigned i = 0, inputs = cut.getInputSize(); i != inputs; ++i) {
-        if (childDelays[i] == kUnreachable)
-          continue;
-        delays[i] = std::max(delays[i], childDelays[i] + 1);
-      }
-    }
-    return delayCache.try_emplace(index, std::move(delays)).first->second;
-  };
-
-  const auto &rootDelays = computeDelays(cut.getRootIndex());
-  for (unsigned i = 0, e = cut.getInputSize(); i != e; ++i)
-    if (rootDelays[i] != kUnreachable)
-      metrics.delays[i] = rootDelays[i];
-  return metrics;
-}
-
-static ExactMIGMetrics
-computeExactMIGMetrics(const ExactMIGNetwork &network, const Cut &cut,
-                       const LogicNetwork &logicNetwork) {
-  static constexpr DelayType kUnreachable =
-      std::numeric_limits<DelayType>::min() / 4;
-
-  ExactMIGMetrics metrics;
-  metrics.delays.assign(cut.getInputSize(), 0);
-
-  if (network.steps.empty()) {
-    if (network.output.source == 0)
-      return metrics;
-
-    unsigned inputPos = network.output.source - 1;
-    if (inputPos >= cut.inputs.size())
-      return metrics;
-
-    uint32_t inputIndex = cut.inputs[inputPos];
-    const auto &gate = logicNetwork.getGate(inputIndex);
-    if (gate.getKind() == LogicNetworkGate::Constant)
-      return metrics;
-
-    metrics.area = network.output.inverted ? 1 : 0;
-    if (network.output.inverted)
-      metrics.delays[inputPos] = 1;
-    return metrics;
-  }
-
-  SmallVector<SmallVector<DelayType, 6>, 4> stepDelays;
-  stepDelays.reserve(network.steps.size());
-
-  auto getSourceDelays =
-      [&](ExactSignalRef signal) -> SmallVector<DelayType, 6> {
-    SmallVector<DelayType, 6> delays(cut.getInputSize(), kUnreachable);
-    if (signal.source == 0)
-      return delays;
-    if (signal.source <= cut.getInputSize()) {
-      delays[signal.source - 1] = 0;
-      return delays;
-    }
-    unsigned stepIndex = signal.source - (cut.getInputSize() + 1);
-    assert(stepIndex < stepDelays.size() && "step reference out of order");
-    return stepDelays[stepIndex];
-  };
-
-  for (const auto &step : network.steps) {
-    SmallVector<DelayType, 6> delays(cut.getInputSize(), kUnreachable);
-    for (ExactSignalRef signal : step.fanins) {
-      auto childDelays = getSourceDelays(signal);
-      for (unsigned i = 0, e = cut.getInputSize(); i != e; ++i) {
-        if (childDelays[i] == kUnreachable)
-          continue;
-        delays[i] = std::max(delays[i], childDelays[i] + 1);
-      }
-    }
-    stepDelays.push_back(std::move(delays));
-  }
-
-  metrics.area = network.steps.size();
-  for (unsigned i = 0, e = cut.getInputSize(); i != e; ++i)
-    if (stepDelays.back()[i] != kUnreachable)
-      metrics.delays[i] = stepDelays.back()[i];
-  return metrics;
-}
-
 struct ExactMIGCandidate {
   std::array<unsigned, 3> fanins;
   std::array<bool, 3> inverted;
@@ -1021,10 +879,14 @@ loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule,
     BinaryTruthTable canonicalTT(hwModule.getNumInputPorts(), 1,
                                  canonicalTTAttr.getValue());
     auto delay = computeExactMIGInputDelays(*network);
+    SmallVector<unsigned> canonicalInputPermutation(canonicalTT.numInputs);
+    std::iota(canonicalInputPermutation.begin(),
+              canonicalInputPermutation.end(), 0);
     database.entries.push_back(
         {.moduleName = hwModule.getModuleName().str(),
          .network = std::move(*network),
-         .npnClass = NPNClass::computeNPNCanonicalForm(canonicalTT)});
+         .npnClass = NPNClass(canonicalTT,
+                              std::move(canonicalInputPermutation), 0, 0)});
     auto &entry = database.entries.back();
     entry.area = computeMaterializedExactMIGArea(entry.network);
     entry.delay.assign(delay.begin(), delay.end());
@@ -1064,14 +926,7 @@ struct FileMIGExactPattern : public CutRewritePattern {
         return std::nullopt;
     }
 
-    // if (!cut.getNPNClass().equivalentOtherThanPermutation(entry.npnClass))
-    //   return std::nullopt;
-
-    // ExactMIGMetrics currentMetrics =
-    //     computeCurrentCutMetrics(cut, logicNetwork);
-    // if (!(entry.area < currentMetrics.area ||
-    //       (entry.area == currentMetrics.area &&
-    //        entry.maxDepth < currentMetrics.getMaxDepth())))
+    // if (!(cut.getNPNClass().truthTable == entry.npnClass.truthTable))
     //   return std::nullopt;
 
     return MatchResult(entry.area, entry.delay);

@@ -188,8 +188,8 @@ void NPNClass::getInputPermutation(
     llvm::SmallVectorImpl<unsigned> &permutation) const {
   assert(inputPermutation.size() == targetNPN.inputPermutation.size() &&
          "NPN classes must have the same number of inputs");
-  assert(equivalentOtherThanPermutation(targetNPN) &&
-         "NPN classes must be equivalent for input mapping");
+  assert(truthTable == targetNPN.truthTable &&
+         "NPN classes must have the same canonical truth table");
 
   // Create inverse permutation for this NPN class
   auto thisInverse = invertPermutation(inputPermutation);

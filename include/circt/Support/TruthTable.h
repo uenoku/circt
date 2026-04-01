@@ -128,12 +128,14 @@ struct NPNClass {
   /// instead.
   static NPNClass computeNPNCanonicalForm(const BinaryTruthTable &tt);
 
-  /// Get input permutation from this NPN class to another equivalent NPN class.
+  /// Get input permutation from this NPN class to another NPN class with the
+  /// same canonical truth table.
   ///
-  /// When two NPN classes are equivalent, they may have different input
-  /// permutations. This function computes a permutation that allows
-  /// transforming input indices from the target NPN class to input indices of
-  /// this NPN class.
+  /// When two NPN classes share the same canonical truth table, they may still
+  /// have different input permutations and input/output negations. This
+  /// function computes the permutation that maps input indices from the target
+  /// NPN class to input indices of this NPN class. Input and output negations
+  /// are handled separately by the caller.
   ///
   /// Returns a permutation vector where result[i] gives the input index in this
   /// NPN class that corresponds to input i in the target NPN class.
