@@ -305,7 +305,10 @@ public:
         totalSources(1 + numInputs + numSteps) {}
 
   SolveResult solve() {
-    buildEncoding();
+    if (!encodingBuilt) {
+      buildEncoding();
+      encodingBuilt = true;
+    }
     LLVM_DEBUG(llvm::dbgs() << "ExactMIG SAT solve: numInputs=" << numInputs
                             << " numSteps=" << numSteps << " numMinterms="
                             << numMinterms << " vars=" << nextVar << "\n");
@@ -324,6 +327,21 @@ public:
       dumpExactMIGNetwork(llvm::dbgs(), network);
     });
     return {.result = result, .network = std::move(network)};
+  }
+
+  void blockCurrentModel() {
+    SmallVector<int, 8> blockingClause;
+    blockingClause.reserve(numSteps);
+    for (const auto &selectionVars : stepSelectionVars) {
+      for (int selectionVar : selectionVars) {
+        if (solver.val(selectionVar) != selectionVar)
+          continue;
+        blockingClause.push_back(-selectionVar);
+        break;
+      }
+    }
+    if (!blockingClause.empty())
+      solver.addClause(blockingClause);
   }
 
 private:
@@ -475,6 +493,7 @@ private:
   SmallVector<SmallVector<int, 16>, 8> sourceValueVars;
   SmallVector<SmallVector<ExactMIGCandidate, 64>, 8> stepCandidates;
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
+  bool encodingBuilt = false;
 };
 
 class ExactMIGSynthesizer {
@@ -491,78 +510,53 @@ public:
     std::optional<ExactMIGNetwork> network;
   };
 
+  struct QuerySetResult {
+    QueryStatus status = QueryStatus::Error;
+    SmallVector<ExactMIGNetwork> networks;
+  };
+
   explicit ExactMIGSynthesizer(StringRef backend, int conflictLimit = -1)
       : backend(backend), conflictLimit(conflictLimit) {}
 
-  QueryResult getOrCompute(const BinaryTruthTable &tt, unsigned maxArea) {
+  QueryResult synthesizeForArea(const BinaryTruthTable &tt, unsigned area) const {
     auto [normalizedTT, invertOutput] = normalize(tt);
-    auto key = std::make_pair(normalizedTT.table, normalizedTT.numInputs);
-    auto [it, inserted] = cache.try_emplace(key);
-    (void)inserted;
-    auto &entry = it->second;
     LLVM_DEBUG({
       llvm::dbgs() << "ExactMIG query: inputs=" << tt.numInputs
-                   << " maxArea=" << maxArea << " tt=" << tt.table
+                   << " area=" << area << " tt=" << tt.table
                    << " normalized=" << normalizedTT.table
-                   << " invertOutput=" << invertOutput << " cacheState=";
-      if (entry.solution)
-        llvm::dbgs() << "hit(area=" << entry.solution->steps.size() << ")";
-      else
-        llvm::dbgs() << "miss(searchedUpTo=" << entry.searchedUpTo << ")";
-      llvm::dbgs() << "\n";
+                   << " invertOutput=" << invertOutput << "\n";
     });
 
-    if (!entry.solution &&
-        (entry.searchedUpTo < 0 ||
-         maxArea > static_cast<unsigned>(entry.searchedUpTo))) {
-      unsigned firstArea = entry.searchedUpTo < 0
-                               ? 0u
-                               : static_cast<unsigned>(entry.searchedUpTo + 1);
-      for (unsigned area = firstArea; area <= maxArea; ++area) {
-        LLVM_DEBUG(llvm::dbgs() << "ExactMIG search: trying area " << area
-                                << " for normalized function "
-                                << normalizedTT.table << "\n");
-        auto candidate = synthesizeNormalized(normalizedTT.numInputs,
-                                              normalizedTT.table, area);
-        if (candidate.status == QueryStatus::ConflictLimitReached)
-          return {.status = QueryStatus::ConflictLimitReached};
-        if (candidate.status == QueryStatus::Error)
-          return {.status = QueryStatus::Error};
-        if (candidate.network) {
-          LLVM_DEBUG(llvm::dbgs() << "ExactMIG search: found solution at area "
-                                  << area << "\n");
-          entry.solution = std::move(*candidate.network);
-          entry.searchedUpTo = area;
-          break;
-        }
-        entry.searchedUpTo = area;
-      }
-    }
+    auto result = synthesizeNormalized(normalizedTT.numInputs, normalizedTT.table,
+                                       area);
+    if (result.status != QueryStatus::Solved || !result.network)
+      return result;
 
-    if (!entry.solution) {
-      LLVM_DEBUG(llvm::dbgs() << "ExactMIG query: no solution up to area "
-                              << maxArea << "\n");
-      return {.status = QueryStatus::NoSolution};
-    }
-
-    ExactMIGNetwork result = *entry.solution;
+    ExactMIGNetwork network = *result.network;
     if (invertOutput)
-      result = invertExactMIGOutput(std::move(result));
+      network = invertExactMIGOutput(std::move(network));
     LLVM_DEBUG({
       llvm::dbgs() << "ExactMIG query: returning "
                    << (invertOutput ? "output-inverted " : "") << "solution\n";
-      dumpExactMIGNetwork(llvm::dbgs(), result);
+      dumpExactMIGNetwork(llvm::dbgs(), network);
     });
     return {.status = QueryStatus::Solved,
-            .network = std::optional<ExactMIGNetwork>(std::move(result))};
+            .network = std::optional<ExactMIGNetwork>(std::move(network))};
+  }
+
+  QuerySetResult synthesizeAllForArea(const BinaryTruthTable &tt,
+                                      unsigned area) const {
+    auto [normalizedTT, invertOutput] = normalize(tt);
+    auto result =
+        synthesizeAllNormalized(normalizedTT.numInputs, normalizedTT.table, area);
+    if (invertOutput) {
+      for (auto &network : result.networks)
+        network = invertExactMIGOutput(std::move(network));
+    }
+    return result;
   }
 
 private:
-  struct CacheEntry {
-    std::optional<ExactMIGNetwork> solution;
-    int searchedUpTo = -1;
-  };
-
   static std::pair<BinaryTruthTable, bool>
   normalize(const BinaryTruthTable &tt) {
     bool invertOutput = tt.table[0];
@@ -644,9 +638,50 @@ private:
             .network = std::move(solveResult.network)};
   }
 
+  QuerySetResult synthesizeAllNormalized(unsigned numInputs,
+                                         const llvm::APInt &target,
+                                         unsigned area) const {
+    if (area == 0) {
+      auto direct = synthesizeDirect(numInputs, target);
+      QuerySetResult result;
+      result.status = direct ? QueryStatus::Solved : QueryStatus::NoSolution;
+      if (direct)
+        result.networks.push_back(std::move(*direct));
+      return result;
+    }
+
+    auto solver = createExactMIGSATSolver(backend, conflictLimit);
+    if (!solver) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "ExactMIG synthesis: solver backend unavailable: "
+                 << backend << "\n");
+      return {.status = QueryStatus::Error};
+    }
+
+    ExactMIGSATProblem problem(*solver, numInputs, target, area);
+    QuerySetResult result;
+    while (true) {
+      auto solveResult = problem.solve();
+      if (solveResult.result == IncrementalSATSolver::kUNKNOWN) {
+        result.status = QueryStatus::ConflictLimitReached;
+        return result;
+      }
+      if (solveResult.result == IncrementalSATSolver::kUNSAT) {
+        result.status =
+            result.networks.empty() ? QueryStatus::NoSolution : QueryStatus::Solved;
+        return result;
+      }
+      if (!solveResult.network) {
+        result.status = QueryStatus::Error;
+        return result;
+      }
+      result.networks.push_back(std::move(*solveResult.network));
+      problem.blockCurrentModel();
+    }
+  }
+
   std::string backend;
   int conflictLimit;
-  DenseMap<std::pair<APInt, unsigned>, CacheEntry> cache;
 };
 
 static constexpr unsigned kMaxMIGExactInputs = 4;
@@ -790,6 +825,20 @@ static Value materializeExactMIGNetwork(OpBuilder &builder, Location loc,
   return stepValues.back();
 }
 
+static unsigned computeMaterializedExactMIGArea(const ExactMIGNetwork &network) {
+  if (!network.steps.empty())
+    return network.steps.size();
+  return network.output.source != 0 && network.output.inverted ? 1 : 0;
+}
+
+static DelayType computeExactMIGMaxDepth(const ExactMIGNetwork &network) {
+  auto delays = computeExactMIGInputDelays(network);
+  DelayType maxDepth = 0;
+  for (DelayType delay : delays)
+    maxDepth = std::max(maxDepth, delay);
+  return maxDepth;
+}
+
 static void
 collectCanonicalTruthTables(unsigned numInputs,
                             SmallVectorImpl<BinaryTruthTable> &truthTables) {
@@ -834,14 +883,16 @@ collectCanonicalTruthTables(unsigned numInputs,
 }
 
 struct LoadedExactMIGDatabase {
-  const ExactMIGNetwork *lookup(const BinaryTruthTable &tt) const {
-    auto it = entries.find({tt.table, tt.numInputs});
-    if (it == entries.end())
-      return nullptr;
-    return &it->second;
-  }
+  struct Entry {
+    std::string moduleName;
+    ExactMIGNetwork network;
+    NPNClass npnClass;
+    double area = 0.0;
+    SmallVector<DelayType> delay;
+    DelayType maxDepth = 0;
+  };
 
-  DenseMap<std::pair<APInt, unsigned>, ExactMIGNetwork> entries;
+  std::vector<Entry> entries;
   unsigned maxInputSize = 0;
 };
 
@@ -969,11 +1020,15 @@ loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule,
 
     BinaryTruthTable canonicalTT(hwModule.getNumInputPorts(), 1,
                                  canonicalTTAttr.getValue());
-    auto [it, inserted] = database.entries.try_emplace(
-        {canonicalTT.table, canonicalTT.numInputs}, std::move(*network));
-    if (!inserted)
-      return hwModule.emitError("duplicate canonical truth table in "
-                                "cut-rewrite MIG database");
+    auto delay = computeExactMIGInputDelays(*network);
+    database.entries.push_back(
+        {.moduleName = hwModule.getModuleName().str(),
+         .network = std::move(*network),
+         .npnClass = NPNClass::computeNPNCanonicalForm(canonicalTT)});
+    auto &entry = database.entries.back();
+    entry.area = computeMaterializedExactMIGArea(entry.network);
+    entry.delay.assign(delay.begin(), delay.end());
+    entry.maxDepth = computeExactMIGMaxDepth(entry.network);
 
     database.maxInputSize = std::max(
         database.maxInputSize, static_cast<unsigned>(canonicalTT.numInputs));
@@ -986,8 +1041,9 @@ loadExactMIGDatabaseFromModule(mlir::ModuleOp dbModule,
 }
 
 struct FileMIGExactPattern : public CutRewritePattern {
-  FileMIGExactPattern(MLIRContext *context, LoadedExactMIGDatabase &database)
-      : CutRewritePattern(context), database(database) {}
+  FileMIGExactPattern(MLIRContext *context,
+                      const LoadedExactMIGDatabase::Entry &entry)
+      : CutRewritePattern(context), entry(entry) {}
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
@@ -1008,40 +1064,30 @@ struct FileMIGExactPattern : public CutRewritePattern {
         return std::nullopt;
     }
 
-    const NPNClass &npnClass = cut.getNPNClass();
-    const ExactMIGNetwork *canonicalNetwork =
-        database.lookup(npnClass.truthTable);
-    if (!canonicalNetwork)
-      return std::nullopt;
+    // if (!cut.getNPNClass().equivalentOtherThanPermutation(entry.npnClass))
+    //   return std::nullopt;
 
-    ExactMIGNetwork exactNetwork =
-        remapExactMIGToCutInputs(*canonicalNetwork, npnClass);
-    ExactMIGMetrics currentMetrics =
-        computeCurrentCutMetrics(cut, logicNetwork);
-    ExactMIGMetrics exactMetrics =
-        computeExactMIGMetrics(exactNetwork, cut, logicNetwork);
-    if (!(exactMetrics.area < currentMetrics.area ||
-          (exactMetrics.area == currentMetrics.area &&
-           exactMetrics.getMaxDepth() < currentMetrics.getMaxDepth())))
-      return std::nullopt;
+    // ExactMIGMetrics currentMetrics =
+    //     computeCurrentCutMetrics(cut, logicNetwork);
+    // if (!(entry.area < currentMetrics.area ||
+    //       (entry.area == currentMetrics.area &&
+    //        entry.maxDepth < currentMetrics.getMaxDepth())))
+    //   return std::nullopt;
 
-    MatchResult result;
-    result.area = exactMetrics.area;
-    result.setOwnedDelays(std::move(exactMetrics.delays));
-    return result;
+    return MatchResult(entry.area, entry.delay);
+  }
+
+  bool useTruthTableMatcher(
+      SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
+    matchingNPNClasses.push_back(entry.npnClass);
+    return true;
   }
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
                                  const Cut &cut) const override {
     const auto &logicNetwork = enumerator.getLogicNetwork();
-    const NPNClass &npnClass = cut.getNPNClass();
-    const ExactMIGNetwork *canonicalNetwork =
-        database.lookup(npnClass.truthTable);
-    if (!canonicalNetwork)
-      return failure();
-
     ExactMIGNetwork exactNetwork =
-        remapExactMIGToCutInputs(*canonicalNetwork, npnClass);
+        remapExactMIGToCutInputs(entry.network, cut.getNPNClass());
     auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
     assert(rootOp && "cut root must be a valid operation");
 
@@ -1055,10 +1101,10 @@ struct FileMIGExactPattern : public CutRewritePattern {
   }
 
   unsigned getNumOutputs() const override { return 1; }
-  StringRef getPatternName() const override { return "MIG_EXACT_FILE_DB"; }
+  StringRef getPatternName() const override { return entry.moduleName; }
 
 private:
-  LoadedExactMIGDatabase &database;
+  const LoadedExactMIGDatabase::Entry &entry;
 };
 
 static FailureOr<OwningOpRef<mlir::ModuleOp>>
@@ -1112,8 +1158,9 @@ struct CutRewritePass
 
     SmallVector<std::unique_ptr<CutRewritePattern>, 1> patterns;
     assert(loadedFileDatabase && "file database must be initialized");
-    patterns.push_back(std::make_unique<FileMIGExactPattern>(
-        module->getContext(), *loadedFileDatabase));
+    for (const auto &entry : loadedFileDatabase->entries)
+      patterns.push_back(
+          std::make_unique<FileMIGExactPattern>(module->getContext(), entry));
 
     CutRewriterOptions options;
     options.strategy = strategy;
@@ -1180,9 +1227,59 @@ circt::synth::emitExactMIGDatabase(mlir::ModuleOp module,
           attrBuilder.getArrayAttr({attrBuilder.getI64IntegerAttr(delay)}));
     return attrBuilder.getDictionaryAttr({
         attrBuilder.getNamedAttr(
-            "area", attrBuilder.getF64FloatAttr(network.steps.size())),
+            "area",
+            attrBuilder.getF64FloatAttr(
+                computeMaterializedExactMIGArea(network))),
         attrBuilder.getNamedAttr("delay", attrBuilder.getArrayAttr(delayRows)),
     });
+  };
+
+  auto appendDatabaseEntry = [&](const BinaryTruthTable &canonicalTT,
+                                 const ExactMIGNetwork &exactNetwork,
+                                 unsigned variantIndex) {
+    SmallVector<hw::PortInfo> inputs;
+    inputs.reserve(canonicalTT.numInputs);
+    for (unsigned i = 0; i != canonicalTT.numInputs; ++i) {
+      hw::PortInfo port;
+      port.name = attrBuilder.getStringAttr(("i" + Twine(i)).str());
+      port.type = builder.getI1Type();
+      port.dir = hw::ModulePort::Direction::Input;
+      port.argNum = i;
+      inputs.push_back(port);
+    }
+
+    hw::PortInfo output;
+    output.name = attrBuilder.getStringAttr("y");
+    output.type = builder.getI1Type();
+    output.dir = hw::ModulePort::Direction::Output;
+    output.argNum = 0;
+
+    SmallString<64> moduleName;
+    moduleName += "mig_exact_i";
+    moduleName += Twine(canonicalTT.numInputs).str();
+    moduleName += "_tt_";
+    SmallString<32> ttString;
+    canonicalTT.table.toStringUnsigned(ttString, 16);
+    moduleName += ttString;
+    moduleName += "_v";
+    moduleName += Twine(variantIndex).str();
+
+    hw::HWModuleOp hwModule = hw::HWModuleOp::create(
+        builder, module.getLoc(), attrBuilder.getStringAttr(moduleName),
+        hw::ModulePortInfo(inputs, {output}));
+    hwModule->setAttr("hw.techlib.info", createTechInfo(exactNetwork));
+    hwModule->setAttr(
+        kCutRewriteCanonicalTTAttr,
+        attrBuilder.getIntegerAttr(
+            builder.getIntegerType(1u << canonicalTT.numInputs),
+            canonicalTT.table));
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(hwModule.getBodyBlock());
+    Value result = materializeExactMIGNetwork(
+        builder, hwModule.getLoc(), hwModule.getBodyBlock()->getArguments(),
+        exactNetwork);
+    hwModule.getBodyBlock()->getTerminator()->setOperands({result});
   };
 
   for (unsigned numInputs = 1; numInputs <= options.maxInputs; ++numInputs) {
@@ -1196,82 +1293,64 @@ circt::synth::emitExactMIGDatabase(mlir::ModuleOp module,
                << "ExactMIG dbgen: building " << canonicalTruthTables.size()
                << " canonical classes for " << numInputs << " inputs\n");
 
-    std::vector<std::optional<ExactMIGNetwork>> exactNetworks(
+    std::vector<SmallVector<ExactMIGNetwork>> exactNetworks(
         canonicalTruthTables.size());
     if (failed(mlir::failableParallelForEachN(
             context, 0, canonicalTruthTables.size(), [&](size_t index) {
               ExactMIGSynthesizer synthesizer(options.satSolver,
                                               options.conflictLimit);
-              auto result = synthesizer.getOrCompute(
-                  canonicalTruthTables[index], kMaxMIGExactSearchArea);
               SmallString<32> ttString;
               canonicalTruthTables[index].table.toStringUnsigned(ttString, 16);
-              if (result.status ==
-                  ExactMIGSynthesizer::QueryStatus::ConflictLimitReached) {
-                module.emitWarning()
-                    << "skipping exact MIG generation for canonical truth "
-                       "table "
-                    << ttString << " due to SAT conflict limit";
-                return success();
+              bool hitConflictLimit = false;
+              for (unsigned area = 0; area <= kMaxMIGExactSearchArea; ++area) {
+                auto result =
+                    synthesizer.synthesizeForArea(canonicalTruthTables[index],
+                                                 area);
+                if (result.status ==
+                    ExactMIGSynthesizer::QueryStatus::ConflictLimitReached) {
+                  hitConflictLimit = true;
+                  LLVM_DEBUG(llvm::dbgs()
+                             << "ExactMIG dbgen: conflict limit reached for tt="
+                             << ttString << " at area=" << area << "\n");
+                  break;
+                }
+                if (result.status == ExactMIGSynthesizer::QueryStatus::Error) {
+                  module.emitError()
+                      << "failed to synthesize exact MIG for canonical truth "
+                         "table "
+                      << ttString;
+                  return failure();
+                }
+                if (result.status != ExactMIGSynthesizer::QueryStatus::Solved ||
+                    !result.network)
+                  continue;
+
+                exactNetworks[index].push_back(std::move(*result.network));
+                LLVM_DEBUG(llvm::dbgs()
+                           << "ExactMIG dbgen: found first solution for tt="
+                           << ttString << " at area=" << area << "\n");
+                break;
               }
-              if (result.status != ExactMIGSynthesizer::QueryStatus::Solved ||
-                  !result.network) {
+              if (exactNetworks[index].empty() && !hitConflictLimit) {
                 module.emitError()
                     << "failed to synthesize exact MIG for canonical truth "
                        "table "
                     << ttString;
                 return failure();
               }
-              exactNetworks[index] = std::move(*result.network);
+              if (hitConflictLimit) {
+                module.emitWarning()
+                    << "stopping exact MIG search for canonical truth table "
+                    << ttString << " due to SAT conflict limit";
+              }
               return success();
             })))
       return failure();
 
     for (auto [index, canonicalTT] : llvm::enumerate(canonicalTruthTables)) {
-      if (!exactNetworks[index])
-        continue;
-      const auto &exactNetwork = *exactNetworks[index];
-
-      SmallVector<hw::PortInfo> inputs;
-      inputs.reserve(numInputs);
-      for (unsigned i = 0; i != numInputs; ++i) {
-        hw::PortInfo port;
-        port.name = attrBuilder.getStringAttr(("i" + Twine(i)).str());
-        port.type = builder.getI1Type();
-        port.dir = hw::ModulePort::Direction::Input;
-        port.argNum = i;
-        inputs.push_back(port);
-      }
-
-      hw::PortInfo output;
-      output.name = attrBuilder.getStringAttr("y");
-      output.type = builder.getI1Type();
-      output.dir = hw::ModulePort::Direction::Output;
-      output.argNum = 0;
-
-      SmallString<64> moduleName;
-      moduleName += "mig_exact_i";
-      moduleName += Twine(numInputs).str();
-      moduleName += "_tt_";
-      SmallString<32> ttString;
-      canonicalTT.table.toStringUnsigned(ttString, 16);
-      moduleName += ttString;
-
-      hw::HWModuleOp hwModule = hw::HWModuleOp::create(
-          builder, module.getLoc(), attrBuilder.getStringAttr(moduleName),
-          hw::ModulePortInfo(inputs, {output}));
-      hwModule->setAttr("hw.techlib.info", createTechInfo(exactNetwork));
-      hwModule->setAttr(
-          kCutRewriteCanonicalTTAttr,
-          attrBuilder.getIntegerAttr(builder.getIntegerType(1u << numInputs),
-                                     canonicalTT.table));
-
-      OpBuilder::InsertionGuard guard(builder);
-      builder.setInsertionPointToStart(hwModule.getBodyBlock());
-      Value result = materializeExactMIGNetwork(
-          builder, hwModule.getLoc(), hwModule.getBodyBlock()->getArguments(),
-          exactNetwork);
-      hwModule.getBodyBlock()->getTerminator()->setOperands({result});
+      for (auto [variantIndex, exactNetwork] :
+           llvm::enumerate(exactNetworks[index]))
+        appendDatabaseEntry(canonicalTT, exactNetwork, variantIndex);
     }
   }
 
