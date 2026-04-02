@@ -40,8 +40,8 @@ FailureOr<OwningOpRef<mlir::ModuleOp>>
 parseCutRewriteDBFile(StringRef dbFile, mlir::MLIRContext *context);
 
 LogicalResult
-loadExactSynthesisDatabaseFromModule(mlir::ModuleOp dbModule,
-                                     LoadedCutRewriteDatabase &database);
+loadCutRewriteDatabaseFromModule(mlir::ModuleOp dbModule,
+                                 LoadedCutRewriteDatabase &database);
 
 } // namespace synth
 } // namespace circt

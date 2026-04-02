@@ -1280,7 +1280,7 @@ circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
   return parsedModule;
 }
 
-LogicalResult circt::synth::loadExactSynthesisDatabaseFromModule(
+LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
     mlir::ModuleOp dbModule, LoadedCutRewriteDatabase &database) {
   auto kindAttr = dbModule->getAttrOfType<StringAttr>(kCutRewriteDBKindAttr);
   if (!kindAttr)

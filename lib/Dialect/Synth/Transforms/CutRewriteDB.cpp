@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the file-backed exact-synthesis cut-rewrite pass.
+// This file implements the file-backed cut-rewrite pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,9 +32,9 @@ using namespace mlir;
 
 namespace {
 
-struct ExactSynthesisPattern : public CutRewritePattern {
-  ExactSynthesisPattern(MLIRContext *context,
-                        const LoadedCutRewriteEntry &entry)
+struct CutRewriteDatabasePattern : public CutRewritePattern {
+  CutRewriteDatabasePattern(MLIRContext *context,
+                            const LoadedCutRewriteEntry &entry)
       : CutRewritePattern(context), entry(entry) {}
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
@@ -67,7 +67,7 @@ struct CutRewritePass
 
   LogicalResult initialize(MLIRContext *context) override {
     loadedMaxInputSize = maxCutInputSize;
-    loadedFileDatabase.reset();
+    loadedDatabase.reset();
     if (dbFile.empty()) {
       emitError(UnknownLoc::get(context))
           << "synth-cut-rewrite requires 'db-file'";
@@ -79,10 +79,10 @@ struct CutRewritePass
       return failure();
 
     auto database = std::make_shared<LoadedCutRewriteDatabase>();
-    if (failed(loadExactSynthesisDatabaseFromModule(**parsedModule, *database)))
+    if (failed(loadCutRewriteDatabaseFromModule(**parsedModule, *database)))
       return failure();
     loadedMaxInputSize = database->maxInputSize;
-    loadedFileDatabase = std::move(database);
+    loadedDatabase = std::move(database);
     return success();
   }
 
@@ -90,9 +90,9 @@ struct CutRewritePass
     auto module = getOperation();
 
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
-    assert(loadedFileDatabase && "file database must be initialized");
-    for (const auto &entry : loadedFileDatabase->entries)
-      patterns.push_back(std::make_unique<ExactSynthesisPattern>(
+    assert(loadedDatabase && "file database must be initialized");
+    for (const auto &entry : loadedDatabase->entries)
+      patterns.push_back(std::make_unique<CutRewriteDatabasePattern>(
           module->getContext(), *entry));
 
     CutRewriterOptions options;
