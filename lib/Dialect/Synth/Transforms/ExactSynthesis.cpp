@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements modular exact-synthesis database generation and
-// database loading.
+// This file implements modular exact-synthesis database generation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,11 +15,9 @@
 #include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
-#include "ExactSynthesisImpl.h"
+#include "CutRewriteDBImpl.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
-#include "mlir/Parser/Parser.h"
-#include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -28,7 +25,6 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/SourceMgr.h"
 #include <array>
 #include <memory>
 #include <numeric>
@@ -48,16 +44,6 @@ static constexpr unsigned kMaxMIGExactSearchArea = 32;
 static constexpr unsigned kMaxAIGExactSearchArea = 32;
 static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
     "synth.cut_rewrite.canonical_tt";
-static constexpr StringLiteral kCutRewriteDBKindAttr =
-    "synth.cut_rewrite.db_kind";
-
-static std::string normalizeDatabaseKind(StringRef kind) {
-  std::string normalized = kind.lower();
-  for (char &c : normalized)
-    if (c == '_')
-      c = '-';
-  return normalized;
-}
 
 static std::unique_ptr<IncrementalSATSolver>
 createExactSATSolver(StringRef backend, int conflictLimit = -1) {
@@ -231,11 +217,11 @@ static void appendDatabaseEntry(ModuleOp module, OpBuilder &builder,
   hwModule.getBodyBlock()->getTerminator()->setOperands({result});
 }
 
-class ExactSynthesisBackend {
+class ExactSynthesisBackend : public CutRewriteDBBackend {
 public:
   virtual ~ExactSynthesisBackend() = default;
 
-  virtual StringRef getKind() const = 0;
+  StringRef getKind() const override = 0;
   virtual StringRef getModulePrefix() const = 0;
   virtual unsigned getMaxSupportedInputs() const = 0;
   virtual StringRef getFamilyName() const = 0;
@@ -262,8 +248,8 @@ public:
   virtual LogicalResult
   emitDatabase(ModuleOp module,
                const ExactSynthesisDatabaseGenOptions &options) const = 0;
-  virtual FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-  parseEntry(hw::HWModuleOp module) const = 0;
+  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
+  parseEntry(hw::HWModuleOp module) const override = 0;
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind);
@@ -1249,7 +1235,7 @@ static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
   static const MIGExactSynthesisBackend migBackend;
   static const AIGExactSynthesisBackend aigBackend;
 
-  std::string normalized = normalizeDatabaseKind(kind);
+  std::string normalized = normalizeCutRewriteDatabaseKind(kind);
   if (normalized == migBackend.getKind())
     return &migBackend;
   if (normalized == aigBackend.getKind())
@@ -1259,64 +1245,15 @@ static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
 
 } // namespace
 
-//===----------------------------------------------------------------------===//
-// Generic DB Loading
-//===----------------------------------------------------------------------===//
-
-FailureOr<OwningOpRef<mlir::ModuleOp>>
-circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
-  std::string errorMessage;
-  auto input = mlir::openInputFile(dbFile, &errorMessage);
-  if (!input) {
-    emitError(UnknownLoc::get(context)) << errorMessage;
-    return failure();
-  }
-
-  llvm::SourceMgr sourceMgr;
-  sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
-  auto parsedModule = parseSourceFile<mlir::ModuleOp>(sourceMgr, context);
-  if (!parsedModule)
-    return failure();
-  return parsedModule;
-}
-
-LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
-    mlir::ModuleOp dbModule, LoadedCutRewriteDatabase &database) {
-  auto kindAttr = dbModule->getAttrOfType<StringAttr>(kCutRewriteDBKindAttr);
-  if (!kindAttr)
-    return dbModule.emitError("cut-rewrite database missing '")
-           << kCutRewriteDBKindAttr << "'";
-
-  std::string normalizedKind = normalizeDatabaseKind(kindAttr.getValue());
-  auto *backend = getExactSynthesisBackend(normalizedKind);
-  if (!backend)
-    return dbModule.emitError("unsupported exact-synthesis database kind '")
-           << kindAttr.getValue() << "'";
-
-  database.kind = normalizedKind;
-  database.entries.clear();
-  database.maxInputSize = 0;
-
-  for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
-    auto entry = backend->parseEntry(hwModule);
-    if (failed(entry))
-      return failure();
-    database.maxInputSize = std::max(
-        database.maxInputSize,
-        static_cast<unsigned>((*entry)->npnClass.truthTable.numInputs));
-    database.entries.push_back(std::move(*entry));
-  }
-
-  if (database.entries.empty())
-    return dbModule.emitError("cut-rewrite database did not contain any "
-                              "matching library entries");
-  return success();
+const CutRewriteDBBackend *
+circt::synth::getCutRewriteDatabaseBackend(StringRef kind) {
+  return getExactSynthesisBackend(kind);
 }
 
 LogicalResult circt::synth::emitExactSynthesisDatabase(
     mlir::ModuleOp module, StringRef kind,
     const ExactSynthesisDatabaseGenOptions &options) {
-  std::string normalizedKind = normalizeDatabaseKind(kind);
+  std::string normalizedKind = normalizeCutRewriteDatabaseKind(kind);
   auto *backend = getExactSynthesisBackend(normalizedKind);
   if (!backend) {
     module.emitError() << "unsupported database kind '" << kind << "'";

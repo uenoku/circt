@@ -10,12 +10,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ExactSynthesisImpl.h"
+#include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/FileUtilities.h"
+#include "llvm/Support/SourceMgr.h"
 
 #define DEBUG_TYPE "synth-cut-rewrite"
 
@@ -29,6 +32,64 @@ namespace synth {
 using namespace circt;
 using namespace circt::synth;
 using namespace mlir;
+
+std::string circt::synth::normalizeCutRewriteDatabaseKind(StringRef kind) {
+  std::string normalized = kind.lower();
+  for (char &c : normalized)
+    if (c == '_')
+      c = '-';
+  return normalized;
+}
+
+FailureOr<OwningOpRef<mlir::ModuleOp>>
+circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
+  std::string errorMessage;
+  auto input = mlir::openInputFile(dbFile, &errorMessage);
+  if (!input) {
+    emitError(UnknownLoc::get(context)) << errorMessage;
+    return failure();
+  }
+
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
+  auto parsedModule = parseSourceFile<mlir::ModuleOp>(sourceMgr, context);
+  if (!parsedModule)
+    return failure();
+  return parsedModule;
+}
+
+LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
+    mlir::ModuleOp dbModule, LoadedCutRewriteDatabase &database) {
+  auto kindAttr = dbModule->getAttrOfType<StringAttr>(kCutRewriteDBKindAttr);
+  if (!kindAttr)
+    return dbModule.emitError("cut-rewrite database missing '")
+           << kCutRewriteDBKindAttr << "'";
+
+  database.kind = normalizeCutRewriteDatabaseKind(kindAttr.getValue());
+
+  auto *backend = getCutRewriteDatabaseBackend(database.kind);
+  if (!backend)
+    return dbModule.emitError("unsupported cut-rewrite database kind '")
+           << kindAttr.getValue() << "'";
+
+  database.entries.clear();
+  database.maxInputSize = 0;
+
+  for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
+    auto entry = backend->parseEntry(hwModule);
+    if (failed(entry))
+      return failure();
+    database.maxInputSize = std::max(
+        database.maxInputSize,
+        static_cast<unsigned>((*entry)->npnClass.truthTable.numInputs));
+    database.entries.push_back(std::move(*entry));
+  }
+
+  if (database.entries.empty())
+    return dbModule.emitError("cut-rewrite database did not contain any "
+                              "matching library entries");
+  return success();
+}
 
 namespace {
 
