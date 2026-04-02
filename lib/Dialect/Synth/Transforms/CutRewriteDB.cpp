@@ -115,7 +115,7 @@ struct CutRewritePass
   }
 
 private:
-  std::shared_ptr<LoadedCutRewriteDatabase> loadedFileDatabase;
+  std::shared_ptr<const LoadedCutRewriteDatabase> loadedDatabase;
   unsigned loadedMaxInputSize = 0;
 };
 
