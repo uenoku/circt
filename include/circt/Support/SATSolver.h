@@ -14,6 +14,7 @@
 #define CIRCT_SUPPORT_SATSOLVER_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include <memory>
 
 namespace circt {
@@ -204,6 +205,13 @@ struct CadicalSATSolverOptions {
 /// Construct a CaDiCaL-backed incremental IPASIR-style SAT solver.
 std::unique_ptr<IncrementalSATSolver>
 createCadicalSATSolver(const CadicalSATSolverOptions &options = {});
+/// Construct an incremental SAT solver from a backend name.
+///
+/// Recognized backend names are `auto`, `cadical`, and `z3`. `auto` prefers
+/// CaDiCaL when available and falls back to Z3. Returns null for unknown or
+/// unavailable backends.
+std::unique_ptr<IncrementalSATSolver>
+createIncrementalSATSolver(llvm::StringRef backend);
 /// Return true when at least one incremental SAT backend is available.
 bool hasIncrementalSATSolverBackend();
 

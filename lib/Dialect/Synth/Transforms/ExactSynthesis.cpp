@@ -74,25 +74,6 @@ getCutRewriteInverterKind(hw::HWModuleOp module) {
   return failure();
 }
 
-static std::unique_ptr<IncrementalSATSolver>
-createExactSATSolver(StringRef backend, int conflictLimit = -1) {
-  auto applyConflictLimit = [&](std::unique_ptr<IncrementalSATSolver> solver) {
-    if (solver)
-      solver->setConflictLimit(conflictLimit);
-    return solver;
-  };
-  if (backend == "auto") {
-    if (auto solver = applyConflictLimit(createCadicalSATSolver()))
-      return solver;
-    return applyConflictLimit(createZ3SATSolver());
-  }
-  if (backend == "cadical")
-    return applyConflictLimit(createCadicalSATSolver());
-  if (backend == "z3")
-    return applyConflictLimit(createZ3SATSolver());
-  return {};
-}
-
 struct ExactSignalRef {
   unsigned source = 0;
   bool inverted = false;
@@ -522,9 +503,10 @@ private:
               .network = std::move(direct)};
     }
 
-    auto solver = createExactSATSolver(satBackend, conflictLimit);
+    auto solver = createIncrementalSATSolver(satBackend);
     if (!solver)
       return {.status = QueryStatus::Error};
+    solver->setConflictLimit(conflictLimit);
 
     GenericExactSATProblem problem(backend, *solver, numInputs, target, area);
     auto solveResult = problem.solve();
@@ -554,7 +536,7 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
         << "'conflict-limit' must be greater than or equal to -1";
     return failure();
   }
-  if (!createExactSATSolver(options.satSolver, options.conflictLimit)) {
+  if (!createIncrementalSATSolver(options.satSolver)) {
     module.emitError() << "Exact " << backend.getFamilyName()
                        << " database generation requires a SAT solver backend '"
                        << options.satSolver << "'";

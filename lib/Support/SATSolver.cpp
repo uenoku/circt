@@ -266,6 +266,20 @@ createCadicalSATSolver(const CadicalSATSolverOptions &options) {
 #endif
 }
 
+std::unique_ptr<IncrementalSATSolver>
+createIncrementalSATSolver(llvm::StringRef backend) {
+  if (backend == "auto") {
+    if (auto solver = createCadicalSATSolver())
+      return solver;
+    return createZ3SATSolver();
+  }
+  if (backend == "cadical")
+    return createCadicalSATSolver();
+  if (backend == "z3")
+    return createZ3SATSolver();
+  return {};
+}
+
 bool hasIncrementalSATSolverBackend() {
   return static_cast<bool>(createCadicalSATSolver()) ||
          static_cast<bool>(createZ3SATSolver());
