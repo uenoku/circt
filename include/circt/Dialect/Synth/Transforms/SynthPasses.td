@@ -95,8 +95,6 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
   let options = [
     Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "4",
            "Maximum number of cuts to maintain per node">,
-    Option<"maxCutInputSize", "max-cut-input-size", "unsigned", "4",
-           "Maximum number of cut inputs to consider">,
     Option<"strategy", "strategy", "synth::OptimizationStrategy",
            /*default=*/"synth::OptimizationStrategyTiming",
            "Optimization strategy (area vs. timing)",

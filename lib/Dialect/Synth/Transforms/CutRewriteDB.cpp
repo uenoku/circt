@@ -140,7 +140,7 @@ struct CutRewritePass
   using circt::synth::impl::CutRewriteBase<CutRewritePass>::CutRewriteBase;
 
   LogicalResult initialize(MLIRContext *context) override {
-    loadedMaxInputSize = maxCutInputSize;
+    loadedMaxInputSize = 0;
     loadedDatabase.reset();
     if (dbFile.empty()) {
       emitError(UnknownLoc::get(context))
@@ -173,8 +173,7 @@ struct CutRewritePass
 
     CutRewriterOptions options;
     options.strategy = strategy;
-    options.maxCutInputSize =
-        std::min(maxCutInputSize.getValue(), loadedMaxInputSize);
+    options.maxCutInputSize = loadedMaxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
     options.attachDebugTiming = test;

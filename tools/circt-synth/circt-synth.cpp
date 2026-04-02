@@ -283,13 +283,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
-<<<<<<< HEAD
     optimizationOptions.cutRewriteDBFile = cutRewriteDBFile;
     optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
-=======
     optimizationOptions.disableFunctionalReduction.setValue(
         !enableFunctionalReduction);
->>>>>>> origin/main
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
     if (untilReached(UntilMapping))

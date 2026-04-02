@@ -96,11 +96,6 @@ struct SynthOptimizationPipelineOptions
       *this, "cut-rewrite-max-cuts-per-root",
       llvm::cl::desc("Maximum number of cuts per root for cut rewriting"),
       llvm::cl::init(4)};
-
-  PassOptions::Option<unsigned> cutRewriteMaxCutInputSize{
-      *this, "cut-rewrite-max-cut-input-size",
-      llvm::cl::desc("Maximum cut input size for cut rewriting"),
-      llvm::cl::init(4)};
 };
 
 //===----------------------------------------------------------------------===//

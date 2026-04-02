@@ -137,7 +137,6 @@ void circt::synth::buildSynthOptimizationPipeline(
     CutRewriteOptions cutRewriteOptions;
     cutRewriteOptions.dbFile = options.cutRewriteDBFile;
     cutRewriteOptions.maxCutsPerRoot = options.cutRewriteMaxCutsPerRoot;
-    cutRewriteOptions.maxCutInputSize = options.cutRewriteMaxCutInputSize;
     cutRewriteOptions.strategy = OptimizationStrategyTiming;
     pm.addPass(synth::createCutRewrite(cutRewriteOptions));
     pm.addPass(createCSEPass());
