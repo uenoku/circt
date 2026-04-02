@@ -13,6 +13,7 @@
 #include "circt/Support/SATSolver.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/SMTAPI.h"
 
 #ifdef CIRCT_CADICAL_ENABLED
@@ -33,8 +34,30 @@ namespace {
 
 #ifdef CIRCT_CADICAL_ENABLED
 
+const char *
+toCadicalConfigName(CadicalSATSolverOptions::CadicalSolverConfig config) {
+  switch (config) {
+  case CadicalSATSolverOptions::CadicalSolverConfig::Default:
+    return "default";
+  case CadicalSATSolverOptions::CadicalSolverConfig::Plain:
+    return "plain";
+  case CadicalSATSolverOptions::CadicalSolverConfig::Sat:
+    return "sat";
+  case CadicalSATSolverOptions::CadicalSolverConfig::Unsat:
+    return "unsat";
+  }
+  llvm_unreachable("unknown CaDiCaL configuration");
+}
+
 class CadicalSATSolver : public IncrementalSATSolver {
 public:
+  explicit CadicalSATSolver(const CadicalSATSolverOptions &options) {
+    if (options.config != CadicalSolverConfig::Default) {
+      bool configured = solver.configure(toCadicalConfigName(options.config));
+      assert(configured && "invalid CaDiCaL configuration");
+      (void)configured;
+    }
+  }
   void add(int lit) override { solver.add(lit); }
   void assume(int lit) override {
     if (lit != 0)
@@ -233,12 +256,18 @@ std::unique_ptr<IncrementalSATSolver> createZ3SATSolver() {
 #endif
 }
 
-std::unique_ptr<IncrementalSATSolver> createCadicalSATSolver() {
+std::unique_ptr<IncrementalSATSolver>
+createCadicalSATSolver(const CadicalSATSolverOptions &options) {
 #ifdef CIRCT_CADICAL_ENABLED
-  return std::make_unique<CadicalSATSolver>();
+  return std::make_unique<CadicalSATSolver>(options);
 #else
   return {};
 #endif
+}
+
+bool hasIncrementalSATSolverBackend() {
+  return static_cast<bool>(createCadicalSATSolver()) ||
+         static_cast<bool>(createZ3SATSolver());
 }
 
 } // namespace circt

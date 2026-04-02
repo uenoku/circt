@@ -192,8 +192,20 @@ public:
 
 /// Construct a Z3-backed incremental IPASIR-style SAT solver.
 std::unique_ptr<IncrementalSATSolver> createZ3SATSolver();
+struct CadicalSATSolverOptions {
+  enum class CadicalSolverConfig {
+    Default, // Default.
+    Plain,   // Disable preprocessing.
+    Sat,     // Target satisfiable instances.
+    Unsat,   // Target unsatisfiable instances.
+  };
+  CadicalSolverConfig config = CadicalSolverConfig::Default;
+};
 /// Construct a CaDiCaL-backed incremental IPASIR-style SAT solver.
-std::unique_ptr<IncrementalSATSolver> createCadicalSATSolver();
+std::unique_ptr<IncrementalSATSolver>
+createCadicalSATSolver(const CadicalSATSolverOptions &options = {});
+/// Return true when at least one incremental SAT backend is available.
+bool hasIncrementalSATSolverBackend();
 
 } // namespace circt
 

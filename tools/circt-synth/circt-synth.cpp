@@ -189,6 +189,10 @@ static cl::opt<bool>
 static cl::opt<bool> enableSOPBalancing("enable-sop-balancing",
                                         cl::desc("Enable SOP balancing"),
                                         cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> enableFunctionalReduction(
+    "enable-functional-reduction",
+    cl::desc("Enable FunctionalReduction during synth optimization"),
+    cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<std::string> cutRewriteDBFile(
     "cut-rewrite-db-file",
@@ -279,8 +283,13 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
+<<<<<<< HEAD
     optimizationOptions.cutRewriteDBFile = cutRewriteDBFile;
     optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
+=======
+    optimizationOptions.disableFunctionalReduction.setValue(
+        !enableFunctionalReduction);
+>>>>>>> origin/main
 
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
     if (untilReached(UntilMapping))
