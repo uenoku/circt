@@ -8,7 +8,7 @@
 
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
-#include "circt/Dialect/Synth/Transforms/ExactMIGDatabase.h"
+#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Support/Version.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -38,7 +38,7 @@ static cl::opt<bool>
 static cl::opt<bool> force("f", cl::desc("Enable binary output on terminals"),
                            cl::init(false), cl::cat(mainCategory));
 static cl::opt<std::string> kind(
-    "kind", cl::desc("Database kind to generate"),
+    "kind", cl::desc("Database kind to generate: mig-exact or aig-exact"),
     cl::value_desc("name"), cl::init("mig-exact"), cl::cat(mainCategory));
 static cl::opt<unsigned> maxInputs(
     "max-inputs", cl::desc("Maximum function input size to generate"),
@@ -77,20 +77,15 @@ int main(int argc, char **argv) {
   cl::HideUnrelatedOptions(mainCategory);
   cl::ParseCommandLineOptions(argc, argv, "CIRCT synthesis DB generator\n");
 
-  if (kind != "mig-exact" && kind != "MIG_EXACT") {
-    llvm::errs() << "unsupported database kind '" << kind << "'\n";
-    return 1;
-  }
-
   MLIRContext context;
   context.loadDialect<hw::HWDialect, synth::SynthDialect>();
 
   auto module = ModuleOp::create(UnknownLoc::get(&context));
-  ExactMIGDatabaseGenOptions options;
+  ExactSynthesisDatabaseGenOptions options;
   options.maxInputs = maxInputs;
   options.satSolver = satSolver;
   options.conflictLimit = conflictLimit;
-  if (failed(emitExactMIGDatabase(module, options)))
+  if (failed(emitExactSynthesisDatabase(module, kind, options)))
     return 1;
 
   std::string errorMessage;
