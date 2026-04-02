@@ -33,12 +33,37 @@ using namespace circt;
 using namespace circt::synth;
 using namespace mlir;
 
-std::string circt::synth::normalizeCutRewriteDatabaseKind(StringRef kind) {
-  std::string normalized = kind.lower();
-  for (char &c : normalized)
-    if (c == '_')
-      c = '-';
-  return normalized;
+FailureOr<std::pair<double, SmallVector<DelayType>>>
+circt::synth::getAreaAndDelayFromTechInfo(hw::HWModuleOp module) {
+  auto techInfo = module->getAttrOfType<DictionaryAttr>("hw.techlib.info");
+  if (!techInfo)
+    return module.emitError("cut-rewrite database module missing "
+                            "'hw.techlib.info'");
+
+  auto areaAttr = techInfo.getAs<FloatAttr>("area");
+  auto delayAttr = techInfo.getAs<ArrayAttr>("delay");
+  if (!areaAttr || !delayAttr)
+    return module.emitError("cut-rewrite database module must have "
+                            "'area'(float) and 'delay'(array) in "
+                            "'hw.techlib.info'");
+
+  SmallVector<DelayType> delay;
+  for (auto delayValue : delayAttr) {
+    auto delayArray = dyn_cast<ArrayAttr>(delayValue);
+    if (!delayArray)
+      return module.emitError("cut-rewrite database delay entries must be "
+                              "arrays");
+    for (auto delayElement : delayArray) {
+      auto intAttr = dyn_cast<IntegerAttr>(delayElement);
+      if (!intAttr)
+        return module.emitError("cut-rewrite database delay values must be "
+                                "integers");
+      delay.push_back(intAttr.getValue().getZExtValue());
+    }
+  }
+
+  return std::make_pair(areaAttr.getValue().convertToDouble(),
+                        std::move(delay));
 }
 
 FailureOr<OwningOpRef<mlir::ModuleOp>>
@@ -60,23 +85,11 @@ circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
 
 LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
     mlir::ModuleOp dbModule, LoadedCutRewriteDatabase &database) {
-  auto kindAttr = dbModule->getAttrOfType<StringAttr>(kCutRewriteDBKindAttr);
-  if (!kindAttr)
-    return dbModule.emitError("cut-rewrite database missing '")
-           << kCutRewriteDBKindAttr << "'";
-
-  database.kind = normalizeCutRewriteDatabaseKind(kindAttr.getValue());
-
-  auto *backend = getCutRewriteDatabaseBackend(database.kind);
-  if (!backend)
-    return dbModule.emitError("unsupported cut-rewrite database kind '")
-           << kindAttr.getValue() << "'";
-
   database.entries.clear();
   database.maxInputSize = 0;
 
   for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
-    auto entry = backend->parseEntry(hwModule);
+    auto entry = parseCutRewriteEntry(hwModule);
     if (failed(entry))
       return failure();
     database.maxInputSize = std::max(

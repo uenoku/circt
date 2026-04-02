@@ -15,12 +15,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OwningOpRef.h"
+#include <utility>
 
 namespace circt {
 namespace synth {
-
-static constexpr llvm::StringLiteral kCutRewriteDBKindAttr =
-    "synth.cut_rewrite.db_kind";
 
 struct LoadedCutRewriteEntry {
   virtual ~LoadedCutRewriteEntry() = default;
@@ -36,24 +34,16 @@ struct LoadedCutRewriteEntry {
 };
 
 struct LoadedCutRewriteDatabase {
-  std::string kind;
   mlir::OwningOpRef<mlir::ModuleOp> backingModule;
   std::vector<std::unique_ptr<LoadedCutRewriteEntry>> entries;
   unsigned maxInputSize = 0;
 };
 
-class CutRewriteDBBackend {
-public:
-  virtual ~CutRewriteDBBackend() = default;
+FailureOr<std::pair<double, SmallVector<DelayType>>>
+getAreaAndDelayFromTechInfo(hw::HWModuleOp module);
 
-  virtual StringRef getKind() const = 0;
-  virtual FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-  parseEntry(hw::HWModuleOp module) const = 0;
-};
-
-std::string normalizeCutRewriteDatabaseKind(StringRef kind);
-
-const CutRewriteDBBackend *getCutRewriteDatabaseBackend(StringRef kind);
+FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
+parseCutRewriteEntry(hw::HWModuleOp module);
 
 FailureOr<OwningOpRef<mlir::ModuleOp>>
 parseCutRewriteDBFile(StringRef dbFile, mlir::MLIRContext *context);

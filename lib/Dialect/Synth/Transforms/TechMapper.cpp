@@ -20,6 +20,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
+#include "CutRewriteDBImpl.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
@@ -197,31 +198,13 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         continue;
       }
 
-      // Get area and delay attributes
-      auto areaAttr = techInfo.getAs<FloatAttr>("area");
-      auto delayAttr = techInfo.getAs<ArrayAttr>("delay");
-      if (!areaAttr || !delayAttr) {
-        mlir::emitError(hwModule.getLoc())
-            << "Library module " << hwModule.getModuleName()
-            << " must have 'area'(float) and 'delay' (2d array to represent "
-               "input-output pair delay) attributes";
+      auto areaAndDelay = getAreaAndDelayFromTechInfo(hwModule);
+      if (failed(areaAndDelay)) {
         signalPassFailure();
         return;
       }
-
-      double area = areaAttr.getValue().convertToDouble();
-
-      SmallVector<DelayType> delay;
-      for (auto delayValue : delayAttr) {
-        auto delayArray = cast<ArrayAttr>(delayValue);
-        for (auto delayElement : delayArray) {
-          // FIXME: Currently we assume delay is given as integer attributes,
-          // this should be replaced once we have a proper cell op with
-          // dedicated timing attributes with units.
-          delay.push_back(
-              cast<mlir::IntegerAttr>(delayElement).getValue().getZExtValue());
-        }
-      }
+      double area = areaAndDelay->first;
+      SmallVector<DelayType> delay = std::move(areaAndDelay->second);
       // Compute NPN Class for the module.
       auto npnClass = getNPNClassFromModule(hwModule);
       if (failed(npnClass)) {

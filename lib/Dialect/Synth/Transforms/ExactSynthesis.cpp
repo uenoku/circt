@@ -44,7 +44,34 @@ static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
 static constexpr unsigned kMaxAIGExactSearchArea = 32;
 static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
-    "synth.cut_rewrite.canonical_tt";
+    "synth.cut_rewrite.inverter_kind = "mig", synth.cut_rewrite.canonical_tt";
+static constexpr StringLiteral kCutRewriteInverterKindAttr =
+    "synth.cut_rewrite.inverter_kind";
+
+enum class CutRewriteInverterKind { mig, aig };
+
+static std::string normalizeExactSynthesisKind(StringRef kind) {
+  std::string normalized = kind.lower();
+  for (char &c : normalized)
+    if (c == '_')
+      c = '-';
+  return normalized;
+}
+
+static FailureOr<CutRewriteInverterKind>
+getCutRewriteInverterKind(hw::HWModuleOp module) {
+  auto kindAttr = module->getAttrOfType<StringAttr>(kCutRewriteInverterKindAttr);
+  if (!kindAttr)
+    return module.emitError("cut-rewrite database module missing '")
+           << kCutRewriteInverterKindAttr << "'";
+  if (kindAttr.getValue() == "mig")
+    return CutRewriteInverterKind::mig;
+  if (kindAttr.getValue() == "aig")
+    return CutRewriteInverterKind::aig;
+  module.emitError("unsupported cut-rewrite inverter kind '")
+      << kindAttr.getValue() << "'";
+  return failure();
+}
 
 static std::unique_ptr<IncrementalSATSolver>
 createExactSATSolver(StringRef backend, int conflictLimit = -1) {
@@ -97,19 +124,6 @@ getCanonicalTruthTable(hw::HWModuleOp module) {
            << kCutRewriteCanonicalTTAttr << "'";
   return BinaryTruthTable(module.getNumInputPorts(), 1,
                           canonicalTTAttr.getValue());
-}
-
-static FailureOr<ExactSignalRef>
-lookupExactSignal(Value value, DenseMap<Value, ExactSignalRef> &valueToSignal,
-                  Operation *user, StringRef familyName) {
-  auto it = valueToSignal.find(value);
-  if (it == valueToSignal.end()) {
-    auto diag = user->emitError("cut-rewrite ")
-                << familyName << " database module used an unsupported operand";
-    diag.attachNote() << "operand: " << value;
-    return failure();
-  }
-  return it->second;
 }
 
 static void
@@ -172,7 +186,8 @@ template <typename MaterializeFn>
 static void appendDatabaseEntry(ModuleOp module, OpBuilder &builder,
                                 Builder &attrBuilder, StringRef modulePrefix,
                                 const BinaryTruthTable &canonicalTT,
-                                unsigned variantIndex, DictionaryAttr techInfo,
+                                unsigned variantIndex, StringRef inverterKind,
+                                DictionaryAttr techInfo,
                                 MaterializeFn materialize) {
   SmallVector<hw::PortInfo> inputs;
   inputs.reserve(canonicalTT.numInputs);
@@ -206,6 +221,8 @@ static void appendDatabaseEntry(ModuleOp module, OpBuilder &builder,
       builder, module.getLoc(), attrBuilder.getStringAttr(moduleName),
       hw::ModulePortInfo(inputs, {output}));
   hwModule->setAttr("hw.techlib.info", techInfo);
+  hwModule->setAttr(kCutRewriteInverterKindAttr,
+                    attrBuilder.getStringAttr(inverterKind));
   hwModule->setAttr(kCutRewriteCanonicalTTAttr,
                     attrBuilder.getIntegerAttr(
                         builder.getIntegerType(1u << canonicalTT.numInputs),
@@ -218,11 +235,12 @@ static void appendDatabaseEntry(ModuleOp module, OpBuilder &builder,
   hwModule.getBodyBlock()->getTerminator()->setOperands({result});
 }
 
-class ExactSynthesisBackend : public CutRewriteDBBackend {
+class ExactSynthesisBackend {
 public:
   virtual ~ExactSynthesisBackend() = default;
 
-  StringRef getKind() const override = 0;
+  virtual StringRef getKind() const = 0;
+  virtual StringRef getInverterKind() const = 0;
   virtual StringRef getModulePrefix() const = 0;
   virtual unsigned getMaxSupportedInputs() const = 0;
   virtual StringRef getFamilyName() const = 0;
@@ -242,8 +260,6 @@ public:
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
           getSourceLiteral) const = 0;
-  virtual Value materializeInverter(OpBuilder &builder, Location loc,
-                                    Value input) const = 0;
   virtual Value materializeNetwork(OpBuilder &builder, Location loc,
                                    ValueRange inputs,
                                    const ExactNetwork &network) const = 0;
@@ -251,8 +267,6 @@ public:
   virtual LogicalResult
   emitDatabase(ModuleOp module,
                const ExactSynthesisDatabaseGenOptions &options) const = 0;
-  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-  parseEntry(hw::HWModuleOp module) const override = 0;
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind);
@@ -614,7 +628,7 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
       auto delays = computeExactNetworkInputDelays(exactNetwork);
       appendDatabaseEntry(
           module, builder, attrBuilder, backend.getModulePrefix(), canonicalTT,
-          0,
+          0, backend.getInverterKind(),
           createTechInfo(attrBuilder,
                          computeMaterializedExactNetworkArea(exactNetwork),
                          delays),
@@ -692,103 +706,13 @@ static Value materializeExactMIGNetwork(OpBuilder &builder, Location loc,
   return materializeOutputSignal(network.output, stepValues);
 }
 
-static FailureOr<ExactNetwork>
-parseExactMIGNetworkFromModule(hw::HWModuleOp module) {
-  auto inputTypes = module.getInputTypes();
-  auto outputTypes = module.getOutputTypes();
-  if (outputTypes.size() != 1)
-    return module.emitError(
-        "cut-rewrite MIG database modules must have a single output");
-  for (Type type : inputTypes)
-    if (!type.isInteger(1))
-      return module.emitError(
-          "cut-rewrite MIG database module inputs must be i1");
-  for (Type type : outputTypes)
-    if (!type.isInteger(1))
-      return module.emitError(
-          "cut-rewrite MIG database module outputs must be i1");
-
-  ExactNetwork network;
-  network.numInputs = module.getNumInputPorts();
-  auto *bodyBlock = module.getBodyBlock();
-  DenseMap<Value, ExactSignalRef> valueToSignal;
-  for (auto [index, argument] : llvm::enumerate(bodyBlock->getArguments()))
-    valueToSignal[argument] = {static_cast<unsigned>(index + 1), false};
-
-  for (Operation &op : bodyBlock->without_terminator()) {
-    if (auto constant = dyn_cast<hw::ConstantOp>(op)) {
-      if (!constant.getType().isInteger(1))
-        return constant.emitError(
-            "cut-rewrite MIG database constants must be i1");
-      valueToSignal[constant.getResult()] = {
-          0, constant.getValueAttr().getValue()[0]};
-      continue;
-    }
-
-    if (auto wire = dyn_cast<hw::WireOp>(op)) {
-      auto signal =
-          lookupExactSignal(wire.getInput(), valueToSignal, wire, "MIG");
-      if (failed(signal))
-        return failure();
-      valueToSignal[wire.getResult()] = *signal;
-      continue;
-    }
-
-    if (auto majority = dyn_cast<synth::mig::MajorityInverterOp>(op)) {
-      SmallVector<ExactSignalRef> operands;
-      operands.reserve(majority.getInputs().size());
-      for (auto [index, operand] : llvm::enumerate(majority.getInputs())) {
-        auto signal =
-            lookupExactSignal(operand, valueToSignal, majority, "MIG");
-        if (failed(signal))
-          return failure();
-        if (majority.isInverted(index))
-          signal->inverted = !signal->inverted;
-        operands.push_back(*signal);
-      }
-
-      if (operands.size() == 1) {
-        valueToSignal[majority.getResult()] = operands.front();
-        continue;
-      }
-      if (operands.size() != 3)
-        return majority.emitError(
-            "cut-rewrite MIG database currently supports only 1-input "
-            "inverters and 3-input majorities");
-
-      ExactNetworkStep step;
-      step.fanins.append(operands.begin(), operands.end());
-      network.steps.push_back(std::move(step));
-      valueToSignal[majority.getResult()] = {
-          static_cast<unsigned>(network.numInputs + network.steps.size()),
-          false};
-      continue;
-    }
-
-    return op.emitError("unsupported operation in cut-rewrite MIG database");
-  }
-
-  auto output = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
-  if (!output || output.getNumOperands() != 1)
-    return module.emitError(
-        "cut-rewrite MIG database module must terminate with a single-output "
-        "hw.output");
-
-  auto outputSignal =
-      lookupExactSignal(output.getOperand(0), valueToSignal, output, "MIG");
-  if (failed(outputSignal))
-    return failure();
-  network.output = *outputSignal;
-  return network;
-}
-
 struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
-  const ExactSynthesisBackend &backend;
+  CutRewriteInverterKind inverterKind;
   Operation *moduleOp;
 
-  LoadedExactNetworkEntry(const ExactSynthesisBackend &backend,
+  LoadedExactNetworkEntry(CutRewriteInverterKind inverterKind,
                           hw::HWModuleOp module)
-      : backend(backend), moduleOp(module.getOperation()) {}
+      : inverterKind(inverterKind), moduleOp(module.getOperation()) {}
 
   FailureOr<Operation *> rewrite(OpBuilder &builder,
                                  CutEnumerator &enumerator,
@@ -815,7 +739,7 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
       Value input =
           logicNetwork.getValue(cut.inputs[cutNPN.inputPermutation[index]]);
       if ((cutNPN.inputNegation >> index) & 1)
-        input = backend.materializeInverter(builder, rootOp->getLoc(), input);
+        input = materializeInverter(builder, rootOp->getLoc(), input);
       mapping.map(argument, input);
     }
 
@@ -824,17 +748,54 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
 
     Value result = mapping.lookup(output.getOperand(0));
     if (cutNPN.outputNegation & 1)
-      result = backend.materializeInverter(builder, rootOp->getLoc(), result);
+      result = materializeInverter(builder, rootOp->getLoc(), result);
 
     if (auto *resultOp = result.getDefiningOp())
       return resultOp;
     return hw::WireOp::create(builder, rootOp->getLoc(), result).getOperation();
   }
+
+private:
+  Value materializeInverter(OpBuilder &builder, Location loc, Value input) const {
+    std::array<Value, 1> operands = {input};
+    std::array<bool, 1> inverted = {true};
+    switch (inverterKind) {
+    case CutRewriteInverterKind::mig:
+      return synth::mig::MajorityInverterOp::create(builder, loc, operands,
+                                                    inverted);
+    case CutRewriteInverterKind::aig:
+      return synth::aig::AndInverterOp::create(builder, loc, operands,
+                                               inverted);
+    }
+    llvm_unreachable("unsupported inverter kind");
+  }
 };
+
+static FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
+parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module) {
+  auto canonicalTT = getCanonicalTruthTable(module);
+  if (failed(canonicalTT))
+    return failure();
+  auto inverterKind = getCutRewriteInverterKind(module);
+  if (failed(inverterKind))
+    return failure();
+  auto areaAndDelay = getAreaAndDelayFromTechInfo(module);
+  if (failed(areaAndDelay))
+    return failure();
+
+  auto entry = std::make_unique<LoadedExactNetworkEntry>(*inverterKind, module);
+  entry->moduleName = module.getModuleName().str();
+  entry->npnClass = getIdentityNPNClass(*canonicalTT);
+  entry->area = areaAndDelay->first;
+  entry->delay = std::move(areaAndDelay->second);
+  std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
+  return result;
+}
 
 class MIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
   StringRef getKind() const override { return "mig-exact"; }
+  StringRef getInverterKind() const override { return "mig"; }
   StringRef getModulePrefix() const override { return "mig_exact"; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
@@ -934,14 +895,6 @@ public:
     addConditionedClause({bLit, cLit, -outLit});
   }
 
-  Value materializeInverter(OpBuilder &builder, Location loc,
-                            Value input) const override {
-    std::array<Value, 1> operands = {input};
-    std::array<bool, 1> inverted = {true};
-    return synth::mig::MajorityInverterOp::create(builder, loc, operands,
-                                                  inverted);
-  }
-
   Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
                            const ExactNetwork &network) const override {
     return materializeExactMIGNetwork(builder, loc, inputs, network);
@@ -953,23 +906,6 @@ public:
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
 
-  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-  parseEntry(hw::HWModuleOp module) const override {
-    auto canonicalTT = getCanonicalTruthTable(module);
-    if (failed(canonicalTT))
-      return failure();
-    auto network = parseExactMIGNetworkFromModule(module);
-    if (failed(network))
-      return failure();
-
-    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this, module);
-    entry->moduleName = module.getModuleName().str();
-    entry->npnClass = getIdentityNPNClass(*canonicalTT);
-    entry->delay = computeExactNetworkInputDelays(*network);
-    entry->area = computeMaterializedExactNetworkArea(*network);
-    std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
-    return result;
-  }
 };
 
 //===----------------------------------------------------------------------===//
@@ -1033,98 +969,10 @@ static Value materializeExactAIGNetwork(OpBuilder &builder, Location loc,
   return materializeOutputSignal(network.output, stepValues);
 }
 
-static FailureOr<ExactNetwork>
-parseExactAIGNetworkFromModule(hw::HWModuleOp module) {
-  auto inputTypes = module.getInputTypes();
-  auto outputTypes = module.getOutputTypes();
-  if (outputTypes.size() != 1)
-    return module.emitError(
-        "cut-rewrite AIG database modules must have a single output");
-  for (Type type : inputTypes)
-    if (!type.isInteger(1))
-      return module.emitError(
-          "cut-rewrite AIG database module inputs must be i1");
-  for (Type type : outputTypes)
-    if (!type.isInteger(1))
-      return module.emitError(
-          "cut-rewrite AIG database module outputs must be i1");
-
-  ExactNetwork network;
-  network.numInputs = module.getNumInputPorts();
-  auto *bodyBlock = module.getBodyBlock();
-  DenseMap<Value, ExactSignalRef> valueToSignal;
-  for (auto [index, argument] : llvm::enumerate(bodyBlock->getArguments()))
-    valueToSignal[argument] = {static_cast<unsigned>(index + 1), false};
-
-  for (Operation &op : bodyBlock->without_terminator()) {
-    if (auto constant = dyn_cast<hw::ConstantOp>(op)) {
-      if (!constant.getType().isInteger(1))
-        return constant.emitError(
-            "cut-rewrite AIG database constants must be i1");
-      valueToSignal[constant.getResult()] = {
-          0, constant.getValueAttr().getValue()[0]};
-      continue;
-    }
-
-    if (auto wire = dyn_cast<hw::WireOp>(op)) {
-      auto signal =
-          lookupExactSignal(wire.getInput(), valueToSignal, wire, "AIG");
-      if (failed(signal))
-        return failure();
-      valueToSignal[wire.getResult()] = *signal;
-      continue;
-    }
-
-    if (auto andOp = dyn_cast<synth::aig::AndInverterOp>(op)) {
-      SmallVector<ExactSignalRef> operands;
-      operands.reserve(andOp.getInputs().size());
-      for (auto [index, operand] : llvm::enumerate(andOp.getInputs())) {
-        auto signal = lookupExactSignal(operand, valueToSignal, andOp, "AIG");
-        if (failed(signal))
-          return failure();
-        if (andOp.isInverted(index))
-          signal->inverted = !signal->inverted;
-        operands.push_back(*signal);
-      }
-
-      if (operands.size() == 1) {
-        valueToSignal[andOp.getResult()] = operands.front();
-        continue;
-      }
-      if (operands.size() != 2)
-        return andOp.emitError(
-            "cut-rewrite AIG database currently supports only 1-input "
-            "inverters and 2-input AND nodes");
-
-      ExactNetworkStep step;
-      step.fanins.append(operands.begin(), operands.end());
-      network.steps.push_back(std::move(step));
-      valueToSignal[andOp.getResult()] = {
-          static_cast<unsigned>(network.numInputs + network.steps.size()),
-          false};
-      continue;
-    }
-
-    return op.emitError("unsupported operation in cut-rewrite AIG database");
-  }
-
-  auto output = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
-  if (!output || output.getNumOperands() != 1)
-    return module.emitError(
-        "cut-rewrite AIG database module must terminate with a single-output "
-        "hw.output");
-
-  auto outputSignal =
-      lookupExactSignal(output.getOperand(0), valueToSignal, output, "AIG");
-  if (failed(outputSignal))
-    return failure();
-  network.output = *outputSignal;
-  return network;
-}
-
 class AIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
   StringRef getKind() const override { return "aig-exact"; }
+  StringRef getInverterKind() const override { return "aig"; }
   StringRef getModulePrefix() const override { return "aig_exact"; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
@@ -1206,13 +1054,6 @@ public:
     addConditionedClause({bLit, -outLit});
   }
 
-  Value materializeInverter(OpBuilder &builder, Location loc,
-                            Value input) const override {
-    std::array<Value, 1> operands = {input};
-    std::array<bool, 1> inverted = {true};
-    return synth::aig::AndInverterOp::create(builder, loc, operands, inverted);
-  }
-
   Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
                            const ExactNetwork &network) const override {
     return materializeExactAIGNetwork(builder, loc, inputs, network);
@@ -1224,30 +1065,13 @@ public:
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
 
-  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-  parseEntry(hw::HWModuleOp module) const override {
-    auto canonicalTT = getCanonicalTruthTable(module);
-    if (failed(canonicalTT))
-      return failure();
-    auto network = parseExactAIGNetworkFromModule(module);
-    if (failed(network))
-      return failure();
-
-    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this, module);
-    entry->moduleName = module.getModuleName().str();
-    entry->npnClass = getIdentityNPNClass(*canonicalTT);
-    entry->delay = computeExactNetworkInputDelays(*network);
-    entry->area = computeMaterializedExactNetworkArea(*network);
-    std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
-    return result;
-  }
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
   static const MIGExactSynthesisBackend migBackend;
   static const AIGExactSynthesisBackend aigBackend;
 
-  std::string normalized = normalizeCutRewriteDatabaseKind(kind);
+  std::string normalized = normalizeExactSynthesisKind(kind);
   if (normalized == migBackend.getKind())
     return &migBackend;
   if (normalized == aigBackend.getKind())
@@ -1257,22 +1081,20 @@ static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
 
 } // namespace
 
-const CutRewriteDBBackend *
-circt::synth::getCutRewriteDatabaseBackend(StringRef kind) {
-  return getExactSynthesisBackend(kind);
+FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
+circt::synth::parseCutRewriteEntry(hw::HWModuleOp module) {
+  return parseExactSynthesisCutRewriteEntry(module);
 }
 
 LogicalResult circt::synth::emitExactSynthesisDatabase(
     mlir::ModuleOp module, StringRef kind,
     const ExactSynthesisDatabaseGenOptions &options) {
-  std::string normalizedKind = normalizeCutRewriteDatabaseKind(kind);
+  std::string normalizedKind = normalizeExactSynthesisKind(kind);
   auto *backend = getExactSynthesisBackend(normalizedKind);
   if (!backend) {
     module.emitError() << "unsupported database kind '" << kind << "'";
     return failure();
   }
 
-  module->setAttr(kCutRewriteDBKindAttr,
-                  StringAttr::get(module.getContext(), backend->getKind()));
   return backend->emitDatabase(module, options);
 }
