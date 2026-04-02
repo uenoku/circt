@@ -17,6 +17,7 @@
 #include "circt/Support/TruthTable.h"
 #include "CutRewriteDBImpl.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
@@ -241,6 +242,8 @@ public:
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
           getSourceLiteral) const = 0;
+  virtual Value materializeInverter(OpBuilder &builder, Location loc,
+                                    Value input) const = 0;
   virtual Value materializeNetwork(OpBuilder &builder, Location loc,
                                    ValueRange inputs,
                                    const ExactNetwork &network) const = 0;
@@ -253,27 +256,6 @@ public:
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind);
-
-static ExactNetwork remapExactNetworkToCutInputs(ExactNetwork network,
-                                                 const NPNClass &npnClass) {
-  assert(network.numInputs == npnClass.truthTable.numInputs &&
-         "network and NPN class input size mismatch");
-
-  auto remapSignal = [&](ExactSignalRef &signal) {
-    if (signal.source == 0 || signal.source > network.numInputs)
-      return;
-    unsigned canonicalInput = signal.source - 1;
-    signal.source = npnClass.inputPermutation[canonicalInput] + 1;
-    if ((npnClass.inputNegation >> canonicalInput) & 1)
-      signal.inverted = !signal.inverted;
-  };
-
-  for (auto &step : network.steps)
-    for (auto &fanin : step.fanins)
-      remapSignal(fanin);
-  remapSignal(network.output);
-  return network;
-}
 
 static SmallVector<DelayType, 6>
 computeExactNetworkInputDelays(const ExactNetwork &network) {
@@ -328,15 +310,6 @@ computeMaterializedExactNetworkArea(const ExactNetwork &network) {
   if (network.output.inverted && network.output.source != 0)
     ++area;
   return area;
-}
-
-static ExactNetwork remapExactNetworkToCutInputs(
-    ExactNetwork network, const NPNClass &npnClass,
-    const ExactSynthesisBackend &backend) {
-  network = remapExactNetworkToCutInputs(std::move(network), npnClass);
-  if (npnClass.outputNegation & 1)
-    network = backend.applyOutputNegation(std::move(network));
-  return network;
 }
 
 class GenericExactSATProblem {
@@ -811,25 +784,51 @@ parseExactMIGNetworkFromModule(hw::HWModuleOp module) {
 
 struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
   const ExactSynthesisBackend &backend;
-  ExactNetwork network;
+  Operation *moduleOp;
 
-  explicit LoadedExactNetworkEntry(const ExactSynthesisBackend &backend)
-      : backend(backend) {}
+  LoadedExactNetworkEntry(const ExactSynthesisBackend &backend,
+                          hw::HWModuleOp module)
+      : backend(backend), moduleOp(module.getOperation()) {}
 
   FailureOr<Operation *> rewrite(OpBuilder &builder,
                                  CutEnumerator &enumerator,
                                  const Cut &cut) const override {
     const auto &logicNetwork = enumerator.getLogicNetwork();
-    ExactNetwork exactNetwork =
-        remapExactNetworkToCutInputs(network, cut.getNPNClass(), backend);
     auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
-    SmallVector<Value> inputs;
-    inputs.reserve(cut.getInputSize());
-    for (uint32_t inputIndex : cut.inputs)
-      inputs.push_back(logicNetwork.getValue(inputIndex));
-    return backend.materializeNetwork(builder, rootOp->getLoc(), inputs,
-                                      exactNetwork)
-        .getDefiningOp();
+    assert(rootOp && "cut root must be a valid operation");
+
+    auto dbModule = cast<hw::HWModuleOp>(moduleOp);
+    auto *bodyBlock = dbModule.getBodyBlock();
+    auto output = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
+    if (!output || output.getNumOperands() != 1) {
+      dbModule.emitError("cut-rewrite database module must terminate with a "
+                         "single output");
+      return failure();
+    }
+
+    const auto &cutNPN = cut.getNPNClass();
+    assert(cutNPN.inputPermutation.size() == bodyBlock->getNumArguments() &&
+           "cut input permutation size mismatch");
+
+    IRMapping mapping;
+    for (auto [index, argument] : llvm::enumerate(bodyBlock->getArguments())) {
+      Value input =
+          logicNetwork.getValue(cut.inputs[cutNPN.inputPermutation[index]]);
+      if ((cutNPN.inputNegation >> index) & 1)
+        input = backend.materializeInverter(builder, rootOp->getLoc(), input);
+      mapping.map(argument, input);
+    }
+
+    for (Operation &op : bodyBlock->without_terminator())
+      builder.clone(op, mapping);
+
+    Value result = mapping.lookup(output.getOperand(0));
+    if (cutNPN.outputNegation & 1)
+      result = backend.materializeInverter(builder, rootOp->getLoc(), result);
+
+    if (auto *resultOp = result.getDefiningOp())
+      return resultOp;
+    return hw::WireOp::create(builder, rootOp->getLoc(), result).getOperation();
   }
 };
 
@@ -935,6 +934,14 @@ public:
     addConditionedClause({bLit, cLit, -outLit});
   }
 
+  Value materializeInverter(OpBuilder &builder, Location loc,
+                            Value input) const override {
+    std::array<Value, 1> operands = {input};
+    std::array<bool, 1> inverted = {true};
+    return synth::mig::MajorityInverterOp::create(builder, loc, operands,
+                                                  inverted);
+  }
+
   Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
                            const ExactNetwork &network) const override {
     return materializeExactMIGNetwork(builder, loc, inputs, network);
@@ -955,12 +962,11 @@ public:
     if (failed(network))
       return failure();
 
-    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this);
+    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this, module);
     entry->moduleName = module.getModuleName().str();
-    entry->network = std::move(*network);
     entry->npnClass = getIdentityNPNClass(*canonicalTT);
-    entry->delay = computeExactNetworkInputDelays(entry->network);
-    entry->area = computeMaterializedExactNetworkArea(entry->network);
+    entry->delay = computeExactNetworkInputDelays(*network);
+    entry->area = computeMaterializedExactNetworkArea(*network);
     std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
     return result;
   }
@@ -1200,6 +1206,13 @@ public:
     addConditionedClause({bLit, -outLit});
   }
 
+  Value materializeInverter(OpBuilder &builder, Location loc,
+                            Value input) const override {
+    std::array<Value, 1> operands = {input};
+    std::array<bool, 1> inverted = {true};
+    return synth::aig::AndInverterOp::create(builder, loc, operands, inverted);
+  }
+
   Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
                            const ExactNetwork &network) const override {
     return materializeExactAIGNetwork(builder, loc, inputs, network);
@@ -1220,12 +1233,11 @@ public:
     if (failed(network))
       return failure();
 
-    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this);
+    auto entry = std::make_unique<LoadedExactNetworkEntry>(*this, module);
     entry->moduleName = module.getModuleName().str();
-    entry->network = std::move(*network);
     entry->npnClass = getIdentityNPNClass(*canonicalTT);
-    entry->delay = computeExactNetworkInputDelays(entry->network);
-    entry->area = computeMaterializedExactNetworkArea(entry->network);
+    entry->delay = computeExactNetworkInputDelays(*network);
+    entry->area = computeMaterializedExactNetworkArea(*network);
     std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
     return result;
   }

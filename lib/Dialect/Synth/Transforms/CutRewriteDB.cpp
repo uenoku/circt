@@ -140,7 +140,9 @@ struct CutRewritePass
       return failure();
 
     auto database = std::make_shared<LoadedCutRewriteDatabase>();
-    if (failed(loadCutRewriteDatabaseFromModule(**parsedModule, *database)))
+    database->backingModule = std::move(*parsedModule);
+    if (failed(loadCutRewriteDatabaseFromModule(*database->backingModule,
+                                                *database)))
       return failure();
     loadedMaxInputSize = database->maxInputSize;
     loadedDatabase = std::move(database);
