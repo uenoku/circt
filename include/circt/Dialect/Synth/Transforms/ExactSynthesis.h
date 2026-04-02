@@ -30,9 +30,9 @@ struct ExactSynthesisDatabaseGenOptions {
 
 /// Populate `module` with canonical exact-synthesis implementations encoded as
 /// `hw.module`s carrying `hw.techlib.info` and cut-rewrite metadata.
-LogicalResult emitExactSynthesisDatabase(
-    mlir::ModuleOp module, llvm::StringRef kind,
-    const ExactSynthesisDatabaseGenOptions &options);
+llvm::LogicalResult
+emitExactSynthesisDatabase(mlir::ModuleOp module, llvm::StringRef kind,
+                           const ExactSynthesisDatabaseGenOptions &options);
 
 } // namespace synth
 } // namespace circt

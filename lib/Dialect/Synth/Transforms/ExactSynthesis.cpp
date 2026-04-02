@@ -10,12 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
+#include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
-#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
-#include "CutRewriteDBImpl.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
@@ -44,7 +44,7 @@ static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
 static constexpr unsigned kMaxAIGExactSearchArea = 32;
 static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
-    "synth.cut_rewrite.inverter_kind = "mig", synth.cut_rewrite.canonical_tt";
+    "synth.cut_rewrite.canonical_tt";
 static constexpr StringLiteral kCutRewriteInverterKindAttr =
     "synth.cut_rewrite.inverter_kind";
 
@@ -60,7 +60,8 @@ static std::string normalizeExactSynthesisKind(StringRef kind) {
 
 static FailureOr<CutRewriteInverterKind>
 getCutRewriteInverterKind(hw::HWModuleOp module) {
-  auto kindAttr = module->getAttrOfType<StringAttr>(kCutRewriteInverterKindAttr);
+  auto kindAttr =
+      module->getAttrOfType<StringAttr>(kCutRewriteInverterKindAttr);
   if (!kindAttr)
     return module.emitError("cut-rewrite database module missing '")
            << kCutRewriteInverterKindAttr << "'";
@@ -183,12 +184,11 @@ static DictionaryAttr createTechInfo(Builder &builder, double area,
 }
 
 template <typename MaterializeFn>
-static void appendDatabaseEntry(ModuleOp module, OpBuilder &builder,
-                                Builder &attrBuilder, StringRef modulePrefix,
-                                const BinaryTruthTable &canonicalTT,
-                                unsigned variantIndex, StringRef inverterKind,
-                                DictionaryAttr techInfo,
-                                MaterializeFn materialize) {
+static void
+appendDatabaseEntry(ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
+                    StringRef modulePrefix, const BinaryTruthTable &canonicalTT,
+                    unsigned variantIndex, StringRef inverterKind,
+                    DictionaryAttr techInfo, MaterializeFn materialize) {
   SmallVector<hw::PortInfo> inputs;
   inputs.reserve(canonicalTT.numInputs);
   for (unsigned i = 0; i != canonicalTT.numInputs; ++i) {
@@ -337,8 +337,8 @@ public:
                          IncrementalSATSolver &solver, unsigned numInputs,
                          const llvm::APInt &target, unsigned numSteps)
       : backend(backend), solver(solver), numInputs(numInputs), target(target),
-        numSteps(numSteps), arity(backend.getArity()), numMinterms(1u << numInputs),
-        totalSources(1 + numInputs + numSteps) {}
+        numSteps(numSteps), arity(backend.getArity()),
+        numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
 
   SolveResult solve() {
     buildEncoding();
@@ -494,7 +494,8 @@ public:
 
   GenericExactSynthesizer(const ExactSynthesisBackend &backend,
                           StringRef satBackend, int conflictLimit)
-      : backend(backend), satBackend(satBackend), conflictLimit(conflictLimit) {}
+      : backend(backend), satBackend(satBackend), conflictLimit(conflictLimit) {
+  }
 
   QueryResult synthesizeForArea(const BinaryTruthTable &tt,
                                 unsigned area) const {
@@ -582,8 +583,8 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
                    ++area) {
                 auto result = synthesizer.synthesizeForArea(
                     canonicalTruthTables[index], area);
-                if (result.status ==
-                    GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
+                if (result.status == GenericExactSynthesizer::QueryStatus::
+                                         ConflictLimitReached) {
                   hitConflictLimit = true;
                   LLVM_DEBUG(llvm::dbgs()
                              << "Exact" << backend.getFamilyName()
@@ -594,7 +595,8 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
                 if (result.status ==
                     GenericExactSynthesizer::QueryStatus::Error) {
                   module.emitError()
-                      << "failed to synthesize exact " << backend.getFamilyName()
+                      << "failed to synthesize exact "
+                      << backend.getFamilyName()
                       << " for canonical truth table " << ttString;
                   return failure();
                 }
@@ -714,8 +716,7 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
                           hw::HWModuleOp module)
       : inverterKind(inverterKind), moduleOp(module.getOperation()) {}
 
-  FailureOr<Operation *> rewrite(OpBuilder &builder,
-                                 CutEnumerator &enumerator,
+  FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
                                  const Cut &cut) const override {
     const auto &logicNetwork = enumerator.getLogicNetwork();
     auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
@@ -756,7 +757,8 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
   }
 
 private:
-  Value materializeInverter(OpBuilder &builder, Location loc, Value input) const {
+  Value materializeInverter(OpBuilder &builder, Location loc,
+                            Value input) const {
     std::array<Value, 1> operands = {input};
     std::array<bool, 1> inverted = {true};
     switch (inverterKind) {
@@ -868,11 +870,11 @@ public:
           }
   }
 
-  void addConditionedSemantics(
-      IncrementalSATSolver &solver, int selector, int outLit,
-      const ExactCandidate &candidate, unsigned minterm,
-      llvm::function_ref<int(unsigned, unsigned, bool)>
-          getSourceLiteral) const override {
+  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
+                               int outLit, const ExactCandidate &candidate,
+                               unsigned minterm,
+                               llvm::function_ref<int(unsigned, unsigned, bool)>
+                                   getSourceLiteral) const override {
     auto addConditionedClause = [&](std::initializer_list<int> lits) {
       SmallVector<int, 8> clause;
       clause.reserve(lits.size() + 1);
@@ -905,7 +907,6 @@ public:
                const ExactSynthesisDatabaseGenOptions &options) const override {
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
-
 };
 
 //===----------------------------------------------------------------------===//
@@ -1032,11 +1033,11 @@ public:
         }
   }
 
-  void addConditionedSemantics(
-      IncrementalSATSolver &solver, int selector, int outLit,
-      const ExactCandidate &candidate, unsigned minterm,
-      llvm::function_ref<int(unsigned, unsigned, bool)>
-          getSourceLiteral) const override {
+  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
+                               int outLit, const ExactCandidate &candidate,
+                               unsigned minterm,
+                               llvm::function_ref<int(unsigned, unsigned, bool)>
+                                   getSourceLiteral) const override {
     auto addConditionedClause = [&](std::initializer_list<int> lits) {
       SmallVector<int, 8> clause;
       clause.reserve(lits.size() + 1);
@@ -1064,7 +1065,6 @@ public:
                const ExactSynthesisDatabaseGenOptions &options) const override {
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
-
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
