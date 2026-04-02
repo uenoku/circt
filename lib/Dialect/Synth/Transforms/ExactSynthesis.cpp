@@ -75,15 +75,20 @@ getCutRewriteInverterKind(hw::HWModuleOp module) {
 }
 
 struct ExactSignalRef {
+  // `source == 0` denotes the constant-false source. All other sources are
+  // numbered as 1-based primary inputs followed by synthesized steps.
   unsigned source = 0;
   bool inverted = false;
 };
 
 struct ExactNetworkStep {
+  // One backend-specific primitive node in the synthesized network.
   SmallVector<ExactSignalRef, 3> fanins;
 };
 
 struct ExactNetwork {
+  // Compact backend-independent representation used during SAT search and DB
+  // generation. The concrete IR form is produced later by `materializeNetwork`.
   unsigned numInputs = 0;
   SmallVector<ExactNetworkStep, 4> steps;
   ExactSignalRef output;
@@ -130,6 +135,9 @@ collectCanonicalTruthTables(unsigned numInputs,
     if (seen.test(value))
       continue;
 
+    // Walk the full NPN orbit of one seed function, mark every equivalent
+    // representative as seen, and keep the lexicographically smallest truth
+    // table as the canonical class representative.
     BinaryTruthTable seed(numInputs, 1, APInt(numTruthTableBits, value));
     BinaryTruthTable best = seed;
 
@@ -170,6 +178,9 @@ appendDatabaseEntry(ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
                     StringRef modulePrefix, const BinaryTruthTable &canonicalTT,
                     unsigned variantIndex, StringRef inverterKind,
                     DictionaryAttr techInfo, MaterializeFn materialize) {
+  // Exact-synthesis databases are serialized as one `hw.module` per canonical
+  // truth table. The loaded cut-rewrite path later clones these bodies
+  // directly instead of reconstructing them from an intermediate graph.
   SmallVector<hw::PortInfo> inputs;
   inputs.reserve(canonicalTT.numInputs);
   for (unsigned i = 0; i != canonicalTT.numInputs; ++i) {
@@ -220,31 +231,54 @@ class ExactSynthesisBackend {
 public:
   virtual ~ExactSynthesisBackend() = default;
 
+  // User-visible identifier accepted by `--kind`.
   virtual StringRef getKind() const = 0;
+  // Inverter family stored in each serialized DB entry so the generic loader
+  // knows which single-input inverter op to materialize for NPN corrections.
   virtual StringRef getInverterKind() const = 0;
+  // Prefix used for generated `hw.module` names in the on-disk database.
   virtual StringRef getModulePrefix() const = 0;
+  // Hard limit for this backend family, independent of CLI options.
   virtual unsigned getMaxSupportedInputs() const = 0;
+  // Short family label used in diagnostics and debug output.
   virtual StringRef getFamilyName() const = 0;
+  // Primitive node fanin count used by the SAT encoding.
   virtual unsigned getArity() const = 0;
+  // Maximum area budget explored during exact search.
   virtual unsigned getMaxSearchArea() const = 0;
 
+  // Normalize a truth table into the subset of NPN space this backend chooses
+  // to synthesize directly. The returned flag tells the caller whether the
+  // synthesized network must be complemented again afterward.
   virtual std::pair<BinaryTruthTable, bool>
   normalize(const BinaryTruthTable &tt) const = 0;
+  // Recognize trivial zero-area solutions such as constants and projections.
+  // Returning `nullopt` tells the generic solver to build a SAT instance.
   virtual std::optional<ExactNetwork>
   synthesizeDirect(unsigned numInputs, const llvm::APInt &target) const = 0;
+  // Apply a deferred output inversion in the backend's native representation.
+  // MIG can often absorb this into the last majority; AIG typically cannot.
   virtual ExactNetwork applyOutputNegation(ExactNetwork network) const = 0;
+  // Enumerate all primitive nodes that may appear at the next synthesized
+  // step, using the currently available constant/input/step sources.
   virtual void
   enumerateCandidates(unsigned availableSources,
                       SmallVectorImpl<ExactCandidate> &candidates) const = 0;
+  // Emit CNF clauses for one candidate node at one minterm. `selector` gates
+  // the clauses so only the chosen candidate constrains the step output.
   virtual void addConditionedSemantics(
       IncrementalSATSolver &solver, int selector, int outLit,
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
           getSourceLiteral) const = 0;
+  // Lower the abstract `ExactNetwork` into concrete dialect IR when writing
+  // database entries.
   virtual Value materializeNetwork(OpBuilder &builder, Location loc,
                                    ValueRange inputs,
                                    const ExactNetwork &network) const = 0;
 
+  // Populate `module` with all canonical database entries supported by this
+  // backend.
   virtual LogicalResult
   emitDatabase(ModuleOp module,
                const ExactSynthesisDatabaseGenOptions &options) const = 0;
@@ -275,6 +309,8 @@ computeExactNetworkInputDelays(const ExactNetwork &network) {
   };
 
   for (const auto &step : network.steps) {
+    // Delay is tracked per primary input. Each node contributes unit delay on
+    // top of the longest reachable input-to-fanin path.
     SmallVector<DelayType, 6> delays(network.numInputs, kUnreachable);
     for (ExactSignalRef signal : step.fanins) {
       auto childDelays = getSourceDelays(signal.source);
@@ -340,6 +376,8 @@ private:
     if (vars.size() < 2)
       return;
 
+    // Encode pairwise exclusion with a sequential ladder. This keeps the
+    // auxiliary-variable cost linear instead of quadratic in `vars.size()`.
     SmallVector<int, 8> ladder(vars.size() - 1);
     for (int &var : ladder)
       var = newVar();
@@ -354,6 +392,8 @@ private:
   }
 
   void addExactlyOne(ArrayRef<int> vars) {
+    // One long positive clause enforces "at least one", and the ladder
+    // encoding above enforces "at most one".
     solver.addClause(vars);
     addAtMostOne(vars);
   }
@@ -363,11 +403,16 @@ private:
   }
 
   int getSourceLiteral(unsigned source, unsigned minterm, bool inverted) const {
+    // Candidates refer to sources in network numbering, not SAT numbering.
+    // This helper converts one source/minterm pair into the corresponding CNF
+    // literal, optionally complemented for inverted fanins.
     int lit = getSourceValueVar(source, minterm);
     return inverted ? -lit : lit;
   }
 
   void buildEncoding() {
+    // Every source gets one SAT variable per minterm so the backend can
+    // constrain each candidate purely in terms of truth-table semantics.
     sourceValueVars.resize(totalSources);
     for (unsigned source = 0; source != totalSources; ++source) {
       sourceValueVars[source].reserve(numMinterms);
@@ -375,9 +420,12 @@ private:
         sourceValueVars[source].push_back(newVar());
     }
 
+    // Source 0 is the dedicated constant-false source for every backend.
     for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
       solver.addClause({-getSourceValueVar(0, minterm)});
 
+    // Primary inputs are fully determined by the minterm index itself: bit
+    // `input` of the minterm number is the truth-table value of that input.
     for (unsigned input = 0; input != numInputs; ++input)
       for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
         solver.addClause({((minterm >> input) & 1)
@@ -387,6 +435,8 @@ private:
     stepCandidates.resize(numSteps);
     stepSelectionVars.resize(numSteps);
     for (unsigned step = 0; step != numSteps; ++step) {
+      // A step may use the constant source, any primary input, and any
+      // previously synthesized step, but never future steps.
       unsigned availableSources = 1 + numInputs + step;
       backend.enumerateCandidates(availableSources, stepCandidates[step]);
       auto &selectionVars = stepSelectionVars[step];
@@ -398,6 +448,14 @@ private:
       unsigned outSource = 1 + numInputs + step;
       for (auto [candidateIndex, candidate] :
            llvm::enumerate(stepCandidates[step])) {
+        // The selector literal gates the semantics of one candidate. Exactly
+        // one selector is true, so the SAT model picks one concrete node
+        // implementation per synthesized step.
+        //
+        // Repeating this for every minterm is what turns structural synthesis
+        // into pure Boolean satisfiability: the solver must assign values to
+        // all internal sources so that the selected primitive computes the
+        // right truth-table row for each minterm independently.
         backend.addConditionedSemantics(
             solver, selectionVars[candidateIndex],
             getSourceValueVar(outSource, 0), candidate, 0,
@@ -415,6 +473,9 @@ private:
     }
 
     unsigned rootSource = totalSources - 1;
+    // The last synthesized step is the network root. Constraining its value on
+    // every minterm to match `target` forces the entire selected network to
+    // implement the requested truth table.
     for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
       solver.addClause({target[minterm]
                             ? getSourceValueVar(rootSource, minterm)
@@ -432,6 +493,8 @@ private:
       for (size_t i = 0, e = selectionVars.size(); i != e; ++i) {
         if (solver.val(selectionVars[i]) != selectionVars[i])
           continue;
+        // `addExactlyOne` guarantees a unique selected candidate for each
+        // step, so decoding only has to find the one positive selector.
         ExactNetworkStep resultStep;
         resultStep.fanins.reserve(arity);
         for (unsigned operand = 0; operand != arity; ++operand)
@@ -452,10 +515,18 @@ private:
   unsigned numSteps;
   unsigned arity;
   unsigned numMinterms;
+  // Total sources in the abstract network numbering:
+  //   0                  -> constant false
+  //   [1, numInputs]     -> primary inputs
+  //   remaining sources  -> synthesized steps in topological order
   unsigned totalSources;
   int nextVar = 0;
+  // `sourceValueVars[source][minterm]` is the SAT variable that represents the
+  // Boolean value of one source on one truth-table row.
   SmallVector<SmallVector<int, 16>, 8> sourceValueVars;
+  // Structural choices available for each synthesized step.
   SmallVector<SmallVector<ExactCandidate, 64>, 8> stepCandidates;
+  // One-hot selector variables choosing which candidate realizes each step.
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
 };
 
@@ -498,6 +569,8 @@ private:
                                    const llvm::APInt &target,
                                    unsigned area) const {
     if (area == 0) {
+      // Area-zero solutions are only constants or projections, so let the
+      // backend answer those directly without building a SAT instance.
       auto direct = backend.synthesizeDirect(numInputs, target);
       return {.status = direct ? QueryStatus::Solved : QueryStatus::NoSolution,
               .network = std::move(direct)};
@@ -719,6 +792,9 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
 
     IRMapping mapping;
     for (auto [index, argument] : llvm::enumerate(bodyBlock->getArguments())) {
+      // Stored database bodies are already in canonical input order. Rebuild
+      // the original cut by applying the inverse NPN input permutation and the
+      // required input negations while mapping block arguments.
       Value input =
           logicNetwork.getValue(cut.inputs[cutNPN.inputPermutation[index]]);
       if ((cutNPN.inputNegation >> index) & 1)
@@ -831,6 +907,9 @@ public:
       network.output.inverted = !network.output.inverted;
       return network;
     }
+    // For MIGs, negating a majority can be absorbed by inverting all three
+    // fanins of the final majority node instead of materializing a separate
+    // output inverter.
     for (auto &fanin : network.steps.back().fanins)
       fanin.inverted = !fanin.inverted;
     return network;
@@ -997,6 +1076,8 @@ public:
   }
 
   ExactNetwork applyOutputNegation(ExactNetwork network) const override {
+    // AIG output negation is represented explicitly because the final node is
+    // binary AND rather than a self-dual majority.
     network.output.inverted = !network.output.inverted;
     return network;
   }
