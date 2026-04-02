@@ -10,11 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ExactSynthesisImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
-#include "ExactSynthesisImpl.h"
 #include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "synth-cut-rewrite"
@@ -34,30 +34,12 @@ namespace {
 
 struct ExactSynthesisPattern : public CutRewritePattern {
   ExactSynthesisPattern(MLIRContext *context,
-                        const LoadedExactSynthesisEntry &entry)
+                        const LoadedCutRewriteEntry &entry)
       : CutRewritePattern(context), entry(entry) {}
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    const auto &logicNetwork = enumerator.getLogicNetwork();
-    if (cut.isTrivialCut() || cut.getOutputSize(logicNetwork) != 1)
-      return std::nullopt;
-
-    auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
-    if (!rootOp || !rootOp->getResult(0).getType().isInteger(1))
-      return std::nullopt;
-
-    for (uint32_t inputIndex : cut.inputs) {
-      if (logicNetwork.getGate(inputIndex).getKind() ==
-          LogicNetworkGate::Constant)
-        continue;
-      Value inputValue = logicNetwork.getValue(inputIndex);
-      if (!inputValue || !inputValue.getType().isInteger(1))
-        return std::nullopt;
-    }
-
-    if (!(cut.getNPNClass().truthTable == entry.npnClass.truthTable))
-      return std::nullopt;
+    assert(cut.getNPNClass().truthTable == entry.npnClass.truthTable);
     return MatchResult(entry.area, entry.delay);
   }
 
@@ -76,7 +58,7 @@ struct ExactSynthesisPattern : public CutRewritePattern {
   StringRef getPatternName() const override { return entry.moduleName; }
 
 private:
-  const LoadedExactSynthesisEntry &entry;
+  const LoadedCutRewriteEntry &entry;
 };
 
 struct CutRewritePass
@@ -96,7 +78,7 @@ struct CutRewritePass
     if (failed(parsedModule))
       return failure();
 
-    auto database = std::make_shared<LoadedExactSynthesisDatabase>();
+    auto database = std::make_shared<LoadedCutRewriteDatabase>();
     if (failed(loadExactSynthesisDatabaseFromModule(**parsedModule, *database)))
       return failure();
     loadedMaxInputSize = database->maxInputSize;
@@ -133,7 +115,7 @@ struct CutRewritePass
   }
 
 private:
-  std::shared_ptr<LoadedExactSynthesisDatabase> loadedFileDatabase;
+  std::shared_ptr<LoadedCutRewriteDatabase> loadedFileDatabase;
   unsigned loadedMaxInputSize = 0;
 };
 

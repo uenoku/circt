@@ -262,7 +262,7 @@ public:
   virtual LogicalResult
   emitDatabase(ModuleOp module,
                const ExactSynthesisDatabaseGenOptions &options) const = 0;
-  virtual FailureOr<std::unique_ptr<LoadedExactSynthesisEntry>>
+  virtual FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
   parseEntry(hw::HWModuleOp module) const = 0;
 };
 
@@ -823,7 +823,7 @@ parseExactMIGNetworkFromModule(hw::HWModuleOp module) {
   return network;
 }
 
-struct LoadedExactNetworkEntry : public LoadedExactSynthesisEntry {
+struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
   const ExactSynthesisBackend &backend;
   ExactNetwork network;
 
@@ -960,7 +960,7 @@ public:
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
 
-  FailureOr<std::unique_ptr<LoadedExactSynthesisEntry>>
+  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
   parseEntry(hw::HWModuleOp module) const override {
     auto canonicalTT = getCanonicalTruthTable(module);
     if (failed(canonicalTT))
@@ -975,7 +975,7 @@ public:
     entry->npnClass = getIdentityNPNClass(*canonicalTT);
     entry->delay = computeExactNetworkInputDelays(entry->network);
     entry->area = computeMaterializedExactNetworkArea(entry->network);
-    std::unique_ptr<LoadedExactSynthesisEntry> result = std::move(entry);
+    std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
     return result;
   }
 };
@@ -1225,7 +1225,7 @@ public:
     return emitExactSynthesisDatabaseForBackend(*this, module, options);
   }
 
-  FailureOr<std::unique_ptr<LoadedExactSynthesisEntry>>
+  FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
   parseEntry(hw::HWModuleOp module) const override {
     auto canonicalTT = getCanonicalTruthTable(module);
     if (failed(canonicalTT))
@@ -1240,7 +1240,7 @@ public:
     entry->npnClass = getIdentityNPNClass(*canonicalTT);
     entry->delay = computeExactNetworkInputDelays(entry->network);
     entry->area = computeMaterializedExactNetworkArea(entry->network);
-    std::unique_ptr<LoadedExactSynthesisEntry> result = std::move(entry);
+    std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
     return result;
   }
 };
@@ -1281,7 +1281,7 @@ circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
 }
 
 LogicalResult circt::synth::loadExactSynthesisDatabaseFromModule(
-    mlir::ModuleOp dbModule, LoadedExactSynthesisDatabase &database) {
+    mlir::ModuleOp dbModule, LoadedCutRewriteDatabase &database) {
   auto kindAttr = dbModule->getAttrOfType<StringAttr>(kCutRewriteDBKindAttr);
   if (!kindAttr)
     return dbModule.emitError("cut-rewrite database missing '")

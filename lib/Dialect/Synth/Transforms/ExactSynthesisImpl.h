@@ -17,8 +17,8 @@
 namespace circt {
 namespace synth {
 
-struct LoadedExactSynthesisEntry {
-  virtual ~LoadedExactSynthesisEntry() = default;
+struct LoadedCutRewriteEntry {
+  virtual ~LoadedCutRewriteEntry() = default;
 
   std::string moduleName;
   NPNClass npnClass;
@@ -30,9 +30,9 @@ struct LoadedExactSynthesisEntry {
                                          const Cut &cut) const = 0;
 };
 
-struct LoadedExactSynthesisDatabase {
+struct LoadedCutRewriteDatabase {
   std::string kind;
-  std::vector<std::unique_ptr<LoadedExactSynthesisEntry>> entries;
+  std::vector<std::unique_ptr<LoadedCutRewriteEntry>> entries;
   unsigned maxInputSize = 0;
 };
 
@@ -41,7 +41,7 @@ parseCutRewriteDBFile(StringRef dbFile, mlir::MLIRContext *context);
 
 LogicalResult
 loadExactSynthesisDatabaseFromModule(mlir::ModuleOp dbModule,
-                                     LoadedExactSynthesisDatabase &database);
+                                     LoadedCutRewriteDatabase &database);
 
 } // namespace synth
 } // namespace circt
