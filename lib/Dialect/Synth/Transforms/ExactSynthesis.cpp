@@ -185,25 +185,60 @@ public:
 
   GenericExactSATProblem(const ExactSynthesisBackend &backend,
                          IncrementalSATSolver &solver, unsigned numInputs,
-                         const llvm::APInt &target, unsigned numSteps)
+                         const llvm::APInt &target)
       : backend(backend), solver(solver), numInputs(numInputs), target(target),
-        numSteps(numSteps), arity(backend.getArity()),
-        numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
+        arity(backend.getArity()), numMinterms(1u << numInputs) {
+    initializeBaseEncoding();
+  }
 
-  SolveResult solve() {
-    buildEncoding();
+  unsigned getNumSteps() const { return stepCandidates.size(); }
+
+  void appendStep() {
+    unsigned step = stepCandidates.size();
+    appendSourceValueVars();
+
+    stepCandidates.emplace_back();
+    stepSelectionVars.emplace_back();
+
+    unsigned availableSources = 1 + numInputs + step;
+    backend.enumerateCandidates(availableSources, stepCandidates.back());
+    llvm::erase_if(stepCandidates.back(), [&](const ExactCandidate &candidate) {
+      return backend.isTrivialCandidate(candidate);
+    });
+
+    auto &selectionVars = stepSelectionVars.back();
+    selectionVars.reserve(stepCandidates.back().size());
+    for (size_t i = 0, e = stepCandidates.back().size(); i != e; ++i)
+      selectionVars.push_back(newVar());
+    addExactlyOne(selectionVars);
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "  step " << step << ": availableSources="
+               << availableSources
+               << " candidates=" << stepCandidates.back().size() << "\n");
+
+    if (step != 0)
+      addAdjacentStepOrdering(step - 1, step);
+    addCandidateSemanticsForStep(step);
+  }
+
+  SolveResult solveCurrentArea() {
+    unsigned numSteps = getNumSteps();
+    assert(numSteps != 0 && "area-zero queries do not use SAT");
+
+    int areaAssumption = createAreaAssumption(numSteps);
     LLVM_DEBUG(llvm::dbgs()
                << "Exact SAT solve: family=" << backend.getFamilyName()
                << " inputs=" << numInputs << " steps=" << numSteps
                << " minterms=" << numMinterms << " vars=" << nextVar << "\n");
-    auto result = solver.solve();
+    auto result = solver.solve({areaAssumption});
     LLVM_DEBUG(llvm::dbgs()
                << "Exact SAT result: family=" << backend.getFamilyName()
                << " inputs=" << numInputs << " steps=" << numSteps
                << " result=" << static_cast<int>(result) << "\n");
     if (result != IncrementalSATSolver::kSAT)
       return {.result = result};
-    return {.result = result, .network = decodeModel()};
+    return {.result = result, .network = decodeModel(numSteps)};
   }
 
 private:
@@ -280,14 +315,14 @@ private:
     return key;
   }
 
-  void buildEncoding() {
+  void initializeBaseEncoding() {
     // Every source gets one SAT variable per minterm so the backend can
     // constrain each candidate purely in terms of truth-table semantics.
-    sourceValueVars.resize(totalSources);
-    for (unsigned source = 0; source != totalSources; ++source) {
-      sourceValueVars[source].reserve(numMinterms);
+    sourceValueVars.resize(1 + numInputs);
+    for (auto &vars : sourceValueVars) {
+      vars.reserve(numMinterms);
       for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-        sourceValueVars[source].push_back(newVar());
+        vars.push_back(newVar());
     }
 
     // Source 0 is the dedicated constant-false source for every backend.
@@ -301,46 +336,14 @@ private:
         solver.addClause({((minterm >> input) & 1)
                               ? getSourceValueVar(1 + input, minterm)
                               : -getSourceValueVar(1 + input, minterm)});
-
-    stepCandidates.resize(numSteps);
-    stepSelectionVars.resize(numSteps);
-    for (unsigned step = 0; step != numSteps; ++step) {
-      // A step may use the constant source, any primary input, and any
-      // previously synthesized step, but never future steps.
-      unsigned availableSources = 1 + numInputs + step;
-      backend.enumerateCandidates(availableSources, stepCandidates[step]);
-      llvm::erase_if(stepCandidates[step],
-                     [&](const ExactCandidate &candidate) {
-                       return backend.isTrivialCandidate(candidate);
-                     });
-      auto &selectionVars = stepSelectionVars[step];
-      selectionVars.reserve(stepCandidates[step].size());
-      for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
-        selectionVars.push_back(newVar());
-      addExactlyOne(selectionVars);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "  step " << step
-                 << ": availableSources=" << availableSources
-                 << " candidates=" << stepCandidates[step].size() << "\n");
-    }
-
-    addAdjacentStepSymmetryBreakingConstraints();
-    addCandidateSemanticsConstraints();
-    addUseAllStepsConstraints();
-
-    unsigned rootSource = totalSources - 1;
-    // The last synthesized step is the network root. Constraining its value on
-    // every minterm to match `target` forces the entire selected network to
-    // implement the requested truth table.
-    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-      solver.addClause({target[minterm]
-                            ? getSourceValueVar(rootSource, minterm)
-                            : -getSourceValueVar(rootSource, minterm)});
   }
 
-  void addAdjacentStepSymmetryBreakingConstraints() {
-    for (unsigned step = 0; step + 1 < numSteps; ++step)
-      addAdjacentStepOrdering(step, step + 1);
+  void appendSourceValueVars() {
+    sourceValueVars.emplace_back();
+    auto &vars = sourceValueVars.back();
+    vars.reserve(numMinterms);
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      vars.push_back(newVar());
   }
 
   void addAdjacentStepOrdering(unsigned prevStep, unsigned nextStep) {
@@ -373,38 +376,54 @@ private:
               {-prevSelectionVars[prevIndex], -nextSelectionVars[nextIndex]});
   }
 
-  void addCandidateSemanticsConstraints() {
-    for (unsigned step = 0; step != numSteps; ++step) {
-      unsigned outSource = 1 + numInputs + step;
-      const auto &selectionVars = stepSelectionVars[step];
-      for (auto [candidateIndex, candidate] :
-           llvm::enumerate(stepCandidates[step])) {
-        // The selector literal gates the semantics of one candidate. Exactly
-        // one selector is true, so the SAT model picks one concrete node
-        // implementation per synthesized step.
-        //
-        // Repeating this for every minterm is what turns structural synthesis
-        // into pure Boolean satisfiability: the solver must assign values to
-        // all internal sources so that the selected primitive computes the
-        // right truth-table row for each minterm independently.
+  void addCandidateSemanticsForStep(unsigned step) {
+    unsigned outSource = 1 + numInputs + step;
+    const auto &selectionVars = stepSelectionVars[step];
+    for (auto [candidateIndex, candidate] : llvm::enumerate(stepCandidates[step])) {
+      // The selector literal gates the semantics of one candidate. Exactly
+      // one selector is true, so the SAT model picks one concrete node
+      // implementation per synthesized step.
+      //
+      // Repeating this for every minterm is what turns structural synthesis
+      // into pure Boolean satisfiability: the solver must assign values to
+      // all internal sources so that the selected primitive computes the
+      // right truth-table row for each minterm independently.
+      backend.addConditionedSemantics(
+          solver, selectionVars[candidateIndex], getSourceValueVar(outSource, 0),
+          candidate, 0,
+          [&](unsigned source, unsigned minterm, bool inverted) {
+            return getSourceLiteral(source, minterm, inverted);
+          });
+      for (unsigned minterm = 1; minterm != numMinterms; ++minterm)
         backend.addConditionedSemantics(
             solver, selectionVars[candidateIndex],
-            getSourceValueVar(outSource, 0), candidate, 0,
-            [&](unsigned source, unsigned minterm, bool inverted) {
-              return getSourceLiteral(source, minterm, inverted);
+            getSourceValueVar(outSource, minterm), candidate, minterm,
+            [&](unsigned source, unsigned currentMinterm, bool inverted) {
+              return getSourceLiteral(source, currentMinterm, inverted);
             });
-        for (unsigned minterm = 1; minterm != numMinterms; ++minterm)
-          backend.addConditionedSemantics(
-              solver, selectionVars[candidateIndex],
-              getSourceValueVar(outSource, minterm), candidate, minterm,
-              [&](unsigned source, unsigned currentMinterm, bool inverted) {
-                return getSourceLiteral(source, currentMinterm, inverted);
-              });
-      }
     }
   }
 
-  void addUseAllStepsConstraints() {
+  int createAreaAssumption(unsigned numSteps) {
+    assert(numSteps != 0 && "area-zero queries do not use SAT");
+    int assumption = newVar();
+    areaAssumptions.push_back(assumption);
+
+    addRootConstraintsForArea(assumption, numSteps);
+    addUseAllStepsConstraintsForArea(assumption, numSteps);
+    return assumption;
+  }
+
+  void addRootConstraintsForArea(int assumption, unsigned numSteps) {
+    unsigned rootSource = 1 + numInputs + numSteps - 1;
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      solver.addClause({-assumption, target[minterm]
+                                         ? getSourceValueVar(rootSource, minterm)
+                                         : -getSourceValueVar(rootSource,
+                                                              minterm)});
+  }
+
+  void addUseAllStepsConstraintsForArea(int assumption, unsigned numSteps) {
     for (unsigned step = 0; step + 1 < numSteps; ++step) {
       unsigned source = 1 + numInputs + step;
       SmallVector<int, 32> users;
@@ -417,11 +436,15 @@ private:
             users.push_back(stepSelectionVars[userStep][candidateIndex]);
       LLVM_DEBUG(llvm::dbgs() << "  use-all-steps: step " << step << " source="
                               << source << " users=" << users.size() << "\n");
-      solver.addClause(users);
+      SmallVector<int, 33> clause;
+      clause.reserve(users.size() + 1);
+      clause.push_back(-assumption);
+      clause.append(users.begin(), users.end());
+      solver.addClause(clause);
     }
   }
 
-  ExactNetwork decodeModel() const {
+  ExactNetwork decodeModel(unsigned numSteps) const {
     ExactNetwork network;
     network.numInputs = numInputs;
     network.steps.reserve(numSteps);
@@ -451,14 +474,8 @@ private:
   IncrementalSATSolver &solver;
   unsigned numInputs;
   llvm::APInt target;
-  unsigned numSteps;
   unsigned arity;
   unsigned numMinterms;
-  // Total sources in the abstract network numbering:
-  //   0                  -> constant false
-  //   [1, numInputs]     -> primary inputs
-  //   remaining sources  -> synthesized steps in topological order
-  unsigned totalSources;
   int nextVar = 0;
   // `sourceValueVars[source][minterm]` is the SAT variable that represents the
   // Boolean value of one source on one truth-table row.
@@ -467,6 +484,8 @@ private:
   SmallVector<SmallVector<ExactCandidate, 64>, 8> stepCandidates;
   // One-hot selector variables choosing which candidate realizes each step.
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
+  // One assumption variable per area query.
+  SmallVector<int, 8> areaAssumptions;
 };
 
 class GenericExactSynthesizer {
@@ -527,13 +546,21 @@ private:
               .network = std::move(direct)};
     }
 
-    auto solver = createIncrementalSATSolver(satBackend, cadicalOptions);
-    if (!solver)
-      return {.status = QueryStatus::Error};
-    solver->setConflictLimit(conflictLimit);
+    if (!solver) {
+      solver = createIncrementalSATSolver(satBackend, cadicalOptions);
+      if (!solver)
+        return {.status = QueryStatus::Error};
+      solver->setConflictLimit(conflictLimit);
+    }
+    if (!problem)
+      problem =
+          std::make_unique<GenericExactSATProblem>(backend, *solver, numInputs,
+                                                  target);
 
-    GenericExactSATProblem problem(backend, *solver, numInputs, target, area);
-    auto solveResult = problem.solve();
+    while (problem->getNumSteps() < area)
+      problem->appendStep();
+
+    auto solveResult = problem->solveCurrentArea();
     if (solveResult.result == IncrementalSATSolver::kUNKNOWN)
       return {.status = QueryStatus::ConflictLimitReached};
     return {.status = solveResult.network ? QueryStatus::Solved
@@ -545,6 +572,8 @@ private:
   std::string satBackend;
   CadicalSATSolverOptions cadicalOptions;
   int conflictLimit;
+  mutable std::unique_ptr<IncrementalSATSolver> solver;
+  mutable std::unique_ptr<GenericExactSATProblem> problem;
 };
 
 static FailureOr<BinaryTruthTable>
