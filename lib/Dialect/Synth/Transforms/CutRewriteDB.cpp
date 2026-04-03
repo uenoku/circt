@@ -104,6 +104,25 @@ FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
 
 namespace {
 
+static FailureOr<std::string> inferCutRewriteInverterKind(mlir::ModuleOp db) {
+  bool sawMIG = false;
+  bool sawAIG = false;
+  for (auto module : db.getOps<hw::HWModuleOp>()) {
+    for (Operation &op : module.getBodyBlock()->without_terminator()) {
+      if (isa<synth::mig::MajorityInverterOp>(op))
+        sawMIG = true;
+      else if (isa<synth::aig::AndInverterOp>(op))
+        sawAIG = true;
+    }
+  }
+
+  // AIG inversion is the conservative fallback for ambiguous databases, and it
+  // also covers mixed AIG/MIG bodies because later strashing can flatten them.
+  if (sawAIG || !sawMIG)
+    return std::string("aig");
+  return std::string("mig");
+}
+
 static double computeMaterializedModuleArea(hw::HWModuleOp module) {
   double area = 0.0;
   for (Operation &op : module.getBodyBlock()->without_terminator())
@@ -195,6 +214,10 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
   database.entries.clear();
   database.maxInputSize = 0;
 
+  auto inferredInverterKind = inferCutRewriteInverterKind(dbModule);
+  if (failed(inferredInverterKind))
+    return failure();
+
   SmallVector<hw::HWModuleOp> hwModules(dbModule.getOps<hw::HWModuleOp>());
   std::vector<std::unique_ptr<LoadedCutRewriteEntry>> loadedEntries(
       hwModules.size());
@@ -203,6 +226,7 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
             auto metadata = computeCutRewriteModuleMetadata(hwModules[index]);
             if (failed(metadata))
               return failure();
+            metadata->inverterKind = *inferredInverterKind;
             auto entry = parseCutRewriteEntry(hwModules[index], *metadata);
             if (failed(entry))
               return failure();

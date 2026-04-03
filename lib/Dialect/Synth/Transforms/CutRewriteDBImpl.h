@@ -15,6 +15,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OwningOpRef.h"
+#include <string>
 #include <utility>
 
 namespace circt {
@@ -43,6 +44,7 @@ struct CutRewriteModuleMetadata {
   NPNClass npnClass;
   double area = 0.0;
   SmallVector<DelayType> delay;
+  std::string inverterKind = "aig";
 };
 
 FailureOr<std::pair<double, SmallVector<DelayType>>>
