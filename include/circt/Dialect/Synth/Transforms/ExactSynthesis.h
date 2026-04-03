@@ -29,7 +29,7 @@ struct ExactSynthesisDatabaseGenOptions {
 };
 
 /// Populate `module` with canonical exact-synthesis implementations encoded as
-/// `hw.module`s carrying `hw.techlib.info` and cut-rewrite metadata.
+/// `hw.module`s carrying the cut-rewrite attributes needed to replay them.
 llvm::LogicalResult
 emitExactSynthesisDatabase(mlir::ModuleOp module, llvm::StringRef kind,
                            const ExactSynthesisDatabaseGenOptions &options);

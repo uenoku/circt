@@ -39,13 +39,20 @@ struct LoadedCutRewriteDatabase {
   unsigned maxInputSize = 0;
 };
 
+struct CutRewriteModuleMetadata {
+  NPNClass npnClass;
+  double area = 0.0;
+  SmallVector<DelayType> delay;
+};
+
 FailureOr<std::pair<double, SmallVector<DelayType>>>
 getAreaAndDelayFromTechInfo(hw::HWModuleOp module);
 
 FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module);
 
 FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-parseCutRewriteEntry(hw::HWModuleOp module);
+parseCutRewriteEntry(hw::HWModuleOp module,
+                     const CutRewriteModuleMetadata &metadata);
 
 FailureOr<OwningOpRef<mlir::ModuleOp>>
 parseCutRewriteDBFile(StringRef dbFile, mlir::MLIRContext *context);

@@ -13,14 +13,12 @@
 #include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
-#include "mlir/Pass/AnalysisManager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -45,8 +43,6 @@ namespace {
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
 static constexpr unsigned kMaxAIGExactSearchArea = 32;
-static constexpr StringLiteral kCutRewriteCanonicalTTAttr =
-    "synth.cut_rewrite.canonical_tt";
 static constexpr StringLiteral kCutRewriteInverterKindAttr =
     "synth.cut_rewrite.inverter_kind";
 
@@ -104,17 +100,6 @@ static NPNClass getIdentityNPNClass(const BinaryTruthTable &canonicalTT) {
   return NPNClass(canonicalTT, std::move(inputPermutation), 0, 0);
 }
 
-static FailureOr<BinaryTruthTable>
-getCanonicalTruthTable(hw::HWModuleOp module) {
-  auto canonicalTTAttr =
-      module->getAttrOfType<IntegerAttr>(kCutRewriteCanonicalTTAttr);
-  if (!canonicalTTAttr)
-    return module.emitError("cut-rewrite database module missing '")
-           << kCutRewriteCanonicalTTAttr << "'";
-  return BinaryTruthTable(module.getNumInputPorts(), 1,
-                          canonicalTTAttr.getValue());
-}
-
 static void
 collectCanonicalTruthTables(unsigned numInputs,
                             SmallVectorImpl<BinaryTruthTable> &truthTables) {
@@ -159,19 +144,6 @@ collectCanonicalTruthTables(unsigned numInputs,
 
     truthTables.push_back(std::move(best));
   }
-}
-
-static DictionaryAttr createTechInfo(Builder &builder, double area,
-                                     ArrayRef<DelayType> delays) {
-  SmallVector<Attribute> delayRows;
-  delayRows.reserve(delays.size());
-  for (DelayType delay : delays)
-    delayRows.push_back(
-        builder.getArrayAttr({builder.getI64IntegerAttr(delay)}));
-  return builder.getDictionaryAttr({
-      builder.getNamedAttr("area", builder.getF64FloatAttr(area)),
-      builder.getNamedAttr("delay", builder.getArrayAttr(delayRows)),
-  });
 }
 
 template <typename MaterializeFn>
@@ -282,72 +254,6 @@ public:
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind);
-
-static double computeMaterializedModuleArea(hw::HWModuleOp module) {
-  double area = 0.0;
-  for (Operation &op : module.getBodyBlock()->without_terminator())
-    if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp>(op))
-      area += 1.0;
-  return area;
-}
-
-static FailureOr<SmallVector<DelayType>>
-computeMaterializedModuleInputDelays(hw::HWModuleOp module,
-                                     LongestPathAnalysis &analysis) {
-  auto output = dyn_cast<hw::OutputOp>(module.getBodyBlock()->getTerminator());
-  if (!output || output.getNumOperands() != 1)
-    return module.emitError("generated exact synthesis module must terminate "
-                            "with a single-output hw.output");
-
-  SmallVector<DataflowPath> paths;
-  if (failed(analysis.computeGlobalPaths(output.getOperand(0), /*bitPos=*/0,
-                                         paths)))
-    return failure();
-
-  SmallVector<DelayType> delays(module.getNumInputPorts(), 0);
-  for (const auto &path : paths) {
-    auto arg = dyn_cast<BlockArgument>(path.getStartPoint().value);
-    if (!arg || arg.getParentBlock() != module.getBodyBlock())
-      continue;
-    delays[arg.getArgNumber()] =
-        std::max(delays[arg.getArgNumber()],
-                 static_cast<DelayType>(path.getDelay()));
-  }
-  return delays;
-}
-
-static LogicalResult annotateGeneratedDatabaseEntries(ModuleOp module) {
-  mlir::ModuleAnalysisManager moduleAnalysisManager(module,
-                                                    /*passInstrumentor=*/nullptr);
-  mlir::AnalysisManager analysisManager = moduleAnalysisManager;
-  LongestPathAnalysis pathAnalysis(
-      module, analysisManager,
-      LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
-                                 /*lazyComputation=*/false,
-                                 /*keepOnlyMaxDelayPaths=*/true));
-
-  Builder attrBuilder(module.getContext());
-  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
-    auto npnClass = getNPNClassFromModule(hwModule);
-    if (failed(npnClass))
-      return failure();
-    auto delays = computeMaterializedModuleInputDelays(hwModule, pathAnalysis);
-    if (failed(delays))
-      return failure();
-
-    hwModule->setAttr(
-        "hw.techlib.info",
-        createTechInfo(attrBuilder, computeMaterializedModuleArea(hwModule),
-                       *delays));
-    hwModule->setAttr(
-        kCutRewriteCanonicalTTAttr,
-        attrBuilder.getIntegerAttr(
-            IntegerType::get(module.getContext(),
-                             1u << (*npnClass).truthTable.numInputs),
-            (*npnClass).truthTable.table));
-  }
-  return success();
-}
 
 class GenericExactSATProblem {
 public:
@@ -698,7 +604,7 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
     }
   }
 
-  return annotateGeneratedDatabaseEntries(module);
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -834,22 +740,17 @@ private:
 };
 
 static FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module) {
-  auto canonicalTT = getCanonicalTruthTable(module);
-  if (failed(canonicalTT))
-    return failure();
+parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
+                                   const CutRewriteModuleMetadata &metadata) {
   auto inverterKind = getCutRewriteInverterKind(module);
   if (failed(inverterKind))
-    return failure();
-  auto areaAndDelay = getAreaAndDelayFromTechInfo(module);
-  if (failed(areaAndDelay))
     return failure();
 
   auto entry = std::make_unique<LoadedExactNetworkEntry>(*inverterKind, module);
   entry->moduleName = module.getModuleName().str();
-  entry->npnClass = getIdentityNPNClass(*canonicalTT);
-  entry->area = areaAndDelay->first;
-  entry->delay = std::move(areaAndDelay->second);
+  entry->npnClass = getIdentityNPNClass(metadata.npnClass.truthTable);
+  entry->area = metadata.area;
+  entry->delay = metadata.delay;
   std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
   return result;
 }
@@ -1147,8 +1048,9 @@ static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
 } // namespace
 
 FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
-circt::synth::parseCutRewriteEntry(hw::HWModuleOp module) {
-  return parseExactSynthesisCutRewriteEntry(module);
+circt::synth::parseCutRewriteEntry(hw::HWModuleOp module,
+                                   const CutRewriteModuleMetadata &metadata) {
+  return parseExactSynthesisCutRewriteEntry(module, metadata);
 }
 
 LogicalResult circt::synth::emitExactSynthesisDatabase(

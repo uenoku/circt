@@ -12,9 +12,12 @@
 
 #include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
+#include "mlir/IR/Threading.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/FileUtilities.h"
@@ -99,6 +102,77 @@ FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
   return NPNClass::computeNPNCanonicalForm(*truthTable);
 }
 
+namespace {
+
+static double computeMaterializedModuleArea(hw::HWModuleOp module) {
+  double area = 0.0;
+  for (Operation &op : module.getBodyBlock()->without_terminator())
+    if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp>(op))
+      area += 1.0;
+  return area;
+}
+
+static FailureOr<SmallVector<DelayType>>
+computeMaterializedModuleInputDelays(hw::HWModuleOp module,
+                                     LongestPathAnalysis &analysis) {
+  auto output = dyn_cast<hw::OutputOp>(module.getBodyBlock()->getTerminator());
+  if (!output || output.getNumOperands() != 1)
+    return module.emitError("generated cut-rewrite database module must "
+                            "terminate with a single-output hw.output");
+
+  SmallVector<DataflowPath> paths;
+  if (failed(analysis.computeGlobalPaths(output.getOperand(0), /*bitPos=*/0,
+                                         paths)))
+    return failure();
+
+  SmallVector<DelayType> delays(module.getNumInputPorts(), 0);
+  for (const auto &path : paths) {
+    auto arg = dyn_cast<BlockArgument>(path.getStartPoint().value);
+    if (!arg || arg.getParentBlock() != module.getBodyBlock())
+      continue;
+    delays[arg.getArgNumber()] =
+        std::max(delays[arg.getArgNumber()],
+                 static_cast<DelayType>(path.getDelay()));
+  }
+  return delays;
+}
+
+static FailureOr<CutRewriteModuleMetadata>
+computeCutRewriteModuleMetadata(hw::HWModuleOp module) {
+  CutRewriteModuleMetadata metadata;
+  auto npnClass = getNPNClassFromModule(module);
+  if (failed(npnClass))
+    return failure();
+  metadata.npnClass = std::move(*npnClass);
+
+  if (module->hasAttr("hw.techlib.info")) {
+    auto areaAndDelay = getAreaAndDelayFromTechInfo(module);
+    if (failed(areaAndDelay))
+      return failure();
+    metadata.area = areaAndDelay->first;
+    metadata.delay = std::move(areaAndDelay->second);
+    return metadata;
+  }
+
+  mlir::ModuleAnalysisManager moduleAnalysisManager(
+      module, /*passInstrumentor=*/nullptr);
+  mlir::AnalysisManager analysisManager = moduleAnalysisManager;
+  LongestPathAnalysis pathAnalysis(
+      module, analysisManager,
+      LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
+                                 /*lazyComputation=*/false,
+                                 /*keepOnlyMaxDelayPaths=*/true));
+
+  auto delays = computeMaterializedModuleInputDelays(module, pathAnalysis);
+  if (failed(delays))
+    return failure();
+  metadata.area = computeMaterializedModuleArea(module);
+  metadata.delay = std::move(*delays);
+  return metadata;
+}
+
+} // namespace
+
 FailureOr<OwningOpRef<mlir::ModuleOp>>
 circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
   std::string errorMessage;
@@ -121,14 +195,27 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
   database.entries.clear();
   database.maxInputSize = 0;
 
-  for (auto hwModule : dbModule.getOps<hw::HWModuleOp>()) {
-    auto entry = parseCutRewriteEntry(hwModule);
-    if (failed(entry))
-      return failure();
-    database.maxInputSize = std::max(
-        database.maxInputSize,
-        static_cast<unsigned>((*entry)->npnClass.truthTable.numInputs));
-    database.entries.push_back(std::move(*entry));
+  SmallVector<hw::HWModuleOp> hwModules(dbModule.getOps<hw::HWModuleOp>());
+  std::vector<std::unique_ptr<LoadedCutRewriteEntry>> loadedEntries(
+      hwModules.size());
+  if (failed(mlir::failableParallelForEachN(
+          dbModule.getContext(), 0, hwModules.size(), [&](size_t index) {
+            auto metadata = computeCutRewriteModuleMetadata(hwModules[index]);
+            if (failed(metadata))
+              return failure();
+            auto entry = parseCutRewriteEntry(hwModules[index], *metadata);
+            if (failed(entry))
+              return failure();
+            loadedEntries[index] = std::move(*entry);
+            return success();
+          })))
+    return failure();
+
+  for (auto &entry : loadedEntries) {
+    database.maxInputSize =
+        std::max(database.maxInputSize,
+                 static_cast<unsigned>(entry->npnClass.truthTable.numInputs));
+    database.entries.push_back(std::move(entry));
   }
 
   if (database.entries.empty())
