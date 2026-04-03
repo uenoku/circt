@@ -41,51 +41,6 @@ using namespace circt::synth;
 
 #define DEBUG_TYPE "synth-tech-mapper"
 
-//===----------------------------------------------------------------------===//
-// Tech Mapper Pass
-//===----------------------------------------------------------------------===//
-
-static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
-  // Get input and output ports
-  auto inputTypes = module.getInputTypes();
-  auto outputTypes = module.getOutputTypes();
-
-  unsigned numInputs = inputTypes.size();
-  unsigned numOutputs = outputTypes.size();
-  if (numOutputs != 1)
-    return module->emitError(
-        "Modules with multiple outputs are not supported yet");
-
-  // Verify all ports are single bit
-  for (auto type : inputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All input ports must be single bit");
-  }
-  for (auto type : outputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All output ports must be single bit");
-  }
-
-  if (numInputs > maxTruthTableInputs)
-    return module->emitError("Too many inputs for truth table generation");
-
-  SmallVector<Value> results;
-  results.reserve(numOutputs);
-  // Get the body block of the module
-  auto *bodyBlock = module.getBodyBlock();
-  assert(bodyBlock && "Module must have a body block");
-  // Collect output values from the body block
-  for (auto result : bodyBlock->getTerminator()->getOperands())
-    results.push_back(result);
-
-  // Create a truth table for the module
-  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
-  if (failed(truthTable))
-    return failure();
-
-  return NPNClass::computeNPNCanonicalForm(*truthTable);
-}
-
 /// Simple technology library encoded as a HWModuleOp.
 struct TechLibraryPattern : public CutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,

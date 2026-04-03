@@ -13,12 +13,14 @@
 #include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -177,7 +179,7 @@ static void
 appendDatabaseEntry(ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
                     StringRef modulePrefix, const BinaryTruthTable &canonicalTT,
                     unsigned variantIndex, StringRef inverterKind,
-                    DictionaryAttr techInfo, MaterializeFn materialize) {
+                    MaterializeFn materialize) {
   // Exact-synthesis databases are serialized as one `hw.module` per canonical
   // truth table. The loaded cut-rewrite path later clones these bodies
   // directly instead of reconstructing them from an intermediate graph.
@@ -212,13 +214,8 @@ appendDatabaseEntry(ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
   hw::HWModuleOp hwModule = hw::HWModuleOp::create(
       builder, module.getLoc(), attrBuilder.getStringAttr(moduleName),
       hw::ModulePortInfo(inputs, {output}));
-  hwModule->setAttr("hw.techlib.info", techInfo);
   hwModule->setAttr(kCutRewriteInverterKindAttr,
                     attrBuilder.getStringAttr(inverterKind));
-  hwModule->setAttr(kCutRewriteCanonicalTTAttr,
-                    attrBuilder.getIntegerAttr(
-                        builder.getIntegerType(1u << canonicalTT.numInputs),
-                        canonicalTT.table));
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(hwModule.getBodyBlock());
@@ -286,61 +283,70 @@ public:
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind);
 
-static SmallVector<DelayType, 6>
-computeExactNetworkInputDelays(const ExactNetwork &network) {
-  static constexpr DelayType kUnreachable =
-      std::numeric_limits<DelayType>::min() / 4;
-  SmallVector<DelayType, 6> result(network.numInputs, 0);
-
-  SmallVector<SmallVector<DelayType, 6>, 4> stepDelays;
-  stepDelays.reserve(network.steps.size());
-
-  auto getSourceDelays = [&](unsigned source) {
-    SmallVector<DelayType, 6> delays(network.numInputs, kUnreachable);
-    if (source == 0)
-      return delays;
-    if (source <= network.numInputs) {
-      delays[source - 1] = 0;
-      return delays;
-    }
-    unsigned stepIndex = source - (network.numInputs + 1);
-    assert(stepIndex < stepDelays.size() && "step reference out of order");
-    return stepDelays[stepIndex];
-  };
-
-  for (const auto &step : network.steps) {
-    // Delay is tracked per primary input. Each node contributes unit delay on
-    // top of the longest reachable input-to-fanin path.
-    SmallVector<DelayType, 6> delays(network.numInputs, kUnreachable);
-    for (ExactSignalRef signal : step.fanins) {
-      auto childDelays = getSourceDelays(signal.source);
-      for (unsigned i = 0; i != network.numInputs; ++i) {
-        if (childDelays[i] == kUnreachable)
-          continue;
-        delays[i] = std::max(delays[i], childDelays[i] + 1);
-      }
-    }
-    stepDelays.push_back(std::move(delays));
-  }
-
-  auto outputDelays = getSourceDelays(network.output.source);
-  if (network.output.inverted && network.output.source != 0)
-    for (DelayType &delay : outputDelays)
-      if (delay != kUnreachable)
-        ++delay;
-
-  for (unsigned i = 0; i != network.numInputs; ++i)
-    if (outputDelays[i] != kUnreachable)
-      result[i] = outputDelays[i];
-  return result;
+static double computeMaterializedModuleArea(hw::HWModuleOp module) {
+  double area = 0.0;
+  for (Operation &op : module.getBodyBlock()->without_terminator())
+    if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp>(op))
+      area += 1.0;
+  return area;
 }
 
-static unsigned
-computeMaterializedExactNetworkArea(const ExactNetwork &network) {
-  unsigned area = network.steps.size();
-  if (network.output.inverted && network.output.source != 0)
-    ++area;
-  return area;
+static FailureOr<SmallVector<DelayType>>
+computeMaterializedModuleInputDelays(hw::HWModuleOp module,
+                                     LongestPathAnalysis &analysis) {
+  auto output = dyn_cast<hw::OutputOp>(module.getBodyBlock()->getTerminator());
+  if (!output || output.getNumOperands() != 1)
+    return module.emitError("generated exact synthesis module must terminate "
+                            "with a single-output hw.output");
+
+  SmallVector<DataflowPath> paths;
+  if (failed(analysis.computeGlobalPaths(output.getOperand(0), /*bitPos=*/0,
+                                         paths)))
+    return failure();
+
+  SmallVector<DelayType> delays(module.getNumInputPorts(), 0);
+  for (const auto &path : paths) {
+    auto arg = dyn_cast<BlockArgument>(path.getStartPoint().value);
+    if (!arg || arg.getParentBlock() != module.getBodyBlock())
+      continue;
+    delays[arg.getArgNumber()] =
+        std::max(delays[arg.getArgNumber()],
+                 static_cast<DelayType>(path.getDelay()));
+  }
+  return delays;
+}
+
+static LogicalResult annotateGeneratedDatabaseEntries(ModuleOp module) {
+  mlir::ModuleAnalysisManager moduleAnalysisManager(module,
+                                                    /*passInstrumentor=*/nullptr);
+  mlir::AnalysisManager analysisManager = moduleAnalysisManager;
+  LongestPathAnalysis pathAnalysis(
+      module, analysisManager,
+      LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
+                                 /*lazyComputation=*/false,
+                                 /*keepOnlyMaxDelayPaths=*/true));
+
+  Builder attrBuilder(module.getContext());
+  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
+    auto npnClass = getNPNClassFromModule(hwModule);
+    if (failed(npnClass))
+      return failure();
+    auto delays = computeMaterializedModuleInputDelays(hwModule, pathAnalysis);
+    if (failed(delays))
+      return failure();
+
+    hwModule->setAttr(
+        "hw.techlib.info",
+        createTechInfo(attrBuilder, computeMaterializedModuleArea(hwModule),
+                       *delays));
+    hwModule->setAttr(
+        kCutRewriteCanonicalTTAttr,
+        attrBuilder.getIntegerAttr(
+            IntegerType::get(module.getContext(),
+                             1u << (*npnClass).truthTable.numInputs),
+            (*npnClass).truthTable.table));
+  }
+  return success();
 }
 
 class GenericExactSATProblem {
@@ -682,13 +688,9 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
       if (!exactNetworks[index])
         continue;
       const ExactNetwork &exactNetwork = *exactNetworks[index];
-      auto delays = computeExactNetworkInputDelays(exactNetwork);
       appendDatabaseEntry(
           module, builder, attrBuilder, backend.getModulePrefix(), canonicalTT,
           0, backend.getInverterKind(),
-          createTechInfo(attrBuilder,
-                         computeMaterializedExactNetworkArea(exactNetwork),
-                         delays),
           [&](OpBuilder &entryBuilder, Location loc, ValueRange inputs) {
             return backend.materializeNetwork(entryBuilder, loc, inputs,
                                               exactNetwork);
@@ -696,7 +698,7 @@ static LogicalResult emitExactSynthesisDatabaseForBackend(
     }
   }
 
-  return success();
+  return annotateGeneratedDatabaseEntries(module);
 }
 
 //===----------------------------------------------------------------------===//

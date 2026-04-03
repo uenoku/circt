@@ -42,6 +42,8 @@ struct LoadedCutRewriteDatabase {
 FailureOr<std::pair<double, SmallVector<DelayType>>>
 getAreaAndDelayFromTechInfo(hw::HWModuleOp module);
 
+FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module);
+
 FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
 parseCutRewriteEntry(hw::HWModuleOp module);
 

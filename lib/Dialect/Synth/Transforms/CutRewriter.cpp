@@ -310,8 +310,20 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
     if (op.getNumResults() == 0)
       continue;
 
-    // Support AIG, XOR, and MIG operations
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+    // Support constants, trivial forwarding wires, and the boolean primitives
+    // used by the current cut-rewrite clients.
+    if (auto constant = dyn_cast<hw::ConstantOp>(&op)) {
+      if (!constant.getType().isInteger(1))
+        return constant.emitError("Constant results must be single bit");
+      bool value = constant.getValueAttr().getValue()[0];
+      eval[constant.getResult()] =
+          value ? APInt::getAllOnes(1u << numInputs) : APInt(1u << numInputs, 0);
+    } else if (auto wire = dyn_cast<hw::WireOp>(&op)) {
+      auto it = eval.find(wire.getInput());
+      if (it == eval.end())
+        return wire.emitError("Input value not found in evaluation map");
+      eval[wire.getResult()] = it->second;
+    } else if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
       SmallVector<llvm::APInt, 2> inputs;
       inputs.reserve(andOp.getInputs().size());
       for (auto input : andOp.getInputs()) {

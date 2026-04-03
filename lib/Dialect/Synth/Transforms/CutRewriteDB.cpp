@@ -66,6 +66,39 @@ circt::synth::getAreaAndDelayFromTechInfo(hw::HWModuleOp module) {
                         std::move(delay));
 }
 
+FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
+  auto inputTypes = module.getInputTypes();
+  auto outputTypes = module.getOutputTypes();
+
+  unsigned numInputs = inputTypes.size();
+  unsigned numOutputs = outputTypes.size();
+  if (numOutputs != 1)
+    return module->emitError(
+        "modules with multiple outputs are not supported yet");
+
+  for (auto type : inputTypes)
+    if (!type.isInteger(1))
+      return module->emitError("all input ports must be single bit");
+  for (auto type : outputTypes)
+    if (!type.isInteger(1))
+      return module->emitError("all output ports must be single bit");
+
+  if (numInputs > maxTruthTableInputs)
+    return module->emitError("too many inputs for truth table generation");
+
+  SmallVector<Value> results;
+  results.reserve(numOutputs);
+  auto *bodyBlock = module.getBodyBlock();
+  assert(bodyBlock && "module must have a body block");
+  for (auto result : bodyBlock->getTerminator()->getOperands())
+    results.push_back(result);
+
+  auto truthTable = getTruthTable(results, bodyBlock);
+  if (failed(truthTable))
+    return failure();
+  return NPNClass::computeNPNCanonicalForm(*truthTable);
+}
+
 FailureOr<OwningOpRef<mlir::ModuleOp>>
 circt::synth::parseCutRewriteDBFile(StringRef dbFile, MLIRContext *context) {
   std::string errorMessage;
