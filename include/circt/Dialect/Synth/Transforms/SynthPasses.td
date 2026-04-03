@@ -148,6 +148,9 @@ def ExactSynthesis : Pass<"synth-exact-synthesis", "hw::HWModuleOp"> {
            "Exact-synthesis backend kind (mig or aig)">,
     Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
            "SAT solver backend to use: auto, z3, or cadical">,
+    Option<"cadicalConfig", "cadical-config", "std::string", "\"default\"",
+           "CaDiCaL configuration to use when the selected SAT solver is "
+           "CaDiCaL: default, plain, sat, or unsat">,
     Option<"conflictLimit", "conflict-limit", "int64_t", "100",
            "Per-SAT-call conflict budget. -1 disables the limit">
   ];

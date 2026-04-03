@@ -212,6 +212,14 @@ createCadicalSATSolver(const CadicalSATSolverOptions &options = {});
 /// unavailable backends.
 std::unique_ptr<IncrementalSATSolver>
 createIncrementalSATSolver(llvm::StringRef backend);
+/// Construct an incremental SAT solver from a backend name with explicit
+/// CaDiCaL configuration.
+///
+/// The `cadicalOptions` are used when the chosen backend is CaDiCaL, whether
+/// selected directly via `cadical` or indirectly via `auto`.
+std::unique_ptr<IncrementalSATSolver>
+createIncrementalSATSolver(llvm::StringRef backend,
+                           const CadicalSATSolverOptions &cadicalOptions);
 /// Return true when at least one incremental SAT backend is available.
 bool hasIncrementalSATSolverBackend();
 

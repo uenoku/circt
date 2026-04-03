@@ -25,6 +25,7 @@ namespace synth {
 
 struct ExactSynthesisRunOptions {
   std::string satSolver = "auto";
+  std::string cadicalConfig = "default";
   int64_t conflictLimit = 100;
 };
 

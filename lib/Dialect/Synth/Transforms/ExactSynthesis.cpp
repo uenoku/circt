@@ -10,11 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "CutRewriteDBImpl.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
-#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
@@ -71,6 +71,20 @@ static std::string normalizeExactSynthesisKind(StringRef kind) {
     if (c == '_')
       c = '-';
   return normalized;
+}
+
+static FailureOr<CadicalSATSolverOptions::CadicalSolverConfig>
+parseCadicalConfig(Operation *op, StringRef config) {
+  if (config == "default")
+    return CadicalSATSolverOptions::CadicalSolverConfig::Default;
+  if (config == "plain")
+    return CadicalSATSolverOptions::CadicalSolverConfig::Plain;
+  if (config == "sat")
+    return CadicalSATSolverOptions::CadicalSolverConfig::Sat;
+  if (config == "unsat")
+    return CadicalSATSolverOptions::CadicalSolverConfig::Unsat;
+  op->emitError() << "unsupported CaDiCaL configuration '" << config << "'";
+  return failure();
 }
 
 static FailureOr<CutRewriteInverterKind>
@@ -246,7 +260,8 @@ private:
     return true;
   }
 
-  static bool isColexLess(const ExactCandidate &lhs, const ExactCandidate &rhs) {
+  static bool isColexLess(const ExactCandidate &lhs,
+                          const ExactCandidate &rhs) {
     assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
     for (int i = static_cast<int>(lhs.fanins.size()) - 1; i >= 0; --i) {
       if (lhs.fanins[i].source < rhs.fanins[i].source)
@@ -294,17 +309,18 @@ private:
       // previously synthesized step, but never future steps.
       unsigned availableSources = 1 + numInputs + step;
       backend.enumerateCandidates(availableSources, stepCandidates[step]);
-      llvm::erase_if(stepCandidates[step], [&](const ExactCandidate &candidate) {
-        return backend.isTrivialCandidate(candidate);
-      });
+      llvm::erase_if(stepCandidates[step],
+                     [&](const ExactCandidate &candidate) {
+                       return backend.isTrivialCandidate(candidate);
+                     });
       auto &selectionVars = stepSelectionVars[step];
       selectionVars.reserve(stepCandidates[step].size());
       for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
         selectionVars.push_back(newVar());
       addExactlyOne(selectionVars);
       LLVM_DEBUG(llvm::dbgs()
-                 << "  step " << step << ": availableSources="
-                 << availableSources
+                 << "  step " << step
+                 << ": availableSources=" << availableSources
                  << " candidates=" << stepCandidates[step].size() << "\n");
     }
 
@@ -399,9 +415,8 @@ private:
                 return fanin.source == source;
               }))
             users.push_back(stepSelectionVars[userStep][candidateIndex]);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "  use-all-steps: step " << step << " source=" << source
-                 << " users=" << users.size() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  use-all-steps: step " << step << " source="
+                              << source << " users=" << users.size() << "\n");
       solver.addClause(users);
     }
   }
@@ -469,9 +484,11 @@ public:
   };
 
   GenericExactSynthesizer(const ExactSynthesisBackend &backend,
-                          StringRef satBackend, int conflictLimit)
-      : backend(backend), satBackend(satBackend), conflictLimit(conflictLimit) {
-  }
+                          StringRef satBackend,
+                          CadicalSATSolverOptions cadicalOptions,
+                          int conflictLimit)
+      : backend(backend), satBackend(satBackend),
+        cadicalOptions(cadicalOptions), conflictLimit(conflictLimit) {}
 
   QueryResult synthesizeForArea(const BinaryTruthTable &tt,
                                 unsigned area) const {
@@ -510,7 +527,7 @@ private:
               .network = std::move(direct)};
     }
 
-    auto solver = createIncrementalSATSolver(satBackend);
+    auto solver = createIncrementalSATSolver(satBackend, cadicalOptions);
     if (!solver)
       return {.status = QueryStatus::Error};
     solver->setConflictLimit(conflictLimit);
@@ -526,6 +543,7 @@ private:
 
   const ExactSynthesisBackend &backend;
   std::string satBackend;
+  CadicalSATSolverOptions cadicalOptions;
   int conflictLimit;
 };
 
@@ -539,13 +557,14 @@ parseTruthTableTargetFromModule(hw::HWModuleOp module) {
 
   for (Type type : module.getInputTypes())
     if (!type.isInteger(1))
-      return module.emitError("exact synthesis only supports single-bit inputs");
+      return module.emitError(
+          "exact synthesis only supports single-bit inputs");
   for (Type type : module.getOutputTypes())
     if (!type.isInteger(1))
-      return module.emitError("exact synthesis only supports single-bit outputs");
+      return module.emitError(
+          "exact synthesis only supports single-bit outputs");
 
-  auto truthTableOp =
-      output.getOperand(0).getDefiningOp<comb::TruthTableOp>();
+  auto truthTableOp = output.getOperand(0).getDefiningOp<comb::TruthTableOp>();
   if (!truthTableOp)
     return module.emitError("exact synthesis expects hw.output to be driven by "
                             "a comb.truth_table");
@@ -559,8 +578,8 @@ parseTruthTableTargetFromModule(hw::HWModuleOp module) {
   // The predefined generator emits operands in reverse port order so module
   // input 0 remains the LSB in `BinaryTruthTable`.
   for (auto [index, operand] : llvm::enumerate(truthTableOp.getInputs()))
-    if (operand != bodyBlock->getArgument(bodyBlock->getNumArguments() - 1 -
-                                          index))
+    if (operand !=
+        bodyBlock->getArgument(bodyBlock->getNumArguments() - 1 - index))
       return truthTableOp.emitError("truth table operands must list module "
                                     "inputs in reverse order");
 
@@ -568,10 +587,10 @@ parseTruthTableTargetFromModule(hw::HWModuleOp module) {
   llvm::APInt table(tableAttr.size(), 0);
   for (auto [index, bit] : llvm::enumerate(tableAttr))
     table.setBitVal(index, bit);
-  LLVM_DEBUG(llvm::dbgs()
-             << "Parsed truth-table module " << module.getModuleName() << ": "
-             << "inputs=" << bodyBlock->getNumArguments()
-             << " tt=" << formatTruthTable(table) << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Parsed truth-table module "
+                          << module.getModuleName() << ": "
+                          << "inputs=" << bodyBlock->getNumArguments()
+                          << " tt=" << formatTruthTable(table) << "\n");
   return BinaryTruthTable(bodyBlock->getNumArguments(), 1, table);
 }
 
@@ -580,8 +599,13 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
                                     const BinaryTruthTable &target,
                                     const ExactSynthesisRunOptions &options,
                                     Operation *op) {
+  auto cadicalConfig = parseCadicalConfig(op, options.cadicalConfig);
+  if (failed(cadicalConfig))
+    return failure();
+  CadicalSATSolverOptions cadicalOptions;
+  cadicalOptions.config = *cadicalConfig;
   GenericExactSynthesizer synthesizer(backend, options.satSolver,
-                                      options.conflictLimit);
+                                      cadicalOptions, options.conflictLimit);
   SmallString<32> ttString;
   target.table.toStringUnsigned(ttString, 16);
   for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
@@ -611,16 +635,15 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
                  << " steps=" << result.network->steps.size() << "\n");
       return std::optional<ExactNetwork>(std::move(*result.network));
     }
-    LLVM_DEBUG(llvm::dbgs()
-               << "Exact synthesis no solution at area: family="
-               << backend.getFamilyName() << " tt=" << ttString
-               << " area=" << area << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Exact synthesis no solution at area: family="
+                            << backend.getFamilyName() << " tt=" << ttString
+                            << " area=" << area << "\n");
   }
 
-  LLVM_DEBUG(llvm::dbgs()
-             << "Exact synthesis exhausted search area: family="
-             << backend.getFamilyName() << " tt=" << ttString
-             << " max-area=" << backend.getMaxSearchArea() << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Exact synthesis exhausted search area: family="
+                          << backend.getFamilyName() << " tt=" << ttString
+                          << " max-area=" << backend.getMaxSearchArea()
+                          << "\n");
   return std::optional<ExactNetwork>();
 }
 
@@ -647,11 +670,11 @@ static void rewriteModuleWithExactNetwork(const ExactSynthesisBackend &backend,
 
   OpBuilder builder(module);
   builder.setInsertionPointToStart(bodyBlock);
-  LLVM_DEBUG(llvm::dbgs()
-             << "Rewriting module " << module.getModuleName() << " with "
-             << backend.getFamilyName() << " network steps="
-             << network.steps.size()
-             << " output-inverted=" << network.output.inverted << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Rewriting module " << module.getModuleName()
+                          << " with " << backend.getFamilyName()
+                          << " network steps=" << network.steps.size()
+                          << " output-inverted=" << network.output.inverted
+                          << "\n");
   Value result = backend.materializeNetwork(builder, module.getLoc(),
                                             bodyBlock->getArguments(), network);
   output->setOperands({result});
@@ -794,7 +817,8 @@ private:
 static FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
 parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
                                    const CutRewriteModuleMetadata &metadata) {
-  auto inverterKind = parseCutRewriteInverterKind(module, metadata.inverterKind);
+  auto inverterKind =
+      parseCutRewriteInverterKind(module, metadata.inverterKind);
   if (failed(inverterKind))
     return failure();
 
@@ -1112,17 +1136,24 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
         << "'conflict-limit' must be greater than or equal to -1";
     return failure();
   }
-  if (!createIncrementalSATSolver(options.satSolver)) {
+  auto cadicalConfig = parseCadicalConfig(module, options.cadicalConfig);
+  if (failed(cadicalConfig))
+    return failure();
+  CadicalSATSolverOptions cadicalOptions;
+  cadicalOptions.config = *cadicalConfig;
+  if (!createIncrementalSATSolver(options.satSolver, cadicalOptions)) {
     module.emitError() << "Exact " << backend->getFamilyName()
                        << " synthesis requires a SAT solver backend '"
                        << options.satSolver << "'";
     return failure();
   }
 
-  LLVM_DEBUG(llvm::dbgs()
-             << "Running exact synthesis on module " << module.getModuleName()
-             << ": kind=" << kind << " solver=" << options.satSolver
-             << " conflict-limit=" << options.conflictLimit << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "Running exact synthesis on module "
+                          << module.getModuleName() << ": kind=" << kind
+                          << " solver=" << options.satSolver
+                          << " cadical-config=" << options.cadicalConfig
+                          << " conflict-limit=" << options.conflictLimit
+                          << "\n");
   auto network = exactSynthesizeModuleForBackend(*backend, module, options);
   if (failed(network))
     return failure();
@@ -1162,12 +1193,12 @@ LogicalResult circt::synth::emitExactSynthesisDatabase(
 
   ExactSynthesisRunOptions exactOptions;
   exactOptions.satSolver = options.satSolver;
+  exactOptions.cadicalConfig = options.cadicalConfig;
   exactOptions.conflictLimit = options.conflictLimit;
   for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Exact database entry synthesis: module="
-               << hwModule.getModuleName() << " backend="
-               << backend->getFamilyName() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "Exact database entry synthesis: module="
+                            << hwModule.getModuleName()
+                            << " backend=" << backend->getFamilyName() << "\n");
     if (failed(exactSynthesizeTruthTable(hwModule, kind, exactOptions)))
       return failure();
   }
@@ -1184,6 +1215,7 @@ struct ExactSynthesisPass
   void runOnOperation() override {
     ExactSynthesisRunOptions options;
     options.satSolver = satSolver;
+    options.cadicalConfig = cadicalConfig;
     options.conflictLimit = conflictLimit;
     if (failed(exactSynthesizeTruthTable(getOperation(), kind, options)))
       signalPassFailure();
