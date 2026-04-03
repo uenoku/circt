@@ -143,6 +143,9 @@ public:
   virtual void
   enumerateCandidates(unsigned availableSources,
                       SmallVectorImpl<ExactCandidate> &candidates) const = 0;
+  // Return true if a candidate step computes only a constant or a projection.
+  // Such steps can always be removed from an optimum solution.
+  virtual bool isTrivialCandidate(const ExactCandidate &candidate) const = 0;
   // Emit CNF clauses for one candidate node at one minterm. `selector` gates
   // the clauses so only the chosen candidate constrains the step output.
   virtual void addConditionedSemantics(
@@ -234,6 +237,34 @@ private:
     return inverted ? -lit : lit;
   }
 
+  static bool haveSameFaninSources(const ExactCandidate &lhs,
+                                   const ExactCandidate &rhs) {
+    assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
+    for (auto [lhsFanin, rhsFanin] : llvm::zip_equal(lhs.fanins, rhs.fanins))
+      if (lhsFanin.source != rhsFanin.source)
+        return false;
+    return true;
+  }
+
+  static bool isColexLess(const ExactCandidate &lhs, const ExactCandidate &rhs) {
+    assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
+    for (int i = static_cast<int>(lhs.fanins.size()) - 1; i >= 0; --i) {
+      if (lhs.fanins[i].source < rhs.fanins[i].source)
+        return true;
+      if (lhs.fanins[i].source > rhs.fanins[i].source)
+        return false;
+    }
+    return false;
+  }
+
+  static unsigned getOperatorOrderKey(const ExactCandidate &candidate) {
+    unsigned key = 0;
+    for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
+      if (fanin.inverted)
+        key |= 1u << index;
+    return key;
+  }
+
   void buildEncoding() {
     // Every source gets one SAT variable per minterm so the backend can
     // constrain each candidate purely in terms of truth-table semantics.
@@ -263,6 +294,9 @@ private:
       // previously synthesized step, but never future steps.
       unsigned availableSources = 1 + numInputs + step;
       backend.enumerateCandidates(availableSources, stepCandidates[step]);
+      llvm::erase_if(stepCandidates[step], [&](const ExactCandidate &candidate) {
+        return backend.isTrivialCandidate(candidate);
+      });
       auto &selectionVars = stepSelectionVars[step];
       selectionVars.reserve(stepCandidates[step].size());
       for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
@@ -272,8 +306,61 @@ private:
                  << "  step " << step << ": availableSources="
                  << availableSources
                  << " candidates=" << stepCandidates[step].size() << "\n");
+    }
 
+    addAdjacentStepSymmetryBreakingConstraints();
+    addCandidateSemanticsConstraints();
+    addUseAllStepsConstraints();
+
+    unsigned rootSource = totalSources - 1;
+    // The last synthesized step is the network root. Constraining its value on
+    // every minterm to match `target` forces the entire selected network to
+    // implement the requested truth table.
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      solver.addClause({target[minterm]
+                            ? getSourceValueVar(rootSource, minterm)
+                            : -getSourceValueVar(rootSource, minterm)});
+  }
+
+  void addAdjacentStepSymmetryBreakingConstraints() {
+    for (unsigned step = 0; step + 1 < numSteps; ++step)
+      addAdjacentStepOrdering(step, step + 1);
+  }
+
+  void addAdjacentStepOrdering(unsigned prevStep, unsigned nextStep) {
+    const auto &prevCandidates = stepCandidates[prevStep];
+    const auto &nextCandidates = stepCandidates[nextStep];
+    const auto &prevSelectionVars = stepSelectionVars[prevStep];
+    const auto &nextSelectionVars = stepSelectionVars[nextStep];
+
+    for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
+      SmallVector<int, 64> allowedNextSelections;
+      for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
+        if (!isColexLess(nextCandidate, prevCandidate))
+          allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
+
+      assert(!allowedNextSelections.empty() &&
+             "colex symmetry break must leave some valid next-step choices");
+      SmallVector<int, 65> clause;
+      clause.reserve(allowedNextSelections.size() + 1);
+      clause.push_back(-prevSelectionVars[prevIndex]);
+      clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
+      solver.addClause(clause);
+    }
+
+    for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates))
+      for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
+        if (haveSameFaninSources(prevCandidate, nextCandidate) &&
+            getOperatorOrderKey(nextCandidate) <
+                getOperatorOrderKey(prevCandidate))
+          solver.addClause(
+              {-prevSelectionVars[prevIndex], -nextSelectionVars[nextIndex]});
+  }
+
+  void addCandidateSemanticsConstraints() {
+    for (unsigned step = 0; step != numSteps; ++step) {
       unsigned outSource = 1 + numInputs + step;
+      const auto &selectionVars = stepSelectionVars[step];
       for (auto [candidateIndex, candidate] :
            llvm::enumerate(stepCandidates[step])) {
         // The selector literal gates the semantics of one candidate. Exactly
@@ -299,15 +386,24 @@ private:
               });
       }
     }
+  }
 
-    unsigned rootSource = totalSources - 1;
-    // The last synthesized step is the network root. Constraining its value on
-    // every minterm to match `target` forces the entire selected network to
-    // implement the requested truth table.
-    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-      solver.addClause({target[minterm]
-                            ? getSourceValueVar(rootSource, minterm)
-                            : -getSourceValueVar(rootSource, minterm)});
+  void addUseAllStepsConstraints() {
+    for (unsigned step = 0; step + 1 < numSteps; ++step) {
+      unsigned source = 1 + numInputs + step;
+      SmallVector<int, 32> users;
+      for (unsigned userStep = step + 1; userStep != numSteps; ++userStep)
+        for (auto [candidateIndex, candidate] :
+             llvm::enumerate(stepCandidates[userStep]))
+          if (llvm::any_of(candidate.fanins, [&](const ExactSignalRef &fanin) {
+                return fanin.source == source;
+              }))
+            users.push_back(stepSelectionVars[userStep][candidateIndex]);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  use-all-steps: step " << step << " source=" << source
+                 << " users=" << users.size() << "\n");
+      solver.addClause(users);
+    }
   }
 
   ExactNetwork decodeModel() const {
@@ -788,6 +884,10 @@ public:
           }
   }
 
+  bool isTrivialCandidate(const ExactCandidate &) const override {
+    return false;
+  }
+
   void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
                                int outLit, const ExactCandidate &candidate,
                                unsigned minterm,
@@ -943,6 +1043,12 @@ public:
           candidate.fanins.push_back({b, static_cast<bool>(invMask & 2)});
           candidates.push_back(std::move(candidate));
         }
+  }
+
+  bool isTrivialCandidate(const ExactCandidate &candidate) const override {
+    return llvm::any_of(candidate.fanins, [](const ExactSignalRef &fanin) {
+      return fanin.source == 0;
+    });
   }
 
   void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
