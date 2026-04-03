@@ -6,15 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements modular exact-synthesis database generation.
+// This file implements exact synthesis of truth-table database entries.
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "CutRewriteDBImpl.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
@@ -22,11 +22,10 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 #include <array>
@@ -43,7 +42,6 @@ using namespace mlir;
 
 namespace circt {
 namespace synth {
-#define GEN_PASS_DEF_GENPREDEFINED
 #define GEN_PASS_DEF_EXACTSYNTHESIS
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
 } // namespace synth
@@ -103,139 +101,12 @@ static NPNClass getIdentityNPNClass(const BinaryTruthTable &canonicalTT) {
   return NPNClass(canonicalTT, std::move(inputPermutation), 0, 0);
 }
 
-static void
-collectCanonicalTruthTables(unsigned numInputs,
-                            SmallVectorImpl<BinaryTruthTable> &truthTables) {
-  truthTables.clear();
-  assert(numInputs < 6 &&
-         "orbit walk requires the function space to fit in uint64_t");
-
-  unsigned numTruthTableBits = 1u << numInputs;
-  uint64_t numFunctions = 1ULL << numTruthTableBits;
-  llvm::BitVector seen(numFunctions, false);
-
-  SmallVector<unsigned> permutation(numInputs);
-  std::iota(permutation.begin(), permutation.end(), 0);
-  SmallVector<SmallVector<unsigned>> permutations;
-  do {
-    permutations.push_back(permutation);
-  } while (std::next_permutation(permutation.begin(), permutation.end()));
-
-  for (uint64_t value = 0; value != numFunctions; ++value) {
-    if (seen.test(value))
-      continue;
-
-    // Walk the full NPN orbit of one seed function, mark every equivalent
-    // representative as seen, and keep the lexicographically smallest truth
-    // table as the canonical class representative.
-    BinaryTruthTable seed(numInputs, 1, APInt(numTruthTableBits, value));
-    BinaryTruthTable best = seed;
-
-    for (uint32_t negMask = 0; negMask < (1u << numInputs); ++negMask) {
-      BinaryTruthTable negatedTT = seed.applyInputNegation(negMask);
-      for (ArrayRef<unsigned> perm : permutations) {
-        BinaryTruthTable permutedTT = negatedTT.applyPermutation(perm);
-        for (unsigned outputNegMask = 0; outputNegMask != 2; ++outputNegMask) {
-          BinaryTruthTable candidateTT =
-              permutedTT.applyOutputNegation(outputNegMask);
-          seen.set(candidateTT.table.getZExtValue());
-          if (candidateTT.isLexicographicallySmaller(best))
-            best = std::move(candidateTT);
-        }
-      }
-    }
-
-    truthTables.push_back(std::move(best));
-  }
-}
-
-static hw::HWModuleOp createDatabaseEntryModule(
-    ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
-    StringRef modulePrefix, const BinaryTruthTable &canonicalTT,
-    unsigned variantIndex) {
-  SmallVector<hw::PortInfo> inputs;
-  inputs.reserve(canonicalTT.numInputs);
-  for (unsigned i = 0; i != canonicalTT.numInputs; ++i) {
-    hw::PortInfo port;
-    port.name = attrBuilder.getStringAttr(("i" + Twine(i)).str());
-    port.type = builder.getI1Type();
-    port.dir = hw::ModulePort::Direction::Input;
-    port.argNum = i;
-    inputs.push_back(port);
-  }
-
-  hw::PortInfo output;
-  output.name = attrBuilder.getStringAttr("y");
-  output.type = builder.getI1Type();
-  output.dir = hw::ModulePort::Direction::Output;
-  output.argNum = 0;
-
-  SmallString<64> moduleName;
-  moduleName += modulePrefix;
-  moduleName += "_i";
-  moduleName += Twine(canonicalTT.numInputs).str();
-  moduleName += "_tt_";
-  SmallString<32> ttString;
-  canonicalTT.table.toStringUnsigned(ttString, 16);
-  moduleName += ttString;
-  moduleName += "_v";
-  moduleName += Twine(variantIndex).str();
-
-  return hw::HWModuleOp::create(
-      builder, module.getLoc(), attrBuilder.getStringAttr(moduleName),
-      hw::ModulePortInfo(inputs, {output}));
-}
-
-static void appendPredefinedTruthTableEntry(ModuleOp module, OpBuilder &builder,
-                                            Builder &attrBuilder,
-                                            StringRef modulePrefix,
-                                            const BinaryTruthTable &canonicalTT,
-                                            unsigned variantIndex) {
-  hw::HWModuleOp hwModule = createDatabaseEntryModule(
-      module, builder, attrBuilder, modulePrefix, canonicalTT, variantIndex);
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(hwModule.getBodyBlock());
-  SmallVector<Value> inputs;
-  auto arguments = hwModule.getBodyBlock()->getArguments();
-  inputs.append(arguments.rbegin(), arguments.rend());
-
-  SmallVector<bool> table;
-  table.reserve(canonicalTT.table.getBitWidth());
-  for (unsigned i = 0, e = canonicalTT.table.getBitWidth(); i != e; ++i)
-    table.push_back(canonicalTT.table[i]);
-
-  Value result =
-      comb::TruthTableOp::create(builder, hwModule.getLoc(), inputs, table);
-  hwModule.getBodyBlock()->getTerminator()->setOperands({result});
-}
-
-template <typename MaterializeFn>
-static void
-appendDatabaseEntry(ModuleOp module, OpBuilder &builder, Builder &attrBuilder,
-                    StringRef modulePrefix, const BinaryTruthTable &canonicalTT,
-                    unsigned variantIndex, MaterializeFn materialize) {
-  // Exact-synthesis databases are serialized as one `hw.module` per canonical
-  // truth table. The loaded cut-rewrite path later clones these bodies
-  // directly instead of reconstructing them from an intermediate graph.
-  hw::HWModuleOp hwModule = createDatabaseEntryModule(
-      module, builder, attrBuilder, modulePrefix, canonicalTT, variantIndex);
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(hwModule.getBodyBlock());
-  Value result = materialize(builder, hwModule.getLoc(),
-                             hwModule.getBodyBlock()->getArguments());
-  hwModule.getBodyBlock()->getTerminator()->setOperands({result});
-}
-
 class ExactSynthesisBackend {
 public:
   virtual ~ExactSynthesisBackend() = default;
 
   // User-visible identifier accepted by `--kind`.
   virtual StringRef getKind() const = 0;
-  // Prefix used for generated `hw.module` names in the on-disk database.
-  virtual StringRef getModulePrefix() const = 0;
   // Hard limit for this backend family, independent of CLI options.
   virtual unsigned getMaxSupportedInputs() const = 0;
   // Short family label used in diagnostics and debug output.
@@ -572,7 +443,7 @@ parseTruthTableTargetFromModule(hw::HWModuleOp module) {
   return BinaryTruthTable(bodyBlock->getNumArguments(), 1, table);
 }
 
-static FailureOr<ExactNetwork>
+static FailureOr<std::optional<ExactNetwork>>
 exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
                                     const BinaryTruthTable &target,
                                     const ExactSynthesisRunOptions &options,
@@ -584,12 +455,8 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
   for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
     auto result = synthesizer.synthesizeForArea(target, area);
     if (result.status ==
-        GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
-      op->emitError() << "exact " << backend.getFamilyName()
-                      << " synthesis hit the conflict limit for truth table "
-                      << ttString;
-      return failure();
-    }
+        GenericExactSynthesizer::QueryStatus::ConflictLimitReached)
+      return std::optional<ExactNetwork>();
     if (result.status == GenericExactSynthesizer::QueryStatus::Error) {
       op->emitError() << "failed to synthesize exact "
                       << backend.getFamilyName() << " for truth table "
@@ -598,15 +465,13 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
     }
     if (result.status == GenericExactSynthesizer::QueryStatus::Solved &&
         result.network)
-      return std::move(*result.network);
+      return std::optional<ExactNetwork>(std::move(*result.network));
   }
 
-  op->emitError() << "failed to synthesize exact " << backend.getFamilyName()
-                  << " for truth table " << ttString;
-  return failure();
+  return std::optional<ExactNetwork>();
 }
 
-static FailureOr<ExactNetwork>
+static FailureOr<std::optional<ExactNetwork>>
 exactSynthesizeModuleForBackend(const ExactSynthesisBackend &backend,
                                 hw::HWModuleOp module,
                                 const ExactSynthesisRunOptions &options) {
@@ -787,7 +652,6 @@ parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
 class MIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
   StringRef getKind() const override { return "mig-exact"; }
-  StringRef getModulePrefix() const override { return "mig_exact"; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
   }
@@ -959,7 +823,6 @@ static Value materializeExactAIGNetwork(OpBuilder &builder, Location loc,
 class AIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
   StringRef getKind() const override { return "aig-exact"; }
-  StringRef getModulePrefix() const override { return "aig_exact"; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
   }
@@ -1068,34 +931,6 @@ circt::synth::parseCutRewriteEntry(hw::HWModuleOp module,
   return parseExactSynthesisCutRewriteEntry(module, metadata);
 }
 
-LogicalResult circt::synth::emitPredefinedTruthTableDatabase(
-    mlir::ModuleOp module, StringRef kind,
-    const PredefinedTruthTableDatabaseGenOptions &options) {
-  std::string normalizedKind = normalizeExactSynthesisKind(kind);
-  if (normalizedKind != "npn" && normalizedKind != "npn4") {
-    module.emitError() << "unsupported predefined database kind '" << kind
-                       << "'";
-    return failure();
-  }
-  if (options.maxInputs > kMaxExactSynthesisInputs) {
-    module.emitError() << "predefined NPN4 generation supports at most "
-                       << kMaxExactSynthesisInputs << " inputs";
-    return failure();
-  }
-
-  Builder attrBuilder(module.getContext());
-  OpBuilder builder(module.getContext());
-  builder.setInsertionPointToStart(module.getBody());
-  for (unsigned numInputs = 1; numInputs <= options.maxInputs; ++numInputs) {
-    SmallVector<BinaryTruthTable> canonicalTruthTables;
-    collectCanonicalTruthTables(numInputs, canonicalTruthTables);
-    for (const auto &canonicalTT : canonicalTruthTables)
-      appendPredefinedTruthTableEntry(module, builder, attrBuilder, "npn",
-                                      canonicalTT, 0);
-  }
-  return success();
-}
-
 LogicalResult circt::synth::exactSynthesizeTruthTable(
     hw::HWModuleOp module, StringRef kind,
     const ExactSynthesisRunOptions &options) {
@@ -1119,7 +954,8 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
   auto network = exactSynthesizeModuleForBackend(*backend, module, options);
   if (failed(network))
     return failure();
-  rewriteModuleWithExactNetwork(*backend, module, *network);
+  if (*network)
+    rewriteModuleWithExactNetwork(*backend, module, **network);
   return success();
 }
 
@@ -1139,17 +975,13 @@ LogicalResult circt::synth::emitExactSynthesisDatabase(
     return failure();
   }
 
-  Builder attrBuilder(module.getContext());
-  OpBuilder builder(module.getContext());
-  builder.setInsertionPointToStart(module.getBody());
-  for (unsigned numInputs = 1; numInputs <= options.maxInputs; ++numInputs) {
-    SmallVector<BinaryTruthTable> canonicalTruthTables;
-    collectCanonicalTruthTables(numInputs, canonicalTruthTables);
-    for (const auto &canonicalTT : canonicalTruthTables)
-      appendPredefinedTruthTableEntry(module, builder, attrBuilder,
-                                      backend->getModulePrefix(), canonicalTT,
-                                      0);
-  }
+  PassManager pm(module.getContext());
+  GenPredefinedOptions predefinedOptions;
+  predefinedOptions.kind = "npn";
+  predefinedOptions.maxInputs = options.maxInputs;
+  pm.addPass(createGenPredefined(std::move(predefinedOptions)));
+  if (failed(pm.run(module)))
+    return failure();
 
   ExactSynthesisRunOptions exactOptions;
   exactOptions.satSolver = options.satSolver;
@@ -1161,19 +993,6 @@ LogicalResult circt::synth::emitExactSynthesisDatabase(
 }
 
 namespace {
-
-struct GenPredefinedPass
-    : public circt::synth::impl::GenPredefinedBase<GenPredefinedPass> {
-  using circt::synth::impl::GenPredefinedBase<
-      GenPredefinedPass>::GenPredefinedBase;
-
-  void runOnOperation() override {
-    PredefinedTruthTableDatabaseGenOptions options;
-    options.maxInputs = maxInputs;
-    if (failed(emitPredefinedTruthTableDatabase(getOperation(), kind, options)))
-      signalPassFailure();
-  }
-};
 
 struct ExactSynthesisPass
     : public circt::synth::impl::ExactSynthesisBase<ExactSynthesisPass> {

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CutRewriteDBImpl.h"
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
 #include "circt/Dialect/Synth/SynthOps.h"
@@ -103,6 +104,11 @@ FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
 }
 
 namespace {
+
+static bool isUnsynthesizedTruthTableModule(hw::HWModuleOp module) {
+  return llvm::any_of(module.getBodyBlock()->without_terminator(),
+                      [](Operation &op) { return isa<comb::TruthTableOp>(op); });
+}
 
 static FailureOr<std::string> inferCutRewriteInverterKind(mlir::ModuleOp db) {
   bool sawMIG = false;
@@ -223,6 +229,8 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
       hwModules.size());
   if (failed(mlir::failableParallelForEachN(
           dbModule.getContext(), 0, hwModules.size(), [&](size_t index) {
+            if (isUnsynthesizedTruthTableModule(hwModules[index]))
+              return success();
             auto metadata = computeCutRewriteModuleMetadata(hwModules[index]);
             if (failed(metadata))
               return failure();
@@ -236,6 +244,8 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
     return failure();
 
   for (auto &entry : loadedEntries) {
+    if (!entry)
+      continue;
     database.maxInputSize =
         std::max(database.maxInputSize,
                  static_cast<unsigned>(entry->npnClass.truthTable.numInputs));

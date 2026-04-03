@@ -125,7 +125,7 @@ def GenPredefined : Pass<"synth-gen-predefined", "mlir::ModuleOp"> {
   let description = [{
     Populate a module with predefined cut-rewrite entries represented as
     `hw.module` bodies built from `comb.truth_table`. The current predefined
-    set is the canonical NPN4 single-output truth-table database.
+    set is the canonical single-output NPN truth-table database.
   }];
   let options = [
     Option<"kind", "kind", "std::string", "\"npn\"",
