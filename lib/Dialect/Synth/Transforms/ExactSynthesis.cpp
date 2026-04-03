@@ -50,8 +50,8 @@ namespace synth {
 namespace {
 
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
-static constexpr unsigned kMaxMIGExactSearchArea = 32;
-static constexpr unsigned kMaxAIGExactSearchArea = 32;
+static constexpr unsigned kMaxMIGExactSearchArea = 8;
+static constexpr unsigned kMaxAIGExactSearchArea = 10;
 
 enum class CutRewriteInverterKind { mig, aig };
 
@@ -530,6 +530,28 @@ public:
   }
 
 private:
+  unsigned computeMaxReservedVars(unsigned numInputs) const {
+    unsigned maxArea = backend.getMaxSearchArea();
+    unsigned numMinterms = 1u << numInputs;
+    unsigned totalVars = (1 + numInputs + maxArea) * numMinterms;
+
+    for (unsigned step = 0; step != maxArea; ++step) {
+      SmallVector<ExactCandidate, 64> candidates;
+      unsigned availableSources = 1 + numInputs + step;
+      backend.enumerateCandidates(availableSources, candidates);
+      llvm::erase_if(candidates, [&](const ExactCandidate &candidate) {
+        return backend.isTrivialCandidate(candidate);
+      });
+      totalVars += candidates.size();
+      if (candidates.size() >= 2)
+        totalVars += candidates.size() - 1;
+    }
+
+    // One assumption literal is created for each positive-area query.
+    totalVars += maxArea;
+    return totalVars;
+  }
+
   QueryResult synthesizeNormalized(unsigned numInputs,
                                    const llvm::APInt &target,
                                    unsigned area) const {
@@ -550,6 +572,7 @@ private:
       solver = createIncrementalSATSolver(satBackend, cadicalOptions);
       if (!solver)
         return {.status = QueryStatus::Error};
+      solver->reserveVars(computeMaxReservedVars(numInputs));
       solver->setConflictLimit(conflictLimit);
     }
     if (!problem)
