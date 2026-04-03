@@ -6,13 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
-#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/Version.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -38,18 +40,11 @@ static cl::opt<bool>
 static cl::opt<bool> force("f", cl::desc("Enable binary output on terminals"),
                            cl::init(false), cl::cat(mainCategory));
 static cl::opt<std::string> kind(
-    "kind", cl::desc("Database kind to generate: mig-exact or aig-exact"),
-    cl::value_desc("name"), cl::init("mig-exact"), cl::cat(mainCategory));
+    "kind", cl::desc("Predefined database kind to generate: npn"),
+    cl::value_desc("name"), cl::init("npn"), cl::cat(mainCategory));
 static cl::opt<unsigned> maxInputs(
     "max-inputs", cl::desc("Maximum function input size to generate"),
     cl::init(4), cl::cat(mainCategory));
-static cl::opt<std::string> satSolver(
-    "sat-solver", cl::desc("SAT solver backend to use: auto, z3, or cadical"),
-    cl::value_desc("backend"), cl::init("auto"), cl::cat(mainCategory));
-static cl::opt<int64_t> conflictLimit(
-    "conflict-limit",
-    cl::desc("Per-SAT-call conflict budget. -1 disables the limit"),
-    cl::init(100), cl::cat(mainCategory));
 
 static bool checkBytecodeOutputToConsole(raw_ostream &os) {
   if (os.is_displayed()) {
@@ -78,14 +73,16 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(argc, argv, "CIRCT synthesis DB generator\n");
 
   MLIRContext context;
-  context.loadDialect<hw::HWDialect, synth::SynthDialect>();
+  context.loadDialect<comb::CombDialect, hw::HWDialect, synth::SynthDialect>();
 
   auto module = ModuleOp::create(UnknownLoc::get(&context));
-  ExactSynthesisDatabaseGenOptions options;
-  options.maxInputs = maxInputs;
-  options.satSolver = satSolver;
-  options.conflictLimit = conflictLimit;
-  if (failed(emitExactSynthesisDatabase(module, kind, options)))
+  PassManager pm(&context);
+
+  GenPredefinedOptions predefinedOptions;
+  predefinedOptions.kind = kind;
+  predefinedOptions.maxInputs = maxInputs;
+  pm.addPass(createGenPredefined(std::move(predefinedOptions)));
+  if (failed(pm.run(module)))
     return 1;
 
   std::string errorMessage;

@@ -1,11 +1,7 @@
-// REQUIRES: z3-integration
-// RUN: circt-synth-dbgen --kind=mig-exact --max-inputs=2 --sat-solver=z3 | FileCheck %s --check-prefix=MIG
-// RUN: circt-synth-dbgen --kind=aig-exact --max-inputs=2 --sat-solver=z3 | FileCheck %s --check-prefix=AIG
+// RUN: circt-synth-dbgen --kind=npn --max-inputs=2 | FileCheck %s --check-prefix=NPN
 
-// MIG: hw.module @mig_exact_i1_tt_0
-// MIG-SAME: attributes {synth.cut_rewrite.inverter_kind = "mig"}
-
-// AIG: hw.module @aig_exact_i1_tt_0
-// AIG-SAME: attributes {synth.cut_rewrite.inverter_kind = "aig"}
+// NPN: hw.module @npn_i1_tt_0_v0
+// NPN: %[[TT:.+]] = comb.truth_table %i0 -> [false, false]
+// NPN: hw.output %[[TT]] : i1
 
 // Empty file; the generator does not consume input IR.

@@ -120,6 +120,42 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
                            "circt::synth::SynthDialect"];
 }
 
+def GenPredefined : Pass<"synth-gen-predefined", "mlir::ModuleOp"> {
+  let summary = "Generate predefined cut-rewrite database modules";
+  let description = [{
+    Populate a module with predefined cut-rewrite entries represented as
+    `hw.module` bodies built from `comb.truth_table`. The current predefined
+    set is the canonical NPN4 single-output truth-table database.
+  }];
+  let options = [
+    Option<"kind", "kind", "std::string", "\"npn\"",
+           "Predefined database kind to generate">,
+    Option<"maxInputs", "max-inputs", "unsigned", "4",
+           "Maximum function input size to generate">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect"];
+}
+
+def ExactSynthesis : Pass<"synth-exact-synthesis", "hw::HWModuleOp"> {
+  let summary = "Exact-synthesize truth-table modules into database entries";
+  let description = [{
+    Replace each `hw.module` body driven by a canonical `comb.truth_table`
+    with an exact implementation in the requested backend family.
+  }];
+  let options = [
+    Option<"kind", "kind", "std::string", "\"mig\"",
+           "Exact-synthesis backend kind (mig or aig)">,
+    Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
+           "SAT solver backend to use: auto, z3, or cadical">,
+    Option<"conflictLimit", "conflict-limit", "int64_t", "100",
+           "Per-SAT-call conflict budget. -1 disables the limit">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 def LowerVariadic : Pass<"synth-lower-variadic", "hw::HWModuleOp"> {
   let summary = "Lower variadic operations to binary operations";
   let description = [{
