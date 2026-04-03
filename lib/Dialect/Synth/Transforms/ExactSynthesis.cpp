@@ -55,6 +55,16 @@ static constexpr unsigned kMaxAIGExactSearchArea = 32;
 
 enum class CutRewriteInverterKind { mig, aig };
 
+static std::string formatTruthTable(const llvm::APInt &table) {
+  SmallString<32> ttString;
+  table.toStringUnsigned(ttString, 16);
+  return std::string(ttString);
+}
+
+static std::string formatTruthTable(const BinaryTruthTable &truthTable) {
+  return formatTruthTable(truthTable.table);
+}
+
 static std::string normalizeExactSynthesisKind(StringRef kind) {
   std::string normalized = kind.lower();
   for (char &c : normalized)
@@ -165,7 +175,15 @@ public:
 
   SolveResult solve() {
     buildEncoding();
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact SAT solve: family=" << backend.getFamilyName()
+               << " inputs=" << numInputs << " steps=" << numSteps
+               << " minterms=" << numMinterms << " vars=" << nextVar << "\n");
     auto result = solver.solve();
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact SAT result: family=" << backend.getFamilyName()
+               << " inputs=" << numInputs << " steps=" << numSteps
+               << " result=" << static_cast<int>(result) << "\n");
     if (result != IncrementalSATSolver::kSAT)
       return {.result = result};
     return {.result = result, .network = decodeModel()};
@@ -250,6 +268,10 @@ private:
       for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
         selectionVars.push_back(newVar());
       addExactlyOne(selectionVars);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  step " << step << ": availableSources="
+                 << availableSources
+                 << " candidates=" << stepCandidates[step].size() << "\n");
 
       unsigned outSource = 1 + numInputs + step;
       for (auto [candidateIndex, candidate] :
@@ -358,6 +380,11 @@ public:
   QueryResult synthesizeForArea(const BinaryTruthTable &tt,
                                 unsigned area) const {
     auto [normalizedTT, invertOutput] = backend.normalize(tt);
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis query: family=" << backend.getFamilyName()
+               << " area=" << area << " original-tt=" << formatTruthTable(tt)
+               << " normalized-tt=" << formatTruthTable(normalizedTT)
+               << " invert-output=" << invertOutput << "\n");
     auto result =
         synthesizeNormalized(normalizedTT.numInputs, normalizedTT.table, area);
     if (result.status != QueryStatus::Solved || !result.network)
@@ -378,6 +405,11 @@ private:
       // Area-zero solutions are only constants or projections, so let the
       // backend answer those directly without building a SAT instance.
       auto direct = backend.synthesizeDirect(numInputs, target);
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis direct query: family="
+                 << backend.getFamilyName() << " inputs=" << numInputs
+                 << " tt=" << formatTruthTable(target)
+                 << " solved=" << static_cast<bool>(direct) << "\n");
       return {.status = direct ? QueryStatus::Solved : QueryStatus::NoSolution,
               .network = std::move(direct)};
     }
@@ -440,6 +472,10 @@ parseTruthTableTargetFromModule(hw::HWModuleOp module) {
   llvm::APInt table(tableAttr.size(), 0);
   for (auto [index, bit] : llvm::enumerate(tableAttr))
     table.setBitVal(index, bit);
+  LLVM_DEBUG(llvm::dbgs()
+             << "Parsed truth-table module " << module.getModuleName() << ": "
+             << "inputs=" << bodyBlock->getNumArguments()
+             << " tt=" << formatTruthTable(table) << "\n");
   return BinaryTruthTable(bodyBlock->getNumArguments(), 1, table);
 }
 
@@ -455,19 +491,40 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
   for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
     auto result = synthesizer.synthesizeForArea(target, area);
     if (result.status ==
-        GenericExactSynthesizer::QueryStatus::ConflictLimitReached)
+        GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis stopped at conflict limit: family="
+                 << backend.getFamilyName() << " tt=" << ttString
+                 << " area=" << area << "\n");
       return std::optional<ExactNetwork>();
+    }
     if (result.status == GenericExactSynthesizer::QueryStatus::Error) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis error: family=" << backend.getFamilyName()
+                 << " tt=" << ttString << " area=" << area << "\n");
       op->emitError() << "failed to synthesize exact "
                       << backend.getFamilyName() << " for truth table "
                       << ttString;
       return failure();
     }
     if (result.status == GenericExactSynthesizer::QueryStatus::Solved &&
-        result.network)
+        result.network) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis solved: family=" << backend.getFamilyName()
+                 << " tt=" << ttString << " area=" << area
+                 << " steps=" << result.network->steps.size() << "\n");
       return std::optional<ExactNetwork>(std::move(*result.network));
+    }
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis no solution at area: family="
+               << backend.getFamilyName() << " tt=" << ttString
+               << " area=" << area << "\n");
   }
 
+  LLVM_DEBUG(llvm::dbgs()
+             << "Exact synthesis exhausted search area: family="
+             << backend.getFamilyName() << " tt=" << ttString
+             << " max-area=" << backend.getMaxSearchArea() << "\n");
   return std::optional<ExactNetwork>();
 }
 
@@ -494,6 +551,11 @@ static void rewriteModuleWithExactNetwork(const ExactSynthesisBackend &backend,
 
   OpBuilder builder(module);
   builder.setInsertionPointToStart(bodyBlock);
+  LLVM_DEBUG(llvm::dbgs()
+             << "Rewriting module " << module.getModuleName() << " with "
+             << backend.getFamilyName() << " network steps="
+             << network.steps.size()
+             << " output-inverted=" << network.output.inverted << "\n");
   Value result = backend.materializeNetwork(builder, module.getLoc(),
                                             bodyBlock->getArguments(), network);
   output->setOperands({result});
@@ -951,11 +1013,20 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
     return failure();
   }
 
+  LLVM_DEBUG(llvm::dbgs()
+             << "Running exact synthesis on module " << module.getModuleName()
+             << ": kind=" << kind << " solver=" << options.satSolver
+             << " conflict-limit=" << options.conflictLimit << "\n");
   auto network = exactSynthesizeModuleForBackend(*backend, module, options);
   if (failed(network))
     return failure();
-  if (*network)
+  if (*network) {
     rewriteModuleWithExactNetwork(*backend, module, **network);
+  } else {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Leaving module " << module.getModuleName()
+               << " as comb.truth_table after unsuccessful exact synthesis\n");
+  }
   return success();
 }
 
@@ -986,9 +1057,14 @@ LogicalResult circt::synth::emitExactSynthesisDatabase(
   ExactSynthesisRunOptions exactOptions;
   exactOptions.satSolver = options.satSolver;
   exactOptions.conflictLimit = options.conflictLimit;
-  for (auto hwModule : module.getOps<hw::HWModuleOp>())
+  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact database entry synthesis: module="
+               << hwModule.getModuleName() << " backend="
+               << backend->getFamilyName() << "\n");
     if (failed(exactSynthesizeTruthTable(hwModule, kind, exactOptions)))
       return failure();
+  }
   return success();
 }
 
