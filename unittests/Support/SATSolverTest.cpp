@@ -141,21 +141,11 @@ TEST(SatSolverTest, CadicalConflictLimitCanBeConfigured) {
 
   solver->reserveVars(pigeons * holes);
 
-<<<<<<< HEAD
-=======
   // Each pigeon must be in at least one hole.
->>>>>>> origin/main
   for (int pigeon = 0; pigeon < pigeons; ++pigeon)
     solver->addClause(
         {var(pigeon, 0), var(pigeon, 1), var(pigeon, 2), var(pigeon, 3)});
 
-<<<<<<< HEAD
-  for (int hole = 0; hole < holes; ++hole)
-    for (int lhs = 0; lhs < pigeons; ++lhs)
-      for (int rhs = lhs + 1; rhs < pigeons; ++rhs)
-        solver->addClause({-var(lhs, hole), -var(rhs, hole)});
-
-=======
   // No hole can contain two pigeons.
   for (int hole = 0; hole < holes; ++hole) {
     for (int lhs = 0; lhs < pigeons; ++lhs) {
@@ -165,7 +155,6 @@ TEST(SatSolverTest, CadicalConflictLimitCanBeConfigured) {
   }
 
   // Fail with a very low conflict limit, but succeed with no conflict limit.
->>>>>>> origin/main
   solver->setConflictLimit(0);
   EXPECT_EQ(IncrementalSATSolver::kUNKNOWN, solver->solve());
   solver->setConflictLimit(-1);
