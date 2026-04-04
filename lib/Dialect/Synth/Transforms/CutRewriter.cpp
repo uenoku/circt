@@ -818,6 +818,38 @@ bool CutRewritePattern::useTruthTableMatcher(
 // CutRewritePatternSet
 //===----------------------------------------------------------------------===//
 
+static void dumpRegisteredCutRewritePattern(const CutRewritePattern &pattern,
+                                            ArrayRef<NPNClass> npnClasses,
+                                            bool usesTruthTableMatcher) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "registered cut-rewrite pattern '"
+                 << pattern.getPatternName() << "'"
+                 << " outputs=" << pattern.getNumOutputs()
+                 << " matcher="
+                 << (usesTruthTableMatcher ? "truth-table" : "custom");
+    if (usesTruthTableMatcher)
+      llvm::dbgs() << " npn-classes=" << npnClasses.size();
+    llvm::dbgs() << "\n";
+
+    if (!usesTruthTableMatcher)
+      return;
+
+    for (const auto &npnClass : npnClasses) {
+      SmallString<32> ttString;
+      npnClass.truthTable.table.toStringUnsigned(ttString, 16);
+      llvm::dbgs() << "  tt=" << ttString
+                   << " inputs=" << npnClass.truthTable.numInputs
+                   << " in-neg=0x";
+      llvm::dbgs().write_hex(npnClass.inputNegation);
+      llvm::dbgs() << " out-neg=0x";
+      llvm::dbgs().write_hex(npnClass.outputNegation);
+      llvm::dbgs() << " perm=[";
+      llvm::interleaveComma(npnClass.inputPermutation, llvm::dbgs());
+      llvm::dbgs() << "]\n";
+    }
+  });
+}
+
 CutRewritePatternSet::CutRewritePatternSet(
     llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns)
     : patterns(std::move(patterns)) {
@@ -825,6 +857,7 @@ CutRewritePatternSet::CutRewritePatternSet(
   for (auto &pattern : this->patterns) {
     SmallVector<NPNClass, 2> npnClasses;
     auto result = pattern->useTruthTableMatcher(npnClasses);
+    dumpRegisteredCutRewritePattern(*pattern, npnClasses, result);
     if (result) {
       for (auto npnClass : npnClasses) {
         // Create a NPN class from the truth table

@@ -133,9 +133,10 @@ void circt::synth::buildSynthOptimizationPipeline(
     pm.addPass(createStructuralHash());
   }
 
-  if (!options.cutRewriteDBFile.empty()) {
+  if (!options.cutRewriteDBFiles.empty()) {
     CutRewriteOptions cutRewriteOptions;
-    cutRewriteOptions.dbFile = options.cutRewriteDBFile;
+    for (const std::string &dbFile : options.cutRewriteDBFiles)
+      cutRewriteOptions.dbFiles.push_back(dbFile);
     cutRewriteOptions.maxCutsPerRoot = options.cutRewriteMaxCutsPerRoot;
     cutRewriteOptions.strategy = OptimizationStrategyTiming;
     pm.addPass(synth::createCutRewrite(cutRewriteOptions));

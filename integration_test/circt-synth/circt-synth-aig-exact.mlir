@@ -1,7 +1,7 @@
 // REQUIRES: z3-integration
 // RUN: circt-synth-dbgen --kind=npn --max-inputs=2 -o %t.pre.mlir
 // RUN: circt-opt %t.pre.mlir -pass-pipeline='builtin.module(hw.module(synth-exact-synthesis{kind=aig sat-solver=z3}))' -o %t.db.mlir
-// RUN: circt-synth %s --target-ir=mig --cut-rewrite-db-file=%t.db.mlir --until-before mapping | FileCheck %s
+// RUN: circt-synth %s --target-ir=mig --cut-rewrite-db-files=%t.pre.mlir,%t.db.mlir --until-before mapping | FileCheck %s
 
 // CHECK-LABEL: hw.module @and_from_mig
 // CHECK-NOT: synth.mig.maj_inv

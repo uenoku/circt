@@ -22,7 +22,6 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -54,6 +53,7 @@ static constexpr unsigned kMaxMIGExactSearchArea = 32;
 static constexpr unsigned kMaxAIGExactSearchArea = 32;
 
 enum class CutRewriteInverterKind { mig, aig };
+enum class ExactSynthesisObjective { area, depthSize };
 
 static std::string formatTruthTable(const llvm::APInt &table) {
   SmallString<32> ttString;
@@ -71,6 +71,17 @@ static std::string normalizeExactSynthesisKind(StringRef kind) {
     if (c == '_')
       c = '-';
   return normalized;
+}
+
+static FailureOr<ExactSynthesisObjective>
+parseExactSynthesisObjective(Operation *op, StringRef objective) {
+  if (objective == "area")
+    return ExactSynthesisObjective::area;
+  if (objective == "depth-size")
+    return ExactSynthesisObjective::depthSize;
+  op->emitError() << "unsupported exact synthesis objective '" << objective
+                  << "'";
+  return failure();
 }
 
 static FailureOr<CadicalSATSolverOptions::CadicalSolverConfig>
@@ -118,6 +129,50 @@ struct ExactNetwork {
 };
 
 using ExactCandidate = ExactNetworkStep;
+
+static bool haveSameFaninSources(const ExactCandidate &lhs,
+                                 const ExactCandidate &rhs) {
+  assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
+  for (auto [lhsFanin, rhsFanin] : llvm::zip_equal(lhs.fanins, rhs.fanins))
+    if (lhsFanin.source != rhsFanin.source)
+      return false;
+  return true;
+}
+
+static bool isColexLess(const ExactCandidate &lhs, const ExactCandidate &rhs) {
+  assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
+  for (int i = static_cast<int>(lhs.fanins.size()) - 1; i >= 0; --i) {
+    if (lhs.fanins[i].source < rhs.fanins[i].source)
+      return true;
+    if (lhs.fanins[i].source > rhs.fanins[i].source)
+      return false;
+  }
+  return false;
+}
+
+static unsigned getOperatorOrderKey(const ExactCandidate &candidate) {
+  unsigned key = 0;
+  for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
+    if (fanin.inverted)
+      key |= 1u << index;
+  return key;
+}
+
+static unsigned computeDepthAreaUpperBound(unsigned arity, unsigned depth,
+                                           unsigned maxArea) {
+  uint64_t total = 0;
+  uint64_t nodesAtLevel = 1;
+  for (unsigned currentDepth = 0; currentDepth != depth; ++currentDepth) {
+    total += nodesAtLevel;
+    if (total >= maxArea)
+      return maxArea;
+    if (nodesAtLevel > maxArea / arity)
+      nodesAtLevel = maxArea;
+    else
+      nodesAtLevel *= arity;
+  }
+  return static_cast<unsigned>(std::min<uint64_t>(total, maxArea));
+}
 
 static NPNClass getIdentityNPNClass(const BinaryTruthTable &canonicalTT) {
   SmallVector<unsigned> inputPermutation(canonicalTT.numInputs);
@@ -213,30 +268,8 @@ private:
     return fresh;
   }
 
-  void addAtMostOne(ArrayRef<int> vars) {
-    if (vars.size() < 2)
-      return;
-
-    // Encode pairwise exclusion with a sequential ladder. This keeps the
-    // auxiliary-variable cost linear instead of quadratic in `vars.size()`.
-    SmallVector<int, 8> ladder(vars.size() - 1);
-    for (int &var : ladder)
-      var = newVar();
-
-    solver.addClause({-vars.front(), ladder.front()});
-    for (unsigned i = 1, e = vars.size() - 1; i < e; ++i) {
-      solver.addClause({-vars[i], ladder[i]});
-      solver.addClause({-ladder[i - 1], ladder[i]});
-      solver.addClause({-vars[i], -ladder[i - 1]});
-    }
-    solver.addClause({-vars.back(), -ladder.back()});
-  }
-
   void addExactlyOne(ArrayRef<int> vars) {
-    // One long positive clause enforces "at least one", and the ladder
-    // encoding above enforces "at most one".
-    solver.addClause(vars);
-    addAtMostOne(vars);
+    solver.addExactlyOne(vars, [&] { return newVar(); });
   }
 
   int getSourceValueVar(unsigned source, unsigned minterm) const {
@@ -249,35 +282,6 @@ private:
     // literal, optionally complemented for inverted fanins.
     int lit = getSourceValueVar(source, minterm);
     return inverted ? -lit : lit;
-  }
-
-  static bool haveSameFaninSources(const ExactCandidate &lhs,
-                                   const ExactCandidate &rhs) {
-    assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
-    for (auto [lhsFanin, rhsFanin] : llvm::zip_equal(lhs.fanins, rhs.fanins))
-      if (lhsFanin.source != rhsFanin.source)
-        return false;
-    return true;
-  }
-
-  static bool isColexLess(const ExactCandidate &lhs,
-                          const ExactCandidate &rhs) {
-    assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
-    for (int i = static_cast<int>(lhs.fanins.size()) - 1; i >= 0; --i) {
-      if (lhs.fanins[i].source < rhs.fanins[i].source)
-        return true;
-      if (lhs.fanins[i].source > rhs.fanins[i].source)
-        return false;
-    }
-    return false;
-  }
-
-  static unsigned getOperatorOrderKey(const ExactCandidate &candidate) {
-    unsigned key = 0;
-    for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
-      if (fanin.inverted)
-        key |= 1u << index;
-    return key;
   }
 
   void buildEncoding() {
@@ -469,6 +473,286 @@ private:
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
 };
 
+class GenericDepthExactSATProblem {
+public:
+  struct SolveResult {
+    IncrementalSATSolver::Result result = IncrementalSATSolver::kUNKNOWN;
+    std::optional<ExactNetwork> network;
+  };
+
+  GenericDepthExactSATProblem(const ExactSynthesisBackend &backend,
+                              IncrementalSATSolver &solver,
+                              unsigned numInputs, const llvm::APInt &target,
+                              unsigned numSteps, unsigned targetDepth)
+      : backend(backend), solver(solver), numInputs(numInputs), target(target),
+        numSteps(numSteps), targetDepth(targetDepth), arity(backend.getArity()),
+        numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
+
+  SolveResult solve() {
+    buildEncoding();
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact SAT solve: family=" << backend.getFamilyName()
+               << " inputs=" << numInputs << " steps=" << numSteps
+               << " depth=" << targetDepth << " minterms=" << numMinterms
+               << " vars=" << nextVar << "\n");
+    auto result = solver.solve();
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact SAT result: family=" << backend.getFamilyName()
+               << " inputs=" << numInputs << " steps=" << numSteps
+               << " depth=" << targetDepth
+               << " result=" << static_cast<int>(result) << "\n");
+    if (result != IncrementalSATSolver::kSAT)
+      return {.result = result};
+    return {.result = result, .network = decodeModel()};
+  }
+
+private:
+  int newVar() {
+    int fresh = ++nextVar;
+    solver.reserveVars(fresh);
+    return fresh;
+  }
+
+  void addExactlyOne(ArrayRef<int> vars) {
+    solver.addExactlyOne(vars, [&] { return newVar(); });
+  }
+
+  int getSourceValueVar(unsigned source, unsigned minterm) const {
+    return sourceValueVars[source][minterm];
+  }
+
+  int getSourceLiteral(unsigned source, unsigned minterm, bool inverted) const {
+    int lit = getSourceValueVar(source, minterm);
+    return inverted ? -lit : lit;
+  }
+
+  unsigned getStepIndexForSource(unsigned source) const {
+    assert(source > numInputs && "source must reference a synthesized step");
+    return source - (1 + numInputs);
+  }
+
+  int getStepDepthVar(unsigned step, unsigned depth) const {
+    assert(depth >= 1 && depth <= targetDepth && "invalid depth");
+    return stepDepthVars[step][depth - 1];
+  }
+
+  void buildEncoding() {
+    sourceValueVars.resize(totalSources);
+    for (unsigned source = 0; source != totalSources; ++source) {
+      sourceValueVars[source].reserve(numMinterms);
+      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+        sourceValueVars[source].push_back(newVar());
+    }
+
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      solver.addClause({-getSourceValueVar(0, minterm)});
+
+    for (unsigned input = 0; input != numInputs; ++input)
+      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+        solver.addClause({((minterm >> input) & 1)
+                              ? getSourceValueVar(1 + input, minterm)
+                              : -getSourceValueVar(1 + input, minterm)});
+
+    stepCandidates.resize(numSteps);
+    stepSelectionVars.resize(numSteps);
+    stepDepthVars.resize(numSteps);
+    for (unsigned step = 0; step != numSteps; ++step) {
+      unsigned availableSources = 1 + numInputs + step;
+      backend.enumerateCandidates(availableSources, stepCandidates[step]);
+      llvm::erase_if(stepCandidates[step],
+                     [&](const ExactCandidate &candidate) {
+                       return backend.isTrivialCandidate(candidate);
+                     });
+
+      auto &selectionVars = stepSelectionVars[step];
+      selectionVars.reserve(stepCandidates[step].size());
+      for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
+        selectionVars.push_back(newVar());
+      addExactlyOne(selectionVars);
+
+      auto &depthVars = stepDepthVars[step];
+      depthVars.reserve(targetDepth);
+      for (unsigned depth = 1; depth <= targetDepth; ++depth)
+        depthVars.push_back(newVar());
+      addExactlyOne(depthVars);
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  step " << step
+                 << ": availableSources=" << availableSources
+                 << " candidates=" << stepCandidates[step].size()
+                 << " depths=" << targetDepth << "\n");
+    }
+
+    addCandidateSemanticsConstraints();
+    addDepthConstraints();
+    addUseAllStepsConstraints();
+    addAdjacentDepthOrderingConstraints();
+    addAdjacentSameLayerSymmetryBreakingConstraints();
+    addRootConstraints();
+  }
+
+  void addCandidateSemanticsConstraints() {
+    for (unsigned step = 0; step != numSteps; ++step) {
+      unsigned outSource = 1 + numInputs + step;
+      const auto &selectionVars = stepSelectionVars[step];
+      for (auto [candidateIndex, candidate] :
+           llvm::enumerate(stepCandidates[step])) {
+        backend.addConditionedSemantics(
+            solver, selectionVars[candidateIndex],
+            getSourceValueVar(outSource, 0), candidate, 0,
+            [&](unsigned source, unsigned minterm, bool inverted) {
+              return getSourceLiteral(source, minterm, inverted);
+            });
+        for (unsigned minterm = 1; minterm != numMinterms; ++minterm)
+          backend.addConditionedSemantics(
+              solver, selectionVars[candidateIndex],
+              getSourceValueVar(outSource, minterm), candidate, minterm,
+              [&](unsigned source, unsigned currentMinterm, bool inverted) {
+                return getSourceLiteral(source, currentMinterm, inverted);
+              });
+      }
+    }
+  }
+
+  void addDepthConstraints() {
+    for (unsigned step = 0; step != numSteps; ++step) {
+      const auto &selectionVars = stepSelectionVars[step];
+      for (auto [candidateIndex, candidate] :
+           llvm::enumerate(stepCandidates[step])) {
+        for (unsigned depth = 1; depth <= targetDepth; ++depth) {
+          SmallVector<int, 4> supportingFanins;
+          for (const auto &fanin : candidate.fanins) {
+            if (fanin.source <= numInputs)
+              continue;
+            unsigned producerStep = getStepIndexForSource(fanin.source);
+            for (unsigned producerDepth = depth; producerDepth <= targetDepth;
+                 ++producerDepth)
+              solver.addClause({-selectionVars[candidateIndex],
+                                -getStepDepthVar(step, depth),
+                                -getStepDepthVar(producerStep, producerDepth)});
+            if (depth > 1)
+              supportingFanins.push_back(
+                  getStepDepthVar(producerStep, depth - 1));
+          }
+
+          if (depth == 1)
+            continue;
+
+          SmallVector<int, 8> clause;
+          clause.reserve(supportingFanins.size() + 2);
+          clause.push_back(-selectionVars[candidateIndex]);
+          clause.push_back(-getStepDepthVar(step, depth));
+          clause.append(supportingFanins.begin(), supportingFanins.end());
+          solver.addClause(clause);
+        }
+      }
+    }
+  }
+
+  void addUseAllStepsConstraints() {
+    for (unsigned step = 0; step + 1 < numSteps; ++step) {
+      unsigned source = 1 + numInputs + step;
+      SmallVector<int, 32> users;
+      for (unsigned userStep = step + 1; userStep != numSteps; ++userStep)
+        for (auto [candidateIndex, candidate] :
+             llvm::enumerate(stepCandidates[userStep]))
+          if (llvm::any_of(candidate.fanins, [&](const ExactSignalRef &fanin) {
+                return fanin.source == source;
+              }))
+            users.push_back(stepSelectionVars[userStep][candidateIndex]);
+      LLVM_DEBUG(llvm::dbgs() << "  use-all-steps: step " << step << " source="
+                              << source << " users=" << users.size() << "\n");
+      solver.addClause(users);
+    }
+  }
+
+  void addAdjacentDepthOrderingConstraints() {
+    for (unsigned step = 0; step + 1 < numSteps; ++step)
+      for (unsigned prevDepth = 1; prevDepth <= targetDepth; ++prevDepth)
+        for (unsigned nextDepth = 1; nextDepth < prevDepth; ++nextDepth)
+          solver.addClause({-getStepDepthVar(step, prevDepth),
+                            -getStepDepthVar(step + 1, nextDepth)});
+  }
+
+  void addAdjacentSameLayerSymmetryBreakingConstraints() {
+    for (unsigned step = 0; step + 1 < numSteps; ++step)
+      addAdjacentSameLayerOrdering(step, step + 1);
+  }
+
+  void addAdjacentSameLayerOrdering(unsigned prevStep, unsigned nextStep) {
+    const auto &prevCandidates = stepCandidates[prevStep];
+    const auto &nextCandidates = stepCandidates[nextStep];
+    const auto &prevSelectionVars = stepSelectionVars[prevStep];
+    const auto &nextSelectionVars = stepSelectionVars[nextStep];
+
+    for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates))
+      for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates)) {
+        bool violatesColex = isColexLess(nextCandidate, prevCandidate);
+        bool violatesOperatorOrder =
+            haveSameFaninSources(prevCandidate, nextCandidate) &&
+            getOperatorOrderKey(nextCandidate) <
+                getOperatorOrderKey(prevCandidate);
+        if (!violatesColex && !violatesOperatorOrder)
+          continue;
+
+        for (unsigned depth = 1; depth <= targetDepth; ++depth)
+          solver.addClause({-prevSelectionVars[prevIndex],
+                            -nextSelectionVars[nextIndex],
+                            -getStepDepthVar(prevStep, depth),
+                            -getStepDepthVar(nextStep, depth)});
+      }
+  }
+
+  void addRootConstraints() {
+    solver.addClause({getStepDepthVar(numSteps - 1, targetDepth)});
+
+    unsigned rootSource = totalSources - 1;
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      solver.addClause({target[minterm]
+                            ? getSourceValueVar(rootSource, minterm)
+                            : -getSourceValueVar(rootSource, minterm)});
+  }
+
+  ExactNetwork decodeModel() const {
+    ExactNetwork network;
+    network.numInputs = numInputs;
+    network.steps.reserve(numSteps);
+
+    for (unsigned step = 0; step != numSteps; ++step) {
+      const auto &selectionVars = stepSelectionVars[step];
+      const auto &candidates = stepCandidates[step];
+      for (size_t i = 0, e = selectionVars.size(); i != e; ++i) {
+        if (solver.val(selectionVars[i]) != selectionVars[i])
+          continue;
+        ExactNetworkStep resultStep;
+        resultStep.fanins.reserve(arity);
+        for (unsigned operand = 0; operand != arity; ++operand)
+          resultStep.fanins.push_back(candidates[i].fanins[operand]);
+        network.steps.push_back(resultStep);
+        break;
+      }
+    }
+
+    network.output = {1 + numInputs + numSteps - 1, false};
+    return network;
+  }
+
+  const ExactSynthesisBackend &backend;
+  IncrementalSATSolver &solver;
+  unsigned numInputs;
+  llvm::APInt target;
+  unsigned numSteps;
+  unsigned targetDepth;
+  unsigned arity;
+  unsigned numMinterms;
+  unsigned totalSources;
+  int nextVar = 0;
+  SmallVector<SmallVector<int, 16>, 8> sourceValueVars;
+  SmallVector<SmallVector<ExactCandidate, 64>, 8> stepCandidates;
+  SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
+  SmallVector<SmallVector<int, 8>, 8> stepDepthVars;
+};
+
 class GenericExactSynthesizer {
 public:
   enum class QueryStatus {
@@ -484,22 +768,28 @@ public:
   };
 
   GenericExactSynthesizer(const ExactSynthesisBackend &backend,
+                          ExactSynthesisObjective objective,
                           StringRef satBackend,
                           CadicalSATSolverOptions cadicalOptions,
                           int conflictLimit)
-      : backend(backend), satBackend(satBackend),
+      : backend(backend), objective(objective), satBackend(satBackend),
         cadicalOptions(cadicalOptions), conflictLimit(conflictLimit) {}
 
-  QueryResult synthesizeForArea(const BinaryTruthTable &tt,
-                                unsigned area) const {
+  QueryResult synthesize(const BinaryTruthTable &tt) const {
     auto [normalizedTT, invertOutput] = backend.normalize(tt);
-    LLVM_DEBUG(llvm::dbgs()
-               << "Exact synthesis query: family=" << backend.getFamilyName()
-               << " area=" << area << " original-tt=" << formatTruthTable(tt)
-               << " normalized-tt=" << formatTruthTable(normalizedTT)
-               << " invert-output=" << invertOutput << "\n");
-    auto result =
-        synthesizeNormalized(normalizedTT.numInputs, normalizedTT.table, area);
+    LLVM_DEBUG(
+        llvm::dbgs() << "Exact synthesis query: family="
+                     << backend.getFamilyName()
+                     << " objective="
+                     << (objective == ExactSynthesisObjective::area ? "area"
+                                                                   : "depth-size")
+                     << " original-tt=" << formatTruthTable(tt)
+                     << " normalized-tt=" << formatTruthTable(normalizedTT)
+                     << " invert-output=" << invertOutput << "\n");
+
+    auto result = objective == ExactSynthesisObjective::area
+                      ? synthesizeForMinimumArea(normalizedTT)
+                      : synthesizeForMinimumDepthThenArea(normalizedTT);
     if (result.status != QueryStatus::Solved || !result.network)
       return result;
 
@@ -511,9 +801,9 @@ public:
   }
 
 private:
-  QueryResult synthesizeNormalized(unsigned numInputs,
-                                   const llvm::APInt &target,
-                                   unsigned area) const {
+  QueryResult synthesizeNormalizedForArea(unsigned numInputs,
+                                          const llvm::APInt &target,
+                                          unsigned area) const {
     if (area == 0) {
       // Area-zero solutions are only constants or projections, so let the
       // backend answer those directly without building a SAT instance.
@@ -541,7 +831,80 @@ private:
             .network = std::move(solveResult.network)};
   }
 
+  QueryResult synthesizeNormalizedForDepth(unsigned numInputs,
+                                           const llvm::APInt &target,
+                                           unsigned area,
+                                           unsigned depth) const {
+    auto solver = createIncrementalSATSolver(satBackend, cadicalOptions);
+    if (!solver)
+      return {.status = QueryStatus::Error};
+    solver->setConflictLimit(conflictLimit);
+
+    GenericDepthExactSATProblem problem(backend, *solver, numInputs, target,
+                                        area, depth);
+    auto solveResult = problem.solve();
+    if (solveResult.result == IncrementalSATSolver::kUNKNOWN)
+      return {.status = QueryStatus::ConflictLimitReached};
+    return {.status = solveResult.network ? QueryStatus::Solved
+                                          : QueryStatus::NoSolution,
+            .network = std::move(solveResult.network)};
+  }
+
+  QueryResult synthesizeForMinimumArea(const BinaryTruthTable &tt) const {
+    for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
+      auto result =
+          synthesizeNormalizedForArea(tt.numInputs, tt.table, area);
+      if (result.status != QueryStatus::NoSolution)
+        return result;
+      LLVM_DEBUG(llvm::dbgs() << "Exact synthesis no solution at area: family="
+                              << backend.getFamilyName()
+                              << " tt=" << formatTruthTable(tt)
+                              << " area=" << area << "\n");
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis exhausted search area: family="
+               << backend.getFamilyName() << " tt=" << formatTruthTable(tt)
+               << " max-area=" << backend.getMaxSearchArea() << "\n");
+    return {.status = QueryStatus::NoSolution};
+  }
+
+  QueryResult
+  synthesizeForMinimumDepthThenArea(const BinaryTruthTable &tt) const {
+    auto direct = synthesizeNormalizedForArea(tt.numInputs, tt.table, 0);
+    if (direct.status != QueryStatus::NoSolution)
+      return direct;
+
+    unsigned maxArea = backend.getMaxSearchArea();
+    for (unsigned depth = 1; depth <= maxArea; ++depth) {
+      unsigned areaUpperBound =
+          computeDepthAreaUpperBound(backend.getArity(), depth, maxArea);
+      for (unsigned area = 1; area <= areaUpperBound; ++area) {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "Exact synthesis depth query: family="
+                   << backend.getFamilyName()
+                   << " tt=" << formatTruthTable(tt) << " depth=" << depth
+                   << " area=" << area << "\n");
+        auto result =
+            synthesizeNormalizedForDepth(tt.numInputs, tt.table, area, depth);
+        if (result.status != QueryStatus::NoSolution)
+          return result;
+      }
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis no solution at depth: family="
+                 << backend.getFamilyName() << " tt=" << formatTruthTable(tt)
+                 << " depth=" << depth << "\n");
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis exhausted search depth: family="
+               << backend.getFamilyName() << " tt=" << formatTruthTable(tt)
+               << " max-depth=" << backend.getMaxSearchArea() << "\n");
+    return {.status = QueryStatus::NoSolution};
+  }
+
   const ExactSynthesisBackend &backend;
+  ExactSynthesisObjective objective;
   std::string satBackend;
   CadicalSATSolverOptions cadicalOptions;
   int conflictLimit;
@@ -599,51 +962,37 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
                                     const BinaryTruthTable &target,
                                     const ExactSynthesisRunOptions &options,
                                     Operation *op) {
+  auto objective = parseExactSynthesisObjective(op, options.objective);
+  if (failed(objective))
+    return failure();
   auto cadicalConfig = parseCadicalConfig(op, options.cadicalConfig);
   if (failed(cadicalConfig))
     return failure();
   CadicalSATSolverOptions cadicalOptions;
   cadicalOptions.config = *cadicalConfig;
-  GenericExactSynthesizer synthesizer(backend, options.satSolver,
+  GenericExactSynthesizer synthesizer(backend, *objective, options.satSolver,
                                       cadicalOptions, options.conflictLimit);
   SmallString<32> ttString;
   target.table.toStringUnsigned(ttString, 16);
-  for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
-    auto result = synthesizer.synthesizeForArea(target, area);
-    if (result.status ==
-        GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Exact synthesis stopped at conflict limit: family="
-                 << backend.getFamilyName() << " tt=" << ttString
-                 << " area=" << area << "\n");
-      return std::optional<ExactNetwork>();
-    }
-    if (result.status == GenericExactSynthesizer::QueryStatus::Error) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Exact synthesis error: family=" << backend.getFamilyName()
-                 << " tt=" << ttString << " area=" << area << "\n");
-      op->emitError() << "failed to synthesize exact "
-                      << backend.getFamilyName() << " for truth table "
-                      << ttString;
-      return failure();
-    }
-    if (result.status == GenericExactSynthesizer::QueryStatus::Solved &&
-        result.network) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Exact synthesis solved: family=" << backend.getFamilyName()
-                 << " tt=" << ttString << " area=" << area
-                 << " steps=" << result.network->steps.size() << "\n");
-      return std::optional<ExactNetwork>(std::move(*result.network));
-    }
-    LLVM_DEBUG(llvm::dbgs() << "Exact synthesis no solution at area: family="
-                            << backend.getFamilyName() << " tt=" << ttString
-                            << " area=" << area << "\n");
+  auto result = synthesizer.synthesize(target);
+  if (result.status == GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis stopped at conflict limit: family="
+               << backend.getFamilyName() << " tt=" << ttString
+               << " objective=" << options.objective << "\n");
+    return std::optional<ExactNetwork>();
   }
-
-  LLVM_DEBUG(llvm::dbgs() << "Exact synthesis exhausted search area: family="
-                          << backend.getFamilyName() << " tt=" << ttString
-                          << " max-area=" << backend.getMaxSearchArea()
-                          << "\n");
+  if (result.status == GenericExactSynthesizer::QueryStatus::Error) {
+    LLVM_DEBUG(llvm::dbgs() << "Exact synthesis error: family="
+                            << backend.getFamilyName() << " tt=" << ttString
+                            << " objective=" << options.objective << "\n");
+    op->emitError() << "failed to synthesize exact "
+                    << backend.getFamilyName() << " for truth table "
+                    << ttString;
+    return failure();
+  }
+  if (result.network)
+    return std::optional<ExactNetwork>(std::move(*result.network));
   return std::optional<ExactNetwork>();
 }
 
@@ -1136,6 +1485,8 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
         << "'conflict-limit' must be greater than or equal to -1";
     return failure();
   }
+  if (failed(parseExactSynthesisObjective(module, options.objective)))
+    return failure();
   auto cadicalConfig = parseCadicalConfig(module, options.cadicalConfig);
   if (failed(cadicalConfig))
     return failure();
@@ -1150,6 +1501,7 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
 
   LLVM_DEBUG(llvm::dbgs() << "Running exact synthesis on module "
                           << module.getModuleName() << ": kind=" << kind
+                          << " objective=" << options.objective
                           << " solver=" << options.satSolver
                           << " cadical-config=" << options.cadicalConfig
                           << " conflict-limit=" << options.conflictLimit
@@ -1167,44 +1519,6 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
   return success();
 }
 
-LogicalResult circt::synth::emitExactSynthesisDatabase(
-    mlir::ModuleOp module, StringRef kind,
-    const ExactSynthesisDatabaseGenOptions &options) {
-  auto *backend = getExactSynthesisBackend(kind);
-  if (!backend) {
-    module.emitError() << "unsupported database kind '" << kind << "'";
-    return failure();
-  }
-
-  if (options.maxInputs > backend->getMaxSupportedInputs()) {
-    module.emitError() << backend->getFamilyName()
-                       << " exact database generation supports at most "
-                       << backend->getMaxSupportedInputs() << " inputs";
-    return failure();
-  }
-
-  PassManager pm(module.getContext());
-  GenPredefinedOptions predefinedOptions;
-  predefinedOptions.kind = "npn";
-  predefinedOptions.maxInputs = options.maxInputs;
-  pm.addPass(createGenPredefined(std::move(predefinedOptions)));
-  if (failed(pm.run(module)))
-    return failure();
-
-  ExactSynthesisRunOptions exactOptions;
-  exactOptions.satSolver = options.satSolver;
-  exactOptions.cadicalConfig = options.cadicalConfig;
-  exactOptions.conflictLimit = options.conflictLimit;
-  for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
-    LLVM_DEBUG(llvm::dbgs() << "Exact database entry synthesis: module="
-                            << hwModule.getModuleName()
-                            << " backend=" << backend->getFamilyName() << "\n");
-    if (failed(exactSynthesizeTruthTable(hwModule, kind, exactOptions)))
-      return failure();
-  }
-  return success();
-}
-
 namespace {
 
 struct ExactSynthesisPass
@@ -1214,6 +1528,7 @@ struct ExactSynthesisPass
 
   void runOnOperation() override {
     ExactSynthesisRunOptions options;
+    options.objective = objective;
     options.satSolver = satSolver;
     options.cadicalConfig = cadicalConfig;
     options.conflictLimit = conflictLimit;

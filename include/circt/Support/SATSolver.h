@@ -14,8 +14,10 @@
 #define CIRCT_SUPPORT_SATSOLVER_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <memory>
+#include <utility>
 
 namespace circt {
 template <typename T>
@@ -188,6 +190,36 @@ public:
     for (int lit : lits)
       add(lit);
     add(0);
+  }
+
+  /// Add a sequential-ladder at-most-one constraint over `vars`.
+  ///
+  /// Callers provide `newVar()` so the helper can allocate any auxiliary SAT
+  /// variables in the numbering scheme owned by the encoding.
+  template <typename NewVarFn>
+  void addAtMostOne(llvm::ArrayRef<int> vars, NewVarFn &&newVar) {
+    if (vars.size() < 2)
+      return;
+
+    llvm::SmallVector<int, 8> ladder(vars.size() - 1);
+    for (int &var : ladder)
+      var = newVar();
+
+    addClause({-vars.front(), ladder.front()});
+    for (unsigned i = 1, e = vars.size() - 1; i < e; ++i) {
+      addClause({-vars[i], ladder[i]});
+      addClause({-ladder[i - 1], ladder[i]});
+      addClause({-vars[i], -ladder[i - 1]});
+    }
+    addClause({-vars.back(), -ladder.back()});
+  }
+
+  /// Add an exactly-one constraint using one positive clause plus the
+  /// sequential-ladder at-most-one encoding above.
+  template <typename NewVarFn>
+  void addExactlyOne(llvm::ArrayRef<int> vars, NewVarFn &&newVar) {
+    addClause(vars);
+    addAtMostOne(vars, std::forward<NewVarFn>(newVar));
   }
 };
 

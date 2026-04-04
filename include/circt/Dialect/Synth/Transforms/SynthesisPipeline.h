@@ -87,10 +87,10 @@ struct SynthOptimizationPipelineOptions
       llvm::cl::desc("Lower operators in a timing-aware fashion"),
       llvm::cl::init(false)};
 
-  PassOptions::Option<std::string> cutRewriteDBFile{
-      *this, "cut-rewrite-db-file",
-      llvm::cl::desc("External cut-rewrite database file in MLIR or MLIR bytecode"),
-      llvm::cl::init("")};
+  PassOptions::ListOption<std::string> cutRewriteDBFiles{
+      *this, "cut-rewrite-db-files",
+      llvm::cl::desc(
+          "External cut-rewrite database files in MLIR or MLIR bytecode")};
 
   PassOptions::Option<unsigned> cutRewriteMaxCutsPerRoot{
       *this, "cut-rewrite-max-cuts-per-root",

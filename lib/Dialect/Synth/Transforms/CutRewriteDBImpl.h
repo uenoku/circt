@@ -35,7 +35,7 @@ struct LoadedCutRewriteEntry {
 };
 
 struct LoadedCutRewriteDatabase {
-  mlir::OwningOpRef<mlir::ModuleOp> backingModule;
+  SmallVector<mlir::OwningOpRef<mlir::ModuleOp>> backingModules;
   std::vector<std::unique_ptr<LoadedCutRewriteEntry>> entries;
   unsigned maxInputSize = 0;
 };

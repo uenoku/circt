@@ -22,6 +22,8 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/FileUtilities.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/SourceMgr.h"
 
 #define DEBUG_TYPE "synth-cut-rewrite"
@@ -104,6 +106,20 @@ FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
 }
 
 namespace {
+
+static void dumpLoadedCutRewriteEntry(const LoadedCutRewriteEntry &entry) {
+  LLVM_DEBUG({
+    SmallString<32> ttString;
+    entry.npnClass.truthTable.table.toStringUnsigned(ttString, 16);
+
+    llvm::dbgs() << "loaded cut-rewrite entry '" << entry.moduleName << "'"
+                 << " tt=" << ttString
+                 << " inputs=" << entry.npnClass.truthTable.numInputs
+                 << " area=" << entry.area << " delay=[";
+    llvm::interleaveComma(entry.delay, llvm::dbgs());
+    llvm::dbgs() << "]\n";
+  });
+}
 
 static bool isUnsynthesizedTruthTableModule(hw::HWModuleOp module) {
   return llvm::any_of(module.getBodyBlock()->without_terminator(),
@@ -252,9 +268,6 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
     database.entries.push_back(std::move(entry));
   }
 
-  if (database.entries.empty())
-    return dbModule.emitError("cut-rewrite database did not contain any "
-                              "matching library entries");
   return success();
 }
 
@@ -296,22 +309,42 @@ struct CutRewritePass
   LogicalResult initialize(MLIRContext *context) override {
     loadedMaxInputSize = 0;
     loadedDatabase.reset();
-    if (dbFile.empty()) {
+    if (dbFiles.empty()) {
       emitError(UnknownLoc::get(context))
-          << "synth-cut-rewrite requires 'db-file'";
+          << "synth-cut-rewrite requires at least one 'db-files' entry";
       return failure();
     }
 
-    auto parsedModule = parseCutRewriteDBFile(dbFile, context);
-    if (failed(parsedModule))
-      return failure();
-
     auto database = std::make_shared<LoadedCutRewriteDatabase>();
-    database->backingModule = std::move(*parsedModule);
-    if (failed(loadCutRewriteDatabaseFromModule(*database->backingModule,
-                                                *database)))
+    for (const std::string &dbFile : dbFiles) {
+      auto parsedModule = parseCutRewriteDBFile(dbFile, context);
+      if (failed(parsedModule))
+        return failure();
+
+      LoadedCutRewriteDatabase fileDatabase;
+      fileDatabase.backingModules.push_back(std::move(*parsedModule));
+      if (failed(loadCutRewriteDatabaseFromModule(*fileDatabase.backingModules.back(),
+                                                  fileDatabase)))
+        return failure();
+
+      loadedMaxInputSize =
+          std::max(loadedMaxInputSize, fileDatabase.maxInputSize);
+      database->maxInputSize =
+          std::max(database->maxInputSize, fileDatabase.maxInputSize);
+      database->backingModules.push_back(
+          std::move(fileDatabase.backingModules.back()));
+      for (auto &entry : fileDatabase.entries) {
+        dumpLoadedCutRewriteEntry(*entry);
+        database->entries.push_back(std::move(entry));
+      }
+    }
+
+    if (database->entries.empty()) {
+      emitError(UnknownLoc::get(context))
+          << "cut-rewrite database did not contain any matching library entries";
       return failure();
-    loadedMaxInputSize = database->maxInputSize;
+    }
+
     loadedDatabase = std::move(database);
     return success();
   }
@@ -330,7 +363,7 @@ struct CutRewritePass
     options.maxCutInputSize = loadedMaxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
-    options.attachDebugTiming = test;
+    options.attachDebugTiming = true;
 
     CutRewritePatternSet patternSet(std::move(patterns));
     CutRewriter rewriter(options, patternSet);

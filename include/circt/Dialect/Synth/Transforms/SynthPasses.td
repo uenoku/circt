@@ -105,8 +105,8 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
                         "Optimize for timing")
            )}]>,
     Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
-    Option<"dbFile", "db-file", "std::string", "\"\"",
-           "External cut-rewrite database file in MLIR or MLIR bytecode">,
+    ListOption<"dbFiles", "db-files", "std::string",
+               "External cut-rewrite database files in MLIR or MLIR bytecode">,
   ];
   let statistics = [
     Statistic<"numCutsCreated", "cuts-created",
@@ -146,6 +146,8 @@ def ExactSynthesis : Pass<"synth-exact-synthesis", "hw::HWModuleOp"> {
   let options = [
     Option<"kind", "kind", "std::string", "\"mig\"",
            "Exact-synthesis backend kind (mig or aig)">,
+    Option<"objective", "objective", "std::string", "\"area\"",
+           "Optimization objective: area or depth-size">,
     Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
            "SAT solver backend to use: auto, z3, or cadical">,
     Option<"cadicalConfig", "cadical-config", "std::string", "\"default\"",

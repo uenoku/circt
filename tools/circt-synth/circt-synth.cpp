@@ -194,10 +194,11 @@ static cl::opt<bool> enableFunctionalReduction(
     cl::desc("Enable FunctionalReduction during synth optimization"),
     cl::init(false), cl::cat(mainCategory));
 
-static cl::opt<std::string> cutRewriteDBFile(
-    "cut-rewrite-db-file",
-    cl::desc("External cut-rewrite database file in MLIR or MLIR bytecode"),
-    cl::value_desc("filename"), cl::init(""), cl::cat(mainCategory));
+static cl::list<std::string> cutRewriteDBFiles(
+    "cut-rewrite-db-files",
+    cl::desc("External cut-rewrite database files in MLIR or MLIR bytecode"),
+    cl::value_desc("filename"), cl::ZeroOrMore, cl::CommaSeparated,
+    cl::cat(mainCategory));
 
 static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
@@ -283,7 +284,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     optimizationOptions.disableWordToBits.setValue(disableWordToBits);
     optimizationOptions.timingAware.setValue(!disableTimingAware);
     optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
-    optimizationOptions.cutRewriteDBFile = cutRewriteDBFile;
+    for (const std::string &dbFile : cutRewriteDBFiles)
+      optimizationOptions.cutRewriteDBFiles.push_back(dbFile);
     optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
     optimizationOptions.disableFunctionalReduction.setValue(
         !enableFunctionalReduction);
