@@ -146,7 +146,7 @@ def ExactSynthesis : Pass<"synth-exact-synthesis", "mlir::ModuleOp"> {
   }];
   let options = [
     Option<"kind", "kind", "std::string", "\"mig\"",
-           "Exact-synthesis backend kind (currently: mig)">,
+           "Exact-synthesis backend kind (mig or mig-xor)">,
     Option<"objective", "objective", "std::string", "\"area\"",
            "Optimization objective: area or depth-size">,
     Option<"satSolver", "sat-solver", "std::string", "\"cadical\"",

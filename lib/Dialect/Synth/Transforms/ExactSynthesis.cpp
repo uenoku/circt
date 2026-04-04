@@ -117,8 +117,14 @@ struct ExactSignalRef {
   bool inverted = false;
 };
 
+enum class ExactNodeKind {
+  Maj3,
+  Xor2,
+};
+
 struct ExactNetworkStep {
   // One backend-specific primitive node in the synthesized network.
+  ExactNodeKind kind = ExactNodeKind::Maj3;
   SmallVector<ExactSignalRef, 3> fanins;
 };
 
@@ -132,32 +138,27 @@ struct ExactNetwork {
 
 using ExactCandidate = ExactNetworkStep;
 
-static bool haveSameFaninSources(const ExactCandidate &lhs,
-                                 const ExactCandidate &rhs) {
-  assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
-  for (auto [lhsFanin, rhsFanin] : llvm::zip_equal(lhs.fanins, rhs.fanins))
-    if (lhsFanin.source != rhsFanin.source)
-      return false;
-  return true;
-}
-
-static bool isColexLess(const ExactCandidate &lhs, const ExactCandidate &rhs) {
-  assert(lhs.fanins.size() == rhs.fanins.size() && "arity mismatch");
-  for (int i = static_cast<int>(lhs.fanins.size()) - 1; i >= 0; --i) {
-    if (lhs.fanins[i].source < rhs.fanins[i].source)
-      return true;
-    if (lhs.fanins[i].source > rhs.fanins[i].source)
-      return false;
-  }
-  return false;
-}
-
-static unsigned getOperatorOrderKey(const ExactCandidate &candidate) {
+static unsigned getCandidateInversionMask(const ExactCandidate &candidate) {
   unsigned key = 0;
   for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
     if (fanin.inverted)
       key |= 1u << index;
   return key;
+}
+
+static bool isCandidateLess(const ExactCandidate &lhs,
+                            const ExactCandidate &rhs) {
+  if (lhs.fanins.size() != rhs.fanins.size())
+    return lhs.fanins.size() < rhs.fanins.size();
+  for (size_t i = 0, e = lhs.fanins.size(); i != e; ++i) {
+    if (lhs.fanins[i].source < rhs.fanins[i].source)
+      return true;
+    if (lhs.fanins[i].source > rhs.fanins[i].source)
+      return false;
+  }
+  if (lhs.kind != rhs.kind)
+    return static_cast<unsigned>(lhs.kind) < static_cast<unsigned>(rhs.kind);
+  return getCandidateInversionMask(lhs) < getCandidateInversionMask(rhs);
 }
 
 static unsigned computeDepthAreaUpperBound(unsigned arity, unsigned depth,
@@ -245,8 +246,8 @@ public:
                          IncrementalSATSolver &solver, unsigned numInputs,
                          const llvm::APInt &target, unsigned numSteps)
       : backend(backend), solver(solver), numInputs(numInputs), target(target),
-        numSteps(numSteps), arity(backend.getArity()),
-        numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
+        numSteps(numSteps), numMinterms(1u << numInputs),
+        totalSources(1 + numInputs + numSteps) {}
 
   SolveResult solve() {
     buildEncoding();
@@ -359,7 +360,7 @@ private:
     for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
       SmallVector<int, 64> allowedNextSelections;
       for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-        if (!isColexLess(nextCandidate, prevCandidate))
+        if (!isCandidateLess(nextCandidate, prevCandidate))
           allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
 
       assert(!allowedNextSelections.empty() &&
@@ -371,13 +372,6 @@ private:
       solver.addClause(clause);
     }
 
-    for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates))
-      for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-        if (haveSameFaninSources(prevCandidate, nextCandidate) &&
-            getOperatorOrderKey(nextCandidate) <
-                getOperatorOrderKey(prevCandidate))
-          solver.addClause(
-              {-prevSelectionVars[prevIndex], -nextSelectionVars[nextIndex]});
   }
 
   void addCandidateSemanticsConstraints() {
@@ -441,11 +435,7 @@ private:
           continue;
         // `addExactlyOne` guarantees a unique selected candidate for each
         // step, so decoding only has to find the one positive selector.
-        ExactNetworkStep resultStep;
-        resultStep.fanins.reserve(arity);
-        for (unsigned operand = 0; operand != arity; ++operand)
-          resultStep.fanins.push_back(candidates[i].fanins[operand]);
-        network.steps.push_back(resultStep);
+        network.steps.push_back(candidates[i]);
         break;
       }
     }
@@ -459,7 +449,6 @@ private:
   unsigned numInputs;
   llvm::APInt target;
   unsigned numSteps;
-  unsigned arity;
   unsigned numMinterms;
   // Total sources in the abstract network numbering:
   //   0                  -> constant false
@@ -488,7 +477,7 @@ public:
                               const llvm::APInt &target, unsigned numSteps,
                               unsigned targetDepth)
       : backend(backend), solver(solver), numInputs(numInputs), target(target),
-        numSteps(numSteps), targetDepth(targetDepth), arity(backend.getArity()),
+        numSteps(numSteps), targetDepth(targetDepth),
         numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
 
   SolveResult solve() {
@@ -689,12 +678,7 @@ private:
 
     for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates))
       for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates)) {
-        bool violatesColex = isColexLess(nextCandidate, prevCandidate);
-        bool violatesOperatorOrder =
-            haveSameFaninSources(prevCandidate, nextCandidate) &&
-            getOperatorOrderKey(nextCandidate) <
-                getOperatorOrderKey(prevCandidate);
-        if (!violatesColex && !violatesOperatorOrder)
+        if (!isCandidateLess(nextCandidate, prevCandidate))
           continue;
 
         for (unsigned depth = 1; depth <= targetDepth; ++depth)
@@ -726,11 +710,7 @@ private:
       for (size_t i = 0, e = selectionVars.size(); i != e; ++i) {
         if (solver.val(selectionVars[i]) != selectionVars[i])
           continue;
-        ExactNetworkStep resultStep;
-        resultStep.fanins.reserve(arity);
-        for (unsigned operand = 0; operand != arity; ++operand)
-          resultStep.fanins.push_back(candidates[i].fanins[operand]);
-        network.steps.push_back(resultStep);
+        network.steps.push_back(candidates[i]);
         break;
       }
     }
@@ -745,7 +725,6 @@ private:
   llvm::APInt target;
   unsigned numSteps;
   unsigned targetDepth;
-  unsigned arity;
   unsigned numMinterms;
   unsigned totalSources;
   int nextVar = 0;
@@ -1061,35 +1040,61 @@ static Value materializeExactMIGNetwork(OpBuilder &builder, Location loc,
     return stepValues[stepIndex];
   };
 
-  auto materializeOutputSignal = [&](ExactSignalRef signal,
-                                     ArrayRef<Value> stepValues) -> Value {
-    if (signal.source == 0)
-      return getConstant(signal.inverted);
-
-    Value value = getRawSignal(signal, stepValues);
-    if (!signal.inverted) {
-      if (value.getDefiningOp())
-        return value;
-      return hw::WireOp::create(builder, loc, value);
-    }
-
+  auto materializeInverter = [&](Value value) -> Value {
     std::array<Value, 1> operands = {value};
     std::array<bool, 1> inverted = {true};
     return synth::mig::MajorityInverterOp::create(builder, loc, operands,
                                                   inverted);
   };
 
+  auto materializeSignal = [&](ExactSignalRef signal,
+                               ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(signal.inverted);
+    Value value = getRawSignal(signal, stepValues);
+    if (!signal.inverted)
+      return value;
+    return materializeInverter(value);
+  };
+
+  auto materializeOutputSignal = [&](ExactSignalRef signal,
+                                     ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(signal.inverted);
+
+    Value value = signal.inverted ? materializeSignal(signal, stepValues)
+                                  : getRawSignal(signal, stepValues);
+    if (!signal.inverted) {
+      if (value.getDefiningOp())
+        return value;
+      return hw::WireOp::create(builder, loc, value);
+    }
+    return value;
+  };
+
   SmallVector<Value, 4> stepValues;
   stepValues.reserve(network.steps.size());
   for (const auto &step : network.steps) {
-    std::array<Value, 3> operands = {getRawSignal(step.fanins[0], stepValues),
-                                     getRawSignal(step.fanins[1], stepValues),
-                                     getRawSignal(step.fanins[2], stepValues)};
-    std::array<bool, 3> inverted = {step.fanins[0].inverted,
-                                    step.fanins[1].inverted,
-                                    step.fanins[2].inverted};
-    stepValues.push_back(synth::mig::MajorityInverterOp::create(
-        builder, loc, operands, inverted));
+    switch (step.kind) {
+    case ExactNodeKind::Maj3: {
+      std::array<Value, 3> operands = {
+          getRawSignal(step.fanins[0], stepValues),
+          getRawSignal(step.fanins[1], stepValues),
+          getRawSignal(step.fanins[2], stepValues)};
+      std::array<bool, 3> inverted = {step.fanins[0].inverted,
+                                      step.fanins[1].inverted,
+                                      step.fanins[2].inverted};
+      stepValues.push_back(synth::mig::MajorityInverterOp::create(
+          builder, loc, operands, inverted));
+      break;
+    }
+    case ExactNodeKind::Xor2: {
+      Value lhs = materializeSignal(step.fanins[0], stepValues);
+      Value rhs = materializeSignal(step.fanins[1], stepValues);
+      stepValues.push_back(comb::XorOp::create(builder, loc, lhs, rhs));
+      break;
+    }
+    }
   }
   return materializeOutputSignal(network.output, stepValues);
 }
@@ -1249,6 +1254,7 @@ public:
         for (unsigned c = b + 1; c < availableSources; ++c)
           for (unsigned invMask = 0; invMask != 8; ++invMask) {
             ExactCandidate candidate;
+            candidate.kind = ExactNodeKind::Maj3;
             candidate.fanins.push_back({a, static_cast<bool>(invMask & 1)});
             candidate.fanins.push_back({b, static_cast<bool>(invMask & 2)});
             candidate.fanins.push_back({c, static_cast<bool>(invMask & 4)});
@@ -1293,12 +1299,160 @@ public:
   }
 };
 
+class MIGXORExactSynthesisBackend final : public ExactSynthesisBackend {
+public:
+  StringRef getKind() const override { return "mig-xor"; }
+  unsigned getMaxSupportedInputs() const override {
+    return kMaxExactSynthesisInputs;
+  }
+  StringRef getFamilyName() const override { return "MIG-XOR"; }
+  unsigned getArity() const override { return 3; }
+  unsigned getMaxSearchArea() const override { return kMaxMIGExactSearchArea; }
+
+  std::pair<BinaryTruthTable, bool>
+  normalize(const BinaryTruthTable &tt) const override {
+    if (!tt.table[0])
+      return {tt, false};
+    BinaryTruthTable normalized = tt;
+    normalized.table.flipAllBits();
+    return {std::move(normalized), true};
+  }
+
+  std::optional<ExactNetwork>
+  synthesizeDirect(unsigned numInputs,
+                   const llvm::APInt &target) const override {
+    ExactNetwork network;
+    network.numInputs = numInputs;
+    if (target.isZero()) {
+      network.output = {0, false};
+      return network;
+    }
+    if (target.isAllOnes()) {
+      network.output = {0, true};
+      return network;
+    }
+    for (unsigned input = 0; input != numInputs; ++input) {
+      llvm::APInt mask = circt::createVarMask(numInputs, input, true);
+      if (target == mask) {
+        network.output = {1 + input, false};
+        return network;
+      }
+      llvm::APInt invertedMask = mask;
+      invertedMask.flipAllBits();
+      if (target == invertedMask) {
+        network.output = {1 + input, true};
+        return network;
+      }
+    }
+    return std::nullopt;
+  }
+
+  ExactNetwork applyOutputNegation(ExactNetwork network) const override {
+    if (network.steps.empty()) {
+      network.output.inverted = !network.output.inverted;
+      return network;
+    }
+    auto &lastStep = network.steps.back();
+    switch (lastStep.kind) {
+    case ExactNodeKind::Maj3:
+      for (auto &fanin : lastStep.fanins)
+        fanin.inverted = !fanin.inverted;
+      break;
+    case ExactNodeKind::Xor2:
+      lastStep.fanins[0].inverted = !lastStep.fanins[0].inverted;
+      break;
+    }
+    return network;
+  }
+
+  void enumerateCandidates(
+      unsigned availableSources,
+      SmallVectorImpl<ExactCandidate> &candidates) const override {
+    candidates.clear();
+    for (unsigned a = 0; a + 2 < availableSources; ++a)
+      for (unsigned b = a + 1; b + 1 < availableSources; ++b)
+        for (unsigned c = b + 1; c < availableSources; ++c)
+          for (unsigned invMask = 0; invMask != 8; ++invMask) {
+            ExactCandidate candidate;
+            candidate.kind = ExactNodeKind::Maj3;
+            candidate.fanins.push_back({a, static_cast<bool>(invMask & 1)});
+            candidate.fanins.push_back({b, static_cast<bool>(invMask & 2)});
+            candidate.fanins.push_back({c, static_cast<bool>(invMask & 4)});
+            candidates.push_back(std::move(candidate));
+          }
+
+    for (unsigned a = 1; a + 1 < availableSources; ++a)
+      for (unsigned b = a + 1; b < availableSources; ++b) {
+        ExactCandidate candidate;
+        candidate.kind = ExactNodeKind::Xor2;
+        candidate.fanins.push_back({a, false});
+        candidate.fanins.push_back({b, false});
+        candidates.push_back(std::move(candidate));
+      }
+  }
+
+  bool isTrivialCandidate(const ExactCandidate &) const override {
+    return false;
+  }
+
+  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
+                               int outLit, const ExactCandidate &candidate,
+                               unsigned minterm,
+                               llvm::function_ref<int(unsigned, unsigned, bool)>
+                                   getSourceLiteral) const override {
+    auto addConditionedClause = [&](std::initializer_list<int> lits) {
+      SmallVector<int, 8> clause;
+      clause.reserve(lits.size() + 1);
+      clause.push_back(-selector);
+      clause.append(lits.begin(), lits.end());
+      solver.addClause(clause);
+    };
+
+    switch (candidate.kind) {
+    case ExactNodeKind::Maj3: {
+      int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                  candidate.fanins[0].inverted);
+      int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                  candidate.fanins[1].inverted);
+      int cLit = getSourceLiteral(candidate.fanins[2].source, minterm,
+                                  candidate.fanins[2].inverted);
+      addConditionedClause({-aLit, -bLit, outLit});
+      addConditionedClause({-aLit, -cLit, outLit});
+      addConditionedClause({-bLit, -cLit, outLit});
+      addConditionedClause({aLit, bLit, -outLit});
+      addConditionedClause({aLit, cLit, -outLit});
+      addConditionedClause({bLit, cLit, -outLit});
+      break;
+    }
+    case ExactNodeKind::Xor2: {
+      int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                  candidate.fanins[0].inverted);
+      int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                  candidate.fanins[1].inverted);
+      addConditionedClause({aLit, bLit, -outLit});
+      addConditionedClause({-aLit, -bLit, -outLit});
+      addConditionedClause({aLit, -bLit, outLit});
+      addConditionedClause({-aLit, bLit, outLit});
+      break;
+    }
+    }
+  }
+
+  Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
+                           const ExactNetwork &network) const override {
+    return materializeExactMIGNetwork(builder, loc, inputs, network);
+  }
+};
+
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
   static const MIGExactSynthesisBackend migBackend;
+  static const MIGXORExactSynthesisBackend migXorBackend;
 
   std::string normalized = normalizeExactSynthesisKind(kind);
   if (normalized == migBackend.getKind())
     return &migBackend;
+  if (normalized == migXorBackend.getKind())
+    return &migXorBackend;
   return nullptr;
 }
 

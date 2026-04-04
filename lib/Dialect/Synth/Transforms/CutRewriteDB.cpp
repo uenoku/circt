@@ -127,29 +127,22 @@ static bool isUnsynthesizedTruthTableModule(hw::HWModuleOp module) {
       [](Operation &op) { return isa<comb::TruthTableOp>(op); });
 }
 
-static FailureOr<std::string> inferCutRewriteInverterKind(mlir::ModuleOp db) {
-  bool sawMIG = false;
-  bool sawAIG = false;
-  for (auto module : db.getOps<hw::HWModuleOp>()) {
-    for (Operation &op : module.getBodyBlock()->without_terminator()) {
-      if (isa<synth::mig::MajorityInverterOp>(op))
-        sawMIG = true;
-      else if (isa<synth::aig::AndInverterOp>(op))
-        sawAIG = true;
-    }
-  }
+static std::string inferCutRewriteInverterKind(hw::HWModuleOp module) {
+  for (Operation &op : module.getBodyBlock()->without_terminator())
+    if (isa<synth::aig::AndInverterOp>(op))
+      return std::string("aig");
 
-  // AIG inversion is the conservative fallback for ambiguous databases, and it
-  // also covers mixed AIG/MIG bodies because later strashing can flatten them.
-  if (sawAIG || !sawMIG)
-    return std::string("aig");
+  // Exact-synthesized MIG databases may contain pure XOR entries with no
+  // explicit majority op, but they still rely on MIG-style inversion when
+  // applying NPN input/output negations during rewrite.
   return std::string("mig");
 }
 
 static double computeMaterializedModuleArea(hw::HWModuleOp module) {
   double area = 0.0;
   for (Operation &op : module.getBodyBlock()->without_terminator())
-    if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp>(op))
+    if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp,
+            comb::XorOp>(op))
       area += 1.0;
   return area;
 }
@@ -181,6 +174,7 @@ computeMaterializedModuleInputDelays(hw::HWModuleOp module,
 static FailureOr<CutRewriteModuleMetadata>
 computeCutRewriteModuleMetadata(hw::HWModuleOp module) {
   CutRewriteModuleMetadata metadata;
+  metadata.inverterKind = inferCutRewriteInverterKind(module);
   auto npnClass = getNPNClassFromModule(module);
   if (failed(npnClass))
     return failure();
@@ -236,10 +230,6 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
   database.entries.clear();
   database.maxInputSize = 0;
 
-  auto inferredInverterKind = inferCutRewriteInverterKind(dbModule);
-  if (failed(inferredInverterKind))
-    return failure();
-
   SmallVector<hw::HWModuleOp> hwModules(dbModule.getOps<hw::HWModuleOp>());
   std::vector<std::unique_ptr<LoadedCutRewriteEntry>> loadedEntries(
       hwModules.size());
@@ -250,7 +240,6 @@ LogicalResult circt::synth::loadCutRewriteDatabaseFromModule(
             auto metadata = computeCutRewriteModuleMetadata(hwModules[index]);
             if (failed(metadata))
               return failure();
-            metadata->inverterKind = *inferredInverterKind;
             auto entry = parseCutRewriteEntry(hwModules[index], *metadata);
             if (failed(entry))
               return failure();
