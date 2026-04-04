@@ -747,43 +747,14 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
 
   case LogicNetworkGate::Choice: {
     auto choiceOp = cast<synth::ChoiceOp>(gate.getOperation());
-    result = simulateGate(network,
-                          network.getIndex(choiceOp.getInputs().front()), cache,
-                          numInputs);
+    result =
+        simulateGate(network, network.getIndex(choiceOp.getInputs().front()),
+                     cache, numInputs);
     break;
   }
   }
 
   cache[index] = result;
-  return result;
-}
-
-static llvm::APInt remapOperandTruthTableToCutInputs(const BinaryTruthTable &tt,
-                                                     ArrayRef<uint32_t> src,
-                                                     ArrayRef<uint32_t> dst) {
-  assert(tt.numInputs == src.size() && "source inputs must match truth table");
-
-  unsigned dstInputs = dst.size();
-  llvm::APInt result(1u << dstInputs, 0);
-  llvm::DenseMap<uint32_t, unsigned> dstPosition;
-  dstPosition.reserve(dst.size());
-  for (auto [index, value] : llvm::enumerate(dst))
-    dstPosition.try_emplace(value, index);
-
-  for (unsigned dstAssignment = 0, e = 1u << dstInputs; dstAssignment != e;
-       ++dstAssignment) {
-    unsigned srcAssignment = 0;
-    for (auto [srcIndex, srcValue] : llvm::enumerate(src)) {
-      auto it = dstPosition.find(srcValue);
-      assert(it != dstPosition.end() &&
-             "operand cut inputs must be contained in merged cut inputs");
-      unsigned bit = (dstAssignment >> it->second) & 1u;
-      srcAssignment |= bit << srcIndex;
-    }
-    if (tt.table[srcAssignment])
-      result.setBit(dstAssignment);
-  }
-
   return result;
 }
 
@@ -813,62 +784,7 @@ void Cut::computeTruthTable(const LogicNetwork &network) {
 }
 
 void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
-  if (isTrivialCut()) {
-    computeTruthTable(network);
-    return;
-  }
-
-  if (operandCuts.empty()) {
-    computeTruthTable(network);
-    return;
-  }
-
-  const auto &gate = network.getGate(rootIndex);
-  unsigned numInputs = inputs.size();
-  SmallVector<llvm::APInt, 3> operandTables;
-  operandTables.reserve(operandCuts.size());
-
-  for (auto [operandIndex, operandCut] : llvm::enumerate(operandCuts)) {
-    auto *mutableOperandCut = const_cast<Cut *>(operandCut);
-    if (!mutableOperandCut->getTruthTable().has_value())
-      mutableOperandCut->computeTruthTableFromOperands(network);
-
-    llvm::APInt remapped = remapOperandTruthTableToCutInputs(
-        *mutableOperandCut->getTruthTable(), operandCut->inputs, inputs);
-    if (gate.getKind() != LogicNetworkGate::Choice &&
-        gate.edges[operandIndex].isInverted())
-      remapped.flipAllBits();
-    operandTables.push_back(std::move(remapped));
-  }
-
-  llvm::APInt result;
-  switch (gate.getKind()) {
-  case LogicNetworkGate::Identity:
-    assert(operandTables.size() == 1 && "identity must have one operand");
-    result = applyGateSemantics(gate.getKind(), operandTables[0]);
-    break;
-  case LogicNetworkGate::And2:
-  case LogicNetworkGate::Xor2:
-    assert(operandTables.size() == 2 && "binary gate must have two operands");
-    result =
-        applyGateSemantics(gate.getKind(), operandTables[0], operandTables[1]);
-    break;
-  case LogicNetworkGate::Maj3:
-    assert(operandTables.size() == 3 && "majority gate must have three operands");
-    result = applyGateSemantics(gate.getKind(), operandTables[0],
-                                operandTables[1], operandTables[2]);
-    break;
-  case LogicNetworkGate::Choice:
-    assert(operandTables.size() == 1 &&
-           "choice-derived cuts must reference one selected operand cut");
-    result = operandTables[0];
-    break;
-  case LogicNetworkGate::Constant:
-  case LogicNetworkGate::PrimaryInput:
-    llvm_unreachable("non-trivial cuts cannot have constant or PI roots");
-  }
-
-  truthTable.emplace(numInputs, 1, result);
+  computeTruthTable(network);
 }
 
 bool Cut::dominates(const Cut &other) const { return dominates(other.inputs); }
@@ -1183,9 +1099,8 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
         cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
     resultCutSet->addCut(primaryInputCut);
 
-    llvm::scope_exit prune([&]() {
-      resultCutSet->finalize(options, matchCut, logicNetwork);
-    });
+    llvm::scope_exit prune(
+        [&]() { resultCutSet->finalize(options, matchCut, logicNetwork); });
 
     for (Value operand : choiceOp.getInputs()) {
       auto *operandCutSet = getCutSet(logicNetwork.getIndex(operand));

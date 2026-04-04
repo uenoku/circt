@@ -121,9 +121,6 @@ void circt::synth::buildSynthOptimizationPipeline(
   pm.addPass(createLowerVariadicPass(options.timingAware));
   pm.addPass(createStructuralHash());
 
-  if (!options.disableFunctionalReduction && hasIncrementalSATSolverBackend())
-    pm.addPass(createFunctionalReduction());
-
   // SOP balancing.
   if (!options.disableSOPBalancing) {
     SOPBalancingOptions sopOptions;
@@ -145,6 +142,16 @@ void circt::synth::buildSynthOptimizationPipeline(
     pm.addPass(synth::createCutRewrite(cutRewriteOptions));
     pm.addPass(createCSEPass());
     pm.addPass(createStructuralHash());
+  }
+
+  if (!options.disableFunctionalReduction && hasIncrementalSATSolverBackend()) {
+    FunctionalReductionOptions frOptions;
+    frOptions.conflictLimit =
+        getenv("SYNTH_FUNCRED_CONFLICT_LIMIT")
+            ? std::stoi(getenv("SYNTH_FUNCRED_CONFLICT_LIMIT"))
+            : 100;
+    frOptions.numRandomPatterns = 2048;
+    pm.addPass(createFunctionalReduction(frOptions));
   }
 
   if (!options.abcCommands.empty()) {
