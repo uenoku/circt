@@ -27,8 +27,11 @@
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+#include <atomic>
 #include <array>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <vector>
@@ -50,7 +53,6 @@ namespace {
 
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
-static constexpr unsigned kMaxAIGExactSearchArea = 32;
 
 enum class CutRewriteInverterKind { mig, aig };
 enum class ExactSynthesisObjective { area, depthSize };
@@ -205,7 +207,8 @@ public:
   virtual std::optional<ExactNetwork>
   synthesizeDirect(unsigned numInputs, const llvm::APInt &target) const = 0;
   // Apply a deferred output inversion in the backend's native representation.
-  // MIG can often absorb this into the last majority; AIG typically cannot.
+  // Some families can absorb this into the final node instead of materializing
+  // a separate inverter.
   virtual ExactNetwork applyOutputNegation(ExactNetwork network) const = 0;
   // Enumerate all primitive nodes that may appear at the next synthesized
   // step, using the currently available constant/input/step sources.
@@ -1178,7 +1181,7 @@ parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
 
 class MIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
-  StringRef getKind() const override { return "mig-exact"; }
+  StringRef getKind() const override { return "mig"; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
   }
@@ -1290,173 +1293,12 @@ public:
   }
 };
 
-//===----------------------------------------------------------------------===//
-// AIG Exact Synthesis Backend
-//===----------------------------------------------------------------------===//
-static Value materializeExactAIGNetwork(OpBuilder &builder, Location loc,
-                                        ValueRange inputs,
-                                        const ExactNetwork &network) {
-  Value constZero;
-  Value constOne;
-  auto getConstant = [&](bool value) -> Value {
-    if (!value) {
-      if (!constZero)
-        constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
-      return constZero;
-    }
-    if (!constOne)
-      constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
-    return constOne;
-  };
-
-  auto getRawSignal = [&](ExactSignalRef signal,
-                          ArrayRef<Value> stepValues) -> Value {
-    if (signal.source == 0)
-      return getConstant(false);
-    if (signal.source <= inputs.size())
-      return inputs[signal.source - 1];
-
-    unsigned stepIndex = signal.source - (inputs.size() + 1);
-    assert(stepIndex < stepValues.size() && "invalid synthesized step index");
-    return stepValues[stepIndex];
-  };
-
-  auto materializeOutputSignal = [&](ExactSignalRef signal,
-                                     ArrayRef<Value> stepValues) -> Value {
-    if (signal.source == 0)
-      return getConstant(signal.inverted);
-
-    Value value = getRawSignal(signal, stepValues);
-    if (!signal.inverted) {
-      if (value.getDefiningOp())
-        return value;
-      return hw::WireOp::create(builder, loc, value);
-    }
-
-    std::array<Value, 1> operands = {value};
-    std::array<bool, 1> inverted = {true};
-    return synth::aig::AndInverterOp::create(builder, loc, operands, inverted);
-  };
-
-  SmallVector<Value, 4> stepValues;
-  stepValues.reserve(network.steps.size());
-  for (const auto &step : network.steps) {
-    std::array<Value, 2> operands = {getRawSignal(step.fanins[0], stepValues),
-                                     getRawSignal(step.fanins[1], stepValues)};
-    std::array<bool, 2> inverted = {step.fanins[0].inverted,
-                                    step.fanins[1].inverted};
-    stepValues.push_back(
-        synth::aig::AndInverterOp::create(builder, loc, operands, inverted));
-  }
-  return materializeOutputSignal(network.output, stepValues);
-}
-
-class AIGExactSynthesisBackend final : public ExactSynthesisBackend {
-public:
-  StringRef getKind() const override { return "aig-exact"; }
-  unsigned getMaxSupportedInputs() const override {
-    return kMaxExactSynthesisInputs;
-  }
-  StringRef getFamilyName() const override { return "AIG"; }
-  unsigned getArity() const override { return 2; }
-  unsigned getMaxSearchArea() const override { return kMaxAIGExactSearchArea; }
-
-  std::pair<BinaryTruthTable, bool>
-  normalize(const BinaryTruthTable &tt) const override {
-    if (!tt.table[0])
-      return {tt, false};
-    BinaryTruthTable normalized = tt;
-    normalized.table.flipAllBits();
-    return {std::move(normalized), true};
-  }
-
-  std::optional<ExactNetwork>
-  synthesizeDirect(unsigned numInputs,
-                   const llvm::APInt &target) const override {
-    ExactNetwork network;
-    network.numInputs = numInputs;
-    if (target.isZero()) {
-      network.output = {0, false};
-      return network;
-    }
-    if (target.isAllOnes()) {
-      network.output = {0, true};
-      return network;
-    }
-    for (unsigned input = 0; input != numInputs; ++input) {
-      llvm::APInt mask = circt::createVarMask(numInputs, input, true);
-      if (target == mask) {
-        network.output = {1 + input, false};
-        return network;
-      }
-    }
-    return std::nullopt;
-  }
-
-  ExactNetwork applyOutputNegation(ExactNetwork network) const override {
-    // AIG output negation is represented explicitly because the final node is
-    // binary AND rather than a self-dual majority.
-    network.output.inverted = !network.output.inverted;
-    return network;
-  }
-
-  void enumerateCandidates(
-      unsigned availableSources,
-      SmallVectorImpl<ExactCandidate> &candidates) const override {
-    candidates.clear();
-    for (unsigned a = 0; a + 1 < availableSources; ++a)
-      for (unsigned b = a + 1; b < availableSources; ++b)
-        for (unsigned invMask = 0; invMask != 4; ++invMask) {
-          ExactCandidate candidate;
-          candidate.fanins.push_back({a, static_cast<bool>(invMask & 1)});
-          candidate.fanins.push_back({b, static_cast<bool>(invMask & 2)});
-          candidates.push_back(std::move(candidate));
-        }
-  }
-
-  bool isTrivialCandidate(const ExactCandidate &candidate) const override {
-    return llvm::any_of(candidate.fanins, [](const ExactSignalRef &fanin) {
-      return fanin.source == 0;
-    });
-  }
-
-  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
-                               int outLit, const ExactCandidate &candidate,
-                               unsigned minterm,
-                               llvm::function_ref<int(unsigned, unsigned, bool)>
-                                   getSourceLiteral) const override {
-    auto addConditionedClause = [&](std::initializer_list<int> lits) {
-      SmallVector<int, 8> clause;
-      clause.reserve(lits.size() + 1);
-      clause.push_back(-selector);
-      clause.append(lits.begin(), lits.end());
-      solver.addClause(clause);
-    };
-
-    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
-                                candidate.fanins[0].inverted);
-    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
-                                candidate.fanins[1].inverted);
-    addConditionedClause({-aLit, -bLit, outLit});
-    addConditionedClause({aLit, -outLit});
-    addConditionedClause({bLit, -outLit});
-  }
-
-  Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
-                           const ExactNetwork &network) const override {
-    return materializeExactAIGNetwork(builder, loc, inputs, network);
-  }
-};
-
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
   static const MIGExactSynthesisBackend migBackend;
-  static const AIGExactSynthesisBackend aigBackend;
 
   std::string normalized = normalizeExactSynthesisKind(kind);
-  if (normalized == migBackend.getKind() || normalized == "mig")
+  if (normalized == migBackend.getKind())
     return &migBackend;
-  if (normalized == aigBackend.getKind() || normalized == "aig")
-    return &aigBackend;
   return nullptr;
 }
 
@@ -1517,6 +1359,32 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
 
 namespace {
 
+static LogicalResult exactSynthesizeTruthTables(ModuleOp module, StringRef kind,
+                                                const ExactSynthesisRunOptions &options) {
+  SmallVector<hw::HWModuleOp> modules;
+  for (auto hwModule : module.getOps<hw::HWModuleOp>())
+    modules.push_back(hwModule);
+
+  std::atomic<unsigned> completedCount = 0;
+  std::mutex progressMutex;
+  return mlir::failableParallelForEach(
+      module.getContext(), modules, [&](hw::HWModuleOp hwModule) {
+        if (failed(exactSynthesizeTruthTable(hwModule, kind, options)))
+          return failure();
+
+        if (modules.size() > 1) {
+          unsigned completed =
+              completedCount.fetch_add(1, std::memory_order_relaxed) + 1;
+          std::lock_guard<std::mutex> lock(progressMutex);
+          llvm::errs() << "synth-exact-synthesis [" << completed << "/"
+                       << modules.size() << "]: " << hwModule.getModuleName()
+                       << "\n";
+          llvm::errs().flush();
+        }
+        return success();
+      });
+}
+
 struct ExactSynthesisPass
     : public circt::synth::impl::ExactSynthesisBase<ExactSynthesisPass> {
   using circt::synth::impl::ExactSynthesisBase<
@@ -1528,7 +1396,7 @@ struct ExactSynthesisPass
     options.satSolver = satSolver;
     options.cadicalConfig = cadicalConfig;
     options.conflictLimit = conflictLimit;
-    if (failed(exactSynthesizeTruthTable(getOperation(), kind, options)))
+    if (failed(exactSynthesizeTruthTables(getOperation(), kind, options)))
       signalPassFailure();
   }
 };

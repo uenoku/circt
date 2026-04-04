@@ -137,15 +137,16 @@ def GenPredefined : Pass<"synth-gen-predefined", "mlir::ModuleOp"> {
                            "circt::hw::HWDialect"];
 }
 
-def ExactSynthesis : Pass<"synth-exact-synthesis", "hw::HWModuleOp"> {
+def ExactSynthesis : Pass<"synth-exact-synthesis", "mlir::ModuleOp"> {
   let summary = "Exact-synthesize truth-table modules into database entries";
   let description = [{
     Replace each `hw.module` body driven by a canonical `comb.truth_table`
-    with an exact implementation in the requested backend family.
+    within a `builtin.module` with an exact implementation in the requested
+    backend family.
   }];
   let options = [
     Option<"kind", "kind", "std::string", "\"mig\"",
-           "Exact-synthesis backend kind (mig or aig)">,
+           "Exact-synthesis backend kind (currently: mig)">,
     Option<"objective", "objective", "std::string", "\"area\"",
            "Optimization objective: area or depth-size">,
     Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
