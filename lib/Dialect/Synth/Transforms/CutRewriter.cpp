@@ -161,12 +161,19 @@ collectNPN4Representatives(ArrayRef<NPNTransform4> transforms,
 
 } // namespace
 
+void circt::synth::collectCanonicalNPN4Representatives(
+    SmallVectorImpl<uint16_t> &representatives) {
+  SmallVector<NPNTransform4, 24 * 16 * 2> transforms;
+  buildCanonicalOrderNPNTransforms4(transforms);
+  collectNPN4Representatives(transforms, representatives);
+}
+
 NPNTable::NPNTable() {
   SmallVector<NPNTransform4, 24 * 16 * 2> transforms;
   buildCanonicalOrderNPNTransforms4(transforms);
 
   SmallVector<uint16_t, 222> representatives;
-  collectNPN4Representatives(transforms, representatives);
+  collectCanonicalNPN4Representatives(representatives);
 
   llvm::BitVector initialized(entries4.size(), false);
   auto isBetterEntry = [&](const Entry4 &candidate, const Entry4 &current) {

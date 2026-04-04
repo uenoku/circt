@@ -12,6 +12,7 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
@@ -42,18 +43,16 @@ namespace {
 
 constexpr unsigned kMaxPredefinedTruthTableInputs = 5;
 constexpr unsigned kNumNPN4Classes = 222;
+constexpr unsigned kNumNPN5Inputs = 5;
 constexpr unsigned kNumNPN5Classes = 616126;
-constexpr unsigned kNPN4OrbitCapacity = 24 * 16 * 2;
-constexpr unsigned kNPN5OrbitCapacity = 5 * 4 * 3 * 2 * 1 * 32;
-constexpr uint64_t kNPN4TruthTableSpaceSize = 1ULL << 16;
-constexpr uint64_t kNPN5TruthTableHalfSpaceSize = 1ULL << 31;
+constexpr unsigned kNPN5InputNegationCount = 1u << kNumNPN5Inputs;
+constexpr unsigned kNPN5OrbitCapacity =
+    kNumNPN5Inputs * (kNumNPN5Inputs - 1) * (kNumNPN5Inputs - 2) *
+    (kNumNPN5Inputs - 3) * (kNumNPN5Inputs - 4) * kNPN5InputNegationCount;
+constexpr uint64_t kNPN5TruthTableHalfSpaceSize =
+    1ULL << ((1u << kNumNPN5Inputs) - 1);
 constexpr uint64_t kMinCanonicalBucketSize = 1ULL << 10;
 constexpr uint64_t kMaxCanonicalBucketSize = 1ULL << 18;
-
-struct NPNTransform4 {
-  std::array<uint8_t, 16> outputToSource;
-  bool outputNegation = false;
-};
 
 std::string normalizePredefinedDatabaseKind(StringRef kind) {
   std::string normalized = kind.lower();
@@ -103,46 +102,6 @@ void collectCanonicalTruthTablesBruteForce(
 
     truthTables.push_back(std::move(best));
   }
-}
-
-uint16_t applyNPNTransform4(uint16_t truthTable,
-                            const NPNTransform4 &transform) {
-  uint16_t result = 0;
-  for (unsigned output = 0; output != 16; ++output) {
-    unsigned bit = (truthTable >> transform.outputToSource[output]) & 1u;
-    if (transform.outputNegation)
-      bit ^= 1u;
-    result |= static_cast<uint16_t>(bit << output);
-  }
-  return result;
-}
-
-void buildNPNTransforms4(SmallVectorImpl<NPNTransform4> &transforms) {
-  transforms.clear();
-  transforms.reserve(kNPN4OrbitCapacity);
-
-  std::array<unsigned, 4> permutation = {0, 1, 2, 3};
-  do {
-    std::array<unsigned, 4> inversePermutation;
-    for (unsigned i = 0; i != 4; ++i)
-      inversePermutation[permutation[i]] = i;
-    for (unsigned negMask = 0; negMask != 16; ++negMask) {
-      for (unsigned outputNegation = 0; outputNegation != 2; ++outputNegation) {
-        NPNTransform4 transform;
-        transform.outputNegation = outputNegation;
-        for (unsigned output = 0; output != 16; ++output) {
-          unsigned source = 0;
-          for (unsigned input = 0; input != 4; ++input) {
-            unsigned bit = (output >> inversePermutation[input]) & 1u;
-            bit ^= (negMask >> input) & 1u;
-            source |= bit << input;
-          }
-          transform.outputToSource[output] = source;
-        }
-        transforms.push_back(transform);
-      }
-    }
-  } while (std::next_permutation(permutation.begin(), permutation.end()));
 }
 
 void setBit(std::vector<std::atomic<uint64_t>> &bitset, uint64_t bit) {
@@ -272,6 +231,16 @@ uint32_t normalizeTruthTableOutputPhase(uint32_t truthTable,
   return truthTable;
 }
 
+unsigned getGrayCodeChangedBit(unsigned grayIndex, bool reverse) {
+  unsigned currentIndex = reverse ? (kNPN5InputNegationCount - 1 - grayIndex)
+                                  : grayIndex;
+  unsigned nextIndex = reverse ? (kNPN5InputNegationCount - 2 - grayIndex)
+                               : (grayIndex + 1);
+  unsigned currentCode = currentIndex ^ (currentIndex >> 1);
+  unsigned nextCode = nextIndex ^ (nextIndex >> 1);
+  return __builtin_ctz(currentCode ^ nextCode);
+}
+
 void enumerateAdjacentPermutations(
     unsigned numInputs,
     function_ref<void(ArrayRef<unsigned>, std::optional<unsigned> swapIndex)>
@@ -309,63 +278,46 @@ void enumerateAdjacentPermutations(
   }
 }
 
-void enumerateNPTransformOrbit5(uint32_t truthTable,
-                                function_ref<void(uint32_t)> callback) {
-  std::array<uint32_t, 32> grayCodeMasks;
-  for (unsigned i = 0; i != grayCodeMasks.size(); ++i)
-    grayCodeMasks[i] = i ^ (i >> 1);
+struct NPN5OrbitWalker {
+  void enumerate(uint32_t truthTable, function_ref<void(uint32_t)> callback) {
+    uint32_t current = truthTable;
+    unsigned permutationIndex = 0;
+    enumerateAdjacentPermutations(
+        kNumNPN5Inputs,
+        [&](ArrayRef<unsigned>, std::optional<unsigned> swapIndex) {
+          if (swapIndex)
+            current = swapAdjacentTruthTableVariables(current, *swapIndex);
+          enumerateInputNegations(current, permutationIndex, callback);
+          ++permutationIndex;
+        });
+  }
 
-  uint32_t current = truthTable;
-  unsigned permutationIndex = 0;
-  enumerateAdjacentPermutations(
-      5, [&](ArrayRef<unsigned>, std::optional<unsigned> swapIndex) {
-        if (swapIndex)
-          current = swapAdjacentTruthTableVariables(current, *swapIndex);
+private:
+  void enumerateInputNegations(uint32_t &truthTable, unsigned permutationIndex,
+                               function_ref<void(uint32_t)> callback) const {
+    bool reverseGrayCode = permutationIndex & 1u;
+    for (unsigned grayIndex = 0; grayIndex != kNPN5InputNegationCount;
+         ++grayIndex) {
+      callback(normalizeTruthTableOutputPhase(truthTable, kNumNPN5Inputs));
+      if (grayIndex + 1 == kNPN5InputNegationCount)
+        break;
+      truthTable = flipTruthTableVariable(
+          truthTable, getGrayCodeChangedBit(grayIndex, reverseGrayCode));
+    }
+  }
+};
 
-        bool reverseGrayCode = permutationIndex & 1u;
-        for (unsigned grayIndex = 0; grayIndex != grayCodeMasks.size();
-             ++grayIndex) {
-          callback(current);
-
-          if (grayIndex + 1 == grayCodeMasks.size())
-            break;
-          unsigned currentIndex = reverseGrayCode
-                                      ? static_cast<unsigned>(grayCodeMasks.size() -
-                                                              1 - grayIndex)
-                                      : grayIndex;
-          unsigned nextIndex = reverseGrayCode
-                                   ? static_cast<unsigned>(grayCodeMasks.size() -
-                                                           2 - grayIndex)
-                                   : (grayIndex + 1);
-          unsigned diffMask =
-              grayCodeMasks[currentIndex] ^ grayCodeMasks[nextIndex];
-          unsigned changedBit = __builtin_ctz(diffMask);
-          current = flipTruthTableVariable(current, changedBit);
-        }
-
-        ++permutationIndex;
-      });
-}
-
-void enumerateNPNTransformOrbit4(
-    uint16_t truthTable, ArrayRef<NPNTransform4> transforms,
-    function_ref<void(uint16_t)> callback) {
-  for (const auto &transform : transforms)
-    callback(applyNPNTransform4(truthTable, transform));
+void enumerateNPNTransformOrbit5(uint32_t truthTable,
+                                 function_ref<void(uint32_t)> callback) {
+  NPN5OrbitWalker walker;
+  walker.enumerate(truthTable, callback);
 }
 
 void collectCanonicalTruthTables4(MLIRContext *context,
                                   SmallVectorImpl<BinaryTruthTable> &truthTables) {
-  SmallVector<NPNTransform4, kNPN4OrbitCapacity> transforms;
-  buildNPNTransforms4(transforms);
-
   SmallVector<uint16_t, kNumNPN4Classes> representatives;
-  collectCanonicalRepresentativesInBuckets<uint16_t>(
-      context, kNPN4TruthTableSpaceSize, kNPN4OrbitCapacity, kNumNPN4Classes,
-      [&](uint16_t truthTable, function_ref<void(uint16_t)> callback) {
-        enumerateNPNTransformOrbit4(truthTable, transforms, callback);
-      },
-      representatives);
+  (void)context;
+  collectCanonicalNPN4Representatives(representatives);
 
   truthTables.clear();
   truthTables.reserve(representatives.size());
@@ -380,9 +332,7 @@ void collectCanonicalTruthTables5(MLIRContext *context,
       context, kNPN5TruthTableHalfSpaceSize, kNPN5OrbitCapacity,
       kNumNPN5Classes,
       [&](uint32_t truthTable, function_ref<void(uint32_t)> callback) {
-        enumerateNPTransformOrbit5(truthTable, [&](uint32_t transformed) {
-          callback(normalizeTruthTableOutputPhase(transformed, 5));
-        });
+        enumerateNPNTransformOrbit5(truthTable, callback);
       },
       representatives);
 

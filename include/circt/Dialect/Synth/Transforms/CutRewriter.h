@@ -402,6 +402,11 @@ private:
   std::array<Entry4, 1u << 16> entries4;
 };
 
+/// Collect all canonical 4-input single-output NPN class representatives in
+/// ascending truth-table order.
+void collectCanonicalNPN4Representatives(
+    llvm::SmallVectorImpl<uint16_t> &representatives);
+
 /// Represents a cut in the combinational logic network.
 ///
 /// A cut is a subset of nodes in the combinational logic that forms a complete
