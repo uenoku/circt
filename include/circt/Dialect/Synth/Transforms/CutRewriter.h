@@ -28,6 +28,8 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -64,6 +66,7 @@ class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 class LogicNetwork;
+class NPNTable;
 
 //===----------------------------------------------------------------------===//
 // Logic Network Data Structures (Flat IR for efficient cut enumeration)
@@ -118,7 +121,8 @@ struct LogicNetworkGate {
     And2 = 2,         ///< AND gate (2-input, aig::AndInverterOp)
     Xor2 = 3,         ///< XOR gate (2-input)
     Maj3 = 4,         ///< Majority gate (3-input, mig::MajOp)
-    Identity = 5      ///< Identity gate (used for 1-input inverter)
+    Identity = 5,     ///< Identity gate (used for 1-input inverter)
+    Choice = 6        ///< Choice node (synth.choice)
   };
 
   /// Operation pointer and kind packed together.
@@ -126,8 +130,8 @@ struct LogicNetworkGate {
   llvm::PointerIntPair<Operation *, 3, Kind> opAndKind;
 
   /// Fanin edges (up to 3 inputs). For AND gates, only edges[0] and edges[1]
-  /// are used. For MAJ gates, all three are used. For PrimaryInput/Constant,
-  /// none are used. The inversion bit is encoded in each edge.
+  /// are used. For MAJ gates, all three are used. For PrimaryInput/Constant
+  /// and Choice, none are used. The inversion bit is encoded in each edge.
   Signal edges[3];
 
   LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
@@ -158,6 +162,8 @@ struct LogicNetworkGate {
       return 3;
     case Identity:
       return 1;
+    case Choice:
+      return 0;
     }
     llvm_unreachable("Unknown gate kind");
   }
@@ -165,7 +171,8 @@ struct LogicNetworkGate {
   /// Check if this is a logic gate that can be part of a cut.
   bool isLogicGate() const {
     Kind k = getKind();
-    return k == And2 || k == Xor2 || k == Maj3 || k == Identity;
+    return k == And2 || k == Xor2 || k == Maj3 || k == Identity ||
+           k == Choice;
   }
 
   /// Check if this should always be a cut input (PI or constant).
@@ -369,6 +376,32 @@ public:
   double getArea() const;
 };
 
+/// Precomputed NPN canonicalization table for 4-input single-output functions.
+///
+/// The table stores the exact canonical form selected by
+/// `NPNClass::computeNPNCanonicalForm`, including representative,
+/// permutation, and phase information.
+class NPNTable {
+public:
+  NPNTable();
+
+  /// Look up the NPN canonical form for a supported truth table.
+  ///
+  /// Returns false if the table shape is unsupported. Currently only 4-input,
+  /// single-output truth tables are handled.
+  bool lookup(const BinaryTruthTable &tt, NPNClass &result) const;
+
+private:
+  struct Entry4 {
+    uint16_t representative = 0;
+    std::array<uint8_t, 4> inputPermutation = {};
+    uint8_t inputNegation = 0;
+    bool outputNegation = false;
+  };
+
+  std::array<Entry4, 1u << 16> entries4;
+};
+
 /// Represents a cut in the combinational logic network.
 ///
 /// A cut is a subset of nodes in the combinational logic that forms a complete
@@ -460,11 +493,13 @@ public:
   /// Get the NPN canonical form for this cut.
   /// This is used for efficient pattern matching against library components.
   const NPNClass &getNPNClass() const;
+  const NPNClass &getNPNClass(const CutRewriterOptions &options) const;
 
   /// Get the permutated inputs for this cut based on the given pattern NPN.
   /// Returns indices into the inputs vector.
   void
-  getPermutatedInputIndices(const NPNClass &patternNPN,
+  getPermutatedInputIndices(const CutRewriterOptions &options,
+                            const NPNClass &patternNPN,
                             SmallVectorImpl<unsigned> &permutedIndices) const;
 
   /// Get arrival times for each input of this cut.
@@ -551,6 +586,10 @@ struct CutRewriterOptions {
 
   /// Run priority cuts enumeration and dump the cut sets.
   bool testPriorityCuts = false;
+
+  /// Optional pass-owned lookup table used to accelerate 4-input NPN
+  /// canonicalization.
+  const NPNTable *npnTable = nullptr;
 };
 
 //===----------------------------------------------------------------------===//
@@ -618,6 +657,9 @@ public:
 
   /// Clear all cut sets and reset the enumerator.
   void clear();
+
+  /// Get the cut rewriter options used for this enumeration.
+  const CutRewriterOptions &getOptions() const { return options; }
 
   /// Record that one cut was successfully rewritten.
   void noteCutRewritten() { ++stats.numCutsRewritten; }

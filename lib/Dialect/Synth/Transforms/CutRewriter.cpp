@@ -35,6 +35,7 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
@@ -57,6 +58,159 @@
 
 using namespace circt;
 using namespace circt::synth;
+
+namespace {
+
+static SmallVector<unsigned>
+expandInputPermutation(const std::array<uint8_t, 4> &permutation) {
+  SmallVector<unsigned> result;
+  result.reserve(permutation.size());
+  for (uint8_t index : permutation)
+    result.push_back(index);
+  return result;
+}
+
+struct NPNTransform4 {
+  std::array<uint8_t, 16> outputToSource = {};
+  std::array<uint8_t, 16> inverseOutputToSource = {};
+  std::array<uint8_t, 4> inputPermutation = {};
+  uint8_t inputNegation = 0;
+  bool outputNegation = false;
+};
+
+static uint8_t
+permuteNegationMask4(uint8_t negationMask,
+                     const std::array<unsigned, 4> &permutation) {
+  uint8_t result = 0;
+  for (unsigned i = 0; i != permutation.size(); ++i)
+    if (negationMask & (1u << permutation[i]))
+      result |= 1u << i;
+  return result;
+}
+
+static uint16_t
+applyNPNTransform4(uint16_t truthTable,
+                   const std::array<uint8_t, 16> &outputToSource,
+                   bool outputNegation) {
+  uint16_t result = 0;
+  for (unsigned output = 0; output != 16; ++output) {
+    unsigned bit = (truthTable >> outputToSource[output]) & 1u;
+    if (outputNegation)
+      bit ^= 1u;
+    result |= static_cast<uint16_t>(bit << output);
+  }
+  return result;
+}
+
+static void
+buildCanonicalOrderNPNTransforms4(SmallVectorImpl<NPNTransform4> &transforms) {
+  transforms.clear();
+  transforms.reserve(24 * 16 * 2);
+
+  for (unsigned negMask = 0; negMask != 16; ++negMask) {
+    std::array<unsigned, 4> permutation = {0, 1, 2, 3};
+    do {
+      std::array<unsigned, 4> inversePermutation = {};
+      for (unsigned i = 0; i != 4; ++i)
+        inversePermutation[permutation[i]] = i;
+
+      uint8_t currentNegMask = permuteNegationMask4(negMask, permutation);
+      for (unsigned outputNegation = 0; outputNegation != 2; ++outputNegation) {
+        NPNTransform4 transform;
+        transform.inputNegation = currentNegMask;
+        transform.outputNegation = outputNegation;
+        for (unsigned i = 0; i != 4; ++i)
+          transform.inputPermutation[i] = permutation[i];
+
+        for (unsigned output = 0; output != 16; ++output) {
+          unsigned source = 0;
+          for (unsigned input = 0; input != 4; ++input) {
+            unsigned bit = (output >> inversePermutation[input]) & 1u;
+            bit ^= (negMask >> input) & 1u;
+            source |= bit << input;
+          }
+          transform.outputToSource[output] = source;
+          transform.inverseOutputToSource[source] = output;
+        }
+        transforms.push_back(transform);
+      }
+    } while (std::next_permutation(permutation.begin(), permutation.end()));
+  }
+}
+
+static void
+collectNPN4Representatives(ArrayRef<NPNTransform4> transforms,
+                           SmallVectorImpl<uint16_t> &representatives) {
+  llvm::BitVector seen(1u << 16, false);
+  representatives.clear();
+
+  for (unsigned seed = 0; seed != (1u << 16); ++seed) {
+    if (seen.test(seed))
+      continue;
+
+    uint16_t representative = seed;
+    for (const auto &transform : transforms) {
+      uint16_t member = applyNPNTransform4(seed, transform.outputToSource,
+                                           transform.outputNegation);
+      seen.set(member);
+      representative = std::min(representative, member);
+    }
+    representatives.push_back(representative);
+  }
+}
+
+} // namespace
+
+NPNTable::NPNTable() {
+  SmallVector<NPNTransform4, 24 * 16 * 2> transforms;
+  buildCanonicalOrderNPNTransforms4(transforms);
+
+  SmallVector<uint16_t, 222> representatives;
+  collectNPN4Representatives(transforms, representatives);
+
+  llvm::BitVector initialized(entries4.size(), false);
+  auto isBetterEntry = [&](const Entry4 &candidate, const Entry4 &current) {
+    if (candidate.representative != current.representative)
+      return candidate.representative < current.representative;
+    if (candidate.inputNegation != current.inputNegation)
+      return candidate.inputNegation < current.inputNegation;
+    return candidate.outputNegation < current.outputNegation;
+  };
+
+  for (uint16_t representative : representatives) {
+    for (const auto &transform : transforms) {
+      uint16_t member =
+          applyNPNTransform4(representative, transform.inverseOutputToSource,
+                             transform.outputNegation);
+
+      Entry4 candidate;
+      candidate.representative = representative;
+      candidate.inputPermutation = transform.inputPermutation;
+      candidate.inputNegation = transform.inputNegation;
+      candidate.outputNegation = transform.outputNegation;
+
+      if (!initialized.test(member) ||
+          isBetterEntry(candidate, entries4[member])) {
+        entries4[member] = candidate;
+        initialized.set(member);
+      }
+    }
+  }
+
+  assert(initialized.all() && "expected to populate all 4-input NPN entries");
+}
+
+bool NPNTable::lookup(const BinaryTruthTable &tt, NPNClass &result) const {
+  if (tt.numInputs != 4 || tt.numOutputs != 1)
+    return false;
+
+  const auto &entry = entries4[tt.table.getZExtValue()];
+  result =
+      NPNClass(BinaryTruthTable(4, 1, llvm::APInt(16, entry.representative)),
+               expandInputPermutation(entry.inputPermutation),
+               entry.inputNegation, entry.outputNegation);
+  return true;
+}
 
 //===----------------------------------------------------------------------===//
 // LogicNetwork
@@ -217,6 +371,15 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               valueToIndex[result] = constIdx;
               return success();
             })
+            .Case<synth::ChoiceOp>([&](synth::ChoiceOp choiceOp) {
+              if (!choiceOp.getResult().getType().isInteger(1)) {
+                handleOtherResults(choiceOp);
+                return success();
+              }
+              addGate(choiceOp, LogicNetworkGate::Choice, choiceOp.getResult(),
+                      {});
+              return success();
+            })
             .Default([&](Operation *defaultOp) {
               handleOtherResults(defaultOp);
               return success();
@@ -316,13 +479,18 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       if (!constant.getType().isInteger(1))
         return constant.emitError("Constant results must be single bit");
       bool value = constant.getValueAttr().getValue()[0];
-      eval[constant.getResult()] =
-          value ? APInt::getAllOnes(1u << numInputs) : APInt(1u << numInputs, 0);
+      eval[constant.getResult()] = value ? APInt::getAllOnes(1u << numInputs)
+                                         : APInt(1u << numInputs, 0);
     } else if (auto wire = dyn_cast<hw::WireOp>(&op)) {
       auto it = eval.find(wire.getInput());
       if (it == eval.end())
         return wire.emitError("Input value not found in evaluation map");
       eval[wire.getResult()] = it->second;
+    } else if (auto choice = dyn_cast<synth::ChoiceOp>(&op)) {
+      auto it = eval.find(choice.getInputs().front());
+      if (it == eval.end())
+        return choice.emitError("Input value not found in evaluation map");
+      eval[choice.getResult()] = it->second;
     } else if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
       SmallVector<llvm::APInt, 2> inputs;
       inputs.reserve(andOp.getInputs().size());
@@ -374,23 +542,29 @@ bool Cut::isTrivialCut() const {
 }
 
 const NPNClass &Cut::getNPNClass() const {
+  CutRewriterOptions defaultOptions{};
+  return getNPNClass(defaultOptions);
+}
+
+const NPNClass &Cut::getNPNClass(const CutRewriterOptions &options) const {
   // If the NPN is already computed, return it
   if (npnClass)
     return *npnClass;
 
   const auto &truthTable = *getTruthTable();
 
-  // Compute the NPN canonical form
-  auto canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
+  NPNClass canonicalForm;
+  if (!options.npnTable || !options.npnTable->lookup(truthTable, canonicalForm))
+    canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
 
   npnClass.emplace(std::move(canonicalForm));
   return *npnClass;
 }
 
 void Cut::getPermutatedInputIndices(
-    const NPNClass &patternNPN,
+    const CutRewriterOptions &options, const NPNClass &patternNPN,
     SmallVectorImpl<unsigned> &permutedIndices) const {
-  auto npnClass = getNPNClass();
+  const auto &npnClass = getNPNClass(options);
   npnClass.getInputPermutation(patternNPN, permutedIndices);
 }
 
@@ -563,9 +737,46 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
     result = applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]));
     break;
   }
+
+  case LogicNetworkGate::Choice: {
+    auto choiceOp = cast<synth::ChoiceOp>(gate.getOperation());
+    result = simulateGate(network,
+                          network.getIndex(choiceOp.getInputs().front()), cache,
+                          numInputs);
+    break;
+  }
   }
 
   cache[index] = result;
+  return result;
+}
+
+static llvm::APInt remapOperandTruthTableToCutInputs(const BinaryTruthTable &tt,
+                                                     ArrayRef<uint32_t> src,
+                                                     ArrayRef<uint32_t> dst) {
+  assert(tt.numInputs == src.size() && "source inputs must match truth table");
+
+  unsigned dstInputs = dst.size();
+  llvm::APInt result(1u << dstInputs, 0);
+  llvm::DenseMap<uint32_t, unsigned> dstPosition;
+  dstPosition.reserve(dst.size());
+  for (auto [index, value] : llvm::enumerate(dst))
+    dstPosition.try_emplace(value, index);
+
+  for (unsigned dstAssignment = 0, e = 1u << dstInputs; dstAssignment != e;
+       ++dstAssignment) {
+    unsigned srcAssignment = 0;
+    for (auto [srcIndex, srcValue] : llvm::enumerate(src)) {
+      auto it = dstPosition.find(srcValue);
+      assert(it != dstPosition.end() &&
+             "operand cut inputs must be contained in merged cut inputs");
+      unsigned bit = (dstAssignment >> it->second) & 1u;
+      srcAssignment |= bit << srcIndex;
+    }
+    if (tt.table[srcAssignment])
+      result.setBit(dstAssignment);
+  }
+
   return result;
 }
 
@@ -595,7 +806,62 @@ void Cut::computeTruthTable(const LogicNetwork &network) {
 }
 
 void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
-  computeTruthTable(network);
+  if (isTrivialCut()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  if (operandCuts.empty()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  const auto &gate = network.getGate(rootIndex);
+  unsigned numInputs = inputs.size();
+  SmallVector<llvm::APInt, 3> operandTables;
+  operandTables.reserve(operandCuts.size());
+
+  for (auto [operandIndex, operandCut] : llvm::enumerate(operandCuts)) {
+    auto *mutableOperandCut = const_cast<Cut *>(operandCut);
+    if (!mutableOperandCut->getTruthTable().has_value())
+      mutableOperandCut->computeTruthTableFromOperands(network);
+
+    llvm::APInt remapped = remapOperandTruthTableToCutInputs(
+        *mutableOperandCut->getTruthTable(), operandCut->inputs, inputs);
+    if (gate.getKind() != LogicNetworkGate::Choice &&
+        gate.edges[operandIndex].isInverted())
+      remapped.flipAllBits();
+    operandTables.push_back(std::move(remapped));
+  }
+
+  llvm::APInt result;
+  switch (gate.getKind()) {
+  case LogicNetworkGate::Identity:
+    assert(operandTables.size() == 1 && "identity must have one operand");
+    result = applyGateSemantics(gate.getKind(), operandTables[0]);
+    break;
+  case LogicNetworkGate::And2:
+  case LogicNetworkGate::Xor2:
+    assert(operandTables.size() == 2 && "binary gate must have two operands");
+    result =
+        applyGateSemantics(gate.getKind(), operandTables[0], operandTables[1]);
+    break;
+  case LogicNetworkGate::Maj3:
+    assert(operandTables.size() == 3 && "majority gate must have three operands");
+    result = applyGateSemantics(gate.getKind(), operandTables[0],
+                                operandTables[1], operandTables[2]);
+    break;
+  case LogicNetworkGate::Choice:
+    assert(operandTables.size() == 1 &&
+           "choice-derived cuts must reference one selected operand cut");
+    result = operandTables[0];
+    break;
+  case LogicNetworkGate::Constant:
+  case LogicNetworkGate::PrimaryInput:
+    llvm_unreachable("non-trivial cuts cannot have constant or PI roots");
+  }
+
+  truthTable.emplace(numInputs, 1, result);
 }
 
 bool Cut::dominates(const Cut &other) const { return dominates(other.inputs); }
@@ -824,8 +1090,7 @@ static void dumpRegisteredCutRewritePattern(const CutRewritePattern &pattern,
   LLVM_DEBUG({
     llvm::dbgs() << "registered cut-rewrite pattern '"
                  << pattern.getPatternName() << "'"
-                 << " outputs=" << pattern.getNumOutputs()
-                 << " matcher="
+                 << " outputs=" << pattern.getNumOutputs() << " matcher="
                  << (usesTruthTableMatcher ? "truth-table" : "custom");
     if (usesTruthTableMatcher)
       llvm::dbgs() << " npn-classes=" << npnClasses.size();
@@ -901,6 +1166,37 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   auto *logicOp = gate.getOperation();
   assert(logicOp && logicOp->getNumResults() == 1 &&
          "Logic operation must have a single result");
+
+  if (gate.getKind() == LogicNetworkGate::Choice) {
+    auto choiceOp = cast<synth::ChoiceOp>(logicOp);
+
+    auto *resultCutSet = createNewCutSet(nodeIndex);
+    processingOrder.push_back(nodeIndex);
+    Cut *primaryInputCut =
+        cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
+    resultCutSet->addCut(primaryInputCut);
+
+    llvm::scope_exit prune([&]() {
+      resultCutSet->finalize(options, matchCut, logicNetwork);
+    });
+
+    for (Value operand : choiceOp.getInputs()) {
+      auto *operandCutSet = getCutSet(logicNetwork.getIndex(operand));
+      if (!operandCutSet)
+        return logicOp->emitError("Failed to get cut set for choice operand");
+
+      for (const Cut *operandCut : operandCutSet->getCuts()) {
+        if (operandCut->isTrivialCut())
+          continue;
+        auto *choiceCut = cutAllocator.create();
+        choiceCut->setRootIndex(nodeIndex);
+        choiceCut->inputs = operandCut->inputs;
+        choiceCut->setOperandCuts({operandCut});
+        resultCutSet->addCut(choiceCut);
+      }
+    }
+    return success();
+  }
 
   unsigned numFanins = gate.getNumFanins();
 
@@ -1255,7 +1551,7 @@ CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
   if (patterns.npnToPatternMap.empty())
     return {};
 
-  auto &npnClass = cut.getNPNClass();
+  auto &npnClass = cut.getNPNClass(options);
   auto it = patterns.npnToPatternMap.find(
       {npnClass.truthTable.table, npnClass.truthTable.numInputs});
   if (it == patterns.npnToPatternMap.end())
@@ -1339,7 +1635,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     auto matchResult = pattern->match(cutEnumerator, cut);
     if (!matchResult)
       continue;
-    auto &cutNPN = cut.getNPNClass();
+    auto &cutNPN = cut.getNPNClass(options);
 
     // Get the input mapping from pattern's NPN class to cut's NPN class
     SmallVector<unsigned> inputMapping;

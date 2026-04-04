@@ -18,8 +18,8 @@
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "mlir/IR/Threading.h"
-#include "mlir/Pass/AnalysisManager.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/SmallString.h"
@@ -122,8 +122,9 @@ static void dumpLoadedCutRewriteEntry(const LoadedCutRewriteEntry &entry) {
 }
 
 static bool isUnsynthesizedTruthTableModule(hw::HWModuleOp module) {
-  return llvm::any_of(module.getBodyBlock()->without_terminator(),
-                      [](Operation &op) { return isa<comb::TruthTableOp>(op); });
+  return llvm::any_of(
+      module.getBodyBlock()->without_terminator(),
+      [](Operation &op) { return isa<comb::TruthTableOp>(op); });
 }
 
 static FailureOr<std::string> inferCutRewriteInverterKind(mlir::ModuleOp db) {
@@ -171,9 +172,8 @@ computeMaterializedModuleInputDelays(hw::HWModuleOp module,
     auto arg = dyn_cast<BlockArgument>(path.getStartPoint().value);
     if (!arg || arg.getParentBlock() != module.getBodyBlock())
       continue;
-    delays[arg.getArgNumber()] =
-        std::max(delays[arg.getArgNumber()],
-                 static_cast<DelayType>(path.getDelay()));
+    delays[arg.getArgNumber()] = std::max(
+        delays[arg.getArgNumber()], static_cast<DelayType>(path.getDelay()));
   }
   return delays;
 }
@@ -202,7 +202,7 @@ computeCutRewriteModuleMetadata(hw::HWModuleOp module) {
       module, analysisManager,
       LongestPathAnalysisOptions(/*collectDebugInfo=*/false,
                                  /*lazyComputation=*/false,
-                                 /*keepOnlyMaxDelayPaths=*/true));
+                                 /*keepOnlyMaxDelayPaths=*/false));
 
   auto delays = computeMaterializedModuleInputDelays(module, pathAnalysis);
   if (failed(delays))
@@ -280,7 +280,8 @@ struct CutRewriteDatabasePattern : public CutRewritePattern {
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    assert(cut.getNPNClass().truthTable == entry.npnClass.truthTable);
+    assert(cut.getNPNClass(enumerator.getOptions()).truthTable ==
+           entry.npnClass.truthTable);
     return MatchResult(entry.area, entry.delay);
   }
 
@@ -309,6 +310,7 @@ struct CutRewritePass
   LogicalResult initialize(MLIRContext *context) override {
     loadedMaxInputSize = 0;
     loadedDatabase.reset();
+    npnTable = std::make_shared<const NPNTable>();
     if (dbFiles.empty()) {
       emitError(UnknownLoc::get(context))
           << "synth-cut-rewrite requires at least one 'db-files' entry";
@@ -323,8 +325,8 @@ struct CutRewritePass
 
       LoadedCutRewriteDatabase fileDatabase;
       fileDatabase.backingModules.push_back(std::move(*parsedModule));
-      if (failed(loadCutRewriteDatabaseFromModule(*fileDatabase.backingModules.back(),
-                                                  fileDatabase)))
+      if (failed(loadCutRewriteDatabaseFromModule(
+              *fileDatabase.backingModules.back(), fileDatabase)))
         return failure();
 
       loadedMaxInputSize =
@@ -341,7 +343,8 @@ struct CutRewritePass
 
     if (database->entries.empty()) {
       emitError(UnknownLoc::get(context))
-          << "cut-rewrite database did not contain any matching library entries";
+          << "cut-rewrite database did not contain any matching library "
+             "entries";
       return failure();
     }
 
@@ -364,6 +367,7 @@ struct CutRewritePass
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
     options.attachDebugTiming = true;
+    options.npnTable = npnTable.get();
 
     CutRewritePatternSet patternSet(std::move(patterns));
     CutRewriter rewriter(options, patternSet);
@@ -379,6 +383,7 @@ struct CutRewritePass
 private:
   std::shared_ptr<const LoadedCutRewriteDatabase> loadedDatabase;
   unsigned loadedMaxInputSize = 0;
+  std::shared_ptr<const NPNTable> npnTable;
 };
 
 } // namespace

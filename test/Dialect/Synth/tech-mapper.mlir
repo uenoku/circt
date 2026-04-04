@@ -106,6 +106,23 @@ hw.module @primary_inputs_test(in %a : i1, in %b : i1, out result : i1) {
     hw.output %0 : i1
 }
 
+// Test that choice nodes contribute their equivalent operand cuts to later
+// cut enumeration.
+// CHECK-LABEL: @choice_test
+hw.module @choice_test(in %a : i1, in %b : i1, in %c : i1, out result : i1) {
+    %false = hw.constant false
+    %0 = synth.aig.and_inv %a, %b : i1
+    %1 = synth.mig.maj_inv %a, %b, %false : i1
+    %2 = synth.choice %0, %1 : i1
+    %3 = synth.aig.and_inv not %2, %c : i1
+    // CHECK-NEXT: %false = hw.constant false
+    // CHECK-NOT: synth.choice
+    // CHECK-NEXT: %[[choice_base:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
+    // CHECK-NEXT: %[[choice_root:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %[[choice_base]]: i1, b: %c: i1) -> (result: i1) {test.arrival_times = [2]}
+    // CHECK-NEXT: hw.output %[[choice_root]] : i1
+    hw.output %3 : i1
+}
+
 // Test chain of operations for timing analysis
 // CHECK-LABEL: @timing_chain_test
 hw.module @timing_chain_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, out result : i1) {

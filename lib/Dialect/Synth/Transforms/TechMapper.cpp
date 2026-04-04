@@ -18,9 +18,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CutRewriteDBImpl.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
-#include "CutRewriteDBImpl.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
@@ -68,7 +68,8 @@ struct TechLibraryPattern : public CutRewritePattern {
   /// Match the cut set against this library primitive
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    if (!cut.getNPNClass().equivalentOtherThanPermutation(npnClass))
+    if (!cut.getNPNClass(enumerator.getOptions())
+             .equivalentOtherThanPermutation(npnClass))
       return std::nullopt;
 
     return MatchResult(area, delay);
@@ -88,7 +89,8 @@ struct TechLibraryPattern : public CutRewritePattern {
     const auto &network = enumerator.getLogicNetwork();
     // Create a new instance of the module
     SmallVector<unsigned> permutedInputIndices;
-    cut.getPermutatedInputIndices(npnClass, permutedInputIndices);
+    cut.getPermutatedInputIndices(enumerator.getOptions(), npnClass,
+                                  permutedInputIndices);
 
     SmallVector<Value> inputs;
     inputs.reserve(permutedInputIndices.size());
@@ -129,6 +131,12 @@ private:
 namespace {
 struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
   using TechMapperBase<TechMapperPass>::TechMapperBase;
+
+  LogicalResult initialize(MLIRContext *context) override {
+    (void)context;
+    npnTable = std::make_shared<const NPNTable>();
+    return success();
+  }
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -188,6 +196,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.maxCutInputSize = maxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = test;
+    options.npnTable = npnTable.get();
     std::atomic<uint64_t> numCutsCreatedCount = 0;
     std::atomic<uint64_t> numCutSetsCreatedCount = 0;
     std::atomic<uint64_t> numCutsRewrittenCount = 0;
@@ -213,6 +222,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     numCutSetsCreated += numCutSetsCreatedCount;
     numCutsRewritten += numCutsRewrittenCount;
   }
+
+private:
+  std::shared_ptr<const NPNTable> npnTable;
 };
 
 } // namespace

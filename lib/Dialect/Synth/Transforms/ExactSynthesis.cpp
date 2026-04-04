@@ -481,9 +481,9 @@ public:
   };
 
   GenericDepthExactSATProblem(const ExactSynthesisBackend &backend,
-                              IncrementalSATSolver &solver,
-                              unsigned numInputs, const llvm::APInt &target,
-                              unsigned numSteps, unsigned targetDepth)
+                              IncrementalSATSolver &solver, unsigned numInputs,
+                              const llvm::APInt &target, unsigned numSteps,
+                              unsigned targetDepth)
       : backend(backend), solver(solver), numInputs(numInputs), target(target),
         numSteps(numSteps), targetDepth(targetDepth), arity(backend.getArity()),
         numMinterms(1u << numInputs), totalSources(1 + numInputs + numSteps) {}
@@ -576,11 +576,10 @@ private:
         depthVars.push_back(newVar());
       addExactlyOne(depthVars);
 
-      LLVM_DEBUG(llvm::dbgs()
-                 << "  step " << step
-                 << ": availableSources=" << availableSources
-                 << " candidates=" << stepCandidates[step].size()
-                 << " depths=" << targetDepth << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  step " << step
+                              << ": availableSources=" << availableSources
+                              << " candidates=" << stepCandidates[step].size()
+                              << " depths=" << targetDepth << "\n");
     }
 
     addCandidateSemanticsConstraints();
@@ -777,15 +776,14 @@ public:
 
   QueryResult synthesize(const BinaryTruthTable &tt) const {
     auto [normalizedTT, invertOutput] = backend.normalize(tt);
-    LLVM_DEBUG(
-        llvm::dbgs() << "Exact synthesis query: family="
-                     << backend.getFamilyName()
-                     << " objective="
-                     << (objective == ExactSynthesisObjective::area ? "area"
-                                                                   : "depth-size")
-                     << " original-tt=" << formatTruthTable(tt)
-                     << " normalized-tt=" << formatTruthTable(normalizedTT)
-                     << " invert-output=" << invertOutput << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "Exact synthesis query: family=" << backend.getFamilyName()
+               << " objective="
+               << (objective == ExactSynthesisObjective::area ? "area"
+                                                              : "depth-size")
+               << " original-tt=" << formatTruthTable(tt)
+               << " normalized-tt=" << formatTruthTable(normalizedTT)
+               << " invert-output=" << invertOutput << "\n");
 
     auto result = objective == ExactSynthesisObjective::area
                       ? synthesizeForMinimumArea(normalizedTT)
@@ -852,14 +850,13 @@ private:
 
   QueryResult synthesizeForMinimumArea(const BinaryTruthTable &tt) const {
     for (unsigned area = 0; area <= backend.getMaxSearchArea(); ++area) {
-      auto result =
-          synthesizeNormalizedForArea(tt.numInputs, tt.table, area);
+      auto result = synthesizeNormalizedForArea(tt.numInputs, tt.table, area);
       if (result.status != QueryStatus::NoSolution)
         return result;
-      LLVM_DEBUG(llvm::dbgs() << "Exact synthesis no solution at area: family="
-                              << backend.getFamilyName()
-                              << " tt=" << formatTruthTable(tt)
-                              << " area=" << area << "\n");
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Exact synthesis no solution at area: family="
+                 << backend.getFamilyName() << " tt=" << formatTruthTable(tt)
+                 << " area=" << area << "\n");
     }
 
     LLVM_DEBUG(llvm::dbgs()
@@ -882,9 +879,8 @@ private:
       for (unsigned area = 1; area <= areaUpperBound; ++area) {
         LLVM_DEBUG(llvm::dbgs()
                    << "Exact synthesis depth query: family="
-                   << backend.getFamilyName()
-                   << " tt=" << formatTruthTable(tt) << " depth=" << depth
-                   << " area=" << area << "\n");
+                   << backend.getFamilyName() << " tt=" << formatTruthTable(tt)
+                   << " depth=" << depth << " area=" << area << "\n");
         auto result =
             synthesizeNormalizedForDepth(tt.numInputs, tt.table, area, depth);
         if (result.status != QueryStatus::NoSolution)
@@ -975,7 +971,8 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
   SmallString<32> ttString;
   target.table.toStringUnsigned(ttString, 16);
   auto result = synthesizer.synthesize(target);
-  if (result.status == GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
+  if (result.status ==
+      GenericExactSynthesizer::QueryStatus::ConflictLimitReached) {
     LLVM_DEBUG(llvm::dbgs()
                << "Exact synthesis stopped at conflict limit: family="
                << backend.getFamilyName() << " tt=" << ttString
@@ -986,9 +983,8 @@ exactSynthesizeTruthTableForBackend(const ExactSynthesisBackend &backend,
     LLVM_DEBUG(llvm::dbgs() << "Exact synthesis error: family="
                             << backend.getFamilyName() << " tt=" << ttString
                             << " objective=" << options.objective << "\n");
-    op->emitError() << "failed to synthesize exact "
-                    << backend.getFamilyName() << " for truth table "
-                    << ttString;
+    op->emitError() << "failed to synthesize exact " << backend.getFamilyName()
+                    << " for truth table " << ttString;
     return failure();
   }
   if (result.network)
@@ -1118,7 +1114,7 @@ struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
       return failure();
     }
 
-    const auto &cutNPN = cut.getNPNClass();
+    const auto &cutNPN = cut.getNPNClass(enumerator.getOptions());
     assert(cutNPN.inputPermutation.size() == bodyBlock->getNumArguments() &&
            "cut input permutation size mismatch");
 
