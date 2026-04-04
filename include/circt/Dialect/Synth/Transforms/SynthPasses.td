@@ -149,7 +149,7 @@ def ExactSynthesis : Pass<"synth-exact-synthesis", "mlir::ModuleOp"> {
            "Exact-synthesis backend kind (currently: mig)">,
     Option<"objective", "objective", "std::string", "\"area\"",
            "Optimization objective: area or depth-size">,
-    Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
+    Option<"satSolver", "sat-solver", "std::string", "\"cadical\"",
            "SAT solver backend to use: auto, z3, or cadical">,
     Option<"cadicalConfig", "cadical-config", "std::string", "\"default\"",
            "CaDiCaL configuration to use when the selected SAT solver is "
