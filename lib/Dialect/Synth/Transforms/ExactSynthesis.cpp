@@ -1184,128 +1184,22 @@ parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
   return result;
 }
 
-class MIGExactSynthesisBackend final : public ExactSynthesisBackend {
-public:
-  StringRef getKind() const override { return "mig"; }
-  unsigned getMaxSupportedInputs() const override {
-    return kMaxExactSynthesisInputs;
-  }
-  StringRef getFamilyName() const override { return "MIG"; }
-  unsigned getArity() const override { return 3; }
-  unsigned getMaxSearchArea() const override { return kMaxMIGExactSearchArea; }
-
-  std::pair<BinaryTruthTable, bool>
-  normalize(const BinaryTruthTable &tt) const override {
-    if (!tt.table[0])
-      return {tt, false};
-    BinaryTruthTable normalized = tt;
-    normalized.table.flipAllBits();
-    return {std::move(normalized), true};
-  }
-
-  std::optional<ExactNetwork>
-  synthesizeDirect(unsigned numInputs,
-                   const llvm::APInt &target) const override {
-    ExactNetwork network;
-    network.numInputs = numInputs;
-    if (target.isZero()) {
-      network.output = {0, false};
-      return network;
-    }
-    if (target.isAllOnes()) {
-      network.output = {0, true};
-      return network;
-    }
-    for (unsigned input = 0; input != numInputs; ++input) {
-      llvm::APInt mask = circt::createVarMask(numInputs, input, true);
-      if (target == mask) {
-        network.output = {1 + input, false};
-        return network;
-      }
-      llvm::APInt invertedMask = mask;
-      invertedMask.flipAllBits();
-      if (target == invertedMask) {
-        network.output = {1 + input, true};
-        return network;
-      }
-    }
-    return std::nullopt;
-  }
-
-  ExactNetwork applyOutputNegation(ExactNetwork network) const override {
-    if (network.steps.empty()) {
-      network.output.inverted = !network.output.inverted;
-      return network;
-    }
-    // For MIGs, negating a majority can be absorbed by inverting all three
-    // fanins of the final majority node instead of materializing a separate
-    // output inverter.
-    for (auto &fanin : network.steps.back().fanins)
-      fanin.inverted = !fanin.inverted;
-    return network;
-  }
-
-  void enumerateCandidates(
-      unsigned availableSources,
-      SmallVectorImpl<ExactCandidate> &candidates) const override {
-    candidates.clear();
-    for (unsigned a = 0; a + 2 < availableSources; ++a)
-      for (unsigned b = a + 1; b + 1 < availableSources; ++b)
-        for (unsigned c = b + 1; c < availableSources; ++c)
-          for (unsigned invMask = 0; invMask != 8; ++invMask) {
-            ExactCandidate candidate;
-            candidate.kind = ExactNodeKind::Maj3;
-            candidate.fanins.push_back({a, static_cast<bool>(invMask & 1)});
-            candidate.fanins.push_back({b, static_cast<bool>(invMask & 2)});
-            candidate.fanins.push_back({c, static_cast<bool>(invMask & 4)});
-            candidates.push_back(std::move(candidate));
-          }
-  }
-
-  bool isTrivialCandidate(const ExactCandidate &) const override {
-    return false;
-  }
-
-  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
-                               int outLit, const ExactCandidate &candidate,
-                               unsigned minterm,
-                               llvm::function_ref<int(unsigned, unsigned, bool)>
-                                   getSourceLiteral) const override {
-    auto addConditionedClause = [&](std::initializer_list<int> lits) {
-      SmallVector<int, 8> clause;
-      clause.reserve(lits.size() + 1);
-      clause.push_back(-selector);
-      clause.append(lits.begin(), lits.end());
-      solver.addClause(clause);
-    };
-
-    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
-                                candidate.fanins[0].inverted);
-    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
-                                candidate.fanins[1].inverted);
-    int cLit = getSourceLiteral(candidate.fanins[2].source, minterm,
-                                candidate.fanins[2].inverted);
-    addConditionedClause({-aLit, -bLit, outLit});
-    addConditionedClause({-aLit, -cLit, outLit});
-    addConditionedClause({-bLit, -cLit, outLit});
-    addConditionedClause({aLit, bLit, -outLit});
-    addConditionedClause({aLit, cLit, -outLit});
-    addConditionedClause({bLit, cLit, -outLit});
-  }
-
-  Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
-                           const ExactNetwork &network) const override {
-    return materializeExactMIGNetwork(builder, loc, inputs, network);
-  }
+struct MIGBackendConfig {
+  StringLiteral kind;
+  StringLiteral familyName;
+  bool enableXor;
 };
 
-class MIGXORExactSynthesisBackend final : public ExactSynthesisBackend {
+class ConfigurableMIGExactSynthesisBackend final : public ExactSynthesisBackend {
 public:
-  StringRef getKind() const override { return "mig-xor"; }
+  explicit ConfigurableMIGExactSynthesisBackend(MIGBackendConfig config)
+      : config(config) {}
+
+  StringRef getKind() const override { return config.kind; }
   unsigned getMaxSupportedInputs() const override {
     return kMaxExactSynthesisInputs;
   }
-  StringRef getFamilyName() const override { return "MIG-XOR"; }
+  StringRef getFamilyName() const override { return config.familyName; }
   unsigned getArity() const override { return 3; }
   unsigned getMaxSearchArea() const override { return kMaxMIGExactSearchArea; }
 
@@ -1381,6 +1275,9 @@ public:
             candidates.push_back(std::move(candidate));
           }
 
+    if (!config.enableXor)
+      return;
+
     for (unsigned a = 1; a + 1 < availableSources; ++a)
       for (unsigned b = a + 1; b < availableSources; ++b) {
         ExactCandidate candidate;
@@ -1442,11 +1339,16 @@ public:
                            const ExactNetwork &network) const override {
     return materializeExactMIGNetwork(builder, loc, inputs, network);
   }
+
+private:
+  MIGBackendConfig config;
 };
 
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
-  static const MIGExactSynthesisBackend migBackend;
-  static const MIGXORExactSynthesisBackend migXorBackend;
+  static const ConfigurableMIGExactSynthesisBackend migBackend(
+      {StringLiteral("mig"), StringLiteral("MIG"), false});
+  static const ConfigurableMIGExactSynthesisBackend migXorBackend(
+      {StringLiteral("mig-xor"), StringLiteral("MIG-XOR"), true});
 
   std::string normalized = normalizeExactSynthesisKind(kind);
   if (normalized == migBackend.getKind())
