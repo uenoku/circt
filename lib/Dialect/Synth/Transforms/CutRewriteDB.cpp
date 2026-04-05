@@ -310,10 +310,7 @@ struct GreedyCutRewriteDatabasePattern : public SpeculativeCutRewritePattern {
     return true;
   }
 
-  FailureOr<CandidateRecipe> speculate(CutEnumerator &enumerator,
-                                       const Cut &cut) const override {
-    assert(cut.getNPNClass(enumerator.getOptions()).truthTable ==
-           entry.npnClass.truthTable);
+  FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const override {
     const CandidateRecipe *recipe = entry.getCandidateRecipe();
     if (!recipe)
       return failure();

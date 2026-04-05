@@ -388,6 +388,20 @@ struct CandidateRecipe {
   SmallVector<CandidateRecipeNode, 8> nodes;
 };
 
+/// Value-based local cut used by the greedy speculative rewriter.
+///
+/// Unlike `Cut`, this is intentionally independent of `LogicNetwork` and is
+/// meant for root-local IR walks.
+struct LocalCut {
+  Value root;
+  SmallVector<Value, 4> leaves;
+  mutable std::optional<BinaryTruthTable> truthTable;
+  mutable std::optional<NPNClass> npnClass;
+
+  unsigned getInputSize() const { return leaves.size(); }
+  const NPNClass &getNPNClass(const CutRewriterOptions &options) const;
+};
+
 /// Represents a cut that has been successfully matched to a rewriting pattern.
 ///
 /// This class encapsulates the result of matching a cut against a rewriting
@@ -863,6 +877,11 @@ struct SpeculativeCutRewritePattern : public CutRewritePattern {
 
   bool isSpeculative() const final { return true; }
 
+  std::optional<MatchResult> match(const LocalCut &cut) const;
+
+  FailureOr<Operation *> rewrite(mlir::OpBuilder &builder, const LocalCut &cut,
+                                 const MatchedPattern &match) const;
+
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const final;
 
@@ -870,8 +889,7 @@ struct SpeculativeCutRewritePattern : public CutRewritePattern {
                                  CutEnumerator &enumerator, const Cut &cut,
                                  const MatchedPattern &match) const final;
 
-  virtual FailureOr<CandidateRecipe> speculate(CutEnumerator &enumerator,
-                                               const Cut &cut) const = 0;
+  virtual FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const = 0;
 };
 
 /// Manages a collection of rewriting patterns for combinational logic
@@ -999,20 +1017,18 @@ class GreedyCutRewriter {
 public:
   GreedyCutRewriter(const GreedyCutRewriterOptions &options,
                     CutRewritePatternSet &patterns)
-      : options(options), patterns(patterns), cutEnumerator(options) {}
+      : options(options), patterns(patterns) {}
 
   LogicalResult run(Operation *topOp);
 
-  const CutEnumeratorStats &getStats() const {
-    return cutEnumerator.getStats();
-  }
+  const CutEnumeratorStats &getStats() const { return stats; }
 
 private:
-  std::optional<MatchedPattern> patternMatchCut(const Cut &cut);
+  std::optional<MatchedPattern> patternMatchCut(const LocalCut &cut);
 
   const GreedyCutRewriterOptions &options;
   const CutRewritePatternSet &patterns;
-  CutEnumerator cutEnumerator;
+  CutEnumeratorStats stats;
 };
 
 } // namespace synth

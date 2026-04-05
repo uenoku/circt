@@ -438,6 +438,11 @@ void LogicNetwork::clear() {
 // Helper functions
 //===----------------------------------------------------------------------===//
 
+namespace {
+static NPNClass computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
+                                              const CutRewriterOptions &options);
+}
+
 // Return true if the gate at the given index is always a cut input.
 static bool isAlwaysCutInput(const LogicNetwork &network, uint32_t index) {
   const auto &gate = network.getGate(index);
@@ -593,12 +598,105 @@ const NPNClass &Cut::getNPNClass(const CutRewriterOptions &options) const {
     return *npnClass;
 
   const auto &truthTable = *getTruthTable();
+  npnClass.emplace(computeNPNClassFromTruthTable(truthTable, options));
+  return *npnClass;
+}
 
-  NPNClass canonicalForm;
-  if (!options.npnTable || !options.npnTable->lookup(truthTable, canonicalForm))
-    canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
+namespace {
 
-  npnClass.emplace(std::move(canonicalForm));
+static FailureOr<llvm::APInt>
+evaluateLocalCutValue(Value value, unsigned numInputs,
+                      DenseMap<Value, unsigned> &leafToIndex,
+                      DenseMap<Value, llvm::APInt> &cache) {
+  if (auto it = cache.find(value); it != cache.end())
+    return it->second;
+  if (auto it = leafToIndex.find(value); it != leafToIndex.end()) {
+    auto tt = circt::createVarMask(numInputs, it->second, true);
+    cache[value] = tt;
+    return tt;
+  }
+
+  if (auto blockArg = dyn_cast<BlockArgument>(value))
+    return blockArg.getOwner()->getParentOp()->emitError()
+           << "local cut input missing from leaf set";
+
+  auto *defOp = value.getDefiningOp();
+  if (!defOp)
+    return emitError(value.getLoc(), "unsupported value in local cut");
+
+  auto memoize = [&](llvm::APInt result) -> FailureOr<llvm::APInt> {
+    cache[value] = result;
+    return result;
+  };
+
+  if (auto constant = dyn_cast<hw::ConstantOp>(defOp)) {
+    if (!constant.getType().isInteger(1))
+      return constant.emitError("local cut only supports i1 constants");
+    return memoize(constant.getValue().isOne()
+                       ? llvm::APInt::getAllOnes(1u << numInputs)
+                       : llvm::APInt(1u << numInputs, 0));
+  }
+  if (auto wireOp = dyn_cast<hw::WireOp>(defOp))
+    return memoize(*evaluateLocalCutValue(wireOp.getInput(), numInputs,
+                                          leafToIndex, cache));
+  if (auto choiceOp = dyn_cast<synth::ChoiceOp>(defOp))
+    return memoize(*evaluateLocalCutValue(choiceOp.getInputs().front(),
+                                          numInputs, leafToIndex, cache));
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(defOp)) {
+    SmallVector<llvm::APInt, 3> inputs;
+    inputs.reserve(andOp.getInputs().size());
+    for (Value operand : andOp.getInputs())
+      inputs.push_back(
+          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    return memoize(andOp.evaluate(inputs));
+  }
+  if (auto xorOp = dyn_cast<comb::XorOp>(defOp)) {
+    if (xorOp.getNumOperands() == 0)
+      return emitError(xorOp.getLoc(), "xor must have at least one operand");
+    llvm::APInt result(1u << numInputs, 0);
+    for (auto [index, operand] : llvm::enumerate(xorOp.getOperands())) {
+      auto input = *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache);
+      result = index == 0 ? input : result ^ input;
+    }
+    return memoize(result);
+  }
+  if (auto majOp = dyn_cast<mig::MajorityInverterOp>(defOp)) {
+    SmallVector<llvm::APInt, 3> inputs;
+    inputs.reserve(majOp.getInputs().size());
+    for (Value operand : majOp.getInputs())
+      inputs.push_back(
+          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    return memoize(majOp.evaluate(inputs));
+  }
+  if (auto dotOp = dyn_cast<dig::DotInverterOp>(defOp)) {
+    SmallVector<llvm::APInt, 3> inputs;
+    inputs.reserve(dotOp.getInputs().size());
+    for (Value operand : dotOp.getInputs())
+      inputs.push_back(
+          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    return memoize(dotOp.evaluate(inputs));
+  }
+
+  return defOp->emitError("unsupported operation in local cut truth-table evaluation");
+}
+
+} // namespace
+
+const NPNClass &LocalCut::getNPNClass(const CutRewriterOptions &options) const {
+  if (!truthTable) {
+    DenseMap<Value, unsigned> leafToIndex;
+    for (auto [index, leaf] : llvm::enumerate(leaves))
+      leafToIndex[leaf] = index;
+
+    DenseMap<Value, llvm::APInt> cache;
+    auto evaluated =
+        evaluateLocalCutValue(root, leaves.size(), leafToIndex, cache);
+    assert(succeeded(evaluated) && "failed to evaluate local cut truth table");
+    truthTable.emplace(leaves.size(), 1, std::move(*evaluated));
+  }
+
+  if (!npnClass)
+    npnClass.emplace(computeNPNClassFromTruthTable(*truthTable, options));
   return *npnClass;
 }
 
@@ -1152,10 +1250,18 @@ struct ProbeResult {
   SmallVector<Operation *, 8> reusedOps;
 };
 
-struct GreedyFrontierLeaf {
-  uint32_t index = 0;
+struct LocalFrontierLeaf {
+  Value value;
   unsigned depth = 0;
 };
+
+static NPNClass computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
+                                              const CutRewriterOptions &options) {
+  NPNClass canonicalForm;
+  if (!options.npnTable || !options.npnTable->lookup(truthTable, canonicalForm))
+    canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
+  return canonicalForm;
+}
 
 static MatchBinding getIdentityBinding(unsigned numInputs) {
   MatchBinding binding;
@@ -1182,29 +1288,98 @@ static MatchBinding getBindingForPattern(const Cut &cut,
   return binding;
 }
 
-static bool isGreedyExpandableGate(const LogicNetwork &network, uint32_t index) {
-  if (index == LogicNetwork::kConstant0 || index == LogicNetwork::kConstant1)
-    return false;
-  const auto &gate = network.getGate(index);
-  if (gate.isAlwaysCutInput())
-    return false;
-  return gate.getKind() != LogicNetworkGate::Choice;
+static MatchBinding getBindingForPattern(const LocalCut &cut,
+                                         const NPNClass *patternNPN,
+                                         const CutRewriterOptions &options) {
+  MatchBinding binding = getIdentityBinding(cut.getInputSize());
+  if (!patternNPN)
+    return binding;
+
+  const auto &cutNPN = cut.getNPNClass(options);
+  cutNPN.getInputPermutation(*patternNPN, binding.inputPermutation);
+  binding.inputNegationMask = static_cast<uint8_t>(
+      cutNPN.inputNegation ^ patternNPN->inputNegation);
+  binding.outputNegated =
+      static_cast<bool>((cutNPN.outputNegation ^ patternNPN->outputNegation) &
+                        1u);
+  return binding;
 }
 
-static void normalizeGreedyFrontier(
-    SmallVectorImpl<GreedyFrontierLeaf> &frontier) {
-  llvm::sort(frontier, [](const GreedyFrontierLeaf &lhs,
-                          const GreedyFrontierLeaf &rhs) {
-    return lhs.index < rhs.index;
+static bool isValueLess(Value lhs, Value rhs) {
+  return lhs.getAsOpaquePointer() < rhs.getAsOpaquePointer();
+}
+
+static bool isGreedyLeafValue(Value value) {
+  if (!value)
+    return true;
+  if (isa<BlockArgument>(value))
+    return true;
+  if (isa<hw::ConstantOp, synth::ChoiceOp>(value.getDefiningOp()))
+    return true;
+  return false;
+}
+
+static bool isGreedyExpandableValue(Value value) {
+  if (!value || isGreedyLeafValue(value))
+    return false;
+  auto *op = value.getDefiningOp();
+  if (!op || !value.getType().isInteger(1))
+    return false;
+  if (isa<hw::WireOp>(op))
+    return true;
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op))
+    return andOp.getNumOperands() == 1 || andOp.getNumOperands() == 2;
+  if (auto xorOp = dyn_cast<comb::XorOp>(op))
+    return xorOp.getNumOperands() == 2;
+  if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op))
+    return majOp.getNumOperands() == 1 || majOp.getNumOperands() == 3;
+  if (auto dotOp = dyn_cast<dig::DotInverterOp>(op))
+    return dotOp.getNumOperands() == 1 || dotOp.getNumOperands() == 3;
+  return false;
+}
+
+static void getExpandableGreedyOperands(Value value,
+                                        SmallVectorImpl<Value> &operands) {
+  operands.clear();
+  if (!isGreedyExpandableValue(value))
+    return;
+
+  auto *op = value.getDefiningOp();
+  if (auto wireOp = dyn_cast<hw::WireOp>(op)) {
+    operands.push_back(wireOp.getInput());
+    return;
+  }
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+    llvm::append_range(operands, andOp.getInputs());
+    return;
+  }
+  if (auto xorOp = dyn_cast<comb::XorOp>(op)) {
+    llvm::append_range(operands, xorOp.getOperands());
+    return;
+  }
+  if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
+    llvm::append_range(operands, majOp.getOperands());
+    return;
+  }
+  if (auto dotOp = dyn_cast<dig::DotInverterOp>(op)) {
+    llvm::append_range(operands, dotOp.getOperands());
+    return;
+  }
+}
+
+static void normalizeLocalFrontier(
+    SmallVectorImpl<LocalFrontierLeaf> &frontier) {
+  llvm::sort(frontier, [](const LocalFrontierLeaf &lhs,
+                          const LocalFrontierLeaf &rhs) {
+    return isValueLess(lhs.value, rhs.value);
   });
 
   unsigned write = 0;
   for (unsigned read = 0; read != frontier.size(); ++read) {
-    if (frontier[read].index == LogicNetwork::kConstant0 ||
-        frontier[read].index == LogicNetwork::kConstant1)
+    if (!frontier[read].value)
       continue;
 
-    if (write != 0 && frontier[write - 1].index == frontier[read].index) {
+    if (write != 0 && frontier[write - 1].value == frontier[read].value) {
       frontier[write - 1].depth =
           std::min(frontier[write - 1].depth, frontier[read].depth);
       continue;
@@ -1214,65 +1389,63 @@ static void normalizeGreedyFrontier(
   frontier.resize(write);
 }
 
-static void appendExpandedGreedyLeaf(const LogicNetwork &network, uint32_t index,
-                                     unsigned nextDepth,
-                                     SmallVectorImpl<GreedyFrontierLeaf> &out) {
-  const auto &gate = network.getGate(index);
-  for (unsigned faninIndex = 0, faninCount = gate.getNumFanins();
-       faninIndex < faninCount; ++faninIndex)
-    out.push_back({gate.edges[faninIndex].getIndex(), nextDepth});
+static void appendExpandedGreedyLeaf(Value value, unsigned nextDepth,
+                                     SmallVectorImpl<LocalFrontierLeaf> &out) {
+  SmallVector<Value, 3> operands;
+  getExpandableGreedyOperands(value, operands);
+  for (Value operand : operands)
+    out.push_back({operand, nextDepth});
 }
 
-static bool hasEquivalentGreedyCut(ArrayRef<Cut> cuts, const Cut &candidate) {
-  return llvm::any_of(cuts, [&](const Cut &cut) {
-    return cut.inputs == candidate.inputs &&
-           cut.getRootIndex() == candidate.getRootIndex();
+static bool hasEquivalentGreedyCut(ArrayRef<LocalCut> cuts,
+                                   const LocalCut &candidate) {
+  return llvm::any_of(cuts, [&](const LocalCut &cut) {
+    return cut.root == candidate.root && cut.leaves == candidate.leaves;
   });
 }
 
-static void enumerateGreedyCutsForRoot(const LogicNetwork &network,
-                                       uint32_t rootIndex, unsigned maxInputs,
+static void enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
                                        unsigned maxExpansionDepth,
-                                       SmallVectorImpl<Cut> &cuts) {
+                                       SmallVectorImpl<LocalCut> &cuts) {
   cuts.clear();
-  if (!isGreedyExpandableGate(network, rootIndex))
+  if (!isGreedyExpandableValue(root))
     return;
 
-  SmallVector<GreedyFrontierLeaf, 8> initialFrontier;
-  appendExpandedGreedyLeaf(network, rootIndex, 1, initialFrontier);
-  normalizeGreedyFrontier(initialFrontier);
+  SmallVector<LocalFrontierLeaf, 8> initialFrontier;
+  appendExpandedGreedyLeaf(root, 1, initialFrontier);
+  normalizeLocalFrontier(initialFrontier);
   if (initialFrontier.size() > maxInputs)
     return;
 
-  auto addCut = [&](ArrayRef<GreedyFrontierLeaf> frontier) {
-    Cut cut;
-    cut.setRootIndex(rootIndex);
-    cut.inputs.reserve(frontier.size());
+  auto addCut = [&](ArrayRef<LocalFrontierLeaf> frontier) {
+    LocalCut cut;
+    cut.root = root;
+    cut.leaves.reserve(frontier.size());
     for (const auto &leaf : frontier)
-      cut.inputs.push_back(leaf.index);
-    if (!cut.inputs.empty() && !hasEquivalentGreedyCut(cuts, cut))
+      cut.leaves.push_back(leaf.value);
+    if (!cut.leaves.empty() && !hasEquivalentGreedyCut(cuts, cut))
       cuts.push_back(std::move(cut));
   };
 
   auto recurse = [&](auto &&self,
-                     const SmallVector<GreedyFrontierLeaf, 8> &frontier) -> void {
+                     const SmallVector<LocalFrontierLeaf, 8> &frontier) -> void {
     addCut(frontier);
 
     for (unsigned leafIndex = 0; leafIndex != frontier.size(); ++leafIndex) {
       const auto &leaf = frontier[leafIndex];
       if (leaf.depth >= maxExpansionDepth ||
-          !isGreedyExpandableGate(network, leaf.index))
+          !isGreedyExpandableValue(leaf.value))
         continue;
 
-      SmallVector<GreedyFrontierLeaf, 8> expanded;
+      SmallVector<LocalFrontierLeaf, 8> expanded;
       expanded.reserve(frontier.size() + 2);
       for (unsigned i = 0; i != frontier.size(); ++i) {
         if (i == leafIndex)
           continue;
         expanded.push_back(frontier[i]);
       }
-      appendExpandedGreedyLeaf(network, leaf.index, leaf.depth + 1, expanded);
-      normalizeGreedyFrontier(expanded);
+      appendExpandedGreedyLeaf(leaf.value, leaf.depth + 1, expanded);
+      normalizeLocalFrontier(expanded);
       if (expanded.empty() || expanded.size() > maxInputs)
         continue;
       self(self, expanded);
@@ -1454,8 +1627,7 @@ static Value materializeRecipeInverter(OpBuilder &builder, Location loc,
 
 static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
                                         const MatchBinding &binding,
-                                        const Cut &cut,
-                                        const LogicNetwork &logicNetwork,
+                                        Value rootValue, ArrayRef<Value> cutInputs,
                                         DenseMap<Value, uint64_t> &signalIds,
                                         ArrayRef<StructuralEntry> existing) {
   ProbeResult result;
@@ -1481,8 +1653,7 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   };
 
   auto bindInputSignal = [&](unsigned inputIndex) -> uint64_t {
-    Value inputValue =
-        logicNetwork.getValue(cut.inputs[binding.inputPermutation[inputIndex]]);
+    Value inputValue = cutInputs[binding.inputPermutation[inputIndex]];
     auto it = signalIds.find(inputValue);
     assert(it != signalIds.end() && "cut input must have a signal id");
     uint64_t rawSignal = it->second;
@@ -1532,10 +1703,8 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
         operandSignals.push_back((signal << 1) | static_cast<uint64_t>(inverted));
       }
       canonicalizeStructuralOperands(node.kind, operandSignals);
-      OperationName opName =
-          getRecipeOperationName(logicNetwork.getValue(cut.getRootIndex())
-                                     .getContext(),
-                                 recipe, node.kind);
+      OperationName opName = getRecipeOperationName(rootValue.getContext(),
+                                                    recipe, node.kind);
       if (Value existingValue =
               findStructuralValue(existing, opName, operandSignals)) {
         if (auto *op = existingValue.getDefiningOp())
@@ -1563,9 +1732,8 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   if (binding.outputNegated) {
     SmallVector<uint64_t, 3> operandSignals = {(result.rootSignal << 1) | 1u};
     OperationName inverterName =
-        getRecipeOperationName(logicNetwork.getValue(cut.getRootIndex())
-                                   .getContext(),
-                               recipe, CandidateRecipeNode::Identity);
+        getRecipeOperationName(rootValue.getContext(), recipe,
+                               CandidateRecipeNode::Identity);
     if (Value existingValue =
             findStructuralValue(existing, inverterName, operandSignals)) {
       if (auto *op = existingValue.getDefiningOp())
@@ -1581,6 +1749,28 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       std::unique(result.reusedOps.begin(), result.reusedOps.end()),
       result.reusedOps.end());
   return result;
+}
+
+static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
+                                        const MatchBinding &binding,
+                                        const LocalCut &cut,
+                                        DenseMap<Value, uint64_t> &signalIds,
+                                        ArrayRef<StructuralEntry> existing) {
+  return probeCandidateRecipe(recipe, binding, cut.root, cut.leaves, signalIds,
+                              existing);
+}
+
+static LocalCut getLocalCut(CutEnumerator &enumerator, const Cut &cut) {
+  LocalCut localCut;
+  const auto &network = enumerator.getLogicNetwork();
+  localCut.root = network.getValue(cut.getRootIndex());
+  localCut.leaves.reserve(cut.inputs.size());
+  for (uint32_t input : cut.inputs)
+    localCut.leaves.push_back(network.getValue(input));
+  if (cut.getTruthTable())
+    localCut.truthTable = *cut.getTruthTable();
+  localCut.npnClass = cut.getNPNClass(enumerator.getOptions());
+  return localCut;
 }
 
 static SmallVector<Operation *>
@@ -1609,11 +1799,11 @@ computeDoomedCone(Operation *rootOp, ArrayRef<Operation *> preservedOps) {
   return doomed;
 }
 
-static FailureOr<Operation *>
-materializeRecipe(OpBuilder &builder, CutEnumerator &enumerator, const Cut &cut,
-                  const MatchBinding &binding, const CandidateRecipe &recipe) {
-  const auto &logicNetwork = enumerator.getLogicNetwork();
-  auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
+static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
+                                                const LocalCut &cut,
+                                                const MatchBinding &binding,
+                                                const CandidateRecipe &recipe) {
+  auto *rootOp = cut.root.getDefiningOp();
   assert(rootOp && "cut root must be a valid operation");
 
   DenseMap<Value, uint64_t> signalIds;
@@ -1643,8 +1833,7 @@ materializeRecipe(OpBuilder &builder, CutEnumerator &enumerator, const Cut &cut,
   };
 
   auto bindInputValue = [&](unsigned inputIndex) -> std::pair<Value, uint64_t> {
-    Value inputValue =
-        logicNetwork.getValue(cut.inputs[binding.inputPermutation[inputIndex]]);
+    Value inputValue = cut.leaves[binding.inputPermutation[inputIndex]];
     uint64_t rawSignal = signalIds.lookup(inputValue);
     if (((binding.inputNegationMask >> inputIndex) & 1u) == 0)
       return {inputValue, rawSignal};
@@ -1941,9 +2130,8 @@ bool CutRewritePattern::useTruthTableMatcher(
 }
 
 std::optional<MatchResult>
-SpeculativeCutRewritePattern::match(CutEnumerator &enumerator,
-                                    const Cut &cut) const {
-  auto recipe = speculate(enumerator, cut);
+SpeculativeCutRewritePattern::match(const LocalCut &cut) const {
+  auto recipe = speculate(cut);
   if (failed(recipe))
     return std::nullopt;
 
@@ -1954,15 +2142,26 @@ SpeculativeCutRewritePattern::match(CutEnumerator &enumerator,
 }
 
 FailureOr<Operation *>
+SpeculativeCutRewritePattern::rewrite(OpBuilder &builder, const LocalCut &cut,
+                                      const MatchedPattern &match) const {
+  auto recipe = speculate(cut);
+  if (failed(recipe))
+    return failure();
+  return materializeRecipe(builder, cut, match.getBinding(), *recipe);
+}
+
+std::optional<MatchResult>
+SpeculativeCutRewritePattern::match(CutEnumerator &enumerator,
+                                    const Cut &cut) const {
+  return match(getLocalCut(enumerator, cut));
+}
+
+FailureOr<Operation *>
 SpeculativeCutRewritePattern::rewrite(OpBuilder &builder,
                                       CutEnumerator &enumerator,
                                       const Cut &cut,
                                       const MatchedPattern &match) const {
-  auto recipe = speculate(enumerator, cut);
-  if (failed(recipe))
-    return failure();
-  return materializeRecipe(builder, enumerator, cut, match.getBinding(),
-                           *recipe);
+  return rewrite(builder, getLocalCut(enumerator, cut), match);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2659,16 +2858,16 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
 }
 
 struct GreedyRewriteCandidate {
-  uint32_t rootIndex = 0;
-  Cut cut;
+  LocalCut cut;
   MatchedPattern match;
   CandidateRecipe recipe;
   int gain = 0;
   unsigned newArea = 0;
 };
 
-std::optional<MatchedPattern> GreedyCutRewriter::patternMatchCut(const Cut &cut) {
-  if (cut.isTrivialCut())
+std::optional<MatchedPattern>
+GreedyCutRewriter::patternMatchCut(const LocalCut &cut) {
+  if (!cut.root || cut.leaves.empty())
     return {};
 
   const CutRewritePattern *bestPattern = nullptr;
@@ -2692,12 +2891,14 @@ std::optional<MatchedPattern> GreedyCutRewriter::patternMatchCut(const Cut &cut)
   };
 
   if (!patterns.npnToPatternMap.empty()) {
-    auto &cutNPN = cut.getNPNClass(options);
+    const auto &cutNPN = cut.getNPNClass(options);
     auto it = patterns.npnToPatternMap.find(
         {cutNPN.truthTable.table, cutNPN.truthTable.numInputs});
     if (it != patterns.npnToPatternMap.end()) {
       for (auto &[patternNPN, pattern] : it->second) {
-        auto matchResult = pattern->match(cutEnumerator, cut);
+        auto *specPattern =
+            static_cast<const SpeculativeCutRewritePattern *>(pattern);
+        auto matchResult = specPattern->match(cut);
         if (!matchResult)
           continue;
         pickBest(pattern, *matchResult,
@@ -2707,7 +2908,9 @@ std::optional<MatchedPattern> GreedyCutRewriter::patternMatchCut(const Cut &cut)
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
-    if (auto matchResult = pattern->match(cutEnumerator, cut))
+    auto *specPattern =
+        static_cast<const SpeculativeCutRewritePattern *>(pattern);
+    if (auto matchResult = specPattern->match(cut))
       pickBest(pattern, *matchResult, getIdentityBinding(cut.getInputSize()));
   }
 
@@ -2735,44 +2938,29 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
     if (failed(topologicallySortLogicNetwork(topOp)))
       return failure();
 
-    cutEnumerator.clear();
     Block *block = &topOp->getRegion(0).getBlocks().front();
-    if (failed(cutEnumerator.getLogicNetwork().buildFromBlock(block)))
-      return failure();
-
-    const auto &logicNetwork = cutEnumerator.getLogicNetwork();
-    DenseMap<Value, uint64_t> signalIds;
-    SmallVector<StructuralEntry, 64> existing;
-    collectStructuralEntries(block, signalIds, existing);
-
-    std::optional<GreedyRewriteCandidate> bestCandidate;
-    SmallVector<uint32_t, 32> rootIndices;
-    for (Operation &op : llvm::reverse(*block)) {
+    bool changed = false;
+    constexpr unsigned greedyMaxExpansionDepth = 3;
+    SmallVector<LocalCut, 16> rootCuts;
+    for (Operation &op : llvm::make_early_inc_range(llvm::reverse(*block))) {
+      if ((options.maxIterations != 0 && iteration >= options.maxIterations))
+        return success();
       if (!op.getNumResults() || !op.getResult(0).getType().isInteger(1))
         continue;
-      Value result = op.getResult(0);
-      if (!logicNetwork.hasIndex(result))
-        continue;
-      uint32_t index = logicNetwork.getIndex(result);
-      if (isAlwaysCutInput(logicNetwork, index))
-        continue;
-      if (!logicNetwork.getGate(index).isLogicGate())
-        continue;
-      rootIndices.push_back(index);
-    }
-
-    constexpr unsigned greedyMaxExpansionDepth = 3;
-    SmallVector<Cut, 16> rootCuts;
-    for (uint32_t index : rootIndices) {
-      Value rootValue = logicNetwork.getValue(index);
-      auto *rootOp = rootValue.getDefiningOp();
-      if (!rootOp || rootValue.use_empty())
+      Value rootValue = op.getResult(0);
+      if (!isGreedyExpandableValue(rootValue) || !isAreaCountedLogicOp(&op) ||
+          rootValue.use_empty())
         continue;
 
-      enumerateGreedyCutsForRoot(logicNetwork, index, options.maxCutInputSize,
+      DenseMap<Value, uint64_t> signalIds;
+      SmallVector<StructuralEntry, 64> existing;
+      collectStructuralEntries(block, signalIds, existing);
+
+      std::optional<GreedyRewriteCandidate> bestCandidate;
+      enumerateGreedyCutsForRoot(rootValue, options.maxCutInputSize,
                                  greedyMaxExpansionDepth, rootCuts);
-      for (Cut &cut : rootCuts) {
-        cut.computeTruthTable(logicNetwork);
+      stats.numCutsCreated += rootCuts.size();
+      for (LocalCut &cut : rootCuts) {
         auto matched = patternMatchCut(cut);
         if (!matched)
           continue;
@@ -2780,17 +2968,16 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
             static_cast<const SpeculativeCutRewritePattern *>(
                 matched->getPattern());
 
-        auto recipe = specPattern->speculate(cutEnumerator, cut);
+        auto recipe = specPattern->speculate(cut);
         if (failed(recipe))
           continue;
 
-        ProbeResult probe = probeCandidateRecipe(*recipe, matched->getBinding(),
-                                                 cut, logicNetwork, signalIds,
-                                                 existing);
+        ProbeResult probe = probeCandidateRecipe(*recipe, matched->getBinding(), cut,
+                                                 signalIds, existing);
         if (probe.rootSignal == signalIds.lookup(rootValue))
           continue;
 
-        auto doomed = computeDoomedCone(rootOp, probe.reusedOps);
+        auto doomed = computeDoomedCone(&op, probe.reusedOps);
         int gain =
             static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
         if (gain <= 0)
@@ -2802,44 +2989,45 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
             (gain == bestCandidate->gain &&
              probe.newArea == bestCandidate->newArea &&
              cut.getInputSize() < bestCandidate->cut.getInputSize())) {
-          bestCandidate = GreedyRewriteCandidate{
-              index, cut, *matched, *recipe, gain, probe.newArea};
+          bestCandidate =
+              GreedyRewriteCandidate{cut, *matched, *recipe, gain, probe.newArea};
         }
       }
+
+      if (!bestCandidate)
+        continue;
+
+      auto *rootOp = bestCandidate->cut.root.getDefiningOp();
+      PatternRewriter rewriter(topOp->getContext());
+      rewriter.setInsertionPoint(rootOp);
+      auto *specPattern = static_cast<const SpeculativeCutRewritePattern *>(
+          bestCandidate->match.getPattern());
+      auto result = specPattern->rewrite(rewriter, bestCandidate->cut,
+                                         bestCandidate->match);
+      if (failed(result))
+        return failure();
+
+      DenseMap<Value, uint64_t> freshSignalIds;
+      SmallVector<StructuralEntry, 64> freshExisting;
+      collectStructuralEntries(block, freshSignalIds, freshExisting);
+      ProbeResult freshProbe = probeCandidateRecipe(
+          bestCandidate->recipe, bestCandidate->match.getBinding(),
+          bestCandidate->cut, freshSignalIds, freshExisting);
+      auto doomed = computeDoomedCone(rootOp, freshProbe.reusedOps);
+
+      rewriter.replaceOp(rootOp, *result);
+      UnusedOpPruner pruner;
+      for (Operation *doomedOp : doomed)
+        if (doomedOp != rootOp && doomedOp->use_empty())
+          pruner.eraseNow(doomedOp);
+      ++stats.numCutsRewritten;
+      ++iteration;
+      changed = true;
     }
 
-    if (!bestCandidate) {
-      cutEnumerator.clear();
+    if (!changed)
       return success();
-    }
-
-    auto *rootOp =
-        logicNetwork.getGate(bestCandidate->cut.getRootIndex()).getOperation();
-    PatternRewriter rewriter(topOp->getContext());
-    rewriter.setInsertionPoint(rootOp);
-    auto result = bestCandidate->match.getPattern()->rewrite(
-        rewriter, cutEnumerator, bestCandidate->cut, bestCandidate->match);
-    if (failed(result))
-      return failure();
-
-    DenseMap<Value, uint64_t> freshSignalIds;
-    SmallVector<StructuralEntry, 64> freshExisting;
-    collectStructuralEntries(block, freshSignalIds, freshExisting);
-    ProbeResult freshProbe = probeCandidateRecipe(
-        bestCandidate->recipe, bestCandidate->match.getBinding(),
-        bestCandidate->cut, logicNetwork, freshSignalIds, freshExisting);
-    auto doomed = computeDoomedCone(rootOp, freshProbe.reusedOps);
-
-    rewriter.replaceOp(rootOp, *result);
-    UnusedOpPruner pruner;
-    for (Operation *op : doomed)
-      if (op != rootOp && op->use_empty())
-        pruner.eraseNow(op);
-    cutEnumerator.noteCutRewritten();
-    cutEnumerator.clear();
-    ++iteration;
   }
 
-  cutEnumerator.clear();
   return success();
 }
