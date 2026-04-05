@@ -51,6 +51,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -825,8 +826,266 @@ void Cut::computeTruthTable(const LogicNetwork &network) {
   truthTable.emplace(numInputs, 1, result);
 }
 
+static llvm::APInt
+expandTruthTableForMergedInputs(const llvm::APInt &tt,
+                                ArrayRef<unsigned> inputMapping,
+                                unsigned numMergedInputs) {
+  unsigned numOrigInputs = inputMapping.size();
+  unsigned mergedSize = 1U << numMergedInputs;
+
+  if (numOrigInputs == numMergedInputs) {
+    bool isIdentity = true;
+    for (unsigned i = 0; i < numOrigInputs && isIdentity; ++i)
+      isIdentity = inputMapping[i] == i;
+    if (isIdentity)
+      return tt.zext(mergedSize);
+  }
+
+  if (numMergedInputs <= 6) {
+    uint64_t origTT = tt.getZExtValue();
+    uint64_t result = 0;
+
+    static constexpr uint64_t kVarMasks[6] = {
+        0xAAAAAAAAAAAAAAAAULL, 0xCCCCCCCCCCCCCCCCULL,
+        0xF0F0F0F0F0F0F0F0ULL, 0xFF00FF00FF00FF00ULL,
+        0xFFFF0000FFFF0000ULL, 0xFFFFFFFF00000000ULL};
+
+    uint64_t sizeMask = (mergedSize == 64) ? ~0ULL : ((1ULL << mergedSize) - 1);
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (((origTT >> origIdx) & 1ULL) == 0)
+        continue;
+
+      uint64_t pattern = sizeMask;
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = ((origIdx >> i) & 1U) != 0;
+        uint64_t varMask = kVarMasks[mergedPos] & sizeMask;
+        pattern &= origBit ? varMask : ~varMask;
+      }
+      result |= pattern;
+    }
+    return llvm::APInt(mergedSize, result);
+  }
+
+  if (numMergedInputs <= 8) {
+    constexpr unsigned kMaxFastInputs = 8;
+    constexpr unsigned kMaxFastWords = (1U << kMaxFastInputs) / 64;
+
+    struct FastMaskCache {
+      bool initialized = false;
+      std::array<
+          std::array<std::array<uint64_t, kMaxFastWords>, kMaxFastInputs>,
+          kMaxFastInputs + 1>
+          masks{};
+    };
+
+    static FastMaskCache fastMaskCache;
+    if (!fastMaskCache.initialized) {
+      for (unsigned n = 1; n <= kMaxFastInputs; ++n) {
+        unsigned size = 1U << n;
+        for (unsigned var = 0; var < n; ++var)
+          for (unsigned idx = 0; idx < size; ++idx) {
+            if (((idx >> var) & 1U) == 0)
+              continue;
+            unsigned word = idx >> 6;
+            unsigned bit = idx & 63;
+            fastMaskCache.masks[n][var][word] |= 1ULL << bit;
+          }
+      }
+      fastMaskCache.initialized = true;
+    }
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxFastWords> fullMask{};
+    for (unsigned w = 0; w < numWords; ++w)
+      fullMask[w] = ~0ULL;
+    if (unsigned tail = mergedSize & 63)
+      fullMask[numWords - 1] = (1ULL << tail) - 1;
+
+    std::array<uint64_t, kMaxFastWords> result{};
+    unsigned origSize = 1U << numOrigInputs;
+    for (unsigned origIdx = 0; origIdx < origSize; ++origIdx) {
+      if (!tt[origIdx])
+        continue;
+
+      auto pattern = fullMask;
+      for (unsigned i = 0; i < numOrigInputs; ++i) {
+        unsigned mergedPos = inputMapping[i];
+        bool origBit = ((origIdx >> i) & 1U) != 0;
+        const auto &varMask = fastMaskCache.masks[numMergedInputs][mergedPos];
+        for (unsigned w = 0; w < numWords; ++w)
+          pattern[w] &= origBit ? varMask[w] : ~varMask[w];
+      }
+
+      for (unsigned w = 0; w < numWords; ++w)
+        result[w] |= pattern[w];
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
+  if (numMergedInputs <= 10) {
+    constexpr unsigned kMaxMergedInputs = 10;
+    constexpr unsigned kMaxWords = (1U << kMaxMergedInputs) / 64;
+
+    unsigned numWords = (mergedSize + 63) >> 6;
+    std::array<uint64_t, kMaxWords> result{};
+    std::array<uint32_t, kMaxMergedInputs> mergedBitMasks{};
+    std::array<unsigned, kMaxMergedInputs> origBitMasks{};
+    for (unsigned i = 0; i < numOrigInputs; ++i) {
+      mergedBitMasks[i] = 1U << inputMapping[i];
+      origBitMasks[i] = 1U << i;
+    }
+
+    const uint64_t *srcWords = tt.getRawData();
+    for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+      unsigned origIdx = 0;
+      for (unsigned i = 0; i < numOrigInputs; ++i)
+        if (mergedIdx & mergedBitMasks[i])
+          origIdx |= origBitMasks[i];
+
+      if (((srcWords[origIdx >> 6] >> (origIdx & 63)) & 1ULL) == 0)
+        continue;
+      result[mergedIdx >> 6] |= 1ULL << (mergedIdx & 63);
+    }
+
+    return llvm::APInt(mergedSize,
+                       llvm::ArrayRef<uint64_t>(result.data(), numWords));
+  }
+
+  llvm::APInt result = llvm::APInt::getZero(mergedSize);
+  for (unsigned mergedIdx = 0; mergedIdx < mergedSize; ++mergedIdx) {
+    unsigned origIdx = 0;
+    for (unsigned i = 0; i < numOrigInputs; ++i)
+      if ((mergedIdx >> inputMapping[i]) & 1U)
+        origIdx |= 1U << i;
+    if (tt[origIdx])
+      result.setBit(mergedIdx);
+  }
+
+  return result;
+}
+
+static llvm::APInt
+getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
+                      const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
+                      unsigned numMergedInputs,
+                      ArrayRef<const Cut *> operandCuts) {
+  auto lookupMergedPos = [&](uint32_t idx) -> std::optional<unsigned> {
+    auto it = llvm::find(mergedInputs, idx);
+    if (it == mergedInputs.end())
+      return std::nullopt;
+    return static_cast<unsigned>(std::distance(mergedInputs.begin(), it));
+  };
+
+  if (operandIdx == LogicNetwork::kConstant0) {
+    auto result = llvm::APInt::getZero(1U << numMergedInputs);
+    if (isInverted)
+      result.flipAllBits();
+    return result;
+  }
+  if (operandIdx == LogicNetwork::kConstant1) {
+    auto result = llvm::APInt::getAllOnes(1U << numMergedInputs);
+    if (isInverted)
+      result.flipAllBits();
+    return result;
+  }
+
+  if (auto pos = lookupMergedPos(operandIdx)) {
+    return circt::createVarMask(numMergedInputs, *pos, !isInverted);
+  }
+
+  for (const Cut *cut : operandCuts) {
+    if (!cut)
+      continue;
+
+    uint32_t cutOutput =
+        cut->isTrivialCut() ? cut->inputs[0] : cut->getRootIndex();
+    if (cutOutput != operandIdx)
+      continue;
+
+    const auto &cutTT = *cut->getTruthTable();
+    SmallVector<unsigned, 8> mapping;
+    mapping.reserve(cut->inputs.size());
+    unsigned mergedPos = 0;
+    for (uint32_t idx : cut->inputs) {
+      while (mergedPos < mergedInputs.size() && mergedInputs[mergedPos] < idx)
+        ++mergedPos;
+      assert(mergedPos < mergedInputs.size() && mergedInputs[mergedPos] == idx &&
+             "cut input must exist in merged inputs");
+      mapping.push_back(mergedPos);
+    }
+
+    auto result =
+        expandTruthTableForMergedInputs(cutTT.table, mapping, numMergedInputs);
+    if (isInverted)
+      result.flipAllBits();
+    return result;
+  }
+
+  llvm_unreachable("Operand not found in cuts or merged inputs");
+}
+
+static BinaryTruthTable
+computeTruthTableForGate(const LogicNetworkGate &rootGate,
+                         const llvm::SmallVectorImpl<uint32_t> &mergedInputs,
+                         ArrayRef<const Cut *> operandCuts) {
+  unsigned numMergedInputs = mergedInputs.size();
+
+  auto getEdgeTT = [&](unsigned edgeIdx) {
+    const auto &edge = rootGate.edges[edgeIdx];
+    return getExpandedTruthTable(edge.getIndex(), edge.isInverted(),
+                                 mergedInputs, numMergedInputs, operandCuts);
+  };
+
+  switch (rootGate.getKind()) {
+  case LogicNetworkGate::And2:
+  case LogicNetworkGate::Xor2:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
+  case LogicNetworkGate::Maj3:
+  case LogicNetworkGate::Dot3:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1),
+                           getEdgeTT(2)));
+  case LogicNetworkGate::Identity:
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
+  case LogicNetworkGate::Choice: {
+    assert(operandCuts.size() == 1 &&
+           "choice cuts must keep exactly one selected operand cut");
+    const Cut *selectedCut = operandCuts.front();
+    uint32_t selectedOutput = selectedCut->isTrivialCut()
+                                  ? selectedCut->inputs[0]
+                                  : selectedCut->getRootIndex();
+    return BinaryTruthTable(
+        numMergedInputs, 1,
+        getExpandedTruthTable(selectedOutput, false, mergedInputs,
+                              numMergedInputs, operandCuts));
+  }
+  default:
+    llvm_unreachable("Unsupported operation for truth table computation");
+  }
+}
+
 void Cut::computeTruthTableFromOperands(const LogicNetwork &network) {
-  computeTruthTable(network);
+  if (isTrivialCut()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  if (operandCuts.empty()) {
+    computeTruthTable(network);
+    return;
+  }
+
+  const auto &rootGate = network.getGate(rootIndex);
+  truthTable.emplace(computeTruthTableForGate(rootGate, inputs, operandCuts));
 }
 
 bool Cut::dominates(const Cut &other) const {
