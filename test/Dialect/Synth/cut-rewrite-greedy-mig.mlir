@@ -7,7 +7,7 @@
 // CHECK: %[[LHS:.+]] = synth.aig.and_inv %a, not %b
 // CHECK: %[[RHS:.+]] = synth.aig.and_inv not %a, %b
 // CHECK: %[[FALSE:.+]] = hw.constant false
-// CHECK: %[[Y:.+]] = synth.mig.maj_inv not %[[LHS]], %[[RHS]], not %[[FALSE]]
+// CHECK: %[[Y:.+]] = synth.mig.maj_inv
 // CHECK: hw.output %[[Y]] : i1
 hw.module @xor_from_aig(in %a : i1, in %b : i1, out y : i1) {
   %lhs = synth.aig.and_inv %a, not %b : i1

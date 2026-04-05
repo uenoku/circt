@@ -1718,8 +1718,8 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
     case CandidateRecipeNode::Dot: {
       SmallVector<uint64_t, 3> operandSignals;
       operandSignals.reserve(node.fanins.size());
-      for (auto [faninIndex, bitIndex] : llvm::enumerate(node.fanins)) {
-        uint64_t signal = nodeSignals[faninIndex];
+      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
+        uint64_t signal = nodeSignals[faninNodeIndex];
         bool inverted = (node.inputInvertMask >> bitIndex) & 1u;
         operandSignals.push_back((signal << 1) | static_cast<uint64_t>(inverted));
       }
@@ -1907,11 +1907,11 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
       operandSignals.reserve(node.fanins.size());
       operands.reserve(node.fanins.size());
       inverted.reserve(node.fanins.size());
-      for (auto [faninIndex, bitIndex] : llvm::enumerate(node.fanins)) {
+      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
         bool isInverted = (node.inputInvertMask >> bitIndex) & 1u;
-        operands.push_back(nodeValues[faninIndex]);
+        operands.push_back(nodeValues[faninNodeIndex]);
         inverted.push_back(isInverted);
-        operandSignals.push_back((nodeSignals[faninIndex] << 1) |
+        operandSignals.push_back((nodeSignals[faninNodeIndex] << 1) |
                                  static_cast<uint64_t>(isInverted));
       }
       canonicalizeStructuralOperands(node.kind, operandSignals);
