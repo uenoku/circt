@@ -66,10 +66,9 @@ struct llvm::DenseMapInfo<StructuralKey> {
   }
 
   static unsigned getHashValue(const StructuralKey &key) {
-    return static_cast<unsigned>(
-        llvm::hash_combine(key.opName, llvm::hash_combine_range(
-                                           key.operandSignals.begin(),
-                                           key.operandSignals.end())));
+    return static_cast<unsigned>(llvm::hash_combine(
+        key.opName, llvm::hash_combine_range(key.operandSignals.begin(),
+                                             key.operandSignals.end())));
   }
 
   static bool isEqual(const StructuralKey &lhs, const StructuralKey &rhs) {
@@ -94,8 +93,9 @@ struct LocalFrontierLeaf {
   unsigned depth = 0;
 };
 
-static NPNClass computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
-                                              const CutRewriterOptions &options) {
+static NPNClass
+computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
+                              const CutRewriterOptions &options) {
   NPNClass canonicalForm;
   if (!options.npnTable || !options.npnTable->lookup(truthTable, canonicalForm))
     canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
@@ -161,7 +161,8 @@ evaluateLocalCutValue(Value value, unsigned numInputs,
       return emitError(xorOp.getLoc(), "xor must have at least one operand");
     llvm::APInt result(1u << numInputs, 0);
     for (auto [index, operand] : llvm::enumerate(xorOp.getOperands())) {
-      auto input = *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache);
+      auto input =
+          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache);
       result = index == 0 ? input : result ^ input;
     }
     return memoize(result);
@@ -183,7 +184,8 @@ evaluateLocalCutValue(Value value, unsigned numInputs,
     return memoize(dotOp.evaluate(inputs));
   }
 
-  return defOp->emitError("unsupported operation in local cut truth-table evaluation");
+  return defOp->emitError(
+      "unsupported operation in local cut truth-table evaluation");
 }
 
 static MatchBinding getBindingForPattern(const LocalCut &cut,
@@ -195,11 +197,10 @@ static MatchBinding getBindingForPattern(const LocalCut &cut,
 
   const auto &cutNPN = cut.getNPNClass(options);
   cutNPN.getInputPermutation(*patternNPN, binding.inputPermutation);
-  binding.inputNegationMask = static_cast<uint8_t>(
-      cutNPN.inputNegation ^ patternNPN->inputNegation);
-  binding.outputNegated =
-      static_cast<bool>((cutNPN.outputNegation ^ patternNPN->outputNegation) &
-                        1u);
+  binding.inputNegationMask =
+      static_cast<uint8_t>(cutNPN.inputNegation ^ patternNPN->inputNegation);
+  binding.outputNegated = static_cast<bool>(
+      (cutNPN.outputNegation ^ patternNPN->outputNegation) & 1u);
   return binding;
 }
 
@@ -261,8 +262,8 @@ static void getExpandableGreedyOperands(Value value,
   }
 }
 
-static void dedupNormalizedLocalFrontier(
-    SmallVectorImpl<LocalFrontierLeaf> &frontier) {
+static void
+dedupNormalizedLocalFrontier(SmallVectorImpl<LocalFrontierLeaf> &frontier) {
   unsigned write = 0;
   for (unsigned read = 0; read != frontier.size(); ++read) {
     if (!frontier[read].value)
@@ -278,14 +279,14 @@ static void dedupNormalizedLocalFrontier(
   frontier.resize(write);
 }
 
-static void normalizeAndDedupLocalFrontier(
-    SmallVectorImpl<LocalFrontierLeaf> &frontier,
-    const GreedyStructuralIndex &structuralIndex) {
-  llvm::sort(frontier, [&](const LocalFrontierLeaf &lhs,
-                           const LocalFrontierLeaf &rhs) {
-    return getGreedyStructuralOrder(structuralIndex, lhs.value) <
-           getGreedyStructuralOrder(structuralIndex, rhs.value);
-  });
+static void
+normalizeAndDedupLocalFrontier(SmallVectorImpl<LocalFrontierLeaf> &frontier,
+                               const GreedyStructuralIndex &structuralIndex) {
+  llvm::sort(frontier,
+             [&](const LocalFrontierLeaf &lhs, const LocalFrontierLeaf &rhs) {
+               return getGreedyStructuralOrder(structuralIndex, lhs.value) <
+                      getGreedyStructuralOrder(structuralIndex, rhs.value);
+             });
   dedupNormalizedLocalFrontier(frontier);
 }
 
@@ -304,10 +305,11 @@ static bool hasEquivalentGreedyCut(ArrayRef<LocalCut> cuts,
   });
 }
 
-static void enumerateGreedyCutsForRoot(
-    Value root, unsigned maxInputs, unsigned maxExpansionDepth,
-    const GreedyStructuralIndex &structuralIndex,
-    SmallVectorImpl<LocalCut> &cuts) {
+static void
+enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
+                           unsigned maxExpansionDepth,
+                           const GreedyStructuralIndex &structuralIndex,
+                           SmallVectorImpl<LocalCut> &cuts) {
   cuts.clear();
   if (!isGreedyExpandableValue(root))
     return;
@@ -328,8 +330,9 @@ static void enumerateGreedyCutsForRoot(
       cuts.push_back(std::move(cut));
   };
 
-  auto recurse = [&](auto &&self,
-                     const SmallVector<LocalFrontierLeaf, 8> &frontier) -> void {
+  auto recurse =
+      [&](auto &&self,
+          const SmallVector<LocalFrontierLeaf, 8> &frontier) -> void {
     addCut(frontier);
 
     for (unsigned leafIndex = 0; leafIndex != frontier.size(); ++leafIndex) {
@@ -372,8 +375,13 @@ static bool isAreaCountedLogicOp(Operation *op) {
              comb::XorOp>(op);
 }
 
+static bool isGreedyDoomedTrackableOp(Operation *op) {
+  return isAreaCountedLogicOp(op) || isa<hw::WireOp, synth::ChoiceOp>(op);
+}
+
 static unsigned getUseCount(Value value) {
-  return static_cast<unsigned>(std::distance(value.use_begin(), value.use_end()));
+  return static_cast<unsigned>(
+      std::distance(value.use_begin(), value.use_end()));
 }
 
 static OperationName getRecipeOperationName(MLIRContext *context,
@@ -443,10 +451,11 @@ public:
 
   uint64_t getNextSignalId() const { return nextSignalId; }
 
-  Value lookupValue(OperationName opName, ArrayRef<uint64_t> operandSignals) const {
-    auto it = valueTable.find(StructuralKey(
-        opName, SmallVector<uint64_t, 3>(operandSignals.begin(),
-                                         operandSignals.end())));
+  Value lookupValue(OperationName opName,
+                    ArrayRef<uint64_t> operandSignals) const {
+    auto it = valueTable.find(
+        StructuralKey(opName, SmallVector<uint64_t, 3>(operandSignals.begin(),
+                                                       operandSignals.end())));
     if (it == valueTable.end() || it->second.empty())
       return {};
     return it->second.front();
@@ -491,10 +500,10 @@ private:
       for (auto [i, operand] : llvm::enumerate(andOp.getInputs()))
         operandSignals.push_back((getSignalId(operand) << 1) |
                                  static_cast<uint64_t>(andOp.isInverted(i)));
-      canonicalizeStructuralOperands(
-          andOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
-                                      : CandidateRecipeNode::And,
-          operandSignals);
+      canonicalizeStructuralOperands(andOp.getNumOperands() == 1
+                                         ? CandidateRecipeNode::Identity
+                                         : CandidateRecipeNode::And,
+                                     operandSignals);
       return StructuralKey(op->getName(), std::move(operandSignals));
     }
     if (auto xorOp = dyn_cast<comb::XorOp>(op)) {
@@ -509,10 +518,10 @@ private:
       for (auto [i, operand] : llvm::enumerate(majOp.getOperands()))
         operandSignals.push_back((getSignalId(operand) << 1) |
                                  static_cast<uint64_t>(majOp.isInverted(i)));
-      canonicalizeStructuralOperands(
-          majOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
-                                      : CandidateRecipeNode::Maj,
-          operandSignals);
+      canonicalizeStructuralOperands(majOp.getNumOperands() == 1
+                                         ? CandidateRecipeNode::Identity
+                                         : CandidateRecipeNode::Maj,
+                                     operandSignals);
       return StructuralKey(op->getName(), std::move(operandSignals));
     }
     if (auto dotOp = dyn_cast<dig::DotInverterOp>(op)) {
@@ -520,10 +529,10 @@ private:
       for (auto [i, operand] : llvm::enumerate(dotOp.getOperands()))
         operandSignals.push_back((getSignalId(operand) << 1) |
                                  static_cast<uint64_t>(dotOp.isInverted(i)));
-      canonicalizeStructuralOperands(
-          dotOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
-                                      : CandidateRecipeNode::Dot,
-          operandSignals);
+      canonicalizeStructuralOperands(dotOp.getNumOperands() == 1
+                                         ? CandidateRecipeNode::Identity
+                                         : CandidateRecipeNode::Dot,
+                                     operandSignals);
       return StructuralKey(op->getName(), std::move(operandSignals));
     }
     return std::nullopt;
@@ -594,9 +603,9 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   SmallVector<uint64_t, 8> nodeSignals(recipe.nodes.size(), 0);
   SmallVector<LocalProbeEntry, 8> localEntries;
 
-  auto findLocalSignal = [&](OperationName opName,
-                             ArrayRef<uint64_t> operandSignals)
-      -> std::optional<uint64_t> {
+  auto findLocalSignal =
+      [&](OperationName opName,
+          ArrayRef<uint64_t> operandSignals) -> std::optional<uint64_t> {
     for (const auto &entry : localEntries)
       if (entry.opName == opName && entry.operandSignals == operandSignals)
         return entry.signalId;
@@ -610,9 +619,8 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       return rawSignal;
 
     SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
-    OperationName inverterName =
-        getRecipeOperationName(inputValue.getContext(), recipe,
-                               CandidateRecipeNode::Identity);
+    OperationName inverterName = getRecipeOperationName(
+        inputValue.getContext(), recipe, CandidateRecipeNode::Identity);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals)) {
       result.reusedOps.push_back(existingValue.getDefiningOp());
       return index.getSignalId(existingValue);
@@ -622,6 +630,7 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       return *localSignal;
 
     uint64_t signal = allocateSignal();
+    ++result.newArea;
     localEntries.push_back(
         LocalProbeEntry{inverterName, std::move(operandSignals), signal});
     return signal;
@@ -648,11 +657,12 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
         uint64_t signal = nodeSignals[faninNodeIndex];
         bool inverted = (node.inputInvertMask >> bitIndex) & 1u;
-        operandSignals.push_back((signal << 1) | static_cast<uint64_t>(inverted));
+        operandSignals.push_back((signal << 1) |
+                                 static_cast<uint64_t>(inverted));
       }
       canonicalizeStructuralOperands(node.kind, operandSignals);
-      OperationName opName = getRecipeOperationName(rootValue.getContext(),
-                                                    recipe, node.kind);
+      OperationName opName =
+          getRecipeOperationName(rootValue.getContext(), recipe, node.kind);
       if (Value existingValue = index.lookupValue(opName, operandSignals)) {
         if (auto *op = existingValue.getDefiningOp())
           result.reusedOps.push_back(op);
@@ -678,15 +688,18 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   result.rootSignal = nodeSignals[recipe.root];
   if (binding.outputNegated) {
     SmallVector<uint64_t, 3> operandSignals = {(result.rootSignal << 1) | 1u};
-    OperationName inverterName =
-        getRecipeOperationName(rootValue.getContext(), recipe,
-                               CandidateRecipeNode::Identity);
+    OperationName inverterName = getRecipeOperationName(
+        rootValue.getContext(), recipe, CandidateRecipeNode::Identity);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals)) {
       if (auto *op = existingValue.getDefiningOp())
-        result.reusedOps.push_back(op);
+      result.reusedOps.push_back(op);
       result.rootSignal = index.getSignalId(existingValue);
     } else {
       result.rootSignal = allocateSignal();
+      ++result.newArea;
+      localEntries.push_back(
+          LocalProbeEntry{inverterName, std::move(operandSignals),
+                          result.rootSignal});
     }
   }
 
@@ -706,20 +719,22 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
 
 static SmallVector<Operation *>
 computeDoomedCone(Operation *rootOp, ArrayRef<Operation *> preservedOps) {
-  SmallPtrSet<Operation *, 8> preserved(preservedOps.begin(), preservedOps.end());
+  SmallPtrSet<Operation *, 8> preserved(preservedOps.begin(),
+                                        preservedOps.end());
   SmallPtrSet<Operation *, 16> doomedSet;
   DenseMap<Operation *, unsigned> removedUses;
   SmallVector<Operation *> doomed;
 
   auto recurse = [&](auto &&self, Operation *op) -> void {
-    if (!isAreaCountedLogicOp(op) || preserved.contains(op) ||
+    if (!isGreedyDoomedTrackableOp(op) || preserved.contains(op) ||
         doomedSet.contains(op))
       return;
     doomedSet.insert(op);
     doomed.push_back(op);
     for (Value operand : op->getOperands()) {
       auto *defOp = operand.getDefiningOp();
-      if (!defOp || !isAreaCountedLogicOp(defOp) || preserved.contains(defOp))
+      if (!defOp || !isGreedyDoomedTrackableOp(defOp) ||
+          preserved.contains(defOp))
         continue;
       unsigned removed = ++removedUses[defOp];
       if (removed == getUseCount(defOp->getResult(0)))
@@ -729,6 +744,53 @@ computeDoomedCone(Operation *rootOp, ArrayRef<Operation *> preservedOps) {
 
   recurse(recurse, rootOp);
   return doomed;
+}
+
+static SmallVector<Operation *>
+collectPreservedOps(const LocalCut &cut, ArrayRef<Operation *> reusedOps) {
+  SmallVector<Operation *, 8> preservedOps(reusedOps.begin(), reusedOps.end());
+  SmallPtrSet<Operation *, 8> preservedSet(preservedOps.begin(),
+                                           preservedOps.end());
+  for (Value leaf : cut.leaves) {
+    auto *defOp = leaf.getDefiningOp();
+    if (!defOp || !isGreedyDoomedTrackableOp(defOp) ||
+        !preservedSet.insert(defOp).second)
+      continue;
+    preservedOps.push_back(defOp);
+  }
+  return preservedOps;
+}
+
+static void eraseDoomedCone(mlir::PatternRewriter &rewriter, Operation *rootOp,
+                            ArrayRef<Operation *> doomed) {
+  SmallVector<Operation *, 16> pending;
+  pending.reserve(doomed.size());
+  for (Operation *doomedOp : doomed)
+    if (doomedOp != rootOp && doomedOp && doomedOp->getBlock())
+      pending.push_back(doomedOp);
+
+  bool changed = true;
+  while (changed && !pending.empty()) {
+    changed = false;
+    unsigned write = 0;
+    for (Operation *doomedOp : pending) {
+      if (!doomedOp || !doomedOp->getBlock())
+        continue;
+      if (!doomedOp->use_empty()) {
+        pending[write++] = doomedOp;
+        continue;
+      }
+      rewriter.eraseOp(doomedOp);
+      changed = true;
+    }
+    pending.resize(write);
+  }
+
+  LLVM_DEBUG({
+    if (!pending.empty())
+      llvm::dbgs() << "failed to erase " << pending.size()
+                   << " doomed ops due to remaining uses\n";
+  });
 }
 
 static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
@@ -760,17 +822,16 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
       return {inputValue, rawSignal};
 
     SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
-    OperationName inverterName =
-        getRecipeOperationName(builder.getContext(), recipe,
-                               CandidateRecipeNode::Identity);
+    OperationName inverterName = getRecipeOperationName(
+        builder.getContext(), recipe, CandidateRecipeNode::Identity);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals))
       return {existingValue, index.getSignalId(existingValue)};
 
     if (auto it = freeInverters.find(rawSignal); it != freeInverters.end())
       return {it->second, index.getSignalId(it->second)};
 
-    Value inv =
-        materializeRecipeInverter(builder, loc, recipe.inverterKind, inputValue);
+    Value inv = materializeRecipeInverter(builder, loc, recipe.inverterKind,
+                                          inputValue);
     freeInverters[rawSignal] = inv;
     uint64_t signal = index.getOrCreateSignalId(inv);
     return {inv, signal};
@@ -835,8 +896,8 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
         value = comb::XorOp::create(builder, loc, operands[0], operands[1]);
         break;
       case CandidateRecipeNode::Maj:
-        value = mig::MajorityInverterOp::create(builder, loc, operands,
-                                                inverted);
+        value =
+            mig::MajorityInverterOp::create(builder, loc, operands, inverted);
         break;
       case CandidateRecipeNode::Dot:
         value = dig::DotInverterOp::create(builder, loc, operands, inverted);
@@ -856,8 +917,8 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
 
   Value result = nodeValues[recipe.root];
   if (binding.outputNegated)
-    result = materializeRecipeInverter(builder, loc, recipe.inverterKind,
-                                       result);
+    result =
+        materializeRecipeInverter(builder, loc, recipe.inverterKind, result);
   if (auto *op = result.getDefiningOp())
     return op;
   return hw::WireOp::create(builder, loc, result).getOperation();
@@ -969,16 +1030,26 @@ public:
         continue;
 
       ProbeResult probe =
-          probeCandidateRecipe(*recipe, matched->binding, cut,
-                               structuralIndex);
+          probeCandidateRecipe(*recipe, matched->binding, cut, structuralIndex);
       if (probe.rootSignal == structuralIndex.getSignalId(rootValue))
         continue;
 
-      auto doomed = computeDoomedCone(op, probe.reusedOps);
-      int gain =
-          static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
+      SmallVector<Operation *, 8> preservedOps =
+          collectPreservedOps(cut, probe.reusedOps);
+      auto doomed = computeDoomedCone(op, preservedOps);
+      int gain = static_cast<int>(llvm::count_if(
+                     doomed, [](Operation *doomedOp) {
+                       return isAreaCountedLogicOp(doomedOp);
+                     })) -
+                 static_cast<int>(probe.newArea);
       if (gain <= 0)
         continue;
+      LLVM_DEBUG({
+        llvm::dbgs() << "candidate cut with gain " << gain
+                     << " (new area: " << probe.newArea
+                     << ", preserved ops: " << probe.reusedOps.size()
+                     << ", doomed ops: " << doomed.size() << ")\n";
+      });
 
       if (!bestCandidate || gain > bestCandidate->gain ||
           (gain == bestCandidate->gain &&
@@ -986,9 +1057,9 @@ public:
           (gain == bestCandidate->gain &&
            probe.newArea == bestCandidate->newArea &&
            cut.getInputSize() < bestCandidate->cut.getInputSize())) {
-        bestCandidate =
-            GreedyRewriteCandidate{cut, *matched, *recipe, probe.reusedOps,
-                                   gain, probe.newArea};
+        bestCandidate = GreedyRewriteCandidate{
+            cut, *matched, *recipe, std::move(preservedOps), gain,
+            probe.newArea};
       }
     }
 
@@ -997,10 +1068,9 @@ public:
 
     auto doomed = computeDoomedCone(op, bestCandidate->preservedOps);
     rewriter.setInsertionPoint(op);
-    auto result =
-        materializeRecipe(rewriter, bestCandidate->cut,
-                          bestCandidate->match.binding,
-                          bestCandidate->recipe, structuralIndex);
+    auto result = materializeRecipe(rewriter, bestCandidate->cut,
+                                    bestCandidate->match.binding,
+                                    bestCandidate->recipe, structuralIndex);
     if (failed(result))
       return failure();
 
@@ -1010,9 +1080,7 @@ public:
     }
 
     rewriter.replaceOp(op, *result);
-    for (Operation *doomedOp : doomed)
-      if (doomedOp != op && doomedOp->getBlock() && doomedOp->use_empty())
-        rewriter.eraseOp(doomedOp);
+    eraseDoomedCone(rewriter, op, doomed);
 
     driver.noteCutRewritten();
     return success();

@@ -6,9 +6,8 @@
 // CHECK-LABEL: hw.module @xor_from_aig
 // CHECK: %[[LHS:.+]] = synth.aig.and_inv %a, not %b
 // CHECK: %[[RHS:.+]] = synth.aig.and_inv not %a, %b
-// CHECK: %[[DOT0:.+]] = synth.dig.dot_inv
-// CHECK: %[[DOT1:.+]] = synth.dig.dot_inv
-// CHECK: hw.output %[[DOT1]] : i1
+// CHECK: %[[Y:.+]] = synth.aig.and_inv not %[[LHS]], not %[[RHS]]
+// CHECK: hw.output %[[Y]] : i1
 hw.module @xor_from_aig(in %a : i1, in %b : i1, out y : i1) {
   %lhs = synth.aig.and_inv %a, not %b : i1
   %rhs = synth.aig.and_inv not %a, %b : i1
