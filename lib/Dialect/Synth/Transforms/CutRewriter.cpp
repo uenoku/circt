@@ -2942,13 +2942,28 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
     bool changed = false;
     constexpr unsigned greedyMaxExpansionDepth = 3;
     SmallVector<LocalCut, 16> rootCuts;
-    for (Operation &op : llvm::make_early_inc_range(llvm::reverse(*block))) {
-      if ((options.maxIterations != 0 && iteration >= options.maxIterations))
-        return success();
+    SmallVector<Operation *, 32> rootOps;
+    for (Operation &op : llvm::reverse(*block)) {
       if (!op.getNumResults() || !op.getResult(0).getType().isInteger(1))
         continue;
-      Value rootValue = op.getResult(0);
-      if (!isGreedyExpandableValue(rootValue) || !isAreaCountedLogicOp(&op) ||
+      if (!isGreedyExpandableValue(op.getResult(0)))
+        continue;
+      if (!isAreaCountedLogicOp(&op))
+        continue;
+      rootOps.push_back(&op);
+    }
+
+    SmallVector<Operation *, 32> deferredDoomedOps;
+    SmallPtrSet<Operation *, 32> deferredDoomedSet;
+    for (Operation *rootOp : rootOps) {
+      if ((options.maxIterations != 0 && iteration >= options.maxIterations))
+        break;
+      if (!rootOp || rootOp->getBlock() != block)
+        continue;
+      if (!rootOp->getNumResults() || !rootOp->getResult(0).getType().isInteger(1))
+        continue;
+      Value rootValue = rootOp->getResult(0);
+      if (!isGreedyExpandableValue(rootValue) || !isAreaCountedLogicOp(rootOp) ||
           rootValue.use_empty())
         continue;
 
@@ -2977,7 +2992,7 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
         if (probe.rootSignal == signalIds.lookup(rootValue))
           continue;
 
-        auto doomed = computeDoomedCone(&op, probe.reusedOps);
+        auto doomed = computeDoomedCone(rootOp, probe.reusedOps);
         int gain =
             static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
         if (gain <= 0)
@@ -2997,9 +3012,9 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
       if (!bestCandidate)
         continue;
 
-      auto *rootOp = bestCandidate->cut.root.getDefiningOp();
+      auto *rewriteRootOp = bestCandidate->cut.root.getDefiningOp();
       PatternRewriter rewriter(topOp->getContext());
-      rewriter.setInsertionPoint(rootOp);
+      rewriter.setInsertionPoint(rewriteRootOp);
       auto *specPattern = static_cast<const SpeculativeCutRewritePattern *>(
           bestCandidate->match.getPattern());
       auto result = specPattern->rewrite(rewriter, bestCandidate->cut,
@@ -3013,18 +3028,25 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
       ProbeResult freshProbe = probeCandidateRecipe(
           bestCandidate->recipe, bestCandidate->match.getBinding(),
           bestCandidate->cut, freshSignalIds, freshExisting);
-      auto doomed = computeDoomedCone(rootOp, freshProbe.reusedOps);
+      auto doomed = computeDoomedCone(rewriteRootOp, freshProbe.reusedOps);
 
-      rewriter.replaceOp(rootOp, *result);
-      UnusedOpPruner pruner;
+      rewriter.replaceOp(rewriteRootOp, *result);
       for (Operation *doomedOp : doomed)
-        if (doomedOp != rootOp && doomedOp->use_empty())
-          pruner.eraseNow(doomedOp);
+        if (doomedOp != rewriteRootOp &&
+            deferredDoomedSet.insert(doomedOp).second)
+          deferredDoomedOps.push_back(doomedOp);
       ++stats.numCutsRewritten;
       ++iteration;
       changed = true;
     }
 
+    UnusedOpPruner pruner;
+    for (Operation *doomedOp : deferredDoomedOps)
+      if (doomedOp->getBlock() && doomedOp->use_empty())
+        pruner.eraseNow(doomedOp);
+
+    if ((options.maxIterations != 0 && iteration >= options.maxIterations))
+      return success();
     if (!changed)
       return success();
   }
