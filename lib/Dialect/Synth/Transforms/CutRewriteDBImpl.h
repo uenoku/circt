@@ -29,6 +29,8 @@ struct LoadedCutRewriteEntry {
   double area = 0.0;
   SmallVector<DelayType> delay;
 
+  virtual const CandidateRecipe *getCandidateRecipe() const { return nullptr; }
+
   virtual FailureOr<Operation *> rewrite(OpBuilder &builder,
                                          CutEnumerator &enumerator,
                                          const Cut &cut) const = 0;

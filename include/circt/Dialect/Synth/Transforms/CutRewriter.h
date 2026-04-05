@@ -347,6 +347,47 @@ private:
   std::optional<SmallVector<DelayType, 6>> ownedDelays;
 };
 
+/// Functional binding between a matched pattern and a concrete cut.
+///
+/// This records only wiring information needed to rebuild a pattern instance
+/// for a specific cut. It does not model any phase economics.
+struct MatchBinding {
+  SmallVector<unsigned, 6> inputPermutation;
+  uint8_t inputNegationMask = 0;
+  bool outputNegated = false;
+};
+
+/// Inverter family used to materialize unary inversion in recipes.
+enum class RecipeInverterKind : uint8_t { Aig, Mig, Dig };
+
+/// One node in a speculative candidate recipe.
+struct CandidateRecipeNode {
+  enum Kind : uint8_t {
+    Input,
+    Const0,
+    Const1,
+    Identity,
+    And,
+    Xor,
+    Maj,
+    Dot
+  };
+
+  Kind kind = Input;
+  SmallVector<unsigned, 3> fanins;
+  uint8_t inputInvertMask = 0;
+};
+
+/// Structural recipe for a speculative replacement candidate.
+struct CandidateRecipe {
+  unsigned numInputs = 0;
+  unsigned root = 0;
+  RecipeInverterKind inverterKind = RecipeInverterKind::Aig;
+  double area = 0.0;
+  SmallVector<DelayType, 6> perInputDelays;
+  SmallVector<CandidateRecipeNode, 8> nodes;
+};
+
 /// Represents a cut that has been successfully matched to a rewriting pattern.
 ///
 /// This class encapsulates the result of matching a cut against a rewriting
@@ -358,6 +399,7 @@ private:
   SmallVector<DelayType, 1>
       arrivalTimes;  ///< Arrival times of outputs from this pattern
   double area = 0.0; ///< Area cost of this pattern
+  MatchBinding binding; ///< Wiring from pattern inputs/outputs to cut values
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -365,8 +407,10 @@ public:
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
-                 SmallVector<DelayType, 1> arrivalTimes, double area)
-      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area) {}
+                 SmallVector<DelayType, 1> arrivalTimes, double area,
+                 MatchBinding binding = {})
+      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area),
+        binding(std::move(binding)) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
@@ -377,6 +421,9 @@ public:
 
   /// Get the area cost of using this pattern.
   double getArea() const;
+
+  /// Get the binding used to materialize this pattern for the cut.
+  const MatchBinding &getBinding() const { return binding; }
 };
 
 /// Precomputed NPN canonicalization table for 4-input single-output functions.
@@ -785,7 +832,8 @@ struct CutRewritePattern {
   /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          CutEnumerator &enumerator,
-                                         const Cut &cut) const = 0;
+                                         const Cut &cut,
+                                         const MatchedPattern &match) const = 0;
 
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;
@@ -796,10 +844,34 @@ struct CutRewritePattern {
   /// Get location for this pattern(optional).
   virtual LocationAttr getLoc() const { return mlir::UnknownLoc::get(context); }
 
+  /// Whether this pattern provides a speculative recipe.
+  virtual bool isSpeculative() const { return false; }
+
   mlir::MLIRContext *getContext() const { return context; }
 
 private:
   mlir::MLIRContext *context;
+};
+
+/// Speculative extension of `CutRewritePattern`.
+///
+/// Subclasses provide a structural candidate recipe. Default implementations of
+/// `match` and `rewrite` derive coarse cost data and concrete materialization
+/// from that recipe.
+struct SpeculativeCutRewritePattern : public CutRewritePattern {
+  using CutRewritePattern::CutRewritePattern;
+
+  bool isSpeculative() const final { return true; }
+
+  std::optional<MatchResult> match(CutEnumerator &enumerator,
+                                   const Cut &cut) const final;
+
+  FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
+                                 CutEnumerator &enumerator, const Cut &cut,
+                                 const MatchedPattern &match) const final;
+
+  virtual FailureOr<CandidateRecipe> speculate(CutEnumerator &enumerator,
+                                               const Cut &cut) const = 0;
 };
 
 /// Manages a collection of rewriting patterns for combinational logic
@@ -839,6 +911,7 @@ private:
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
+  friend class GreedyCutRewriter;
 };
 
 /// Main cut-based rewriting algorithm for combinational logic optimization.
@@ -909,6 +982,36 @@ private:
   /// Available rewriting patterns
   const CutRewritePatternSet &patterns;
 
+  CutEnumerator cutEnumerator;
+};
+
+/// Options for greedy speculative cut rewriting.
+struct GreedyCutRewriterOptions : public CutRewriterOptions {
+  /// Maximum number of greedy commits. Zero means until fixpoint.
+  unsigned maxIterations = 0;
+};
+
+/// Greedy local cut-rewriting driver.
+///
+/// Unlike `CutRewriter`, this driver commits one profitable speculative
+/// replacement at a time and then re-enumerates cuts on the updated IR.
+class GreedyCutRewriter {
+public:
+  GreedyCutRewriter(const GreedyCutRewriterOptions &options,
+                    CutRewritePatternSet &patterns)
+      : options(options), patterns(patterns), cutEnumerator(options) {}
+
+  LogicalResult run(Operation *topOp);
+
+  const CutEnumeratorStats &getStats() const {
+    return cutEnumerator.getStats();
+  }
+
+private:
+  std::optional<MatchedPattern> patternMatchCut(const Cut &cut);
+
+  const GreedyCutRewriterOptions &options;
+  const CutRewritePatternSet &patterns;
   CutEnumerator cutEnumerator;
 };
 

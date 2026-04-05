@@ -85,16 +85,14 @@ struct TechLibraryPattern : public CutRewritePattern {
   /// Rewrite the cut set using this library primitive
   llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                        CutEnumerator &enumerator,
-                                       const Cut &cut) const override {
+                                       const Cut &cut,
+                                       const MatchedPattern &match) const override {
     const auto &network = enumerator.getLogicNetwork();
     // Create a new instance of the module
-    SmallVector<unsigned> permutedInputIndices;
-    cut.getPermutatedInputIndices(enumerator.getOptions(), npnClass,
-                                  permutedInputIndices);
-
     SmallVector<Value> inputs;
-    inputs.reserve(permutedInputIndices.size());
-    for (unsigned idx : permutedInputIndices) {
+    const auto &binding = match.getBinding();
+    inputs.reserve(binding.inputPermutation.size());
+    for (unsigned idx : binding.inputPermutation) {
       assert(idx < cut.inputs.size() && "input permutation index out of range");
       inputs.push_back(network.getValue(cut.inputs[idx]));
     }

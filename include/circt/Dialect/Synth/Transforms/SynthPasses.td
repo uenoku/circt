@@ -121,6 +121,35 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
                            "circt::synth::SynthDialect"];
 }
 
+def GreedyCutRewrite : Pass<"synth-greedy-cut-rewrite", "hw::HWModuleOp"> {
+  let summary = "Greedy cut rewriting using an external database";
+  let description = [{
+    This pass performs greedy local cut rewriting using an external database
+    file. It commits one profitable speculative rewrite at a time and
+    re-enumerates cuts on the updated IR.
+  }];
+  let options = [
+    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "4",
+           "Maximum number of cuts to maintain per node">,
+    Option<"test", "test", "bool", "false", "Attach timing to IR for testing">,
+    Option<"maxIterations", "max-iterations", "unsigned", "0",
+           "Maximum number of greedy rewrites; 0 means until fixpoint">,
+    ListOption<"dbFiles", "db-files", "std::string",
+               "External cut-rewrite database files in MLIR or MLIR bytecode">,
+  ];
+  let statistics = [
+    Statistic<"numCutsCreated", "cuts-created",
+              "Number of cuts created during cut enumeration">,
+    Statistic<"numCutSetsCreated", "cut-sets-created",
+              "Number of cut sets created during cut enumeration">,
+    Statistic<"numCutsRewritten", "cuts-rewritten",
+              "Number of cuts rewritten">,
+  ];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 def GenPredefined : Pass<"synth-gen-predefined", "mlir::ModuleOp"> {
   let summary = "Generate predefined cut-rewrite database modules";
   let description = [{

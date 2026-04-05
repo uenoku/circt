@@ -31,6 +31,7 @@
 namespace circt {
 namespace synth {
 #define GEN_PASS_DEF_CUTREWRITE
+#define GEN_PASS_DEF_GREEDYCUTREWRITE
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
 } // namespace synth
 } // namespace circt
@@ -286,8 +287,37 @@ struct CutRewriteDatabasePattern : public CutRewritePattern {
   }
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
-                                 const Cut &cut) const override {
+                                 const Cut &cut,
+                                 const MatchedPattern &match) const override {
     return entry.rewrite(builder, enumerator, cut);
+  }
+
+  unsigned getNumOutputs() const override { return 1; }
+  StringRef getPatternName() const override { return entry.moduleName; }
+
+private:
+  const LoadedCutRewriteEntry &entry;
+};
+
+struct GreedyCutRewriteDatabasePattern : public SpeculativeCutRewritePattern {
+  GreedyCutRewriteDatabasePattern(MLIRContext *context,
+                                  const LoadedCutRewriteEntry &entry)
+      : SpeculativeCutRewritePattern(context), entry(entry) {}
+
+  bool useTruthTableMatcher(
+      SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
+    matchingNPNClasses.push_back(entry.npnClass);
+    return true;
+  }
+
+  FailureOr<CandidateRecipe> speculate(CutEnumerator &enumerator,
+                                       const Cut &cut) const override {
+    assert(cut.getNPNClass(enumerator.getOptions()).truthTable ==
+           entry.npnClass.truthTable);
+    const CandidateRecipe *recipe = entry.getCandidateRecipe();
+    if (!recipe)
+      return failure();
+    return *recipe;
   }
 
   unsigned getNumOutputs() const override { return 1; }
@@ -365,6 +395,97 @@ struct CutRewritePass
 
     CutRewritePatternSet patternSet(std::move(patterns));
     CutRewriter rewriter(options, patternSet);
+    if (failed(rewriter.run(module)))
+      return signalPassFailure();
+
+    const auto &stats = rewriter.getStats();
+    numCutsCreated += stats.numCutsCreated;
+    numCutSetsCreated += stats.numCutSetsCreated;
+    numCutsRewritten += stats.numCutsRewritten;
+  }
+
+private:
+  std::shared_ptr<const LoadedCutRewriteDatabase> loadedDatabase;
+  unsigned loadedMaxInputSize = 0;
+  std::shared_ptr<const NPNTable> npnTable;
+};
+
+struct GreedyCutRewritePass
+    : public circt::synth::impl::GreedyCutRewriteBase<GreedyCutRewritePass> {
+  using circt::synth::impl::GreedyCutRewriteBase<
+      GreedyCutRewritePass>::GreedyCutRewriteBase;
+
+  LogicalResult initialize(MLIRContext *context) override {
+    loadedMaxInputSize = 0;
+    loadedDatabase.reset();
+    npnTable = std::make_shared<const NPNTable>();
+    if (dbFiles.empty()) {
+      emitError(UnknownLoc::get(context))
+          << "synth-greedy-cut-rewrite requires at least one 'db-files' entry";
+      return failure();
+    }
+
+    auto database = std::make_shared<LoadedCutRewriteDatabase>();
+    for (const std::string &dbFile : dbFiles) {
+      auto parsedModule = parseCutRewriteDBFile(dbFile, context);
+      if (failed(parsedModule))
+        return failure();
+
+      LoadedCutRewriteDatabase fileDatabase;
+      fileDatabase.backingModules.push_back(std::move(*parsedModule));
+      if (failed(loadCutRewriteDatabaseFromModule(
+              *fileDatabase.backingModules.back(), fileDatabase)))
+        return failure();
+
+      loadedMaxInputSize =
+          std::max(loadedMaxInputSize, fileDatabase.maxInputSize);
+      database->maxInputSize =
+          std::max(database->maxInputSize, fileDatabase.maxInputSize);
+      database->backingModules.push_back(
+          std::move(fileDatabase.backingModules.back()));
+      for (auto &entry : fileDatabase.entries) {
+        if (!entry->getCandidateRecipe()) {
+          emitError(UnknownLoc::get(context))
+              << "synth-greedy-cut-rewrite only supports database entries with "
+                 "speculative recipes";
+          return failure();
+        }
+        dumpLoadedCutRewriteEntry(*entry);
+        database->entries.push_back(std::move(entry));
+      }
+    }
+
+    if (database->entries.empty()) {
+      emitError(UnknownLoc::get(context))
+          << "cut-rewrite database did not contain any matching library "
+             "entries";
+      return failure();
+    }
+
+    loadedDatabase = std::move(database);
+    return success();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
+    assert(loadedDatabase && "file database must be initialized");
+    for (const auto &entry : loadedDatabase->entries)
+      patterns.push_back(std::make_unique<GreedyCutRewriteDatabasePattern>(
+          module->getContext(), *entry));
+
+    GreedyCutRewriterOptions options;
+    options.strategy = synth::OptimizationStrategyArea;
+    options.maxCutInputSize = loadedMaxInputSize;
+    options.maxCutSizePerRoot = maxCutsPerRoot;
+    options.allowNoMatch = false;
+    options.attachDebugTiming = test;
+    options.maxIterations = maxIterations;
+    options.npnTable = npnTable.get();
+
+    CutRewritePatternSet patternSet(std::move(patterns));
+    GreedyCutRewriter rewriter(options, patternSet);
     if (failed(rewriter.run(module)))
       return signalPassFailure();
 

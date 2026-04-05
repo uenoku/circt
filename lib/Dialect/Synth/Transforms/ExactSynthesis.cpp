@@ -113,6 +113,18 @@ parseCutRewriteInverterKind(Operation *op, StringRef kind) {
   return failure();
 }
 
+static RecipeInverterKind toRecipeInverterKind(CutRewriteInverterKind kind) {
+  switch (kind) {
+  case CutRewriteInverterKind::mig:
+    return RecipeInverterKind::Mig;
+  case CutRewriteInverterKind::aig:
+    return RecipeInverterKind::Aig;
+  case CutRewriteInverterKind::dig:
+    return RecipeInverterKind::Dig;
+  }
+  llvm_unreachable("unsupported cut-rewrite inverter kind");
+}
+
 struct ExactSignalRef {
   // `source == 0` denotes the constant-false source. All other sources are
   // numbered as 1-based primary inputs followed by synthesized steps.
@@ -1191,10 +1203,13 @@ static Value materializeExactDIGNetwork(OpBuilder &builder, Location loc,
 struct LoadedExactNetworkEntry : public LoadedCutRewriteEntry {
   CutRewriteInverterKind inverterKind;
   Operation *moduleOp;
+  CandidateRecipe recipe;
 
   LoadedExactNetworkEntry(CutRewriteInverterKind inverterKind,
                           hw::HWModuleOp module)
       : inverterKind(inverterKind), moduleOp(module.getOperation()) {}
+
+  const CandidateRecipe *getCandidateRecipe() const override { return &recipe; }
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
                                  const Cut &cut) const override {
@@ -1259,6 +1274,100 @@ private:
   }
 };
 
+static FailureOr<CandidateRecipe>
+parseCandidateRecipe(hw::HWModuleOp dbModule, CutRewriteInverterKind inverterKind) {
+  CandidateRecipe recipe;
+  recipe.numInputs = dbModule.getNumInputPorts();
+  recipe.inverterKind = toRecipeInverterKind(inverterKind);
+
+  DenseMap<Value, unsigned> nodeIds;
+  auto *bodyBlock = dbModule.getBodyBlock();
+  for (BlockArgument arg : bodyBlock->getArguments()) {
+    unsigned nodeIndex = recipe.nodes.size();
+    recipe.nodes.push_back({CandidateRecipeNode::Input, {}, 0});
+    nodeIds[arg] = nodeIndex;
+  }
+
+  auto internNode = [&](Value value, CandidateRecipeNode::Kind kind,
+                        SmallVector<unsigned, 3> fanins,
+                        uint8_t inputInvertMask = 0) {
+    unsigned nodeIndex = recipe.nodes.size();
+    CandidateRecipeNode node;
+    node.kind = kind;
+    node.fanins = std::move(fanins);
+    node.inputInvertMask = inputInvertMask;
+    recipe.nodes.push_back(std::move(node));
+    nodeIds[value] = nodeIndex;
+  };
+
+  for (Operation &op : bodyBlock->without_terminator()) {
+    if (auto constOp = dyn_cast<hw::ConstantOp>(op)) {
+      auto value = constOp.getValue();
+      if (value.getBitWidth() != 1)
+        return op.emitError("speculative cut-rewrite recipe only supports i1 constants");
+      internNode(op.getResult(0),
+                 value.isOne() ? CandidateRecipeNode::Const1
+                               : CandidateRecipeNode::Const0,
+                 {});
+      continue;
+    }
+    if (auto xorOp = dyn_cast<comb::XorOp>(op)) {
+      SmallVector<unsigned, 3> fanins;
+      for (Value operand : xorOp.getOperands())
+        fanins.push_back(nodeIds.lookup(operand));
+      internNode(op.getResult(0), CandidateRecipeNode::Xor, std::move(fanins));
+      continue;
+    }
+    auto parseInvertible = [&](auto invertibleOp,
+                               CandidateRecipeNode::Kind naryKind)
+        -> FailureOr<bool> {
+      SmallVector<unsigned, 3> fanins;
+      uint8_t inputInvertMask = 0;
+      for (auto [idx, operand] : llvm::enumerate(invertibleOp->getOperands())) {
+        if (!nodeIds.contains(operand))
+          return invertibleOp.emitOpError("recipe operand not available");
+        fanins.push_back(nodeIds.lookup(operand));
+        if (invertibleOp.isInverted(idx))
+          inputInvertMask |= static_cast<uint8_t>(1u << idx);
+      }
+      if (invertibleOp->getNumOperands() == 1)
+        internNode(op.getResult(0), CandidateRecipeNode::Identity,
+                   std::move(fanins), inputInvertMask);
+      else
+        internNode(op.getResult(0), naryKind, std::move(fanins),
+                   inputInvertMask);
+      return true;
+    };
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+      auto parsed = parseInvertible(andOp, CandidateRecipeNode::And);
+      if (failed(parsed))
+        return failure();
+      continue;
+    }
+    if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
+      auto parsed = parseInvertible(majOp, CandidateRecipeNode::Maj);
+      if (failed(parsed))
+        return failure();
+      continue;
+    }
+    if (auto dotOp = dyn_cast<dig::DotInverterOp>(op)) {
+      auto parsed = parseInvertible(dotOp, CandidateRecipeNode::Dot);
+      if (failed(parsed))
+        return failure();
+      continue;
+    }
+    return op.emitError("unsupported operation in speculative cut-rewrite recipe");
+  }
+
+  auto output = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
+  if (!output || output.getNumOperands() != 1)
+    return dbModule.emitError("cut-rewrite database module must terminate with a single output");
+  if (!nodeIds.contains(output.getOperand(0)))
+    return dbModule.emitError("cut-rewrite output must map to a recipe node");
+  recipe.root = nodeIds.lookup(output.getOperand(0));
+  return recipe;
+}
+
 static FailureOr<std::unique_ptr<LoadedCutRewriteEntry>>
 parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
                                    const CutRewriteModuleMetadata &metadata) {
@@ -1268,10 +1377,16 @@ parseExactSynthesisCutRewriteEntry(hw::HWModuleOp module,
     return failure();
 
   auto entry = std::make_unique<LoadedExactNetworkEntry>(*inverterKind, module);
+  auto recipe = parseCandidateRecipe(module, *inverterKind);
+  if (failed(recipe))
+    return failure();
+  entry->recipe = std::move(*recipe);
   entry->moduleName = module.getModuleName().str();
   entry->npnClass = getIdentityNPNClass(metadata.npnClass.truthTable);
   entry->area = metadata.area;
   entry->delay = metadata.delay;
+  entry->recipe.area = metadata.area;
+  entry->recipe.perInputDelays = metadata.delay;
   std::unique_ptr<LoadedCutRewriteEntry> result = std::move(entry);
   return result;
 }

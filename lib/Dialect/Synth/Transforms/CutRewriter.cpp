@@ -1138,6 +1138,635 @@ double MatchedPattern::getArea() const {
   return area;
 }
 
+namespace {
+
+struct StructuralEntry {
+  OperationName opName;
+  SmallVector<uint64_t, 3> operandSignals;
+  Value value;
+};
+
+struct ProbeResult {
+  unsigned newArea = 0;
+  uint64_t rootSignal = 0;
+  SmallVector<Operation *, 8> reusedOps;
+};
+
+struct GreedyFrontierLeaf {
+  uint32_t index = 0;
+  unsigned depth = 0;
+};
+
+static MatchBinding getIdentityBinding(unsigned numInputs) {
+  MatchBinding binding;
+  binding.inputPermutation.reserve(numInputs);
+  for (unsigned i = 0; i != numInputs; ++i)
+    binding.inputPermutation.push_back(i);
+  return binding;
+}
+
+static MatchBinding getBindingForPattern(const Cut &cut,
+                                         const NPNClass *patternNPN,
+                                         const CutRewriterOptions &options) {
+  MatchBinding binding = getIdentityBinding(cut.getInputSize());
+  if (!patternNPN)
+    return binding;
+
+  const auto &cutNPN = cut.getNPNClass(options);
+  cutNPN.getInputPermutation(*patternNPN, binding.inputPermutation);
+  binding.inputNegationMask = static_cast<uint8_t>(
+      cutNPN.inputNegation ^ patternNPN->inputNegation);
+  binding.outputNegated =
+      static_cast<bool>((cutNPN.outputNegation ^ patternNPN->outputNegation) &
+                        1u);
+  return binding;
+}
+
+static bool isGreedyExpandableGate(const LogicNetwork &network, uint32_t index) {
+  if (index == LogicNetwork::kConstant0 || index == LogicNetwork::kConstant1)
+    return false;
+  const auto &gate = network.getGate(index);
+  if (gate.isAlwaysCutInput())
+    return false;
+  return gate.getKind() != LogicNetworkGate::Choice;
+}
+
+static void normalizeGreedyFrontier(
+    SmallVectorImpl<GreedyFrontierLeaf> &frontier) {
+  llvm::sort(frontier, [](const GreedyFrontierLeaf &lhs,
+                          const GreedyFrontierLeaf &rhs) {
+    return lhs.index < rhs.index;
+  });
+
+  unsigned write = 0;
+  for (unsigned read = 0; read != frontier.size(); ++read) {
+    if (frontier[read].index == LogicNetwork::kConstant0 ||
+        frontier[read].index == LogicNetwork::kConstant1)
+      continue;
+
+    if (write != 0 && frontier[write - 1].index == frontier[read].index) {
+      frontier[write - 1].depth =
+          std::min(frontier[write - 1].depth, frontier[read].depth);
+      continue;
+    }
+    frontier[write++] = frontier[read];
+  }
+  frontier.resize(write);
+}
+
+static void appendExpandedGreedyLeaf(const LogicNetwork &network, uint32_t index,
+                                     unsigned nextDepth,
+                                     SmallVectorImpl<GreedyFrontierLeaf> &out) {
+  const auto &gate = network.getGate(index);
+  for (unsigned faninIndex = 0, faninCount = gate.getNumFanins();
+       faninIndex < faninCount; ++faninIndex)
+    out.push_back({gate.edges[faninIndex].getIndex(), nextDepth});
+}
+
+static bool hasEquivalentGreedyCut(ArrayRef<Cut> cuts, const Cut &candidate) {
+  return llvm::any_of(cuts, [&](const Cut &cut) {
+    return cut.inputs == candidate.inputs &&
+           cut.getRootIndex() == candidate.getRootIndex();
+  });
+}
+
+static void enumerateGreedyCutsForRoot(const LogicNetwork &network,
+                                       uint32_t rootIndex, unsigned maxInputs,
+                                       unsigned maxExpansionDepth,
+                                       SmallVectorImpl<Cut> &cuts) {
+  cuts.clear();
+  if (!isGreedyExpandableGate(network, rootIndex))
+    return;
+
+  SmallVector<GreedyFrontierLeaf, 8> initialFrontier;
+  appendExpandedGreedyLeaf(network, rootIndex, 1, initialFrontier);
+  normalizeGreedyFrontier(initialFrontier);
+  if (initialFrontier.size() > maxInputs)
+    return;
+
+  auto addCut = [&](ArrayRef<GreedyFrontierLeaf> frontier) {
+    Cut cut;
+    cut.setRootIndex(rootIndex);
+    cut.inputs.reserve(frontier.size());
+    for (const auto &leaf : frontier)
+      cut.inputs.push_back(leaf.index);
+    if (!cut.inputs.empty() && !hasEquivalentGreedyCut(cuts, cut))
+      cuts.push_back(std::move(cut));
+  };
+
+  auto recurse = [&](auto &&self,
+                     const SmallVector<GreedyFrontierLeaf, 8> &frontier) -> void {
+    addCut(frontier);
+
+    for (unsigned leafIndex = 0; leafIndex != frontier.size(); ++leafIndex) {
+      const auto &leaf = frontier[leafIndex];
+      if (leaf.depth >= maxExpansionDepth ||
+          !isGreedyExpandableGate(network, leaf.index))
+        continue;
+
+      SmallVector<GreedyFrontierLeaf, 8> expanded;
+      expanded.reserve(frontier.size() + 2);
+      for (unsigned i = 0; i != frontier.size(); ++i) {
+        if (i == leafIndex)
+          continue;
+        expanded.push_back(frontier[i]);
+      }
+      appendExpandedGreedyLeaf(network, leaf.index, leaf.depth + 1, expanded);
+      normalizeGreedyFrontier(expanded);
+      if (expanded.empty() || expanded.size() > maxInputs)
+        continue;
+      self(self, expanded);
+    }
+  };
+
+  recurse(recurse, initialFrontier);
+}
+
+static bool isRecipeCommutative(CandidateRecipeNode::Kind kind) {
+  return kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
+         kind == CandidateRecipeNode::Maj;
+}
+
+static bool isRecipeAreaCounted(CandidateRecipeNode::Kind kind) {
+  return kind == CandidateRecipeNode::Identity ||
+         kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
+         kind == CandidateRecipeNode::Maj || kind == CandidateRecipeNode::Dot;
+}
+
+static bool isAreaCountedLogicOp(Operation *op) {
+  return isa<aig::AndInverterOp, mig::MajorityInverterOp, dig::DotInverterOp,
+             comb::XorOp>(op);
+}
+
+static unsigned getUseCount(Value value) {
+  return static_cast<unsigned>(std::distance(value.use_begin(), value.use_end()));
+}
+
+static OperationName getRecipeOperationName(MLIRContext *context,
+                                            const CandidateRecipe &recipe,
+                                            CandidateRecipeNode::Kind kind) {
+  switch (kind) {
+  case CandidateRecipeNode::Identity:
+    switch (recipe.inverterKind) {
+    case RecipeInverterKind::Aig:
+      return OperationName(aig::AndInverterOp::getOperationName(), context);
+    case RecipeInverterKind::Mig:
+      return OperationName(mig::MajorityInverterOp::getOperationName(),
+                           context);
+    case RecipeInverterKind::Dig:
+      return OperationName(dig::DotInverterOp::getOperationName(), context);
+    }
+    break;
+  case CandidateRecipeNode::And:
+    return OperationName(aig::AndInverterOp::getOperationName(), context);
+  case CandidateRecipeNode::Xor:
+    return OperationName(comb::XorOp::getOperationName(), context);
+  case CandidateRecipeNode::Maj:
+    return OperationName(mig::MajorityInverterOp::getOperationName(), context);
+  case CandidateRecipeNode::Dot:
+    return OperationName(dig::DotInverterOp::getOperationName(), context);
+  case CandidateRecipeNode::Input:
+  case CandidateRecipeNode::Const0:
+  case CandidateRecipeNode::Const1:
+    break;
+  }
+  llvm_unreachable("recipe node does not have an operation name");
+}
+
+static void canonicalizeStructuralOperands(CandidateRecipeNode::Kind kind,
+                                           SmallVectorImpl<uint64_t> &signals) {
+  if (!isRecipeCommutative(kind))
+    return;
+  llvm::sort(signals);
+}
+
+static bool sameStructuralKey(OperationName opName,
+                              ArrayRef<uint64_t> operandSignals,
+                              const StructuralEntry &entry) {
+  return entry.opName == opName && entry.operandSignals == operandSignals;
+}
+
+static Value findStructuralValue(ArrayRef<StructuralEntry> entries,
+                                 OperationName opName,
+                                 ArrayRef<uint64_t> operandSignals) {
+  for (const auto &entry : entries)
+    if (sameStructuralKey(opName, operandSignals, entry))
+      return entry.value;
+  return {};
+}
+
+static void appendStructuralEntry(SmallVectorImpl<StructuralEntry> &entries,
+                                  OperationName opName,
+                                  SmallVector<uint64_t, 3> operandSignals,
+                                  Value value) {
+  entries.push_back(
+      StructuralEntry{opName, std::move(operandSignals), value});
+}
+
+static void collectStructuralEntries(
+    Block *block, DenseMap<Value, uint64_t> &signalIds,
+    SmallVectorImpl<StructuralEntry> &entries) {
+  signalIds.clear();
+  entries.clear();
+
+  uint64_t nextId = 1;
+  for (Value arg : block->getArguments())
+    signalIds.try_emplace(arg, nextId++);
+
+  auto getSignalId = [&](Value value) -> uint64_t {
+    auto [it, inserted] = signalIds.try_emplace(value, nextId);
+    if (inserted)
+      ++nextId;
+    return it->second;
+  };
+
+  for (Operation &op : block->getOperations()) {
+    if (!op.getNumResults() || !op.getResult(0).getType().isInteger(1))
+      continue;
+
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+      SmallVector<uint64_t, 3> operandSignals;
+      operandSignals.reserve(andOp.getNumOperands());
+      for (auto [i, operand] : llvm::enumerate(andOp.getInputs())) {
+        operandSignals.push_back((getSignalId(operand) << 1) |
+                                 static_cast<uint64_t>(andOp.isInverted(i)));
+      }
+      canonicalizeStructuralOperands(
+          andOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
+                                      : CandidateRecipeNode::And,
+          operandSignals);
+      appendStructuralEntry(entries, op.getName(), std::move(operandSignals),
+                            op.getResult(0));
+    } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
+      SmallVector<uint64_t, 3> operandSignals;
+      operandSignals.reserve(2);
+      for (Value operand : xorOp->getOperands())
+        operandSignals.push_back(getSignalId(operand) << 1);
+      canonicalizeStructuralOperands(CandidateRecipeNode::Xor, operandSignals);
+      appendStructuralEntry(entries, op.getName(), std::move(operandSignals),
+                            op.getResult(0));
+    } else if (auto majOp = dyn_cast<mig::MajorityInverterOp>(&op)) {
+      SmallVector<uint64_t, 3> operandSignals;
+      operandSignals.reserve(majOp.getNumOperands());
+      for (auto [i, operand] : llvm::enumerate(majOp.getOperands())) {
+        operandSignals.push_back((getSignalId(operand) << 1) |
+                                 static_cast<uint64_t>(majOp.isInverted(i)));
+      }
+      canonicalizeStructuralOperands(
+          majOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
+                                      : CandidateRecipeNode::Maj,
+          operandSignals);
+      appendStructuralEntry(entries, op.getName(), std::move(operandSignals),
+                            op.getResult(0));
+    } else if (auto dotOp = dyn_cast<dig::DotInverterOp>(&op)) {
+      SmallVector<uint64_t, 3> operandSignals;
+      operandSignals.reserve(dotOp.getNumOperands());
+      for (auto [i, operand] : llvm::enumerate(dotOp.getOperands())) {
+        operandSignals.push_back((getSignalId(operand) << 1) |
+                                 static_cast<uint64_t>(dotOp.isInverted(i)));
+      }
+      canonicalizeStructuralOperands(
+          dotOp.getNumOperands() == 1 ? CandidateRecipeNode::Identity
+                                      : CandidateRecipeNode::Dot,
+          operandSignals);
+      appendStructuralEntry(entries, op.getName(), std::move(operandSignals),
+                            op.getResult(0));
+    } else {
+      getSignalId(op.getResult(0));
+    }
+  }
+}
+
+static Value materializeRecipeInverter(OpBuilder &builder, Location loc,
+                                       RecipeInverterKind kind, Value input) {
+  std::array<Value, 1> operands = {input};
+  std::array<bool, 1> inverted = {true};
+  switch (kind) {
+  case RecipeInverterKind::Aig:
+    return aig::AndInverterOp::create(builder, loc, operands, inverted);
+  case RecipeInverterKind::Mig:
+    return mig::MajorityInverterOp::create(builder, loc, operands, inverted);
+  case RecipeInverterKind::Dig:
+    return dig::DotInverterOp::create(builder, loc, operands, inverted);
+  }
+  llvm_unreachable("unsupported recipe inverter kind");
+}
+
+static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
+                                        const MatchBinding &binding,
+                                        const Cut &cut,
+                                        const LogicNetwork &logicNetwork,
+                                        DenseMap<Value, uint64_t> &signalIds,
+                                        ArrayRef<StructuralEntry> existing) {
+  ProbeResult result;
+  struct LocalProbeEntry {
+    OperationName opName;
+    SmallVector<uint64_t, 3> operandSignals;
+    uint64_t signalId = 0;
+  };
+
+  uint64_t nextSignalId = signalIds.size() + 1;
+  auto allocateSignal = [&]() { return nextSignalId++; };
+
+  SmallVector<uint64_t, 8> nodeSignals(recipe.nodes.size(), 0);
+  SmallVector<LocalProbeEntry, 8> localEntries;
+
+  auto findLocalSignal = [&](OperationName opName,
+                             ArrayRef<uint64_t> operandSignals)
+      -> std::optional<uint64_t> {
+    for (const auto &entry : localEntries)
+      if (entry.opName == opName && entry.operandSignals == operandSignals)
+        return entry.signalId;
+    return std::nullopt;
+  };
+
+  auto bindInputSignal = [&](unsigned inputIndex) -> uint64_t {
+    Value inputValue =
+        logicNetwork.getValue(cut.inputs[binding.inputPermutation[inputIndex]]);
+    auto it = signalIds.find(inputValue);
+    assert(it != signalIds.end() && "cut input must have a signal id");
+    uint64_t rawSignal = it->second;
+    if (((binding.inputNegationMask >> inputIndex) & 1u) == 0)
+      return rawSignal;
+
+    SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
+    OperationName inverterName =
+        getRecipeOperationName(inputValue.getContext(), recipe,
+                               CandidateRecipeNode::Identity);
+    if (Value existingValue =
+            findStructuralValue(existing, inverterName, operandSignals)) {
+      result.reusedOps.push_back(existingValue.getDefiningOp());
+      return signalIds.lookup(existingValue);
+    }
+
+    if (auto localSignal = findLocalSignal(inverterName, operandSignals))
+      return *localSignal;
+
+    uint64_t signal = allocateSignal();
+    localEntries.push_back(
+        LocalProbeEntry{inverterName, std::move(operandSignals), signal});
+    return signal;
+  };
+
+  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
+    const auto &node = recipe.nodes[i];
+    switch (node.kind) {
+    case CandidateRecipeNode::Input:
+      assert(i < recipe.numInputs && "input nodes must be first");
+      nodeSignals[i] = bindInputSignal(i);
+      break;
+    case CandidateRecipeNode::Const0:
+    case CandidateRecipeNode::Const1:
+      nodeSignals[i] = allocateSignal();
+      break;
+    case CandidateRecipeNode::Identity:
+    case CandidateRecipeNode::And:
+    case CandidateRecipeNode::Xor:
+    case CandidateRecipeNode::Maj:
+    case CandidateRecipeNode::Dot: {
+      SmallVector<uint64_t, 3> operandSignals;
+      operandSignals.reserve(node.fanins.size());
+      for (auto [faninIndex, bitIndex] : llvm::enumerate(node.fanins)) {
+        uint64_t signal = nodeSignals[faninIndex];
+        bool inverted = (node.inputInvertMask >> bitIndex) & 1u;
+        operandSignals.push_back((signal << 1) | static_cast<uint64_t>(inverted));
+      }
+      canonicalizeStructuralOperands(node.kind, operandSignals);
+      OperationName opName =
+          getRecipeOperationName(logicNetwork.getValue(cut.getRootIndex())
+                                     .getContext(),
+                                 recipe, node.kind);
+      if (Value existingValue =
+              findStructuralValue(existing, opName, operandSignals)) {
+        if (auto *op = existingValue.getDefiningOp())
+          result.reusedOps.push_back(op);
+        nodeSignals[i] = signalIds.lookup(existingValue);
+        break;
+      }
+
+      if (auto localSignal = findLocalSignal(opName, operandSignals)) {
+        nodeSignals[i] = *localSignal;
+        break;
+      }
+
+      nodeSignals[i] = allocateSignal();
+      if (isRecipeAreaCounted(node.kind))
+        ++result.newArea;
+      localEntries.push_back(
+          LocalProbeEntry{opName, std::move(operandSignals), nodeSignals[i]});
+      break;
+    }
+    }
+  }
+
+  result.rootSignal = nodeSignals[recipe.root];
+  if (binding.outputNegated) {
+    SmallVector<uint64_t, 3> operandSignals = {(result.rootSignal << 1) | 1u};
+    OperationName inverterName =
+        getRecipeOperationName(logicNetwork.getValue(cut.getRootIndex())
+                                   .getContext(),
+                               recipe, CandidateRecipeNode::Identity);
+    if (Value existingValue =
+            findStructuralValue(existing, inverterName, operandSignals)) {
+      if (auto *op = existingValue.getDefiningOp())
+        result.reusedOps.push_back(op);
+      result.rootSignal = signalIds.lookup(existingValue);
+    } else {
+      result.rootSignal = allocateSignal();
+    }
+  }
+
+  llvm::sort(result.reusedOps);
+  result.reusedOps.erase(
+      std::unique(result.reusedOps.begin(), result.reusedOps.end()),
+      result.reusedOps.end());
+  return result;
+}
+
+static SmallVector<Operation *>
+computeDoomedCone(Operation *rootOp, ArrayRef<Operation *> preservedOps) {
+  SmallPtrSet<Operation *, 8> preserved(preservedOps.begin(), preservedOps.end());
+  SmallPtrSet<Operation *, 16> doomedSet;
+  DenseMap<Operation *, unsigned> removedUses;
+  SmallVector<Operation *> doomed;
+
+  auto recurse = [&](auto &&self, Operation *op) -> void {
+    if (!isAreaCountedLogicOp(op) || preserved.contains(op) || doomedSet.contains(op))
+      return;
+    doomedSet.insert(op);
+    doomed.push_back(op);
+    for (Value operand : op->getOperands()) {
+      auto *defOp = operand.getDefiningOp();
+      if (!defOp || !isAreaCountedLogicOp(defOp) || preserved.contains(defOp))
+        continue;
+      unsigned removed = ++removedUses[defOp];
+      if (removed == getUseCount(defOp->getResult(0)))
+        self(self, defOp);
+    }
+  };
+
+  recurse(recurse, rootOp);
+  return doomed;
+}
+
+static FailureOr<Operation *>
+materializeRecipe(OpBuilder &builder, CutEnumerator &enumerator, const Cut &cut,
+                  const MatchBinding &binding, const CandidateRecipe &recipe) {
+  const auto &logicNetwork = enumerator.getLogicNetwork();
+  auto *rootOp = logicNetwork.getGate(cut.getRootIndex()).getOperation();
+  assert(rootOp && "cut root must be a valid operation");
+
+  DenseMap<Value, uint64_t> signalIds;
+  SmallVector<StructuralEntry, 64> existing;
+  collectStructuralEntries(rootOp->getBlock(), signalIds, existing);
+  uint64_t nextSignalId = signalIds.size() + 1;
+
+  auto assignSignalId = [&](Value value) -> uint64_t {
+    auto [it, inserted] = signalIds.try_emplace(value, nextSignalId);
+    if (inserted)
+      ++nextSignalId;
+    return it->second;
+  };
+
+  Location loc = rootOp->getLoc();
+  SmallVector<Value, 8> nodeValues(recipe.nodes.size());
+  SmallVector<uint64_t, 8> nodeSignals(recipe.nodes.size(), 0);
+  DenseMap<uint64_t, Value> freeInverters;
+  Value constZero;
+  Value constOne;
+
+  auto getConstant = [&](bool one) -> Value {
+    Value &cached = one ? constOne : constZero;
+    if (!cached)
+      cached = hw::ConstantOp::create(builder, loc, APInt(1, one ? 1 : 0));
+    return cached;
+  };
+
+  auto bindInputValue = [&](unsigned inputIndex) -> std::pair<Value, uint64_t> {
+    Value inputValue =
+        logicNetwork.getValue(cut.inputs[binding.inputPermutation[inputIndex]]);
+    uint64_t rawSignal = signalIds.lookup(inputValue);
+    if (((binding.inputNegationMask >> inputIndex) & 1u) == 0)
+      return {inputValue, rawSignal};
+
+    SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
+    OperationName inverterName =
+        getRecipeOperationName(builder.getContext(), recipe,
+                               CandidateRecipeNode::Identity);
+    if (Value existingValue =
+            findStructuralValue(existing, inverterName, operandSignals))
+      return {existingValue, signalIds.lookup(existingValue)};
+
+    if (auto it = freeInverters.find(rawSignal); it != freeInverters.end())
+      return {it->second, signalIds.lookup(it->second)};
+
+    Value inv =
+        materializeRecipeInverter(builder, loc, recipe.inverterKind, inputValue);
+    freeInverters[rawSignal] = inv;
+    uint64_t signal = assignSignalId(inv);
+    return {inv, signal};
+  };
+
+  SmallVector<StructuralEntry, 8> localEntries;
+
+  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
+    const auto &node = recipe.nodes[i];
+    switch (node.kind) {
+    case CandidateRecipeNode::Input: {
+      auto [value, signal] = bindInputValue(i);
+      nodeValues[i] = value;
+      nodeSignals[i] = signal;
+      break;
+    }
+    case CandidateRecipeNode::Const0:
+      nodeValues[i] = getConstant(false);
+      nodeSignals[i] = assignSignalId(nodeValues[i]);
+      break;
+    case CandidateRecipeNode::Const1:
+      nodeValues[i] = getConstant(true);
+      nodeSignals[i] = assignSignalId(nodeValues[i]);
+      break;
+    case CandidateRecipeNode::Identity:
+    case CandidateRecipeNode::And:
+    case CandidateRecipeNode::Xor:
+    case CandidateRecipeNode::Maj:
+    case CandidateRecipeNode::Dot: {
+      SmallVector<uint64_t, 3> operandSignals;
+      SmallVector<Value, 3> operands;
+      SmallVector<bool, 3> inverted;
+      operandSignals.reserve(node.fanins.size());
+      operands.reserve(node.fanins.size());
+      inverted.reserve(node.fanins.size());
+      for (auto [faninIndex, bitIndex] : llvm::enumerate(node.fanins)) {
+        bool isInverted = (node.inputInvertMask >> bitIndex) & 1u;
+        operands.push_back(nodeValues[faninIndex]);
+        inverted.push_back(isInverted);
+        operandSignals.push_back((nodeSignals[faninIndex] << 1) |
+                                 static_cast<uint64_t>(isInverted));
+      }
+      canonicalizeStructuralOperands(node.kind, operandSignals);
+      OperationName opName =
+          getRecipeOperationName(builder.getContext(), recipe, node.kind);
+
+      if (Value existingValue =
+              findStructuralValue(existing, opName, operandSignals)) {
+        nodeValues[i] = existingValue;
+        nodeSignals[i] = signalIds.lookup(existingValue);
+        break;
+      }
+      if (Value localValue =
+              findStructuralValue(localEntries, opName, operandSignals)) {
+        nodeValues[i] = localValue;
+        nodeSignals[i] = signalIds.lookup(localValue);
+        break;
+      }
+
+      Value value;
+      switch (node.kind) {
+      case CandidateRecipeNode::Identity:
+        value = materializeRecipeInverter(builder, loc, recipe.inverterKind,
+                                          operands.front());
+        break;
+      case CandidateRecipeNode::And:
+        value = aig::AndInverterOp::create(builder, loc, operands, inverted);
+        break;
+      case CandidateRecipeNode::Xor:
+        assert(operands.size() == 2 && "xor recipe nodes must be binary");
+        value = comb::XorOp::create(builder, loc, operands[0], operands[1]);
+        break;
+      case CandidateRecipeNode::Maj:
+        value = mig::MajorityInverterOp::create(builder, loc, operands,
+                                                inverted);
+        break;
+      case CandidateRecipeNode::Dot:
+        value = dig::DotInverterOp::create(builder, loc, operands, inverted);
+        break;
+      case CandidateRecipeNode::Input:
+      case CandidateRecipeNode::Const0:
+      case CandidateRecipeNode::Const1:
+        llvm_unreachable("handled above");
+      }
+
+      nodeValues[i] = value;
+      nodeSignals[i] = assignSignalId(value);
+      appendStructuralEntry(localEntries, opName, std::move(operandSignals),
+                            value);
+      break;
+    }
+    }
+  }
+
+  Value result = nodeValues[recipe.root];
+  if (binding.outputNegated)
+    result = materializeRecipeInverter(builder, loc, recipe.inverterKind,
+                                       result);
+  if (auto *op = result.getDefiningOp())
+    return op;
+  return hw::WireOp::create(builder, loc, result).getOperation();
+}
+
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // CutSet
 //===----------------------------------------------------------------------===//
@@ -1309,6 +1938,31 @@ void CutSet::finalize(
 bool CutRewritePattern::useTruthTableMatcher(
     SmallVectorImpl<NPNClass> &matchingNPNClasses) const {
   return false;
+}
+
+std::optional<MatchResult>
+SpeculativeCutRewritePattern::match(CutEnumerator &enumerator,
+                                    const Cut &cut) const {
+  auto recipe = speculate(enumerator, cut);
+  if (failed(recipe))
+    return std::nullopt;
+
+  MatchResult result;
+  result.area = recipe->area;
+  result.setOwnedDelays(recipe->perInputDelays);
+  return result;
+}
+
+FailureOr<Operation *>
+SpeculativeCutRewritePattern::rewrite(OpBuilder &builder,
+                                      CutEnumerator &enumerator,
+                                      const Cut &cut,
+                                      const MatchedPattern &match) const {
+  auto recipe = speculate(enumerator, cut);
+  if (failed(recipe))
+    return failure();
+  return materializeRecipe(builder, enumerator, cut, match.getBinding(),
+                           *recipe);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1843,6 +2497,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
   const auto &network = cutEnumerator.getLogicNetwork();
   const CutRewritePattern *bestPattern = nullptr;
+  MatchBinding bestBinding;
   SmallVector<DelayType, 4> inputArrivalTimes;
   SmallVector<DelayType, 1> bestArrivalTimes;
   double bestArea = 0.0;
@@ -1855,6 +2510,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
   auto computeArrivalTimeAndPickBest =
       [&](const CutRewritePattern *pattern, const MatchResult &matchResult,
+          const MatchBinding &binding,
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
         SmallVector<DelayType, 1> outputArrivalTimes;
         // Compute the maximum delay for each output from inputs.
@@ -1904,6 +2560,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           bestArrivalTimes = std::move(outputArrivalTimes);
           bestArea = matchResult.area;
           bestPattern = pattern;
+          bestBinding = binding;
         }
       };
 
@@ -1919,19 +2576,22 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     SmallVector<unsigned> inputMapping;
     cutNPN.getInputPermutation(patternNPN, inputMapping);
     computeArrivalTimeAndPickBest(pattern, *matchResult,
+                                  getBindingForPattern(cut, &patternNPN, options),
                                   [&](unsigned i) { return inputMapping[i]; });
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
     if (auto matchResult = pattern->match(cutEnumerator, cut))
-      computeArrivalTimeAndPickBest(pattern, *matchResult,
+      computeArrivalTimeAndPickBest(
+          pattern, *matchResult, getIdentityBinding(cut.getInputSize()),
                                     [&](unsigned i) { return i; });
   }
 
   if (!bestPattern)
     return {}; // No matching pattern found
 
-  return MatchedPattern(bestPattern, std::move(bestArrivalTimes), bestArea);
+  return MatchedPattern(bestPattern, std::move(bestArrivalTimes), bestArea,
+                        std::move(bestBinding));
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
@@ -1979,7 +2639,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     rewriter.setInsertionPoint(rootOp);
     const auto &matchedPattern = bestCut->getMatchedPattern();
     auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
-                                                        *bestCut);
+                                                        *bestCut,
+                                                        *matchedPattern);
     if (failed(result))
       return failure();
 
@@ -1993,6 +2654,192 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   }
 
   // Clear the enumerator after rewriting is complete
+  cutEnumerator.clear();
+  return success();
+}
+
+struct GreedyRewriteCandidate {
+  uint32_t rootIndex = 0;
+  Cut cut;
+  MatchedPattern match;
+  CandidateRecipe recipe;
+  int gain = 0;
+  unsigned newArea = 0;
+};
+
+std::optional<MatchedPattern> GreedyCutRewriter::patternMatchCut(const Cut &cut) {
+  if (cut.isTrivialCut())
+    return {};
+
+  const CutRewritePattern *bestPattern = nullptr;
+  MatchBinding bestBinding;
+  DelayType bestOutputDelay = 0;
+  double bestArea = 0.0;
+  auto pickBest = [&](const CutRewritePattern *pattern,
+                      const MatchResult &matchResult,
+                      const MatchBinding &binding) {
+    DelayType outputDelay = 0;
+    for (DelayType delay : matchResult.getDelays())
+      outputDelay = std::max(outputDelay, delay);
+
+    if (!bestPattern || matchResult.area < bestArea ||
+        (matchResult.area == bestArea && outputDelay < bestOutputDelay)) {
+      bestPattern = pattern;
+      bestArea = matchResult.area;
+      bestOutputDelay = outputDelay;
+      bestBinding = binding;
+    }
+  };
+
+  if (!patterns.npnToPatternMap.empty()) {
+    auto &cutNPN = cut.getNPNClass(options);
+    auto it = patterns.npnToPatternMap.find(
+        {cutNPN.truthTable.table, cutNPN.truthTable.numInputs});
+    if (it != patterns.npnToPatternMap.end()) {
+      for (auto &[patternNPN, pattern] : it->second) {
+        auto matchResult = pattern->match(cutEnumerator, cut);
+        if (!matchResult)
+          continue;
+        pickBest(pattern, *matchResult,
+                 getBindingForPattern(cut, &patternNPN, options));
+      }
+    }
+  }
+
+  for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
+    if (auto matchResult = pattern->match(cutEnumerator, cut))
+      pickBest(pattern, *matchResult, getIdentityBinding(cut.getInputSize()));
+  }
+
+  if (!bestPattern)
+    return {};
+  SmallVector<DelayType, 1> arrivalTimes = {bestOutputDelay};
+  return MatchedPattern(bestPattern, std::move(arrivalTimes), bestArea,
+                        std::move(bestBinding));
+}
+
+LogicalResult GreedyCutRewriter::run(Operation *topOp) {
+  for (auto &pattern : patterns.patterns) {
+    if (pattern->getNumOutputs() > 1)
+      return mlir::emitError(pattern->getLoc(),
+                             "Greedy cut rewriter does not support patterns "
+                             "with multiple outputs yet");
+    if (!pattern->isSpeculative())
+      return mlir::emitError(pattern->getLoc(),
+                             "Greedy cut rewriter requires speculative "
+                             "patterns");
+  }
+
+  unsigned iteration = 0;
+  while (options.maxIterations == 0 || iteration < options.maxIterations) {
+    if (failed(topologicallySortLogicNetwork(topOp)))
+      return failure();
+
+    cutEnumerator.clear();
+    Block *block = &topOp->getRegion(0).getBlocks().front();
+    if (failed(cutEnumerator.getLogicNetwork().buildFromBlock(block)))
+      return failure();
+
+    const auto &logicNetwork = cutEnumerator.getLogicNetwork();
+    DenseMap<Value, uint64_t> signalIds;
+    SmallVector<StructuralEntry, 64> existing;
+    collectStructuralEntries(block, signalIds, existing);
+
+    std::optional<GreedyRewriteCandidate> bestCandidate;
+    SmallVector<uint32_t, 32> rootIndices;
+    for (Operation &op : llvm::reverse(*block)) {
+      if (!op.getNumResults() || !op.getResult(0).getType().isInteger(1))
+        continue;
+      Value result = op.getResult(0);
+      if (!logicNetwork.hasIndex(result))
+        continue;
+      uint32_t index = logicNetwork.getIndex(result);
+      if (isAlwaysCutInput(logicNetwork, index))
+        continue;
+      if (!logicNetwork.getGate(index).isLogicGate())
+        continue;
+      rootIndices.push_back(index);
+    }
+
+    constexpr unsigned greedyMaxExpansionDepth = 3;
+    SmallVector<Cut, 16> rootCuts;
+    for (uint32_t index : rootIndices) {
+      Value rootValue = logicNetwork.getValue(index);
+      auto *rootOp = rootValue.getDefiningOp();
+      if (!rootOp || rootValue.use_empty())
+        continue;
+
+      enumerateGreedyCutsForRoot(logicNetwork, index, options.maxCutInputSize,
+                                 greedyMaxExpansionDepth, rootCuts);
+      for (Cut &cut : rootCuts) {
+        cut.computeTruthTable(logicNetwork);
+        auto matched = patternMatchCut(cut);
+        if (!matched)
+          continue;
+        auto *specPattern =
+            static_cast<const SpeculativeCutRewritePattern *>(
+                matched->getPattern());
+
+        auto recipe = specPattern->speculate(cutEnumerator, cut);
+        if (failed(recipe))
+          continue;
+
+        ProbeResult probe = probeCandidateRecipe(*recipe, matched->getBinding(),
+                                                 cut, logicNetwork, signalIds,
+                                                 existing);
+        if (probe.rootSignal == signalIds.lookup(rootValue))
+          continue;
+
+        auto doomed = computeDoomedCone(rootOp, probe.reusedOps);
+        int gain =
+            static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
+        if (gain <= 0)
+          continue;
+
+        if (!bestCandidate || gain > bestCandidate->gain ||
+            (gain == bestCandidate->gain &&
+             probe.newArea < bestCandidate->newArea) ||
+            (gain == bestCandidate->gain &&
+             probe.newArea == bestCandidate->newArea &&
+             cut.getInputSize() < bestCandidate->cut.getInputSize())) {
+          bestCandidate = GreedyRewriteCandidate{
+              index, cut, *matched, *recipe, gain, probe.newArea};
+        }
+      }
+    }
+
+    if (!bestCandidate) {
+      cutEnumerator.clear();
+      return success();
+    }
+
+    auto *rootOp =
+        logicNetwork.getGate(bestCandidate->cut.getRootIndex()).getOperation();
+    PatternRewriter rewriter(topOp->getContext());
+    rewriter.setInsertionPoint(rootOp);
+    auto result = bestCandidate->match.getPattern()->rewrite(
+        rewriter, cutEnumerator, bestCandidate->cut, bestCandidate->match);
+    if (failed(result))
+      return failure();
+
+    DenseMap<Value, uint64_t> freshSignalIds;
+    SmallVector<StructuralEntry, 64> freshExisting;
+    collectStructuralEntries(block, freshSignalIds, freshExisting);
+    ProbeResult freshProbe = probeCandidateRecipe(
+        bestCandidate->recipe, bestCandidate->match.getBinding(),
+        bestCandidate->cut, logicNetwork, freshSignalIds, freshExisting);
+    auto doomed = computeDoomedCone(rootOp, freshProbe.reusedOps);
+
+    rewriter.replaceOp(rootOp, *result);
+    UnusedOpPruner pruner;
+    for (Operation *op : doomed)
+      if (op != rootOp && op->use_empty())
+        pruner.eraseNow(op);
+    cutEnumerator.noteCutRewritten();
+    cutEnumerator.clear();
+    ++iteration;
+  }
+
   cutEnumerator.clear();
   return success();
 }
