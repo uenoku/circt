@@ -7,10 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass performs structural hashing for Synth dialect operations
-// (AIG/MIG). Unlike MLIR's general CSE pass, this is domain-specific to
-// AIG/MIG operations, allowing it to reorder operands based on their
-// structural properties and take inversion flags into account for
-// canonicalization.
+// (AIG/MIG/DIG). Unlike MLIR's general CSE pass, this is domain-specific to
+// these operations, allowing it to reorder operands for commutative gates and
+// take inversion flags into account for canonicalization.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,8 +42,8 @@ using namespace circt;
 using namespace circt::synth;
 
 /// A struct that represents the key used for structural hashing. It contains
-/// the operation name and a sorted vector of pointer-integer pairs, which
-/// represent the inputs to the operation and their inversion status.
+/// the operation name and a vector of pointer-integer pairs, which represent
+/// the inputs to the operation and their inversion status.
 /// This key is used to identify structurally equivalent operations for CSE.
 struct StructuralHashKey {
   OperationName opName;
@@ -102,7 +101,8 @@ public:
   StructuralHashDriver() = default;
   void visitOp(Operation *op, ArrayRef<bool> inverted);
   void visitUnaryOp(Operation *op, bool inverted);
-  void visitVariadicOp(Operation *op, ArrayRef<bool> inverted);
+  void visitVariadicOp(Operation *op, ArrayRef<bool> inverted,
+                       bool sortOperands);
   uint64_t getNumber(Value v);
 
   /// Runs the structural hashing pass on the given module.
@@ -138,7 +138,8 @@ void StructuralHashDriver::visitOp(Operation *op, ArrayRef<bool> inverted) {
     visitUnaryOp(op, inverted[0]);
     return;
   }
-  visitVariadicOp(op, inverted);
+  bool sortOperands = !isa<circt::synth::dig::DotInverterOp>(op);
+  visitVariadicOp(op, inverted, sortOperands);
 }
 
 /// Handles unary operations (single operand).
@@ -167,7 +168,8 @@ void StructuralHashDriver::visitUnaryOp(Operation *op, bool inverted) {
 /// Computes a structural hash key, sorts operands for canonicalization,
 /// and performs CSE by checking the hash table for equivalent operations.
 void StructuralHashDriver::visitVariadicOp(Operation *op,
-                                           ArrayRef<bool> inverted) {
+                                           ArrayRef<bool> inverted,
+                                           bool sortOperands) {
 
   // Compute the structural hash key for the operation.
   StructuralHashKey key(op->getName(), {});
@@ -188,14 +190,16 @@ void StructuralHashDriver::visitVariadicOp(Operation *op,
     (void)getNumber(input);
   }
 
-  // Sort operands based on their assigned numbers.
-  llvm::sort(key.operandPairs, [&](auto a, auto b) {
-    size_t aNum = getNumber(a.getPointer());
-    size_t bNum = getNumber(b.getPointer());
-    if (aNum != bNum)
-      return aNum < bNum;
-    return a.getInt() < b.getInt();
-  });
+  if (sortOperands) {
+    // Sort operands based on their assigned numbers for commutative gates.
+    llvm::sort(key.operandPairs, [&](auto a, auto b) {
+      size_t aNum = getNumber(a.getPointer());
+      size_t bNum = getNumber(b.getPointer());
+      if (aNum != bNum)
+        return aNum < bNum;
+      return a.getInt() < b.getInt();
+    });
+  }
 
   // Insert the key into the hash table.
   auto [it, inserted] = hashTable.try_emplace(key, op);
@@ -246,7 +250,8 @@ llvm::LogicalResult StructuralHashDriver::run(hw::HWModuleOp moduleOp) {
   auto isOperationReady = [&](Value value, Operation *op) -> bool {
     // Otherthan target ops, all other ops are always ready.
     return !isa<circt::synth::aig::AndInverterOp,
-                circt::synth::mig::MajorityInverterOp>(op);
+                circt::synth::mig::MajorityInverterOp,
+                circt::synth::dig::DotInverterOp>(op);
   };
 
   if (!mlir::sortTopologically(moduleOp.getBodyBlock(), isOperationReady))
@@ -262,7 +267,8 @@ llvm::LogicalResult StructuralHashDriver::run(hw::HWModuleOp moduleOp) {
        llvm::make_early_inc_range(moduleOp.getBodyBlock()->getOperations())) {
     mlir::TypeSwitch<Operation *>(&op)
         .Case<circt::synth::aig::AndInverterOp,
-              circt::synth::mig::MajorityInverterOp>([&](auto invertibleOp) {
+              circt::synth::mig::MajorityInverterOp,
+              circt::synth::dig::DotInverterOp>([&](auto invertibleOp) {
           visitOp(invertibleOp, invertibleOp.getInverted());
         })
         .Default([&](Operation *op) {});

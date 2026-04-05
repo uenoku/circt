@@ -48,3 +48,20 @@ hw.module @port_removal(in %a: i2) {
   // CHECK-NEXT: hw.output
   %0 = synth.aig.and_inv not %a : i2
 }
+
+// CHECK-LABEL: hw.module @dot_structural_hash
+hw.module @dot_structural_hash(in %a: i1, in %b: i1, in %c: i1,
+                               out out0: i1, out out1: i1, out out2: i1,
+                               out out3: i1, out out4: i1) {
+  // CHECK:      %[[DOT0:.+]] = synth.dig.dot_inv %a, %b, not %c : i1
+  // CHECK-NEXT: %[[DOT1:.+]] = synth.dig.dot_inv %b, %a, not %c : i1
+  // CHECK-NEXT: %[[DOT2:.+]] = synth.dig.dot_inv %a, not %b, %c : i1
+  // CHECK-NEXT: hw.output %[[DOT0]], %[[DOT0]], %[[DOT1]], %[[DOT2]], %[[DOT2]] : i1, i1, i1, i1, i1
+  %0 = synth.dig.dot_inv %a, %b, not %c : i1
+  %1 = synth.dig.dot_inv %a, %b, not %c : i1
+  %2 = synth.dig.dot_inv %b, %a, not %c : i1
+  %3 = synth.dig.dot_inv not %b : i1
+  %4 = synth.dig.dot_inv %a, %3, %c : i1
+  %5 = synth.dig.dot_inv %a, not %b, %c : i1
+  hw.output %0, %1, %2, %4, %5 : i1, i1, i1, i1, i1
+}
