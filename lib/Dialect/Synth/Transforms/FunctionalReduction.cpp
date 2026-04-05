@@ -59,8 +59,7 @@ class FunctionalReductionSATBuilder {
 public:
   FunctionalReductionSATBuilder(IncrementalSATSolver &solver,
                                 llvm::DenseMap<Value, int> &satVars,
-                                llvm::DenseSet<Value> &encodedValues,
-                                int &nextFreshVar);
+                                llvm::DenseSet<Value> &encodedValues);
 
   EquivResult verify(Value lhs, Value rhs);
 
@@ -80,12 +79,11 @@ private:
   IncrementalSATSolver &solver;
   llvm::DenseMap<Value, int> &satVars;
   llvm::DenseSet<Value> &encodedValues;
-  int &nextFreshVar;
 };
 
 static bool isFunctionalReductionSimulatableOp(Operation *op) {
-  return isa<aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp,
-             comb::OrOp, comb::XorOp>(op);
+  return isa<aig::AndInverterOp, mig::MajorityInverterOp,
+             dig::DotInverterOp, comb::AndOp, comb::OrOp, comb::XorOp>(op);
 }
 
 EquivResult FunctionalReductionSATBuilder::verify(Value lhs, Value rhs) {
@@ -123,9 +121,7 @@ int FunctionalReductionSATBuilder::getOrCreateVar(Value value) {
 }
 
 int FunctionalReductionSATBuilder::createAuxVar() {
-  int freshVar = ++nextFreshVar;
-  solver.reserveVars(freshVar);
-  return freshVar;
+  return solver.newVar();
 }
 
 int FunctionalReductionSATBuilder::getLiteral(Value value, bool inverted) {
@@ -311,6 +307,24 @@ void FunctionalReductionSATBuilder::encodeValue(Value value) {
             inputLits.push_back(getLiteral(input, inverted));
           addMajorityClauses(outVar, inputLits);
         })
+        .Case<dig::DotInverterOp>([&](auto dotOp) {
+          if (dotOp.getNumOperands() == 1) {
+            int inputLit = getLiteral(dotOp.getOperand(0), dotOp.isInverted(0));
+            solver.addClause({-outVar, inputLit});
+            solver.addClause({outVar, -inputLit});
+            return;
+          }
+
+          int xLit = getLiteral(dotOp.getOperand(0), dotOp.isInverted(0));
+          int yLit = getLiteral(dotOp.getOperand(1), dotOp.isInverted(1));
+          int zLit = getLiteral(dotOp.getOperand(2), dotOp.isInverted(2));
+
+          int andVar = createAuxVar();
+          addAndClauses(andVar, {xLit, yLit});
+          int orVar = createAuxVar();
+          addOrClauses(orVar, {zLit, andVar});
+          addXorClauses(outVar, xLit, orVar);
+        })
         .Case<comb::AndOp>([&](auto andOp) {
           for (auto input : andOp.getInputs())
             inputLits.push_back(getLiteral(input));
@@ -406,17 +420,13 @@ private:
   std::unique_ptr<FunctionalReductionSATBuilder> satBuilder;
   llvm::DenseMap<Value, int> satVars;
   llvm::DenseSet<Value> encodedValues;
-  // Monotonic counter for auxiliary SAT variables introduced by definitional
-  // CNF encodings, currently used for variadic XOR.
-  int nextFreshVar = 0;
   Stats stats;
 };
 
 FunctionalReductionSATBuilder::FunctionalReductionSATBuilder(
     IncrementalSATSolver &solver, llvm::DenseMap<Value, int> &satVars,
-    llvm::DenseSet<Value> &encodedValues, int &nextFreshVar)
-    : solver(solver), satVars(satVars), encodedValues(encodedValues),
-      nextFreshVar(nextFreshVar) {}
+    llvm::DenseSet<Value> &encodedValues)
+    : solver(solver), satVars(satVars), encodedValues(encodedValues) {}
 
 Attribute FunctionalReductionSolver::getTestEquivClass(Value value) {
   Operation *op = value.getDefiningOp();
@@ -451,11 +461,10 @@ void FunctionalReductionSolver::initializeSATState() {
   satVars.reserve(allValues.size());
   for (auto [index, value] : llvm::enumerate(allValues))
     satVars[value] = index + 1;
-  nextFreshVar = allValues.size();
   satSolver->reserveVars(allValues.size());
 
   satBuilder = std::make_unique<FunctionalReductionSATBuilder>(
-      *satSolver, satVars, encodedValues, nextFreshVar);
+      *satSolver, satVars, encodedValues);
 }
 
 //===----------------------------------------------------------------------===//
@@ -531,7 +540,8 @@ llvm::APInt FunctionalReductionSolver::simulateValue(Value v) {
   if (!op)
     return simSignatures.at(v);
   return llvm::TypeSwitch<Operation *, llvm::APInt>(op)
-      .Case<mig::MajorityInverterOp, aig::AndInverterOp>([&](auto op) {
+      .Case<mig::MajorityInverterOp, aig::AndInverterOp,
+            dig::DotInverterOp>([&](auto op) {
         SmallVector<llvm::APInt> inputSigs;
         for (auto input : op.getInputs())
           inputSigs.push_back(simSignatures.at(input));

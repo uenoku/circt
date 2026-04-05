@@ -81,11 +81,17 @@ public:
       return 0;
     return solver.val(v);
   }
+  int newVar() override {
+    maxVariable = std::max(maxVariable, solver.vars());
+    maxVariable = solver.declare_one_more_variable();
+    return maxVariable;
+  }
   void setConflictLimit(int limit) override { conflictLimit = limit; }
   void reserveVars(int maxVar) override {
+    maxVariable = std::max(maxVariable, solver.vars());
     if (maxVar <= maxVariable)
       return;
-    solver.resize(maxVar);
+    solver.declare_more_variables(maxVar - maxVariable);
     maxVariable = maxVar;
   }
   void addClause(llvm::ArrayRef<int> lits) override {
@@ -93,6 +99,10 @@ public:
       solver.add(0);
       return;
     }
+    int maxClauseVar = 0;
+    for (int lit : lits)
+      maxClauseVar = std::max(maxClauseVar, std::abs(lit));
+    reserveVars(maxClauseVar);
     solver.clause(lits.data(), lits.size());
   }
 
@@ -120,6 +130,7 @@ public:
   Result solve() override;
   Result solve(llvm::ArrayRef<int> assumptions) override;
   int val(int v) const override;
+  int newVar() override;
   void reserveVars(int maxVar) override;
 
 private:
@@ -191,6 +202,11 @@ int Z3SATSolver::val(int v) const {
   if (!solver->getInterpretation(variables[v - 1], value))
     return 0;
   return value != 0 ? v : -v;
+}
+
+int Z3SATSolver::newVar() {
+  reserveVars(maxVariable + 1);
+  return maxVariable;
 }
 
 void Z3SATSolver::reserveVars(int maxVar) {

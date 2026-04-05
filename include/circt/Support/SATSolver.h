@@ -177,6 +177,9 @@ public:
   /// Return the satisfying assignment for variable `v` from the last SAT
   /// result. The sign of the returned literal encodes the Boolean value.
   virtual int val(int v) const = 0;
+  /// Allocate and return one fresh SAT variable that is guaranteed not to
+  /// collide with backend-internal extension variables.
+  virtual int newVar() = 0;
 
   // These helpers are not part of the standard IPASIR interface.
   /// Set the per-`solve()` conflict budget. Negative values restore the
