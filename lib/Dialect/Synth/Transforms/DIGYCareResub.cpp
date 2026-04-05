@@ -366,17 +366,13 @@ public:
 private:
   int getOrCreateVar(Value value) {
     auto [it, inserted] = satVars.try_emplace(value, 0);
-    if (inserted) {
-      it->second = ++nextFreshVar;
-      solver.reserveVars(nextFreshVar);
-    }
+    if (inserted)
+      it->second = solver.newVar();
     return it->second;
   }
 
   int createAuxVar() {
-    int freshVar = ++nextFreshVar;
-    solver.reserveVars(freshVar);
-    return freshVar;
+    return solver.newVar();
   }
 
   int getConstLiteral(bool value) {
@@ -602,7 +598,6 @@ private:
   IncrementalSATSolver &solver;
   DenseMap<Value, int> satVars;
   DenseSet<Value> encodedValues;
-  int nextFreshVar = 0;
   int trueVar = 0;
   int falseVar = 0;
 };

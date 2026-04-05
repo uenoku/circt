@@ -57,3 +57,28 @@ hw.module @functional_reduction_supported_ops_sat(
   %14 = synth.mig.maj_inv %a, %10, %13 : i1
   hw.output %0, %1, %2, %3, %4, %5, %6, %8, %9, %14 : i1, i1, i1, i1, i1, i1, i1, i1, i1, i1
 }
+
+// SAT should prove equivalence for both ternary and unary DIG nodes.
+// RUN: circt-lec %s %t.mlir --shared-libs=%libz3 --c1 functional_reduction_dig_sat --c2 functional_reduction_dig_sat | FileCheck %s --check-prefix=DIG
+// DIG: c1 == c2
+// CHECK-LABEL: hw.module @functional_reduction_dig_sat
+hw.module @functional_reduction_dig_sat(in %a: i1, in %b: i1, in %c: i1,
+                                        out out0: i1, out out1: i1,
+                                        out out2: i1, out out3: i1) {
+  // CHECK: %[[DOT:.+]] = synth.dig.dot_inv %a, %b, %c : i1
+  // CHECK: %[[AND:.+]] = comb.and %a, %b : i1
+  // CHECK: %[[OR:.+]] = comb.or %c, %[[AND]] : i1
+  // CHECK: %[[XOR:.+]] = comb.xor %a, %[[OR]] : i1
+  // CHECK-NEXT: %[[CHOICE0:.+]] = synth.choice %[[DOT]], %[[XOR]]
+  // CHECK: %[[NDOT:.+]] = synth.dig.dot_inv not %a : i1
+  // CHECK: %[[NAND:.+]] = synth.aig.and_inv not %a : i1
+  // CHECK-NEXT: %[[CHOICE1:.+]] = synth.choice %[[NDOT]], %[[NAND]]
+  // CHECK: hw.output %[[CHOICE0]], %[[CHOICE0]], %[[CHOICE1]], %[[CHOICE1]] : i1, i1, i1, i1
+  %0 = synth.dig.dot_inv %a, %b, %c : i1
+  %1 = comb.and %a, %b : i1
+  %2 = comb.or %c, %1 : i1
+  %3 = comb.xor %a, %2 : i1
+  %4 = synth.dig.dot_inv not %a : i1
+  %5 = synth.aig.and_inv not %a : i1
+  hw.output %0, %3, %4, %5 : i1, i1, i1, i1
+}

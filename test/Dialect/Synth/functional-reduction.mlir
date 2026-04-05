@@ -63,3 +63,24 @@ hw.module @test_five_input_mig(in %a: i1, in %b: i1, in %c: i1, in %d: i1,
   %1 = synth.mig.maj_inv %e, %d, %c, %b, %a {synth.test.fc_equiv_class = 6} : i1
   hw.output %0, %1 : i1, i1
 }
+
+// CHECK-LABEL: hw.module @test_dot
+hw.module @test_dot(in %a: i1, in %b: i1, in %c: i1,
+                    out out0: i1, out out1: i1, out out2: i1) {
+  // CHECK: %[[DOT:.+]] = synth.dig.dot_inv %a, %b, %c
+  // CHECK: %[[AND:.+]] = comb.and %a, %b : i1
+  // CHECK: %[[OR:.+]] = comb.or %c, %[[AND]] : i1
+  // CHECK: %[[XOR:.+]] = comb.xor %a, %[[OR]]
+  // CHECK-NEXT: %[[CHOICE0:.+]] = synth.choice %[[DOT]], %[[XOR]] : i1
+  // CHECK: %[[NDOT:.+]] = synth.dig.dot_inv not %a
+  // CHECK: %[[NAND:.+]] = synth.aig.and_inv not %a
+  // CHECK-NEXT: %[[CHOICE1:.+]] = synth.choice %[[NDOT]], %[[NAND]] : i1
+  // CHECK: hw.output %[[CHOICE0]], %[[CHOICE0]], %[[CHOICE1]] : i1, i1, i1
+  %0 = synth.dig.dot_inv %a, %b, %c {synth.test.fc_equiv_class = 7} : i1
+  %1 = comb.and %a, %b : i1
+  %2 = comb.or %c, %1 : i1
+  %3 = comb.xor %a, %2 {synth.test.fc_equiv_class = 7} : i1
+  %4 = synth.dig.dot_inv not %a {synth.test.fc_equiv_class = 8} : i1
+  %5 = synth.aig.and_inv not %a {synth.test.fc_equiv_class = 8} : i1
+  hw.output %0, %3, %4 : i1, i1, i1
+}
