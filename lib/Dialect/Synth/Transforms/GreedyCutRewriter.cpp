@@ -39,6 +39,8 @@ using namespace circt::synth;
 
 namespace {
 
+constexpr unsigned greedyMaxExpansionDepth = 4;
+
 struct StructuralKey {
   OperationName opName;
   SmallVector<uint64_t, 3> operandSignals;
@@ -365,18 +367,26 @@ static bool isRecipeCommutative(CandidateRecipeNode::Kind kind) {
 }
 
 static bool isRecipeAreaCounted(CandidateRecipeNode::Kind kind) {
-  return kind == CandidateRecipeNode::Identity ||
-         kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
+  return kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
          kind == CandidateRecipeNode::Maj || kind == CandidateRecipeNode::Dot;
 }
 
+static bool isFreeInverterOp(Operation *op) {
+  return (isa<aig::AndInverterOp, mig::MajorityInverterOp, dig::DotInverterOp>(
+              op) &&
+          op->getNumOperands() == 1);
+}
+
 static bool isAreaCountedLogicOp(Operation *op) {
-  return isa<aig::AndInverterOp, mig::MajorityInverterOp, dig::DotInverterOp,
-             comb::XorOp>(op);
+  return isa<comb::XorOp>(op) ||
+         ((isa<aig::AndInverterOp, mig::MajorityInverterOp, dig::DotInverterOp>(
+              op)) &&
+          op->getNumOperands() != 1);
 }
 
 static bool isGreedyDoomedTrackableOp(Operation *op) {
-  return isAreaCountedLogicOp(op) || isa<hw::WireOp, synth::ChoiceOp>(op);
+  return isAreaCountedLogicOp(op) || isFreeInverterOp(op) ||
+         isa<hw::WireOp, synth::ChoiceOp>(op);
 }
 
 static unsigned getUseCount(Value value) {
@@ -630,7 +640,6 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       return *localSignal;
 
     uint64_t signal = allocateSignal();
-    ++result.newArea;
     localEntries.push_back(
         LocalProbeEntry{inverterName, std::move(operandSignals), signal});
     return signal;
@@ -692,14 +701,12 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
         rootValue.getContext(), recipe, CandidateRecipeNode::Identity);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals)) {
       if (auto *op = existingValue.getDefiningOp())
-      result.reusedOps.push_back(op);
+        result.reusedOps.push_back(op);
       result.rootSignal = index.getSignalId(existingValue);
     } else {
       result.rootSignal = allocateSignal();
-      ++result.newArea;
-      localEntries.push_back(
-          LocalProbeEntry{inverterName, std::move(operandSignals),
-                          result.rootSignal});
+      localEntries.push_back(LocalProbeEntry{
+          inverterName, std::move(operandSignals), result.rootSignal});
     }
   }
 
@@ -1002,8 +1009,12 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
   if (!bestPattern)
     return {};
   return GreedyRewriteCandidate::GreedyMatchedPattern{
-      bestPattern, SmallVector<DelayType, 1>{bestOutputDelay}, bestArea,
-      std::move(bestBinding), std::move(*bestRecipe), std::move(bestProbe)};
+      bestPattern,
+      SmallVector<DelayType, 1>{bestOutputDelay},
+      bestArea,
+      std::move(bestBinding),
+      std::move(*bestRecipe),
+      std::move(bestProbe)};
 }
 
 class GreedyRootPattern : public mlir::RewritePattern {
@@ -1026,7 +1037,6 @@ public:
     if (rootValue.use_empty())
       return failure();
 
-    constexpr unsigned greedyMaxExpansionDepth = 3;
     SmallVector<LocalCut, 16> rootCuts;
     enumerateGreedyCutsForRoot(rootValue, driver.getOptions().maxCutInputSize,
                                greedyMaxExpansionDepth, structuralIndex,
@@ -1046,10 +1056,11 @@ public:
       SmallVector<Operation *, 8> preservedOps =
           collectPreservedOps(cut, probe.reusedOps);
       auto doomed = computeDoomedCone(op, preservedOps);
-      int gain = static_cast<int>(llvm::count_if(
-                     doomed, [](Operation *doomedOp) {
-                       return isAreaCountedLogicOp(doomedOp);
-                     })) -
+      int gain = static_cast<int>(llvm::count_if(doomed,
+                                                 [](Operation *doomedOp) {
+                                                   return isAreaCountedLogicOp(
+                                                       doomedOp);
+                                                 })) -
                  static_cast<int>(probe.newArea);
       if (gain <= 0)
         continue;
@@ -1076,10 +1087,9 @@ public:
 
     auto doomed = computeDoomedCone(op, bestCandidate->preservedOps);
     rewriter.setInsertionPoint(op);
-    auto result = materializeRecipe(rewriter, bestCandidate->cut,
-                                    bestCandidate->match.binding,
-                                    bestCandidate->match.recipe,
-                                    structuralIndex);
+    auto result = materializeRecipe(
+        rewriter, bestCandidate->cut, bestCandidate->match.binding,
+        bestCandidate->match.recipe, structuralIndex);
     if (failed(result))
       return failure();
 
