@@ -461,7 +461,7 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
     // Topologically sort AIG ops, MIG ops, and dataflow ops. Other operations
     // can be scheduled.
     return !(isa<aig::AndInverterOp, mig::MajorityInverterOp>(op) ||
-             isa<dig::DotInverterOp>(op) ||
+             isa<dig::DotInverterOp, synth::ChoiceOp>(op) ||
              isa<comb::XorOp, comb::AndOp, comb::OrOp, comb::ExtractOp,
                  comb::ReplicateOp, comb::ConcatOp>(op));
   };
@@ -1384,6 +1384,13 @@ CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
   return cutSetPtr->second;
 }
 
+static Cut *getTrivialCut(CutSet *cutSet) {
+  auto cuts = cutSet->getCuts();
+  if (cuts.size() != 1 || !cuts.front()->isTrivialCut())
+    return nullptr;
+  return cuts.front();
+}
+
 void CutEnumerator::clear() {
   cutSets.clear();
   processingOrder.clear();
@@ -1401,11 +1408,19 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   if (gate.getKind() == LogicNetworkGate::Choice) {
     auto choiceOp = cast<synth::ChoiceOp>(logicOp);
 
-    auto *resultCutSet = createNewCutSet(nodeIndex);
+    auto cutSetIt = cutSets.find(nodeIndex);
+    CutSet *resultCutSet = nullptr;
+    if (cutSetIt == cutSets.end()) {
+      resultCutSet = createNewCutSet(nodeIndex);
+      Cut *primaryInputCut =
+          cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
+      resultCutSet->addCut(primaryInputCut);
+    } else {
+      resultCutSet = cutSetIt->second;
+      assert(getTrivialCut(resultCutSet) &&
+             "existing cut set for unvisited logic op must be trivial");
+    }
     processingOrder.push_back(nodeIndex);
-    Cut *primaryInputCut =
-        cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
-    resultCutSet->addCut(primaryInputCut);
 
     llvm::scope_exit prune(
         [&]() { resultCutSet->finalize(options, matchCut, logicNetwork); });
@@ -1465,11 +1480,20 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
 
   // Create the trivial cut for this node's output
   Cut *primaryInputCut =
-      cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
+      nullptr;
 
-  auto *resultCutSet = createNewCutSet(nodeIndex);
+  auto cutSetIt = cutSets.find(nodeIndex);
+  CutSet *resultCutSet = nullptr;
+  if (cutSetIt == cutSets.end()) {
+    primaryInputCut = cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
+    resultCutSet = createNewCutSet(nodeIndex);
+    resultCutSet->addCut(primaryInputCut);
+  } else {
+    resultCutSet = cutSetIt->second;
+    assert(getTrivialCut(resultCutSet) &&
+           "existing cut set for unvisited logic op must be trivial");
+  }
   processingOrder.push_back(nodeIndex);
-  resultCutSet->addCut(primaryInputCut);
 
   // Schedule cut set finalization when exiting this scope
   llvm::scope_exit prune([&]() {
