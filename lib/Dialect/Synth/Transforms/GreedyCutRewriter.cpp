@@ -95,6 +95,35 @@ struct LocalFrontierLeaf {
   unsigned depth = 0;
 };
 
+static unsigned computeRecipeDepth(const CandidateRecipe &recipe) {
+  SmallVector<unsigned, 8> nodeDepths(recipe.nodes.size(), 0);
+  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
+    const auto &node = recipe.nodes[i];
+    switch (node.kind) {
+    case CandidateRecipeNode::Input:
+    case CandidateRecipeNode::Const0:
+    case CandidateRecipeNode::Const1:
+      nodeDepths[i] = 0;
+      break;
+    case CandidateRecipeNode::Identity:
+      assert(node.fanins.size() == 1 && "identity recipe nodes must be unary");
+      nodeDepths[i] = nodeDepths[node.fanins.front()];
+      break;
+    case CandidateRecipeNode::And:
+    case CandidateRecipeNode::Xor:
+    case CandidateRecipeNode::Maj:
+    case CandidateRecipeNode::Dot: {
+      unsigned maxDepth = 0;
+      for (unsigned fanin : node.fanins)
+        maxDepth = std::max(maxDepth, nodeDepths[fanin]);
+      nodeDepths[i] = maxDepth + 1;
+      break;
+    }
+    }
+  }
+  return nodeDepths[recipe.root];
+}
+
 static NPNClass
 computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
                               const CutRewriterOptions &options) {
@@ -326,8 +355,11 @@ enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
     LocalCut cut;
     cut.root = root;
     cut.leaves.reserve(frontier.size());
+    cut.depth = 0;
     for (const auto &leaf : frontier)
       cut.leaves.push_back(leaf.value);
+    for (const auto &leaf : frontier)
+      cut.depth = std::max(cut.depth, leaf.depth);
     if (!cut.leaves.empty() && !hasEquivalentGreedyCut(cuts, cut))
       cuts.push_back(std::move(cut));
   };
@@ -944,6 +976,7 @@ struct GreedyRewriteCandidate {
   SmallVector<Operation *, 8> preservedOps;
   int gain = 0;
   unsigned newArea = 0;
+  unsigned recipeDepth = 0;
 };
 
 static std::optional<GreedyRewriteCandidate::GreedyMatchedPattern>
@@ -1042,6 +1075,8 @@ public:
                                greedyMaxExpansionDepth, structuralIndex,
                                rootCuts);
     driver.noteCutsCreated(rootCuts.size());
+    unsigned currentSupportSize =
+        rootCuts.empty() ? op->getNumOperands() : rootCuts.front().getInputSize();
 
     std::optional<GreedyRewriteCandidate> bestCandidate;
     for (LocalCut &cut : rootCuts) {
@@ -1056,19 +1091,24 @@ public:
       SmallVector<Operation *, 8> preservedOps =
           collectPreservedOps(cut, probe.reusedOps);
       auto doomed = computeDoomedCone(op, preservedOps);
-      int gain = static_cast<int>(llvm::count_if(doomed,
-                                                 [](Operation *doomedOp) {
-                                                   return isAreaCountedLogicOp(
-                                                       doomedOp);
-                                                 })) -
-                 static_cast<int>(probe.newArea);
-      if (gain <= 0)
+      int doomedArea = static_cast<int>(llvm::count_if(
+          doomed, [](Operation *doomedOp) { return isAreaCountedLogicOp(doomedOp); }));
+      int gain = doomedArea - static_cast<int>(probe.newArea);
+      unsigned recipeDepth = computeRecipeDepth(matched->recipe);
+      bool isUsefulZeroGain =
+          gain == 0 &&
+          (cut.getInputSize() < currentSupportSize || recipeDepth < cut.depth);
+      if (gain < 0 || (gain == 0 && !isUsefulZeroGain))
         continue;
       LLVM_DEBUG({
         llvm::dbgs() << "candidate cut with gain " << gain
                      << " (new area: " << probe.newArea
                      << ", preserved ops: " << probe.reusedOps.size()
-                     << ", doomed ops: " << doomed.size() << ")\n";
+                     << ", doomed ops: " << doomed.size()
+                     << ", cut inputs: " << cut.getInputSize()
+                     << ", current inputs: " << currentSupportSize
+                     << ", recipe depth: " << recipeDepth
+                     << ", cut depth: " << cut.depth << ")\n";
       });
 
       if (!bestCandidate || gain > bestCandidate->gain ||
@@ -1076,9 +1116,14 @@ public:
            probe.newArea < bestCandidate->newArea) ||
           (gain == bestCandidate->gain &&
            probe.newArea == bestCandidate->newArea &&
-           cut.getInputSize() < bestCandidate->cut.getInputSize())) {
+           cut.getInputSize() < bestCandidate->cut.getInputSize()) ||
+          (gain == bestCandidate->gain &&
+           probe.newArea == bestCandidate->newArea &&
+           cut.getInputSize() == bestCandidate->cut.getInputSize() &&
+           recipeDepth < bestCandidate->recipeDepth)) {
         bestCandidate = GreedyRewriteCandidate{
-            cut, *matched, std::move(preservedOps), gain, probe.newArea};
+            cut, *matched, std::move(preservedOps), gain, probe.newArea,
+            recipeDepth};
       }
     }
 

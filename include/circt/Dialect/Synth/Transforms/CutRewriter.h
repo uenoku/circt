@@ -397,6 +397,7 @@ struct CandidateRecipe {
 struct LocalCut {
   Value root;
   SmallVector<Value, 4> leaves;
+  unsigned depth = 0;
   mutable std::optional<BinaryTruthTable> truthTable;
   mutable std::optional<NPNClass> npnClass;
 
