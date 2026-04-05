@@ -410,4 +410,41 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
   let dependentDialects = ["synth::SynthDialect"];
 }
 
+def DIGYCareResub : Pass<"synth-dig-y-care-resub", "hw::HWModuleOp"> {
+  let summary = "DIG y-input care-set resubstitution";
+  let description = [{
+    This pass inspects ternary `synth.dig.dot_inv` roots and tries to replace
+    only the logical `y` input with a cheaper nearby candidate. Candidates are
+    filtered with random-pattern simulation, then proven legal under the local
+    care set `x & ~z` using a SAT solver. Rewrites are applied only when they
+    strictly reduce local DIG area.
+  }];
+
+  let options = [
+    Option<"maxCandidatesPerRoot", "max-candidates-per-root", "unsigned", "12",
+           "Maximum number of y' candidates to try for each DIG root">,
+    Option<"numRandomPatterns", "num-random-patterns", "unsigned", "256",
+           "Number of random simulation patterns used for prefiltering. 0 disables simulation; otherwise must be a multiple of 64">,
+    Option<"satSolver", "sat-solver", "std::string", "\"auto\"",
+           "SAT solver backend to use: auto, z3, or cadical">,
+    Option<"conflictLimit", "conflict-limit", "int64_t", "200",
+           "Per-SAT-call conflict budget. -1 disables the limit.">
+  ];
+  let statistics = [
+    Statistic<"numRootsVisited", "num-roots-visited",
+              "Number of ternary DIG roots considered">,
+    Statistic<"numCandidatesTried", "num-candidates-tried",
+              "Number of y' candidates considered after cheap area filtering">,
+    Statistic<"numSimulationRejected", "num-simulation-rejected",
+              "Number of candidates rejected by random simulation">,
+    Statistic<"numSatRejected", "num-sat-rejected",
+              "Number of candidates rejected by SAT or UNKNOWN result">,
+    Statistic<"numRewrites", "num-rewrites",
+              "Number of DIG roots rewritten">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

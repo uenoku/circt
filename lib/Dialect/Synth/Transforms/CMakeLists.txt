@@ -10,6 +10,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
   CutRewriteDB.cpp
   CutRewriter.cpp
+  DIGYCareResub.cpp
   ExactSynthesis.cpp
   FunctionalReduction.cpp
   GenericLUTMapper.cpp
