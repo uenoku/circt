@@ -30,6 +30,25 @@ hw.module @test_choice(in %a: i32, in %b: i32, in %c: i32, out out0: i32) {
   hw.output %0 : i32
 }
 
+// CHECK-LABEL: @test_dig
+hw.module @test_dig(in %a: i1, in %b: i1, in %c: i1, out out0: i1) {
+  // CHECK-DAG: %[[AND:.+]] = comb.and %a, %b : i1
+  // CHECK-DAG: %[[OR:.+]] = comb.or %c, %[[AND]] : i1
+  // CHECK: %[[RESULT:.+]] = comb.xor %a, %[[OR]] : i1
+  // CHECK: hw.output %[[RESULT]] : i1
+  %0 = synth.dig.dot_inv %a, %b, %c : i1
+  hw.output %0 : i1
+}
+
+// CHECK-LABEL: @test_dig_inv
+hw.module @test_dig_inv(in %a: i1, out out0: i1) {
+  // CHECK: %[[TRUE:.+]] = hw.constant true
+  // CHECK: %[[RESULT:.+]] = comb.xor bin %a, %[[TRUE]] : i1
+  // CHECK: hw.output %[[RESULT]] : i1
+  %0 = synth.dig.dot_inv not %a : i1
+  hw.output %0 : i1
+}
+
 // CHECK-LABEL: @test_maj5
 hw.module @test_maj5(in %a: i32, in %b: i32, in %c: i32, in %d: i32, in %e: i32,
                      out out0: i32) {

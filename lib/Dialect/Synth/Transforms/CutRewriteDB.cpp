@@ -129,6 +129,10 @@ static bool isUnsynthesizedTruthTableModule(hw::HWModuleOp module) {
 
 static std::string inferCutRewriteInverterKind(hw::HWModuleOp module) {
   for (Operation &op : module.getBodyBlock()->without_terminator())
+    if (isa<synth::dig::DotInverterOp>(op))
+      return std::string("dig");
+
+  for (Operation &op : module.getBodyBlock()->without_terminator())
     if (isa<synth::aig::AndInverterOp>(op))
       return std::string("aig");
 
@@ -142,6 +146,7 @@ static double computeMaterializedModuleArea(hw::HWModuleOp module) {
   double area = 0.0;
   for (Operation &op : module.getBodyBlock()->without_terminator())
     if (isa<synth::aig::AndInverterOp, synth::mig::MajorityInverterOp,
+            synth::dig::DotInverterOp,
             comb::XorOp>(op))
       area += 1.0;
   return area;

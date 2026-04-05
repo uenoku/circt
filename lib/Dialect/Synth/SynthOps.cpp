@@ -25,6 +25,7 @@ using namespace mlir;
 using namespace circt;
 using namespace circt::synth;
 using namespace circt::synth::mig;
+using namespace circt::synth::dig;
 using namespace circt::synth::aig;
 
 #define GET_OP_CLASSES
@@ -230,6 +231,63 @@ LogicalResult MajorityInverterOp::canonicalize(MajorityInverterOp op,
         return replaceWithIndex(i);
       }
     }
+  }
+  return failure();
+}
+
+LogicalResult DotInverterOp::verify() {
+  if (getNumOperands() != 1 && getNumOperands() != 3)
+    return emitOpError("requires exactly 1 or 3 operands");
+
+  if (!getResult().getType().isInteger(1))
+    return emitOpError("requires i1 result type");
+
+  for (auto input : getInputs())
+    if (!input.getType().isInteger(1))
+      return emitOpError("requires i1 operand types");
+
+  return success();
+}
+
+APInt DotInverterOp::evaluate(ArrayRef<APInt> inputs) {
+  assert(inputs.size() == getNumOperands() &&
+         "Number of inputs must match number of operands");
+
+  auto getInput = [&](size_t index) -> APInt {
+    return isInverted(index) ? ~inputs[index] : inputs[index];
+  };
+
+  if (inputs.size() == 1)
+    return getInput(0);
+
+  APInt x = getInput(0);
+  APInt y = getInput(1);
+  APInt z = getInput(2);
+  return x ^ (z | (x & y));
+}
+
+OpFoldResult DotInverterOp::fold(FoldAdaptor adaptor) {
+  if (getNumOperands() == 1 && !isInverted(0))
+    return getOperand(0);
+
+  SmallVector<APInt, 3> inputValues;
+  inputValues.reserve(adaptor.getInputs().size());
+  for (auto input : adaptor.getInputs()) {
+    auto attr = dyn_cast_or_null<IntegerAttr>(input);
+    if (!attr)
+      return {};
+    inputValues.push_back(attr.getValue());
+  }
+  return IntegerAttr::get(getType(), evaluate(inputValues));
+}
+
+LogicalResult DotInverterOp::canonicalize(DotInverterOp op,
+                                          PatternRewriter &rewriter) {
+  if (op.getNumOperands() == 1) {
+    if (op.getInverted()[0])
+      return failure();
+    rewriter.replaceOp(op, op.getOperand(0));
+    return success();
   }
   return failure();
 }

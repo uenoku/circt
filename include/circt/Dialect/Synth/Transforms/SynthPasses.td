@@ -116,7 +116,8 @@ def CutRewrite : Pass<"synth-cut-rewrite", "hw::HWModuleOp"> {
     Statistic<"numCutsRewritten", "cuts-rewritten",
               "Number of cuts rewritten">,
   ];
-  let dependentDialects = ["circt::hw::HWDialect",
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
                            "circt::synth::SynthDialect"];
 }
 
@@ -146,7 +147,7 @@ def ExactSynthesis : Pass<"synth-exact-synthesis", "mlir::ModuleOp"> {
   }];
   let options = [
     Option<"kind", "kind", "std::string", "\"mig\"",
-           "Exact-synthesis backend kind (mig or mig-xor)">,
+           "Exact-synthesis backend kind (mig, mig-xor, or dig)">,
     Option<"objective", "objective", "std::string", "\"area\"",
            "Optimization objective: area or depth-size">,
     Option<"satSolver", "sat-solver", "std::string", "\"cadical\"",

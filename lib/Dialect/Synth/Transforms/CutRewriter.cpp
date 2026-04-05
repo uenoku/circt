@@ -369,6 +369,26 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                           {aSignal, bSignal, cSignal});
                   return success();
                 })
+            .Case<synth::dig::DotInverterOp>([&](synth::dig::DotInverterOp op) {
+              if (op->getNumOperands() == 1) {
+                const Signal inputSignal =
+                    getOrCreateSignal(op.getOperand(0), op.isInverted(0));
+                handleSingleInputGate(op, op.getResult(), inputSignal);
+                return success();
+              }
+              if (op->getNumOperands() != 3) {
+                handleOtherResults(op);
+                return success();
+              }
+              const Signal xSignal =
+                  getOrCreateSignal(op.getOperand(0), op.isInverted(0));
+              const Signal ySignal =
+                  getOrCreateSignal(op.getOperand(1), op.isInverted(1));
+              const Signal zSignal =
+                  getOrCreateSignal(op.getOperand(2), op.isInverted(2));
+              addGate(op, LogicNetworkGate::Dot3, {xSignal, ySignal, zSignal});
+              return success();
+            })
             .Case<hw::ConstantOp>([&](hw::ConstantOp constOp) {
               Value result = constOp.getResult();
               if (!result.getType().isInteger(1)) {
@@ -440,6 +460,7 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
     // Topologically sort AIG ops, MIG ops, and dataflow ops. Other operations
     // can be scheduled.
     return !(isa<aig::AndInverterOp, mig::MajorityInverterOp>(op) ||
+             isa<dig::DotInverterOp>(op) ||
              isa<comb::XorOp, comb::AndOp, comb::OrOp, comb::ExtractOp,
                  comb::ReplicateOp, comb::ConcatOp>(op));
   };
@@ -532,6 +553,16 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
         inputs.push_back(it->second);
       }
       eval[migOp.getResult()] = migOp.evaluate(inputs);
+    } else if (auto digOp = dyn_cast<synth::dig::DotInverterOp>(&op)) {
+      SmallVector<llvm::APInt, 3> inputs;
+      inputs.reserve(digOp.getInputs().size());
+      for (auto input : digOp.getInputs()) {
+        auto it = eval.find(input);
+        if (it == eval.end())
+          return digOp.emitError("Input value not found in evaluation map");
+        inputs.push_back(it->second);
+      }
+      eval[digOp.getResult()] = digOp.evaluate(inputs);
     } else if (!isa<hw::OutputOp>(&op)) {
       return op.emitError("Unsupported operation for truth table simulation");
     }
@@ -689,6 +720,8 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   switch (kind) {
   case LogicNetworkGate::Maj3:
     return (a & b) | (a & c) | (b & c);
+  case LogicNetworkGate::Dot3:
+    return a ^ (c | (a & b));
   default:
     llvm_unreachable(
         "Unsupported ternary operation for truth table computation");
@@ -736,6 +769,13 @@ static llvm::APInt simulateGate(const LogicNetwork &network, uint32_t index,
   }
 
   case LogicNetworkGate::Maj3: {
+    result =
+        applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
+                           getEdgeTT(gate.edges[1]), getEdgeTT(gate.edges[2]));
+    break;
+  }
+
+  case LogicNetworkGate::Dot3: {
     result =
         applyGateSemantics(gate.getKind(), getEdgeTT(gate.edges[0]),
                            getEdgeTT(gate.edges[1]), getEdgeTT(gate.edges[2]));

@@ -70,6 +70,14 @@ static bool accumulateResourceCounts(Operation *op,
         counts[name] += count;
         return true;
       })
+      .Case<synth::dig::DotInverterOp>([&](auto logicOp) {
+        uint64_t count = logicOp.getType().getIntOrFloatBitWidth();
+        std::string name = (Twine(logicOp->getName().getStringRef()) + "_" +
+                            Twine(logicOp.getNumOperands()))
+                               .str();
+        counts[name] += count;
+        return true;
+      })
       // Truth tables (LUTs) - count both the total number of truth tables and
       // the per-input breakdown.
       .Case<comb::TruthTableOp>([&](auto op) {

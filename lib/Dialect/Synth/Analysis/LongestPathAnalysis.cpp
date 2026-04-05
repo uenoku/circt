@@ -669,6 +669,8 @@ private:
                       SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(mig::MajorityInverterOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
+  LogicalResult visit(dig::DotInverterOp op, size_t bitPos,
+                      SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(comb::AndOp op, size_t bitPos,
                       SmallVectorImpl<OpenPath> &results);
   LogicalResult visit(comb::XorOp op, size_t bitPos,
@@ -883,6 +885,11 @@ LogicalResult LocalVisitor::visit(mig::MajorityInverterOp op, size_t bitPos,
       return failure();
   }
   return success();
+}
+
+LogicalResult LocalVisitor::visit(dig::DotInverterOp op, size_t bitPos,
+                                  SmallVectorImpl<OpenPath> &results) {
+  return addLogicOp(op, bitPos, results);
 }
 
 LogicalResult LocalVisitor::visit(comb::AndOp op, size_t bitPos,
@@ -1166,10 +1173,11 @@ LogicalResult LocalVisitor::visitValue(Value value, size_t bitPos,
   auto result =
       TypeSwitch<Operation *, LogicalResult>(op)
           .Case<comb::ConcatOp, comb::ExtractOp, comb::ReplicateOp,
-                aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp,
-                comb::OrOp, comb::MuxOp, comb::XorOp, comb::TruthTableOp,
-                seq::FirRegOp, seq::CompRegOp, seq::FirMemReadOp,
-                seq::FirMemReadWriteOp, hw::WireOp>([&](auto op) {
+                aig::AndInverterOp, mig::MajorityInverterOp,
+                dig::DotInverterOp, comb::AndOp, comb::OrOp, comb::MuxOp,
+                comb::XorOp, comb::TruthTableOp, seq::FirRegOp,
+                seq::CompRegOp, seq::FirMemReadOp, seq::FirMemReadWriteOp,
+                hw::WireOp>([&](auto op) {
             size_t idx = results.size();
             auto result = visit(op, bitPos, results);
             if (ctx->doTraceDebugPoints())
@@ -1313,8 +1321,9 @@ LogicalResult LocalVisitor::initializeAndRun() {
               return markRegEndPoint(op.getMemory(), op.getWriteData(), {}, {},
                                      op.getEnable());
             })
-            .Case<aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp,
-                  comb::MuxOp, seq::FirMemReadOp>([&](auto op) {
+            .Case<aig::AndInverterOp, dig::DotInverterOp, comb::AndOp,
+                  comb::OrOp, comb::XorOp, comb::MuxOp,
+                  seq::FirMemReadOp>([&](auto op) {
               // NOTE: Visiting and-inverter is not necessary but
               // useful to reduce recursion depth.
               for (size_t i = 0, e = getBitWidth(op); i < e; ++i)

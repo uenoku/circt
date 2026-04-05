@@ -133,6 +133,40 @@ struct SynthMajorityInverterOpConversion
   }
 };
 
+struct SynthDotInverterOpConversion
+    : OpConversionPattern<synth::dig::DotInverterOp> {
+  using OpConversionPattern<synth::dig::DotInverterOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(synth::dig::DotInverterOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto materializeInput = [&](unsigned idx) -> Value {
+      auto input = adaptor.getInputs()[idx];
+      if (!op.getInverted()[idx])
+        return input;
+      auto width = input.getType().getIntOrFloatBitWidth();
+      auto allOnes = hw::ConstantOp::create(rewriter, op.getLoc(),
+                                            APInt::getAllOnes(width));
+      return rewriter.createOrFold<comb::XorOp>(op.getLoc(), input, allOnes,
+                                                true);
+    };
+
+    if (op.getNumOperands() == 1) {
+      rewriter.replaceOp(op, materializeInput(0));
+      return success();
+    }
+
+    Value x = materializeInput(0);
+    Value y = materializeInput(1);
+    Value z = materializeInput(2);
+    Value xy = rewriter.createOrFold<comb::AndOp>(op.getLoc(), x, y);
+    Value zOrXY = rewriter.createOrFold<comb::OrOp>(op.getLoc(), z, xy);
+    rewriter.replaceOp(op,
+                       rewriter.createOrFold<comb::XorOp>(op.getLoc(), x,
+                                                          zOrXY));
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -150,7 +184,8 @@ struct ConvertSynthToCombPass
 
 static void populateSynthToCombConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion,
-               SynthMajorityInverterOpConversion>(patterns.getContext());
+               SynthMajorityInverterOpConversion,
+               SynthDotInverterOpConversion>(patterns.getContext());
 }
 
 void ConvertSynthToCombPass::runOnOperation() {

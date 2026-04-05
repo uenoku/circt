@@ -69,6 +69,49 @@ def MajorityInverterOp : SynthOp<"mig.maj_inv",
 
 }
 
+def DotInverterOp : SynthOp<"dig.dot_inv", [SameOperandsAndResultType, Pure]> {
+  let summary = "Dot-Inverter operation";
+  let description = [{
+    The `synth.dig.dot_inv` operation represents the Dot primitive used in
+    Dot-Inverter Graphs (DIGs). In v1 this operation is intended as an
+    internal synthesis/cut-rewrite primitive rather than a frontend lowering
+    target.
+
+    The 3-input form computes:
+    `D(x, y, z) = x xor (z or (x and y))`
+    after applying the per-input inversion flags.
+
+    The 1-input form is used as an explicit buffer/inverter carrier.
+
+    Example:
+    ```mlir
+      %r0 = synth.dig.dot_inv not %a : i1
+      %r1 = synth.dig.dot_inv %a, %b, %c : i1
+      %r2 = synth.dig.dot_inv %a, not %b, %c : i1
+    ```
+  }];
+  let arguments = (ins Variadic<AnyType>:$inputs, DenseBoolArrayAttr:$inverted);
+  let results = (outs AnyType:$result);
+  let hasVerifier = true;
+  let hasCanonicalizeMethod = true;
+  let hasFolder = true;
+
+  let assemblyFormat = [{
+    custom<VariadicInvertibleOperands>($inputs, type($result), $inverted,
+                                       attr-dict)
+  }];
+  let cppNamespace = "::circt::synth::dig";
+  let extraClassDeclaration = [{
+    // Evaluate the operation with the given input values.
+    APInt evaluate(ArrayRef<APInt> inputs);
+
+    // Check if the input is inverted.
+    bool isInverted(size_t idx) {
+      return getInverted()[idx];
+    }
+  }];
+}
+
 def AndInverterOp : SynthOp<"aig.and_inv", [SameOperandsAndResultType, Pure]> {
   let summary = "AIG dialect AND operation";
   let description = [{

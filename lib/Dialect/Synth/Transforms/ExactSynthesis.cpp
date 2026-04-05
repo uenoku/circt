@@ -53,8 +53,9 @@ namespace {
 
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxMIGExactSearchArea = 32;
+static constexpr unsigned kMaxDIGExactSearchArea = 16;
 
-enum class CutRewriteInverterKind { mig, aig };
+enum class CutRewriteInverterKind { mig, aig, dig };
 enum class ExactSynthesisObjective { area, depthSize };
 
 static std::string formatTruthTable(const llvm::APInt &table) {
@@ -106,6 +107,8 @@ parseCutRewriteInverterKind(Operation *op, StringRef kind) {
     return CutRewriteInverterKind::mig;
   if (kind == "aig")
     return CutRewriteInverterKind::aig;
+  if (kind == "dig")
+    return CutRewriteInverterKind::dig;
   op->emitError("unsupported cut-rewrite inverter kind '") << kind << "'";
   return failure();
 }
@@ -120,6 +123,7 @@ struct ExactSignalRef {
 enum class ExactNodeKind {
   Maj3,
   Xor2,
+  Dot3,
 };
 
 struct ExactNetworkStep {
@@ -1094,6 +1098,91 @@ static Value materializeExactMIGNetwork(OpBuilder &builder, Location loc,
       stepValues.push_back(comb::XorOp::create(builder, loc, lhs, rhs));
       break;
     }
+    case ExactNodeKind::Dot3:
+      llvm_unreachable("DIG node in MIG network materialization");
+    }
+  }
+  return materializeOutputSignal(network.output, stepValues);
+}
+
+static Value materializeExactDIGNetwork(OpBuilder &builder, Location loc,
+                                        ValueRange inputs,
+                                        const ExactNetwork &network) {
+  Value constZero;
+  Value constOne;
+  auto getConstant = [&](bool value) -> Value {
+    if (!value) {
+      if (!constZero)
+        constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
+      return constZero;
+    }
+    if (!constOne)
+      constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
+    return constOne;
+  };
+
+  auto getRawSignal = [&](ExactSignalRef signal,
+                          ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(false);
+    if (signal.source <= inputs.size())
+      return inputs[signal.source - 1];
+
+    unsigned stepIndex = signal.source - (inputs.size() + 1);
+    assert(stepIndex < stepValues.size() && "invalid synthesized step index");
+    return stepValues[stepIndex];
+  };
+
+  auto materializeInverter = [&](Value value) -> Value {
+    std::array<Value, 1> operands = {value};
+    std::array<bool, 1> inverted = {true};
+    return synth::dig::DotInverterOp::create(builder, loc, operands, inverted);
+  };
+
+  auto materializeSignal = [&](ExactSignalRef signal,
+                               ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(signal.inverted);
+    Value value = getRawSignal(signal, stepValues);
+    if (!signal.inverted)
+      return value;
+    return materializeInverter(value);
+  };
+
+  auto materializeOutputSignal = [&](ExactSignalRef signal,
+                                     ArrayRef<Value> stepValues) -> Value {
+    if (signal.source == 0)
+      return getConstant(signal.inverted);
+
+    Value value = signal.inverted ? materializeSignal(signal, stepValues)
+                                  : getRawSignal(signal, stepValues);
+    if (!signal.inverted) {
+      if (value.getDefiningOp())
+        return value;
+      return hw::WireOp::create(builder, loc, value);
+    }
+    return value;
+  };
+
+  SmallVector<Value, 4> stepValues;
+  stepValues.reserve(network.steps.size());
+  for (const auto &step : network.steps) {
+    switch (step.kind) {
+    case ExactNodeKind::Dot3: {
+      std::array<Value, 3> operands = {
+          getRawSignal(step.fanins[0], stepValues),
+          getRawSignal(step.fanins[1], stepValues),
+          getRawSignal(step.fanins[2], stepValues)};
+      std::array<bool, 3> inverted = {step.fanins[0].inverted,
+                                      step.fanins[1].inverted,
+                                      step.fanins[2].inverted};
+      stepValues.push_back(
+          synth::dig::DotInverterOp::create(builder, loc, operands, inverted));
+      break;
+    }
+    case ExactNodeKind::Maj3:
+    case ExactNodeKind::Xor2:
+      llvm_unreachable("non-DIG node in DIG network materialization");
     }
   }
   return materializeOutputSignal(network.output, stepValues);
@@ -1161,6 +1250,9 @@ private:
                                                     inverted);
     case CutRewriteInverterKind::aig:
       return synth::aig::AndInverterOp::create(builder, loc, operands,
+                                               inverted);
+    case CutRewriteInverterKind::dig:
+      return synth::dig::DotInverterOp::create(builder, loc, operands,
                                                inverted);
     }
     llvm_unreachable("unsupported inverter kind");
@@ -1255,6 +1347,8 @@ public:
     case ExactNodeKind::Xor2:
       lastStep.fanins[0].inverted = !lastStep.fanins[0].inverted;
       break;
+    case ExactNodeKind::Dot3:
+      llvm_unreachable("DIG node in MIG output-negation handling");
     }
     return network;
   }
@@ -1332,6 +1426,8 @@ public:
       addConditionedClause({-aLit, bLit, outLit});
       break;
     }
+    case ExactNodeKind::Dot3:
+      llvm_unreachable("DIG node in MIG semantics encoding");
     }
   }
 
@@ -1344,17 +1440,125 @@ private:
   MIGBackendConfig config;
 };
 
+class DIGExactSynthesisBackend final : public ExactSynthesisBackend {
+public:
+  StringRef getKind() const override { return "dig"; }
+  unsigned getMaxSupportedInputs() const override {
+    return kMaxExactSynthesisInputs;
+  }
+  StringRef getFamilyName() const override { return "DIG"; }
+  unsigned getArity() const override { return 3; }
+  unsigned getMaxSearchArea() const override { return kMaxDIGExactSearchArea; }
+
+  std::pair<BinaryTruthTable, bool>
+  normalize(const BinaryTruthTable &tt) const override {
+    if (!tt.table[0])
+      return {tt, false};
+    BinaryTruthTable normalized = tt;
+    normalized.table.flipAllBits();
+    return {std::move(normalized), true};
+  }
+
+  std::optional<ExactNetwork>
+  synthesizeDirect(unsigned numInputs,
+                   const llvm::APInt &target) const override {
+    ExactNetwork network;
+    network.numInputs = numInputs;
+    if (target.isZero()) {
+      network.output = {0, false};
+      return network;
+    }
+    if (target.isAllOnes()) {
+      network.output = {0, true};
+      return network;
+    }
+    for (unsigned input = 0; input != numInputs; ++input) {
+      llvm::APInt mask = circt::createVarMask(numInputs, input, true);
+      if (target == mask) {
+        network.output = {1 + input, false};
+        return network;
+      }
+      llvm::APInt invertedMask = mask;
+      invertedMask.flipAllBits();
+      if (target == invertedMask) {
+        network.output = {1 + input, true};
+        return network;
+      }
+    }
+    return std::nullopt;
+  }
+
+  ExactNetwork applyOutputNegation(ExactNetwork network) const override {
+    network.output.inverted = !network.output.inverted;
+    return network;
+  }
+
+  void enumerateCandidates(
+      unsigned availableSources,
+      SmallVectorImpl<ExactCandidate> &candidates) const override {
+    candidates.clear();
+    for (unsigned x = 1; x < availableSources; ++x)
+      for (unsigned y = 1; y < availableSources; ++y)
+        for (unsigned z = 1; z < availableSources; ++z)
+          for (unsigned invMask = 0; invMask != 8; ++invMask) {
+            ExactCandidate candidate;
+            candidate.kind = ExactNodeKind::Dot3;
+            candidate.fanins.push_back({x, static_cast<bool>(invMask & 1)});
+            candidate.fanins.push_back({y, static_cast<bool>(invMask & 2)});
+            candidate.fanins.push_back({z, static_cast<bool>(invMask & 4)});
+            candidates.push_back(std::move(candidate));
+          }
+  }
+
+  bool isTrivialCandidate(const ExactCandidate &) const override {
+    return false;
+  }
+
+  void addConditionedSemantics(IncrementalSATSolver &solver, int selector,
+                               int outLit, const ExactCandidate &candidate,
+                               unsigned minterm,
+                               llvm::function_ref<int(unsigned, unsigned, bool)>
+                                   getSourceLiteral) const override {
+    int xLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                candidate.fanins[0].inverted);
+    int yLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                candidate.fanins[1].inverted);
+    int zLit = getSourceLiteral(candidate.fanins[2].source, minterm,
+                                candidate.fanins[2].inverted);
+
+    for (unsigned assignment = 0; assignment != 8; ++assignment) {
+      bool x = assignment & 1;
+      bool y = assignment & 2;
+      bool z = assignment & 4;
+      bool value = x ^ (z || (x && y));
+
+      SmallVector<int, 4> clause = {-selector, x ? -xLit : xLit,
+                                    y ? -yLit : yLit, z ? -zLit : zLit};
+      clause.push_back(value ? outLit : -outLit);
+      solver.addClause(clause);
+    }
+  }
+
+  Value materializeNetwork(OpBuilder &builder, Location loc, ValueRange inputs,
+                           const ExactNetwork &network) const override {
+    return materializeExactDIGNetwork(builder, loc, inputs, network);
+  }
+};
+
 static const ExactSynthesisBackend *getExactSynthesisBackend(StringRef kind) {
   static const ConfigurableMIGExactSynthesisBackend migBackend(
       {StringLiteral("mig"), StringLiteral("MIG"), false});
   static const ConfigurableMIGExactSynthesisBackend migXorBackend(
       {StringLiteral("mig-xor"), StringLiteral("MIG-XOR"), true});
+  static const DIGExactSynthesisBackend digBackend;
 
   std::string normalized = normalizeExactSynthesisKind(kind);
   if (normalized == migBackend.getKind())
     return &migBackend;
   if (normalized == migXorBackend.getKind())
     return &migXorBackend;
+  if (normalized == digBackend.getKind())
+    return &digBackend;
   return nullptr;
 }
 
@@ -1379,8 +1583,15 @@ LogicalResult circt::synth::exactSynthesizeTruthTable(
         << "'conflict-limit' must be greater than or equal to -1";
     return failure();
   }
-  if (failed(parseExactSynthesisObjective(module, options.objective)))
+  auto objective = parseExactSynthesisObjective(module, options.objective);
+  if (failed(objective))
     return failure();
+  if (backend->getKind() == "dig" &&
+      *objective != ExactSynthesisObjective::area) {
+    module.emitError()
+        << "exact synthesis backend 'dig' only supports objective 'area'";
+    return failure();
+  }
   auto cadicalConfig = parseCadicalConfig(module, options.cadicalConfig);
   if (failed(cadicalConfig))
     return failure();
