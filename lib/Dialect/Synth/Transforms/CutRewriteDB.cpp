@@ -360,7 +360,7 @@ struct CutRewritePass
     options.maxCutInputSize = loadedMaxInputSize;
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.allowNoMatch = true;
-    options.attachDebugTiming = true;
+    options.attachDebugTiming = false;
     options.npnTable = npnTable.get();
 
     CutRewritePatternSet patternSet(std::move(patterns));
