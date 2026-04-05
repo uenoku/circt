@@ -245,6 +245,10 @@ static bool isGreedyLeafValue(Value value) {
   return false;
 }
 
+static bool isGreedyConstantValue(Value value) {
+  return value && isa_and_present<hw::ConstantOp>(value.getDefiningOp());
+}
+
 static bool isGreedyExpandableValue(Value value) {
   if (!value || isGreedyLeafValue(value))
     return false;
@@ -357,7 +361,8 @@ enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
     cut.leaves.reserve(frontier.size());
     cut.depth = 0;
     for (const auto &leaf : frontier)
-      cut.leaves.push_back(leaf.value);
+      if (!isGreedyConstantValue(leaf.value))
+        cut.leaves.push_back(leaf.value);
     for (const auto &leaf : frontier)
       cut.depth = std::max(cut.depth, leaf.depth);
     if (!cut.leaves.empty() && !hasEquivalentGreedyCut(cuts, cut))
@@ -1256,7 +1261,7 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
   mlir::GreedyRewriteConfig config;
   config.setListener(&listener);
   config.setScope(&moduleOp->getRegion(0));
-  config.setStrictness(mlir::GreedyRewriteStrictness::ExistingAndNewOps);
+  config.setStrictness(mlir::GreedyRewriteStrictness::ExistingOps);
   config.setRegionSimplificationLevel(
       mlir::GreedySimplifyRegionLevel::Disabled);
   config.enableFolding(false);
