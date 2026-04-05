@@ -217,6 +217,15 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               valueToIndex[result] = constIdx;
               return success();
             })
+            .Case<synth::ChoiceOp>([&](synth::ChoiceOp choiceOp) {
+              if (!choiceOp.getResult().getType().isInteger(1)) {
+                handleOtherResults(choiceOp);
+                return success();
+              }
+              addGate(choiceOp, LogicNetworkGate::Choice, choiceOp.getResult(),
+                      {});
+              return success();
+            })
             .Default([&](Operation *defaultOp) {
               handleOtherResults(defaultOp);
               return success();
@@ -267,8 +276,8 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   const auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops, MIG ops, and dataflow ops. Other operations
     // can be scheduled.
-    return !(isa<aig::AndInverterOp, mig::MajorityInverterOp>(op) ||
-             isa<comb::XorOp, comb::AndOp, comb::OrOp, comb::ExtractOp,
+    return !(isa<aig::AndInverterOp, mig::MajorityInverterOp, synth::ChoiceOp,
+                 comb::XorOp, comb::AndOp, comb::OrOp, comb::ExtractOp,
                  comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
@@ -311,7 +320,12 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       continue;
 
     // Support AIG, XOR, and MIG operations
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+    if (auto choiceOp = dyn_cast<synth::ChoiceOp>(&op)) {
+      auto it = eval.find(choiceOp.getInputs().front());
+      if (it == eval.end())
+        return choiceOp.emitError("Input value not found in evaluation map");
+      eval[choiceOp.getResult()] = it->second;
+    } else if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
       SmallVector<llvm::APInt, 2> inputs;
       inputs.reserve(andOp.getInputs().size());
       for (auto input : andOp.getInputs()) {
@@ -603,6 +617,11 @@ struct MergedTruthTableBuilder {
       return BinaryTruthTable(
           numMergedInputs, 1,
           applyGateSemantics(rootGate.getKind(), getEdgeTT(0)));
+    case LogicNetworkGate::Choice:
+      assert(operandCuts.size() == 1 &&
+             "choice cuts must keep exactly one selected operand cut");
+      return BinaryTruthTable(numMergedInputs, 1,
+                              expandCutTruthTable(operandCuts.front()));
     default:
       llvm_unreachable("Unsupported operation for truth table computation");
     }
@@ -894,6 +913,37 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   auto *logicOp = gate.getOperation();
   assert(logicOp && logicOp->getNumResults() == 1 &&
          "Logic operation must have a single result");
+
+  if (gate.getKind() == LogicNetworkGate::Choice) {
+    auto choiceOp = cast<synth::ChoiceOp>(logicOp);
+    auto *resultCutSet = createNewCutSet(nodeIndex);
+    Cut *primaryInputCut = cutAllocator.create(getAsTrivialCut(nodeIndex));
+    processingOrder.push_back(nodeIndex);
+    resultCutSet->addCut(primaryInputCut);
+
+    llvm::scope_exit prune(
+        [&]() { resultCutSet->finalize(options, matchCut, logicNetwork); });
+
+    for (Value operand : choiceOp.getInputs()) {
+      auto *operandCutSet = getCutSet(logicNetwork.getIndex(operand));
+      if (!operandCutSet)
+        return logicOp->emitError("Failed to get cut set for choice operand");
+
+      // Choice nodes do not introduce new logic. They forward each non-trivial
+      // operand cut as an equivalent alternative for the same root.
+      for (const Cut *operandCut : operandCutSet->getCuts()) {
+        if (operandCut->isTrivialCut())
+          continue;
+
+        auto *choiceCut = cutAllocator.create();
+        choiceCut->setRootIndex(nodeIndex);
+        choiceCut->inputs = operandCut->inputs;
+        choiceCut->setOperandCuts({operandCut});
+        resultCutSet->addCut(choiceCut);
+      }
+    }
+    return success();
+  }
 
   unsigned numFanins = gate.getNumFanins();
 
