@@ -33,6 +33,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include <functional>
 #include <random>
+#include <tuple>
 
 namespace circt {
 namespace synth {
@@ -78,6 +79,37 @@ struct CandidateExpr {
   }
 };
 
+struct SpeculativeReplacement {
+  enum class Kind { ExistingExpr, UnaryDig, TernaryDig };
+
+  Kind kind = Kind::ExistingExpr;
+  CandidateExpr expr;
+  SmallVector<CandidateExpr, 3> inputs;
+
+  unsigned area() const { return kind == Kind::ExistingExpr ? 0 : 1; }
+};
+
+struct StructuralScore {
+  unsigned kindRank = 0;
+  unsigned operandComplexity = 0;
+  unsigned distinctValues = 0;
+  unsigned nonConstantInputs = 0;
+  unsigned invertedInputs = 0;
+
+  auto asTuple() const {
+    return std::tie(kindRank, operandComplexity, distinctValues,
+                    nonConstantInputs, invertedInputs);
+  }
+
+  bool operator<(const StructuralScore &rhs) const {
+    return asTuple() < rhs.asTuple();
+  }
+
+  bool operator==(const StructuralScore &rhs) const {
+    return asTuple() == rhs.asTuple();
+  }
+};
+
 static CandidateExpr normalizeExpr(Value value, bool inverted = false) {
   APInt constantValue;
   if (matchPattern(value, mlir::m_ConstantInt(&constantValue)))
@@ -91,6 +123,132 @@ static CandidateExpr complementExpr(CandidateExpr expr) {
   else
     expr.inverted = !expr.inverted;
   return expr;
+}
+
+static bool isSameExpr(CandidateExpr lhs, CandidateExpr rhs) {
+  return lhs == rhs;
+}
+
+static bool isComplementExpr(CandidateExpr lhs, CandidateExpr rhs) {
+  return complementExpr(lhs) == rhs;
+}
+
+static std::optional<bool> getConstExpr(CandidateExpr expr) {
+  if (expr.kind != CandidateExpr::Kind::Constant)
+    return std::nullopt;
+  return expr.constant;
+}
+
+static unsigned exprComplexity(CandidateExpr expr) {
+  if (expr.kind == CandidateExpr::Kind::Constant)
+    return 0;
+  if (isa<BlockArgument>(expr.value))
+    return 1;
+  Operation *op = expr.value.getDefiningOp();
+  if (!op)
+    return 1;
+  if (isa<hw::WireOp>(op))
+    return 1;
+  if (auto digOp = dyn_cast<dig::DotInverterOp>(op))
+    return digOp.getNumOperands() == 1 ? 2 : 3;
+  if (isa<aig::AndInverterOp, mig::MajorityInverterOp, comb::AndOp, comb::OrOp,
+          comb::XorOp>(op))
+    return 2;
+  return 1;
+}
+
+static SpeculativeReplacement makeReplacementFromExpr(CandidateExpr expr) {
+  SpeculativeReplacement replacement;
+  if (expr.kind == CandidateExpr::Kind::Constant || !expr.inverted) {
+    replacement.kind = SpeculativeReplacement::Kind::ExistingExpr;
+    replacement.expr = expr;
+    return replacement;
+  }
+
+  replacement.kind = SpeculativeReplacement::Kind::UnaryDig;
+  replacement.inputs.push_back(CandidateExpr::getValue(expr.value));
+  replacement.expr = expr;
+  return replacement;
+}
+
+static SpeculativeReplacement
+analyzeSpeculativeReplacement(CandidateExpr xExpr, CandidateExpr yExpr,
+                             CandidateExpr zExpr) {
+  auto xConst = getConstExpr(xExpr);
+  auto yConst = getConstExpr(yExpr);
+  auto zConst = getConstExpr(zExpr);
+
+  if (xConst && !*xConst)
+    return makeReplacementFromExpr(zExpr);
+  if (zConst && *zConst)
+    return makeReplacementFromExpr(complementExpr(xExpr));
+  if (isSameExpr(xExpr, zExpr))
+    return makeReplacementFromExpr(CandidateExpr::getConstant(false));
+
+  if (zConst && !*zConst) {
+    if (yConst && !*yConst)
+      return makeReplacementFromExpr(xExpr);
+    if (yConst && *yConst)
+      return makeReplacementFromExpr(CandidateExpr::getConstant(false));
+    if (isSameExpr(xExpr, yExpr))
+      return makeReplacementFromExpr(CandidateExpr::getConstant(false));
+    if (isComplementExpr(xExpr, yExpr))
+      return makeReplacementFromExpr(xExpr);
+  }
+
+  if (isComplementExpr(xExpr, zExpr)) {
+    if (yConst && !*yConst)
+      return makeReplacementFromExpr(CandidateExpr::getConstant(true));
+    if (yConst && *yConst)
+      return makeReplacementFromExpr(complementExpr(xExpr));
+  }
+
+  if (isSameExpr(yExpr, zExpr)) {
+    if (yConst && !*yConst)
+      return makeReplacementFromExpr(xExpr);
+    if (yConst && *yConst)
+      return makeReplacementFromExpr(complementExpr(xExpr));
+  }
+
+  if (isSameExpr(xExpr, yExpr) && zConst && *zConst)
+    return makeReplacementFromExpr(complementExpr(xExpr));
+  if (isComplementExpr(xExpr, yExpr) && zConst && *zConst)
+    return makeReplacementFromExpr(complementExpr(xExpr));
+
+  SpeculativeReplacement replacement;
+  replacement.kind = SpeculativeReplacement::Kind::TernaryDig;
+  replacement.inputs = {xExpr, yExpr, zExpr};
+  return replacement;
+}
+
+static StructuralScore scoreReplacement(SpeculativeReplacement replacement) {
+  StructuralScore score;
+  score.kindRank = replacement.kind == SpeculativeReplacement::Kind::ExistingExpr
+                       ? 0
+                       : (replacement.kind == SpeculativeReplacement::Kind::UnaryDig
+                              ? 1
+                              : 2);
+
+  SmallPtrSet<void *, 4> seenValues;
+  auto accountExpr = [&](CandidateExpr expr) {
+    score.operandComplexity += exprComplexity(expr);
+    if (expr.kind == CandidateExpr::Kind::Constant)
+      return;
+    ++score.nonConstantInputs;
+    if (expr.inverted)
+      ++score.invertedInputs;
+    seenValues.insert(expr.value.getAsOpaquePointer());
+  };
+
+  if (replacement.kind == SpeculativeReplacement::Kind::ExistingExpr) {
+    accountExpr(replacement.expr);
+  } else {
+    for (CandidateExpr expr : replacement.inputs)
+      accountExpr(expr);
+  }
+
+  score.distinctValues = seenValues.size();
+  return score;
 }
 
 static bool isSupportedSimulatableOp(Operation *op) {
@@ -546,26 +704,37 @@ static bool provesCandidate(dig::DotInverterOp root, CandidateExpr candidate,
   return builder.proveEquivalent(root, xExpr, candidate, zExpr);
 }
 
-static void collectReachableYConeOps(Value value, Value protectedValue,
+static void collectReachableYConeOps(Value value,
+                                     ArrayRef<Value> protectedValues,
                                      SmallVectorImpl<Operation *> &reachable,
                                      llvm::SmallPtrSetImpl<Operation *> &seen) {
-  if (protectedValue && value == protectedValue)
+  if (llvm::is_contained(protectedValues, value))
     return;
   auto digOp = value.getDefiningOp<dig::DotInverterOp>();
   if (!digOp || !seen.insert(digOp).second)
     return;
   reachable.push_back(digOp);
   for (Value operand : digOp.getInputs())
-    collectReachableYConeOps(operand, protectedValue, reachable, seen);
+    collectReachableYConeOps(operand, protectedValues, reachable, seen);
 }
 
 static SmallVector<Operation *> computeDoomedYCone(dig::DotInverterOp root,
                                                    CandidateExpr candidate) {
   SmallVector<Operation *> reachable;
   llvm::SmallPtrSet<Operation *, 16> seen;
-  Value protectedValue =
-      candidate.kind == CandidateExpr::Kind::Value ? candidate.value : Value();
-  collectReachableYConeOps(root.getOperand(1), protectedValue, reachable, seen);
+  CandidateExpr xExpr = normalizeExpr(root.getOperand(0), root.isInverted(0));
+  CandidateExpr zExpr = normalizeExpr(root.getOperand(2), root.isInverted(2));
+
+  SmallVector<Value, 3> protectedValues;
+  auto maybeAddProtectedValue = [&](CandidateExpr expr) {
+    if (expr.kind == CandidateExpr::Kind::Value)
+      protectedValues.push_back(expr.value);
+  };
+  maybeAddProtectedValue(xExpr);
+  maybeAddProtectedValue(candidate);
+  maybeAddProtectedValue(zExpr);
+
+  collectReachableYConeOps(root.getOperand(1), protectedValues, reachable, seen);
 
   llvm::SmallPtrSet<Operation *, 16> doomed;
   doomed.insert(root);
@@ -603,33 +772,53 @@ static Value materializeExpr(OpBuilder &builder, Location loc, CandidateExpr exp
   return expr.value;
 }
 
-static bool rewriteRoot(dig::DotInverterOp root, CandidateExpr candidate,
-                        ArrayRef<Operation *> doomedYConeOps) {
-  CandidateExpr xExpr = normalizeExpr(root.getOperand(0), root.isInverted(0));
-  CandidateExpr zExpr = normalizeExpr(root.getOperand(2), root.isInverted(2));
+static Value materializeReplacement(OpBuilder &builder, Location loc,
+                                    SpeculativeReplacement replacement) {
+  if (replacement.kind == SpeculativeReplacement::Kind::ExistingExpr) {
+    if (replacement.expr.kind == CandidateExpr::Kind::Constant)
+      return hw::ConstantOp::create(builder, loc, APInt(1, replacement.expr.constant));
+    return replacement.expr.value;
+  }
 
-  OpBuilder builder(root);
+  if (replacement.kind == SpeculativeReplacement::Kind::UnaryDig) {
+    auto input = replacement.inputs.front();
+    assert(input.kind == CandidateExpr::Kind::Value &&
+           "unary DIG replacement expects a value input");
+    return dig::DotInverterOp::create(builder, loc, ValueRange{input.value},
+                                      ArrayRef<bool>{true})
+        .getResult();
+  }
+
   SmallVector<Value, 3> operands;
   SmallVector<bool, 3> inverted;
-  operands.push_back(materializeExpr(builder, root.getLoc(), xExpr, inverted));
-  operands.push_back(materializeExpr(builder, root.getLoc(), candidate, inverted));
-  operands.push_back(materializeExpr(builder, root.getLoc(), zExpr, inverted));
+  operands.push_back(materializeExpr(builder, loc, replacement.inputs[0], inverted));
+  operands.push_back(materializeExpr(builder, loc, replacement.inputs[1], inverted));
+  operands.push_back(materializeExpr(builder, loc, replacement.inputs[2], inverted));
+  return dig::DotInverterOp::create(builder, loc, operands, inverted).getResult();
+}
 
-  auto replacement =
-      dig::DotInverterOp::create(builder, root.getLoc(), operands, inverted);
+static bool rewriteRoot(dig::DotInverterOp root,
+                        SpeculativeReplacement replacement,
+                        ArrayRef<Operation *> doomedYConeOps) {
+  OpBuilder builder(root);
+  Value replacementValue =
+      materializeReplacement(builder, root.getLoc(), replacement);
   if (auto namehint = root->getAttr("sv.namehint"))
-    replacement->setAttr("sv.namehint", namehint);
+    if (auto *defOp = replacementValue.getDefiningOp())
+      defOp->setAttr("sv.namehint", namehint);
 
-  root.getResult().replaceAllUsesWith(replacement.getResult());
+  root.getResult().replaceAllUsesWith(replacementValue);
   root.erase();
 
   SmallVector<Operation *> eraseOrder;
-  Block *block = replacement->getBlock();
+  Block *block = builder.getBlock();
   for (Operation &op : llvm::reverse(*block))
     if (llvm::is_contained(doomedYConeOps, &op))
       eraseOrder.push_back(&op);
   for (Operation *op : eraseOrder)
-    op->erase();
+    if (llvm::all_of(op->getResults(),
+                     [](Value result) { return result.use_empty(); }))
+      op->erase();
 
   return true;
 }
@@ -693,6 +882,21 @@ struct DIGYCareResubPass
         continue;
       }
 
+      CandidateExpr currentYExpr =
+          normalizeExpr(root.getOperand(1), root.isInverted(1));
+      CandidateExpr xExpr =
+          normalizeExpr(root.getOperand(0), root.isInverted(0));
+      CandidateExpr zExpr =
+          normalizeExpr(root.getOperand(2), root.isInverted(2));
+      StructuralScore currentScore = scoreReplacement(
+          analyzeSpeculativeReplacement(xExpr, currentYExpr, zExpr));
+
+      std::optional<CandidateExpr> bestCandidate;
+      std::optional<SpeculativeReplacement> bestReplacement;
+      SmallVector<Operation *> bestDoomedYConeOps;
+      int bestGain = 0;
+      unsigned bestNewArea = 0;
+      std::optional<StructuralScore> bestScore;
       for (CandidateExpr candidate : candidates) {
         ++numCandidatesTried;
         if (rejectsBySimulation(root, candidate, numRandomPatterns,
@@ -708,14 +912,31 @@ struct DIGYCareResubPass
         SmallVector<Operation *> doomedYConeOps =
             computeDoomedYCone(root, candidate);
         unsigned oldArea = 1 + doomedYConeOps.size();
-        unsigned newArea = 1;
-        if (newArea >= oldArea)
+        SpeculativeReplacement replacement =
+            analyzeSpeculativeReplacement(xExpr, candidate, zExpr);
+        unsigned newArea = replacement.area();
+        int gain = static_cast<int>(oldArea) - static_cast<int>(newArea);
+        StructuralScore score = scoreReplacement(replacement);
+        bool improvesShape = score < currentScore;
+        if (gain < 0 || (gain == 0 && !improvesShape))
           continue;
+        if (!bestCandidate || gain > bestGain ||
+            (gain == bestGain && newArea < bestNewArea) ||
+            (gain == bestGain && newArea == bestNewArea && bestScore &&
+             score < *bestScore)) {
+          bestCandidate = candidate;
+          bestReplacement = replacement;
+          bestDoomedYConeOps = doomedYConeOps;
+          bestGain = gain;
+          bestNewArea = newArea;
+          bestScore = score;
+        }
+      }
 
-        rewriteRoot(root, candidate, doomedYConeOps);
+      if (bestCandidate && bestReplacement) {
+        rewriteRoot(root, *bestReplacement, bestDoomedYConeOps);
         ++numRewrites;
         changed = true;
-        break;
       }
 
       ++rootSeed;
