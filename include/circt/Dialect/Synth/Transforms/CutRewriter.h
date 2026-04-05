@@ -879,9 +879,6 @@ struct SpeculativeCutRewritePattern : public CutRewritePattern {
 
   std::optional<MatchResult> match(const LocalCut &cut) const;
 
-  FailureOr<Operation *> rewrite(mlir::OpBuilder &builder, const LocalCut &cut,
-                                 const MatchedPattern &match) const;
-
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const final;
 
