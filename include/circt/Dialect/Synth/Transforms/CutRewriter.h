@@ -438,12 +438,9 @@ public:
     return truthTable;
   }
 
-  /// Compute and cache the truth table for this cut using the LogicNetwork.
-  void computeTruthTable(const LogicNetwork &network);
-
   /// Compute truth table using fast incremental method from operand cuts.
-  /// This is much faster than simulation-based computation.
-  /// Requires that operand cuts have already been set via setOperandCuts.
+  /// Trivial cuts are handled directly; non-trivial cuts require that
+  /// operand cuts have already been set via setOperandCuts.
   void computeTruthTableFromOperands(const LogicNetwork &network);
 
   /// Set the truth table directly (used for incremental computation).
