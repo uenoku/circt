@@ -931,8 +931,9 @@ struct GreedyRewriteCandidate {
     SmallVector<DelayType, 1> arrivalTimes;
     double area = 0.0;
     MatchBinding binding;
+    CandidateRecipe recipe;
+    ProbeResult probe;
   } match;
-  CandidateRecipe recipe;
   SmallVector<Operation *, 8> preservedOps;
   int gain = 0;
   unsigned newArea = 0;
@@ -940,24 +941,37 @@ struct GreedyRewriteCandidate {
 
 static std::optional<GreedyRewriteCandidate::GreedyMatchedPattern>
 patternMatchCut(const GreedyCutRewritePatternSet &patterns,
-                const GreedyCutRewriterOptions &options, const LocalCut &cut) {
+                const GreedyCutRewriterOptions &options, const LocalCut &cut,
+                const GreedyStructuralIndex &structuralIndex) {
   if (!cut.root || cut.leaves.empty())
     return {};
 
   const GreedyCutRewritePattern *bestPattern = nullptr;
   MatchBinding bestBinding;
+  std::optional<CandidateRecipe> bestRecipe;
+  ProbeResult bestProbe;
   DelayType bestOutputDelay = 0;
   double bestArea = 0.0;
   auto pickBest = [&](const GreedyCutRewritePattern *pattern,
                       const MatchResult &matchResult,
                       const MatchBinding &binding) {
+    auto recipe = pattern->speculate(cut);
+    if (failed(recipe))
+      return;
+
+    ProbeResult probe =
+        probeCandidateRecipe(*recipe, binding, cut, structuralIndex);
     DelayType outputDelay = 0;
     for (DelayType delay : matchResult.getDelays())
       outputDelay = std::max(outputDelay, delay);
 
-    if (!bestPattern || matchResult.area < bestArea ||
-        (matchResult.area == bestArea && outputDelay < bestOutputDelay)) {
+    if (!bestPattern || probe.newArea < bestProbe.newArea ||
+        (probe.newArea == bestProbe.newArea && matchResult.area < bestArea) ||
+        (probe.newArea == bestProbe.newArea && matchResult.area == bestArea &&
+         outputDelay < bestOutputDelay)) {
       bestPattern = pattern;
+      bestRecipe = std::move(*recipe);
+      bestProbe = std::move(probe);
       bestArea = matchResult.area;
       bestOutputDelay = outputDelay;
       bestBinding = binding;
@@ -989,7 +1003,7 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
     return {};
   return GreedyRewriteCandidate::GreedyMatchedPattern{
       bestPattern, SmallVector<DelayType, 1>{bestOutputDelay}, bestArea,
-      std::move(bestBinding)};
+      std::move(bestBinding), std::move(*bestRecipe), std::move(bestProbe)};
 }
 
 class GreedyRootPattern : public mlir::RewritePattern {
@@ -1021,16 +1035,11 @@ public:
 
     std::optional<GreedyRewriteCandidate> bestCandidate;
     for (LocalCut &cut : rootCuts) {
-      auto matched =
-          patternMatchCut(driver.getPatterns(), driver.getOptions(), cut);
+      auto matched = patternMatchCut(driver.getPatterns(), driver.getOptions(),
+                                     cut, structuralIndex);
       if (!matched)
         continue;
-      auto recipe = matched->pattern->speculate(cut);
-      if (failed(recipe))
-        continue;
-
-      ProbeResult probe =
-          probeCandidateRecipe(*recipe, matched->binding, cut, structuralIndex);
+      ProbeResult &probe = matched->probe;
       if (probe.rootSignal == structuralIndex.getSignalId(rootValue))
         continue;
 
@@ -1058,8 +1067,7 @@ public:
            probe.newArea == bestCandidate->newArea &&
            cut.getInputSize() < bestCandidate->cut.getInputSize())) {
         bestCandidate = GreedyRewriteCandidate{
-            cut, *matched, *recipe, std::move(preservedOps), gain,
-            probe.newArea};
+            cut, *matched, std::move(preservedOps), gain, probe.newArea};
       }
     }
 
@@ -1070,7 +1078,8 @@ public:
     rewriter.setInsertionPoint(op);
     auto result = materializeRecipe(rewriter, bestCandidate->cut,
                                     bestCandidate->match.binding,
-                                    bestCandidate->recipe, structuralIndex);
+                                    bestCandidate->match.recipe,
+                                    structuralIndex);
     if (failed(result))
       return failure();
 
