@@ -1305,8 +1305,22 @@ static MatchBinding getBindingForPattern(const LocalCut &cut,
   return binding;
 }
 
-static bool isValueLess(Value lhs, Value rhs) {
-  return lhs.getAsOpaquePointer() < rhs.getAsOpaquePointer();
+static void buildGreedyValueOrder(Block *block,
+                                  DenseMap<Value, unsigned> &valueOrder) {
+  valueOrder.clear();
+  unsigned nextOrder = 0;
+  for (BlockArgument argument : block->getArguments())
+    valueOrder.try_emplace(argument, nextOrder++);
+  for (Operation &op : *block)
+    for (Value result : op.getResults())
+      valueOrder.try_emplace(result, nextOrder++);
+}
+
+static unsigned getGreedyValueOrder(const DenseMap<Value, unsigned> &valueOrder,
+                                    Value value) {
+  auto it = valueOrder.find(value);
+  assert(it != valueOrder.end() && "missing greedy value order");
+  return it->second;
 }
 
 static bool isGreedyLeafValue(Value value) {
@@ -1367,13 +1381,8 @@ static void getExpandableGreedyOperands(Value value,
   }
 }
 
-static void normalizeLocalFrontier(
+static void dedupNormalizedLocalFrontier(
     SmallVectorImpl<LocalFrontierLeaf> &frontier) {
-  llvm::sort(frontier, [](const LocalFrontierLeaf &lhs,
-                          const LocalFrontierLeaf &rhs) {
-    return isValueLess(lhs.value, rhs.value);
-  });
-
   unsigned write = 0;
   for (unsigned read = 0; read != frontier.size(); ++read) {
     if (!frontier[read].value)
@@ -1387,6 +1396,17 @@ static void normalizeLocalFrontier(
     frontier[write++] = frontier[read];
   }
   frontier.resize(write);
+}
+
+static void normalizeAndDedupLocalFrontier(
+    SmallVectorImpl<LocalFrontierLeaf> &frontier,
+    const DenseMap<Value, unsigned> &valueOrder) {
+  llvm::sort(frontier, [&](const LocalFrontierLeaf &lhs,
+                           const LocalFrontierLeaf &rhs) {
+    return getGreedyValueOrder(valueOrder, lhs.value) <
+           getGreedyValueOrder(valueOrder, rhs.value);
+  });
+  dedupNormalizedLocalFrontier(frontier);
 }
 
 static void appendExpandedGreedyLeaf(Value value, unsigned nextDepth,
@@ -1406,6 +1426,7 @@ static bool hasEquivalentGreedyCut(ArrayRef<LocalCut> cuts,
 
 static void enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
                                        unsigned maxExpansionDepth,
+                                       const DenseMap<Value, unsigned> &valueOrder,
                                        SmallVectorImpl<LocalCut> &cuts) {
   cuts.clear();
   if (!isGreedyExpandableValue(root))
@@ -1413,7 +1434,7 @@ static void enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
 
   SmallVector<LocalFrontierLeaf, 8> initialFrontier;
   appendExpandedGreedyLeaf(root, 1, initialFrontier);
-  normalizeLocalFrontier(initialFrontier);
+  normalizeAndDedupLocalFrontier(initialFrontier, valueOrder);
   if (initialFrontier.size() > maxInputs)
     return;
 
@@ -1445,7 +1466,7 @@ static void enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
         expanded.push_back(frontier[i]);
       }
       appendExpandedGreedyLeaf(leaf.value, leaf.depth + 1, expanded);
-      normalizeLocalFrontier(expanded);
+      normalizeAndDedupLocalFrontier(expanded, valueOrder);
       if (expanded.empty() || expanded.size() > maxInputs)
         continue;
       self(self, expanded);
@@ -2939,6 +2960,8 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
       return failure();
 
     Block *block = &topOp->getRegion(0).getBlocks().front();
+    DenseMap<Value, unsigned> valueOrder;
+    buildGreedyValueOrder(block, valueOrder);
     bool changed = false;
     constexpr unsigned greedyMaxExpansionDepth = 3;
     SmallVector<LocalCut, 16> rootCuts;
@@ -2973,7 +2996,7 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
 
       std::optional<GreedyRewriteCandidate> bestCandidate;
       enumerateGreedyCutsForRoot(rootValue, options.maxCutInputSize,
-                                 greedyMaxExpansionDepth, rootCuts);
+                                 greedyMaxExpansionDepth, valueOrder, rootCuts);
       stats.numCutsCreated += rootCuts.size();
       for (LocalCut &cut : rootCuts) {
         auto matched = patternMatchCut(cut);
