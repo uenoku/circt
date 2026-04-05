@@ -61,9 +61,11 @@ FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
 
 // Forward declarations
 class CutRewritePatternSet;
+class GreedyCutRewritePatternSet;
 class CutRewriter;
 class CutEnumerator;
 struct CutRewritePattern;
+struct GreedyCutRewritePattern;
 struct CutRewriterOptions;
 class LogicNetwork;
 class NPNTable;
@@ -858,35 +860,10 @@ struct CutRewritePattern {
   /// Get location for this pattern(optional).
   virtual LocationAttr getLoc() const { return mlir::UnknownLoc::get(context); }
 
-  /// Whether this pattern provides a speculative recipe.
-  virtual bool isSpeculative() const { return false; }
-
   mlir::MLIRContext *getContext() const { return context; }
 
 private:
   mlir::MLIRContext *context;
-};
-
-/// Speculative extension of `CutRewritePattern`.
-///
-/// Subclasses provide a structural candidate recipe. Default implementations of
-/// `match` and `rewrite` derive coarse cost data and concrete materialization
-/// from that recipe.
-struct SpeculativeCutRewritePattern : public CutRewritePattern {
-  using CutRewritePattern::CutRewritePattern;
-
-  bool isSpeculative() const final { return true; }
-
-  std::optional<MatchResult> match(const LocalCut &cut) const;
-
-  std::optional<MatchResult> match(CutEnumerator &enumerator,
-                                   const Cut &cut) const final;
-
-  FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
-                                 CutEnumerator &enumerator, const Cut &cut,
-                                 const MatchedPattern &match) const final;
-
-  virtual FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const = 0;
 };
 
 /// Manages a collection of rewriting patterns for combinational logic
@@ -926,6 +903,60 @@ private:
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
+  friend class GreedyCutRewriter;
+};
+
+/// Base class for greedy speculative cut-rewrite patterns.
+///
+/// Unlike `CutRewritePattern`, this interface is value-based and only supports
+/// local-cut matching plus speculative recipe construction.
+struct GreedyCutRewritePattern {
+  GreedyCutRewritePattern(mlir::MLIRContext *context) : context(context) {}
+  virtual ~GreedyCutRewritePattern() = default;
+
+  virtual std::optional<MatchResult> match(const LocalCut &cut) const = 0;
+
+  virtual bool
+  useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
+
+  virtual FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const = 0;
+
+  virtual unsigned getNumOutputs() const = 0;
+  virtual StringRef getPatternName() const { return "<unnamed>"; }
+  virtual LocationAttr getLoc() const { return mlir::UnknownLoc::get(context); }
+
+  mlir::MLIRContext *getContext() const { return context; }
+
+private:
+  mlir::MLIRContext *context;
+};
+
+/// Manages greedy speculative cut-rewrite patterns.
+class GreedyCutRewritePatternSet {
+public:
+  GreedyCutRewritePatternSet(
+      llvm::SmallVector<std::unique_ptr<GreedyCutRewritePattern>, 4> patterns);
+
+  const DenseMap<std::pair<APInt, unsigned>,
+                 SmallVector<std::pair<NPNClass,
+                                       const GreedyCutRewritePattern *>>> &
+  getNPNToPatternMap() const {
+    return npnToPatternMap;
+  }
+
+  ArrayRef<const GreedyCutRewritePattern *> getNonNPNPatterns() const {
+    return nonNPNPatterns;
+  }
+
+private:
+  llvm::SmallVector<std::unique_ptr<GreedyCutRewritePattern>, 4> patterns;
+
+  DenseMap<std::pair<APInt, unsigned>,
+           SmallVector<std::pair<NPNClass, const GreedyCutRewritePattern *>>>
+      npnToPatternMap;
+
+  SmallVector<const GreedyCutRewritePattern *, 4> nonNPNPatterns;
+
   friend class GreedyCutRewriter;
 };
 
@@ -1013,18 +1044,21 @@ struct GreedyCutRewriterOptions : public CutRewriterOptions {
 class GreedyCutRewriter {
 public:
   GreedyCutRewriter(const GreedyCutRewriterOptions &options,
-                    CutRewritePatternSet &patterns)
+                    GreedyCutRewritePatternSet &patterns)
       : options(options), patterns(patterns) {}
 
   LogicalResult run(Operation *topOp);
 
+  const GreedyCutRewriterOptions &getOptions() const { return options; }
+  const GreedyCutRewritePatternSet &getPatterns() const { return patterns; }
+  void noteCutsCreated(unsigned count) { stats.numCutsCreated += count; }
+  void noteCutRewritten() { ++stats.numCutsRewritten; }
+
   const CutEnumeratorStats &getStats() const { return stats; }
 
 private:
-  std::optional<MatchedPattern> patternMatchCut(const LocalCut &cut);
-
   const GreedyCutRewriterOptions &options;
-  const CutRewritePatternSet &patterns;
+  const GreedyCutRewritePatternSet &patterns;
   CutEnumeratorStats stats;
 };
 

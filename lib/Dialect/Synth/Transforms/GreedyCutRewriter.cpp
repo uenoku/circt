@@ -22,6 +22,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -30,6 +31,8 @@
 #include <array>
 #include <optional>
 #include <utility>
+
+#define DEBUG_TYPE "synth-greedy-cut-rewrite"
 
 using namespace circt;
 using namespace circt::synth;
@@ -81,6 +84,10 @@ struct ProbeResult {
   uint64_t rootSignal = 0;
   SmallVector<Operation *, 8> reusedOps;
 };
+
+class GreedyStructuralIndex;
+static uint64_t getGreedyStructuralOrder(const GreedyStructuralIndex &index,
+                                         Value value);
 
 struct LocalFrontierLeaf {
   Value value;
@@ -196,24 +203,6 @@ static MatchBinding getBindingForPattern(const LocalCut &cut,
   return binding;
 }
 
-static void buildGreedyValueOrder(Block *block,
-                                  DenseMap<Value, unsigned> &valueOrder) {
-  valueOrder.clear();
-  unsigned nextOrder = 0;
-  for (BlockArgument argument : block->getArguments())
-    valueOrder.try_emplace(argument, nextOrder++);
-  for (Operation &op : *block)
-    for (Value result : op.getResults())
-      valueOrder.try_emplace(result, nextOrder++);
-}
-
-static unsigned getGreedyValueOrder(const DenseMap<Value, unsigned> &valueOrder,
-                                    Value value) {
-  auto it = valueOrder.find(value);
-  assert(it != valueOrder.end() && "missing greedy value order");
-  return it->second;
-}
-
 static bool isGreedyLeafValue(Value value) {
   if (!value)
     return true;
@@ -291,11 +280,11 @@ static void dedupNormalizedLocalFrontier(
 
 static void normalizeAndDedupLocalFrontier(
     SmallVectorImpl<LocalFrontierLeaf> &frontier,
-    const DenseMap<Value, unsigned> &valueOrder) {
+    const GreedyStructuralIndex &structuralIndex) {
   llvm::sort(frontier, [&](const LocalFrontierLeaf &lhs,
                            const LocalFrontierLeaf &rhs) {
-    return getGreedyValueOrder(valueOrder, lhs.value) <
-           getGreedyValueOrder(valueOrder, rhs.value);
+    return getGreedyStructuralOrder(structuralIndex, lhs.value) <
+           getGreedyStructuralOrder(structuralIndex, rhs.value);
   });
   dedupNormalizedLocalFrontier(frontier);
 }
@@ -317,7 +306,7 @@ static bool hasEquivalentGreedyCut(ArrayRef<LocalCut> cuts,
 
 static void enumerateGreedyCutsForRoot(
     Value root, unsigned maxInputs, unsigned maxExpansionDepth,
-    const DenseMap<Value, unsigned> &valueOrder,
+    const GreedyStructuralIndex &structuralIndex,
     SmallVectorImpl<LocalCut> &cuts) {
   cuts.clear();
   if (!isGreedyExpandableValue(root))
@@ -325,7 +314,7 @@ static void enumerateGreedyCutsForRoot(
 
   SmallVector<LocalFrontierLeaf, 8> initialFrontier;
   appendExpandedGreedyLeaf(root, 1, initialFrontier);
-  normalizeAndDedupLocalFrontier(initialFrontier, valueOrder);
+  normalizeAndDedupLocalFrontier(initialFrontier, structuralIndex);
   if (initialFrontier.size() > maxInputs)
     return;
 
@@ -357,7 +346,7 @@ static void enumerateGreedyCutsForRoot(
         expanded.push_back(frontier[i]);
       }
       appendExpandedGreedyLeaf(leaf.value, leaf.depth + 1, expanded);
-      normalizeAndDedupLocalFrontier(expanded, valueOrder);
+      normalizeAndDedupLocalFrontier(expanded, structuralIndex);
       if (expanded.empty() || expanded.size() > maxInputs)
         continue;
       self(self, expanded);
@@ -547,6 +536,11 @@ private:
   uint64_t nextSignalId = 1;
 };
 
+static uint64_t getGreedyStructuralOrder(const GreedyStructuralIndex &index,
+                                         Value value) {
+  return index.getSignalId(value);
+}
+
 class GreedyStructuralIndexListener : public mlir::RewriterBase::Listener {
 public:
   explicit GreedyStructuralIndexListener(GreedyStructuralIndex &index)
@@ -710,19 +704,6 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   return probeCandidateRecipe(recipe, binding, cut.root, cut.leaves, index);
 }
 
-static LocalCut getLocalCut(CutEnumerator &enumerator, const Cut &cut) {
-  LocalCut localCut;
-  const auto &network = enumerator.getLogicNetwork();
-  localCut.root = network.getValue(cut.getRootIndex());
-  localCut.leaves.reserve(cut.inputs.size());
-  for (uint32_t input : cut.inputs)
-    localCut.leaves.push_back(network.getValue(input));
-  if (cut.getTruthTable())
-    localCut.truthTable = *cut.getTruthTable();
-  localCut.npnClass = cut.getNPNClass(enumerator.getOptions());
-  return localCut;
-}
-
 static SmallVector<Operation *>
 computeDoomedCone(Operation *rootOp, ArrayRef<Operation *> preservedOps) {
   SmallPtrSet<Operation *, 8> preserved(preservedOps.begin(), preservedOps.end());
@@ -882,22 +863,164 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
   return hw::WireOp::create(builder, loc, result).getOperation();
 }
 
-static FailureOr<Operation *>
-materializeRecipeWithFreshStructuralIndex(OpBuilder &builder, const LocalCut &cut,
-                                          const MatchBinding &binding,
-                                          const CandidateRecipe &recipe) {
-  GreedyStructuralIndex index;
-  index.initialize(cut.root.getDefiningOp()->getBlock());
-  return materializeRecipe(builder, cut, binding, recipe, index);
-}
-
 struct GreedyRewriteCandidate {
   LocalCut cut;
-  MatchedPattern match;
+  struct GreedyMatchedPattern {
+    const GreedyCutRewritePattern *pattern = nullptr;
+    SmallVector<DelayType, 1> arrivalTimes;
+    double area = 0.0;
+    MatchBinding binding;
+  } match;
   CandidateRecipe recipe;
   SmallVector<Operation *, 8> preservedOps;
   int gain = 0;
   unsigned newArea = 0;
+};
+
+static std::optional<GreedyRewriteCandidate::GreedyMatchedPattern>
+patternMatchCut(const GreedyCutRewritePatternSet &patterns,
+                const GreedyCutRewriterOptions &options, const LocalCut &cut) {
+  if (!cut.root || cut.leaves.empty())
+    return {};
+
+  const GreedyCutRewritePattern *bestPattern = nullptr;
+  MatchBinding bestBinding;
+  DelayType bestOutputDelay = 0;
+  double bestArea = 0.0;
+  auto pickBest = [&](const GreedyCutRewritePattern *pattern,
+                      const MatchResult &matchResult,
+                      const MatchBinding &binding) {
+    DelayType outputDelay = 0;
+    for (DelayType delay : matchResult.getDelays())
+      outputDelay = std::max(outputDelay, delay);
+
+    if (!bestPattern || matchResult.area < bestArea ||
+        (matchResult.area == bestArea && outputDelay < bestOutputDelay)) {
+      bestPattern = pattern;
+      bestArea = matchResult.area;
+      bestOutputDelay = outputDelay;
+      bestBinding = binding;
+    }
+  };
+
+  const auto &npnToPatternMap = patterns.getNPNToPatternMap();
+  if (!npnToPatternMap.empty()) {
+    const auto &cutNPN = cut.getNPNClass(options);
+    auto it = npnToPatternMap.find(
+        {cutNPN.truthTable.table, cutNPN.truthTable.numInputs});
+    if (it != npnToPatternMap.end()) {
+      for (auto &[patternNPN, pattern] : it->second) {
+        auto matchResult = pattern->match(cut);
+        if (!matchResult)
+          continue;
+        pickBest(pattern, *matchResult,
+                 getBindingForPattern(cut, &patternNPN, options));
+      }
+    }
+  }
+
+  for (const GreedyCutRewritePattern *pattern : patterns.getNonNPNPatterns()) {
+    if (auto matchResult = pattern->match(cut))
+      pickBest(pattern, *matchResult, getIdentityBinding(cut.getInputSize()));
+  }
+
+  if (!bestPattern)
+    return {};
+  return GreedyRewriteCandidate::GreedyMatchedPattern{
+      bestPattern, SmallVector<DelayType, 1>{bestOutputDelay}, bestArea,
+      std::move(bestBinding)};
+}
+
+class GreedyRootPattern : public mlir::RewritePattern {
+public:
+  GreedyRootPattern(MLIRContext *context, GreedyCutRewriter &driver,
+                    GreedyStructuralIndex &structuralIndex)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context),
+        driver(driver), structuralIndex(structuralIndex) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->getNumResults() || !op->getResult(0).getType().isInteger(1))
+      return failure();
+    if (!isGreedyExpandableValue(op->getResult(0)))
+      return failure();
+    if (!isAreaCountedLogicOp(op))
+      return failure();
+
+    Value rootValue = op->getResult(0);
+    if (rootValue.use_empty())
+      return failure();
+
+    constexpr unsigned greedyMaxExpansionDepth = 3;
+    SmallVector<LocalCut, 16> rootCuts;
+    enumerateGreedyCutsForRoot(rootValue, driver.getOptions().maxCutInputSize,
+                               greedyMaxExpansionDepth, structuralIndex,
+                               rootCuts);
+    driver.noteCutsCreated(rootCuts.size());
+
+    std::optional<GreedyRewriteCandidate> bestCandidate;
+    for (LocalCut &cut : rootCuts) {
+      auto matched =
+          patternMatchCut(driver.getPatterns(), driver.getOptions(), cut);
+      if (!matched)
+        continue;
+      auto recipe = matched->pattern->speculate(cut);
+      if (failed(recipe))
+        continue;
+
+      ProbeResult probe =
+          probeCandidateRecipe(*recipe, matched->binding, cut,
+                               structuralIndex);
+      if (probe.rootSignal == structuralIndex.getSignalId(rootValue))
+        continue;
+
+      auto doomed = computeDoomedCone(op, probe.reusedOps);
+      int gain =
+          static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
+      if (gain <= 0)
+        continue;
+
+      if (!bestCandidate || gain > bestCandidate->gain ||
+          (gain == bestCandidate->gain &&
+           probe.newArea < bestCandidate->newArea) ||
+          (gain == bestCandidate->gain &&
+           probe.newArea == bestCandidate->newArea &&
+           cut.getInputSize() < bestCandidate->cut.getInputSize())) {
+        bestCandidate =
+            GreedyRewriteCandidate{cut, *matched, *recipe, probe.reusedOps,
+                                   gain, probe.newArea};
+      }
+    }
+
+    if (!bestCandidate)
+      return failure();
+
+    auto doomed = computeDoomedCone(op, bestCandidate->preservedOps);
+    rewriter.setInsertionPoint(op);
+    auto result =
+        materializeRecipe(rewriter, bestCandidate->cut,
+                          bestCandidate->match.binding,
+                          bestCandidate->recipe, structuralIndex);
+    if (failed(result))
+      return failure();
+
+    if (driver.getOptions().attachDebugTiming) {
+      auto array = rewriter.getI64ArrayAttr(bestCandidate->match.arrivalTimes);
+      (*result)->setAttr("test.arrival_times", array);
+    }
+
+    rewriter.replaceOp(op, *result);
+    for (Operation *doomedOp : doomed)
+      if (doomedOp != op && doomedOp->getBlock() && doomedOp->use_empty())
+        rewriter.eraseOp(doomedOp);
+
+    driver.noteCutRewritten();
+    return success();
+  }
+
+private:
+  GreedyCutRewriter &driver;
+  GreedyStructuralIndex &structuralIndex;
 };
 
 } // namespace
@@ -920,91 +1043,60 @@ const NPNClass &LocalCut::getNPNClass(const CutRewriterOptions &options) const {
   return *npnClass;
 }
 
-std::optional<MatchResult>
-SpeculativeCutRewritePattern::match(const LocalCut &cut) const {
-  auto recipe = speculate(cut);
-  if (failed(recipe))
-    return std::nullopt;
-
-  MatchResult result;
-  result.area = recipe->area;
-  result.setOwnedDelays(recipe->perInputDelays);
-  return result;
+bool GreedyCutRewritePattern::useTruthTableMatcher(
+    SmallVectorImpl<NPNClass> &matchingNPNClasses) const {
+  return false;
 }
 
-std::optional<MatchResult>
-SpeculativeCutRewritePattern::match(CutEnumerator &enumerator,
-                                    const Cut &cut) const {
-  return match(getLocalCut(enumerator, cut));
-}
+static void
+dumpRegisteredGreedyCutRewritePattern(const GreedyCutRewritePattern &pattern,
+                                      ArrayRef<NPNClass> npnClasses,
+                                      bool usesTruthTableMatcher) {
+  LLVM_DEBUG({
+    llvm::dbgs() << "registered greedy cut-rewrite pattern '"
+                 << pattern.getPatternName() << "'"
+                 << " outputs=" << pattern.getNumOutputs() << " matcher="
+                 << (usesTruthTableMatcher ? "truth-table" : "custom");
+    if (usesTruthTableMatcher)
+      llvm::dbgs() << " npn-classes=" << npnClasses.size();
+    llvm::dbgs() << "\n";
 
-FailureOr<Operation *>
-SpeculativeCutRewritePattern::rewrite(OpBuilder &builder,
-                                      CutEnumerator &enumerator,
-                                      const Cut &cut,
-                                      const MatchedPattern &match) const {
-  auto localCut = getLocalCut(enumerator, cut);
-  auto recipe = speculate(localCut);
-  if (failed(recipe))
-    return failure();
-  return materializeRecipeWithFreshStructuralIndex(builder, localCut,
-                                                   match.getBinding(), *recipe);
-}
+    if (!usesTruthTableMatcher)
+      return;
 
-std::optional<MatchedPattern>
-GreedyCutRewriter::patternMatchCut(const LocalCut &cut) {
-  if (!cut.root || cut.leaves.empty())
-    return {};
-
-  const CutRewritePattern *bestPattern = nullptr;
-  MatchBinding bestBinding;
-  DelayType bestOutputDelay = 0;
-  double bestArea = 0.0;
-  auto pickBest = [&](const CutRewritePattern *pattern,
-                      const MatchResult &matchResult,
-                      const MatchBinding &binding) {
-    DelayType outputDelay = 0;
-    for (DelayType delay : matchResult.getDelays())
-      outputDelay = std::max(outputDelay, delay);
-
-    if (!bestPattern || matchResult.area < bestArea ||
-        (matchResult.area == bestArea && outputDelay < bestOutputDelay)) {
-      bestPattern = pattern;
-      bestArea = matchResult.area;
-      bestOutputDelay = outputDelay;
-      bestBinding = binding;
+    for (const auto &npnClass : npnClasses) {
+      SmallString<32> ttString;
+      npnClass.truthTable.table.toStringUnsigned(ttString, 16);
+      llvm::dbgs() << "  tt=" << ttString
+                   << " inputs=" << npnClass.truthTable.numInputs
+                   << " in-neg=0x";
+      llvm::dbgs().write_hex(npnClass.inputNegation);
+      llvm::dbgs() << " out-neg=0x";
+      llvm::dbgs().write_hex(npnClass.outputNegation);
+      llvm::dbgs() << " perm=[";
+      llvm::interleaveComma(npnClass.inputPermutation, llvm::dbgs());
+      llvm::dbgs() << "]\n";
     }
-  };
+  });
+}
 
-  if (!patterns.npnToPatternMap.empty()) {
-    const auto &cutNPN = cut.getNPNClass(options);
-    auto it = patterns.npnToPatternMap.find(
-        {cutNPN.truthTable.table, cutNPN.truthTable.numInputs});
-    if (it != patterns.npnToPatternMap.end()) {
-      for (auto &[patternNPN, pattern] : it->second) {
-        auto *specPattern =
-            static_cast<const SpeculativeCutRewritePattern *>(pattern);
-        auto matchResult = specPattern->match(cut);
-        if (!matchResult)
-          continue;
-        pickBest(pattern, *matchResult,
-                 getBindingForPattern(cut, &patternNPN, options));
+GreedyCutRewritePatternSet::GreedyCutRewritePatternSet(
+    llvm::SmallVector<std::unique_ptr<GreedyCutRewritePattern>, 4> patterns)
+    : patterns(std::move(patterns)) {
+  for (auto &pattern : this->patterns) {
+    SmallVector<NPNClass, 2> npnClasses;
+    bool result = pattern->useTruthTableMatcher(npnClasses);
+    dumpRegisteredGreedyCutRewritePattern(*pattern, npnClasses, result);
+    if (result) {
+      for (auto npnClass : npnClasses) {
+        npnToPatternMap[{npnClass.truthTable.table,
+                         npnClass.truthTable.numInputs}]
+            .push_back(std::make_pair(std::move(npnClass), pattern.get()));
       }
+    } else {
+      nonNPNPatterns.push_back(pattern.get());
     }
   }
-
-  for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
-    auto *specPattern =
-        static_cast<const SpeculativeCutRewritePattern *>(pattern);
-    if (auto matchResult = specPattern->match(cut))
-      pickBest(pattern, *matchResult, getIdentityBinding(cut.getInputSize()));
-  }
-
-  if (!bestPattern)
-    return {};
-  SmallVector<DelayType, 1> arrivalTimes = {bestOutputDelay};
-  return MatchedPattern(bestPattern, std::move(arrivalTimes), bestArea,
-                        std::move(bestBinding));
 }
 
 LogicalResult GreedyCutRewriter::run(Operation *topOp) {
@@ -1013,126 +1105,35 @@ LogicalResult GreedyCutRewriter::run(Operation *topOp) {
       return mlir::emitError(pattern->getLoc(),
                              "Greedy cut rewriter does not support patterns "
                              "with multiple outputs yet");
-    if (!pattern->isSpeculative())
-      return mlir::emitError(pattern->getLoc(),
-                             "Greedy cut rewriter requires speculative "
-                             "patterns");
   }
 
-  unsigned iteration = 0;
-  while (options.maxIterations == 0 || iteration < options.maxIterations) {
-    if (failed(topologicallySortLogicNetwork(topOp)))
-      return failure();
+  auto moduleOp = dyn_cast<hw::HWModuleOp>(topOp);
+  if (!moduleOp)
+    return topOp->emitError("Greedy cut rewriter expects an hw.module op");
 
-    Block *block = &topOp->getRegion(0).getBlocks().front();
-    GreedyStructuralIndex structuralIndex;
-    structuralIndex.initialize(block);
-    DenseMap<Value, unsigned> valueOrder;
-    buildGreedyValueOrder(block, valueOrder);
-    bool changed = false;
-    constexpr unsigned greedyMaxExpansionDepth = 3;
-    SmallVector<LocalCut, 16> rootCuts;
-    SmallVector<Operation *, 32> rootOps;
-    for (Operation &op : llvm::reverse(*block)) {
-      if (!op.getNumResults() || !op.getResult(0).getType().isInteger(1))
-        continue;
-      if (!isGreedyExpandableValue(op.getResult(0)))
-        continue;
-      if (!isAreaCountedLogicOp(&op))
-        continue;
-      rootOps.push_back(&op);
-    }
+  Block *block = moduleOp.getBodyBlock();
+  GreedyStructuralIndex structuralIndex;
+  structuralIndex.initialize(block);
+  GreedyStructuralIndexListener listener(structuralIndex);
 
-    SmallVector<Operation *, 32> deferredDoomedOps;
-    SmallPtrSet<Operation *, 32> deferredDoomedSet;
-    for (Operation *rootOp : rootOps) {
-      if ((options.maxIterations != 0 && iteration >= options.maxIterations))
-        break;
-      if (!rootOp || rootOp->getBlock() != block)
-        continue;
-      if (!rootOp->getNumResults() || !rootOp->getResult(0).getType().isInteger(1))
-        continue;
-      Value rootValue = rootOp->getResult(0);
-      if (!isGreedyExpandableValue(rootValue) || !isAreaCountedLogicOp(rootOp) ||
-          rootValue.use_empty())
-        continue;
+  mlir::RewritePatternSet rewritePatterns(topOp->getContext());
+  rewritePatterns.add<GreedyRootPattern>(topOp->getContext(), *this,
+                                         structuralIndex);
+  mlir::FrozenRewritePatternSet frozenPatterns(std::move(rewritePatterns));
 
-      std::optional<GreedyRewriteCandidate> bestCandidate;
-      enumerateGreedyCutsForRoot(rootValue, options.maxCutInputSize,
-                                 greedyMaxExpansionDepth, valueOrder, rootCuts);
-      stats.numCutsCreated += rootCuts.size();
-      for (LocalCut &cut : rootCuts) {
-        auto matched = patternMatchCut(cut);
-        if (!matched)
-          continue;
-        auto *specPattern =
-            static_cast<const SpeculativeCutRewritePattern *>(
-                matched->getPattern());
+  mlir::GreedyRewriteConfig config;
+  config.setListener(&listener);
+  config.setScope(&moduleOp->getRegion(0));
+  config.setStrictness(mlir::GreedyRewriteStrictness::ExistingAndNewOps);
+  config.setRegionSimplificationLevel(
+      mlir::GreedySimplifyRegionLevel::Disabled);
+  config.enableFolding(false);
+  config.enableConstantCSE(false);
+  if (options.maxIterations != 0)
+    config.setMaxNumRewrites(options.maxIterations);
+  else
+    config.setMaxNumRewrites(mlir::GreedyRewriteConfig::kNoLimit);
+  config.setMaxIterations(mlir::GreedyRewriteConfig::kNoLimit);
 
-        auto recipe = specPattern->speculate(cut);
-        if (failed(recipe))
-          continue;
-
-        ProbeResult probe =
-            probeCandidateRecipe(*recipe, matched->getBinding(), cut,
-                                 structuralIndex);
-        if (probe.rootSignal == structuralIndex.getSignalId(rootValue))
-          continue;
-
-        auto doomed = computeDoomedCone(rootOp, probe.reusedOps);
-        int gain =
-            static_cast<int>(doomed.size()) - static_cast<int>(probe.newArea);
-        if (gain <= 0)
-          continue;
-
-        if (!bestCandidate || gain > bestCandidate->gain ||
-            (gain == bestCandidate->gain &&
-             probe.newArea < bestCandidate->newArea) ||
-            (gain == bestCandidate->gain &&
-             probe.newArea == bestCandidate->newArea &&
-             cut.getInputSize() < bestCandidate->cut.getInputSize())) {
-          bestCandidate =
-              GreedyRewriteCandidate{cut, *matched, *recipe, probe.reusedOps,
-                                     gain, probe.newArea};
-        }
-      }
-
-      if (!bestCandidate)
-        continue;
-
-      auto *rewriteRootOp = bestCandidate->cut.root.getDefiningOp();
-      auto doomed = computeDoomedCone(rewriteRootOp, bestCandidate->preservedOps);
-      GreedyStructuralIndexListener listener(structuralIndex);
-      mlir::IRRewriter rewriter(topOp->getContext(), &listener);
-      rewriter.setInsertionPoint(rewriteRootOp);
-      auto result =
-          materializeRecipe(rewriter, bestCandidate->cut,
-                            bestCandidate->match.getBinding(),
-                            bestCandidate->recipe, structuralIndex);
-      if (failed(result))
-        return failure();
-
-      rewriter.replaceOp(rewriteRootOp, *result);
-      for (Operation *doomedOp : doomed)
-        if (doomedOp != rewriteRootOp &&
-            deferredDoomedSet.insert(doomedOp).second) {
-          structuralIndex.noteErased(doomedOp);
-          deferredDoomedOps.push_back(doomedOp);
-        }
-      ++stats.numCutsRewritten;
-      ++iteration;
-      changed = true;
-    }
-
-    for (Operation *doomedOp : deferredDoomedOps)
-      if (doomedOp->getBlock() && doomedOp->use_empty())
-        doomedOp->erase();
-
-    if ((options.maxIterations != 0 && iteration >= options.maxIterations))
-      return success();
-    if (!changed)
-      return success();
-  }
-
-  return success();
+  return mlir::applyPatternsGreedily(topOp, frozenPatterns, config);
 }

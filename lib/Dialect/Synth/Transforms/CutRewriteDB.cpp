@@ -299,15 +299,20 @@ private:
   const LoadedCutRewriteEntry &entry;
 };
 
-struct GreedyCutRewriteDatabasePattern : public SpeculativeCutRewritePattern {
+struct GreedyCutRewriteDatabasePattern : public GreedyCutRewritePattern {
   GreedyCutRewriteDatabasePattern(MLIRContext *context,
                                   const LoadedCutRewriteEntry &entry)
-      : SpeculativeCutRewritePattern(context), entry(entry) {}
+      : GreedyCutRewritePattern(context), entry(entry) {}
 
   bool useTruthTableMatcher(
       SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
     matchingNPNClasses.push_back(entry.npnClass);
     return true;
+  }
+
+  std::optional<MatchResult> match(const LocalCut &cut) const override {
+    (void)cut;
+    return MatchResult(entry.area, entry.delay);
   }
 
   FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const override {
@@ -466,7 +471,7 @@ struct GreedyCutRewritePass
   void runOnOperation() override {
     auto module = getOperation();
 
-    SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
+    SmallVector<std::unique_ptr<GreedyCutRewritePattern>, 4> patterns;
     assert(loadedDatabase && "file database must be initialized");
     for (const auto &entry : loadedDatabase->entries)
       patterns.push_back(std::make_unique<GreedyCutRewriteDatabasePattern>(
@@ -481,7 +486,7 @@ struct GreedyCutRewritePass
     options.maxIterations = maxIterations;
     options.npnTable = npnTable.get();
 
-    CutRewritePatternSet patternSet(std::move(patterns));
+    GreedyCutRewritePatternSet patternSet(std::move(patterns));
     GreedyCutRewriter rewriter(options, patternSet);
     if (failed(rewriter.run(module)))
       return signalPassFailure();
