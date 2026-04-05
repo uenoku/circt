@@ -270,26 +270,180 @@ OpFoldResult DotInverterOp::fold(FoldAdaptor adaptor) {
   if (getNumOperands() == 1 && !isInverted(0))
     return getOperand(0);
 
+  auto getConst = [&](unsigned index) -> std::optional<APInt> {
+    auto attr = dyn_cast_or_null<IntegerAttr>(adaptor.getInputs()[index]);
+    if (!attr)
+      return std::nullopt;
+    APInt value = attr.getValue();
+    if (isInverted(index))
+      value = ~value;
+    return value;
+  };
+
   SmallVector<APInt, 3> inputValues;
   inputValues.reserve(adaptor.getInputs().size());
   for (auto input : adaptor.getInputs()) {
     auto attr = dyn_cast_or_null<IntegerAttr>(input);
     if (!attr)
-      return {};
+      break;
     inputValues.push_back(attr.getValue());
   }
-  return IntegerAttr::get(getType(), evaluate(inputValues));
+  if (inputValues.size() == adaptor.getInputs().size())
+    return IntegerAttr::get(getType(), evaluate(inputValues));
+
+  if (getNumOperands() != 3)
+    return {};
+
+  auto xConst = getConst(0);
+  auto yConst = getConst(1);
+  auto zConst = getConst(2);
+  auto same = [&](unsigned lhs, unsigned rhs) {
+    return getOperand(lhs) == getOperand(rhs) && isInverted(lhs) == isInverted(rhs);
+  };
+  auto complement = [&](unsigned lhs, unsigned rhs) {
+    return getOperand(lhs) == getOperand(rhs) && isInverted(lhs) != isInverted(rhs);
+  };
+
+  if (xConst && xConst->isZero()) {
+    if (!isInverted(2))
+      return getOperand(2);
+    if (zConst)
+      return IntegerAttr::get(getType(), *zConst);
+  }
+
+  if (same(0, 2))
+    return IntegerAttr::get(getType(), APInt::getZero(1));
+
+  if (zConst && zConst->isZero()) {
+    if (yConst && yConst->isZero() && !isInverted(0))
+      return getOperand(0);
+    if (yConst && yConst->isAllOnes())
+      return IntegerAttr::get(getType(), APInt::getZero(1));
+    if (complement(0, 1) && !isInverted(0))
+      return getOperand(0);
+  }
+
+  if (complement(0, 2) && yConst && yConst->isZero())
+    return IntegerAttr::get(getType(), APInt::getAllOnes(1));
+
+  if (same(1, 2)) {
+    if (yConst && yConst->isZero() && !isInverted(0))
+      return getOperand(0);
+  }
+
+  return {};
 }
 
 LogicalResult DotInverterOp::canonicalize(DotInverterOp op,
                                           PatternRewriter &rewriter) {
+  auto createConst = [&](bool value) -> LogicalResult {
+    rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, APInt(1, value));
+    return success();
+  };
+
+  auto replaceWithValue = [&](Value value, bool inverted = false) {
+    APInt constantValue;
+    if (matchPattern(value, m_ConstantInt(&constantValue))) {
+      APInt result = inverted ? ~constantValue : constantValue;
+      rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, result);
+      return success();
+    }
+
+    if (!inverted) {
+      rewriter.replaceOp(op, value);
+      return success();
+    }
+
+    auto newOp =
+        DotInverterOp::create(rewriter, op.getLoc(), ValueRange{value}, true);
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  };
+
   if (op.getNumOperands() == 1) {
+    if (auto unaryInput = op.getOperand(0).getDefiningOp<DotInverterOp>();
+        unaryInput && unaryInput.getNumOperands() == 1) {
+      bool newInvert = op.isInverted(0) ^ unaryInput.isInverted(0);
+      return replaceWithValue(unaryInput.getOperand(0), newInvert);
+    }
     if (op.getInverted()[0])
       return failure();
     rewriter.replaceOp(op, op.getOperand(0));
     return success();
   }
-  return failure();
+
+  SmallVector<Value, 3> operands(op.getInputs());
+  SmallVector<bool, 3> inverted(op.getInverted().begin(), op.getInverted().end());
+  bool flattenedUnaryInput = false;
+  for (auto [index, operand] : llvm::enumerate(operands)) {
+    auto unaryInput = operand.getDefiningOp<DotInverterOp>();
+    if (!unaryInput || unaryInput.getNumOperands() != 1)
+      continue;
+    operands[index] = unaryInput.getOperand(0);
+    inverted[index] ^= unaryInput.isInverted(0);
+    flattenedUnaryInput = true;
+  }
+
+  auto getConst = [&](unsigned index) -> std::optional<bool> {
+    APInt value;
+    if (!matchPattern(operands[index], m_ConstantInt(&value)))
+      return std::nullopt;
+    return value[0] ^ inverted[index];
+  };
+  auto isSame = [&](unsigned lhs, unsigned rhs) {
+    return operands[lhs] == operands[rhs] && inverted[lhs] == inverted[rhs];
+  };
+  auto isComplement = [&](unsigned lhs, unsigned rhs) {
+    return operands[lhs] == operands[rhs] && inverted[lhs] != inverted[rhs];
+  };
+
+  auto xConst = getConst(0);
+  auto yConst = getConst(1);
+  auto zConst = getConst(2);
+
+  if (xConst && !*xConst)
+    return replaceWithValue(operands[2], inverted[2]);
+  if (zConst && *zConst)
+    return replaceWithValue(operands[0], !inverted[0]);
+  if (isSame(0, 2))
+    return createConst(false);
+
+  if (zConst && !*zConst) {
+    if (yConst && !*yConst)
+      return replaceWithValue(operands[0], inverted[0]);
+    if (yConst && *yConst)
+      return createConst(false);
+    if (isSame(0, 1))
+      return createConst(false);
+    if (isComplement(0, 1))
+      return replaceWithValue(operands[0], inverted[0]);
+  }
+
+  if (isComplement(0, 2)) {
+    if (yConst && !*yConst)
+      return createConst(true);
+    if (yConst && *yConst)
+      return replaceWithValue(operands[0], !inverted[0]);
+  }
+
+  if (isSame(1, 2)) {
+    if (yConst && !*yConst)
+      return replaceWithValue(operands[0], inverted[0]);
+    if (yConst && *yConst)
+      return replaceWithValue(operands[0], !inverted[0]);
+  }
+
+  if (isSame(0, 1) && zConst && *zConst)
+    return replaceWithValue(operands[0], !inverted[0]);
+  if (isComplement(0, 1) && zConst && *zConst)
+    return replaceWithValue(operands[0], !inverted[0]);
+
+  if (!flattenedUnaryInput)
+    return failure();
+
+  auto newOp = DotInverterOp::create(rewriter, op.getLoc(), operands, inverted);
+  rewriter.replaceOp(op, newOp.getResult());
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

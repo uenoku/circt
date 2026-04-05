@@ -152,4 +152,48 @@ func.func @test_transitive_merge(%x: i32, %y: i32, %z: i32, %u: i32, %v: i32) ->
   return %1, %2 : i32, i32
 }
 
+// CHECK-LABEL: hw.module @dig_dot_basic
+hw.module @dig_dot_basic(in %a : i1, in %b : i1, in %c : i1,
+                         out o0 : i1, out o1 : i1, out o2 : i1,
+                         out o3 : i1, out o4 : i1, out o5 : i1,
+                         out o6 : i1, out o7 : i1, out o8 : i1) {
+  // CHECK-NEXT: %[[TRUE:.+]] = hw.constant true
+  // CHECK-NEXT: %[[FALSE:.+]] = hw.constant false
+  // CHECK-NEXT: %[[NOTA0:.+]] = synth.dig.dot_inv not %a : i1
+  // CHECK-NEXT: %[[NOTA1:.+]] = synth.dig.dot_inv not %a : i1
+  // CHECK-NEXT: %[[NOTA2:.+]] = synth.dig.dot_inv not %a : i1
+  // CHECK-NEXT: %[[NOTB:.+]] = synth.dig.dot_inv not %b : i1
+  // CHECK-NEXT: hw.output %a, %[[NOTA0]], %[[FALSE]], %a, %[[FALSE]], %[[TRUE]], %[[NOTA1]], %[[NOTA2]], %[[NOTB]] : i1, i1, i1, i1, i1, i1, i1, i1, i1
+  %false = hw.constant false
+  %true = hw.constant true
 
+  // Unary buffer removal.
+  %0 = synth.dig.dot_inv %a : i1
+
+  // z = 1 -> ~x
+  %1 = synth.dig.dot_inv %a, %b, %true : i1
+
+  // x = z -> 0
+  %2 = synth.dig.dot_inv %a, %b, %a : i1
+
+  // z = 0, y = 0 -> x
+  %3 = synth.dig.dot_inv %a, %false, %false : i1
+
+  // z = 0, y = 1 -> 0
+  %4 = synth.dig.dot_inv %a, %true, %false : i1
+
+  // x = ~z, y = 0 -> 1
+  %5 = synth.dig.dot_inv %a, %false, not %a : i1
+
+  // x = y, z = 1 -> ~x
+  %6 = synth.dig.dot_inv %a, %a, %true : i1
+
+  // x = ~y, z = 1 -> ~x
+  %7 = synth.dig.dot_inv %a, not %a, %true : i1
+
+  // Flatten unary input inside ternary DOT.
+  %notb = synth.dig.dot_inv not %b : i1
+  %8 = synth.dig.dot_inv %false, %a, %notb : i1
+
+  hw.output %0, %1, %2, %3, %4, %5, %6, %7, %8 : i1, i1, i1, i1, i1, i1, i1, i1, i1
+}
