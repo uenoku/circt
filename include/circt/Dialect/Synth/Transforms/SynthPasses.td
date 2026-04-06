@@ -327,7 +327,9 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
     Statistic<"numUnknown", "num-unknown",
               "Number of SAT calls hitting resource limit (UNKNOWN)">,
     Statistic<"numMergedNodes", "num-merged-nodes",
-              "Number of nodes merged due to functional equivalence">
+              "Number of nodes merged due to functional equivalence">,
+    Statistic<"numOperandsDroppedToBreakCycles", "num-operands-dropped-to-break-cycles",
+              "Number of operands dropped to break cycles during merging">
   ];
   let dependentDialects = ["synth::SynthDialect"];
 }
