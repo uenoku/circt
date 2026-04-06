@@ -200,9 +200,21 @@ static cl::list<std::string> cutRewriteDBFiles(
     cl::value_desc("filename"), cl::ZeroOrMore, cl::CommaSeparated,
     cl::cat(mainCategory));
 
+static cl::list<std::string> greedyCutRewriteDBFiles(
+    "greedy-cut-rewrite-db-files",
+    cl::desc("External cut-rewrite database files in MLIR or MLIR bytecode "
+             "for greedy local rewriting"),
+    cl::value_desc("filename"), cl::ZeroOrMore, cl::CommaSeparated,
+    cl::cat(mainCategory));
+
 static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
                                       cl::init(6), cl::cat(mainCategory));
+
+static cl::opt<unsigned> greedyCutRewriteMaxIterations(
+    "greedy-cut-rewrite-max-iterations",
+    cl::desc("Maximum number of greedy rewrites; 0 means until fixpoint"),
+    cl::init(0), cl::cat(mainCategory));
 
 static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
     "synthesis-strategy", cl::desc("Synthesis strategy to use"),
@@ -287,6 +299,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     for (const std::string &dbFile : cutRewriteDBFiles)
       optimizationOptions.cutRewriteDBFiles.push_back(dbFile);
     optimizationOptions.cutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
+    for (const std::string &dbFile : greedyCutRewriteDBFiles)
+      optimizationOptions.greedyCutRewriteDBFiles.push_back(dbFile);
+    optimizationOptions.greedyCutRewriteMaxCutsPerRoot = maxCutSizePerRoot;
+    optimizationOptions.greedyCutRewriteMaxIterations =
+        greedyCutRewriteMaxIterations;
     optimizationOptions.disableFunctionalReduction.setValue(
         !enableFunctionalReduction);
 

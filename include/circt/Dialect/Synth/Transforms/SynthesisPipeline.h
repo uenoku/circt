@@ -96,6 +96,24 @@ struct SynthOptimizationPipelineOptions
       *this, "cut-rewrite-max-cuts-per-root",
       llvm::cl::desc("Maximum number of cuts per root for cut rewriting"),
       llvm::cl::init(4)};
+
+  PassOptions::ListOption<std::string> greedyCutRewriteDBFiles{
+      *this, "greedy-cut-rewrite-db-files",
+      llvm::cl::desc(
+          "External cut-rewrite database files in MLIR or MLIR bytecode for "
+          "greedy local rewriting")};
+
+  PassOptions::Option<unsigned> greedyCutRewriteMaxCutsPerRoot{
+      *this, "greedy-cut-rewrite-max-cuts-per-root",
+      llvm::cl::desc(
+          "Maximum number of cuts per root for greedy cut rewriting"),
+      llvm::cl::init(4)};
+
+  PassOptions::Option<unsigned> greedyCutRewriteMaxIterations{
+      *this, "greedy-cut-rewrite-max-iterations",
+      llvm::cl::desc(
+          "Maximum number of greedy rewrites; 0 means until fixpoint"),
+      llvm::cl::init(0)};
 };
 
 //===----------------------------------------------------------------------===//

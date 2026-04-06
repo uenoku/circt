@@ -144,6 +144,19 @@ void circt::synth::buildSynthOptimizationPipeline(
     pm.addPass(createStructuralHash());
   }
 
+  if (!options.greedyCutRewriteDBFiles.empty()) {
+    GreedyCutRewriteOptions greedyCutRewriteOptions;
+    for (const std::string &dbFile : options.greedyCutRewriteDBFiles)
+      greedyCutRewriteOptions.dbFiles.push_back(dbFile);
+    greedyCutRewriteOptions.maxCutsPerRoot =
+        options.greedyCutRewriteMaxCutsPerRoot;
+    greedyCutRewriteOptions.maxIterations =
+        options.greedyCutRewriteMaxIterations;
+    pm.addPass(synth::createGreedyCutRewrite(greedyCutRewriteOptions));
+    pm.addPass(createCSEPass());
+    pm.addPass(createStructuralHash());
+  }
+
   if (!options.disableFunctionalReduction && hasIncrementalSATSolverBackend()) {
     FunctionalReductionOptions frOptions;
     frOptions.conflictLimit =
