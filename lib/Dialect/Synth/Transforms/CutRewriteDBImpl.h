@@ -29,7 +29,9 @@ struct LoadedCutRewriteEntry {
   double area = 0.0;
   SmallVector<DelayType> delay;
 
-  virtual const CandidateRecipe *getCandidateRecipe() const { return nullptr; }
+  virtual std::optional<GreedyPatternBlock> getGreedyPattern() const {
+    return std::nullopt;
+  }
 
   virtual FailureOr<Operation *> rewrite(OpBuilder &builder,
                                          CutEnumerator &enumerator,

@@ -359,35 +359,21 @@ struct MatchBinding {
   bool outputNegated = false;
 };
 
-/// Inverter family used to materialize unary inversion in recipes.
-enum class RecipeInverterKind : uint8_t { Aig, Mig, Dig };
+/// Inverter family used to materialize bound input/output negation in greedy
+/// block-backed candidates.
+enum class GreedyPatternInverterKind : uint8_t { Aig, Mig, Dig };
 
-/// One node in a speculative candidate recipe.
-struct CandidateRecipeNode {
-  enum Kind : uint8_t {
-    Input,
-    Const0,
-    Const1,
-    Identity,
-    And,
-    Xor,
-    Maj,
-    Dot
-  };
+/// Block-backed speculative candidate used by the greedy rewriter.
+///
+/// The block is owned elsewhere, typically by a loaded cut-rewrite database
+/// module. Its block arguments are interpreted in canonical pattern input
+/// order, and the `output` value is the candidate root to probe/materialize.
+struct GreedyPatternBlock {
+  Block *body = nullptr;
+  Value output;
+  GreedyPatternInverterKind inverterKind = GreedyPatternInverterKind::Aig;
 
-  Kind kind = Input;
-  SmallVector<unsigned, 3> fanins;
-  uint8_t inputInvertMask = 0;
-};
-
-/// Structural recipe for a speculative replacement candidate.
-struct CandidateRecipe {
-  unsigned numInputs = 0;
-  unsigned root = 0;
-  RecipeInverterKind inverterKind = RecipeInverterKind::Aig;
-  double area = 0.0;
-  SmallVector<DelayType, 6> perInputDelays;
-  SmallVector<CandidateRecipeNode, 8> nodes;
+  unsigned getNumInputs() const { return body ? body->getNumArguments() : 0; }
 };
 
 /// Value-based local cut used by the greedy speculative rewriter.
@@ -910,7 +896,7 @@ private:
 /// Base class for greedy speculative cut-rewrite patterns.
 ///
 /// Unlike `CutRewritePattern`, this interface is value-based and only supports
-/// local-cut matching plus speculative recipe construction.
+/// local-cut matching plus speculative block construction.
 struct GreedyCutRewritePattern {
   GreedyCutRewritePattern(mlir::MLIRContext *context) : context(context) {}
   virtual ~GreedyCutRewritePattern() = default;
@@ -920,7 +906,7 @@ struct GreedyCutRewritePattern {
   virtual bool
   useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
 
-  virtual FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const = 0;
+  virtual FailureOr<GreedyPatternBlock> speculate(const LocalCut &cut) const = 0;
 
   virtual unsigned getNumOutputs() const = 0;
   virtual StringRef getPatternName() const { return "<unnamed>"; }

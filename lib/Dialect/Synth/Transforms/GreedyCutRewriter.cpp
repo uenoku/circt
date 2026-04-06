@@ -19,6 +19,7 @@
 #include "circt/Support/LLVM.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
@@ -87,6 +88,7 @@ struct ProbeResult {
 };
 
 class GreedyStructuralIndex;
+static bool isFreeInverterOp(Operation *op);
 static uint64_t getGreedyStructuralOrder(const GreedyStructuralIndex &index,
                                          Value value);
 
@@ -94,35 +96,6 @@ struct LocalFrontierLeaf {
   Value value;
   unsigned depth = 0;
 };
-
-static unsigned computeRecipeDepth(const CandidateRecipe &recipe) {
-  SmallVector<unsigned, 8> nodeDepths(recipe.nodes.size(), 0);
-  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
-    const auto &node = recipe.nodes[i];
-    switch (node.kind) {
-    case CandidateRecipeNode::Input:
-    case CandidateRecipeNode::Const0:
-    case CandidateRecipeNode::Const1:
-      nodeDepths[i] = 0;
-      break;
-    case CandidateRecipeNode::Identity:
-      assert(node.fanins.size() == 1 && "identity recipe nodes must be unary");
-      nodeDepths[i] = nodeDepths[node.fanins.front()];
-      break;
-    case CandidateRecipeNode::And:
-    case CandidateRecipeNode::Xor:
-    case CandidateRecipeNode::Maj:
-    case CandidateRecipeNode::Dot: {
-      unsigned maxDepth = 0;
-      for (unsigned fanin : node.fanins)
-        maxDepth = std::max(maxDepth, nodeDepths[fanin]);
-      nodeDepths[i] = maxDepth + 1;
-      break;
-    }
-    }
-  }
-  return nodeDepths[recipe.root];
-}
 
 static NPNClass
 computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
@@ -148,107 +121,20 @@ getLocalCutTruthTable(const LocalCut &cut, const CutRewriterOptions &options) {
   return *cut.truthTable;
 }
 
-static FailureOr<BinaryTruthTable>
-evaluateCandidateRecipeTruthTable(const CandidateRecipe &recipe,
-                                  const MatchBinding &binding,
-                                  unsigned numInputs) {
-  SmallVector<llvm::APInt, 8> nodeValues(recipe.nodes.size());
-  auto getVar = [&](unsigned index, bool inverted) {
-    llvm::APInt value = circt::createVarMask(numInputs, index, true);
-    if (inverted)
-      value.flipAllBits();
-    return value;
-  };
-
-  for (auto [nodeIndex, node] : llvm::enumerate(recipe.nodes)) {
-    switch (node.kind) {
-    case CandidateRecipeNode::Input: {
-      if (nodeIndex >= binding.inputPermutation.size())
-        return failure();
-      unsigned permutedIndex = binding.inputPermutation[nodeIndex];
-      bool inverted = (binding.inputNegationMask >> nodeIndex) & 1u;
-      nodeValues[nodeIndex] = getVar(permutedIndex, inverted);
-      break;
-    }
-    case CandidateRecipeNode::Const0:
-      nodeValues[nodeIndex] = llvm::APInt(1u << numInputs, 0);
-      break;
-    case CandidateRecipeNode::Const1:
-      nodeValues[nodeIndex] = llvm::APInt::getAllOnes(1u << numInputs);
-      break;
-    case CandidateRecipeNode::Identity:
-    case CandidateRecipeNode::And:
-    case CandidateRecipeNode::Xor:
-    case CandidateRecipeNode::Maj:
-    case CandidateRecipeNode::Dot: {
-      SmallVector<llvm::APInt, 3> inputs;
-      inputs.reserve(node.fanins.size());
-      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
-        llvm::APInt input = nodeValues[faninNodeIndex];
-        if ((node.inputInvertMask >> bitIndex) & 1u)
-          input.flipAllBits();
-        inputs.push_back(std::move(input));
-      }
-
-      switch (node.kind) {
-      case CandidateRecipeNode::Identity:
-        assert(inputs.size() == 1 && "identity recipe node must be unary");
-        nodeValues[nodeIndex] = inputs[0];
-        break;
-      case CandidateRecipeNode::And:
-        assert(inputs.size() == 2 && "and recipe node must be binary");
-        nodeValues[nodeIndex] = inputs[0] & inputs[1];
-        break;
-      case CandidateRecipeNode::Xor: {
-        assert(!inputs.empty() && "xor recipe node must have operands");
-        llvm::APInt result = inputs.front();
-        for (unsigned i = 1; i < inputs.size(); ++i)
-          result ^= inputs[i];
-        nodeValues[nodeIndex] = std::move(result);
-        break;
-      }
-      case CandidateRecipeNode::Maj:
-        assert(inputs.size() == 3 && "majority recipe node must be ternary");
-        nodeValues[nodeIndex] = (inputs[0] & inputs[1]) |
-                                (inputs[0] & inputs[2]) |
-                                (inputs[1] & inputs[2]);
-        break;
-      case CandidateRecipeNode::Dot:
-        assert(inputs.size() == 3 && "dot recipe node must be ternary");
-        nodeValues[nodeIndex] =
-            inputs[0] ^ (inputs[2] | (inputs[0] & inputs[1]));
-        break;
-      case CandidateRecipeNode::Input:
-      case CandidateRecipeNode::Const0:
-      case CandidateRecipeNode::Const1:
-        llvm_unreachable("handled above");
-      }
-      break;
-    }
-    }
-  }
-
-  llvm::APInt result = nodeValues[recipe.root];
-  if (binding.outputNegated)
-    result.flipAllBits();
-  return BinaryTruthTable(numInputs, 1, std::move(result));
-}
-
+template <typename BlockArgEvaluator>
 static FailureOr<llvm::APInt>
-evaluateLocalCutValue(Value value, unsigned numInputs,
-                      DenseMap<Value, unsigned> &leafToIndex,
-                      DenseMap<Value, llvm::APInt> &cache) {
+evaluateBooleanValue(Value value, unsigned numInputs,
+                     DenseMap<Value, llvm::APInt> &cache,
+                     BlockArgEvaluator &&evaluateBlockArg) {
   if (auto it = cache.find(value); it != cache.end())
     return it->second;
-  if (auto it = leafToIndex.find(value); it != leafToIndex.end()) {
-    auto tt = circt::createVarMask(numInputs, it->second, true);
-    cache[value] = tt;
-    return tt;
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    auto evaluated = evaluateBlockArg(blockArg);
+    if (failed(evaluated))
+      return failure();
+    cache[value] = *evaluated;
+    return *evaluated;
   }
-
-  if (auto blockArg = dyn_cast<BlockArgument>(value))
-    return blockArg.getOwner()->getParentOp()->emitError()
-           << "local cut input missing from leaf set";
 
   auto *defOp = value.getDefiningOp();
   if (!defOp)
@@ -261,23 +147,35 @@ evaluateLocalCutValue(Value value, unsigned numInputs,
 
   if (auto constant = dyn_cast<hw::ConstantOp>(defOp)) {
     if (!constant.getType().isInteger(1))
-      return constant.emitError("local cut only supports i1 constants");
+      return constant.emitError("greedy cut rewriting only supports i1 constants");
     return memoize(constant.getValue().isOne()
                        ? llvm::APInt::getAllOnes(1u << numInputs)
                        : llvm::APInt(1u << numInputs, 0));
   }
-  if (auto wireOp = dyn_cast<hw::WireOp>(defOp))
-    return memoize(*evaluateLocalCutValue(wireOp.getInput(), numInputs,
-                                          leafToIndex, cache));
-  if (auto choiceOp = dyn_cast<synth::ChoiceOp>(defOp))
-    return memoize(*evaluateLocalCutValue(choiceOp.getInputs().front(),
-                                          numInputs, leafToIndex, cache));
+  if (auto wireOp = dyn_cast<hw::WireOp>(defOp)) {
+    auto input =
+        evaluateBooleanValue(wireOp.getInput(), numInputs, cache, evaluateBlockArg);
+    if (failed(input))
+      return failure();
+    return memoize(*input);
+  }
+  if (auto choiceOp = dyn_cast<synth::ChoiceOp>(defOp)) {
+    auto input = evaluateBooleanValue(choiceOp.getInputs().front(), numInputs,
+                                      cache, evaluateBlockArg);
+    if (failed(input))
+      return failure();
+    return memoize(*input);
+  }
   if (auto andOp = dyn_cast<aig::AndInverterOp>(defOp)) {
     SmallVector<llvm::APInt, 3> inputs;
     inputs.reserve(andOp.getInputs().size());
-    for (Value operand : andOp.getInputs())
-      inputs.push_back(
-          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    for (Value operand : andOp.getInputs()) {
+      auto input =
+          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
+      if (failed(input))
+        return failure();
+      inputs.push_back(*input);
+    }
     return memoize(andOp.evaluate(inputs));
   }
   if (auto xorOp = dyn_cast<comb::XorOp>(defOp)) {
@@ -286,30 +184,113 @@ evaluateLocalCutValue(Value value, unsigned numInputs,
     llvm::APInt result(1u << numInputs, 0);
     for (auto [index, operand] : llvm::enumerate(xorOp.getOperands())) {
       auto input =
-          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache);
-      result = index == 0 ? input : result ^ input;
+          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
+      if (failed(input))
+        return failure();
+      result = index == 0 ? *input : result ^ *input;
     }
     return memoize(result);
   }
   if (auto majOp = dyn_cast<mig::MajorityInverterOp>(defOp)) {
     SmallVector<llvm::APInt, 3> inputs;
     inputs.reserve(majOp.getInputs().size());
-    for (Value operand : majOp.getInputs())
-      inputs.push_back(
-          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    for (Value operand : majOp.getInputs()) {
+      auto input =
+          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
+      if (failed(input))
+        return failure();
+      inputs.push_back(*input);
+    }
     return memoize(majOp.evaluate(inputs));
   }
   if (auto dotOp = dyn_cast<dig::DotInverterOp>(defOp)) {
     SmallVector<llvm::APInt, 3> inputs;
     inputs.reserve(dotOp.getInputs().size());
-    for (Value operand : dotOp.getInputs())
-      inputs.push_back(
-          *evaluateLocalCutValue(operand, numInputs, leafToIndex, cache));
+    for (Value operand : dotOp.getInputs()) {
+      auto input =
+          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
+      if (failed(input))
+        return failure();
+      inputs.push_back(*input);
+    }
     return memoize(dotOp.evaluate(inputs));
   }
 
   return defOp->emitError(
       "unsupported operation in local cut truth-table evaluation");
+}
+
+static FailureOr<llvm::APInt>
+evaluateLocalCutValue(Value value, unsigned numInputs,
+                      DenseMap<Value, unsigned> &leafToIndex,
+                      DenseMap<Value, llvm::APInt> &cache) {
+  for (auto [leaf, index] : leafToIndex)
+    cache.try_emplace(leaf, circt::createVarMask(numInputs, index, true));
+  return evaluateBooleanValue(
+      value, numInputs, cache, [&](BlockArgument blockArg) -> FailureOr<llvm::APInt> {
+        auto it = leafToIndex.find(blockArg);
+        if (it == leafToIndex.end())
+          return blockArg.getOwner()->getParentOp()->emitError()
+                 << "local cut input missing from leaf set";
+        return circt::createVarMask(numInputs, it->second, true);
+      });
+}
+
+static FailureOr<BinaryTruthTable>
+evaluateGreedyPatternTruthTable(const GreedyPatternBlock &pattern,
+                                const MatchBinding &binding,
+                                unsigned numInputs) {
+  if (!pattern.body || !pattern.output)
+    return failure();
+
+  DenseMap<Value, llvm::APInt> cache;
+  auto result = evaluateBooleanValue(
+      pattern.output, numInputs, cache,
+      [&](BlockArgument blockArg) -> FailureOr<llvm::APInt> {
+        if (blockArg.getOwner() != pattern.body)
+          return failure();
+        unsigned inputIndex = blockArg.getArgNumber();
+        if (inputIndex >= binding.inputPermutation.size())
+          return failure();
+        llvm::APInt value =
+            circt::createVarMask(numInputs, binding.inputPermutation[inputIndex],
+                                 true);
+        if ((binding.inputNegationMask >> inputIndex) & 1u)
+          value.flipAllBits();
+        return value;
+      });
+  if (failed(result))
+    return failure();
+  if (binding.outputNegated)
+    result->flipAllBits();
+  return BinaryTruthTable(numInputs, 1, std::move(*result));
+}
+
+static unsigned computePatternBlockDepth(const GreedyPatternBlock &pattern) {
+  if (!pattern.body || !pattern.output)
+    return 0;
+
+  DenseMap<Value, unsigned> depthByValue;
+  for (BlockArgument arg : pattern.body->getArguments())
+    depthByValue[arg] = 0;
+
+  for (Operation &op : pattern.body->without_terminator()) {
+    unsigned depth = 0;
+    if (isa<hw::ConstantOp>(op)) {
+      depth = 0;
+    } else if (auto wireOp = dyn_cast<hw::WireOp>(op)) {
+      depth = depthByValue.lookup(wireOp.getInput());
+    } else if (isFreeInverterOp(&op)) {
+      depth = depthByValue.lookup(op.getOperand(0));
+    } else {
+      for (Value operand : op.getOperands())
+        depth = std::max(depth, depthByValue.lookup(operand));
+      depth += 1;
+    }
+    depthByValue[op.getResult(0)] = depth;
+  }
+
+  return depthByValue.lookup(pattern.output);
 }
 
 static MatchBinding getBindingForPattern(const LocalCut &cut,
@@ -491,16 +472,6 @@ enumerateGreedyCutsForRoot(Value root, unsigned maxInputs,
   recurse(recurse, initialFrontier);
 }
 
-static bool isRecipeCommutative(CandidateRecipeNode::Kind kind) {
-  return kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
-         kind == CandidateRecipeNode::Maj;
-}
-
-static bool isRecipeAreaCounted(CandidateRecipeNode::Kind kind) {
-  return kind == CandidateRecipeNode::And || kind == CandidateRecipeNode::Xor ||
-         kind == CandidateRecipeNode::Maj || kind == CandidateRecipeNode::Dot;
-}
-
 static bool isFreeInverterOp(Operation *op) {
   return (isa<aig::AndInverterOp, mig::MajorityInverterOp, dig::DotInverterOp>(
               op) &&
@@ -524,42 +495,68 @@ static unsigned getUseCount(Value value) {
       std::distance(value.use_begin(), value.use_end()));
 }
 
-static OperationName getRecipeOperationName(MLIRContext *context,
-                                            const CandidateRecipe &recipe,
-                                            CandidateRecipeNode::Kind kind) {
+static OperationName getGreedyInverterOperationName(MLIRContext *context,
+                                                    GreedyPatternInverterKind kind) {
   switch (kind) {
-  case CandidateRecipeNode::Identity:
-    switch (recipe.inverterKind) {
-    case RecipeInverterKind::Aig:
-      return OperationName(aig::AndInverterOp::getOperationName(), context);
-    case RecipeInverterKind::Mig:
-      return OperationName(mig::MajorityInverterOp::getOperationName(),
-                           context);
-    case RecipeInverterKind::Dig:
-      return OperationName(dig::DotInverterOp::getOperationName(), context);
-    }
-    break;
-  case CandidateRecipeNode::And:
+  case GreedyPatternInverterKind::Aig:
     return OperationName(aig::AndInverterOp::getOperationName(), context);
-  case CandidateRecipeNode::Xor:
-    return OperationName(comb::XorOp::getOperationName(), context);
-  case CandidateRecipeNode::Maj:
+  case GreedyPatternInverterKind::Mig:
     return OperationName(mig::MajorityInverterOp::getOperationName(), context);
-  case CandidateRecipeNode::Dot:
+  case GreedyPatternInverterKind::Dig:
     return OperationName(dig::DotInverterOp::getOperationName(), context);
-  case CandidateRecipeNode::Input:
-  case CandidateRecipeNode::Const0:
-  case CandidateRecipeNode::Const1:
-    break;
   }
-  llvm_unreachable("recipe node does not have an operation name");
+  llvm_unreachable("unsupported greedy pattern inverter kind");
 }
 
-static void canonicalizeStructuralOperands(CandidateRecipeNode::Kind kind,
+static bool isStructurallyCommutativeOp(Operation *op) {
+  return isa<comb::XorOp>(op) ||
+         (isa<aig::AndInverterOp>(op) && op->getNumOperands() == 2) ||
+         (isa<mig::MajorityInverterOp>(op) && op->getNumOperands() == 3);
+}
+
+static void canonicalizeStructuralOperands(Operation *op,
                                            SmallVectorImpl<uint64_t> &signals) {
-  if (!isRecipeCommutative(kind))
+  if (!isStructurallyCommutativeOp(op))
     return;
   llvm::sort(signals);
+}
+
+static std::optional<StructuralKey>
+computeStructuralKey(Operation *op,
+                     llvm::function_ref<uint64_t(Value)> getSignalId) {
+  SmallVector<uint64_t, 3> operandSignals;
+  if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
+    operandSignals.reserve(andOp.getNumOperands());
+    for (auto [i, operand] : llvm::enumerate(andOp.getInputs()))
+      operandSignals.push_back((getSignalId(operand) << 1) |
+                               static_cast<uint64_t>(andOp.isInverted(i)));
+    canonicalizeStructuralOperands(op, operandSignals);
+    return StructuralKey(op->getName(), std::move(operandSignals));
+  }
+  if (auto xorOp = dyn_cast<comb::XorOp>(op)) {
+    operandSignals.reserve(xorOp.getNumOperands());
+    for (Value operand : xorOp.getOperands())
+      operandSignals.push_back(getSignalId(operand) << 1);
+    canonicalizeStructuralOperands(op, operandSignals);
+    return StructuralKey(op->getName(), std::move(operandSignals));
+  }
+  if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
+    operandSignals.reserve(majOp.getNumOperands());
+    for (auto [i, operand] : llvm::enumerate(majOp.getOperands()))
+      operandSignals.push_back((getSignalId(operand) << 1) |
+                               static_cast<uint64_t>(majOp.isInverted(i)));
+    canonicalizeStructuralOperands(op, operandSignals);
+    return StructuralKey(op->getName(), std::move(operandSignals));
+  }
+  if (auto dotOp = dyn_cast<dig::DotInverterOp>(op)) {
+    operandSignals.reserve(dotOp.getNumOperands());
+    for (auto [i, operand] : llvm::enumerate(dotOp.getOperands()))
+      operandSignals.push_back((getSignalId(operand) << 1) |
+                               static_cast<uint64_t>(dotOp.isInverted(i)));
+    canonicalizeStructuralOperands(op, operandSignals);
+    return StructuralKey(op->getName(), std::move(operandSignals));
+  }
+  return std::nullopt;
 }
 
 class GreedyStructuralIndex {
@@ -607,7 +604,15 @@ public:
 
     Value result = op->getResult(0);
     getOrCreateSignalId(result);
-    auto key = computeKey(op);
+    if (auto constant = dyn_cast<hw::ConstantOp>(op)) {
+      if (constant.getType().isInteger(1))
+        constants[constant.getValue().isOne()].push_back(result);
+      return;
+    }
+
+    auto key = computeStructuralKey(op, [&](Value value) {
+      return getSignalId(value);
+    });
     if (!key)
       return;
 
@@ -618,6 +623,11 @@ public:
   void noteErased(Operation *op) {
     if (!op)
       return;
+    if (auto constant = dyn_cast<hw::ConstantOp>(op)) {
+      if (constant.getType().isInteger(1))
+        llvm::erase(constants[constant.getValue().isOne()], op->getResult(0));
+      return;
+    }
     auto it = opToKey.find(op);
     if (it == opToKey.end())
       return;
@@ -632,56 +642,19 @@ public:
     opToKey.erase(it);
   }
 
-private:
-  std::optional<StructuralKey> computeKey(Operation *op) {
-    SmallVector<uint64_t, 3> operandSignals;
-    if (auto andOp = dyn_cast<aig::AndInverterOp>(op)) {
-      operandSignals.reserve(andOp.getNumOperands());
-      for (auto [i, operand] : llvm::enumerate(andOp.getInputs()))
-        operandSignals.push_back((getSignalId(operand) << 1) |
-                                 static_cast<uint64_t>(andOp.isInverted(i)));
-      canonicalizeStructuralOperands(andOp.getNumOperands() == 1
-                                         ? CandidateRecipeNode::Identity
-                                         : CandidateRecipeNode::And,
-                                     operandSignals);
-      return StructuralKey(op->getName(), std::move(operandSignals));
-    }
-    if (auto xorOp = dyn_cast<comb::XorOp>(op)) {
-      operandSignals.reserve(2);
-      for (Value operand : xorOp->getOperands())
-        operandSignals.push_back(getSignalId(operand) << 1);
-      canonicalizeStructuralOperands(CandidateRecipeNode::Xor, operandSignals);
-      return StructuralKey(op->getName(), std::move(operandSignals));
-    }
-    if (auto majOp = dyn_cast<mig::MajorityInverterOp>(op)) {
-      operandSignals.reserve(majOp.getNumOperands());
-      for (auto [i, operand] : llvm::enumerate(majOp.getOperands()))
-        operandSignals.push_back((getSignalId(operand) << 1) |
-                                 static_cast<uint64_t>(majOp.isInverted(i)));
-      canonicalizeStructuralOperands(majOp.getNumOperands() == 1
-                                         ? CandidateRecipeNode::Identity
-                                         : CandidateRecipeNode::Maj,
-                                     operandSignals);
-      return StructuralKey(op->getName(), std::move(operandSignals));
-    }
-    if (auto dotOp = dyn_cast<dig::DotInverterOp>(op)) {
-      operandSignals.reserve(dotOp.getNumOperands());
-      for (auto [i, operand] : llvm::enumerate(dotOp.getOperands()))
-        operandSignals.push_back((getSignalId(operand) << 1) |
-                                 static_cast<uint64_t>(dotOp.isInverted(i)));
-      canonicalizeStructuralOperands(dotOp.getNumOperands() == 1
-                                         ? CandidateRecipeNode::Identity
-                                         : CandidateRecipeNode::Dot,
-                                     operandSignals);
-      return StructuralKey(op->getName(), std::move(operandSignals));
-    }
-    return std::nullopt;
+  Value lookupConstant(bool one) const {
+    for (Value constant : constants[one])
+      if (constant && constant.getDefiningOp() && constant.getDefiningOp()->getBlock())
+        return constant;
+    return {};
   }
 
+private:
   Block *block = nullptr;
   DenseMap<Value, uint64_t> signalIds;
   DenseMap<StructuralKey, SmallVector<Value, 1>> valueTable;
   DenseMap<Operation *, StructuralKey> opToKey;
+  SmallVector<Value, 2> constants[2];
   uint64_t nextSignalId = 1;
 };
 
@@ -710,26 +683,50 @@ private:
   GreedyStructuralIndex &index;
 };
 
-static Value materializeRecipeInverter(OpBuilder &builder, Location loc,
-                                       RecipeInverterKind kind, Value input) {
+static Value materializePatternInverter(OpBuilder &builder, Location loc,
+                                        GreedyPatternInverterKind kind,
+                                        Value input) {
   std::array<Value, 1> operands = {input};
   std::array<bool, 1> inverted = {true};
   switch (kind) {
-  case RecipeInverterKind::Aig:
+  case GreedyPatternInverterKind::Aig:
     return aig::AndInverterOp::create(builder, loc, operands, inverted);
-  case RecipeInverterKind::Mig:
+  case GreedyPatternInverterKind::Mig:
     return mig::MajorityInverterOp::create(builder, loc, operands, inverted);
-  case RecipeInverterKind::Dig:
+  case GreedyPatternInverterKind::Dig:
     return dig::DotInverterOp::create(builder, loc, operands, inverted);
   }
-  llvm_unreachable("unsupported recipe inverter kind");
+  llvm_unreachable("unsupported greedy pattern inverter kind");
 }
 
-static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
-                                        const MatchBinding &binding,
-                                        Value rootValue,
-                                        ArrayRef<Value> cutInputs,
-                                        const GreedyStructuralIndex &index) {
+static void collectReachablePatternOps(const GreedyPatternBlock &pattern,
+                                       SmallVectorImpl<Operation *> &ops) {
+  ops.clear();
+  if (!pattern.body || !pattern.output)
+    return;
+
+  SmallPtrSet<Operation *, 16> reachable;
+  auto visitValue = [&](auto &&self, Value value) -> void {
+    auto *defOp = value.getDefiningOp();
+    if (!defOp || defOp->getBlock() != pattern.body || isa<hw::OutputOp>(defOp))
+      return;
+    if (!reachable.insert(defOp).second)
+      return;
+    for (Value operand : defOp->getOperands())
+      self(self, operand);
+  };
+  visitValue(visitValue, pattern.output);
+
+  for (Operation &op : pattern.body->without_terminator())
+    if (reachable.contains(&op))
+      ops.push_back(&op);
+}
+
+static ProbeResult probeGreedyPattern(const GreedyPatternBlock &pattern,
+                                      const MatchBinding &binding,
+                                      Value rootValue,
+                                      ArrayRef<Value> cutInputs,
+                                      const GreedyStructuralIndex &index) {
   ProbeResult result;
   struct LocalProbeEntry {
     OperationName opName;
@@ -740,8 +737,9 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   uint64_t nextSignalId = index.getNextSignalId();
   auto allocateSignal = [&]() { return nextSignalId++; };
 
-  SmallVector<uint64_t, 8> nodeSignals(recipe.nodes.size(), 0);
+  DenseMap<Value, uint64_t> signalMap;
   SmallVector<LocalProbeEntry, 8> localEntries;
+  std::array<uint64_t, 2> localConstantSignals = {0, 0};
 
   auto findLocalSignal =
       [&](OperationName opName,
@@ -752,6 +750,15 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
     return std::nullopt;
   };
 
+  auto getConstantSignal = [&](bool one) -> uint64_t {
+    if (Value existing = index.lookupConstant(one))
+      return index.getSignalId(existing);
+    uint64_t &localSignal = localConstantSignals[one];
+    if (!localSignal)
+      localSignal = allocateSignal();
+    return localSignal;
+  };
+
   auto bindInputSignal = [&](unsigned inputIndex) -> uint64_t {
     Value inputValue = cutInputs[binding.inputPermutation[inputIndex]];
     uint64_t rawSignal = index.getSignalId(inputValue);
@@ -759,8 +766,9 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
       return rawSignal;
 
     SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
-    OperationName inverterName = getRecipeOperationName(
-        inputValue.getContext(), recipe, CandidateRecipeNode::Identity);
+    OperationName inverterName =
+        getGreedyInverterOperationName(inputValue.getContext(),
+                                       pattern.inverterKind);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals)) {
       result.reusedOps.push_back(existingValue.getDefiningOp());
       return index.getSignalId(existingValue);
@@ -775,60 +783,55 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
     return signal;
   };
 
-  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
-    const auto &node = recipe.nodes[i];
-    switch (node.kind) {
-    case CandidateRecipeNode::Input:
-      assert(i < recipe.numInputs && "input nodes must be first");
-      nodeSignals[i] = bindInputSignal(i);
-      break;
-    case CandidateRecipeNode::Const0:
-    case CandidateRecipeNode::Const1:
-      nodeSignals[i] = allocateSignal();
-      break;
-    case CandidateRecipeNode::Identity:
-    case CandidateRecipeNode::And:
-    case CandidateRecipeNode::Xor:
-    case CandidateRecipeNode::Maj:
-    case CandidateRecipeNode::Dot: {
-      SmallVector<uint64_t, 3> operandSignals;
-      operandSignals.reserve(node.fanins.size());
-      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
-        uint64_t signal = nodeSignals[faninNodeIndex];
-        bool inverted = (node.inputInvertMask >> bitIndex) & 1u;
-        operandSignals.push_back((signal << 1) |
-                                 static_cast<uint64_t>(inverted));
-      }
-      canonicalizeStructuralOperands(node.kind, operandSignals);
-      OperationName opName =
-          getRecipeOperationName(rootValue.getContext(), recipe, node.kind);
-      if (Value existingValue = index.lookupValue(opName, operandSignals)) {
-        if (auto *op = existingValue.getDefiningOp())
-          result.reusedOps.push_back(op);
-        nodeSignals[i] = index.getSignalId(existingValue);
-        break;
-      }
+  for (BlockArgument arg : pattern.body->getArguments())
+    signalMap[arg] = bindInputSignal(arg.getArgNumber());
 
-      if (auto localSignal = findLocalSignal(opName, operandSignals)) {
-        nodeSignals[i] = *localSignal;
-        break;
-      }
+  SmallVector<Operation *, 8> reachableOps;
+  collectReachablePatternOps(pattern, reachableOps);
+  for (Operation *patternOp : reachableOps) {
+    if (auto constant = dyn_cast<hw::ConstantOp>(patternOp)) {
+      if (!constant.getType().isInteger(1))
+        return ProbeResult();
+      signalMap[constant.getResult()] = getConstantSignal(constant.getValue().isOne());
+      continue;
+    }
+    if (auto wireOp = dyn_cast<hw::WireOp>(patternOp)) {
+      signalMap[wireOp.getResult()] = signalMap.lookup(wireOp.getInput());
+      continue;
+    }
 
-      nodeSignals[i] = allocateSignal();
-      if (isRecipeAreaCounted(node.kind))
-        ++result.newArea;
-      localEntries.push_back(
-          LocalProbeEntry{opName, std::move(operandSignals), nodeSignals[i]});
-      break;
+    auto key = computeStructuralKey(patternOp, [&](Value value) {
+      return signalMap.lookup(value);
+    });
+    if (!key)
+      return ProbeResult();
+
+    if (Value existingValue = index.lookupValue(key->opName, key->operandSignals)) {
+      if (auto *op = existingValue.getDefiningOp())
+        result.reusedOps.push_back(op);
+      signalMap[patternOp->getResult(0)] = index.getSignalId(existingValue);
+      continue;
     }
+
+    if (auto localSignal = findLocalSignal(key->opName, key->operandSignals)) {
+      signalMap[patternOp->getResult(0)] = *localSignal;
+      continue;
     }
+
+    uint64_t signal = allocateSignal();
+    signalMap[patternOp->getResult(0)] = signal;
+    if (isAreaCountedLogicOp(patternOp))
+      ++result.newArea;
+    localEntries.push_back(
+        LocalProbeEntry{key->opName, std::move(key->operandSignals), signal});
   }
 
-  result.rootSignal = nodeSignals[recipe.root];
+  result.rootSignal = signalMap.lookup(pattern.output);
   if (binding.outputNegated) {
     SmallVector<uint64_t, 3> operandSignals = {(result.rootSignal << 1) | 1u};
-    OperationName inverterName = getRecipeOperationName(
-        rootValue.getContext(), recipe, CandidateRecipeNode::Identity);
+    OperationName inverterName =
+        getGreedyInverterOperationName(rootValue.getContext(),
+                                       pattern.inverterKind);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals)) {
       if (auto *op = existingValue.getDefiningOp())
         result.reusedOps.push_back(op);
@@ -847,11 +850,11 @@ static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
   return result;
 }
 
-static ProbeResult probeCandidateRecipe(const CandidateRecipe &recipe,
-                                        const MatchBinding &binding,
-                                        const LocalCut &cut,
-                                        const GreedyStructuralIndex &index) {
-  return probeCandidateRecipe(recipe, binding, cut.root, cut.leaves, index);
+static ProbeResult probeGreedyPattern(const GreedyPatternBlock &pattern,
+                                      const MatchBinding &binding,
+                                      const LocalCut &cut,
+                                      const GreedyStructuralIndex &index) {
+  return probeGreedyPattern(pattern, binding, cut.root, cut.leaves, index);
 }
 
 static SmallVector<Operation *>
@@ -930,26 +933,20 @@ static void eraseDoomedCone(mlir::PatternRewriter &rewriter, Operation *rootOp,
   });
 }
 
-static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
-                                                const LocalCut &cut,
-                                                const MatchBinding &binding,
-                                                const CandidateRecipe &recipe,
-                                                GreedyStructuralIndex &index) {
+static FailureOr<Operation *> materializeGreedyPattern(
+    OpBuilder &builder, const LocalCut &cut, const MatchBinding &binding,
+    const GreedyPatternBlock &pattern, GreedyStructuralIndex &index) {
   auto *rootOp = cut.root.getDefiningOp();
   assert(rootOp && "cut root must be a valid operation");
 
   Location loc = rootOp->getLoc();
-  SmallVector<Value, 8> nodeValues(recipe.nodes.size());
-  SmallVector<uint64_t, 8> nodeSignals(recipe.nodes.size(), 0);
   DenseMap<uint64_t, Value> freeInverters;
-  Value constZero;
-  Value constOne;
+  IRMapping mapping;
 
   auto getConstant = [&](bool one) -> Value {
-    Value &cached = one ? constOne : constZero;
-    if (!cached)
-      cached = hw::ConstantOp::create(builder, loc, APInt(1, one ? 1 : 0));
-    return cached;
+    if (Value existing = index.lookupConstant(one))
+      return existing;
+    return hw::ConstantOp::create(builder, loc, APInt(1, one ? 1 : 0));
   };
 
   auto bindInputValue = [&](unsigned inputIndex) -> std::pair<Value, uint64_t> {
@@ -959,103 +956,59 @@ static FailureOr<Operation *> materializeRecipe(OpBuilder &builder,
       return {inputValue, rawSignal};
 
     SmallVector<uint64_t, 3> operandSignals = {(rawSignal << 1) | 1u};
-    OperationName inverterName = getRecipeOperationName(
-        builder.getContext(), recipe, CandidateRecipeNode::Identity);
+    OperationName inverterName =
+        getGreedyInverterOperationName(builder.getContext(),
+                                       pattern.inverterKind);
     if (Value existingValue = index.lookupValue(inverterName, operandSignals))
       return {existingValue, index.getSignalId(existingValue)};
 
     if (auto it = freeInverters.find(rawSignal); it != freeInverters.end())
       return {it->second, index.getSignalId(it->second)};
 
-    Value inv = materializeRecipeInverter(builder, loc, recipe.inverterKind,
-                                          inputValue);
+    Value inv =
+        materializePatternInverter(builder, loc, pattern.inverterKind, inputValue);
     freeInverters[rawSignal] = inv;
     uint64_t signal = index.getOrCreateSignalId(inv);
     return {inv, signal};
   };
 
-  for (unsigned i = 0; i != recipe.nodes.size(); ++i) {
-    const auto &node = recipe.nodes[i];
-    switch (node.kind) {
-    case CandidateRecipeNode::Input: {
-      auto [value, signal] = bindInputValue(i);
-      nodeValues[i] = value;
-      nodeSignals[i] = signal;
-      break;
-    }
-    case CandidateRecipeNode::Const0:
-      nodeValues[i] = getConstant(false);
-      nodeSignals[i] = index.getOrCreateSignalId(nodeValues[i]);
-      break;
-    case CandidateRecipeNode::Const1:
-      nodeValues[i] = getConstant(true);
-      nodeSignals[i] = index.getOrCreateSignalId(nodeValues[i]);
-      break;
-    case CandidateRecipeNode::Identity:
-    case CandidateRecipeNode::And:
-    case CandidateRecipeNode::Xor:
-    case CandidateRecipeNode::Maj:
-    case CandidateRecipeNode::Dot: {
-      SmallVector<uint64_t, 3> operandSignals;
-      SmallVector<Value, 3> operands;
-      SmallVector<bool, 3> inverted;
-      operandSignals.reserve(node.fanins.size());
-      operands.reserve(node.fanins.size());
-      inverted.reserve(node.fanins.size());
-      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
-        bool isInverted = (node.inputInvertMask >> bitIndex) & 1u;
-        operands.push_back(nodeValues[faninNodeIndex]);
-        inverted.push_back(isInverted);
-        operandSignals.push_back((nodeSignals[faninNodeIndex] << 1) |
-                                 static_cast<uint64_t>(isInverted));
-      }
-      canonicalizeStructuralOperands(node.kind, operandSignals);
-      OperationName opName =
-          getRecipeOperationName(builder.getContext(), recipe, node.kind);
-
-      if (Value existingValue = index.lookupValue(opName, operandSignals)) {
-        nodeValues[i] = existingValue;
-        nodeSignals[i] = index.getSignalId(existingValue);
-        break;
-      }
-
-      Value value;
-      switch (node.kind) {
-      case CandidateRecipeNode::Identity:
-        value = materializeRecipeInverter(builder, loc, recipe.inverterKind,
-                                          operands.front());
-        break;
-      case CandidateRecipeNode::And:
-        value = aig::AndInverterOp::create(builder, loc, operands, inverted);
-        break;
-      case CandidateRecipeNode::Xor:
-        assert(operands.size() == 2 && "xor recipe nodes must be binary");
-        value = comb::XorOp::create(builder, loc, operands[0], operands[1]);
-        break;
-      case CandidateRecipeNode::Maj:
-        value =
-            mig::MajorityInverterOp::create(builder, loc, operands, inverted);
-        break;
-      case CandidateRecipeNode::Dot:
-        value = dig::DotInverterOp::create(builder, loc, operands, inverted);
-        break;
-      case CandidateRecipeNode::Input:
-      case CandidateRecipeNode::Const0:
-      case CandidateRecipeNode::Const1:
-        llvm_unreachable("handled above");
-      }
-
-      nodeValues[i] = value;
-      nodeSignals[i] = index.getOrCreateSignalId(value);
-      break;
-    }
-    }
+  for (BlockArgument arg : pattern.body->getArguments()) {
+    auto [value, signal] = bindInputValue(arg.getArgNumber());
+    (void)signal;
+    mapping.map(arg, value);
   }
 
-  Value result = nodeValues[recipe.root];
+  SmallVector<Operation *, 8> reachableOps;
+  collectReachablePatternOps(pattern, reachableOps);
+  for (Operation *patternOp : reachableOps) {
+    if (auto constant = dyn_cast<hw::ConstantOp>(patternOp)) {
+      mapping.map(constant.getResult(), getConstant(constant.getValue().isOne()));
+      continue;
+    }
+    if (auto wireOp = dyn_cast<hw::WireOp>(patternOp)) {
+      mapping.map(wireOp.getResult(), mapping.lookup(wireOp.getInput()));
+      continue;
+    }
+
+    auto key = computeStructuralKey(patternOp, [&](Value value) {
+      return index.getSignalId(mapping.lookup(value));
+    });
+    if (!key)
+      return failure();
+
+    if (Value existingValue = index.lookupValue(key->opName, key->operandSignals)) {
+      mapping.map(patternOp->getResult(0), existingValue);
+      continue;
+    }
+
+    Operation *cloned = builder.clone(*patternOp, mapping);
+    mapping.map(patternOp->getResult(0), cloned->getResult(0));
+  }
+
+  Value result = mapping.lookup(pattern.output);
   if (binding.outputNegated)
-    result =
-        materializeRecipeInverter(builder, loc, recipe.inverterKind, result);
+    result = materializePatternInverter(builder, loc, pattern.inverterKind,
+                                        result);
   if (auto *op = result.getDefiningOp())
     return op;
   return hw::WireOp::create(builder, loc, result).getOperation();
@@ -1068,13 +1021,13 @@ struct GreedyRewriteCandidate {
     SmallVector<DelayType, 1> arrivalTimes;
     double area = 0.0;
     MatchBinding binding;
-    CandidateRecipe recipe;
+    GreedyPatternBlock patternBlock;
     ProbeResult probe;
   } match;
   SmallVector<Operation *, 8> preservedOps;
   int gain = 0;
   unsigned newArea = 0;
-  unsigned recipeDepth = 0;
+  unsigned patternDepth = 0;
 };
 
 static std::optional<GreedyRewriteCandidate::GreedyMatchedPattern>
@@ -1086,26 +1039,27 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
 
   const GreedyCutRewritePattern *bestPattern = nullptr;
   MatchBinding bestBinding;
-  std::optional<CandidateRecipe> bestRecipe;
+  std::optional<GreedyPatternBlock> bestPatternBlock;
   ProbeResult bestProbe;
   DelayType bestOutputDelay = 0;
   double bestArea = 0.0;
   auto pickBest = [&](const GreedyCutRewritePattern *pattern,
                       const MatchResult &matchResult,
                       const MatchBinding &binding) {
-    auto recipe = pattern->speculate(cut);
-    if (failed(recipe))
+    auto patternBlock = pattern->speculate(cut);
+    if (failed(patternBlock) || !patternBlock->body || !patternBlock->output)
       return;
 
-    auto recipeTruthTable =
-        evaluateCandidateRecipeTruthTable(*recipe, binding, cut.getInputSize());
-    if (failed(recipeTruthTable))
+    auto patternTruthTable =
+        evaluateGreedyPatternTruthTable(*patternBlock, binding,
+                                        cut.getInputSize());
+    if (failed(patternTruthTable))
       return;
-    if (!(*recipeTruthTable == getLocalCutTruthTable(cut, options)))
+    if (!(*patternTruthTable == getLocalCutTruthTable(cut, options)))
       return;
 
-    ProbeResult probe =
-        probeCandidateRecipe(*recipe, binding, cut, structuralIndex);
+    ProbeResult probe = probeGreedyPattern(*patternBlock, binding, cut,
+                                           structuralIndex);
     DelayType outputDelay = 0;
     for (DelayType delay : matchResult.getDelays())
       outputDelay = std::max(outputDelay, delay);
@@ -1115,7 +1069,7 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
         (probe.newArea == bestProbe.newArea && matchResult.area == bestArea &&
          outputDelay < bestOutputDelay)) {
       bestPattern = pattern;
-      bestRecipe = std::move(*recipe);
+      bestPatternBlock = std::move(*patternBlock);
       bestProbe = std::move(probe);
       bestArea = matchResult.area;
       bestOutputDelay = outputDelay;
@@ -1151,7 +1105,7 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
       SmallVector<DelayType, 1>{bestOutputDelay},
       bestArea,
       std::move(bestBinding),
-      std::move(*bestRecipe),
+      std::move(*bestPatternBlock),
       std::move(bestProbe)};
 }
 
@@ -1199,10 +1153,10 @@ public:
       int doomedArea = static_cast<int>(llvm::count_if(
           doomed, [](Operation *doomedOp) { return isAreaCountedLogicOp(doomedOp); }));
       int gain = doomedArea - static_cast<int>(probe.newArea);
-      unsigned recipeDepth = computeRecipeDepth(matched->recipe);
+      unsigned patternDepth = computePatternBlockDepth(matched->patternBlock);
       bool isUsefulZeroGain =
           gain == 0 &&
-          (cut.getInputSize() < currentSupportSize || recipeDepth < cut.depth);
+          (cut.getInputSize() < currentSupportSize || patternDepth < cut.depth);
       if (gain < 0 || (gain == 0 && !isUsefulZeroGain))
         continue;
       LLVM_DEBUG({
@@ -1212,7 +1166,7 @@ public:
                      << ", doomed ops: " << doomed.size()
                      << ", cut inputs: " << cut.getInputSize()
                      << ", current inputs: " << currentSupportSize
-                     << ", recipe depth: " << recipeDepth
+                     << ", pattern depth: " << patternDepth
                      << ", cut depth: " << cut.depth << ")\n";
       });
 
@@ -1225,10 +1179,10 @@ public:
           (gain == bestCandidate->gain &&
            probe.newArea == bestCandidate->newArea &&
            cut.getInputSize() == bestCandidate->cut.getInputSize() &&
-           recipeDepth < bestCandidate->recipeDepth)) {
+           patternDepth < bestCandidate->patternDepth)) {
         bestCandidate = GreedyRewriteCandidate{
             cut, *matched, std::move(preservedOps), gain, probe.newArea,
-            recipeDepth};
+            patternDepth};
       }
     }
 
@@ -1237,9 +1191,9 @@ public:
 
     auto doomed = computeDoomedCone(op, bestCandidate->preservedOps);
     rewriter.setInsertionPoint(op);
-    auto result = materializeRecipe(
+    auto result = materializeGreedyPattern(
         rewriter, bestCandidate->cut, bestCandidate->match.binding,
-        bestCandidate->match.recipe, structuralIndex);
+        bestCandidate->match.patternBlock, structuralIndex);
     if (failed(result))
       return failure();
 

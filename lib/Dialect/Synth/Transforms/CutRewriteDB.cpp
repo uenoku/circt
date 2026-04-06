@@ -315,11 +315,12 @@ struct GreedyCutRewriteDatabasePattern : public GreedyCutRewritePattern {
     return MatchResult(entry.area, entry.delay);
   }
 
-  FailureOr<CandidateRecipe> speculate(const LocalCut &cut) const override {
-    const CandidateRecipe *recipe = entry.getCandidateRecipe();
-    if (!recipe)
+  FailureOr<GreedyPatternBlock> speculate(const LocalCut &cut) const override {
+    (void)cut;
+    auto pattern = entry.getGreedyPattern();
+    if (!pattern)
       return failure();
-    return *recipe;
+    return *pattern;
   }
 
   unsigned getNumOutputs() const override { return 1; }
@@ -446,10 +447,10 @@ struct GreedyCutRewritePass
       database->backingModules.push_back(
           std::move(fileDatabase.backingModules.back()));
       for (auto &entry : fileDatabase.entries) {
-        if (!entry->getCandidateRecipe()) {
+        if (!entry->getGreedyPattern()) {
           emitError(UnknownLoc::get(context))
               << "synth-greedy-cut-rewrite only supports database entries with "
-                 "speculative recipes";
+                 "greedy block patterns";
           return failure();
         }
         dumpLoadedCutRewriteEntry(*entry);
