@@ -54,6 +54,9 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 // Get the truth table for a specific operation within a block.
 // Block must be a SSACFG or topologically sorted.
 FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
+FailureOr<BinaryTruthTable>
+getTruthTable(ValueRange values, Block *block, unsigned numInputs,
+              const llvm::DenseMap<Value, llvm::APInt> &seedValues);
 
 //===----------------------------------------------------------------------===//
 // Cut Data Structures

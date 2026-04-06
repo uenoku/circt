@@ -121,149 +121,32 @@ getLocalCutTruthTable(const LocalCut &cut, const CutRewriterOptions &options) {
   return *cut.truthTable;
 }
 
-template <typename BlockArgEvaluator>
-static FailureOr<llvm::APInt>
-evaluateBooleanValue(Value value, unsigned numInputs,
-                     DenseMap<Value, llvm::APInt> &cache,
-                     BlockArgEvaluator &&evaluateBlockArg) {
-  if (auto it = cache.find(value); it != cache.end())
-    return it->second;
-  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-    auto evaluated = evaluateBlockArg(blockArg);
-    if (failed(evaluated))
-      return failure();
-    cache[value] = *evaluated;
-    return *evaluated;
-  }
-
-  auto *defOp = value.getDefiningOp();
-  if (!defOp)
-    return emitError(value.getLoc(), "unsupported value in local cut");
-
-  auto memoize = [&](llvm::APInt result) -> FailureOr<llvm::APInt> {
-    cache[value] = result;
-    return result;
-  };
-
-  if (auto constant = dyn_cast<hw::ConstantOp>(defOp)) {
-    if (!constant.getType().isInteger(1))
-      return constant.emitError("greedy cut rewriting only supports i1 constants");
-    return memoize(constant.getValue().isOne()
-                       ? llvm::APInt::getAllOnes(1u << numInputs)
-                       : llvm::APInt(1u << numInputs, 0));
-  }
-  if (auto wireOp = dyn_cast<hw::WireOp>(defOp)) {
-    auto input =
-        evaluateBooleanValue(wireOp.getInput(), numInputs, cache, evaluateBlockArg);
-    if (failed(input))
-      return failure();
-    return memoize(*input);
-  }
-  if (auto choiceOp = dyn_cast<synth::ChoiceOp>(defOp)) {
-    auto input = evaluateBooleanValue(choiceOp.getInputs().front(), numInputs,
-                                      cache, evaluateBlockArg);
-    if (failed(input))
-      return failure();
-    return memoize(*input);
-  }
-  if (auto andOp = dyn_cast<aig::AndInverterOp>(defOp)) {
-    SmallVector<llvm::APInt, 3> inputs;
-    inputs.reserve(andOp.getInputs().size());
-    for (Value operand : andOp.getInputs()) {
-      auto input =
-          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
-      if (failed(input))
-        return failure();
-      inputs.push_back(*input);
-    }
-    return memoize(andOp.evaluate(inputs));
-  }
-  if (auto xorOp = dyn_cast<comb::XorOp>(defOp)) {
-    if (xorOp.getNumOperands() == 0)
-      return emitError(xorOp.getLoc(), "xor must have at least one operand");
-    llvm::APInt result(1u << numInputs, 0);
-    for (auto [index, operand] : llvm::enumerate(xorOp.getOperands())) {
-      auto input =
-          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
-      if (failed(input))
-        return failure();
-      result = index == 0 ? *input : result ^ *input;
-    }
-    return memoize(result);
-  }
-  if (auto majOp = dyn_cast<mig::MajorityInverterOp>(defOp)) {
-    SmallVector<llvm::APInt, 3> inputs;
-    inputs.reserve(majOp.getInputs().size());
-    for (Value operand : majOp.getInputs()) {
-      auto input =
-          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
-      if (failed(input))
-        return failure();
-      inputs.push_back(*input);
-    }
-    return memoize(majOp.evaluate(inputs));
-  }
-  if (auto dotOp = dyn_cast<dig::DotInverterOp>(defOp)) {
-    SmallVector<llvm::APInt, 3> inputs;
-    inputs.reserve(dotOp.getInputs().size());
-    for (Value operand : dotOp.getInputs()) {
-      auto input =
-          evaluateBooleanValue(operand, numInputs, cache, evaluateBlockArg);
-      if (failed(input))
-        return failure();
-      inputs.push_back(*input);
-    }
-    return memoize(dotOp.evaluate(inputs));
-  }
-
-  return defOp->emitError(
-      "unsupported operation in local cut truth-table evaluation");
-}
-
-static FailureOr<llvm::APInt>
-evaluateLocalCutValue(Value value, unsigned numInputs,
-                      DenseMap<Value, unsigned> &leafToIndex,
-                      DenseMap<Value, llvm::APInt> &cache) {
-  for (auto [leaf, index] : leafToIndex)
-    cache.try_emplace(leaf, circt::createVarMask(numInputs, index, true));
-  return evaluateBooleanValue(
-      value, numInputs, cache, [&](BlockArgument blockArg) -> FailureOr<llvm::APInt> {
-        auto it = leafToIndex.find(blockArg);
-        if (it == leafToIndex.end())
-          return blockArg.getOwner()->getParentOp()->emitError()
-                 << "local cut input missing from leaf set";
-        return circt::createVarMask(numInputs, it->second, true);
-      });
-}
-
 static FailureOr<BinaryTruthTable>
 evaluateGreedyPatternTruthTable(const GreedyPatternBlock &pattern,
                                 const MatchBinding &binding,
                                 unsigned numInputs) {
   if (!pattern.body || !pattern.output)
     return failure();
+  DenseMap<Value, llvm::APInt> seedValues;
+  for (BlockArgument blockArg : pattern.body->getArguments()) {
+    unsigned inputIndex = blockArg.getArgNumber();
+    if (inputIndex >= binding.inputPermutation.size())
+      return failure();
+    llvm::APInt value =
+        circt::createVarMask(numInputs, binding.inputPermutation[inputIndex],
+                             true);
+    if ((binding.inputNegationMask >> inputIndex) & 1u)
+      value.flipAllBits();
+    seedValues[blockArg] = std::move(value);
+  }
 
-  DenseMap<Value, llvm::APInt> cache;
-  auto result = evaluateBooleanValue(
-      pattern.output, numInputs, cache,
-      [&](BlockArgument blockArg) -> FailureOr<llvm::APInt> {
-        if (blockArg.getOwner() != pattern.body)
-          return failure();
-        unsigned inputIndex = blockArg.getArgNumber();
-        if (inputIndex >= binding.inputPermutation.size())
-          return failure();
-        llvm::APInt value =
-            circt::createVarMask(numInputs, binding.inputPermutation[inputIndex],
-                                 true);
-        if ((binding.inputNegationMask >> inputIndex) & 1u)
-          value.flipAllBits();
-        return value;
-      });
-  if (failed(result))
+  auto truthTable =
+      getTruthTable(ValueRange(pattern.output), pattern.body, numInputs, seedValues);
+  if (failed(truthTable))
     return failure();
   if (binding.outputNegated)
-    result->flipAllBits();
-  return BinaryTruthTable(numInputs, 1, std::move(*result));
+    truthTable->table.flipAllBits();
+  return *truthTable;
 }
 
 static unsigned computePatternBlockDepth(const GreedyPatternBlock &pattern) {
@@ -1218,15 +1101,16 @@ private:
 
 const NPNClass &LocalCut::getNPNClass(const CutRewriterOptions &options) const {
   if (!truthTable) {
-    DenseMap<Value, unsigned> leafToIndex;
+    DenseMap<Value, llvm::APInt> seedValues;
     for (auto [index, leaf] : llvm::enumerate(leaves))
-      leafToIndex[leaf] = index;
+      seedValues[leaf] = circt::createVarMask(leaves.size(), index, true);
 
-    DenseMap<Value, llvm::APInt> cache;
+    Block *block = isa<BlockArgument>(root) ? cast<BlockArgument>(root).getOwner()
+                                            : root.getDefiningOp()->getBlock();
     auto evaluated =
-        evaluateLocalCutValue(root, leaves.size(), leafToIndex, cache);
+        getTruthTable(ValueRange(root), block, leaves.size(), seedValues);
     assert(succeeded(evaluated) && "failed to evaluate local cut truth table");
-    truthTable.emplace(leaves.size(), 1, std::move(*evaluated));
+    truthTable.emplace(*evaluated);
   }
 
   if (!npnClass)

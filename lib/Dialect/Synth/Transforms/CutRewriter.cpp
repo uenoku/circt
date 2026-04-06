@@ -477,17 +477,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   return success();
 }
 
-/// Get the truth table for operations within a block.
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
-  llvm::SmallSetVector<Value, 4> inputArgs;
-  for (Value arg : block->getArguments())
-    inputArgs.insert(arg);
-
-  if (inputArgs.empty())
-    return BinaryTruthTable();
-
-  const int64_t numInputs = inputArgs.size();
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(
+    ValueRange values, Block *block, unsigned numInputs,
+    const llvm::DenseMap<Value, llvm::APInt> &seedValues) {
   const int64_t numOutputs = values.size();
   if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
     if (numOutputs == 0)
@@ -500,81 +492,111 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
   }
 
   // Create a map to evaluate the operation
-  DenseMap<Value, APInt> eval;
-  for (uint32_t i = 0; i < numInputs; ++i)
-    eval[inputArgs[i]] = circt::createVarMask(numInputs, i, true);
+  DenseMap<Value, APInt> eval(seedValues.begin(), seedValues.end());
+  auto evaluateValue =
+      [&](auto &&self, Value value) -> FailureOr<llvm::APInt> {
+    if (auto it = eval.find(value); it != eval.end())
+      return it->second;
 
-  // Simulate the operations in the block
-  for (Operation &op : *block) {
-    if (op.getNumResults() == 0)
-      continue;
+    if (auto blockArg = dyn_cast<BlockArgument>(value))
+      return blockArg.getOwner()->getParentOp()->emitError()
+             << "Input value not found in evaluation map";
 
-    // Support constants, trivial forwarding wires, and the boolean primitives
-    // used by the current cut-rewrite clients.
-    if (auto constant = dyn_cast<hw::ConstantOp>(&op)) {
+    auto *defOp = value.getDefiningOp();
+    if (!defOp || defOp->getBlock() != block)
+      return emitError(value.getLoc(),
+                       "unsupported value for truth table simulation");
+
+    auto memoize = [&](llvm::APInt result) -> FailureOr<llvm::APInt> {
+      eval[value] = result;
+      return result;
+    };
+
+    if (auto constant = dyn_cast<hw::ConstantOp>(defOp)) {
       if (!constant.getType().isInteger(1))
         return constant.emitError("Constant results must be single bit");
-      bool value = constant.getValueAttr().getValue()[0];
-      eval[constant.getResult()] = value ? APInt::getAllOnes(1u << numInputs)
-                                         : APInt(1u << numInputs, 0);
-    } else if (auto wire = dyn_cast<hw::WireOp>(&op)) {
-      auto it = eval.find(wire.getInput());
-      if (it == eval.end())
-        return wire.emitError("Input value not found in evaluation map");
-      eval[wire.getResult()] = it->second;
-    } else if (auto choice = dyn_cast<synth::ChoiceOp>(&op)) {
-      auto it = eval.find(choice.getInputs().front());
-      if (it == eval.end())
-        return choice.emitError("Input value not found in evaluation map");
-      eval[choice.getResult()] = it->second;
-    } else if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
+      bool bit = constant.getValueAttr().getValue()[0];
+      return memoize(bit ? APInt::getAllOnes(1u << numInputs)
+                         : APInt(1u << numInputs, 0));
+    }
+    if (auto wire = dyn_cast<hw::WireOp>(defOp)) {
+      auto input = self(self, wire.getInput());
+      if (failed(input))
+        return failure();
+      return memoize(*input);
+    }
+    if (auto choice = dyn_cast<synth::ChoiceOp>(defOp)) {
+      auto input = self(self, choice.getInputs().front());
+      if (failed(input))
+        return failure();
+      return memoize(*input);
+    }
+    if (auto andOp = dyn_cast<aig::AndInverterOp>(defOp)) {
       SmallVector<llvm::APInt, 2> inputs;
       inputs.reserve(andOp.getInputs().size());
       for (auto input : andOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
-          return andOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
+        auto evaluated = self(self, input);
+        if (failed(evaluated))
+          return failure();
+        inputs.push_back(*evaluated);
       }
-      eval[andOp.getResult()] = andOp.evaluate(inputs);
-    } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
-      auto it = eval.find(xorOp.getOperand(0));
-      if (it == eval.end())
-        return xorOp.emitError("Input value not found in evaluation map");
-      llvm::APInt result = it->second;
+      return memoize(andOp.evaluate(inputs));
+    }
+    if (auto xorOp = dyn_cast<comb::XorOp>(defOp)) {
+      if (xorOp.getNumOperands() == 0)
+        return xorOp.emitError("XOR must have at least one operand");
+      auto first = self(self, xorOp.getOperand(0));
+      if (failed(first))
+        return failure();
+      llvm::APInt result = *first;
       for (unsigned i = 1; i < xorOp.getNumOperands(); ++i) {
-        it = eval.find(xorOp.getOperand(i));
-        if (it == eval.end())
-          return xorOp.emitError("Input value not found in evaluation map");
-        result ^= it->second;
+        auto evaluated = self(self, xorOp.getOperand(i));
+        if (failed(evaluated))
+          return failure();
+        result ^= *evaluated;
       }
-      eval[xorOp.getResult()] = result;
-    } else if (auto migOp = dyn_cast<synth::mig::MajorityInverterOp>(&op)) {
+      return memoize(result);
+    }
+    if (auto migOp = dyn_cast<synth::mig::MajorityInverterOp>(defOp)) {
       SmallVector<llvm::APInt, 3> inputs;
       inputs.reserve(migOp.getInputs().size());
       for (auto input : migOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
-          return migOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
+        auto evaluated = self(self, input);
+        if (failed(evaluated))
+          return failure();
+        inputs.push_back(*evaluated);
       }
-      eval[migOp.getResult()] = migOp.evaluate(inputs);
-    } else if (auto digOp = dyn_cast<synth::dig::DotInverterOp>(&op)) {
+      return memoize(migOp.evaluate(inputs));
+    }
+    if (auto digOp = dyn_cast<synth::dig::DotInverterOp>(defOp)) {
       SmallVector<llvm::APInt, 3> inputs;
       inputs.reserve(digOp.getInputs().size());
       for (auto input : digOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
-          return digOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
+        auto evaluated = self(self, input);
+        if (failed(evaluated))
+          return failure();
+        inputs.push_back(*evaluated);
       }
-      eval[digOp.getResult()] = digOp.evaluate(inputs);
-    } else if (!isa<hw::OutputOp>(&op)) {
-      return op.emitError("Unsupported operation for truth table simulation");
+      return memoize(digOp.evaluate(inputs));
     }
-  }
+    return defOp->emitError("Unsupported operation for truth table simulation");
+  };
 
-  return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+  auto evaluated = evaluateValue(evaluateValue, values[0]);
+  if (failed(evaluated))
+    return failure();
+  return BinaryTruthTable(numInputs, 1, std::move(*evaluated));
+}
+
+/// Get the truth table for operations within a block.
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
+                                                        Block *block) {
+  llvm::DenseMap<Value, llvm::APInt> seedValues;
+  unsigned numInputs = 0;
+  for (Value arg : block->getArguments())
+    seedValues[arg] = circt::createVarMask(block->getNumArguments(), numInputs++,
+                                           true);
+  return getTruthTable(values, block, block->getNumArguments(), seedValues);
 }
 
 //===----------------------------------------------------------------------===//
