@@ -439,8 +439,9 @@ void LogicNetwork::clear() {
 //===----------------------------------------------------------------------===//
 
 namespace {
-static NPNClass computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
-                                              const CutRewriterOptions &options);
+static NPNClass
+computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
+                              const CutRewriterOptions &options);
 }
 
 // Return true if the gate at the given index is always a cut input.
@@ -493,8 +494,7 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(
 
   // Create a map to evaluate the operation
   DenseMap<Value, APInt> eval(seedValues.begin(), seedValues.end());
-  auto evaluateValue =
-      [&](auto &&self, Value value) -> FailureOr<llvm::APInt> {
+  auto evaluateValue = [&](auto &&self, Value value) -> FailureOr<llvm::APInt> {
     if (auto it = eval.find(value); it != eval.end())
       return it->second;
 
@@ -594,8 +594,8 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
   llvm::DenseMap<Value, llvm::APInt> seedValues;
   unsigned numInputs = 0;
   for (Value arg : block->getArguments())
-    seedValues[arg] = circt::createVarMask(block->getNumArguments(), numInputs++,
-                                           true);
+    seedValues[arg] =
+        circt::createVarMask(block->getNumArguments(), numInputs++, true);
   return getTruthTable(values, block, block->getNumArguments(), seedValues);
 }
 
@@ -618,9 +618,12 @@ const NPNClass &Cut::getNPNClass(const CutRewriterOptions &options) const {
   // If the NPN is already computed, return it
   if (npnClass)
     return *npnClass;
+  NPNClass canonicalForm;
+  const auto &tt = *truthTable;
+  if (!options.npnTable || !options.npnTable->lookup(tt, canonicalForm))
+    canonicalForm = NPNClass::computeNPNCanonicalForm(tt);
 
-  const auto &truthTable = *getTruthTable();
-  npnClass.emplace(computeNPNClassFromTruthTable(truthTable, options));
+  npnClass.emplace(computeNPNClassFromTruthTable(tt, options));
   return *npnClass;
 }
 
@@ -868,9 +871,8 @@ expandTruthTableForMergedInputs(const llvm::APInt &tt,
     uint64_t result = 0;
 
     static constexpr uint64_t kVarMasks[6] = {
-        0xAAAAAAAAAAAAAAAAULL, 0xCCCCCCCCCCCCCCCCULL,
-        0xF0F0F0F0F0F0F0F0ULL, 0xFF00FF00FF00FF00ULL,
-        0xFFFF0000FFFF0000ULL, 0xFFFFFFFF00000000ULL};
+        0xAAAAAAAAAAAAAAAAULL, 0xCCCCCCCCCCCCCCCCULL, 0xF0F0F0F0F0F0F0F0ULL,
+        0xFF00FF00FF00FF00ULL, 0xFFFF0000FFFF0000ULL, 0xFFFFFFFF00000000ULL};
 
     uint64_t sizeMask = (mergedSize == 64) ? ~0ULL : ((1ULL << mergedSize) - 1);
     unsigned origSize = 1U << numOrigInputs;
@@ -1035,7 +1037,8 @@ getExpandedTruthTable(uint32_t operandIdx, bool isInverted,
     for (uint32_t idx : cut->inputs) {
       while (mergedPos < mergedInputs.size() && mergedInputs[mergedPos] < idx)
         ++mergedPos;
-      assert(mergedPos < mergedInputs.size() && mergedInputs[mergedPos] == idx &&
+      assert(mergedPos < mergedInputs.size() &&
+             mergedInputs[mergedPos] == idx &&
              "cut input must exist in merged inputs");
       mapping.push_back(mergedPos);
     }
@@ -1070,10 +1073,9 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
         applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
   case LogicNetworkGate::Maj3:
   case LogicNetworkGate::Dot3:
-    return BinaryTruthTable(
-        numMergedInputs, 1,
-        applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1),
-                           getEdgeTT(2)));
+    return BinaryTruthTable(numMergedInputs, 1,
+                            applyGateSemantics(rootGate.getKind(), getEdgeTT(0),
+                                               getEdgeTT(1), getEdgeTT(2)));
   case LogicNetworkGate::Identity:
     return BinaryTruthTable(
         numMergedInputs, 1,
@@ -1085,10 +1087,10 @@ computeTruthTableForGate(const LogicNetworkGate &rootGate,
     uint32_t selectedOutput = selectedCut->isTrivialCut()
                                   ? selectedCut->inputs[0]
                                   : selectedCut->getRootIndex();
-    return BinaryTruthTable(
-        numMergedInputs, 1,
-        getExpandedTruthTable(selectedOutput, false, mergedInputs,
-                              numMergedInputs, operandCuts));
+    return BinaryTruthTable(numMergedInputs, 1,
+                            getExpandedTruthTable(selectedOutput, false,
+                                                  mergedInputs, numMergedInputs,
+                                                  operandCuts));
   }
   default:
     llvm_unreachable("Unsupported operation for truth table computation");
@@ -1246,8 +1248,9 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
 
 namespace {
 
-static NPNClass computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
-                                              const CutRewriterOptions &options) {
+static NPNClass
+computeNPNClassFromTruthTable(const BinaryTruthTable &truthTable,
+                              const CutRewriterOptions &options) {
   NPNClass canonicalForm;
   if (!options.npnTable || !options.npnTable->lookup(truthTable, canonicalForm))
     canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
@@ -1271,11 +1274,10 @@ static MatchBinding getBindingForPattern(const Cut &cut,
 
   const auto &cutNPN = cut.getNPNClass(options);
   cutNPN.getInputPermutation(*patternNPN, binding.inputPermutation);
-  binding.inputNegationMask = static_cast<uint8_t>(
-      cutNPN.inputNegation ^ patternNPN->inputNegation);
-  binding.outputNegated =
-      static_cast<bool>((cutNPN.outputNegation ^ patternNPN->outputNegation) &
-                        1u);
+  binding.inputNegationMask =
+      static_cast<uint8_t>(cutNPN.inputNegation ^ patternNPN->inputNegation);
+  binding.outputNegated = static_cast<bool>(
+      (cutNPN.outputNegation ^ patternNPN->outputNegation) & 1u);
   return binding;
 }
 
@@ -1443,13 +1445,6 @@ CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
   return cutSetPtr->second;
 }
 
-static Cut *getTrivialCut(CutSet *cutSet) {
-  auto cuts = cutSet->getCuts();
-  if (cuts.size() != 1 || !cuts.front()->isTrivialCut())
-    return nullptr;
-  return cuts.front();
-}
-
 void CutEnumerator::clear() {
   cutSets.clear();
   processingOrder.clear();
@@ -1538,13 +1533,13 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   }
 
   // Create the trivial cut for this node's output
-  Cut *primaryInputCut =
-      nullptr;
+  Cut *primaryInputCut = nullptr;
 
   auto cutSetIt = cutSets.find(nodeIndex);
   CutSet *resultCutSet = nullptr;
   if (cutSetIt == cutSets.end()) {
-    primaryInputCut = cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
+    primaryInputCut =
+        cutAllocator.create(getAsTrivialCut(nodeIndex, logicNetwork));
     resultCutSet = createNewCutSet(nodeIndex);
     resultCutSet->addCut(primaryInputCut);
   } else {
@@ -1980,15 +1975,15 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     // Get the input mapping from pattern's NPN class to cut's NPN class
     SmallVector<unsigned> inputMapping;
     cutNPN.getInputPermutation(patternNPN, inputMapping);
-    computeArrivalTimeAndPickBest(pattern, *matchResult,
-                                  getBindingForPattern(cut, &patternNPN, options),
-                                  [&](unsigned i) { return inputMapping[i]; });
+    computeArrivalTimeAndPickBest(
+        pattern, *matchResult, getBindingForPattern(cut, &patternNPN, options),
+        [&](unsigned i) { return inputMapping[i]; });
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
     if (auto matchResult = pattern->match(cutEnumerator, cut))
-      computeArrivalTimeAndPickBest(
-          pattern, *matchResult, getIdentityBinding(cut.getInputSize()),
+      computeArrivalTimeAndPickBest(pattern, *matchResult,
+                                    getIdentityBinding(cut.getInputSize()),
                                     [&](unsigned i) { return i; });
   }
 
@@ -2043,9 +2038,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     auto *rootOp = network.getGate(bestCut->getRootIndex()).getOperation();
     rewriter.setInsertionPoint(rootOp);
     const auto &matchedPattern = bestCut->getMatchedPattern();
-    auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
-                                                        *bestCut,
-                                                        *matchedPattern);
+    auto result = matchedPattern->getPattern()->rewrite(
+        rewriter, cutEnumerator, *bestCut, *matchedPattern);
     if (failed(result))
       return failure();
 
