@@ -141,6 +141,99 @@ static MatchBinding getIdentityBinding(unsigned numInputs) {
   return binding;
 }
 
+static const BinaryTruthTable &
+getLocalCutTruthTable(const LocalCut &cut, const CutRewriterOptions &options) {
+  (void)cut.getNPNClass(options);
+  assert(cut.truthTable && "local cut truth table should be available");
+  return *cut.truthTable;
+}
+
+static FailureOr<BinaryTruthTable>
+evaluateCandidateRecipeTruthTable(const CandidateRecipe &recipe,
+                                  const MatchBinding &binding,
+                                  unsigned numInputs) {
+  SmallVector<llvm::APInt, 8> nodeValues(recipe.nodes.size());
+  auto getVar = [&](unsigned index, bool inverted) {
+    llvm::APInt value = circt::createVarMask(numInputs, index, true);
+    if (inverted)
+      value.flipAllBits();
+    return value;
+  };
+
+  for (auto [nodeIndex, node] : llvm::enumerate(recipe.nodes)) {
+    switch (node.kind) {
+    case CandidateRecipeNode::Input: {
+      if (nodeIndex >= binding.inputPermutation.size())
+        return failure();
+      unsigned permutedIndex = binding.inputPermutation[nodeIndex];
+      bool inverted = (binding.inputNegationMask >> nodeIndex) & 1u;
+      nodeValues[nodeIndex] = getVar(permutedIndex, inverted);
+      break;
+    }
+    case CandidateRecipeNode::Const0:
+      nodeValues[nodeIndex] = llvm::APInt(1u << numInputs, 0);
+      break;
+    case CandidateRecipeNode::Const1:
+      nodeValues[nodeIndex] = llvm::APInt::getAllOnes(1u << numInputs);
+      break;
+    case CandidateRecipeNode::Identity:
+    case CandidateRecipeNode::And:
+    case CandidateRecipeNode::Xor:
+    case CandidateRecipeNode::Maj:
+    case CandidateRecipeNode::Dot: {
+      SmallVector<llvm::APInt, 3> inputs;
+      inputs.reserve(node.fanins.size());
+      for (auto [bitIndex, faninNodeIndex] : llvm::enumerate(node.fanins)) {
+        llvm::APInt input = nodeValues[faninNodeIndex];
+        if ((node.inputInvertMask >> bitIndex) & 1u)
+          input.flipAllBits();
+        inputs.push_back(std::move(input));
+      }
+
+      switch (node.kind) {
+      case CandidateRecipeNode::Identity:
+        assert(inputs.size() == 1 && "identity recipe node must be unary");
+        nodeValues[nodeIndex] = inputs[0];
+        break;
+      case CandidateRecipeNode::And:
+        assert(inputs.size() == 2 && "and recipe node must be binary");
+        nodeValues[nodeIndex] = inputs[0] & inputs[1];
+        break;
+      case CandidateRecipeNode::Xor: {
+        assert(!inputs.empty() && "xor recipe node must have operands");
+        llvm::APInt result = inputs.front();
+        for (unsigned i = 1; i < inputs.size(); ++i)
+          result ^= inputs[i];
+        nodeValues[nodeIndex] = std::move(result);
+        break;
+      }
+      case CandidateRecipeNode::Maj:
+        assert(inputs.size() == 3 && "majority recipe node must be ternary");
+        nodeValues[nodeIndex] = (inputs[0] & inputs[1]) |
+                                (inputs[0] & inputs[2]) |
+                                (inputs[1] & inputs[2]);
+        break;
+      case CandidateRecipeNode::Dot:
+        assert(inputs.size() == 3 && "dot recipe node must be ternary");
+        nodeValues[nodeIndex] =
+            inputs[0] ^ (inputs[2] | (inputs[0] & inputs[1]));
+        break;
+      case CandidateRecipeNode::Input:
+      case CandidateRecipeNode::Const0:
+      case CandidateRecipeNode::Const1:
+        llvm_unreachable("handled above");
+      }
+      break;
+    }
+    }
+  }
+
+  llvm::APInt result = nodeValues[recipe.root];
+  if (binding.outputNegated)
+    result.flipAllBits();
+  return BinaryTruthTable(numInputs, 1, std::move(result));
+}
+
 static FailureOr<llvm::APInt>
 evaluateLocalCutValue(Value value, unsigned numInputs,
                       DenseMap<Value, unsigned> &leafToIndex,
@@ -1002,6 +1095,13 @@ patternMatchCut(const GreedyCutRewritePatternSet &patterns,
                       const MatchBinding &binding) {
     auto recipe = pattern->speculate(cut);
     if (failed(recipe))
+      return;
+
+    auto recipeTruthTable =
+        evaluateCandidateRecipeTruthTable(*recipe, binding, cut.getInputSize());
+    if (failed(recipeTruthTable))
+      return;
+    if (!(*recipeTruthTable == getLocalCutTruthTable(cut, options)))
       return;
 
     ProbeResult probe =
