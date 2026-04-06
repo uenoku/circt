@@ -1445,6 +1445,13 @@ CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
   return cutSetPtr->second;
 }
 
+static Cut *getTrivialCut(CutSet *cutSet) {
+  auto cuts = cutSet->getCuts();
+  if (cuts.size() != 1 || !cuts.front()->isTrivialCut())
+    return nullptr;
+  return cuts.front();
+}
+
 void CutEnumerator::clear() {
   cutSets.clear();
   processingOrder.clear();
@@ -1788,6 +1795,7 @@ getTestVariableName(Value value, DenseMap<OperationName, unsigned> &opCounter) {
   // Return the formal input name from the hardware module
   return hwOp.getInputName(blockArg.getArgNumber());
 }
+
 
 void CutEnumerator::dump() const {
   DenseMap<OperationName, unsigned> opCounter;
