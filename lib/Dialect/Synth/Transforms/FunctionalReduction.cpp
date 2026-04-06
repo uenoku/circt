@@ -31,10 +31,13 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
+#include <functional>
+#include <memory>
 #include <random>
 
 #define DEBUG_TYPE "synth-functional-reduction"
@@ -54,6 +57,86 @@ using namespace circt::synth;
 
 namespace {
 enum class EquivResult { Proved, Disproved, Unknown };
+
+static bool isFunctionalReductionSCCOp(Operation *op) {
+  return isa<synth::ChoiceOp, aig::AndInverterOp, mig::MajorityInverterOp,
+             comb::AndOp, comb::OrOp, comb::XorOp>(op);
+}
+
+// Walk SCCs in the local use-def graph used by functional reduction. Nodes are
+// logic ops in `block`; edges point from a user to the defining op of each
+// operand that is not considered ready. The callback receives the SCC and
+// whether it is cyclic.
+static void forEachFunctionalReductionSCC(
+    Block *block, llvm::function_ref<bool(Value)> isOperandReady,
+    llvm::function_ref<void(ArrayRef<Operation *>, bool)> callback) {
+  llvm::DenseMap<Operation *, unsigned> indices, lowLinks;
+  llvm::SmallPtrSet<Operation *, 32> onStack, eligibleSet;
+  SmallVector<Operation *> eligibleOps, stack;
+  unsigned nextIndex = 0;
+
+  for (Operation &op : block->getOperations()) {
+    if (!isFunctionalReductionSCCOp(&op))
+      continue;
+    eligibleSet.insert(&op);
+    eligibleOps.push_back(&op);
+  }
+
+  auto forEachSuccessor = [&](Operation *op,
+                              llvm::function_ref<void(Operation *)> fn) {
+    for (Value operand : op->getOperands()) {
+      Operation *succ = operand.getDefiningOp();
+      // Ignore ready values and definitions outside this block-local graph.
+      if (!isOperandReady(operand) && succ && eligibleSet.contains(succ))
+        fn(succ);
+    }
+  };
+
+  std::function<void(Operation *)> visit = [&](Operation *op) {
+    indices[op] = nextIndex;
+    lowLinks[op] = nextIndex;
+    ++nextIndex;
+    stack.push_back(op);
+    onStack.insert(op);
+
+    forEachSuccessor(op, [&](Operation *succ) {
+      auto succIndex = indices.find(succ);
+      if (succIndex == indices.end()) {
+        visit(succ);
+        if (lowLinks[succ] < lowLinks[op])
+          lowLinks[op] = lowLinks[succ];
+        return;
+      }
+      if (onStack.contains(succ) && succIndex->second < lowLinks[op])
+        lowLinks[op] = succIndex->second;
+    });
+
+    if (lowLinks[op] != indices[op])
+      return;
+
+    SmallVector<Operation *> scc;
+    Operation *popped;
+    do {
+      popped = stack.pop_back_val();
+      onStack.erase(popped);
+      scc.push_back(popped);
+    } while (popped != op);
+
+    bool hasCycle =
+        scc.size() > 1 ||
+        llvm::any_of(scc.front()->getOperands(), [&](Value operand) {
+          Operation *def = operand.getDefiningOp();
+          return def == scc.front();
+        });
+    callback(scc, hasCycle);
+  };
+
+  for (Operation *op : eligibleOps) {
+    if (indices.contains(op))
+      continue;
+    visit(op);
+  }
+}
 
 std::unique_ptr<IncrementalSATSolver>
 createFunctionalReductionSATSolver(llvm::StringRef backend) {
@@ -324,6 +407,7 @@ private:
 
   // Phase 4: Merge equivalent nodes
   void mergeEquivalentNodes();
+  bool pruneChoiceCycles();
 
   // Test transformation helpers.
   static Attribute getTestEquivClass(Value value);
@@ -590,7 +674,12 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
     return;
 
   mlir::OpBuilder builder(module.getContext());
-  for (auto &provenEquivSet : provenEquivalences) {
+  // Create all choices first, then rewrite uses. Temporary use-before-def is
+  // fine here; we clean up any introduced cycles and re-topologically-sort the
+  // block afterward.
+  SmallVector<synth::ChoiceOp> choices;
+  choices.reserve(provenEquivalences.size());
+  for (auto provenEquivSet : provenEquivalences) {
     auto &[representative, members] = provenEquivSet;
     if (members.empty())
       continue;
@@ -601,14 +690,98 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
     builder.setInsertionPointAfterValue(members.back());
     auto choice = synth::ChoiceOp::create(builder, representative.getLoc(),
                                           representative.getType(), operands);
+    choices.emplace_back(choice);
     stats.numMergedNodes += members.size() + 1;
-    representative.replaceAllUsesExcept(choice, choice);
-    for (auto value : members)
-      value.replaceAllUsesExcept(choice, choice);
+  }
+
+  for (auto choice : choices)
+    for (Value value : choice.getInputs())
+      value.replaceUsesWithIf(choice.getResult(), [&](OpOperand &use) {
+        return use.getOwner() != choice.getOperation();
+      });
+
+  int64_t numCycles = 0;
+  while (pruneChoiceCycles()) {
+    numCycles++;
+    LLVM_DEBUG(llvm::dbgs()
+               << "FunctionalReduction: Pruned cycles introduced by merging ("
+               << numCycles << ")\n");
   }
 
   LLVM_DEBUG(llvm::dbgs() << "FunctionalReduction: Merged "
                           << stats.numMergedNodes << " nodes\n");
+}
+
+bool FunctionalReductionSolver::pruneChoiceCycles() {
+  // Drop choice operands that keep the choice in a use-def cycle. This lets the
+  // merge step rewrite aggressively and then restores an acyclic graph before
+  // the pass returns.
+  // Ready operands are the leaves of the SCC graph. They cannot participate in
+  // a cycle we need to prune.
+  const auto isOperandReady = [](Value value) -> bool {
+    Operation *op = value.getDefiningOp();
+    if (!op)
+      return true;
+    return !(isa<synth::ChoiceOp, aig::AndInverterOp, mig::MajorityInverterOp,
+                 comb::XorOp, comb::AndOp, comb::OrOp>(op));
+  };
+  SmallVector<std::pair<synth::ChoiceOp, SmallVector<Value>>> choiceRepairs;
+
+  forEachFunctionalReductionSCC(
+      module.getBodyBlock(), isOperandReady,
+      [&](ArrayRef<Operation *> scc, bool hasCycle) {
+        llvm::SmallPtrSet<Operation *, 8> sccOps;
+        for (Operation *op : scc)
+          sccOps.insert(op);
+
+        if (!hasCycle)
+          return;
+
+        for (Operation *op : scc) {
+          auto choice = dyn_cast<synth::ChoiceOp>(op);
+          if (!choice)
+            continue;
+
+          SmallVector<Value> newOperands;
+          newOperands.reserve(choice.getNumOperands());
+          for (Value operand : choice.getInputs()) {
+            Operation *def = operand.getDefiningOp();
+            if (!def || !sccOps.contains(def))
+              newOperands.push_back(operand);
+          }
+
+          // If all operands are still inside the SCC, this choice has no
+          // acyclic replacement in the current SCC snapshot. Repairing another
+          // choice in the same SCC may expose one, so leave it for the next
+          // prune iteration instead of erasing all alternatives.
+          if (newOperands.empty())
+            continue;
+          if (newOperands.size() == choice.getNumOperands())
+            continue;
+
+          choiceRepairs.push_back({choice, std::move(newOperands)});
+        }
+      });
+
+  mlir::OpBuilder builder(module.getContext());
+  // The SCC walk visits definition SCCs before user SCCs in this graph (edges
+  // go from users to defining operations). Apply repairs in reverse so a
+  // replacement is materialized before any choice it depends on is erased.
+  for (auto &[choice, newOperands] : llvm::reverse(choiceRepairs)) {
+    builder.setInsertionPoint(choice);
+    Value replacement;
+    if (newOperands.size() == 1) {
+      replacement = newOperands.front();
+    } else {
+      replacement = synth::ChoiceOp::create(builder, choice.getLoc(),
+                                            choice.getType(), newOperands)
+                        .getResult();
+    }
+    choice.replaceAllUsesWith(replacement);
+    choice.erase();
+  }
+
+  return !choiceRepairs.empty();
 }
 
 //===----------------------------------------------------------------------===//
@@ -660,6 +833,12 @@ FunctionalReductionSolver::run() {
 
   // Phase 4: Merge equivalent nodes
   mergeEquivalentNodes();
+  if (failed(circt::synth::topologicallySortLogicNetwork(module))) {
+    module->emitError()
+        << "FunctionalReduction: Failed to restore topological order after "
+           "rewriting choices";
+    return failure();
+  }
 
   LLVM_DEBUG(llvm::dbgs() << "FunctionalReduction: Complete. Stats:\n"
                           << "  Equivalence classes: " << stats.numEquivClasses
