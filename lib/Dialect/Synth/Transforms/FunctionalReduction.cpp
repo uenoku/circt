@@ -69,7 +69,7 @@ static bool isFunctionalReductionGraphOp(Operation *op) {
 // whether it is cyclic.
 static void forEachFunctionalReductionSCC(
     Block *block, llvm::function_ref<bool(Value)> isOperandReady,
-    llvm::function_ref<void(ArrayRef<Operation *>, bool)> callback) {
+    llvm::function_ref<void(ArrayRef<Operation *>)> callback) {
   llvm::DenseMap<Operation *, unsigned> indices, lowLinks;
   llvm::SmallPtrSet<Operation *, 32> onStack, eligibleSet;
   SmallVector<Operation *> eligibleOps, stack;
@@ -122,8 +122,7 @@ static void forEachFunctionalReductionSCC(
       scc.push_back(popped);
     } while (popped != op);
 
-    bool hasCycle = scc.size() > 1;
-    callback(scc, hasCycle);
+    callback(scc);
   };
 
   for (Operation *op : eligibleOps) {
@@ -688,11 +687,18 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
     stats.numMergedNodes += members.size() + 1;
   }
 
-  for (auto choice : choices)
+  for (auto choice : choices) {
+    llvm::SmallPtrSet<Operation *, 8> protectedUsers;
+    protectedUsers.insert(choice.getOperation());
+    for (Value input : choice.getInputs())
+      if (Operation *def = input.getDefiningOp())
+        protectedUsers.insert(def);
+
     for (Value value : choice.getInputs())
       value.replaceUsesWithIf(choice.getResult(), [&](OpOperand &use) {
-        return use.getOwner() != choice.getOperation();
+        return !protectedUsers.contains(use.getOwner());
       });
+  }
 
   int64_t numCycles = 0;
   while (pruneChoiceCycles()) {
@@ -714,27 +720,30 @@ bool FunctionalReductionSolver::pruneChoiceCycles() {
   // a cycle we need to prune.
   const auto isOperandReady = [](Value value) -> bool {
     Operation *op = value.getDefiningOp();
+    // Block arguments are always ready.
     if (!op)
       return true;
     return !isFunctionalReductionGraphOp(op);
   };
+
   SmallVector<std::pair<synth::ChoiceOp, SmallVector<Value>>> choiceRepairs;
 
   forEachFunctionalReductionSCC(
-      module.getBodyBlock(), isOperandReady,
-      [&](ArrayRef<Operation *> scc, bool hasCycle) {
-        llvm::SmallPtrSet<Operation *, 8> sccOps;
-        for (Operation *op : scc)
-          sccOps.insert(op);
-
-        if (!hasCycle)
+      module.getBodyBlock(), isOperandReady, [&](ArrayRef<Operation *> scc) {
+        // If the SCC has only one node, it cannot have a cycle and we can skip
+        // the repair logic.
+        if (scc.size() <= 1)
           return;
 
+        llvm::SmallPtrSet<Operation *, 8> sccOps;
+        llvm::SmallVector<ChoiceOp> sccChoices;
         for (Operation *op : scc) {
-          auto choice = dyn_cast<synth::ChoiceOp>(op);
-          if (!choice)
-            continue;
+          sccOps.insert(op);
+          if (auto choice = dyn_cast<synth::ChoiceOp>(op))
+            sccChoices.push_back(choice);
+        }
 
+        for (ChoiceOp choice : sccChoices) {
           SmallVector<Value> newOperands;
           newOperands.reserve(choice.getNumOperands());
           for (Value operand : choice.getInputs()) {
@@ -747,9 +756,8 @@ bool FunctionalReductionSolver::pruneChoiceCycles() {
           // acyclic replacement in the current SCC snapshot. Repairing another
           // choice in the same SCC may expose one, so leave it for the next
           // prune iteration instead of erasing all alternatives.
-          if (newOperands.empty())
-            continue;
-          if (newOperands.size() == choice.getNumOperands())
+          if (newOperands.empty() ||
+              newOperands.size() == choice.getNumOperands())
             continue;
 
           choiceRepairs.push_back({choice, std::move(newOperands)});
@@ -762,14 +770,8 @@ bool FunctionalReductionSolver::pruneChoiceCycles() {
   // replacement is materialized before any choice it depends on is erased.
   for (auto &[choice, newOperands] : llvm::reverse(choiceRepairs)) {
     builder.setInsertionPoint(choice);
-    Value replacement;
-    if (newOperands.size() == 1) {
-      replacement = newOperands.front();
-    } else {
-      replacement = synth::ChoiceOp::create(builder, choice.getLoc(),
-                                            choice.getType(), newOperands)
-                        .getResult();
-    }
+    Value replacement = builder.createOrFold<ChoiceOp>(
+        choice.getLoc(), choice.getType(), newOperands);
     choice.replaceAllUsesWith(replacement);
     choice.erase();
   }
