@@ -58,7 +58,7 @@ using namespace circt::synth;
 namespace {
 enum class EquivResult { Proved, Disproved, Unknown };
 
-static bool isFunctionalReductionSCCOp(Operation *op) {
+static bool isFunctionalReductionGraphOp(Operation *op) {
   return isa<synth::ChoiceOp, aig::AndInverterOp, comb::AndOp, comb::OrOp,
              comb::XorOp>(op);
 }
@@ -76,7 +76,7 @@ static void forEachFunctionalReductionSCC(
   unsigned nextIndex = 0;
 
   for (Operation &op : block->getOperations()) {
-    if (!isFunctionalReductionSCCOp(&op))
+    if (!isFunctionalReductionGraphOp(&op))
       continue;
     eligibleSet.insert(&op);
     eligibleOps.push_back(&op);
@@ -122,12 +122,7 @@ static void forEachFunctionalReductionSCC(
       scc.push_back(popped);
     } while (popped != op);
 
-    bool hasCycle =
-        scc.size() > 1 ||
-        llvm::any_of(scc.front()->getOperands(), [&](Value operand) {
-          Operation *def = operand.getDefiningOp();
-          return def == scc.front();
-        });
+    bool hasCycle = scc.size() > 1;
     callback(scc, hasCycle);
   };
 
@@ -679,8 +674,7 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
   // block afterward.
   SmallVector<synth::ChoiceOp> choices;
   choices.reserve(provenEquivalences.size());
-  for (auto provenEquivSet : provenEquivalences) {
-    auto &[representative, members] = provenEquivSet;
+  for (const auto &[representative, members] : provenEquivalences) {
     if (members.empty())
       continue;
     SmallVector<Value> operands;
@@ -722,8 +716,7 @@ bool FunctionalReductionSolver::pruneChoiceCycles() {
     Operation *op = value.getDefiningOp();
     if (!op)
       return true;
-    return !(isa<synth::ChoiceOp, aig::AndInverterOp, comb::XorOp, comb::AndOp,
-                 comb::OrOp>(op));
+    return !isFunctionalReductionGraphOp(op);
   };
   SmallVector<std::pair<synth::ChoiceOp, SmallVector<Value>>> choiceRepairs;
 

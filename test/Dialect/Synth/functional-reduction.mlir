@@ -49,7 +49,7 @@ hw.module @test_no_ssa_cycle(in %a: i1, in %b: i1, out out0: i1, out out1: i1) {
   // CHECK: %[[CHOICE:.+]] = synth.choice %[[AND0]], %[[AND1]] : i1
   // CHECK: hw.output %[[CHOICE]], %[[CHOICE]] : i1, i1
   %0 = comb.and %a, %b {synth.test.fc_equiv_class = 7} : i1
-  %2 = comb.and %a, %b {synth.test.fc_equiv_class = 7} : i1
   %1 = comb.and %0, %a {synth.test.fc_equiv_class = 7} : i1
+  %2 = comb.and %b, %a {synth.test.fc_equiv_class = 7} : i1
   hw.output %1, %2 : i1, i1
 }
