@@ -43,13 +43,14 @@ hw.module @test_supported_ops(in %a: i1, in %b: i1, in %c: i1,
 }
 
 // CHECK-LABEL: hw.module @test_no_ssa_cycle
-hw.module @test_no_ssa_cycle(in %a: i1, in %b: i1, out out0: i1, out out1: i1) {
-  // CHECK: %[[AND0:.+]] = comb.and %a, %b
-  // CHECK: %[[AND1:.+]] = comb.and %a, %b
-  // CHECK: %[[CHOICE:.+]] = synth.choice %[[AND0]], %[[AND1]] : i1
-  // CHECK: hw.output %[[CHOICE]], %[[CHOICE]] : i1, i1
-  %0 = comb.and %a, %b {synth.test.fc_equiv_class = 7} : i1
-  %1 = comb.and %0, %a {synth.test.fc_equiv_class = 7} : i1
-  %2 = comb.and %b, %a {synth.test.fc_equiv_class = 7} : i1
-  hw.output %1, %2 : i1, i1
+hw.module @test_no_ssa_cycle(in %a: i1, in %b: i1, out out0: i1, out out1: i1, out out2: i1) {
+  // CHECK: %[[AND0:.+]] = synth.aig.and_inv %a, %b
+  // CHECK: %[[AND1:.+]] = synth.aig.and_inv %[[AND0]], %a
+  // CHECK: %[[AND2:.+]] = synth.aig.and_inv %b, %a
+  // CHECK: %[[CHOICE:.+]] = synth.choice %[[AND0]], %[[AND1]], %[[AND2]]
+  // CHECK: hw.output %[[CHOICE]], %[[CHOICE]], %[[CHOICE]]
+  %0 = synth.aig.and_inv %a, %b {synth.test.fc_equiv_class = 7} : i1
+  %1 = synth.aig.and_inv %0, %a {synth.test.fc_equiv_class = 7} : i1
+  %2 = synth.aig.and_inv %b, %a {synth.test.fc_equiv_class = 7} : i1
+  hw.output %0, %1, %2 : i1, i1, i1
 }
