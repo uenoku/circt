@@ -59,8 +59,8 @@ namespace {
 enum class EquivResult { Proved, Disproved, Unknown };
 
 static bool isFunctionalReductionSCCOp(Operation *op) {
-  return isa<synth::ChoiceOp, aig::AndInverterOp, mig::MajorityInverterOp,
-             comb::AndOp, comb::OrOp, comb::XorOp>(op);
+  return isa<synth::ChoiceOp, aig::AndInverterOp, comb::AndOp, comb::OrOp,
+             comb::XorOp>(op);
 }
 
 // Walk SCCs in the local use-def graph used by functional reduction. Nodes are
@@ -722,8 +722,8 @@ bool FunctionalReductionSolver::pruneChoiceCycles() {
     Operation *op = value.getDefiningOp();
     if (!op)
       return true;
-    return !(isa<synth::ChoiceOp, aig::AndInverterOp, mig::MajorityInverterOp,
-                 comb::XorOp, comb::AndOp, comb::OrOp>(op));
+    return !(isa<synth::ChoiceOp, aig::AndInverterOp, comb::XorOp, comb::AndOp,
+                 comb::OrOp>(op));
   };
   SmallVector<std::pair<synth::ChoiceOp, SmallVector<Value>>> choiceRepairs;
 
