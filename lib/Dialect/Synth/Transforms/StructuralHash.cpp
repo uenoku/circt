@@ -175,9 +175,8 @@ void StructuralHashDriver::visitVariadicOp(BooleanLogicOpInterface logicOp) {
 
   // Compute the structural hash key for the operation.
   StructuralHashKey key(op->getName(), {});
-  for (unsigned i = 0, e = logicOp.getNumLogicInputs(); i < e; ++i) {
-    auto input = logicOp.getInputValue(i);
-    bool isInverted = inversions[i];
+  for (auto [input, inverted] : llvm::zip(op->getOperands(), inversions)) {
+    bool isInverted = inverted;
     // Check if we can propagate inversion through the inversion map
     auto it = inversion.find(input);
     if (it != inversion.end()) {

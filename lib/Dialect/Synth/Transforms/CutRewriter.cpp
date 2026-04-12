@@ -307,7 +307,8 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       for (unsigned i = 0, e = andOp.getNumLogicInputs(); i < e; ++i)
         if (!eval.contains(andOp.getInputValue(i)))
           return andOp.emitError("Input value not found in evaluation map");
-      eval[andOp.getResult()] = andOp.evaluate([&](unsigned i) -> const APInt & {
+      eval[andOp.getResult()] =
+          andOp.evaluateBooleanLogic([&](unsigned i) -> const APInt & {
         return eval.find(andOp.getInputValue(i))->second;
       });
     } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {

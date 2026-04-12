@@ -82,11 +82,7 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         described by the operation itself.
       }],
       "::llvm::APInt", "evaluateBooleanLogic",
-      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue), "",
-      [{
-        auto concreteOp = mlir::cast<ConcreteOp>($_op);
-        return concreteOp.evaluate(getInputValue);
-      }]
+      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
     >,
     InterfaceMethod<[{
         Compute known bits for the result from the logical inputs.
@@ -95,26 +91,21 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         described by the operation itself.
       }],
       "::llvm::KnownBits", "computeKnownBits",
-      (ins "::llvm::function_ref<const ::llvm::KnownBits &(unsigned)>":$getInputKnownBits), "",
-      [{
-        auto concreteOp = mlir::cast<ConcreteOp>($_op);
-        return concreteOp.computeKnownBits(getInputKnownBits);
-      }]
+      (ins "::llvm::function_ref<const ::llvm::KnownBits &(unsigned)>":$getInputKnownBits)
     >,
     InterfaceMethod<[{
-        Clone this operation with the provided inputs while preserving the
-        existing inversion flags.
+        Clone or fold this operation with the provided inputs while preserving
+        the existing inversion flags.
       }],
-      "::mlir::Operation *", "cloneWithSameInversion",
+      "::mlir::Value", "cloneWithSameInversion",
       (ins "::mlir::OpBuilder &":$builder, "::mlir::ValueRange":$newInputs), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
         auto resultType =
             newInputs.empty() ? concreteOp.getType() : newInputs.front().getType();
-        return ConcreteOp::create(builder, concreteOp.getLoc(),
-                                  resultType, newInputs,
-                                  concreteOp.getInverted())
-            .getOperation();
+        return builder.createOrFold<ConcreteOp>(concreteOp.getLoc(), resultType,
+                                                newInputs,
+                                                concreteOp.getInverted());
       }]
     >
   ];

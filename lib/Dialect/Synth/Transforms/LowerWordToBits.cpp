@@ -315,7 +315,7 @@ Value BitBlaster::getBoolConstant(bool value) {
 ArrayRef<Value>
 BitBlaster::lowerBooleanLogicOperation(BooleanLogicOpInterface op) {
   auto createOp = [&](OpBuilder &builder, ValueRange operands) {
-    return op.cloneWithSameInversion(builder, operands)->getResult(0);
+    return op.cloneWithSameInversion(builder, operands);
   };
   return lowerOp(op.getOperation(), createOp);
 }

@@ -208,7 +208,7 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   return success();
 }
 
-APInt AndInverterOp::evaluate(
+APInt AndInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
   assert(getNumOperands() > 0 && "Expected non-empty input list");
   APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
