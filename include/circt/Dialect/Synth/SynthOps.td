@@ -77,8 +77,10 @@ def AndInverterOp : SynthOp<"aig.and_inv",
     }]>];
 
   let extraClassDeclaration = [{
-    // Evaluate the operation with the given input values.
-    APInt evaluate(ArrayRef<APInt> inputs);
+    // Evaluate the operation with raw operand inputs.
+    APInt evaluate(llvm::function_ref<APInt(unsigned)> getInputValue);
+    llvm::KnownBits computeKnownBits(
+        llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits);
 
     // Check if the input is inverted.
     bool isInverted(size_t idx) {

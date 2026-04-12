@@ -152,17 +152,17 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     LogicalResult result =
         llvm::TypeSwitch<Operation *, LogicalResult>(&op)
             .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
-              const auto inputs = andOp.getInputs();
-              if (inputs.size() == 1) {
+              auto inversions = andOp.getInputInversions();
+              if (andOp.getInputs().size() == 1) {
                 // Single-input AND is a buffer or NOT gate
                 const Signal inputSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
+                    getOrCreateSignal(andOp.getInputValue(0), inversions[0]);
                 handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
-              } else if (inputs.size() == 2) {
+              } else if (andOp.getInputs().size() == 2) {
                 const Signal lhsSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
+                    getOrCreateSignal(andOp.getInputValue(0), inversions[0]);
                 const Signal rhsSignal =
-                    getOrCreateSignal(inputs[1], andOp.isInverted(1));
+                    getOrCreateSignal(andOp.getInputValue(1), inversions[1]);
                 addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
               } else {
                 // Variadic AND gates with >2 inputs are treated as primary
@@ -304,15 +304,12 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       eval[choiceOp.getResult()] = it->second;
     } else if (auto andOp = dyn_cast<aig::AndInverterOp>(&op)) {
       // Support AIG and XOR operations
-      SmallVector<llvm::APInt, 2> inputs;
-      inputs.reserve(andOp.getInputs().size());
-      for (auto input : andOp.getInputs()) {
-        auto it = eval.find(input);
-        if (it == eval.end())
+      for (unsigned i = 0, e = andOp.getNumLogicInputs(); i < e; ++i)
+        if (!eval.contains(andOp.getInputValue(i)))
           return andOp.emitError("Input value not found in evaluation map");
-        inputs.push_back(it->second);
-      }
-      eval[andOp.getResult()] = andOp.evaluate(inputs);
+      eval[andOp.getResult()] = andOp.evaluate([&](unsigned i) {
+        return eval.lookup(andOp.getInputValue(i));
+      });
     } else if (auto xorOp = dyn_cast<comb::XorOp>(&op)) {
       auto it = eval.find(xorOp.getOperand(0));
       if (it == eval.end())

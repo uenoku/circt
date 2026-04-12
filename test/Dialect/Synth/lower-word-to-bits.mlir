@@ -60,10 +60,12 @@ hw.module @Complex_Constant_Patterns(in %a: i2, in %b: i2, out f: i2) {
   %1 = synth.aig.and_inv not %b, not %c2_i2 : i2 // should keep bits 0 not 'b', bits 1 is zero
   %2 = comb.or %c2_i2, %0, %1 : i2
   // CHECK-DAG: %false = hw.constant false
+  // CHECK-DAG: %true = hw.constant true
   // CHECK-DAG: %[[EXTRACT_A_0:.+]] = comb.extract %a from 0 : (i2) -> i1
   // CHECK-DAG: %[[EXTRACT_B_0:.+]] = comb.extract %b from 0 : (i2) -> i1
+  // CHECK-DAG: %[[AND_A_0:.+]] = synth.aig.and_inv %[[EXTRACT_A_0]], %true : i1
   // CHECK-DAG: %[[AND_INV_0:.+]] = synth.aig.and_inv not %[[EXTRACT_B_0]], not %false : i1
-  // CHECK-DAG: %[[OR_0:.+]] = comb.or %[[EXTRACT_A_0]], %[[AND_INV_0]], %false : i1
+  // CHECK-DAG: %[[OR_0:.+]] = comb.or %[[AND_A_0]], %[[AND_INV_0]], %false : i1
   // CHECK-DAG: %[[CONCAT:.+]] = comb.concat %true, %[[OR_0]] : i1, i1
   // CHECK-DAG: hw.output %[[CONCAT]]
   hw.output %2 : i2

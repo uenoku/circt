@@ -57,13 +57,48 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       }]
     >,
     InterfaceMethod<[{
-        Evaluate the boolean logic operation for the provided inputs.
+        Get the inversion flags for all logical inputs.
       }],
-      "::llvm::APInt", "evaluateBooleanLogic",
-      (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs), "",
+      "::llvm::ArrayRef<bool>", "getInputInversions", (ins), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
-        return concreteOp.evaluate(inputs);
+        return concreteOp.getInverted();
+      }]
+    >,
+    InterfaceMethod<[{
+        Return whether the operation semantics are invariant under
+        permutation of logical input pairs. Reordering a logical input means
+        moving both the input value and its inversion flag together.
+      }],
+      "bool", "areInputsPermutationInvariant", (ins), "",
+      [{
+        return true;
+      }]
+    >,
+    InterfaceMethod<[{
+        Evaluate the boolean logic operation for the provided raw operand
+        inputs. The callback returns the raw operand value for input `i`;
+        implementations are responsible for applying any per-input inversion
+        described by the operation itself.
+      }],
+      "::llvm::APInt", "evaluateBooleanLogic",
+      (ins "::llvm::function_ref<::llvm::APInt(unsigned)>":$getInputValue), "",
+      [{
+        auto concreteOp = mlir::cast<ConcreteOp>($_op);
+        return concreteOp.evaluate(getInputValue);
+      }]
+    >,
+    InterfaceMethod<[{
+        Compute known bits for the result from the logical inputs.
+        The callback returns known bits for the raw input value `i`;
+        implementations are responsible for applying any per-input inversion
+        described by the operation itself.
+      }],
+      "::llvm::KnownBits", "computeKnownBits",
+      (ins "::llvm::function_ref<const ::llvm::KnownBits &(unsigned)>":$getInputKnownBits), "",
+      [{
+        auto concreteOp = mlir::cast<ConcreteOp>($_op);
+        return concreteOp.computeKnownBits(getInputKnownBits);
       }]
     >,
     InterfaceMethod<[{
@@ -74,8 +109,10 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       (ins "::mlir::OpBuilder &":$builder, "::mlir::ValueRange":$newInputs), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
+        auto resultType =
+            newInputs.empty() ? concreteOp.getType() : newInputs.front().getType();
         return ConcreteOp::create(builder, concreteOp.getLoc(),
-                                  concreteOp.getType(), newInputs,
+                                  resultType, newInputs,
                                   concreteOp.getInverted())
             .getOperation();
       }]
@@ -94,14 +131,10 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
                "truth table too wide to materialize");
 
         ::llvm::APInt truthTable(static_cast<unsigned>(numRows), 0);
-        ::llvm::SmallVector<::llvm::APInt> inputs;
-        inputs.reserve(numInputs);
         for (size_t assignment = 0; assignment < numRows; ++assignment) {
-          inputs.clear();
-          for (unsigned input = 0; input < numInputs; ++input)
-            inputs.emplace_back(1, (assignment >> input) & 1);
-
-          if (concreteOp.evaluateBooleanLogic(inputs)[0])
+          if (concreteOp.evaluateBooleanLogic([&](unsigned input) {
+                return ::llvm::APInt(1, (assignment >> input) & 1);
+              })[0])
             truthTable.setBit(assignment);
         }
         return truthTable;

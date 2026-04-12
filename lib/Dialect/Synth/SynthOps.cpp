@@ -159,7 +159,7 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
     if (auto andInverterOp = value.getDefiningOp<synth::aig::AndInverterOp>()) {
       if (andInverterOp.getInputs().size() == 1 &&
           andInverterOp.isInverted(0)) {
-        value = andInverterOp.getOperand(0);
+        value = andInverterOp.getInputValue(0);
         newInverted = andInverterOp.isInverted(0) ^ inverted;
         flippedFound = true;
       }
@@ -208,17 +208,37 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   return success();
 }
 
-APInt AndInverterOp::evaluate(ArrayRef<APInt> inputs) {
-  assert(inputs.size() == getNumOperands() &&
-         "Expected as many inputs as operands");
-  assert(!inputs.empty() && "Expected non-empty input list");
-  APInt result = APInt::getAllOnes(inputs.front().getBitWidth());
-  for (auto [idx, input] : llvm::enumerate(inputs)) {
+APInt AndInverterOp::evaluate(
+    llvm::function_ref<APInt(unsigned)> getInputValue) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+  APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
+  for (unsigned idx = 0, e = getNumOperands(); idx < e; ++idx) {
+    APInt input = getInputValue(idx);
     if (isInverted(idx))
       result &= ~input;
     else
       result &= input;
   }
+  return result;
+}
+
+llvm::KnownBits AndInverterOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+
+  auto width = getInputKnownBits(0).getBitWidth();
+  llvm::KnownBits result(width);
+  result.One = APInt::getAllOnes(width);
+  result.Zero = APInt::getZero(width);
+
+  auto inversions = getInverted();
+  for (unsigned i = 0, e = getNumOperands(); i < e; ++i) {
+    auto operandKnownBits = getInputKnownBits(i);
+    if (inversions[i])
+      std::swap(operandKnownBits.Zero, operandKnownBits.One);
+    result &= operandKnownBits;
+  }
+
   return result;
 }
 

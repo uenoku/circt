@@ -259,9 +259,10 @@ void FunctionalReductionSATBuilder::encodeValue(Value value) {
     inputLits.reserve(op->getNumOperands());
     TypeSwitch<Operation *>(op)
         .Case<aig::AndInverterOp>([&](auto andOp) {
-          for (auto [input, inverted] :
-               llvm::zip(andOp.getInputs(), andOp.getInverted()))
-            inputLits.push_back(getLiteral(input, inverted));
+          auto inversions = andOp.getInputInversions();
+          for (unsigned i = 0, e = andOp.getNumLogicInputs(); i < e; ++i)
+            inputLits.push_back(getLiteral(andOp.getInputValue(i),
+                                           inversions[i]));
           addAndClauses(outVar, inputLits);
         })
         .Case<comb::AndOp>([&](auto andOp) {
@@ -485,10 +486,9 @@ llvm::APInt FunctionalReductionSolver::simulateValue(Value v) {
     return simSignatures.at(v);
   return llvm::TypeSwitch<Operation *, llvm::APInt>(op)
       .Case<aig::AndInverterOp>([&](auto op) {
-        SmallVector<llvm::APInt> inputSigs;
-        for (auto input : op.getInputs())
-          inputSigs.push_back(simSignatures.at(input));
-        return op.evaluate(inputSigs);
+        return op.evaluate([&](unsigned i) {
+          return simSignatures.at(op.getInputValue(i));
+        });
       })
       .Case<comb::AndOp>([&](auto op) {
         APInt result = APInt::getAllOnes(numPatterns);
