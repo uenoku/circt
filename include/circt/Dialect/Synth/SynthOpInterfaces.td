@@ -1,4 +1,4 @@
-//===- SynthOpInterfaces.td - Synth operation interfaces ------*- tablegen -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -29,19 +29,20 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       }]
     >,
     InterfaceMethod<[{
-        Get the logical input at the specified index.
+        Get the logical input at the specified index and whether it is
+        inverted before the operation is evaluated.
       }],
-      "::mlir::Value", "getLogicInput", (ins "unsigned":$index), "",
+      "::std::pair<::mlir::Value, bool>", "getInput", (ins "unsigned":$index), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
-        return concreteOp->getOperand(index);
+        return {concreteOp->getOperand(index), concreteOp.isInverted(index)};
       }]
     >,
     InterfaceMethod<[{
         Return whether the specified logical input is inverted before the
         operation is evaluated.
       }],
-      "bool", "isLogicInputInverted", (ins "unsigned":$index), "",
+      "bool", "isInputInverted", (ins "unsigned":$index), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
         return concreteOp.isInverted(index);
@@ -55,6 +56,20 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
         return concreteOp.evaluate(inputs);
+      }]
+    >,
+    InterfaceMethod<[{
+        Clone this operation with the provided inputs while preserving the
+        existing inversion flags.
+      }],
+      "::mlir::Operation *", "cloneWithSameInversion",
+      (ins "::mlir::OpBuilder &":$builder, "::mlir::ValueRange":$newInputs), "",
+      [{
+        auto concreteOp = mlir::cast<ConcreteOp>($_op);
+        return ConcreteOp::create(builder, concreteOp.getLoc(),
+                                  concreteOp.getType(), newInputs,
+                                  concreteOp.getInverted())
+            .getOperation();
       }]
     >,
     InterfaceMethod<[{
