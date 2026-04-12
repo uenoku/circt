@@ -688,11 +688,18 @@ llvm::LogicalResult FunctionalReductionSolver::mergeEquivalentNodes() {
     stats.numMergedNodes += members.size() + 1;
   }
 
-  for (auto choice : choices)
+  for (auto choice : choices) {
+    llvm::SmallPtrSet<Operation *, 8> protectedUsers;
+    protectedUsers.insert(choice.getOperation());
+    for (Value input : choice.getInputs())
+      if (Operation *def = input.getDefiningOp())
+        protectedUsers.insert(def);
+
     for (Value value : choice.getInputs())
       value.replaceUsesWithIf(choice.getResult(), [&](OpOperand &use) {
-        return use.getOwner() != choice.getOperation();
+        return !protectedUsers.contains(use.getOwner());
       });
+  }
 
   int64_t numCycles = 0;
   while (pruneChoiceCycles()) {
