@@ -39,6 +39,14 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       }]
     >,
     InterfaceMethod<[{
+        Get the logical input value at the specified index.
+      }],
+      "::mlir::Value", "getInputValue", (ins "unsigned":$index), "",
+      [{
+        return $_op.getInput(index).first;
+      }]
+    >,
+    InterfaceMethod<[{
         Return whether the specified logical input is inverted before the
         operation is evaluated.
       }],
