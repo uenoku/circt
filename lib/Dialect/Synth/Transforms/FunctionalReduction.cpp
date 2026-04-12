@@ -25,15 +25,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
-#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
-#include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -74,14 +71,15 @@ static void forEachFunctionalReductionSCC(
   // `lowLinks` tracks the smallest discovery index reachable from each node
   // while staying within the active DFS stack.
   llvm::DenseMap<Operation *, unsigned> indices, lowLinks;
-  llvm::SetVector<Operation *, SmallVector<Operation *>,
-                  llvm::SmallPtrSet<Operation *, 32>>
-      eligibleOps, stack;
+  llvm::SmallPtrSet<Operation *, 32> onStack, eligibleSet;
+  SmallVector<Operation *> eligibleOps, stack;
   unsigned nextIndex = 0;
 
   for (Operation &op : block->getOperations()) {
-    if (isFunctionalReductionGraphOp(&op))
-      eligibleOps.insert(&op);
+    if (!isFunctionalReductionGraphOp(&op))
+      continue;
+    eligibleSet.insert(&op);
+    eligibleOps.push_back(&op);
   }
 
   auto forEachSuccessor = [&](Operation *op,
@@ -89,7 +87,7 @@ static void forEachFunctionalReductionSCC(
     for (Value operand : op->getOperands()) {
       Operation *succ = operand.getDefiningOp();
       // Ignore ready values and definitions outside this block-local graph.
-      if (!isOperandReady(operand) && succ && eligibleOps.contains(succ))
+      if (!isOperandReady(operand) && succ && eligibleSet.contains(succ))
         fn(succ);
     }
   };
@@ -98,7 +96,8 @@ static void forEachFunctionalReductionSCC(
     indices[op] = nextIndex;
     lowLinks[op] = nextIndex;
     ++nextIndex;
-    stack.insert(op);
+    stack.push_back(op);
+    onStack.insert(op);
 
     forEachSuccessor(op, [&](Operation *succ) {
       auto succIndex = indices.find(succ);
@@ -108,7 +107,7 @@ static void forEachFunctionalReductionSCC(
           lowLinks[op] = lowLinks[succ];
         return;
       }
-      if (stack.contains(succ) && succIndex->second < lowLinks[op])
+      if (onStack.contains(succ) && succIndex->second < lowLinks[op])
         lowLinks[op] = succIndex->second;
     });
 
@@ -119,6 +118,7 @@ static void forEachFunctionalReductionSCC(
     Operation *popped;
     do {
       popped = stack.pop_back_val();
+      onStack.erase(popped);
       scc.push_back(popped);
     } while (popped != op);
 
