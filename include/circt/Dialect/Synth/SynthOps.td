@@ -23,7 +23,9 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 class SynthOp<string mnemonic, list<Trait> traits = []> :
     Op<Synth_Dialect, mnemonic, traits>;
 
-def AndInverterOp : SynthOp<"aig.and_inv", [SameOperandsAndResultType, Pure]> {
+def AndInverterOp : SynthOp<"aig.and_inv",
+                            [SameOperandsAndResultType, Pure,
+                             DeclareOpInterfaceMethods<BooleanLogicOpInterface>]> {
   let summary = "AIG dialect AND operation";
   let description = [{
     The `synth.aig.and_inv` operation represents an And-Inverter in the AIG dialect.
