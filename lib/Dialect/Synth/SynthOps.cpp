@@ -209,11 +209,11 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
 }
 
 APInt AndInverterOp::evaluate(
-    llvm::function_ref<APInt(unsigned)> getInputValue) {
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
   assert(getNumOperands() > 0 && "Expected non-empty input list");
   APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
   for (unsigned idx = 0, e = getNumOperands(); idx < e; ++idx) {
-    APInt input = getInputValue(idx);
+    const APInt &input = getInputValue(idx);
     if (isInverted(idx))
       result &= ~input;
     else

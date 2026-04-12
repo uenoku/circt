@@ -82,7 +82,7 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         described by the operation itself.
       }],
       "::llvm::APInt", "evaluateBooleanLogic",
-      (ins "::llvm::function_ref<::llvm::APInt(unsigned)>":$getInputValue), "",
+      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue), "",
       [{
         auto concreteOp = mlir::cast<ConcreteOp>($_op);
         return concreteOp.evaluate(getInputValue);
@@ -115,29 +115,6 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
                                   resultType, newInputs,
                                   concreteOp.getInverted())
             .getOperation();
-      }]
-    >,
-    InterfaceMethod<[{
-        Return the single-bit truth table for this operation. Bit `i` of the
-        returned APInt stores the output for assignment `i`, where operand `0`
-        corresponds to the least-significant assignment bit.
-      }],
-      "::llvm::APInt", "getSingleBitTruthTable", (ins), "",
-      [{
-        auto concreteOp = mlir::cast<ConcreteOp>($_op);
-        unsigned numInputs = concreteOp.getNumLogicInputs();
-        size_t numRows = size_t{1} << numInputs;
-        assert(numRows <= std::numeric_limits<unsigned>::max() &&
-               "truth table too wide to materialize");
-
-        ::llvm::APInt truthTable(static_cast<unsigned>(numRows), 0);
-        for (size_t assignment = 0; assignment < numRows; ++assignment) {
-          if (concreteOp.evaluateBooleanLogic([&](unsigned input) {
-                return ::llvm::APInt(1, (assignment >> input) & 1);
-              })[0])
-            truthTable.setBit(assignment);
-        }
-        return truthTable;
       }]
     >
   ];

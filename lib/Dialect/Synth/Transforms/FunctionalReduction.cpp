@@ -261,8 +261,8 @@ void FunctionalReductionSATBuilder::encodeValue(Value value) {
         .Case<aig::AndInverterOp>([&](auto andOp) {
           auto inversions = andOp.getInputInversions();
           for (unsigned i = 0, e = andOp.getNumLogicInputs(); i < e; ++i)
-            inputLits.push_back(getLiteral(andOp.getInputValue(i),
-                                           inversions[i]));
+            inputLits.push_back(
+                getLiteral(andOp.getInputValue(i), inversions[i]));
           addAndClauses(outVar, inputLits);
         })
         .Case<comb::AndOp>([&](auto andOp) {
@@ -486,7 +486,7 @@ llvm::APInt FunctionalReductionSolver::simulateValue(Value v) {
     return simSignatures.at(v);
   return llvm::TypeSwitch<Operation *, llvm::APInt>(op)
       .Case<aig::AndInverterOp>([&](auto op) {
-        return op.evaluate([&](unsigned i) {
+        return op.evaluate([&](unsigned i) -> const APInt & {
           return simSignatures.at(op.getInputValue(i));
         });
       })
