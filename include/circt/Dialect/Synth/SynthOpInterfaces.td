@@ -15,7 +15,16 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
   let cppNamespace = "::circt::synth";
 
   let description = [{
-    Common interface for bitwise boolean-logic operations.
+    Common interface for boolean-logic DAG nodes whose semantics are defined by
+    a list of input values together with per-input inversion flags.
+
+    This intentionally abstracts over more than just `synth.aig.and_inv`.
+    Modern logic-network representations often use the same "value plus
+    complemented edge" model across several node kinds, for example AIG-style
+    nodes as well as closely related 3-input or otherwise non-binary DAG
+    nodes. Passes such as structural hashing, bit lowering, and simulation
+    should be able to operate on those common semantics without hardcoding a
+    specific concrete op.
   }];
 
   let methods = [
