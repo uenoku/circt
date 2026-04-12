@@ -259,10 +259,9 @@ void FunctionalReductionSATBuilder::encodeValue(Value value) {
     inputLits.reserve(op->getNumOperands());
     TypeSwitch<Operation *>(op)
         .Case<aig::AndInverterOp>([&](auto andOp) {
-          auto inversions = andOp.getInputInversions();
-          for (unsigned i = 0, e = andOp.getNumLogicInputs(); i < e; ++i)
-            inputLits.push_back(
-                getLiteral(andOp.getInputValue(i), inversions[i]));
+          for (auto [input, inverted] :
+               llvm::zip(andOp.getInputs(), andOp.getInverted()))
+            inputLits.push_back(getLiteral(input, inverted));
           addAndClauses(outVar, inputLits);
         })
         .Case<comb::AndOp>([&](auto andOp) {

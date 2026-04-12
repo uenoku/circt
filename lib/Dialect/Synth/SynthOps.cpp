@@ -159,7 +159,7 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
     if (auto andInverterOp = value.getDefiningOp<synth::aig::AndInverterOp>()) {
       if (andInverterOp.getInputs().size() == 1 &&
           andInverterOp.isInverted(0)) {
-        value = andInverterOp.getInputValue(0);
+        value = andInverterOp.getOperand(0);
         newInverted = andInverterOp.isInverted(0) ^ inverted;
         flippedFound = true;
       }

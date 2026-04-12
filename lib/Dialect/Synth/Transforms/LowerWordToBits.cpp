@@ -127,10 +127,6 @@ private:
   /// Cache for computed known bits information
   llvm::MapVector<Value, llvm::KnownBits> knownBits;
 
-  /// Scratch space used when a boolean-logic known-bits hook asks for
-  /// inversion-adjusted operand known bits by reference.
-  llvm::KnownBits adjustedInputKnownBits;
-
   /// Cached boolean constants (false at index 0, true at index 1)
   std::array<Value, 2> constants;
 

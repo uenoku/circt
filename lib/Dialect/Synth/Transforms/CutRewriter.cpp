@@ -152,17 +152,17 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     LogicalResult result =
         llvm::TypeSwitch<Operation *, LogicalResult>(&op)
             .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
-              auto inversions = andOp.getInputInversions();
-              if (andOp.getInputs().size() == 1) {
+              const auto inputs = andOp.getInputs();
+              if (inputs.size() == 1) {
                 // Single-input AND is a buffer or NOT gate
                 const Signal inputSignal =
-                    getOrCreateSignal(andOp.getInputValue(0), inversions[0]);
+                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
                 handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
-              } else if (andOp.getInputs().size() == 2) {
+              } else if (inputs.size() == 2) {
                 const Signal lhsSignal =
-                    getOrCreateSignal(andOp.getInputValue(0), inversions[0]);
+                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
                 const Signal rhsSignal =
-                    getOrCreateSignal(andOp.getInputValue(1), inversions[1]);
+                    getOrCreateSignal(inputs[1], andOp.isInverted(1));
                 addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
               } else {
                 // Variadic AND gates with >2 inputs are treated as primary

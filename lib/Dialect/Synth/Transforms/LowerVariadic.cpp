@@ -161,9 +161,8 @@ struct OperandPairLess {
 
 static OperandKey getSortedOperandKey(aig::AndInverterOp op) {
   OperandKey key;
-  auto inversions = op.getInputInversions();
   for (size_t i = 0, e = op.getNumOperands(); i < e; ++i)
-    key.emplace_back(op.getInputValue(i), inversions[i]);
+    key.emplace_back(op.getOperand(i), op.isInverted(i));
 
   std::sort(key.begin(), key.end(), OperandPairLess());
   return key;
