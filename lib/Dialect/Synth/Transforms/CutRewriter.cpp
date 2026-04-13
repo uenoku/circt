@@ -270,20 +270,20 @@ static bool compareDelayAndArea(OptimizationStrategy strategy, double newArea,
   llvm_unreachable("Unknown mapping strategy");
 }
 
-static SmallVector<DelayType, 1> computeOutputArrivalTimes(
-    unsigned numOutputs, unsigned numInputs, ArrayRef<DelayType> delays,
-    ArrayRef<DelayType> inputArrivalTimes,
-    llvm::function_ref<unsigned(unsigned)> mapIndex) {
+static SmallVector<DelayType, 1>
+computeOutputArrivalTimes(unsigned numOutputs, unsigned numInputs,
+                          ArrayRef<DelayType> delays,
+                          ArrayRef<DelayType> inputArrivalTimes,
+                          llvm::function_ref<unsigned(unsigned)> mapIndex) {
   SmallVector<DelayType, 1> outputArrivalTimes;
   outputArrivalTimes.reserve(numOutputs);
   for (unsigned outputIndex = 0; outputIndex < numOutputs; ++outputIndex) {
     DelayType outputArrivalTime = 0;
     for (unsigned inputIndex = 0; inputIndex < numInputs; ++inputIndex) {
       unsigned cutOriginalInput = mapIndex(inputIndex);
-      outputArrivalTime =
-          std::max(outputArrivalTime,
-                   delays[outputIndex * numInputs + inputIndex] +
-                       inputArrivalTimes[cutOriginalInput]);
+      outputArrivalTime = std::max(
+          outputArrivalTime, delays[outputIndex * numInputs + inputIndex] +
+                                 inputArrivalTimes[cutOriginalInput]);
     }
     outputArrivalTimes.push_back(outputArrivalTime);
   }
@@ -683,9 +683,9 @@ ArrayRef<DelayType> MatchedPattern::getArrivalTimes() const {
 
 DelayType MatchedPattern::getWorstOutputArrivalTime() const {
   assert(pattern && "Pattern must be set to get arrival time");
-  return arrivalTimes.empty() ? 0
-                              : *std::max_element(arrivalTimes.begin(),
-                                                  arrivalTimes.end());
+  return arrivalTimes.empty()
+             ? 0
+             : *std::max_element(arrivalTimes.begin(), arrivalTimes.end());
 }
 
 DelayType MatchedPattern::getArrivalTime(unsigned index) const {
@@ -838,9 +838,8 @@ void CutSet::finalize(
                             [](const Cut *cut) { return cut->isTrivialCut(); });
 
   OptimizationStrategy seedStrategy =
-      options.strategy == OptimizationStrategyArea
-          ? OptimizationStrategyTiming
-          : options.strategy;
+      options.strategy == OptimizationStrategyArea ? OptimizationStrategyTiming
+                                                   : options.strategy;
   auto isBetterCut = [seedStrategy](const Cut *a, const Cut *b) {
     assert(!a->isTrivialCut() && !b->isTrivialCut() &&
            "Trivial cuts should have been excluded");
@@ -1487,10 +1486,9 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     return success();
   }
 
-  if (options.strategy == OptimizationStrategyArea) {
-    cutEnumerator.computeRequiredTimes();
-    cutEnumerator.reselectCutsForAreaFlow();
-  }
+  // Run area flow-based re-selection of cuts to prepare for mapping.
+  cutEnumerator.computeRequiredTimes();
+  cutEnumerator.reselectCutsForAreaFlow();
 
   // Select best cuts and perform mapping
   if (failed(runBottomUpRewrite(topOp)))
@@ -1544,10 +1542,9 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
       [&](const CutRewritePattern *pattern, MatchResult matchResult,
           ArrayRef<unsigned> patternInputToCutInput,
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
-        auto outputArrivalTimes =
-            computeOutputArrivalTimes(cut.getOutputSize(network),
-                                      cut.getInputSize(), matchResult.getDelays(),
-                                      inputArrivalTimes, mapIndex);
+        auto outputArrivalTimes = computeOutputArrivalTimes(
+            cut.getOutputSize(network), cut.getInputSize(),
+            matchResult.getDelays(), inputArrivalTimes, mapIndex);
 
         // Update the arrival time
         if (!bestPattern ||
