@@ -212,6 +212,27 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       return result;
   }
 
+  auto isInternalLogicUser = [&](Operation *user) {
+    if (user->getNumResults() != 1)
+      return false;
+    Value result = user->getResult(0);
+    if (!result.getType().isInteger(1) || !hasIndex(result))
+      return false;
+    return getGate(getIndex(result)).isLogicGate();
+  };
+
+  for (auto &[value, index] : valueToIndex) {
+    if (index == kConstant0 || index == kConstant1)
+      continue;
+
+    for (OpOperand &use : value.getUses()) {
+      if (isInternalLogicUser(use.getOwner()))
+        recordLogicUse(index);
+      else
+        recordExternalUse(index);
+    }
+  }
+
   return success();
 }
 
@@ -247,6 +268,26 @@ static bool compareDelayAndArea(OptimizationStrategy strategy, double newArea,
   if (strategy == OptimizationStrategyTiming)
     return newDelay < oldDelay || (newDelay == oldDelay && newArea < oldArea);
   llvm_unreachable("Unknown mapping strategy");
+}
+
+static SmallVector<DelayType, 1> computeOutputArrivalTimes(
+    unsigned numOutputs, unsigned numInputs, ArrayRef<DelayType> delays,
+    ArrayRef<DelayType> inputArrivalTimes,
+    llvm::function_ref<unsigned(unsigned)> mapIndex) {
+  SmallVector<DelayType, 1> outputArrivalTimes;
+  outputArrivalTimes.reserve(numOutputs);
+  for (unsigned outputIndex = 0; outputIndex < numOutputs; ++outputIndex) {
+    DelayType outputArrivalTime = 0;
+    for (unsigned inputIndex = 0; inputIndex < numInputs; ++inputIndex) {
+      unsigned cutOriginalInput = mapIndex(inputIndex);
+      outputArrivalTime =
+          std::max(outputArrivalTime,
+                   delays[outputIndex * numInputs + inputIndex] +
+                       inputArrivalTimes[cutOriginalInput]);
+    }
+    outputArrivalTimes.push_back(outputArrivalTime);
+  }
+  return outputArrivalTimes;
 }
 
 LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
@@ -640,6 +681,13 @@ ArrayRef<DelayType> MatchedPattern::getArrivalTimes() const {
   return arrivalTimes;
 }
 
+DelayType MatchedPattern::getWorstOutputArrivalTime() const {
+  assert(pattern && "Pattern must be set to get arrival time");
+  return arrivalTimes.empty() ? 0
+                              : *std::max_element(arrivalTimes.begin(),
+                                                  arrivalTimes.end());
+}
+
 DelayType MatchedPattern::getArrivalTime(unsigned index) const {
   assert(pattern && "Pattern must be set to get arrival time");
   return arrivalTimes[index];
@@ -652,7 +700,22 @@ const CutRewritePattern *MatchedPattern::getPattern() const {
 
 double MatchedPattern::getArea() const {
   assert(pattern && "Pattern must be set to get area");
-  return area;
+  return matchResult.area;
+}
+
+ArrayRef<DelayType> MatchedPattern::getDelays() const {
+  assert(pattern && "Pattern must be set to get delays");
+  return matchResult.getDelays();
+}
+
+DelayType MatchedPattern::getDelayForCutInput(unsigned cutInputIndex) const {
+  assert(pattern && "Pattern must be set to get delays");
+  for (auto [patternInputIndex, mappedCutInput] :
+       llvm::enumerate(patternInputToCutInput)) {
+    if (mappedCutInput == cutInputIndex)
+      return getDelays()[patternInputIndex];
+  }
+  llvm_unreachable("cut input not found in matched permutation");
 }
 
 //===----------------------------------------------------------------------===//
@@ -774,7 +837,11 @@ void CutSet::finalize(
       std::stable_partition(cuts.begin(), cuts.end(),
                             [](const Cut *cut) { return cut->isTrivialCut(); });
 
-  auto isBetterCut = [&options](const Cut *a, const Cut *b) {
+  OptimizationStrategy seedStrategy =
+      options.strategy == OptimizationStrategyArea
+          ? OptimizationStrategyTiming
+          : options.strategy;
+  auto isBetterCut = [seedStrategy](const Cut *a, const Cut *b) {
     assert(!a->isTrivialCut() && !b->isTrivialCut() &&
            "Trivial cuts should have been excluded");
     const auto &aMatched = a->getMatchedPattern();
@@ -782,7 +849,7 @@ void CutSet::finalize(
 
     if (aMatched && bMatched)
       return compareDelayAndArea(
-          options.strategy, aMatched->getArea(), aMatched->getArrivalTimes(),
+          seedStrategy, aMatched->getArea(), aMatched->getArrivalTimes(),
           bMatched->getArea(), bMatched->getArrivalTimes());
 
     if (static_cast<bool>(aMatched) != static_cast<bool>(bMatched))
@@ -803,6 +870,8 @@ void CutSet::finalize(
     if (!currentMatch)
       continue;
     bestCut = cut;
+    bestArrivalTime = currentMatch->getWorstOutputArrivalTime();
+    areaFlow = currentMatch->getArea();
     break;
   }
 
@@ -1216,6 +1285,167 @@ void CutEnumerator::dump() const {
   llvm::outs() << "Cut enumeration completed successfully\n";
 }
 
+void CutEnumerator::computeRequiredTimes() {
+  for (auto &[index, cutSet] : cutSets) {
+    (void)index;
+    cutSet->requiredTime = std::numeric_limits<DelayType>::max();
+  }
+
+  DelayType globalWorstArrival = 0;
+  bool hasPrimaryOutput = false;
+  for (uint32_t index : logicNetwork.outputNodes()) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    auto *bestCut = it->second->getBestMatchedCut();
+    if (!bestCut)
+      continue;
+
+    hasPrimaryOutput = true;
+    globalWorstArrival =
+        std::max(globalWorstArrival,
+                 bestCut->getMatchedPattern()->getWorstOutputArrivalTime());
+  }
+
+  if (!hasPrimaryOutput)
+    return;
+
+  for (uint32_t index : logicNetwork.outputNodes()) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+    it->second->requiredTime = globalWorstArrival;
+  }
+
+  for (auto it = processingOrder.rbegin(); it != processingOrder.rend(); ++it) {
+    auto cutSetIt = cutSets.find(*it);
+    if (cutSetIt == cutSets.end())
+      continue;
+
+    auto *cutSet = cutSetIt->second;
+    auto *bestCut = cutSet->getBestMatchedCut();
+    if (!bestCut)
+      continue;
+
+    for (auto [inputIdx, inputIndex] : llvm::enumerate(bestCut->inputs)) {
+      if (isAlwaysCutInput(logicNetwork, inputIndex))
+        continue;
+
+      auto inputIt = cutSets.find(inputIndex);
+      if (inputIt == cutSets.end())
+        continue;
+
+      DelayType inputRequired =
+          cutSet->requiredTime -
+          bestCut->getMatchedPattern()->getDelayForCutInput(inputIdx);
+      inputIt->second->requiredTime =
+          std::min(inputIt->second->requiredTime, inputRequired);
+    }
+  }
+}
+
+void CutEnumerator::reselectCutsForAreaFlow() {
+  for (auto index : processingOrder) {
+    auto it = cutSets.find(index);
+    if (it == cutSets.end())
+      continue;
+
+    auto *bestCut = it->second->getBestMatchedCut();
+    if (!bestCut)
+      continue;
+
+    it->second->bestArrivalTime =
+        bestCut->getMatchedPattern()->getWorstOutputArrivalTime();
+  }
+
+  auto rematchCut = [&](const Cut &cut) -> std::optional<MatchedPattern> {
+    const auto &matched = *cut.getMatchedPattern();
+    auto matchResult =
+        matched.getPattern()->match(const_cast<CutEnumerator &>(*this), cut);
+    if (!matchResult)
+      return {};
+
+    SmallVector<DelayType, 4> inputArrivalTimes;
+    inputArrivalTimes.reserve(cut.getInputSize());
+    for (uint32_t inputIndex : cut.inputs) {
+      DelayType inputArrival = 0;
+      if (!isAlwaysCutInput(logicNetwork, inputIndex)) {
+        auto inputIt = cutSets.find(inputIndex);
+        if (inputIt != cutSets.end())
+          inputArrival = inputIt->second->bestArrivalTime;
+      }
+      inputArrivalTimes.push_back(inputArrival);
+    }
+
+    auto outputArrivalTimes = computeOutputArrivalTimes(
+        cut.getOutputSize(logicNetwork), cut.getInputSize(),
+        matchResult->getDelays(), inputArrivalTimes,
+        [&](unsigned i) { return matched.getInputPermutation()[i]; });
+    return MatchedPattern(matched.getPattern(), std::move(outputArrivalTimes),
+                          std::move(*matchResult),
+                          matched.getInputPermutation());
+  };
+
+  for (auto index : processingOrder) {
+    auto cutSetIt = cutSets.find(index);
+    if (cutSetIt == cutSets.end())
+      continue;
+
+    auto *cutSet = cutSetIt->second;
+    Cut *bestAreaFlowCut = nullptr;
+    std::optional<MatchedPattern> bestAreaFlowMatch;
+    double bestFlow = std::numeric_limits<double>::max();
+    DelayType bestFlowArrival = std::numeric_limits<DelayType>::max();
+    double bestLocalArea = std::numeric_limits<double>::max();
+
+    for (Cut *cut : cutSet->getCuts()) {
+      if (!cut->getMatchedPattern())
+        continue;
+
+      auto candidateMatch = rematchCut(*cut);
+      if (!candidateMatch)
+        continue;
+
+      DelayType arrivalTime = candidateMatch->getWorstOutputArrivalTime();
+      if (arrivalTime > cutSet->requiredTime)
+        continue;
+
+      double flow = candidateMatch->getArea();
+      for (uint32_t inputIndex : cut->inputs) {
+        if (isAlwaysCutInput(logicNetwork, inputIndex))
+          continue;
+
+        auto inputIt = cutSets.find(inputIndex);
+        if (inputIt == cutSets.end())
+          continue;
+
+        flow += inputIt->second->areaFlow /
+                logicNetwork.getTotalRefCount(inputIndex);
+      }
+
+      if (flow < bestFlow ||
+          (flow == bestFlow && arrivalTime < bestFlowArrival) ||
+          (flow == bestFlow && arrivalTime == bestFlowArrival &&
+           candidateMatch->getArea() < bestLocalArea)) {
+        bestFlow = flow;
+        bestFlowArrival = arrivalTime;
+        bestLocalArea = candidateMatch->getArea();
+        bestAreaFlowCut = cut;
+        bestAreaFlowMatch = std::move(candidateMatch);
+      }
+    }
+
+    if (!bestAreaFlowCut || !bestAreaFlowMatch)
+      continue;
+
+    bestAreaFlowCut->setMatchedPattern(std::move(*bestAreaFlowMatch));
+    cutSet->setBestCut(bestAreaFlowCut);
+    cutSet->areaFlow = bestFlow;
+    cutSet->bestArrivalTime =
+        bestAreaFlowCut->getMatchedPattern()->getWorstOutputArrivalTime();
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // CutRewriter
 //===----------------------------------------------------------------------===//
@@ -1257,6 +1487,11 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     return success();
   }
 
+  if (options.strategy == OptimizationStrategyArea) {
+    cutEnumerator.computeRequiredTimes();
+    cutEnumerator.reselectCutsForAreaFlow();
+  }
+
   // Select best cuts and perform mapping
   if (failed(runBottomUpRewrite(topOp)))
     return failure();
@@ -1295,7 +1530,9 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   const CutRewritePattern *bestPattern = nullptr;
   SmallVector<DelayType, 4> inputArrivalTimes;
   SmallVector<DelayType, 1> bestArrivalTimes;
+  SmallVector<unsigned, 6> bestInputPermutation;
   double bestArea = 0.0;
+  std::optional<MatchResult> bestMatchResult;
   inputArrivalTimes.reserve(cut.getInputSize());
   bestArrivalTimes.reserve(cut.getOutputSize(network));
 
@@ -1304,27 +1541,13 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     return {};
 
   auto computeArrivalTimeAndPickBest =
-      [&](const CutRewritePattern *pattern, const MatchResult &matchResult,
+      [&](const CutRewritePattern *pattern, MatchResult matchResult,
+          ArrayRef<unsigned> patternInputToCutInput,
           llvm::function_ref<unsigned(unsigned)> mapIndex) {
-        SmallVector<DelayType, 1> outputArrivalTimes;
-        // Compute the maximum delay for each output from inputs.
-        for (unsigned outputIndex = 0, outputSize = cut.getOutputSize(network);
-             outputIndex < outputSize; ++outputIndex) {
-          // Compute the arrival time for this output.
-          DelayType outputArrivalTime = 0;
-          auto delays = matchResult.getDelays();
-          for (unsigned inputIndex = 0, inputSize = cut.getInputSize();
-               inputIndex < inputSize; ++inputIndex) {
-            // Map pattern input i to cut input through NPN transformations
-            unsigned cutOriginalInput = mapIndex(inputIndex);
-            outputArrivalTime =
-                std::max(outputArrivalTime,
-                         delays[outputIndex * inputSize + inputIndex] +
-                             inputArrivalTimes[cutOriginalInput]);
-          }
-
-          outputArrivalTimes.push_back(outputArrivalTime);
-        }
+        auto outputArrivalTimes =
+            computeOutputArrivalTimes(cut.getOutputSize(network),
+                                      cut.getInputSize(), matchResult.getDelays(),
+                                      inputArrivalTimes, mapIndex);
 
         // Update the arrival time
         if (!bestPattern ||
@@ -1351,9 +1574,12 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
             llvm::dbgs() << "== Matched Pattern End ==============\n";
           });
 
-          bestArrivalTimes = std::move(outputArrivalTimes);
+          bestArrivalTimes = outputArrivalTimes;
+          bestInputPermutation.assign(patternInputToCutInput.begin(),
+                                      patternInputToCutInput.end());
           bestArea = matchResult.area;
           bestPattern = pattern;
+          bestMatchResult = std::move(matchResult);
         }
       };
 
@@ -1368,20 +1594,27 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     // Get the input mapping from pattern's NPN class to cut's NPN class
     SmallVector<unsigned> inputMapping;
     cutNPN.getInputPermutation(patternNPN, inputMapping);
-    computeArrivalTimeAndPickBest(pattern, *matchResult,
+    computeArrivalTimeAndPickBest(pattern, std::move(*matchResult),
+                                  inputMapping,
                                   [&](unsigned i) { return inputMapping[i]; });
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
-    if (auto matchResult = pattern->match(cutEnumerator, cut))
-      computeArrivalTimeAndPickBest(pattern, *matchResult,
+    if (auto matchResult = pattern->match(cutEnumerator, cut)) {
+      SmallVector<unsigned, 6> identityMapping(cut.getInputSize());
+      for (auto [idx, mapped] : llvm::enumerate(identityMapping))
+        mapped = idx;
+      computeArrivalTimeAndPickBest(pattern, std::move(*matchResult),
+                                    identityMapping,
                                     [&](unsigned i) { return i; });
+    }
   }
 
   if (!bestPattern)
     return {}; // No matching pattern found
 
-  return MatchedPattern(bestPattern, std::move(bestArrivalTimes), bestArea);
+  return MatchedPattern(bestPattern, std::move(bestArrivalTimes),
+                        std::move(*bestMatchResult), bestInputPermutation);
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
