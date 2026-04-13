@@ -16,8 +16,10 @@ hw.module @and_inv_nn(in %a : i1, in %b : i1, out result : i1) attributes {hw.te
     hw.output %0 : i1
 }
 
-// Delay is shorter than @and_inv + @and_inv_n_n. Area is (significantly) larger than @and_inv_n + @and_inv_n_n.
-// Check that we use @and_inv_3 if strategy = timing, and @and_inv_n + @and_inv_n_n if strategy = area.
+// Delay is shorter than @and_inv + @and_inv_n_n. Area is (significantly)
+// larger than @and_inv_n + @and_inv_n_n. Area mode now seeds from the
+// timing-optimal solution and only spends available slack, so both strategies
+// keep the 3-input implementation here.
 hw.module @and_inv_3(in %a : i1, in %b : i1, in %c : i1, out result : i1) attributes {hw.techlib.info = {area = 10.0 : f64, delay = [[1], [1], [1]]}} {
     %0 = synth.aig.and_inv %a, %b : i1
     %1 = synth.aig.and_inv not %0, %c : i1
@@ -26,9 +28,8 @@ hw.module @and_inv_3(in %a : i1, in %b : i1, in %c : i1, out result : i1) attrib
 
 // CHECK-LABEL: @test_strategy
 hw.module @test_strategy(in %a : i1, in %b : i1, in %c : i1, out result : i1) {
-    // AREA-NEXT: %[[area_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-    // AREA-NEXT: %[[area_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %[[area_0]]: i1, b: %c: i1) -> (result: i1) {test.arrival_times = [2]}
-    // AREA-NEXT: hw.output %[[area_1]] : i1
+    // AREA-NEXT: %[[area:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_3(a: %a: i1, b: %b: i1, c: %c: i1) -> (result: i1) {test.arrival_times = [1]}
+    // AREA-NEXT: hw.output %[[area]] : i1
     // TIMING-NEXT: %[[timing:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_3(a: %a: i1, b: %b: i1, c: %c: i1) -> (result: i1) {test.arrival_times = [1]}
     // TIMING-NEXT: hw.output %[[timing]] : i1
     %0 = synth.aig.and_inv %a, %b : i1
@@ -81,14 +82,11 @@ hw.module @area_flow(in %a : i1, in %b : i1, in %c: i1, out result : i1) attribu
     hw.output %1 : i1
 }
 
-// This is a test that needs area-flow to get an optimal result.
-// Area-flow is an optimization technique that considers the area impact
-// of a gate choice on its end point, not just the gate itself.
-// It produces sub-optimal mappings since currently area-flow is not implemented.
-// See "Heuristics for Area Minimization in LUT-Based FPGA Technology Mapping" for more details. 
+// The cheaper single-cell implementation is too slow for the timing-optimal
+// bound, so timing-preserving area recovery must keep the original two-stage
+// mapping.
 // CHECK-LABEL: @area_flow_test
 hw.module @area_flow_test(in %a : i1, in %b : i1, in %c: i1, out result : i1) {
-    // FIXME: If area-flow is implemented, this should be mapped to @area_flow with area strategy.
     // CHECK:       hw.instance {{.*}} @and_inv_nn(
     // CHECK-NEXT:  hw.instance {{.*}} @and_inv_n(
     %0 = synth.aig.and_inv not %a, not %b : i1
