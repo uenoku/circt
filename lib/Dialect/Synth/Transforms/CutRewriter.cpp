@@ -526,6 +526,30 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
 
 namespace {
 
+static MatchBinding getIdentityBinding(unsigned numInputs) {
+  MatchBinding binding;
+  binding.inputPermutation.reserve(numInputs);
+  for (unsigned i = 0; i != numInputs; ++i)
+    binding.inputPermutation.push_back(i);
+  return binding;
+}
+
+static MatchBinding getBindingForPattern(const Cut &cut,
+                                         const NPNClass *patternNPN,
+                                         const NPNTable *npnTable) {
+  MatchBinding binding = getIdentityBinding(cut.getInputSize());
+  if (!patternNPN)
+    return binding;
+
+  const auto &cutNPN = cut.getNPNClass(npnTable);
+  cutNPN.getInputPermutation(*patternNPN, binding.inputPermutation);
+  binding.inputNegationMask =
+      static_cast<uint8_t>(cutNPN.inputNegation ^ patternNPN->inputNegation);
+  binding.outputNegated = static_cast<bool>(
+      (cutNPN.outputNegation ^ patternNPN->outputNegation) & 1u);
+  return binding;
+}
+
 // Helper class to build a merged truth table for a cut based on its operand
 // cuts
 struct MergedTruthTableBuilder {
@@ -716,7 +740,7 @@ const MatchImplementation *MatchedPattern::getImplementation() const {
 DelayType MatchedPattern::getDelayForCutInput(unsigned cutInputIndex) const {
   assert(pattern && "Pattern must be set to get delays");
   for (auto [patternInputIndex, mappedCutInput] :
-       llvm::enumerate(patternInputToCutInput)) {
+       llvm::enumerate(binding.inputPermutation)) {
     if (mappedCutInput == cutInputIndex)
       return getDelays()[patternInputIndex];
   }
@@ -1364,6 +1388,7 @@ void CutEnumerator::reselectCutsForAreaFlow() {
 
   auto rematchCut = [&](const Cut &cut) -> std::optional<MatchedPattern> {
     const auto &matched = *cut.getMatchedPattern();
+    const auto &binding = matched.getBinding();
     auto matchResult =
         matched.getPattern()->match(const_cast<CutEnumerator &>(*this), cut);
     if (!matchResult)
@@ -1384,10 +1409,9 @@ void CutEnumerator::reselectCutsForAreaFlow() {
     auto outputArrivalTimes = computeOutputArrivalTimes(
         cut.getOutputSize(logicNetwork), cut.getInputSize(),
         matchResult->getDelays(), inputArrivalTimes,
-        [&](unsigned i) { return matched.getInputPermutation()[i]; });
+        [&](unsigned i) { return binding.inputPermutation[i]; });
     return MatchedPattern(matched.getPattern(), std::move(outputArrivalTimes),
-                          std::move(*matchResult),
-                          matched.getInputPermutation());
+                          std::move(*matchResult), binding);
   };
 
   for (auto index : processingOrder) {
@@ -1535,7 +1559,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   const CutRewritePattern *bestPattern = nullptr;
   SmallVector<DelayType, 4> inputArrivalTimes;
   SmallVector<DelayType, 1> bestArrivalTimes;
-  SmallVector<unsigned, 6> bestInputPermutation;
+  MatchBinding bestBinding;
   double bestArea = 0.0;
   std::optional<MatchResult> bestMatchResult;
   inputArrivalTimes.reserve(cut.getInputSize());
@@ -1547,11 +1571,11 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
   auto computeArrivalTimeAndPickBest =
       [&](const CutRewritePattern *pattern, MatchResult matchResult,
-          ArrayRef<unsigned> patternInputToCutInput,
-          llvm::function_ref<unsigned(unsigned)> mapIndex) {
+          MatchBinding binding) {
         auto outputArrivalTimes = computeOutputArrivalTimes(
             cut.getOutputSize(network), cut.getInputSize(),
-            matchResult.getDelays(), inputArrivalTimes, mapIndex);
+            matchResult.getDelays(), inputArrivalTimes,
+            [&](unsigned i) { return binding.inputPermutation[i]; });
 
         // Update the arrival time
         if (!bestPattern ||
@@ -1579,8 +1603,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           });
 
           bestArrivalTimes = outputArrivalTimes;
-          bestInputPermutation.assign(patternInputToCutInput.begin(),
-                                      patternInputToCutInput.end());
+          bestBinding = std::move(binding);
           bestArea = matchResult.getArea();
           bestPattern = pattern;
           bestMatchResult = std::move(matchResult);
@@ -1593,32 +1616,22 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     auto matchResult = pattern->match(cutEnumerator, cut);
     if (!matchResult)
       continue;
-    auto &cutNPN = cut.getNPNClass(options.npnTable);
-
-    // Get the input mapping from pattern's NPN class to cut's NPN class
-    SmallVector<unsigned> inputMapping;
-    cutNPN.getInputPermutation(patternNPN, inputMapping);
-    computeArrivalTimeAndPickBest(pattern, std::move(*matchResult),
-                                  inputMapping,
-                                  [&](unsigned i) { return inputMapping[i]; });
+    computeArrivalTimeAndPickBest(
+        pattern, std::move(*matchResult),
+        getBindingForPattern(cut, &patternNPN, options.npnTable));
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
-    if (auto matchResult = pattern->match(cutEnumerator, cut)) {
-      SmallVector<unsigned, 6> identityMapping(cut.getInputSize());
-      for (auto [idx, mapped] : llvm::enumerate(identityMapping))
-        mapped = idx;
+    if (auto matchResult = pattern->match(cutEnumerator, cut))
       computeArrivalTimeAndPickBest(pattern, std::move(*matchResult),
-                                    identityMapping,
-                                    [&](unsigned i) { return i; });
-    }
+                                    getIdentityBinding(cut.getInputSize()));
   }
 
   if (!bestPattern)
     return {}; // No matching pattern found
 
   return MatchedPattern(bestPattern, std::move(bestArrivalTimes),
-                        std::move(*bestMatchResult), bestInputPermutation);
+                        std::move(*bestMatchResult), std::move(bestBinding));
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {

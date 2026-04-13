@@ -339,6 +339,18 @@ struct MatchImplementation {
   virtual ArrayRef<DelayType> getDelays() const = 0;
 };
 
+/// Functional binding between a matched pattern and a concrete cut.
+///
+/// This records the wiring and phase relationship between canonical pattern
+/// inputs/outputs and the concrete cut. Most patterns only need the input
+/// permutation today, but phase information belongs to the same concept and is
+/// kept here rather than folded into pattern-specific implementation state.
+struct MatchBinding {
+  SmallVector<unsigned, 6> inputPermutation;
+  uint8_t inputNegationMask = 0;
+  bool outputNegated = false;
+};
+
 /// Result of matching a cut against a pattern.
 ///
 /// Most patterns have static area/delay data, so the common case stores those
@@ -398,7 +410,7 @@ private:
   SmallVector<DelayType, 1>
       arrivalTimes;  ///< Arrival times of outputs from this pattern
   MatchResult matchResult; ///< Stored area and per-input delays
-  SmallVector<unsigned, 6> patternInputToCutInput;
+  MatchBinding binding;
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -411,11 +423,10 @@ public:
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
                  SmallVector<DelayType, 1> arrivalTimes, MatchResult matchResult,
-                 ArrayRef<unsigned> patternInputToCutInput)
+                 MatchBinding binding = {})
       : pattern(pattern), arrivalTimes(std::move(arrivalTimes)),
         matchResult(std::move(matchResult)),
-        patternInputToCutInput(patternInputToCutInput.begin(),
-                               patternInputToCutInput.end()) {}
+        binding(std::move(binding)) {}
 
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
@@ -434,9 +445,12 @@ public:
   /// Get the stored pattern-specific implementation object.
   const MatchImplementation *getImplementation() const;
 
+  /// Get the functional binding for this match.
+  const MatchBinding &getBinding() const { return binding; }
+
   /// Get the mapping from pattern input indices to cut input indices.
   ArrayRef<unsigned> getInputPermutation() const {
-    return patternInputToCutInput;
+    return binding.inputPermutation;
   }
 
   /// Get the delay for a cut input after accounting for input permutation.
