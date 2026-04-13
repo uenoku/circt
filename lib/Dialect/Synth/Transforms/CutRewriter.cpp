@@ -700,12 +700,17 @@ const CutRewritePattern *MatchedPattern::getPattern() const {
 
 double MatchedPattern::getArea() const {
   assert(pattern && "Pattern must be set to get area");
-  return matchResult.area;
+  return matchResult.getArea();
 }
 
 ArrayRef<DelayType> MatchedPattern::getDelays() const {
   assert(pattern && "Pattern must be set to get delays");
   return matchResult.getDelays();
+}
+
+const MatchImplementation *MatchedPattern::getImplementation() const {
+  assert(pattern && "Pattern must be set to get implementation");
+  return matchResult.getImplementation();
 }
 
 DelayType MatchedPattern::getDelayForCutInput(unsigned cutInputIndex) const {
@@ -1487,8 +1492,10 @@ LogicalResult CutRewriter::run(Operation *topOp) {
   }
 
   // Run area flow-based re-selection of cuts to prepare for mapping.
-  cutEnumerator.computeRequiredTimes();
-  cutEnumerator.reselectCutsForAreaFlow();
+  if (getenv("ENABLE")) {
+    cutEnumerator.computeRequiredTimes();
+    cutEnumerator.reselectCutsForAreaFlow();
+  }
 
   // Select best cuts and perform mapping
   if (failed(runBottomUpRewrite(topOp)))
@@ -1548,7 +1555,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
 
         // Update the arrival time
         if (!bestPattern ||
-            compareDelayAndArea(options.strategy, matchResult.area,
+            compareDelayAndArea(options.strategy, matchResult.getArea(),
                                 outputArrivalTimes, bestArea,
                                 bestArrivalTimes)) {
           LLVM_DEBUG({
@@ -1557,7 +1564,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
             cut.dump(llvm::dbgs(), network);
             llvm::dbgs() << "Found better pattern: "
                          << pattern->getPatternName();
-            llvm::dbgs() << " with area: " << matchResult.area;
+            llvm::dbgs() << " with area: " << matchResult.getArea();
             llvm::dbgs() << " and input arrival times: ";
             for (unsigned i = 0; i < inputArrivalTimes.size(); ++i) {
               llvm::dbgs() << " " << inputArrivalTimes[i];
@@ -1574,7 +1581,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
           bestArrivalTimes = outputArrivalTimes;
           bestInputPermutation.assign(patternInputToCutInput.begin(),
                                       patternInputToCutInput.end());
-          bestArea = matchResult.area;
+          bestArea = matchResult.getArea();
           bestPattern = pattern;
           bestMatchResult = std::move(matchResult);
         }
@@ -1658,8 +1665,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     auto *rootOp = network.getGate(bestCut->getRootIndex()).getOperation();
     rewriter.setInsertionPoint(rootOp);
     const auto &matchedPattern = bestCut->getMatchedPattern();
-    auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
-                                                        *bestCut);
+    auto result = matchedPattern->getPattern()->rewrite(
+        rewriter, cutEnumerator, *bestCut, *matchedPattern);
     if (failed(result))
       return failure();
 
