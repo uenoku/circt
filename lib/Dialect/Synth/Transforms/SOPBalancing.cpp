@@ -86,7 +86,7 @@ struct SOPAndNode {
   SOPSignal rhs;
 };
 
-struct SOPImplementation : MatchImplementation {
+struct SOPImplementation : RewritePlan {
   ArrayRef<DelayType> getDelays() const override { return delays; }
 
   SmallVector<DelayType, 6> delays;
@@ -229,7 +229,7 @@ struct SOPBalancingPattern : public CutRewritePattern {
     auto implementation = buildSOPImplementation(sop, arrivalTimes);
     MatchResult result;
     result.setStaticArea(static_cast<double>(totalGates));
-    result.setImplementation(std::move(implementation));
+    result.setRewritePlan(std::move(implementation));
     return result;
   }
 
@@ -238,7 +238,7 @@ struct SOPBalancingPattern : public CutRewritePattern {
                                  const MatchedPattern &matched) const override {
     const auto &network = enumerator.getLogicNetwork();
     auto *implementation =
-        static_cast<const SOPImplementation *>(matched.getImplementation());
+        static_cast<const SOPImplementation *>(matched.getRewritePlan());
     if (!implementation)
       return failure();
 

@@ -66,7 +66,7 @@ class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 class LogicNetwork;
-struct MatchImplementation;
+struct RewritePlan;
 
 //===----------------------------------------------------------------------===//
 // Logic Network Data Structures (Flat IR for efficient cut enumeration)
@@ -334,8 +334,8 @@ private:
   llvm::SmallVector<LogicNetworkGate> gates;
 };
 
-struct MatchImplementation {
-  virtual ~MatchImplementation() = default;
+struct RewritePlan {
+  virtual ~RewritePlan() = default;
   virtual ArrayRef<DelayType> getDelays() const = 0;
 };
 
@@ -376,27 +376,25 @@ struct MatchResult {
   /// The caller must ensure the referenced data remains valid.
   void setStaticDelays(ArrayRef<DelayType> delays) { staticDelays = delays; }
 
-  /// Attach a pattern-specific implementation object to this match.
-  void setImplementation(std::unique_ptr<const MatchImplementation> impl) {
-    implementation = std::move(impl);
+  /// Attach a pattern-specific rewrite plan to this match.
+  void setRewritePlan(std::unique_ptr<const RewritePlan> plan) {
+    rewritePlan = std::move(plan);
   }
 
   double getArea() const { return staticArea; }
 
   /// Get all delays as an ArrayRef.
   ArrayRef<DelayType> getDelays() const {
-    return implementation ? implementation->getDelays() : staticDelays;
+    return rewritePlan ? rewritePlan->getDelays() : staticDelays;
   }
 
-  /// Get the pattern-specific implementation object for this match.
-  const MatchImplementation *getImplementation() const {
-    return implementation.get();
-  }
+  /// Get the stored rewrite plan for this match.
+  const RewritePlan *getRewritePlan() const { return rewritePlan.get(); }
 
 private:
   double staticArea = 0.0;
   ArrayRef<DelayType> staticDelays;
-  std::unique_ptr<const MatchImplementation> implementation;
+  std::unique_ptr<const RewritePlan> rewritePlan;
 };
 
 /// Represents a cut that has been successfully matched to a rewriting pattern.
@@ -442,8 +440,8 @@ public:
   /// Get the per-input delays used when scoring this match.
   ArrayRef<DelayType> getDelays() const;
 
-  /// Get the stored pattern-specific implementation object.
-  const MatchImplementation *getImplementation() const;
+  /// Get the stored rewrite plan for this match.
+  const RewritePlan *getRewritePlan() const;
 
   /// Get the functional binding for this match.
   const MatchBinding &getBinding() const { return binding; }

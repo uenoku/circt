@@ -732,9 +732,9 @@ ArrayRef<DelayType> MatchedPattern::getDelays() const {
   return matchResult.getDelays();
 }
 
-const MatchImplementation *MatchedPattern::getImplementation() const {
-  assert(pattern && "Pattern must be set to get implementation");
-  return matchResult.getImplementation();
+const RewritePlan *MatchedPattern::getRewritePlan() const {
+  assert(pattern && "Pattern must be set to get rewrite plan");
+  return matchResult.getRewritePlan();
 }
 
 DelayType MatchedPattern::getDelayForCutInput(unsigned cutInputIndex) const {
