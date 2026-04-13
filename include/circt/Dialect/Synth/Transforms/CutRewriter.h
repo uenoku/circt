@@ -66,6 +66,7 @@ class CutEnumerator;
 struct CutRewritePattern;
 struct CutRewriterOptions;
 class LogicNetwork;
+struct MatchImplementation;
 
 //===----------------------------------------------------------------------===//
 // Logic Network Data Structures (Flat IR for efficient cut enumeration)
@@ -333,55 +334,57 @@ private:
   llvm::SmallVector<LogicNetworkGate> gates;
 };
 
+struct MatchImplementation {
+  virtual ~MatchImplementation() = default;
+  virtual ArrayRef<DelayType> getDelays() const = 0;
+};
+
 /// Result of matching a cut against a pattern.
 ///
-/// This structure contains the area and per-input delay information
-/// computed during pattern matching.
-///
-/// The delays can be stored in two ways:
-/// 1. As a reference to static/cached data (e.g., tech library delays)
-///    - Use setDelayRef() for zero-cost reference (no allocation)
-/// 2. As owned dynamic data (e.g., computed SOP delays)
-///    - Use setOwnedDelays() to transfer ownership
-///
+/// Most patterns have static area/delay data, so the common case stores those
+/// by value/reference without allocation. Arrival-sensitive patterns can attach
+/// a concrete implementation object that owns the realization and delay vector
+/// that was actually selected during matching.
 struct MatchResult {
-  /// Area cost of implementing this cut with the pattern.
-  double area = 0.0;
-
   /// Default constructor.
   MatchResult() = default;
+  MatchResult(const MatchResult &) = delete;
+  MatchResult &operator=(const MatchResult &) = delete;
+  MatchResult(MatchResult &&) = default;
+  MatchResult &operator=(MatchResult &&) = default;
 
   /// Constructor with area and delays (by reference).
   MatchResult(double area, ArrayRef<DelayType> delays)
-      : area(area), borrowedDelays(delays) {}
+      : staticArea(area), staticDelays(delays) {}
+
+  /// Set area for static/cached matches.
+  void setStaticArea(double area) { staticArea = area; }
 
   /// Set delays by reference (zero-cost for static/cached delays).
   /// The caller must ensure the referenced data remains valid.
-  void setDelayRef(ArrayRef<DelayType> delays) { borrowedDelays = delays; }
+  void setStaticDelays(ArrayRef<DelayType> delays) { staticDelays = delays; }
 
-  /// Set delays by transferring ownership (for dynamically computed delays).
-  /// This moves the data into internal storage.
-  void setOwnedDelays(SmallVector<DelayType, 6> delays) {
-    ownedDelays.emplace(std::move(delays));
-    borrowedDelays = {};
+  /// Attach a pattern-specific implementation object to this match.
+  void setImplementation(std::unique_ptr<const MatchImplementation> impl) {
+    implementation = std::move(impl);
   }
+
+  double getArea() const { return staticArea; }
 
   /// Get all delays as an ArrayRef.
   ArrayRef<DelayType> getDelays() const {
-    return ownedDelays.has_value() ? ArrayRef<DelayType>(*ownedDelays)
-                                   : borrowedDelays;
+    return implementation ? implementation->getDelays() : staticDelays;
+  }
+
+  /// Get the pattern-specific implementation object for this match.
+  const MatchImplementation *getImplementation() const {
+    return implementation.get();
   }
 
 private:
-  /// Borrowed delays (used when ownedDelays is empty).
-  /// Points to external data provided via setDelayRef().
-  ArrayRef<DelayType> borrowedDelays;
-
-  /// Owned delays (used when present).
-  /// Only allocated when setOwnedDelays() is called. When empty (std::nullopt),
-  /// moving this MatchResult avoids constructing/moving the SmallVector,
-  /// achieving zero-cost abstraction for the common case (borrowed delays).
-  std::optional<SmallVector<DelayType, 6>> ownedDelays;
+  double staticArea = 0.0;
+  ArrayRef<DelayType> staticDelays;
+  std::unique_ptr<const MatchImplementation> implementation;
 };
 
 /// Represents a cut that has been successfully matched to a rewriting pattern.
@@ -400,6 +403,10 @@ private:
 public:
   /// Default constructor creates an invalid matched pattern.
   MatchedPattern() = default;
+  MatchedPattern(const MatchedPattern &) = delete;
+  MatchedPattern &operator=(const MatchedPattern &) = delete;
+  MatchedPattern(MatchedPattern &&) = default;
+  MatchedPattern &operator=(MatchedPattern &&) = default;
 
   /// Constructor for a valid matched pattern.
   MatchedPattern(const CutRewritePattern *pattern,
@@ -423,6 +430,9 @@ public:
 
   /// Get the per-input delays used when scoring this match.
   ArrayRef<DelayType> getDelays() const;
+
+  /// Get the stored pattern-specific implementation object.
+  const MatchImplementation *getImplementation() const;
 
   /// Get the mapping from pattern input indices to cut input indices.
   ArrayRef<unsigned> getInputPermutation() const {
@@ -834,7 +844,8 @@ struct CutRewritePattern {
   /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          CutEnumerator &enumerator,
-                                         const Cut &cut) const = 0;
+                                         const Cut &cut,
+                                         const MatchedPattern &matched) const = 0;
 
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;
