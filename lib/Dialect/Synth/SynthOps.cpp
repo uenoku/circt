@@ -31,6 +31,53 @@ using namespace circt::synth::aig;
 #define GET_OP_CLASSES
 #include "circt/Dialect/Synth/Synth.cpp.inc"
 
+namespace {
+
+static LogicalResult verifyInvertibleLogicOp(Operation *op, ValueRange inputs,
+                                             ArrayRef<bool> inverted,
+                                             unsigned minOperands,
+                                             std::optional<unsigned> exact) {
+  if (exact) {
+    if (inputs.size() != *exact)
+      return op->emitOpError("expected exactly ")
+             << *exact << " operands, but found " << inputs.size();
+  } else if (inputs.size() < minOperands) {
+    return op->emitOpError("expected ")
+           << minOperands << " or more operands, but found " << inputs.size();
+  }
+
+  auto resultType = op->getResult(0).getType();
+  if (!isa<IntegerType>(resultType))
+    return op->emitOpError("requires integer result type, but found ")
+           << resultType;
+
+  if (inverted.size() != static_cast<size_t>(inputs.size()))
+    return op->emitOpError("requires one inversion flag per operand, but found ")
+           << inverted.size() << " flags for " << inputs.size()
+           << " operands";
+
+  return success();
+}
+
+static APInt applyInversion(APInt value, bool inverted) {
+  if (inverted)
+    value.flipAllBits();
+  return value;
+}
+
+static llvm::KnownBits applyInversion(llvm::KnownBits value, bool inverted) {
+  if (inverted)
+    std::swap(value.Zero, value.One);
+  return value;
+}
+
+static int applyInversion(int lit, bool inverted) {
+  assert(lit != 0 && "expected non-zero SAT literal");
+  return inverted ? -lit : lit;
+}
+
+} // namespace
+
 LogicalResult ChoiceOp::verify() {
   if (getNumOperands() < 1)
     return emitOpError("requires at least one operand");
@@ -132,8 +179,20 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
 
         return getOperand(0);
       }
-    }
+  }
   return {};
+}
+
+LogicalResult XorInverterOp::verify() {
+  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
+                                 /*minOperands=*/1,
+                                 /*exact=*/std::nullopt);
+}
+
+LogicalResult DotOp::verify() {
+  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
+                                 /*minOperands=*/3,
+                                 /*exact=*/3);
 }
 
 LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
@@ -212,18 +271,120 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   return success();
 }
 
+bool XorInverterOp::areInputsPermutationInvariant() { return true; }
+
+OpFoldResult XorInverterOp::fold(FoldAdaptor adaptor) {
+  if (getNumOperands() == 1 && !isInverted(0))
+    return getOperand(0);
+
+  APInt constValue = APInt::getZero(getType().getIntOrFloatBitWidth());
+  for (auto [input, inverted] : llvm::zip(adaptor.getInputs(), getInverted())) {
+    auto intAttr = dyn_cast_or_null<IntegerAttr>(input);
+    if (!intAttr)
+      return {};
+    constValue ^= applyInversion(intAttr.getValue(), inverted);
+  }
+  return IntegerAttr::get(getType(), constValue);
+}
+
+OpFoldResult DotOp::fold(FoldAdaptor adaptor) {
+  for (auto input : adaptor.getInputs()) {
+    auto intAttr = dyn_cast_or_null<IntegerAttr>(input);
+    if (!intAttr)
+      return {};
+  }
+  APInt constValue = evaluateBooleanLogic([&](unsigned i) -> const APInt & {
+    return cast<IntegerAttr>(adaptor.getInputs()[i]).getValue();
+  });
+  return IntegerAttr::get(getType(), constValue);
+}
+
+LogicalResult XorInverterOp::canonicalize(XorInverterOp op,
+                                          PatternRewriter &rewriter) {
+  SmallDenseMap<Value, bool> oddOccurrences;
+  SmallVector<Value> operandOrder;
+  SmallVector<Value> newValues;
+  SmallVector<bool> newInverts;
+  APInt constValue = APInt::getZero(op.getType().getIntOrFloatBitWidth());
+
+  for (auto [value, inverted] : llvm::zip(op.getInputs(), op.getInverted())) {
+    if (auto constOp = value.getDefiningOp<hw::ConstantOp>()) {
+      constValue ^= applyInversion(constOp.getValue(), inverted);
+      continue;
+    }
+
+    if (inverted)
+      constValue.flipAllBits();
+    auto [it, inserted] = oddOccurrences.try_emplace(value, false);
+    if (inserted)
+      operandOrder.push_back(value);
+    it->second = !it->second;
+  }
+
+  for (Value value : operandOrder) {
+    if (!oddOccurrences.lookup(value))
+      continue;
+    newValues.push_back(value);
+    newInverts.push_back(false);
+  }
+
+  if (constValue.isAllOnes() && !newValues.empty()) {
+    newInverts.front() = !newInverts.front();
+    constValue = APInt::getZero(constValue.getBitWidth());
+  }
+
+  if (!constValue.isZero()) {
+    auto constOp = hw::ConstantOp::create(rewriter, op.getLoc(), constValue);
+    newValues.push_back(constOp);
+    newInverts.push_back(false);
+  }
+
+  if (newValues.empty()) {
+    rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, constValue);
+    return success();
+  }
+
+  if (newValues.size() == 1 && !newInverts.front()) {
+    rewriter.replaceOp(op, newValues.front());
+    return success();
+  }
+
+  if (llvm::equal(op.getOperands(), newValues) &&
+      llvm::equal(op.getInverted(), newInverts))
+    return failure();
+
+  replaceOpWithNewOpAndCopyNamehint<synth::XorInverterOp>(rewriter, op,
+                                                          newValues,
+                                                          newInverts);
+  return success();
+}
+
 APInt AndInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
   assert(getNumOperands() > 0 && "Expected non-empty input list");
   APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
   for (auto [idx, inverted] : llvm::enumerate(getInverted())) {
     const APInt &input = getInputValue(idx);
-    if (inverted)
-      result &= ~input;
-    else
-      result &= input;
+    result &= applyInversion(input, inverted);
   }
   return result;
+}
+
+APInt XorInverterOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+  APInt result = APInt::getZero(getInputValue(0).getBitWidth());
+  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputValue(idx), inverted);
+  return result;
+}
+
+APInt DotOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  APInt x = applyInversion(getInputValue(0), isInverted(0));
+  APInt y = applyInversion(getInputValue(1), isInverted(1));
+  APInt z = applyInversion(getInputValue(2), isInverted(2));
+  return x ^ (z | (x & y));
 }
 
 llvm::KnownBits AndInverterOp::computeKnownBits(
@@ -236,24 +397,59 @@ llvm::KnownBits AndInverterOp::computeKnownBits(
   result.Zero = APInt::getZero(width);
 
   for (auto [i, inverted] : llvm::enumerate(getInverted())) {
-    auto operandKnownBits = getInputKnownBits(i);
-    if (inverted)
-      std::swap(operandKnownBits.Zero, operandKnownBits.One);
-    result &= operandKnownBits;
+    result &= applyInversion(getInputKnownBits(i), inverted);
   }
 
   return result;
+}
+
+llvm::KnownBits XorInverterOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+
+  llvm::KnownBits result(getInputKnownBits(0).getBitWidth());
+  for (auto [i, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputKnownBits(i), inverted);
+  return result;
+}
+
+llvm::KnownBits DotOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
+  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
+  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
+  return x ^ (z | (x & y));
 }
 
 int64_t AndInverterOp::getLogicDepthCost() {
   return llvm::Log2_64_Ceil(getNumOperands());
 }
 
+int64_t XorInverterOp::getLogicDepthCost() {
+  return llvm::Log2_64_Ceil(getNumOperands());
+}
+
+int64_t DotOp::getLogicDepthCost() { return 1; }
+
 std::optional<uint64_t> AndInverterOp::getLogicAreaCost() {
   int64_t bitWidth = hw::getBitWidth(getType());
   if (bitWidth < 0)
     return std::nullopt;
   return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
+}
+
+std::optional<uint64_t> XorInverterOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
+}
+
+std::optional<uint64_t> DotOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(bitWidth);
 }
 
 void AndInverterOp::emitCNF(
@@ -268,9 +464,39 @@ void AndInverterOp::emitCNF(
   inputLits.reserve(inputVars.size());
   for (auto [inputVar, inverted] : llvm::zip(inputVars, getInverted())) {
     assert(inputVar > 0 && "input SAT variables must be positive");
-    inputLits.push_back(inverted ? -inputVar : inputVar);
+    inputLits.push_back(applyInversion(inputVar, inverted));
   }
   circt::addAndClauses(outVar, inputLits, addClause);
+}
+
+void XorInverterOp::emitCNF(
+    int outVar, llvm::ArrayRef<int> inputVars,
+    llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
+    llvm::function_ref<int()> newVar) {
+  assert(inputVars.size() == getInputs().size() &&
+         "expected one SAT variable per operand");
+
+  SmallVector<int> inputLits;
+  inputLits.reserve(inputVars.size());
+  for (auto [inputVar, inverted] : llvm::zip(inputVars, getInverted())) {
+    assert(inputVar > 0 && "input SAT variables must be positive");
+    inputLits.push_back(applyInversion(inputVar, inverted));
+  }
+  circt::addParityClauses(outVar, inputLits, addClause, newVar);
+}
+
+void DotOp::emitCNF(int outVar, llvm::ArrayRef<int> inputVars,
+                    llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
+                    llvm::function_ref<int()> newVar) {
+  assert(inputVars.size() == 3 && "expected one SAT variable per operand");
+  int xLit = applyInversion(inputVars[0], isInverted(0));
+  int yLit = applyInversion(inputVars[1], isInverted(1));
+  int zLit = applyInversion(inputVars[2], isInverted(2));
+  int andVar = newVar();
+  int orVar = newVar();
+  circt::addAndClauses(andVar, {xLit, yLit}, addClause);
+  circt::addOrClauses(orVar, {zLit, andVar}, addClause);
+  circt::addXorClauses(outVar, xLit, orVar, addClause);
 }
 
 static Value lowerVariadicAndInverterOp(AndInverterOp op, OperandRange operands,

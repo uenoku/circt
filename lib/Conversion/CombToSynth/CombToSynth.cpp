@@ -337,6 +337,70 @@ struct CombXorOpConversion : OpConversionPattern<XorOp> {
   }
 };
 
+struct CombXorOpToSynthConversion : OpConversionPattern<XorOp> {
+  using OpConversionPattern<XorOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(XorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<bool> inverted(adaptor.getInputs().size(), false);
+    replaceOpWithNewOpAndCopyNamehint<synth::XorInverterOp>(
+        rewriter, op, adaptor.getInputs(), inverted);
+    return success();
+  }
+};
+
+struct SynthXorInverterOpConversion
+    : OpConversionPattern<synth::XorInverterOp> {
+  using OpConversionPattern<synth::XorInverterOp>::OpConversionPattern;
+
+  static Value lowerToAIG(Location loc, ValueRange inputs, ArrayRef<bool> inverted,
+                          ConversionPatternRewriter &rewriter) {
+    switch (inputs.size()) {
+    case 0:
+      llvm_unreachable("cannot lower empty synth.xor_inv");
+    case 1:
+      return synth::aig::AndInverterOp::create(rewriter, loc, inputs[0],
+                                               inverted[0]);
+    case 2: {
+      SmallVector<bool> allInverts = {true, true};
+      SmallVector<bool> allNotInverts = {false, false};
+      auto lhsInputs = llvm::to_vector(inputs);
+      if (inverted[0])
+        lhsInputs[0] = synth::aig::AndInverterOp::create(rewriter, loc,
+                                                         lhsInputs[0], true);
+      if (inverted[1])
+        lhsInputs[1] = synth::aig::AndInverterOp::create(rewriter, loc,
+                                                         lhsInputs[1], true);
+      auto notAAndNotB = synth::aig::AndInverterOp::create(
+          rewriter, loc, lhsInputs, allInverts);
+      auto aAndB = synth::aig::AndInverterOp::create(rewriter, loc, lhsInputs,
+                                                     allNotInverts);
+      return synth::aig::AndInverterOp::create(rewriter, loc, notAAndNotB,
+                                               aAndB,
+                                               /*invertLhs=*/true,
+                                               /*invertRhs=*/true);
+    }
+    default: {
+      auto firstHalf = inputs.size() / 2;
+      auto lhs = lowerToAIG(loc, inputs.take_front(firstHalf),
+                            inverted.take_front(firstHalf), rewriter);
+      auto rhs = lowerToAIG(loc, inputs.drop_front(firstHalf),
+                            inverted.drop_front(firstHalf), rewriter);
+      return lowerToAIG(loc, ValueRange{lhs, rhs}, {false, false}, rewriter);
+    }
+    }
+  }
+
+  LogicalResult
+  matchAndRewrite(synth::XorInverterOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, lowerToAIG(op.getLoc(), adaptor.getInputs(),
+                                      op.getInverted(), rewriter));
+    return success();
+  }
+};
+
 template <typename OpTy>
 struct CombLowerVariadicOp : OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
@@ -1343,18 +1407,23 @@ struct ConvertCombToSynthPass
 
 static void
 populateCombToAIGConversionPatterns(RewritePatternSet &patterns,
-                                    uint32_t maxEmulationUnknownBits) {
+                                    uint32_t maxEmulationUnknownBits,
+                                    bool lowerSynthXorInv) {
   patterns.add<
       // Bitwise Logical Ops
-      CombAndOpConversion, CombXorOpConversion, CombMuxOpConversion,
+      CombAndOpConversion, CombMuxOpConversion,
       CombParityOpConversion,
       // Arithmetic Ops
       CombMulOpConversion, CombICmpOpConversion,
       // Shift Ops
       CombShlOpConversion, CombShrUOpConversion, CombShrSOpConversion,
       // Variadic ops that must be lowered to binary operations
-      CombLowerVariadicOp<XorOp>, CombLowerVariadicOp<AddOp>,
+      CombLowerVariadicOp<AddOp>,
       CombLowerVariadicOp<MulOp>>(patterns.getContext());
+
+  patterns.add<CombXorOpToSynthConversion>(patterns.getContext());
+  if (lowerSynthXorInv)
+    patterns.add<SynthXorInverterOpConversion>(patterns.getContext());
 
   patterns.add(comb::convertSubToAdd);
 
@@ -1385,6 +1454,11 @@ void ConvertCombToSynthPass::runOnOperation() {
                       hw::AggregateConstantOp>();
 
   target.addLegalDialect<synth::SynthDialect>();
+  bool lowerSynthXorInv =
+      !llvm::is_contained(additionalLegalOps,
+                          synth::XorInverterOp::getOperationName());
+  if (lowerSynthXorInv)
+    target.addIllegalOp<synth::XorInverterOp>();
 
   // If additional legal ops are specified, add them to the target.
   if (!additionalLegalOps.empty())
@@ -1392,7 +1466,8 @@ void ConvertCombToSynthPass::runOnOperation() {
       target.addLegalOp(OperationName(opName, &getContext()));
 
   RewritePatternSet patterns(&getContext());
-  populateCombToAIGConversionPatterns(patterns, maxEmulationUnknownBits);
+  populateCombToAIGConversionPatterns(patterns, maxEmulationUnknownBits,
+                                      lowerSynthXorInv);
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
                                           std::move(patterns))))

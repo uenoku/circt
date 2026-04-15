@@ -32,6 +32,16 @@ using namespace comb;
 
 namespace {
 
+static Value materializeInvertedInput(Location loc, Value input, bool inverted,
+                                      ConversionPatternRewriter &rewriter) {
+  if (!inverted)
+    return input;
+  auto width = input.getType().getIntOrFloatBitWidth();
+  auto allOnes =
+      hw::ConstantOp::create(rewriter, loc, APInt::getAllOnes(width));
+  return rewriter.createOrFold<comb::XorOp>(loc, input, allOnes, true);
+}
+
 struct SynthChoiceOpConversion : OpConversionPattern<synth::ChoiceOp> {
   using OpConversionPattern<synth::ChoiceOp>::OpConversionPattern;
   LogicalResult
@@ -66,6 +76,44 @@ struct SynthAndInverterOpConversion
   }
 };
 
+struct SynthXorInverterOpConversion
+    : OpConversionPattern<synth::XorInverterOp> {
+  using OpConversionPattern<synth::XorInverterOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(synth::XorInverterOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands;
+    operands.reserve(op.getNumOperands());
+    for (auto [input, inverted] : llvm::zip(adaptor.getInputs(), op.getInverted()))
+      operands.push_back(
+          materializeInvertedInput(op.getLoc(), input, inverted, rewriter));
+    rewriter.replaceOp(
+        op, rewriter.createOrFold<comb::XorOp>(op.getLoc(), operands, true));
+    return success();
+  }
+};
+
+struct SynthDotOpConversion : OpConversionPattern<synth::DotOp> {
+  using OpConversionPattern<synth::DotOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(synth::DotOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> inputs;
+    inputs.reserve(3);
+    for (auto [input, inverted] : llvm::zip(adaptor.getInputs(), op.getInverted()))
+      inputs.push_back(
+          materializeInvertedInput(op.getLoc(), input, inverted, rewriter));
+
+    auto xy = rewriter.createOrFold<comb::AndOp>(op.getLoc(), inputs[0],
+                                                 inputs[1], true);
+    auto zOrXY = rewriter.createOrFold<comb::OrOp>(op.getLoc(), inputs[2], xy,
+                                                   true);
+    rewriter.replaceOp(op, rewriter.createOrFold<comb::XorOp>(
+                               op.getLoc(), inputs[0], zOrXY, true));
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -82,7 +130,8 @@ struct ConvertSynthToCombPass
 } // namespace
 
 static void populateSynthToCombConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion>(
+  patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion,
+               SynthXorInverterOpConversion, SynthDotOpConversion>(
       patterns.getContext());
 }
 

@@ -274,7 +274,8 @@ void LowerVariadicPass::runOnOperation() {
 
     rewriter.setInsertionPoint(op);
 
-    // Handle AndInverterOp specially to preserve inversion flags.
+    // Handle invertible synth ops specially to preserve per-input inversion
+    // flags while building the balanced tree.
     if (auto andInverterOp = dyn_cast<aig::AndInverterOp>(op)) {
       auto result = replaceWithBalancedTree(
           analysis, rewriter, op,
@@ -287,6 +288,22 @@ void LowerVariadicPass::runOnOperation() {
             return aig::AndInverterOp::create(
                 rewriter, op->getLoc(), lhs.getValue(), rhs.getValue(),
                 lhs.isInverted(), rhs.isInverted());
+          });
+      if (failed(result))
+        return signalPassFailure();
+      continue;
+    }
+
+    if (auto xorInverterOp = dyn_cast<XorInverterOp>(op)) {
+      auto result = replaceWithBalancedTree(
+          analysis, rewriter, op,
+          [&](OpOperand &operand) {
+            return xorInverterOp.isInverted(operand.getOperandNumber());
+          },
+          [&](ValueWithArrivalTime lhs, ValueWithArrivalTime rhs) {
+            return XorInverterOp::create(rewriter, op->getLoc(), lhs.getValue(),
+                                         rhs.getValue(), lhs.isInverted(),
+                                         rhs.isInverted());
           });
       if (failed(result))
         return signalPassFailure();

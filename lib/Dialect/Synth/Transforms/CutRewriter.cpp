@@ -184,6 +184,43 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
               return success();
             })
+            .Case<synth::XorInverterOp>([&](synth::XorInverterOp xorOp) {
+              if (!xorOp.getType().isInteger(1)) {
+                handleOtherResults(xorOp);
+                return success();
+              }
+              if (xorOp->getNumOperands() == 1) {
+                const Signal inputSignal = getOrCreateSignal(
+                    xorOp.getOperand(0), xorOp.isInverted(0));
+                handleSingleInputGate(xorOp, xorOp.getResult(), inputSignal);
+                return success();
+              }
+              if (xorOp->getNumOperands() != 2) {
+                handleOtherResults(xorOp);
+                return success();
+              }
+              const Signal lhsSignal =
+                  getOrCreateSignal(xorOp.getOperand(0), xorOp.isInverted(0));
+              const Signal rhsSignal =
+                  getOrCreateSignal(xorOp.getOperand(1), xorOp.isInverted(1));
+              addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
+              return success();
+            })
+            .Case<synth::DotOp>([&](synth::DotOp dotOp) {
+              if (!dotOp.getType().isInteger(1)) {
+                handleOtherResults(dotOp);
+                return success();
+              }
+              const Signal xSignal =
+                  getOrCreateSignal(dotOp.getOperand(0), dotOp.isInverted(0));
+              const Signal ySignal =
+                  getOrCreateSignal(dotOp.getOperand(1), dotOp.isInverted(1));
+              const Signal zSignal =
+                  getOrCreateSignal(dotOp.getOperand(2), dotOp.isInverted(2));
+              addGate(dotOp, LogicNetworkGate::Dot3,
+                      {xSignal, ySignal, zSignal});
+              return success();
+            })
             .Case<hw::ConstantOp>([&](hw::ConstantOp constOp) {
               Value result = constOp.getResult();
               if (!result.getType().isInteger(1)) {
@@ -254,10 +291,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   const auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops and dataflow ops. Other operations
     // can be scheduled.
-    return !(
-        isa<aig::AndInverterOp, synth::ChoiceOp, comb::XorOp, comb::AndOp,
-            comb::OrOp, comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(
-            op));
+    return !(isa<aig::AndInverterOp, synth::XorInverterOp, synth::DotOp,
+                 synth::ChoiceOp, comb::XorOp, comb::AndOp, comb::OrOp,
+                 comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
   if (failed(topologicallySortGraphRegionBlocks(topOp, isOperationReady)))
@@ -477,6 +513,8 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   switch (kind) {
   case LogicNetworkGate::Maj3:
     return (a & b) | (a & c) | (b & c);
+  case LogicNetworkGate::Dot3:
+    return a ^ (c | (a & b));
   default:
     llvm_unreachable(
         "Unsupported ternary operation for truth table computation");
@@ -575,6 +613,7 @@ struct MergedTruthTableBuilder {
           numMergedInputs, 1,
           applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
     case LogicNetworkGate::Maj3:
+    case LogicNetworkGate::Dot3:
       return BinaryTruthTable(numMergedInputs, 1,
                               applyGateSemantics(rootGate.getKind(),
                                                  getEdgeTT(0), getEdgeTT(1),

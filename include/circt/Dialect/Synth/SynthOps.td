@@ -86,6 +86,90 @@ def AndInverterOp :
   let cppNamespace = "::circt::synth::aig";
 }
 
+def XorInverterOp :
+  SynthOp<"xor_inv",
+          [SameOperandsAndResultType, Pure,
+           DeclareOpInterfaceMethods<BooleanLogicOpInterface,
+                                     ["areInputsPermutationInvariant",
+                                      "getLogicDepthCost",
+                                      "getLogicAreaCost",
+                                      "emitCNF"]>]> {
+  let summary = "XOR gate with invertible variadic inputs";
+  let description = [{
+    The `synth.xor_inv` operation represents a parity node whose operands may be
+    individually inverted before the XOR is evaluated.
+
+    Example:
+    ```mlir
+      %r0 = synth.xor_inv %a, %b : i1
+      %r1 = synth.xor_inv not %a, %b, %c : i8
+      %r2 = synth.xor_inv not %a : i1
+    ```
+  }];
+  let arguments = (ins Variadic<AnyType>:$inputs, DenseBoolArrayAttr:$inverted);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = [{
+    custom<VariadicInvertibleOperands>($inputs, type($result), $inverted, attr-dict)
+  }];
+
+  let builders = [OpBuilder<(ins "Value":$input, CArg<"bool", "false">:$invert),
+                            [{
+      SmallVector<bool> inverted {invert};
+      return build($_builder, $_state, {input}, inverted);
+    }]>,
+                  OpBuilder<(ins "Value":$lhs, "Value":$rhs,
+                                CArg<"bool", "false">:$invertLhs,
+                                CArg<"bool", "false">:$invertRhs),
+                            [{
+      SmallVector<bool> inverted {invertLhs, invertRhs};
+      return build($_builder, $_state, {lhs, rhs}, inverted);
+    }]>];
+
+  let hasVerifier = 1;
+  let hasFolder = 1;
+  let hasCanonicalizeMethod = 1;
+}
+
+def DotOp :
+  SynthOp<"dot",
+          [SameOperandsAndResultType, Pure,
+           DeclareOpInterfaceMethods<BooleanLogicOpInterface,
+                                     ["getLogicDepthCost",
+                                      "getLogicAreaCost",
+                                      "emitCNF"]>]> {
+  let summary = "Ordered 3-input DOT gate with invertible inputs";
+  let description = [{
+    The `synth.dot` operation represents the DIG dot gate described in
+    "Three-Input Gates for Logic Synthesis". Its ordered three-input semantics
+    are `x xor (z or (x and y))`, applied after optional per-input inversion.
+
+    Example:
+    ```mlir
+      %r0 = synth.dot %x, %y, %z : i1
+      %r1 = synth.dot not %x, %y, not %z : i8
+    ```
+  }];
+  let arguments = (ins Variadic<AnyType>:$inputs, DenseBoolArrayAttr:$inverted);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = [{
+    custom<VariadicInvertibleOperands>($inputs, type($result), $inverted, attr-dict)
+  }];
+
+  let builders = [OpBuilder<(ins "Value":$x, "Value":$y, "Value":$z,
+                                CArg<"bool", "false">:$invertX,
+                                CArg<"bool", "false">:$invertY,
+                                CArg<"bool", "false">:$invertZ),
+                            [{
+      SmallVector<bool> inverted {invertX, invertY, invertZ};
+      return build($_builder, $_state, {x, y, z}, inverted);
+    }]>];
+
+  let hasVerifier = 1;
+  let hasFolder = 1;
+}
+
 def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
   let summary = "Synth choice operation";
   let description = [{

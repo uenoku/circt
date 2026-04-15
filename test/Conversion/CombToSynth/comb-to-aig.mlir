@@ -1,4 +1,5 @@
 // RUN: circt-opt %s --convert-comb-to-synth | FileCheck %s
+// RUN: circt-opt %s --convert-comb-to-synth='additional-legal-ops=synth.xor_inv' | FileCheck %s --check-prefix=XOR-INV
 
 // CHECK-LABEL: @test
 hw.module @test(in %arg0: i32, in %arg1: i32, in %arg2: i32, in %arg3: i32, out out0: i32, out out1: i32) {
@@ -13,13 +14,17 @@ hw.module @test(in %arg0: i32, in %arg1: i32, in %arg2: i32, in %arg3: i32, out 
 
 // CHECK-LABEL: @xor
 hw.module @xor(in %arg0: i32, in %arg1: i32, in %arg2: i32, out out0: i32) {
+  // CHECK-NEXT: %[[LHS:.+]] = synth.aig.and_inv %arg0 : i32
   // CHECK-NEXT: %[[RHS_NOT_AND:.+]] = synth.aig.and_inv not %arg1, not %arg2 : i32
   // CHECK-NEXT: %[[RHS_AND:.+]] = synth.aig.and_inv %arg1, %arg2 : i32
   // CHECK-NEXT: %[[RHS_XOR:.+]] = synth.aig.and_inv not %[[RHS_NOT_AND]], not %[[RHS_AND]] : i32
-  // CHECK-NEXT: %[[NOT_AND:.+]] = synth.aig.and_inv not %arg0, not %[[RHS_XOR]] : i32
-  // CHECK-NEXT: %[[AND:.+]] = synth.aig.and_inv %arg0, %[[RHS_XOR]] : i32
+  // CHECK-NEXT: %[[NOT_AND:.+]] = synth.aig.and_inv not %[[LHS]], not %[[RHS_XOR]] : i32
+  // CHECK-NEXT: %[[AND:.+]] = synth.aig.and_inv %[[LHS]], %[[RHS_XOR]] : i32
   // CHECK-NEXT: %[[RESULT:.+]] = synth.aig.and_inv not %[[NOT_AND]], not %[[AND]] : i32
   // CHECK-NEXT: hw.output %[[RESULT]]
+  // XOR-INV-LABEL: @xor
+  // XOR-INV-NEXT: %[[RESULT:.+]] = synth.xor_inv %arg0, %arg1, %arg2 : i32
+  // XOR-INV-NEXT: hw.output %[[RESULT]]
   %0 = comb.xor %arg0, %arg1, %arg2 : i32
   hw.output %0 : i32
 }
