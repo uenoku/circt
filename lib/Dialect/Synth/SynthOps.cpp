@@ -33,45 +33,19 @@ using namespace circt::synth::aig;
 
 namespace {
 
-static LogicalResult verifyInvertibleLogicOp(Operation *op, ValueRange inputs,
-                                             ArrayRef<bool> inverted,
-                                             unsigned minOperands,
-                                             std::optional<unsigned> exact) {
-  if (exact) {
-    if (inputs.size() != *exact)
-      return op->emitOpError("expected exactly ")
-             << *exact << " operands, but found " << inputs.size();
-  } else if (inputs.size() < minOperands) {
-    return op->emitOpError("expected ")
-           << minOperands << " or more operands, but found " << inputs.size();
-  }
-
-  auto resultType = op->getResult(0).getType();
-  if (!isa<IntegerType>(resultType))
-    return op->emitOpError("requires integer result type, but found ")
-           << resultType;
-
-  if (inverted.size() != static_cast<size_t>(inputs.size()))
-    return op->emitOpError("requires one inversion flag per operand, but found ")
-           << inverted.size() << " flags for " << inputs.size()
-           << " operands";
-
-  return success();
-}
-
-static APInt applyInversion(APInt value, bool inverted) {
+inline APInt applyInversion(APInt value, bool inverted) {
   if (inverted)
     value.flipAllBits();
   return value;
 }
 
-static llvm::KnownBits applyInversion(llvm::KnownBits value, bool inverted) {
+inline llvm::KnownBits applyInversion(llvm::KnownBits value, bool inverted) {
   if (inverted)
     std::swap(value.Zero, value.One);
   return value;
 }
 
-static int applyInversion(int lit, bool inverted) {
+inline int applyInversion(int lit, bool inverted) {
   assert(lit != 0 && "expected non-zero SAT literal");
   return inverted ? -lit : lit;
 }
@@ -370,9 +344,10 @@ void XorInverterOp::emitCNF(
 //===----------------------------------------------------------------------===//
 
 LogicalResult DotOp::verify() {
-  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
-                                 /*minOperands=*/3,
-                                 /*exact=*/3);
+  // NOTE: This should be ideally enforced by ODS, but for the composability
+  // with BooleanLogicOpInterface in ODS the inputs is defined as variadic.
+  return getNumOperands() == 3 ? success()
+                               : emitOpError("requires exactly three operands");
 }
 
 APInt DotOp::evaluateBooleanLogic(

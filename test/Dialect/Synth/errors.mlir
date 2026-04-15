@@ -7,7 +7,7 @@ hw.module @test(out result : i1) {
 }
 
 hw.module @dot_arity(in %a : i1, in %b : i1, out result : i1) {
-    // expected-error @+1 {{'synth.dot' op expected exactly 3 operands, but found 2}}
+    // expected-error @+1 {{synth.dot' op requires exactly three operands}}
     %0 = synth.dot %a, %b : i1
     hw.output %0 : i1
 }
