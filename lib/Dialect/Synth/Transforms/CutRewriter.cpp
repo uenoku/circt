@@ -148,6 +148,10 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     }
   };
 
+  auto getInvertibleSignal = [&](auto op, unsigned index) {
+    return getOrCreateSignal(op.getOperand(index), op.isInverted(index));
+  };
+
   // Process operations in topological order
   for (Operation &op : block->getOperations()) {
     LogicalResult result =
@@ -156,14 +160,11 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               const auto inputs = andOp.getInputs();
               if (inputs.size() == 1) {
                 // Single-input AND is a buffer or NOT gate
-                const Signal inputSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
+                const Signal inputSignal = getInvertibleSignal(andOp, 0);
                 handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
               } else if (inputs.size() == 2) {
-                const Signal lhsSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
-                const Signal rhsSignal =
-                    getOrCreateSignal(inputs[1], andOp.isInverted(1));
+                const Signal lhsSignal = getInvertibleSignal(andOp, 0);
+                const Signal rhsSignal = getInvertibleSignal(andOp, 1);
                 addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
               } else {
                 // Variadic AND gates with >2 inputs are treated as primary
@@ -190,8 +191,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                 return success();
               }
               if (xorOp->getNumOperands() == 1) {
-                const Signal inputSignal = getOrCreateSignal(
-                    xorOp.getOperand(0), xorOp.isInverted(0));
+                const Signal inputSignal = getInvertibleSignal(xorOp, 0);
                 handleSingleInputGate(xorOp, xorOp.getResult(), inputSignal);
                 return success();
               }
@@ -199,10 +199,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                 handleOtherResults(xorOp);
                 return success();
               }
-              const Signal lhsSignal =
-                  getOrCreateSignal(xorOp.getOperand(0), xorOp.isInverted(0));
-              const Signal rhsSignal =
-                  getOrCreateSignal(xorOp.getOperand(1), xorOp.isInverted(1));
+              const Signal lhsSignal = getInvertibleSignal(xorOp, 0);
+              const Signal rhsSignal = getInvertibleSignal(xorOp, 1);
               addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
               return success();
             })
@@ -211,12 +209,9 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                 handleOtherResults(dotOp);
                 return success();
               }
-              const Signal xSignal =
-                  getOrCreateSignal(dotOp.getOperand(0), dotOp.isInverted(0));
-              const Signal ySignal =
-                  getOrCreateSignal(dotOp.getOperand(1), dotOp.isInverted(1));
-              const Signal zSignal =
-                  getOrCreateSignal(dotOp.getOperand(2), dotOp.isInverted(2));
+              const Signal xSignal = getInvertibleSignal(dotOp, 0);
+              const Signal ySignal = getInvertibleSignal(dotOp, 1);
+              const Signal zSignal = getInvertibleSignal(dotOp, 2);
               addGate(dotOp, LogicNetworkGate::Dot3,
                       {xSignal, ySignal, zSignal});
               return success();

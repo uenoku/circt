@@ -158,12 +158,6 @@ LogicalResult ChoiceOp::canonicalize(ChoiceOp op, PatternRewriter &rewriter) {
 // AIG Operations
 //===----------------------------------------------------------------------===//
 
-LogicalResult AndInverterOp::verify() {
-  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
-                                 /*minOperands=*/1,
-                                 /*exact=*/std::nullopt);
-}
-
 bool AndInverterOp::areInputsPermutationInvariant() { return true; }
 
 OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
@@ -187,12 +181,6 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
       }
   }
   return {};
-}
-
-LogicalResult XorInverterOp::verify() {
-  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
-                                 /*minOperands=*/1,
-                                 /*exact=*/std::nullopt);
 }
 
 LogicalResult DotOp::verify() {

@@ -1407,8 +1407,7 @@ struct ConvertCombToSynthPass
 
 static void
 populateCombToAIGConversionPatterns(RewritePatternSet &patterns,
-                                    uint32_t maxEmulationUnknownBits,
-                                    bool lowerSynthXorInv) {
+                                    uint32_t maxEmulationUnknownBits) {
   patterns.add<
       // Bitwise Logical Ops
       CombAndOpConversion, CombMuxOpConversion,
@@ -1421,9 +1420,8 @@ populateCombToAIGConversionPatterns(RewritePatternSet &patterns,
       CombLowerVariadicOp<AddOp>,
       CombLowerVariadicOp<MulOp>>(patterns.getContext());
 
-  patterns.add<CombXorOpToSynthConversion>(patterns.getContext());
-  if (lowerSynthXorInv)
-    patterns.add<SynthXorInverterOpConversion>(patterns.getContext());
+  patterns.add<CombXorOpToSynthConversion, SynthXorInverterOpConversion>(
+      patterns.getContext());
 
   patterns.add(comb::convertSubToAdd);
 
@@ -1454,11 +1452,10 @@ void ConvertCombToSynthPass::runOnOperation() {
                       hw::AggregateConstantOp>();
 
   target.addLegalDialect<synth::SynthDialect>();
-  bool lowerSynthXorInv =
-      !llvm::is_contained(additionalLegalOps,
-                          synth::XorInverterOp::getOperationName());
-  if (lowerSynthXorInv)
-    target.addIllegalOp<synth::XorInverterOp>();
+  target.addDynamicallyLegalOp<synth::XorInverterOp>([&](synth::XorInverterOp) {
+    return llvm::is_contained(additionalLegalOps,
+                              synth::XorInverterOp::getOperationName());
+  });
 
   // If additional legal ops are specified, add them to the target.
   if (!additionalLegalOps.empty())
@@ -1466,8 +1463,7 @@ void ConvertCombToSynthPass::runOnOperation() {
       target.addLegalOp(OperationName(opName, &getContext()));
 
   RewritePatternSet patterns(&getContext());
-  populateCombToAIGConversionPatterns(patterns, maxEmulationUnknownBits,
-                                      lowerSynthXorInv);
+  populateCombToAIGConversionPatterns(patterns, maxEmulationUnknownBits);
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
                                           std::move(patterns))))

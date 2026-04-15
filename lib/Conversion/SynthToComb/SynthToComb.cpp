@@ -59,16 +59,12 @@ struct SynthAndInverterOpConversion
   LogicalResult
   matchAndRewrite(synth::aig::AndInverterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Convert to comb.and + comb.xor + hw.constant
-    auto width = op.getResult().getType().getIntOrFloatBitWidth();
-    auto allOnes =
-        hw::ConstantOp::create(rewriter, op.getLoc(), APInt::getAllOnes(width));
     SmallVector<Value> operands;
     operands.reserve(op.getNumOperands());
-    for (auto [input, inverted] : llvm::zip(op.getOperands(), op.getInverted()))
-      operands.push_back(inverted ? rewriter.createOrFold<comb::XorOp>(
-                                        op.getLoc(), input, allOnes, true)
-                                  : input);
+    for (auto [input, inverted] : llvm::zip(adaptor.getInputs(),
+                                            op.getInverted()))
+      operands.push_back(
+          materializeInvertedInput(op.getLoc(), input, inverted, rewriter));
     // NOTE: Use createOrFold to avoid creating a new operation if possible.
     rewriter.replaceOp(
         op, rewriter.createOrFold<comb::AndOp>(op.getLoc(), operands, true));

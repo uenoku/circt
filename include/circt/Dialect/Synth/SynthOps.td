@@ -81,7 +81,6 @@ def AndInverterOp :
       return build($_builder, $_state, {lhs, rhs}, inverted);
     }]>];
 
-  let hasVerifier = 1;
   let hasFolder = 1;
   let hasCanonicalizeMethod = 1;
   let cppNamespace = "::circt::synth::aig";
@@ -127,7 +126,6 @@ def XorInverterOp :
       return build($_builder, $_state, {lhs, rhs}, inverted);
     }]>];
 
-  let hasVerifier = 1;
 }
 
 def DotOp :

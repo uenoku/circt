@@ -2,9 +2,10 @@
 
 // CHECK-LABEL: @test
 hw.module @test(in %a: i32, in %b: i32, in %c: i32, in %d: i32, out out0: i32) {
-  // CHECK: %c-1_i32 = hw.constant -1 : i32
-  // CHECK: %[[NOT_A:.+]] = comb.xor bin %a, %c-1_i32 : i32
-  // CHECK: %[[NOT_C:.+]] = comb.xor bin %c, %c-1_i32 : i32
+  // CHECK: %[[ONES0:.+]] = hw.constant -1 : i32
+  // CHECK: %[[NOT_A:.+]] = comb.xor bin %a, %[[ONES0]] : i32
+  // CHECK: %[[ONES1:.+]] = hw.constant -1 : i32
+  // CHECK: %[[NOT_C:.+]] = comb.xor bin %c, %[[ONES1]] : i32
   // CHECK: %[[RESULT:.+]] = comb.and bin %[[NOT_A]], %b, %[[NOT_C]], %d : i32
   // CHECK: hw.output %[[RESULT]] : i32
   %0 = synth.aig.and_inv not %a, %b, not %c, %d : i32
