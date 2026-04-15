@@ -148,29 +148,37 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     }
   };
 
+  auto getInvertibleSignal = [&](auto op, unsigned index) {
+    return getOrCreateSignal(op.getOperand(index), op.isInverted(index));
+  };
+
+  auto handleInvertibleBinaryGate = [&](auto logicOp,
+                                        LogicNetworkGate::Kind kind) {
+    if (!logicOp.getType().isInteger(1)) {
+      handleOtherResults(logicOp);
+      return success();
+    }
+    if (logicOp->getNumOperands() == 1) {
+      const Signal inputSignal = getInvertibleSignal(logicOp, 0);
+      handleSingleInputGate(logicOp, logicOp.getResult(), inputSignal);
+      return success();
+    }
+    if (logicOp->getNumOperands() != 2) {
+      handleOtherResults(logicOp);
+      return success();
+    }
+    const Signal lhsSignal = getInvertibleSignal(logicOp, 0);
+    const Signal rhsSignal = getInvertibleSignal(logicOp, 1);
+    addGate(logicOp, kind, {lhsSignal, rhsSignal});
+    return success();
+  };
+
   // Process operations in topological order
   for (Operation &op : block->getOperations()) {
     LogicalResult result =
         llvm::TypeSwitch<Operation *, LogicalResult>(&op)
             .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
-              const auto inputs = andOp.getInputs();
-              if (inputs.size() == 1) {
-                // Single-input AND is a buffer or NOT gate
-                const Signal inputSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
-                handleSingleInputGate(andOp, andOp.getResult(), inputSignal);
-              } else if (inputs.size() == 2) {
-                const Signal lhsSignal =
-                    getOrCreateSignal(inputs[0], andOp.isInverted(0));
-                const Signal rhsSignal =
-                    getOrCreateSignal(inputs[1], andOp.isInverted(1));
-                addGate(andOp, LogicNetworkGate::And2, {lhsSignal, rhsSignal});
-              } else {
-                // Variadic AND gates with >2 inputs are treated as primary
-                // inputs.
-                handleOtherResults(andOp);
-              }
-              return success();
+              return handleInvertibleBinaryGate(andOp, LogicNetworkGate::And2);
             })
             .Case<comb::XorOp>([&](comb::XorOp xorOp) {
               if (xorOp->getNumOperands() != 2) {
@@ -182,6 +190,21 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               const Signal rhsSignal =
                   getOrCreateSignal(xorOp.getOperand(1), false);
               addGate(xorOp, LogicNetworkGate::Xor2, {lhsSignal, rhsSignal});
+              return success();
+            })
+            .Case<synth::XorInverterOp>([&](synth::XorInverterOp xorOp) {
+              return handleInvertibleBinaryGate(xorOp, LogicNetworkGate::Xor2);
+            })
+            .Case<synth::DotOp>([&](synth::DotOp dotOp) {
+              if (!dotOp.getType().isInteger(1)) {
+                handleOtherResults(dotOp);
+                return success();
+              }
+              const Signal xSignal = getInvertibleSignal(dotOp, 0);
+              const Signal ySignal = getInvertibleSignal(dotOp, 1);
+              const Signal zSignal = getInvertibleSignal(dotOp, 2);
+              addGate(dotOp, LogicNetworkGate::Dot3,
+                      {xSignal, ySignal, zSignal});
               return success();
             })
             .Case<hw::ConstantOp>([&](hw::ConstantOp constOp) {
@@ -254,10 +277,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   const auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops and dataflow ops. Other operations
     // can be scheduled.
-    return !(
-        isa<aig::AndInverterOp, synth::ChoiceOp, comb::XorOp, comb::AndOp,
-            comb::OrOp, comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(
-            op));
+    return !(isa<aig::AndInverterOp, synth::XorInverterOp, synth::DotOp,
+                 synth::ChoiceOp, comb::XorOp, comb::AndOp, comb::OrOp,
+                 comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
   if (failed(topologicallySortGraphRegionBlocks(topOp, isOperationReady)))
@@ -477,6 +499,8 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   switch (kind) {
   case LogicNetworkGate::Maj3:
     return (a & b) | (a & c) | (b & c);
+  case LogicNetworkGate::Dot3:
+    return a ^ (c | (a & b));
   default:
     llvm_unreachable(
         "Unsupported ternary operation for truth table computation");
@@ -575,6 +599,7 @@ struct MergedTruthTableBuilder {
           numMergedInputs, 1,
           applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
     case LogicNetworkGate::Maj3:
+    case LogicNetworkGate::Dot3:
       return BinaryTruthTable(numMergedInputs, 1,
                               applyGateSemantics(rootGate.getKind(),
                                                  getEdgeTT(0), getEdgeTT(1),

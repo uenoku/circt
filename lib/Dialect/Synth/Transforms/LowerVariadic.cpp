@@ -274,10 +274,10 @@ void LowerVariadicPass::runOnOperation() {
 
     rewriter.setInsertionPoint(op);
 
-    // Handle AndInverterOp specially to preserve inversion flags.
+    // Handle synth ops specially to preserve inversion flags.
     auto result =
         mlir::TypeSwitch<Operation *, LogicalResult>(op)
-            .Case<aig::AndInverterOp>([&](auto op) {
+            .Case<aig::AndInverterOp, XorInverterOp>([&](auto op) {
               return replaceWithBalancedTree(
                   analysis, rewriter, op,
                   // Check if each operand is inverted.

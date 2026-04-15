@@ -32,6 +32,16 @@ using namespace comb;
 
 namespace {
 
+static Value materializeInvertedInput(Location loc, Value input, bool inverted,
+                                      ConversionPatternRewriter &rewriter) {
+  if (!inverted)
+    return input;
+  auto width = input.getType().getIntOrFloatBitWidth();
+  auto allOnes =
+      hw::ConstantOp::create(rewriter, loc, APInt::getAllOnes(width));
+  return rewriter.createOrFold<comb::XorOp>(loc, input, allOnes, true);
+}
+
 struct SynthChoiceOpConversion : OpConversionPattern<synth::ChoiceOp> {
   using OpConversionPattern<synth::ChoiceOp>::OpConversionPattern;
   LogicalResult
@@ -43,26 +53,55 @@ struct SynthChoiceOpConversion : OpConversionPattern<synth::ChoiceOp> {
   }
 };
 
-struct SynthAndInverterOpConversion
-    : OpConversionPattern<synth::aig::AndInverterOp> {
-  using OpConversionPattern<synth::aig::AndInverterOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(synth::aig::AndInverterOp op, OpAdaptor adaptor,
+template <typename SynthOp>
+struct SynthInverterOpConversion : OpConversionPattern<SynthOp> {
+  using OpConversionPattern<SynthOp>::OpConversionPattern;
+  virtual Value createOp(Location loc, ArrayRef<Value> inputs,
+                         ConversionPatternRewriter &rewriter) const = 0;
+
+  virtual LogicalResult
+  matchAndRewrite(SynthOp op, typename SynthOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Convert to comb.and + comb.xor + hw.constant
-    auto width = op.getResult().getType().getIntOrFloatBitWidth();
-    auto allOnes =
-        hw::ConstantOp::create(rewriter, op.getLoc(), APInt::getAllOnes(width));
     SmallVector<Value> operands;
     operands.reserve(op.getNumOperands());
-    for (auto [input, inverted] : llvm::zip(op.getOperands(), op.getInverted()))
-      operands.push_back(inverted ? rewriter.createOrFold<comb::XorOp>(
-                                        op.getLoc(), input, allOnes, true)
-                                  : input);
-    // NOTE: Use createOrFold to avoid creating a new operation if possible.
-    rewriter.replaceOp(
-        op, rewriter.createOrFold<comb::AndOp>(op.getLoc(), operands, true));
+    for (auto [input, inverted] :
+         llvm::zip(adaptor.getInputs(), op.getInverted()))
+      operands.push_back(
+          materializeInvertedInput(op.getLoc(), input, inverted, rewriter));
+    rewriter.replaceOp(op, createOp(op.getLoc(), operands, rewriter));
     return success();
+  }
+};
+
+struct SynthAndInverterOpConversion
+    : SynthInverterOpConversion<synth::aig::AndInverterOp> {
+  using SynthInverterOpConversion<
+      synth::aig::AndInverterOp>::SynthInverterOpConversion;
+  Value createOp(Location loc, ArrayRef<Value> inputs,
+                 ConversionPatternRewriter &rewriter) const override {
+    return rewriter.createOrFold<comb::AndOp>(loc, inputs, true);
+  }
+};
+
+struct SynthXorInverterOpConversion
+    : SynthInverterOpConversion<synth::XorInverterOp> {
+  using SynthInverterOpConversion<
+      synth::XorInverterOp>::SynthInverterOpConversion;
+  Value createOp(Location loc, ArrayRef<Value> inputs,
+                 ConversionPatternRewriter &rewriter) const override {
+    return rewriter.createOrFold<comb::XorOp>(loc, inputs, true);
+  }
+};
+
+struct SynthDotOpConversion : SynthInverterOpConversion<synth::DotOp> {
+  using SynthInverterOpConversion<synth::DotOp>::SynthInverterOpConversion;
+  Value createOp(Location loc, ArrayRef<Value> inputs,
+                 ConversionPatternRewriter &rewriter) const override {
+    assert(inputs.size() == 3 && "expected exactly three inputs");
+    auto xy =
+        rewriter.createOrFold<comb::AndOp>(loc, inputs[0], inputs[1], true);
+    auto zOrXy = rewriter.createOrFold<comb::OrOp>(loc, inputs[2], xy, true);
+    return rewriter.createOrFold<comb::XorOp>(loc, inputs[0], zOrXy, true);
   }
 };
 
@@ -82,7 +121,8 @@ struct ConvertSynthToCombPass
 } // namespace
 
 static void populateSynthToCombConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion>(
+  patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion,
+               SynthXorInverterOpConversion, SynthDotOpConversion>(
       patterns.getContext());
 }
 

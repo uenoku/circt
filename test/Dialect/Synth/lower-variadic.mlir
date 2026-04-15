@@ -83,10 +83,19 @@ hw.module @SharingHeuristic(in %in0 : i1, in %in1 : i1, in %in2 : i1, in %in3 : 
   %out2 = synth.aig.and_inv %in1, %in2, %in3, %in4 : i1
 
   // out1 should now just use the SUBSET_RES directly
-  // CHECK: %[[OUT1_ROOT:.+]] = synth.aig.and_inv %in0, %[[SUBSET_RES]]
+  // CHECK: %[[OUT1_ROOT:.+]] = synth.aig.and_inv %in0, %[[SUBSET_RES]] : i1
   %out1 = synth.aig.and_inv %in0, %in1, %in2, %in3, %in4 : i1
 
-  // CHECK: hw.output %[[OUT1_ROOT]], %[[SUBSET_RES]]
+  // CHECK: hw.output %[[OUT1_ROOT]], %[[SUBSET_RES]] : i1, i1
   hw.output %out1, %out2 : i1, i1
 }
 
+// COMMON-LABEL: hw.module @XorInv
+hw.module @XorInv(in %a: i1, in %b: i1, in %c: i1, in %d: i1, in %e: i1, out o: i1) {
+  // COMMON-NEXT: %[[X0:.+]] = synth.xor_inv not %a, %b : i1
+  // COMMON-NEXT: %[[X1:.+]] = synth.xor_inv %c, not %d : i1
+  // COMMON-NEXT: %[[X2:.+]] = synth.xor_inv %e, %[[X0]] : i1
+  // COMMON-NEXT: %[[X3:.+]] = synth.xor_inv %[[X1]], %[[X2]] : i1
+  %0 = synth.xor_inv not %a, %b, %c, not %d, %e : i1
+  hw.output %0 : i1
+}

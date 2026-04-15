@@ -31,6 +31,27 @@ using namespace circt::synth::aig;
 #define GET_OP_CLASSES
 #include "circt/Dialect/Synth/Synth.cpp.inc"
 
+namespace {
+
+inline APInt applyInversion(APInt value, bool inverted) {
+  if (inverted)
+    value.flipAllBits();
+  return value;
+}
+
+inline llvm::KnownBits applyInversion(llvm::KnownBits value, bool inverted) {
+  if (inverted)
+    std::swap(value.Zero, value.One);
+  return value;
+}
+
+inline int applyInversion(int lit, bool inverted) {
+  assert(lit != 0 && "expected non-zero SAT literal");
+  return inverted ? -lit : lit;
+}
+
+} // namespace
+
 LogicalResult ChoiceOp::verify() {
   if (getNumOperands() < 1)
     return emitOpError("requires at least one operand");
@@ -108,7 +129,7 @@ LogicalResult ChoiceOp::canonicalize(ChoiceOp op, PatternRewriter &rewriter) {
 }
 
 //===----------------------------------------------------------------------===//
-// AIG Operations
+// AndInverterOp
 //===----------------------------------------------------------------------===//
 
 bool AndInverterOp::areInputsPermutationInvariant() { return true; }
@@ -218,10 +239,7 @@ APInt AndInverterOp::evaluateBooleanLogic(
   APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
   for (auto [idx, inverted] : llvm::enumerate(getInverted())) {
     const APInt &input = getInputValue(idx);
-    if (inverted)
-      result &= ~input;
-    else
-      result &= input;
+    result &= applyInversion(input, inverted);
   }
   return result;
 }
@@ -235,12 +253,8 @@ llvm::KnownBits AndInverterOp::computeKnownBits(
   result.One = APInt::getAllOnes(width);
   result.Zero = APInt::getZero(width);
 
-  for (auto [i, inverted] : llvm::enumerate(getInverted())) {
-    auto operandKnownBits = getInputKnownBits(i);
-    if (inverted)
-      std::swap(operandKnownBits.Zero, operandKnownBits.One);
-    result &= operandKnownBits;
-  }
+  for (auto [i, inverted] : llvm::enumerate(getInverted()))
+    result &= applyInversion(getInputKnownBits(i), inverted);
 
   return result;
 }
@@ -268,9 +282,113 @@ void AndInverterOp::emitCNF(
   inputLits.reserve(inputVars.size());
   for (auto [inputVar, inverted] : llvm::zip(inputVars, getInverted())) {
     assert(inputVar > 0 && "input SAT variables must be positive");
-    inputLits.push_back(inverted ? -inputVar : inputVar);
+    inputLits.push_back(applyInversion(inputVar, inverted));
   }
   circt::addAndClauses(outVar, inputLits, addClause);
+}
+
+//===----------------------------------------------------------------------===//
+// XorInverterOp
+//===----------------------------------------------------------------------===//
+
+bool XorInverterOp::areInputsPermutationInvariant() { return true; }
+
+APInt XorInverterOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+  APInt result = APInt::getZero(getInputValue(0).getBitWidth());
+  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputValue(idx), inverted);
+  return result;
+}
+
+llvm::KnownBits XorInverterOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+
+  llvm::KnownBits result(getInputKnownBits(0).getBitWidth());
+  for (auto [i, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputKnownBits(i), inverted);
+  return result;
+}
+
+int64_t XorInverterOp::getLogicDepthCost() {
+  return llvm::Log2_64_Ceil(getNumOperands());
+}
+
+std::optional<uint64_t> XorInverterOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
+}
+
+void XorInverterOp::emitCNF(
+    int outVar, llvm::ArrayRef<int> inputVars,
+    llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
+    llvm::function_ref<int()> newVar) {
+  assert(inputVars.size() == getInputs().size() &&
+         "expected one SAT variable per operand");
+
+  SmallVector<int> inputLits;
+  inputLits.reserve(inputVars.size());
+  for (auto [inputVar, inverted] : llvm::zip(inputVars, getInverted())) {
+    assert(inputVar > 0 && "input SAT variables must be positive");
+    inputLits.push_back(applyInversion(inputVar, inverted));
+  }
+  circt::addParityClauses(outVar, inputLits, addClause, newVar);
+}
+
+//===----------------------------------------------------------------------===//
+// DotOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult DotOp::verify() {
+  // NOTE: This should be ideally enforced by ODS, but for the composability
+  // with BooleanLogicOpInterface in ODS the inputs is defined as variadic.
+  return getNumOperands() == 3 ? success()
+                               : emitOpError("requires exactly three operands");
+}
+
+bool DotOp::areInputsPermutationInvariant() { return false; }
+
+APInt DotOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  APInt x = applyInversion(getInputValue(0), isInverted(0));
+  APInt y = applyInversion(getInputValue(1), isInverted(1));
+  APInt z = applyInversion(getInputValue(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+llvm::KnownBits DotOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
+  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
+  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+int64_t DotOp::getLogicDepthCost() { return 1; }
+
+std::optional<uint64_t> DotOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(bitWidth);
+}
+
+void DotOp::emitCNF(int outVar, llvm::ArrayRef<int> inputVars,
+                    llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
+                    llvm::function_ref<int()> newVar) {
+  assert(inputVars.size() == 3 && "expected one SAT variable per operand");
+  int xLit = applyInversion(inputVars[0], isInverted(0));
+  int yLit = applyInversion(inputVars[1], isInverted(1));
+  int zLit = applyInversion(inputVars[2], isInverted(2));
+  int andVar = newVar();
+  int orVar = newVar();
+  circt::addAndClauses(andVar, {xLit, yLit}, addClause);
+  circt::addOrClauses(orVar, {zLit, andVar}, addClause);
+  circt::addXorClauses(outVar, xLit, orVar, addClause);
 }
 
 static Value lowerVariadicAndInverterOp(AndInverterOp op, OperandRange operands,
