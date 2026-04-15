@@ -158,6 +158,12 @@ LogicalResult ChoiceOp::canonicalize(ChoiceOp op, PatternRewriter &rewriter) {
 // AIG Operations
 //===----------------------------------------------------------------------===//
 
+LogicalResult AndInverterOp::verify() {
+  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
+                                 /*minOperands=*/1,
+                                 /*exact=*/std::nullopt);
+}
+
 bool AndInverterOp::areInputsPermutationInvariant() { return true; }
 
 OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
@@ -272,92 +278,6 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
 }
 
 bool XorInverterOp::areInputsPermutationInvariant() { return true; }
-
-OpFoldResult XorInverterOp::fold(FoldAdaptor adaptor) {
-  if (getNumOperands() == 1 && !isInverted(0))
-    return getOperand(0);
-
-  APInt constValue = APInt::getZero(getType().getIntOrFloatBitWidth());
-  for (auto [input, inverted] : llvm::zip(adaptor.getInputs(), getInverted())) {
-    auto intAttr = dyn_cast_or_null<IntegerAttr>(input);
-    if (!intAttr)
-      return {};
-    constValue ^= applyInversion(intAttr.getValue(), inverted);
-  }
-  return IntegerAttr::get(getType(), constValue);
-}
-
-OpFoldResult DotOp::fold(FoldAdaptor adaptor) {
-  for (auto input : adaptor.getInputs()) {
-    auto intAttr = dyn_cast_or_null<IntegerAttr>(input);
-    if (!intAttr)
-      return {};
-  }
-  APInt constValue = evaluateBooleanLogic([&](unsigned i) -> const APInt & {
-    return cast<IntegerAttr>(adaptor.getInputs()[i]).getValue();
-  });
-  return IntegerAttr::get(getType(), constValue);
-}
-
-LogicalResult XorInverterOp::canonicalize(XorInverterOp op,
-                                          PatternRewriter &rewriter) {
-  SmallDenseMap<Value, bool> oddOccurrences;
-  SmallVector<Value> operandOrder;
-  SmallVector<Value> newValues;
-  SmallVector<bool> newInverts;
-  APInt constValue = APInt::getZero(op.getType().getIntOrFloatBitWidth());
-
-  for (auto [value, inverted] : llvm::zip(op.getInputs(), op.getInverted())) {
-    if (auto constOp = value.getDefiningOp<hw::ConstantOp>()) {
-      constValue ^= applyInversion(constOp.getValue(), inverted);
-      continue;
-    }
-
-    if (inverted)
-      constValue.flipAllBits();
-    auto [it, inserted] = oddOccurrences.try_emplace(value, false);
-    if (inserted)
-      operandOrder.push_back(value);
-    it->second = !it->second;
-  }
-
-  for (Value value : operandOrder) {
-    if (!oddOccurrences.lookup(value))
-      continue;
-    newValues.push_back(value);
-    newInverts.push_back(false);
-  }
-
-  if (constValue.isAllOnes() && !newValues.empty()) {
-    newInverts.front() = !newInverts.front();
-    constValue = APInt::getZero(constValue.getBitWidth());
-  }
-
-  if (!constValue.isZero()) {
-    auto constOp = hw::ConstantOp::create(rewriter, op.getLoc(), constValue);
-    newValues.push_back(constOp);
-    newInverts.push_back(false);
-  }
-
-  if (newValues.empty()) {
-    rewriter.replaceOpWithNewOp<hw::ConstantOp>(op, constValue);
-    return success();
-  }
-
-  if (newValues.size() == 1 && !newInverts.front()) {
-    rewriter.replaceOp(op, newValues.front());
-    return success();
-  }
-
-  if (llvm::equal(op.getOperands(), newValues) &&
-      llvm::equal(op.getInverted(), newInverts))
-    return failure();
-
-  replaceOpWithNewOpAndCopyNamehint<synth::XorInverterOp>(rewriter, op,
-                                                          newValues,
-                                                          newInverts);
-  return success();
-}
 
 APInt AndInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {

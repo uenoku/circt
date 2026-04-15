@@ -81,6 +81,7 @@ def AndInverterOp :
       return build($_builder, $_state, {lhs, rhs}, inverted);
     }]>];
 
+  let hasVerifier = 1;
   let hasFolder = 1;
   let hasCanonicalizeMethod = 1;
   let cppNamespace = "::circt::synth::aig";
@@ -127,8 +128,6 @@ def XorInverterOp :
     }]>];
 
   let hasVerifier = 1;
-  let hasFolder = 1;
-  let hasCanonicalizeMethod = 1;
 }
 
 def DotOp :
@@ -167,7 +166,6 @@ def DotOp :
     }]>];
 
   let hasVerifier = 1;
-  let hasFolder = 1;
 }
 
 def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
