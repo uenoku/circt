@@ -178,8 +178,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
     LogicalResult result =
         llvm::TypeSwitch<Operation *, LogicalResult>(&op)
             .Case<aig::AndInverterOp>([&](aig::AndInverterOp andOp) {
-              return handleInvertibleBinaryGate(andOp,
-                                                LogicNetworkGate::And2);
+              return handleInvertibleBinaryGate(andOp, LogicNetworkGate::And2);
             })
             .Case<comb::XorOp>([&](comb::XorOp xorOp) {
               if (xorOp->getNumOperands() != 2) {
@@ -194,8 +193,7 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
               return success();
             })
             .Case<synth::XorInverterOp>([&](synth::XorInverterOp xorOp) {
-              return handleInvertibleBinaryGate(xorOp,
-                                                LogicNetworkGate::Xor2);
+              return handleInvertibleBinaryGate(xorOp, LogicNetworkGate::Xor2);
             })
             .Case<synth::DotOp>([&](synth::DotOp dotOp) {
               if (!dotOp.getType().isInteger(1)) {
