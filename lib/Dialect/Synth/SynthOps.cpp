@@ -155,7 +155,7 @@ LogicalResult ChoiceOp::canonicalize(ChoiceOp op, PatternRewriter &rewriter) {
 }
 
 //===----------------------------------------------------------------------===//
-// AIG Operations
+// AndInverterOp
 //===----------------------------------------------------------------------===//
 
 bool AndInverterOp::areInputsPermutationInvariant() { return true; }
@@ -179,14 +179,8 @@ OpFoldResult AndInverterOp::fold(FoldAdaptor adaptor) {
 
         return getOperand(0);
       }
-  }
+    }
   return {};
-}
-
-LogicalResult DotOp::verify() {
-  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
-                                 /*minOperands=*/3,
-                                 /*exact=*/3);
 }
 
 LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
@@ -265,8 +259,6 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   return success();
 }
 
-bool XorInverterOp::areInputsPermutationInvariant() { return true; }
-
 APInt AndInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
   assert(getNumOperands() > 0 && "Expected non-empty input list");
@@ -278,23 +270,6 @@ APInt AndInverterOp::evaluateBooleanLogic(
   return result;
 }
 
-APInt XorInverterOp::evaluateBooleanLogic(
-    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  assert(getNumOperands() > 0 && "Expected non-empty input list");
-  APInt result = APInt::getZero(getInputValue(0).getBitWidth());
-  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    result ^= applyInversion(getInputValue(idx), inverted);
-  return result;
-}
-
-APInt DotOp::evaluateBooleanLogic(
-    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  APInt x = applyInversion(getInputValue(0), isInverted(0));
-  APInt y = applyInversion(getInputValue(1), isInverted(1));
-  APInt z = applyInversion(getInputValue(2), isInverted(2));
-  return x ^ (z | (x & y));
-}
-
 llvm::KnownBits AndInverterOp::computeKnownBits(
     llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
   assert(getNumOperands() > 0 && "Expected non-empty input list");
@@ -304,60 +279,21 @@ llvm::KnownBits AndInverterOp::computeKnownBits(
   result.One = APInt::getAllOnes(width);
   result.Zero = APInt::getZero(width);
 
-  for (auto [i, inverted] : llvm::enumerate(getInverted())) {
-    result &= applyInversion(getInputKnownBits(i), inverted);
-  }
-
-  return result;
-}
-
-llvm::KnownBits XorInverterOp::computeKnownBits(
-    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
-  assert(getNumOperands() > 0 && "Expected non-empty input list");
-
-  llvm::KnownBits result(getInputKnownBits(0).getBitWidth());
   for (auto [i, inverted] : llvm::enumerate(getInverted()))
-    result ^= applyInversion(getInputKnownBits(i), inverted);
-  return result;
-}
+    result &= applyInversion(getInputKnownBits(i), inverted);
 
-llvm::KnownBits DotOp::computeKnownBits(
-    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
-  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
-  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
-  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
-  return x ^ (z | (x & y));
+  return result;
 }
 
 int64_t AndInverterOp::getLogicDepthCost() {
   return llvm::Log2_64_Ceil(getNumOperands());
 }
 
-int64_t XorInverterOp::getLogicDepthCost() {
-  return llvm::Log2_64_Ceil(getNumOperands());
-}
-
-int64_t DotOp::getLogicDepthCost() { return 1; }
-
 std::optional<uint64_t> AndInverterOp::getLogicAreaCost() {
   int64_t bitWidth = hw::getBitWidth(getType());
   if (bitWidth < 0)
     return std::nullopt;
   return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
-}
-
-std::optional<uint64_t> XorInverterOp::getLogicAreaCost() {
-  int64_t bitWidth = hw::getBitWidth(getType());
-  if (bitWidth < 0)
-    return std::nullopt;
-  return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
-}
-
-std::optional<uint64_t> DotOp::getLogicAreaCost() {
-  int64_t bitWidth = hw::getBitWidth(getType());
-  if (bitWidth < 0)
-    return std::nullopt;
-  return static_cast<uint64_t>(bitWidth);
 }
 
 void AndInverterOp::emitCNF(
@@ -377,6 +313,42 @@ void AndInverterOp::emitCNF(
   circt::addAndClauses(outVar, inputLits, addClause);
 }
 
+//===----------------------------------------------------------------------===//
+// XorInverterOp
+//===----------------------------------------------------------------------===//
+
+bool XorInverterOp::areInputsPermutationInvariant() { return true; }
+
+APInt XorInverterOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+  APInt result = APInt::getZero(getInputValue(0).getBitWidth());
+  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputValue(idx), inverted);
+  return result;
+}
+
+llvm::KnownBits XorInverterOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  assert(getNumOperands() > 0 && "Expected non-empty input list");
+
+  llvm::KnownBits result(getInputKnownBits(0).getBitWidth());
+  for (auto [i, inverted] : llvm::enumerate(getInverted()))
+    result ^= applyInversion(getInputKnownBits(i), inverted);
+  return result;
+}
+
+int64_t XorInverterOp::getLogicDepthCost() {
+  return llvm::Log2_64_Ceil(getNumOperands());
+}
+
+std::optional<uint64_t> XorInverterOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(getNumOperands() - 1) * bitWidth;
+}
+
 void XorInverterOp::emitCNF(
     int outVar, llvm::ArrayRef<int> inputVars,
     llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
@@ -391,6 +363,41 @@ void XorInverterOp::emitCNF(
     inputLits.push_back(applyInversion(inputVar, inverted));
   }
   circt::addParityClauses(outVar, inputLits, addClause, newVar);
+}
+
+//===----------------------------------------------------------------------===//
+// DotOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult DotOp::verify() {
+  return verifyInvertibleLogicOp(*this, getInputs(), getInverted(),
+                                 /*minOperands=*/3,
+                                 /*exact=*/3);
+}
+
+APInt DotOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  APInt x = applyInversion(getInputValue(0), isInverted(0));
+  APInt y = applyInversion(getInputValue(1), isInverted(1));
+  APInt z = applyInversion(getInputValue(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+llvm::KnownBits DotOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
+  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
+  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+int64_t DotOp::getLogicDepthCost() { return 1; }
+
+std::optional<uint64_t> DotOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(bitWidth);
 }
 
 void DotOp::emitCNF(int outVar, llvm::ArrayRef<int> inputVars,
