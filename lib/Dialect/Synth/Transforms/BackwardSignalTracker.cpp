@@ -62,7 +62,7 @@ private:
   void trackForwardFromObject(const Object &obj,
                               igraph::InstancePathCache &pathCache,
                               hw::InstanceGraph &instanceGraph,
-                              llvm::DenseSet<Object> &visited, int depth = 0);
+                              llvm::DenseSet<Object> &visited, int depth = 0, bool first = false);
 
   // Find all Objects matching the target signal paths (with instance hierarchy)
   void findTargetObjects(hw::HWModuleOp topModule,
@@ -494,7 +494,7 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
 void BackwardSignalTrackerPass::trackForwardFromObject(
     const Object &obj, igraph::InstancePathCache &pathCache,
     hw::InstanceGraph &instanceGraph, llvm::DenseSet<Object> &visited,
-    int depth) {
+    int depth, bool first) {
   // Avoid revisiting the same object
   if (!visited.insert(obj).second)
     return;
@@ -589,8 +589,10 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
     if (auto extractOp = dyn_cast<comb::ExtractOp>(defOp)) {
       // For extract: result[i] comes from input[lowBit + i]
       unsigned lowBit = extractOp.getLowBit();
-      Object sourceObj(obj.instancePath, extractOp.getInput(), lowBit + obj.bitPos);
-      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+      Object sourceObj(obj.instancePath, extractOp.getInput(),
+                       lowBit + obj.bitPos);
+      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                             depth);
     } else if (auto concatOp = dyn_cast<comb::ConcatOp>(defOp)) {
       // Find which operand contributes to this bit
       unsigned bitOffset = 0;
@@ -600,7 +602,8 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
         if (obj.bitPos >= bitOffset && obj.bitPos < bitOffset + opWidth) {
           Object sourceObj(obj.instancePath, concatOp.getOperand(i),
                            obj.bitPos - bitOffset);
-          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                                 depth);
           break;
         }
         bitOffset += opWidth;
@@ -610,23 +613,27 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
       unsigned inputWidth = inputType.getWidth();
       unsigned sourceBit = obj.bitPos % inputWidth;
       Object sourceObj(obj.instancePath, replicateOp.getInput(), sourceBit);
-      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                             depth);
     } else if (auto firregOp = dyn_cast<seq::FirRegOp>(defOp)) {
       // FirReg - track through getNext() only
       Value nextVal = firregOp.getNext();
-      if (auto intType = dyn_cast<IntegerType>(nextVal.getType())) {
-        if (obj.bitPos < intType.getWidth()) {
-          Object sourceObj(obj.instancePath, nextVal, obj.bitPos);
-          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+      if (first)
+        if (auto intType = dyn_cast<IntegerType>(nextVal.getType())) {
+          if (obj.bitPos < intType.getWidth()) {
+            Object sourceObj(obj.instancePath, nextVal, obj.bitPos);
+            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                                   depth);
+          }
         }
-      }
     } else if (auto compregOp = dyn_cast<seq::CompRegOp>(defOp)) {
       // CompReg - track through getInput() only
       Value inputVal = compregOp.getInput();
       if (auto intType = dyn_cast<IntegerType>(inputVal.getType())) {
         if (obj.bitPos < intType.getWidth()) {
           Object sourceObj(obj.instancePath, inputVal, obj.bitPos);
-          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                                 depth);
         }
       }
     } else if (isa<synth::aig::AndInverterOp>(defOp)) {
@@ -635,7 +642,8 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
         if (auto intType = dyn_cast<IntegerType>(operand.getType())) {
           if (obj.bitPos < intType.getWidth()) {
             Object sourceObj(obj.instancePath, operand, obj.bitPos);
-            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                                   depth);
           }
         }
       }
@@ -741,7 +749,8 @@ void BackwardSignalTrackerPass::runOnOperation() {
     target.print(llvm::outs());
     llvm::outs() << "\n";
 
-    trackForwardFromObject(target, pathCache, instanceGraph, visitedForward, 1);
+    trackForwardFromObject(target, pathCache, instanceGraph, visitedForward, 1,
+                           true);
     llvm::outs() << "\n";
   }
 
