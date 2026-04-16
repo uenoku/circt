@@ -60,10 +60,9 @@ private:
 
   // Track forward from a given Object (what it drives)
   void trackForwardFromObject(const Object &obj,
-                               igraph::InstancePathCache &pathCache,
-                               hw::InstanceGraph &instanceGraph,
-                               llvm::DenseSet<Object> &visited,
-                               int depth = 0);
+                              igraph::InstancePathCache &pathCache,
+                              hw::InstanceGraph &instanceGraph,
+                              llvm::DenseSet<Object> &visited, int depth = 0);
 
   // Find all Objects matching the target signal paths (with instance hierarchy)
   void findTargetObjects(hw::HWModuleOp topModule,
@@ -465,7 +464,8 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
     }
 
     // Handle bitwise operations: result[i] depends on operands[i]
-    if (isa<synth::aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp>(userOp)) {
+    if (isa<synth::aig::AndInverterOp, comb::AndOp, comb::OrOp, comb::XorOp>(
+            userOp)) {
       auto resultType = cast<IntegerType>(userOp->getResult(0).getType());
 
       // The same bit position in result depends on this bit
@@ -560,9 +560,11 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
       auto resultNum = cast<OpResult>(obj.value).getResultNumber();
 
       // Get the target module
-      auto *targetNode = instanceGraph.lookup(instanceOp.getModuleNameAttr().getAttr());
+      auto *targetNode =
+          instanceGraph.lookup(instanceOp.getModuleNameAttr().getAttr());
       if (targetNode) {
-        if (auto targetModule = dyn_cast<hw::HWModuleOp>(*targetNode->getModule())) {
+        if (auto targetModule =
+                dyn_cast<hw::HWModuleOp>(*targetNode->getModule())) {
           // Find the hw.output operation in the target module
           Value outputValue;
           targetModule.walk([&](hw::OutputOp output) {
@@ -572,70 +574,62 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
 
           if (outputValue) {
             // Push instance onto path
-            igraph::InstancePath newPath = pathCache.appendInstance(obj.instancePath, instanceOp);
+            igraph::InstancePath newPath =
+                pathCache.appendInstance(obj.instancePath, instanceOp);
             Object sourceObj(newPath, outputValue, obj.bitPos);
-            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                                   depth + 1);
           }
         }
       }
       return;
     }
 
-    // Track forward through operands (what drives this signal)
-    for (auto operand : defOp->getOperands()) {
-      auto operandType = operand.getType();
-
-      // Handle different operation types for bit-precise tracking
-      if (auto extractOp = dyn_cast<comb::ExtractOp>(defOp)) {
-        // For extract: result[i] comes from input[lowBit + i]
-        unsigned lowBit = extractOp.getLowBit();
-        Object sourceObj(obj.instancePath, operand, lowBit + obj.bitPos);
-        trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
-                               depth + 1);
-      } else if (auto concatOp = dyn_cast<comb::ConcatOp>(defOp)) {
-        // Find which operand contributes to this bit
-        unsigned bitOffset = 0;
-        for (int i = concatOp.getNumOperands() - 1; i >= 0; --i) {
-          auto opType = cast<IntegerType>(concatOp.getOperand(i).getType());
-          unsigned opWidth = opType.getWidth();
-          if (obj.bitPos >= bitOffset && obj.bitPos < bitOffset + opWidth) {
-            Object sourceObj(obj.instancePath, concatOp.getOperand(i),
-                             obj.bitPos - bitOffset);
-            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
-                                   depth + 1);
-            break;
-          }
-          bitOffset += opWidth;
+    // Handle different operation types for bit-precise tracking
+    if (auto extractOp = dyn_cast<comb::ExtractOp>(defOp)) {
+      // For extract: result[i] comes from input[lowBit + i]
+      unsigned lowBit = extractOp.getLowBit();
+      Object sourceObj(obj.instancePath, extractOp.getInput(), lowBit + obj.bitPos);
+      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+    } else if (auto concatOp = dyn_cast<comb::ConcatOp>(defOp)) {
+      // Find which operand contributes to this bit
+      unsigned bitOffset = 0;
+      for (int i = concatOp.getNumOperands() - 1; i >= 0; --i) {
+        auto opType = cast<IntegerType>(concatOp.getOperand(i).getType());
+        unsigned opWidth = opType.getWidth();
+        if (obj.bitPos >= bitOffset && obj.bitPos < bitOffset + opWidth) {
+          Object sourceObj(obj.instancePath, concatOp.getOperand(i),
+                           obj.bitPos - bitOffset);
+          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+          break;
         }
-      } else if (auto replicateOp = dyn_cast<comb::ReplicateOp>(defOp)) {
-        auto inputType = cast<IntegerType>(operand.getType());
-        unsigned inputWidth = inputType.getWidth();
-        unsigned sourceBit = obj.bitPos % inputWidth;
-        Object sourceObj(obj.instancePath, operand, sourceBit);
-        trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
-                               depth + 1);
-      } else if (isa<synth::aig::AndInverterOp>(defOp)) {
-        // AIG bitwise operation - same bit position
-        if (auto intType = dyn_cast<IntegerType>(operandType)) {
+        bitOffset += opWidth;
+      }
+    } else if (auto replicateOp = dyn_cast<comb::ReplicateOp>(defOp)) {
+      auto inputType = cast<IntegerType>(replicateOp.getInput().getType());
+      unsigned inputWidth = inputType.getWidth();
+      unsigned sourceBit = obj.bitPos % inputWidth;
+      Object sourceObj(obj.instancePath, replicateOp.getInput(), sourceBit);
+      trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+    } else if (isa<synth::aig::AndInverterOp, seq::FirRegOp, seq::CompRegOp>(defOp)) {
+      // Bitwise/register - track through all operands with same bit position
+      for (auto operand : defOp->getOperands()) {
+        if (auto intType = dyn_cast<IntegerType>(operand.getType())) {
           if (obj.bitPos < intType.getWidth()) {
             Object sourceObj(obj.instancePath, operand, obj.bitPos);
-            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
-                                   depth + 1);
+            trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
           }
         }
-      } else if (isa<hw::InstanceOp>(defOp)) {
-        // Instance - track through to the module's output port
-        // This is handled separately below
-        continue;
-      } else {
-        // Unknown operation - just report it
-        llvm::outs() << std::string((depth + 1) * 2, ' ')
-                     << "Unknown operation for bit-precise tracking: "
-                     << defOp->getName() << "\n";
       }
+    } else {
+      // Unknown operation - just report it
+      llvm::outs() << std::string((depth + 1) * 2, ' ')
+                   << "Unknown operation for bit-precise tracking: "
+                   << defOp->getName() << "\n";
     }
   } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
-    // For block arguments (input ports), track backward to find the driving instance
+    // For block arguments (input ports), track backward to find the driving
+    // instance
     auto module = dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp());
     if (!module)
       return;
@@ -647,12 +641,14 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
       return; // Already at top level, nothing drives this
 
     igraph::InstancePath parentPath = obj.instancePath.dropBack();
-    auto lastInst = cast<hw::InstanceOp>(obj.instancePath.leaf().getOperation());
+    auto lastInst =
+        cast<hw::InstanceOp>(obj.instancePath.leaf().getOperation());
 
     // The input is driven by the corresponding operand of the instance
     Value drivingValue = lastInst.getOperand(argNum);
     Object sourceObj(parentPath, drivingValue, obj.bitPos);
-    trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+    trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited,
+                           depth + 1);
   }
 }
 
@@ -711,11 +707,13 @@ void BackwardSignalTrackerPass::runOnOperation() {
     target.print(llvm::outs());
     llvm::outs() << "\n";
 
-    trackBackwardFromObject(target, pathCache, instanceGraph, visitedBackward, 1);
+    trackBackwardFromObject(target, pathCache, instanceGraph, visitedBackward,
+                            1);
     llvm::outs() << "\n";
   }
 
-  llvm::outs() << "Total unique users found: " << visitedBackward.size() << "\n\n";
+  llvm::outs() << "Total unique users found: " << visitedBackward.size()
+               << "\n\n";
 
   // Track forward from each target
   llvm::outs() << "=== FORWARD TRACKING (Drivers) ===\n";
@@ -729,5 +727,6 @@ void BackwardSignalTrackerPass::runOnOperation() {
     llvm::outs() << "\n";
   }
 
-  llvm::outs() << "Total unique drivers found: " << visitedForward.size() << "\n";
+  llvm::outs() << "Total unique drivers found: " << visitedForward.size()
+               << "\n";
 }
