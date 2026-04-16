@@ -553,13 +553,17 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
   struct PlannedMember {
     Value original;
     bool inverted;
-    aig::AndInverterOp operandInverter;
+  };
+  struct MergeStage {
+    synth::ChoiceOp choice;
+    aig::AndInverterOp choiceNot;
+    llvm::DenseMap<Value, aig::AndInverterOp> operandInverters;
   };
   struct MergeRewritePlan {
     Value representative;
     SmallVector<PlannedMember> members;
-    synth::ChoiceOp choice;
-    aig::AndInverterOp choiceNot;
+    SmallVector<MergeStage> stages;
+    llvm::SmallPtrSet<Operation *, 8> helperOps;
   };
 
   mlir::OpBuilder builder(module.getContext());
@@ -586,68 +590,94 @@ void FunctionalReductionSolver::mergeEquivalentNodes() {
     if (members.empty())
       continue;
 
-    builder.setInsertionPointAfterValue(members.back().first);
-
-    SmallVector<Value> operands;
-    operands.reserve(members.size() + 1);
-    operands.push_back(representative);
-
     SmallVector<PlannedMember> plannedMembers;
     plannedMembers.reserve(members.size());
-    bool hasInvertedMember = false;
     for (auto [member, inverted] : members) {
-      auto &planned =
-          plannedMembers.emplace_back(PlannedMember{member, inverted, {}});
-      if (!inverted) {
-        operands.push_back(member);
-        continue;
-      }
-      hasInvertedMember = true;
-      // If the member is inverted relative to the representative, we
-      // create an inverter for the choice operand
-      planned.operandInverter =
-          aig::AndInverterOp::create(builder, member.getLoc(), member, true);
-      operands.push_back(planned.operandInverter.getResult());
+      plannedMembers.push_back({member, inverted});
     }
 
-    auto choice = synth::ChoiceOp::create(builder, representative.getLoc(),
-                                          representative.getType(), operands);
+    SmallVector<MergeStage> stages;
+    stages.reserve(plannedMembers.size());
+    llvm::SmallPtrSet<Operation *, 8> helperOps;
+    for (auto stageLimit : llvm::seq<size_t>(0, plannedMembers.size())) {
+      auto &limitMember = plannedMembers[stageLimit];
+      builder.setInsertionPointAfterValue(limitMember.original);
 
-    // If there is an inverted member, we need to create an inverter for the
-    // choice result as well
-    auto choiceNot = !hasInvertedMember
-                         ? nullptr
-                         : aig::AndInverterOp::create(builder, choice.getLoc(),
-                                                      choice, true);
+      SmallVector<Value> operands;
+      operands.reserve(stageLimit + 2);
+      operands.push_back(representative);
+
+      llvm::DenseMap<Value, aig::AndInverterOp> operandInverters;
+      operandInverters.reserve(stageLimit + 1);
+      bool prefixHasInvertedMember = false;
+      for (const auto &planned : llvm::ArrayRef<PlannedMember>(plannedMembers)
+                                     .take_front(stageLimit + 1)) {
+        if (!planned.inverted) {
+          operands.push_back(planned.original);
+          continue;
+        }
+        prefixHasInvertedMember = true;
+        auto inverter = aig::AndInverterOp::create(
+            builder, planned.original.getLoc(), planned.original, true);
+        helperOps.insert(inverter);
+        operandInverters[planned.original] = inverter;
+        operands.push_back(inverter.getResult());
+      }
+
+      auto choice = synth::ChoiceOp::create(builder, representative.getLoc(),
+                                            representative.getType(), operands);
+      helperOps.insert(choice);
+
+      auto choiceNot = !prefixHasInvertedMember
+                           ? nullptr
+                           : aig::AndInverterOp::create(
+                                 builder, choice.getLoc(), choice, true);
+      if (choiceNot)
+        helperOps.insert(choiceNot);
+      stages.push_back({choice, choiceNot, std::move(operandInverters)});
+    }
 
     stats.numMergedNodes += members.size() + 1;
-    rewritePlans.push_back(
-        {representative, std::move(plannedMembers), choice, choiceNot});
+    rewritePlans.push_back({representative, std::move(plannedMembers),
+                            std::move(stages), std::move(helperOps)});
   }
 
   for (auto &plan : rewritePlans) {
     auto replaceValue = [&](const PlannedMember &member) {
-      if (member.inverted)
-        replaceDominatedUses(member.original, plan.choiceNot,
+      for (auto &stage : llvm::reverse(plan.stages)) {
+        if (!member.inverted) {
+          replaceDominatedUses(member.original, stage.choice,
+                               [&](Operation *user) {
+                                 return user != stage.choice.getOperation() &&
+                                        !plan.helperOps.contains(user);
+                               });
+          continue;
+        }
+
+        if (!stage.choiceNot)
+          continue;
+
+        auto it = stage.operandInverters.find(member.original);
+        replaceDominatedUses(member.original, stage.choiceNot,
                              [&](Operation *user) {
                                // Do not rewrite the freshly created operand
-                               // inverter or the choice result inverter. This
-                               // avoids creating an immediate cycle when
-                               // merging an inverted node into its
-                               // representative.
-                               return user != member.operandInverter &&
-                                      user != plan.choiceNot.getOperation();
+                               // inverter or any class-local helper op. This
+                               // avoids creating immediate cycles and keeps the
+                               // constructed prefix choices stable.
+                               return (it == stage.operandInverters.end() ||
+                                       user != it->second.getOperation()) &&
+                                      user != stage.choiceNot.getOperation() &&
+                                      !plan.helperOps.contains(user);
                              });
-      else
-        replaceDominatedUses(member.original, plan.choice,
-                             [&](Operation *user) {
-                               return user != plan.choice.getOperation();
-                             });
+      }
     };
 
-    replaceDominatedUses(
-        plan.representative, plan.choice,
-        [&](Operation *user) { return user != plan.choice.getOperation(); });
+    for (auto &stage : llvm::reverse(plan.stages))
+      replaceDominatedUses(plan.representative, stage.choice,
+                           [&](Operation *user) {
+                             return user != stage.choice.getOperation() &&
+                                    !plan.helperOps.contains(user);
+                           });
     for (const auto &member : plan.members)
       replaceValue(member);
   }

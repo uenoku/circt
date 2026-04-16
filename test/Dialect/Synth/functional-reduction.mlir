@@ -2,7 +2,8 @@
 
 // AND(AND(a, not b), AND(c, not d)) is equivalent to AND(a, not b, c, not d).
 // CHECK-LABEL: hw.module @test_mixed
-hw.module @test_mixed(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out out1: i1, out out2: i1, out out3: i1) {
+hw.module @test_mixed(in %a: i1, in %b: i1, in %c: i1, in %d: i1,
+                      out out1: i1, out out2: i1, out out3: i1) {
   // CHECK: %[[RESULT_0:.+]] = synth.aig.and_inv %a, not %b
   // CHECK: %[[RESULT_1:.+]] = synth.aig.and_inv %c, not %d
   // CHECK: %[[RESULT_2:.+]] = synth.aig.and_inv %[[RESULT_0]], %[[RESULT_1]]
@@ -43,7 +44,8 @@ hw.module @test_supported_ops(in %a: i1, in %b: i1, in %c: i1,
 }
 
 // CHECK-LABEL: hw.module @test_inversion_equiv
-hw.module @test_inversion_equiv(in %a: i1, in %b: i1, out out0: i1, out out1: i1) {
+hw.module @test_inversion_equiv(in %a: i1, in %b: i1,
+                                out out0: i1, out out1: i1) {
   // CHECK: %[[AND:.+]] = synth.aig.and_inv not %a, not %b
   // CHECK: %[[OR:.+]] = comb.or %a, %b
   // CHECK: %[[NOTMEMBER:.+]] = synth.aig.and_inv not %[[OR]]
@@ -58,13 +60,55 @@ hw.module @test_inversion_equiv(in %a: i1, in %b: i1, out out0: i1, out out1: i1
 // CHECK-LABEL: hw.module @test_no_ssa_cycle
 hw.module @test_no_ssa_cycle(in %a: i1, in %b: i1,
                              out out0: i1, out out1: i1, out out2: i1) {
-  // CHECK: %[[AND0:.+]] = synth.aig.and_inv %a, %b
-  // CHECK: %[[AND1:.+]] = synth.aig.and_inv %[[AND0]], %a
-  // CHECK: %[[AND2:.+]] = synth.aig.and_inv %b, %a
-  // CHECK: %[[CHOICE:.+]] = synth.choice %[[AND0]], %[[AND1]], %[[AND2]]
-  // CHECK: hw.output %[[CHOICE]], %[[CHOICE]], %[[CHOICE]]
+  // CHECK: %[[AND0:[0-9]+]] = synth.aig.and_inv %a, %b
+  // CHECK-NEXT: %[[AND1:[0-9]+]] = synth.aig.and_inv %[[AND0]], %a
+  // CHECK-NEXT: %[[CHOICE0:[0-9]+]] = synth.choice %[[AND0]], %[[AND1]] : i1
+  // CHECK-NEXT: %[[AND2:[0-9]+]] = synth.aig.and_inv %b, %a
+  // CHECK-NEXT: %[[CHOICE1:[0-9]+]] = synth.choice %[[AND0]], %[[AND1]], %[[AND2]] : i1
+  // CHECK: hw.output %[[CHOICE1]], %[[CHOICE1]], %[[CHOICE1]]
   %0 = synth.aig.and_inv %a, %b {synth.test.fc_equiv_class = 7} : i1
   %1 = synth.aig.and_inv %0, %a {synth.test.fc_equiv_class = 7} : i1
   %2 = synth.aig.and_inv %b, %a {synth.test.fc_equiv_class = 7} : i1
   hw.output %0, %1, %2 : i1, i1, i1
+}
+
+// CHECK-LABEL: hw.module @test_prefix_choice_rewrites_intermediate_uses
+hw.module @test_prefix_choice_rewrites_intermediate_uses(
+    in %a: i1, in %b: i1, in %c: i1,
+    out out0: i1, out out1: i1, out out2: i1, out out3: i1) {
+  // CHECK: %[[AND0:[0-9]+]] = comb.and %a, %b
+  // CHECK-NEXT: %[[AND1:[0-9]+]] = comb.and %b, %a
+  // CHECK-NEXT: %[[CHOICE0:[0-9]+]] = synth.choice %[[AND0]], %[[AND1]] : i1
+  // CHECK-NEXT: %[[MID:[0-9]+]] = comb.or %[[CHOICE0]], %c : i1
+  // CHECK-NEXT: %[[AND2:[0-9]+]] = comb.and %a, %b
+  // CHECK-NEXT: %[[CHOICE1:[0-9]+]] = synth.choice %[[AND0]], %[[AND1]], %[[AND2]] : i1
+  // CHECK: hw.output %[[MID]], %[[CHOICE1]], %[[CHOICE1]], %[[CHOICE1]]
+  %0 = comb.and %a, %b {synth.test.fc_equiv_class = 11} : i1
+  %1 = comb.and %b, %a {synth.test.fc_equiv_class = 11} : i1
+  %2 = comb.or %0, %c : i1
+  %3 = comb.and %a, %b {synth.test.fc_equiv_class = 11} : i1
+  hw.output %2, %0, %1, %3 : i1, i1, i1, i1
+}
+
+// CHECK-LABEL: hw.module @test_prefix_choice_rewrites_intermediate_inverted_uses
+hw.module @test_prefix_choice_rewrites_intermediate_inverted_uses(
+    in %a: i1, in %b: i1, in %c: i1,
+    out out0: i1, out out1: i1, out out2: i1, out out3: i1) {
+  // CHECK: %[[REP:[0-9]+]] = synth.aig.and_inv not %a, not %b
+  // CHECK-NEXT: %[[OR0:[0-9]+]] = comb.or %a, %b
+  // CHECK-NEXT: %[[NOTOR0:[0-9]+]] = synth.aig.and_inv not %[[OR0]]
+  // CHECK-NEXT: %[[CHOICE0:[0-9]+]] = synth.choice %[[REP]], %[[NOTOR0]] : i1
+  // CHECK-NEXT: %[[CHOICENOT0:[0-9]+]] = synth.aig.and_inv not %[[CHOICE0]]
+  // CHECK-NEXT: %[[MID:[0-9]+]] = comb.and %[[CHOICENOT0]], %c : i1
+  // CHECK-NEXT: %[[OR1:[0-9]+]] = comb.or %b, %a
+  // CHECK-NEXT: %[[NOTOR0_AGAIN:[0-9]+]] = synth.aig.and_inv not %[[OR0]]
+  // CHECK-NEXT: %[[NOTOR1:[0-9]+]] = synth.aig.and_inv not %[[OR1]]
+  // CHECK-NEXT: %[[CHOICE1:[0-9]+]] = synth.choice %[[REP]], %[[NOTOR0_AGAIN]], %[[NOTOR1]] : i1
+  // CHECK-NEXT: %[[CHOICENOT1:[0-9]+]] = synth.aig.and_inv not %[[CHOICE1]]
+  // CHECK: hw.output %[[MID]], %[[CHOICE1]], %[[CHOICENOT1]], %[[CHOICENOT1]]
+  %0 = synth.aig.and_inv not %a, not %b {synth.test.fc_equiv_class = 12} : i1
+  %1 = comb.or %a, %b {synth.test.fc_equiv_class = 12} : i1
+  %2 = comb.and %1, %c : i1
+  %3 = comb.or %b, %a {synth.test.fc_equiv_class = 12} : i1
+  hw.output %2, %0, %1, %3 : i1, i1, i1, i1
 }
