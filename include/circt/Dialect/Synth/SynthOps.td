@@ -23,7 +23,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 class SynthOp<string mnemonic, list<Trait> traits = []> :
     Op<Synth_Dialect, mnemonic, traits>;
 
-class InvertibleOp<string mnemonic, list<Trait> traits = []>
+class InvertibleOperandsOp<string mnemonic, list<Trait> traits = []>
   : SynthOp<mnemonic,[
       SameOperandsAndResultType, Pure,
       DeclareOpInterfaceMethods<BooleanLogicOpInterface, [
@@ -39,7 +39,7 @@ class InvertibleOp<string mnemonic, list<Trait> traits = []>
   }];
 }
 
-def AndInverterOp : InvertibleOp<"aig.and_inv"> {
+def AndInverterOp : InvertibleOperandsOp<"aig.and_inv"> {
   let summary = "AIG dialect AND operation";
   let description = [{
     The `synth.aig.and_inv` operation represents an And-Inverter in the AIG dialect.
@@ -88,7 +88,7 @@ def AndInverterOp : InvertibleOp<"aig.and_inv"> {
   let cppNamespace = "::circt::synth::aig";
 }
 
-def XorInverterOp : InvertibleOp<"xor_inv"> {
+def XorInverterOp : InvertibleOperandsOp<"xor_inv"> {
   let summary = "XOR gate with invertible variadic inputs";
   let description = [{
     The `synth.xor_inv` operation represents a parity node whose operands may be
@@ -118,7 +118,7 @@ def XorInverterOp : InvertibleOp<"xor_inv"> {
 
 }
 
-def DotOp : InvertibleOp<"dot"> {
+def DotOp : InvertibleOperandsOp<"dot"> {
   let summary = "Ordered 3-input DOT gate with invertible inputs";
   let description = [{
     The `synth.dot` operation represents the DIG dot gate described in
