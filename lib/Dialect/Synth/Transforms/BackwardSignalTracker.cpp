@@ -76,10 +76,24 @@ private:
 
 Value BackwardSignalTrackerPass::findValueInModule(hw::HWModuleOp module,
                                                    StringRef name) {
-  // Check module inputs/outputs
+  // Check module inputs
   for (auto [idx, argName] : llvm::enumerate(module.getInputNames())) {
     if (cast<StringAttr>(argName).getValue() == name)
       return module.getBodyBlock()->getArgument(idx);
+  }
+
+  // Check module outputs
+  for (auto [idx, argName] : llvm::enumerate(module.getOutputNames())) {
+    if (cast<StringAttr>(argName).getValue() == name) {
+      // For outputs, we need to find the value being output
+      // Walk to find hw.output and get the corresponding operand
+      Value result;
+      module.walk([&](hw::OutputOp output) {
+        result = output.getOperand(idx);
+        return WalkResult::interrupt();
+      });
+      return result;
+    }
   }
 
   // Check for registers and wires with matching names
@@ -184,6 +198,14 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
   if (!targetValue) {
     llvm::errs() << "Could not find signal '" << signalName << "' in module '"
                  << currentModule.getModuleName() << "'\n";
+    llvm::errs() << "Available input ports:\n";
+    for (auto argName : currentModule.getInputNames()) {
+      llvm::errs() << "  - " << cast<StringAttr>(argName).getValue() << "\n";
+    }
+    llvm::errs() << "Available output ports:\n";
+    for (auto argName : currentModule.getOutputNames()) {
+      llvm::errs() << "  - " << cast<StringAttr>(argName).getValue() << "\n";
+    }
     return false;
   }
 

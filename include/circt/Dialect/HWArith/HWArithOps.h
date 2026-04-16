@@ -13,6 +13,7 @@
 #ifndef CIRCT_DIALECT_HWARITH_OPS_H
 #define CIRCT_DIALECT_HWARITH_OPS_H
 
+#include "mlir/IR/OperationSupport.h"
 #include "circt/Dialect/HWArith/HWArithDialect.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
