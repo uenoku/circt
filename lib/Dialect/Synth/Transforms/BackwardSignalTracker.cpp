@@ -322,6 +322,14 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
         auto argNum = blockArg.getArgNumber();
         assert(argNum < inputNames.size());
         llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
+
+        // Check for inner symbol on input port
+        auto portList = module.getPortList();
+        if (argNum < portList.size()) {
+          if (auto sym = portList[argNum].getSym()) {
+            llvm::outs() << " (inner_sym: " << sym.getSymName() << ")";
+          }
+        }
       }
     }
 
@@ -544,6 +552,14 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
         auto argNum = blockArg.getArgNumber();
         assert(argNum < inputNames.size());
         llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
+
+        // Check for inner symbol on input port
+        auto portList = module.getPortList();
+        if (argNum < portList.size()) {
+          if (auto sym = portList[argNum].getSym()) {
+            llvm::outs() << " (inner_sym: " << sym.getSymName() << ")";
+          }
+        }
       }
     }
 
