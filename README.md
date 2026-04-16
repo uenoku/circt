@@ -8,10 +8,12 @@
 "CIRCT" stands for "Circuit Intermediate Representations (IR) Compilers and Tools".  One might also interpret
 it as the recursively as "CIRCT IR Compiler and Tools".  The T can be
 selectively expanded as Tool, Translator, Team, Technology, Target, Tree, Type,
+
 ... we're ok with the ambiguity.
 
 The CIRCT community is an open and welcoming community.  If you'd like to
-participate, you can do so in a number of different ways:
+participate, you can do so in a number of differen
+t ways:
 
 1) Join our [Discourse Forum](https://llvm.discourse.group/c/Projects-that-want-to-become-official-LLVM-Projects/circt/) 
 on the LLVM Discourse server.  To get a "mailing list" like experience click the 
