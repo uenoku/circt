@@ -220,10 +220,33 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
   if (!visited.insert(obj).second)
     return;
 
-  // Print the current object (this is a user of the original target)
-  llvm::outs() << std::string(depth * 2, ' ') << "User: ";
-  obj.print(llvm::outs());
-  llvm::outs() << "\n";
+  // Print the current object in Verilog-style path format
+  llvm::outs() << std::string(depth * 2, ' ') << "User: $root";
+
+  // Print instance path
+  for (auto inst : obj.instancePath) {
+    llvm::outs() << "/" << cast<hw::InstanceOp>(inst.getOperation()).getInstanceName();
+  }
+
+  // Print value name if available
+  if (auto *defOp = obj.value.getDefiningOp()) {
+    if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
+      llvm::outs() << "/" << nameAttr.getValue();
+    } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
+      llvm::outs() << "/" << nameAttr.getValue();
+    }
+  } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
+    // For block arguments (module inputs), get the port name
+    if (auto module = dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
+      auto inputNames = module.getInputNames();
+      auto argNum = blockArg.getArgNumber();
+      if (argNum < inputNames.size()) {
+        llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
+      }
+    }
+  }
+
+  llvm::outs() << "[" << obj.bitPos << "]\n";
 
   // Find all users of this value - these are operations that use obj.value
   for (auto &use : obj.value.getUses()) {
