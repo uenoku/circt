@@ -281,12 +281,11 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
           if (!inst)
             continue;
 
-          // Pop the instance from the path
-          igraph::InstancePath parentPath = obj.instancePath;
-          if (!obj.instancePath.empty() &&
-              obj.instancePath.leaf() == inst) {
-            parentPath = obj.instancePath.dropBack();
-          }
+          // Pop the instance from the path - must match the leaf
+          if (obj.instancePath.empty() || obj.instancePath.leaf() != inst)
+            continue;
+
+          igraph::InstancePath parentPath = obj.instancePath.dropBack();
 
           // Track backward from the instance's result
           Value instResult = inst.getResult(outputIdx);
