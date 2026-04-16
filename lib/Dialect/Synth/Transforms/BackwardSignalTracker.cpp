@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWInstanceGraph.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -53,10 +54,9 @@ struct BackwardSignalTrackerPass
 private:
   // Track users backward from a given Object
   void trackBackwardFromObject(const Object &obj,
-                                igraph::InstancePathCache &pathCache,
-                                hw::InstanceGraph &instanceGraph,
-                                llvm::DenseSet<Object> &visited,
-                                int depth = 0);
+                               igraph::InstancePathCache &pathCache,
+                               hw::InstanceGraph &instanceGraph,
+                               llvm::DenseSet<Object> &visited, int depth = 0);
 
   // Find all Objects matching the target signal paths (with instance hierarchy)
   void findTargetObjects(hw::HWModuleOp topModule,
@@ -151,7 +151,8 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
     signalName = signalWithBit.substr(0, bracketPos);
     size_t endBracket = signalWithBit.find(']', bracketPos);
     if (endBracket != StringRef::npos) {
-      StringRef bitStr = signalWithBit.substr(bracketPos + 1, endBracket - bracketPos - 1);
+      StringRef bitStr =
+          signalWithBit.substr(bracketPos + 1, endBracket - bracketPos - 1);
       unsigned bit;
       if (!bitStr.getAsInteger(10, bit)) {
         bitIndex = bit;
@@ -190,8 +191,8 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
 
     // Get the referenced module using the instance graph
     // Look up the module by name (convert FlatSymbolRefAttr to StringAttr)
-    auto *targetNode = pathCache.instanceGraph.lookup(
-        foundInst.getModuleNameAttr().getAttr());
+    auto *targetNode =
+        pathCache.instanceGraph.lookup(foundInst.getModuleNameAttr().getAttr());
     if (!targetNode) {
       llvm::errs() << "Could not find module '" << foundInst.getModuleName()
                    << "' in instance graph\n";
@@ -233,8 +234,9 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
       if (*bitIndex < intType.getWidth()) {
         results.push_back(Object(instancePath, targetValue, *bitIndex));
       } else {
-        llvm::errs() << "Bit index " << *bitIndex << " out of range for signal '"
-                     << signalName << "' (width: " << intType.getWidth() << ")\n";
+        llvm::errs() << "Bit index " << *bitIndex
+                     << " out of range for signal '" << signalName
+                     << "' (width: " << intType.getWidth() << ")\n";
         return false;
       }
     } else {
@@ -271,50 +273,68 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
     return;
 
   // Print the current object in Verilog-style path format
-  llvm::outs() << std::string(depth * 2, ' ') << "User: $root";
-
-  // Print instance path
-  for (auto inst : obj.instancePath) {
-    llvm::outs() << "/" << cast<hw::InstanceOp>(inst.getOperation()).getInstanceName();
+  bool shouldShow = true;
+  if (auto op = obj.value.getDefiningOp()) {
+    if (isa_and_nonnull<comb::CombDialect, synth::SynthDialect>(
+            op->getDialect()))
+      shouldShow = false;
   }
+  if (shouldShow) {
+    llvm::outs() << std::string(depth * 2, ' ') << "User: $root";
 
-  // Print value name if available
-  if (auto *defOp = obj.value.getDefiningOp()) {
-    if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
-      llvm::outs() << "/" << nameAttr.getValue();
-    } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
-      llvm::outs() << "/" << nameAttr.getValue();
+    // Print instance path
+    for (auto inst : obj.instancePath) {
+      llvm::outs()
+          << "/" << cast<hw::InstanceOp>(inst.getOperation()).getInstanceName();
     }
-  } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
-    // For block arguments (module inputs), get the port name
-    if (auto module = dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
-      auto inputNames = module.getInputNames();
-      auto argNum = blockArg.getArgNumber();
-      if (argNum < inputNames.size()) {
-        llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
+
+    // Print value name if available
+    if (auto *defOp = obj.value.getDefiningOp()) {
+      if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
+        llvm::outs() << "/" << nameAttr.getValue();
+      } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
+        llvm::outs() << "/" << nameAttr.getValue();
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
+      // For block arguments (module inputs), get the port name
+      if (auto module =
+              dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
+        auto inputNames = module.getInputNames();
+        auto argNum = blockArg.getArgNumber();
+        if (argNum < inputNames.size()) {
+          llvm::outs() << "/"
+                       << cast<StringAttr>(inputNames[argNum]).getValue();
+        }
       }
     }
+
+    llvm::outs() << "[" << obj.bitPos << "]\n";
   }
 
-  llvm::outs() << "[" << obj.bitPos << "]\n";
+  if (auto op = obj.value.getDefiningOp()) {
+    if (isa<seq::FirRegOp>(op))
+      return;
+  }
 
   // Find all users of this value - these are operations that use obj.value
   for (auto &use : obj.value.getUses()) {
     Operation *userOp = use.getOwner();
 
-    llvm::outs() << std::string((depth + 1) * 2, ' ')
-                 << "Used by operation: " << userOp->getName() << "\n";
+    // llvm::outs() << std::string((depth + 1) * 2, ' ')
+    //              << "Used by operation: " << userOp->getName() << "\n";
 
     // Check if this is an output port being used by an instance
     // If so, we need to pop the instance path and track in the parent module
     if (auto instanceOp = dyn_cast<hw::InstanceOp>(userOp)) {
       // This value is used as an input to an instance
-      // We need to push the instance onto the path and track the corresponding port
+      // We need to push the instance onto the path and track the corresponding
+      // port
       auto operandIdx = use.getOperandNumber();
-      auto *targetNode = instanceGraph.lookup(
-          instanceOp.getModuleNameAttr().getAttr());
+      auto *targetNode =
+          instanceGraph.lookup(instanceOp.getModuleNameAttr().getAttr());
       if (targetNode) {
-        if (auto targetModule = dyn_cast<hw::HWModuleOp>(*targetNode->getModule())) {
+        if (auto targetModule =
+                dyn_cast<hw::HWModuleOp>(*targetNode->getModule())) {
           auto *bodyBlock = targetModule.getBodyBlock();
           if (!bodyBlock)
             continue;
@@ -375,7 +395,8 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       unsigned lowBit = extractOp.getLowBit();
       auto resultType = cast<IntegerType>(extractOp.getResult().getType());
 
-      // Check if obj.bitPos is within the extracted range [lowBit, lowBit + width)
+      // Check if obj.bitPos is within the extracted range [lowBit, lowBit +
+      // width)
       if (obj.bitPos >= lowBit && obj.bitPos < lowBit + resultType.getWidth()) {
         // This bit is extracted to result[obj.bitPos - lowBit]
         Object userObj(obj.instancePath, extractOp.getResult(),
@@ -412,7 +433,8 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       unsigned inputWidth = inputType.getWidth();
       unsigned multiple = resultType.getWidth() / inputWidth;
 
-      // obj.bitPos appears at: bitPos, bitPos + inputWidth, bitPos + 2*inputWidth, ...
+      // obj.bitPos appears at: bitPos, bitPos + inputWidth, bitPos +
+      // 2*inputWidth, ...
       for (unsigned i = 0; i < multiple; ++i) {
         Object userObj(obj.instancePath, replicateOp.getResult(),
                        obj.bitPos + i * inputWidth);
@@ -435,20 +457,27 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       continue;
     }
 
+    if (isa<seq::FirRegOp, hw::WireOp>(userOp)) {
+      trackBackwardFromObject(Object(obj.instancePath, userOp->getResult(0), obj.bitPos),
+                              pathCache, instanceGraph, visited, depth + 1);
+      continue;
+    }
+
     // For other operations, track conservatively (all bits to all bits)
     for (auto result : userOp->getResults()) {
-      auto type = result.getType();
-      if (auto intType = dyn_cast<IntegerType>(type)) {
-        for (size_t bit = 0; bit < intType.getWidth(); ++bit) {
-          Object userObj(obj.instancePath, result, bit);
-          trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                                  depth + 1);
-        }
-      } else {
-        Object userObj(obj.instancePath, result, 0);
-        trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                                depth + 1);
-      }
+      llvm::errs() << "unknown!" << *userOp << "\n";
+      // auto type = result.getType();
+      // if (auto intType = dyn_cast<IntegerType>(type)) {
+      //   for (size_t bit = 0; bit < intType.getWidth(); ++bit) {
+      //     Object userObj(obj.instancePath, result, bit);
+      //     trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
+      //                             depth + 1);
+      //   }
+      // } else {
+      //   Object userObj(obj.instancePath, result, 0);
+      //   trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
+      //                           depth + 1);
+      // }
     }
   }
 }
@@ -484,7 +513,8 @@ void BackwardSignalTrackerPass::runOnOperation() {
 
   auto topModule = dyn_cast<hw::HWModuleOp>(*topNode->getModule());
   if (!topModule) {
-    moduleOp.emitError("top module '") << topModuleName << "' is not an HWModuleOp";
+    moduleOp.emitError("top module '")
+        << topModuleName << "' is not an HWModuleOp";
     return signalPassFailure();
   }
 
