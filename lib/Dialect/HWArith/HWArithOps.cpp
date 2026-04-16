@@ -15,6 +15,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/APSInt.h"
+#include "mlir/IR/OperationSupport.h"
 
 using namespace circt;
 using namespace hwarith;

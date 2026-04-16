@@ -332,4 +332,37 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
   let dependentDialects = ["synth::SynthDialect"];
 }
 
+def BackwardSignalTracker : Pass<"synth-backward-signal-tracker", "mlir::ModuleOp"> {
+  let summary = "Track signals backward from specific objects to find all users";
+  let description = [{
+    This pass performs backward signal tracking from specified objects to identify
+    all users in the dataflow graph. It uses bit-sensitive Object tracking from
+    LongestPathAnalysis to precisely track individual bits through the circuit.
+
+    Target signals are specified with instance paths in the format:
+      inst1/inst2/signal_name
+
+    For signals in the top module:
+      signal_name
+
+    The pass can be used to:
+    - Find all users of a specific signal or register
+    - Trace backward dependencies from a given point
+    - Analyze fanout and usage patterns
+
+    Results are dumped to stdout for analysis purposes.
+    The input module is assumed to be synthesized.
+  }];
+
+  let options = [
+    ListOption<"targetSignals", "target-signals", "std::string",
+               "Instance paths to target signals (e.g., 'inst1/inst2/reg_q')">,
+    Option<"topModuleName", "top-module-name", "std::string", /*default=*/"",
+           "Name of the top module to analyze (required)">
+  ];
+
+  let dependentDialects = ["circt::comb::CombDialect", "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect", "circt::seq::SeqDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

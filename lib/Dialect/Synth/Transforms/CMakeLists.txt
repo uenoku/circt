@@ -8,6 +8,7 @@
 
 add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
+  BackwardSignalTracker.cpp
   CutRewriter.cpp
   FunctionalReduction.cpp
   GenericLUTMapper.cpp
