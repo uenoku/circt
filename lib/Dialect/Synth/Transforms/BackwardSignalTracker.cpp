@@ -140,8 +140,24 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
   if (pathParts.empty())
     return false;
 
-  // The last element is the signal name
-  StringRef signalName = pathParts.back();
+  // The last element is the signal name, possibly with bit index
+  StringRef signalWithBit = pathParts.back();
+  StringRef signalName = signalWithBit;
+  std::optional<unsigned> bitIndex;
+
+  // Check for bit index like signal_name[9]
+  size_t bracketPos = signalWithBit.find('[');
+  if (bracketPos != StringRef::npos) {
+    signalName = signalWithBit.substr(0, bracketPos);
+    size_t endBracket = signalWithBit.find(']', bracketPos);
+    if (endBracket != StringRef::npos) {
+      StringRef bitStr = signalWithBit.substr(bracketPos + 1, endBracket - bracketPos - 1);
+      unsigned bit;
+      if (!bitStr.getAsInteger(10, bit)) {
+        bitIndex = bit;
+      }
+    }
+  }
 
   // Navigate through instance hierarchy
   hw::HWModuleOp currentModule = topModule;
@@ -209,11 +225,23 @@ bool BackwardSignalTrackerPass::findObjectFromPath(
     return false;
   }
 
-  // Create Objects for each bit
+  // Create Objects for specified bit(s)
   auto type = targetValue.getType();
   if (auto intType = dyn_cast<IntegerType>(type)) {
-    for (size_t bit = 0; bit < intType.getWidth(); ++bit) {
-      results.push_back(Object(instancePath, targetValue, bit));
+    if (bitIndex) {
+      // Only create object for the specified bit
+      if (*bitIndex < intType.getWidth()) {
+        results.push_back(Object(instancePath, targetValue, *bitIndex));
+      } else {
+        llvm::errs() << "Bit index " << *bitIndex << " out of range for signal '"
+                     << signalName << "' (width: " << intType.getWidth() << ")\n";
+        return false;
+      }
+    } else {
+      // Create objects for all bits
+      for (size_t bit = 0; bit < intType.getWidth(); ++bit) {
+        results.push_back(Object(instancePath, targetValue, bit));
+      }
     }
   } else {
     // For non-integer types, create a single bit-0 object
