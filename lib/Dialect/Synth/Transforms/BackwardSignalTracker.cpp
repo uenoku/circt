@@ -280,7 +280,14 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       shouldShow = false;
   }
   if (shouldShow) {
-    llvm::outs() << std::string(depth * 2, ' ') << "User: $root";
+    std::string kind = "input port";
+    if (auto op = obj.value.getDefiningOp()) {
+      if (isa<hw::InstanceOp>(op))
+        kind = "output port";
+      else
+        kind = op->getName().getStringRef();
+    }
+    llvm::outs() << std::string(depth * 2, ' ') << kind << " ";
 
     // Print instance path
     for (auto inst : obj.instancePath) {
@@ -290,7 +297,13 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
 
     // Print value name if available
     if (auto *defOp = obj.value.getDefiningOp()) {
-      if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
+      if (auto instance = dyn_cast<hw::InstanceOp>(defOp)) {
+        llvm::outs() << "/" << instance.getInstanceName() << "/"
+                     << cast<StringAttr>(
+                            instance.getResultNames()[cast<OpResult>(obj.value)
+                                                          .getResultNumber()])
+                            .getValue();
+      } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
         llvm::outs() << "/" << nameAttr.getValue();
       } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
         llvm::outs() << "/" << nameAttr.getValue();
@@ -301,14 +314,14 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
               dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
         auto inputNames = module.getInputNames();
         auto argNum = blockArg.getArgNumber();
-        if (argNum < inputNames.size()) {
-          llvm::outs() << "/"
-                       << cast<StringAttr>(inputNames[argNum]).getValue();
-        }
+        assert(argNum < inputNames.size());
+        llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
       }
     }
 
-    llvm::outs() << "[" << obj.bitPos << "]\n";
+    llvm::outs() << "[" << obj.bitPos << "] (hasEmptyUse="
+                 << (obj.value.use_empty() ? "true" : "false") << ") "
+                 << obj.value.getLoc() << "\n";
   }
 
   if (auto op = obj.value.getDefiningOp()) {
@@ -402,7 +415,7 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
         Object userObj(obj.instancePath, extractOp.getResult(),
                        obj.bitPos - lowBit);
         trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                                depth + 1);
+                                depth);
       }
       continue;
     }
@@ -422,7 +435,7 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       Object userObj(obj.instancePath, concatOp.getResult(),
                      bitOffset + obj.bitPos);
       trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                              depth + 1);
+                              depth);
       continue;
     }
 
@@ -439,7 +452,7 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
         Object userObj(obj.instancePath, replicateOp.getResult(),
                        obj.bitPos + i * inputWidth);
         trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                                depth + 1);
+                                depth);
       }
       continue;
     }
@@ -452,14 +465,15 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
       if (obj.bitPos < resultType.getWidth()) {
         Object userObj(obj.instancePath, aigOp.getResult(), obj.bitPos);
         trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
-                                depth + 1);
+                                depth);
       }
       continue;
     }
 
     if (isa<seq::FirRegOp, hw::WireOp>(userOp)) {
-      trackBackwardFromObject(Object(obj.instancePath, userOp->getResult(0), obj.bitPos),
-                              pathCache, instanceGraph, visited, depth + 1);
+      trackBackwardFromObject(
+          Object(obj.instancePath, userOp->getResult(0), obj.bitPos), pathCache,
+          instanceGraph, visited, depth);
       continue;
     }
 
