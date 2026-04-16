@@ -86,7 +86,7 @@ Value BackwardSignalTrackerPass::findValueInModule(hw::HWModuleOp module,
   Value result;
   module.walk([&](Operation *op) {
     // Check for registers
-    if (auto reg = dyn_cast<seq::CompRegOp>(op)) {
+    if (auto reg = dyn_cast<seq::FirRegOp>(op)) {
       if (auto nameAttr = op->getAttrOfType<StringAttr>("name")) {
         if (nameAttr.getValue() == name) {
           result = reg.getResult();
@@ -294,6 +294,58 @@ void BackwardSignalTrackerPass::trackBackwardFromObject(
           trackBackwardFromObject(newObj, pathCache, instanceGraph, visited,
                                   depth + 1);
         }
+      }
+      continue;
+    }
+
+    // Handle extract: result[i] comes from input[lowBit + i]
+    if (auto extractOp = dyn_cast<comb::ExtractOp>(userOp)) {
+      unsigned lowBit = extractOp.getLowBit();
+      auto resultType = cast<IntegerType>(extractOp.getResult().getType());
+
+      // Check if obj.bitPos is within the extracted range [lowBit, lowBit + width)
+      if (obj.bitPos >= lowBit && obj.bitPos < lowBit + resultType.getWidth()) {
+        // This bit is extracted to result[obj.bitPos - lowBit]
+        Object userObj(obj.instancePath, extractOp.getResult(),
+                       obj.bitPos - lowBit);
+        trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
+                                depth + 1);
+      }
+      continue;
+    }
+
+    // Handle concat: MSB to LSB ordering
+    if (auto concatOp = dyn_cast<comb::ConcatOp>(userOp)) {
+      unsigned operandIdx = use.getOperandNumber();
+      unsigned bitOffset = 0;
+
+      // Calculate offset: sum widths of all operands after this one
+      for (unsigned i = concatOp.getNumOperands() - 1; i > operandIdx; --i) {
+        auto opType = cast<IntegerType>(concatOp.getOperand(i).getType());
+        bitOffset += opType.getWidth();
+      }
+
+      // obj.bitPos in this operand becomes (bitOffset + obj.bitPos) in result
+      Object userObj(obj.instancePath, concatOp.getResult(),
+                     bitOffset + obj.bitPos);
+      trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
+                              depth + 1);
+      continue;
+    }
+
+    // Handle replicate: input repeated multiple times
+    if (auto replicateOp = dyn_cast<comb::ReplicateOp>(userOp)) {
+      auto inputType = cast<IntegerType>(replicateOp.getInput().getType());
+      auto resultType = cast<IntegerType>(replicateOp.getResult().getType());
+      unsigned inputWidth = inputType.getWidth();
+      unsigned multiple = resultType.getWidth() / inputWidth;
+
+      // obj.bitPos appears at: bitPos, bitPos + inputWidth, bitPos + 2*inputWidth, ...
+      for (unsigned i = 0; i < multiple; ++i) {
+        Object userObj(obj.instancePath, replicateOp.getResult(),
+                       obj.bitPos + i * inputWidth);
+        trackBackwardFromObject(userObj, pathCache, instanceGraph, visited,
+                                depth + 1);
       }
       continue;
     }
