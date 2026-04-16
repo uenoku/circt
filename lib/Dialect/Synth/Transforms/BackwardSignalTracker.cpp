@@ -611,8 +611,26 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
       unsigned sourceBit = obj.bitPos % inputWidth;
       Object sourceObj(obj.instancePath, replicateOp.getInput(), sourceBit);
       trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
-    } else if (isa<synth::aig::AndInverterOp, seq::FirRegOp, seq::CompRegOp>(defOp)) {
-      // Bitwise/register - track through all operands with same bit position
+    } else if (auto firregOp = dyn_cast<seq::FirRegOp>(defOp)) {
+      // FirReg - track through getNext() only
+      Value nextVal = firregOp.getNext();
+      if (auto intType = dyn_cast<IntegerType>(nextVal.getType())) {
+        if (obj.bitPos < intType.getWidth()) {
+          Object sourceObj(obj.instancePath, nextVal, obj.bitPos);
+          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+        }
+      }
+    } else if (auto compregOp = dyn_cast<seq::CompRegOp>(defOp)) {
+      // CompReg - track through getInput() only
+      Value inputVal = compregOp.getInput();
+      if (auto intType = dyn_cast<IntegerType>(inputVal.getType())) {
+        if (obj.bitPos < intType.getWidth()) {
+          Object sourceObj(obj.instancePath, inputVal, obj.bitPos);
+          trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
+        }
+      }
+    } else if (isa<synth::aig::AndInverterOp>(defOp)) {
+      // AIG bitwise - track through all operands with same bit position
       for (auto operand : defOp->getOperands()) {
         if (auto intType = dyn_cast<IntegerType>(operand.getType())) {
           if (obj.bitPos < intType.getWidth()) {
