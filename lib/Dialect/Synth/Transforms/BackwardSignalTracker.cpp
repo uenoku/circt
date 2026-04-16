@@ -499,39 +499,61 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
   if (!visited.insert(obj).second)
     return;
 
-  // Print the current object in Verilog-style path format
-  llvm::outs() << std::string(depth * 2, ' ') << "Drives: $root";
-
-  // Print instance path
-  for (auto inst : obj.instancePath) {
-    llvm::outs() << "/" << cast<hw::InstanceOp>(inst.getOperation()).getInstanceName();
+  // Print the current object in same format as backward tracking
+  bool shouldShow = true;
+  if (auto op = obj.value.getDefiningOp()) {
+    if (isa_and_nonnull<comb::CombDialect, synth::SynthDialect>(
+            op->getDialect()))
+      shouldShow = false;
   }
 
-  // Print value name if available
-  if (auto *defOp = obj.value.getDefiningOp()) {
-    if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
-      llvm::outs() << "/" << nameAttr.getValue();
-    } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
-      llvm::outs() << "/" << nameAttr.getValue();
+  if (shouldShow) {
+    std::string kind = "input port";
+    if (auto op = obj.value.getDefiningOp()) {
+      if (isa<hw::InstanceOp>(op))
+        kind = "output port";
+      else
+        kind = op->getName().getStringRef();
     }
-  } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
-    // For block arguments (module inputs), get the port name
-    if (auto module = dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
-      auto inputNames = module.getInputNames();
-      auto argNum = blockArg.getArgNumber();
-      if (argNum < inputNames.size()) {
+    llvm::outs() << std::string(depth * 2, ' ') << kind << " ";
+
+    // Print instance path
+    for (auto inst : obj.instancePath) {
+      llvm::outs()
+          << "/" << cast<hw::InstanceOp>(inst.getOperation()).getInstanceName();
+    }
+
+    // Print value name if available
+    if (auto *defOp = obj.value.getDefiningOp()) {
+      if (auto instance = dyn_cast<hw::InstanceOp>(defOp)) {
+        llvm::outs() << "/" << instance.getInstanceName() << "/"
+                     << cast<StringAttr>(
+                            instance.getResultNames()[cast<OpResult>(obj.value)
+                                                          .getResultNumber()])
+                            .getValue();
+      } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("name")) {
+        llvm::outs() << "/" << nameAttr.getValue();
+      } else if (auto nameAttr = defOp->getAttrOfType<StringAttr>("sym_name")) {
+        llvm::outs() << "/" << nameAttr.getValue();
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
+      // For block arguments (module inputs), get the port name
+      if (auto module =
+              dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp())) {
+        auto inputNames = module.getInputNames();
+        auto argNum = blockArg.getArgNumber();
+        assert(argNum < inputNames.size());
         llvm::outs() << "/" << cast<StringAttr>(inputNames[argNum]).getValue();
       }
     }
-  }
 
-  llvm::outs() << "[" << obj.bitPos << "]\n";
+    llvm::outs() << "[" << obj.bitPos << "] (hasEmptyUse="
+                 << (obj.value.use_empty() ? "true" : "false") << ") "
+                 << obj.value.getLoc() << "\n";
+  }
 
   // Forward tracking: find what this value drives (its operands define it)
   if (auto *defOp = obj.value.getDefiningOp()) {
-    llvm::outs() << std::string((depth + 1) * 2, ' ')
-                 << "Defined by operation: " << defOp->getName() << "\n";
-
     // Handle instance outputs - track into the instance
     if (auto instanceOp = dyn_cast<hw::InstanceOp>(defOp)) {
       // Find which output this is
@@ -612,6 +634,25 @@ void BackwardSignalTrackerPass::trackForwardFromObject(
                      << defOp->getName() << "\n";
       }
     }
+  } else if (auto blockArg = dyn_cast<BlockArgument>(obj.value)) {
+    // For block arguments (input ports), track backward to find the driving instance
+    auto module = dyn_cast<hw::HWModuleOp>(blockArg.getOwner()->getParentOp());
+    if (!module)
+      return;
+
+    auto argNum = blockArg.getArgNumber();
+
+    // Pop the instance path to get to parent
+    if (obj.instancePath.empty())
+      return; // Already at top level, nothing drives this
+
+    igraph::InstancePath parentPath = obj.instancePath.dropBack();
+    auto lastInst = cast<hw::InstanceOp>(obj.instancePath.leaf().getOperation());
+
+    // The input is driven by the corresponding operand of the instance
+    Value drivingValue = lastInst.getOperand(argNum);
+    Object sourceObj(parentPath, drivingValue, obj.bitPos);
+    trackForwardFromObject(sourceObj, pathCache, instanceGraph, visited, depth + 1);
   }
 }
 
