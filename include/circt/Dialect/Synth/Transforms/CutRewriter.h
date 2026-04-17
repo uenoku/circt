@@ -119,16 +119,17 @@ struct LogicNetworkGate {
     Xor2 = 3,         ///< XOR gate (2-input)
     Maj3 = 4,         ///< Reserved 3-input gate kind
     Identity = 5,     ///< Identity gate (used for 1-input inverter)
-    Choice = 6        ///< Choice node (synth.choice)
+    Choice = 6,       ///< Choice node (synth.choice)
+    Dot3 = 7          ///< Ordered DOT gate (3-input, synth.dot)
   };
 
   /// Operation pointer and kind packed together.
   /// The kind is stored in the low bits of the pointer.
   llvm::PointerIntPair<Operation *, 3, Kind> opAndKind;
 
-  /// Fanin edges (up to 3 inputs). For AND gates, only edges[0] and edges[1]
-  /// are used. For PrimaryInput/Constant and Choice, none are used. The
-  /// inversion bit is encoded in each edge.
+  /// Fanin edges (up to 3 inputs). For AND/XOR gates, only edges[0] and
+  /// edges[1] are used. For PrimaryInput/Constant and Choice, none are used.
+  /// The inversion bit is encoded in each edge.
   Signal edges[3];
 
   LogicNetworkGate() : opAndKind(nullptr, Constant), edges{} {}
@@ -156,6 +157,7 @@ struct LogicNetworkGate {
     case Xor2:
       return 2;
     case Maj3:
+    case Dot3:
       return 3;
     case Identity:
       return 1;
@@ -168,7 +170,8 @@ struct LogicNetworkGate {
   /// Check if this is a logic gate that can be part of a cut.
   bool isLogicGate() const {
     Kind k = getKind();
-    return k == And2 || k == Xor2 || k == Maj3 || k == Identity || k == Choice;
+    return k == And2 || k == Xor2 || k == Maj3 || k == Identity ||
+           k == Choice || k == Dot3;
   }
 
   /// Check if this should always be a cut input (PI or constant).

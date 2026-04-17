@@ -110,3 +110,23 @@ func.func @Basic_No_Module(%arg0: i2, %arg1: i2) -> i2 {
   %1 = synth.aig.and_inv not %0, not %0 : i2
   return %1 : i2
 }
+
+// CHECK-LABEL: hw.module @SynthLogic
+hw.module @SynthLogic(in %a: i2, in %b: i2, in %c: i2, out x: i2, out y: i2) {
+  %0 = synth.xor_inv %a, not %b, %c : i2
+  %1 = synth.dot not %a, %b, %c : i2
+  // CHECK-DAG: %[[A0:.+]] = comb.extract %a from 0 : (i2) -> i1
+  // CHECK-DAG: %[[A1:.+]] = comb.extract %a from 1 : (i2) -> i1
+  // CHECK-DAG: %[[B0:.+]] = comb.extract %b from 0 : (i2) -> i1
+  // CHECK-DAG: %[[B1:.+]] = comb.extract %b from 1 : (i2) -> i1
+  // CHECK-DAG: %[[C0:.+]] = comb.extract %c from 0 : (i2) -> i1
+  // CHECK-DAG: %[[C1:.+]] = comb.extract %c from 1 : (i2) -> i1
+  // CHECK-DAG: %[[X0:.+]] = synth.xor_inv %[[A0]], not %[[B0]], %[[C0]] : i1
+  // CHECK-DAG: %[[X1:.+]] = synth.xor_inv %[[A1]], not %[[B1]], %[[C1]] : i1
+  // CHECK-DAG: %[[D0:.+]] = synth.dot not %[[A0]], %[[B0]], %[[C0]] : i1
+  // CHECK-DAG: %[[D1:.+]] = synth.dot not %[[A1]], %[[B1]], %[[C1]] : i1
+  // CHECK-DAG: %[[XC:.+]] = comb.concat %[[X1]], %[[X0]] : i1, i1
+  // CHECK-DAG: %[[DC:.+]] = comb.concat %[[D1]], %[[D0]] : i1, i1
+  // CHECK-DAG: hw.output %[[XC]], %[[DC]] : i2, i2
+  hw.output %0, %1 : i2, i2
+}
