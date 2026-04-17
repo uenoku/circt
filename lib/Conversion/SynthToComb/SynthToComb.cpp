@@ -42,29 +42,6 @@ static Value materializeInvertedInput(Location loc, Value input, bool inverted,
   return rewriter.createOrFold<comb::XorOp>(loc, input, allOnes, true);
 }
 
-template <typename A>
-static A andEval(ArrayRef<A> inputs) {
-  assert(!inputs.empty() && "expected non-empty input list");
-  A result = inputs.front();
-  for (const A &input : inputs.drop_front())
-    result = result & input;
-  return result;
-}
-
-template <typename A>
-static A xorEval(ArrayRef<A> inputs) {
-  assert(!inputs.empty() && "expected non-empty input list");
-  A result = inputs.front();
-  for (const A &input : inputs.drop_front())
-    result = result ^ input;
-  return result;
-}
-
-template <typename A>
-static A dotEval(A x, A y, A z) {
-  return x ^ (z | (x & y));
-}
-
 struct CombExpr {
   Location loc;
   ConversionPatternRewriter *rewriter;
@@ -143,7 +120,7 @@ struct SynthAndInverterOpConversion
   Value createOp(Location loc, ArrayRef<Value> inputs,
                  ConversionPatternRewriter &rewriter) const override {
     auto exprs = asCombExprs(loc, inputs, rewriter);
-    return andEval(ArrayRef<CombExpr>(exprs));
+    return synth::aig::AndInverterOp::template eval<CombExpr>(exprs);
   }
 };
 
@@ -154,7 +131,7 @@ struct SynthXorInverterOpConversion
   Value createOp(Location loc, ArrayRef<Value> inputs,
                  ConversionPatternRewriter &rewriter) const override {
     auto exprs = asCombExprs(loc, inputs, rewriter);
-    return xorEval(ArrayRef<CombExpr>(exprs));
+    return synth::XorInverterOp::template eval<CombExpr>(exprs);
   }
 };
 
@@ -164,7 +141,7 @@ struct SynthDotOpConversion : SynthInverterOpConversion<synth::DotOp> {
                  ConversionPatternRewriter &rewriter) const override {
     assert(inputs.size() == 3 && "expected exactly three inputs");
     auto exprs = asCombExprs(loc, inputs, rewriter);
-    return dotEval(exprs[0], exprs[1], exprs[2]);
+    return synth::DotOp::template eval<CombExpr>(exprs);
   }
 };
 

@@ -88,6 +88,16 @@ def AndInverterOp : InvertibleOperandsOp<"aig.and_inv"> {
   let hasFolder = 1;
   let hasCanonicalizeMethod = 1;
   let cppNamespace = "::circt::synth::aig";
+  let extraClassDeclaration = [{
+    template <typename T>
+    static T eval(::llvm::ArrayRef<T> inputs) {
+      assert(!inputs.empty() && "expected non-empty input list");
+      T result = inputs.front();
+      for (const T &input : inputs.drop_front())
+        result = result & input;
+      return result;
+    }
+  }];
 }
 
 def XorInverterOp : InvertibleOperandsOp<"xor_inv"> {
@@ -117,7 +127,16 @@ def XorInverterOp : InvertibleOperandsOp<"xor_inv"> {
       SmallVector<bool> inverted {invertLhs, invertRhs};
       return build($_builder, $_state, {lhs, rhs}, inverted);
     }]>];
-
+  let extraClassDeclaration = [{
+    template <typename T>
+    static T eval(::llvm::ArrayRef<T> inputs) {
+      assert(!inputs.empty() && "expected non-empty input list");
+      T result = inputs.front();
+      for (const T &input : inputs.drop_front())
+        result = result ^ input;
+      return result;
+    }
+  }];
 }
 
 def DotOp : InvertibleOperandsOp<"dot"> {
@@ -144,6 +163,13 @@ def DotOp : InvertibleOperandsOp<"dot"> {
     }]>];
 
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    template <typename T>
+    static T eval(::llvm::ArrayRef<T> inputs) {
+      assert(inputs.size() == 3 && "expected exactly three inputs");
+      return inputs[0] ^ (inputs[2] | (inputs[0] & inputs[1]));
+    }
+  }];
 }
 
 def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {

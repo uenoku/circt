@@ -33,55 +33,9 @@ using namespace circt::synth::aig;
 
 namespace {
 
-// Keep inversion semantics identical across folding, analysis, and CNF
-// lowering so new invertible Synth ops can reuse the same helpers.
-inline APInt applyInversion(APInt value, bool inverted) {
-  if (inverted)
-    value.flipAllBits();
-  return value;
-}
-
-inline llvm::KnownBits applyInversion(llvm::KnownBits value, bool inverted) {
-  if (inverted)
-    std::swap(value.Zero, value.One);
-  return value;
-}
-
 inline int applyInversion(int lit, bool inverted) {
   assert(lit != 0 && "expected non-zero SAT literal");
   return inverted ? -lit : lit;
-}
-
-template <typename A>
-static A andEval(ArrayRef<A> inputs) {
-  assert(!inputs.empty() && "expected non-empty input list");
-  A result = inputs.front();
-  for (const A &input : inputs.drop_front())
-    result = result & input;
-  return result;
-}
-
-template <typename A>
-static A xorEval(ArrayRef<A> inputs) {
-  assert(!inputs.empty() && "expected non-empty input list");
-  A result = inputs.front();
-  for (const A &input : inputs.drop_front())
-    result = result ^ input;
-  return result;
-}
-
-template <typename A>
-static A dotEval(A x, A y, A z) {
-  return x ^ (z | (x & y));
-}
-
-template <typename T, typename GetInput>
-static SmallVector<T> collectInputs(unsigned numInputs, GetInput getInput) {
-  SmallVector<T> inputs;
-  inputs.reserve(numInputs);
-  for (unsigned i = 0; i < numInputs; ++i)
-    inputs.push_back(getInput(i));
-  return inputs;
 }
 
 } // namespace
@@ -267,23 +221,6 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
   return success();
 }
 
-APInt AndInverterOp::evaluateBooleanLogic(
-    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  auto inputs = collectInputs<APInt>(getNumOperands(), getInputValue);
-  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    inputs[idx] = applyInversion(std::move(inputs[idx]), inverted);
-  return andEval(ArrayRef<APInt>(inputs));
-}
-
-llvm::KnownBits AndInverterOp::computeKnownBits(
-    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
-  auto inputs =
-      collectInputs<llvm::KnownBits>(getNumOperands(), getInputKnownBits);
-  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    inputs[idx] = applyInversion(std::move(inputs[idx]), inverted);
-  return andEval(ArrayRef<llvm::KnownBits>(inputs));
-}
-
 int64_t AndInverterOp::getLogicDepthCost() {
   return llvm::Log2_64_Ceil(getNumOperands());
 }
@@ -315,23 +252,6 @@ void AndInverterOp::emitCNF(
 //===----------------------------------------------------------------------===//
 
 bool XorInverterOp::areInputsPermutationInvariant() { return true; }
-
-APInt XorInverterOp::evaluateBooleanLogic(
-    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  auto inputs = collectInputs<APInt>(getNumOperands(), getInputValue);
-  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    inputs[idx] = applyInversion(std::move(inputs[idx]), inverted);
-  return xorEval(ArrayRef<APInt>(inputs));
-}
-
-llvm::KnownBits XorInverterOp::computeKnownBits(
-    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
-  auto inputs =
-      collectInputs<llvm::KnownBits>(getNumOperands(), getInputKnownBits);
-  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    inputs[idx] = applyInversion(std::move(inputs[idx]), inverted);
-  return xorEval(ArrayRef<llvm::KnownBits>(inputs));
-}
 
 int64_t XorInverterOp::getLogicDepthCost() {
   return llvm::Log2_64_Ceil(getNumOperands());
@@ -368,22 +288,6 @@ LogicalResult DotOp::verify() {
 }
 
 bool DotOp::areInputsPermutationInvariant() { return false; }
-
-APInt DotOp::evaluateBooleanLogic(
-    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  APInt x = applyInversion(getInputValue(0), isInverted(0));
-  APInt y = applyInversion(getInputValue(1), isInverted(1));
-  APInt z = applyInversion(getInputValue(2), isInverted(2));
-  return dotEval(x, y, z);
-}
-
-llvm::KnownBits DotOp::computeKnownBits(
-    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
-  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
-  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
-  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
-  return dotEval(x, y, z);
-}
 
 int64_t DotOp::getLogicDepthCost() { return 1; }
 

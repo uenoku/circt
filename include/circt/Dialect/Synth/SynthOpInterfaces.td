@@ -95,7 +95,20 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         inversion described by the operation itself.
       }],
       "::llvm::APInt", "evaluateBooleanLogic",
-      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
+      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        auto concreteOp = ::mlir::cast<ConcreteOp>($_op);
+        ::llvm::SmallVector<::llvm::APInt> inputs;
+        inputs.reserve(concreteOp.getNumOperands());
+        for (unsigned i = 0, e = concreteOp.getNumOperands(); i < e; ++i) {
+          auto value = getInputValue(i);
+          if (concreteOp.isInverted(i))
+            value.flipAllBits();
+          inputs.push_back(value);
+        }
+        return ConcreteOp::template eval<::llvm::APInt>(inputs);
+      }]
     >,
     InterfaceMethod<[{
         Compute known bits for the result from the logical inputs.
@@ -103,7 +116,20 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         described by the operation itself.
       }],
       "::llvm::KnownBits", "computeKnownBits",
-      (ins "::llvm::function_ref<const ::llvm::KnownBits &(unsigned)>":$getInputKnownBits)
+      (ins "::llvm::function_ref<const ::llvm::KnownBits &(unsigned)>":$getInputKnownBits),
+      /*methodBody=*/[{}],
+      /*defaultImplementation=*/[{
+        auto concreteOp = ::mlir::cast<ConcreteOp>($_op);
+        ::llvm::SmallVector<::llvm::KnownBits> inputs;
+        inputs.reserve(concreteOp.getNumOperands());
+        for (unsigned i = 0, e = concreteOp.getNumOperands(); i < e; ++i) {
+          auto value = getInputKnownBits(i);
+          if (concreteOp.isInverted(i))
+            std::swap(value.Zero, value.One);
+          inputs.push_back(value);
+        }
+        return ConcreteOp::template eval<::llvm::KnownBits>(inputs);
+      }]
     >,
     InterfaceMethod<[{
         Return the abstract logic depth cost contributed by this operation.
