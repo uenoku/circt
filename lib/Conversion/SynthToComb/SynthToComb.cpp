@@ -42,6 +42,69 @@ static Value materializeInvertedInput(Location loc, Value input, bool inverted,
   return rewriter.createOrFold<comb::XorOp>(loc, input, allOnes, true);
 }
 
+template <typename A>
+static A andEval(ArrayRef<A> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  A result = inputs.front();
+  for (const A &input : inputs.drop_front())
+    result = result & input;
+  return result;
+}
+
+template <typename A>
+static A xorEval(ArrayRef<A> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  A result = inputs.front();
+  for (const A &input : inputs.drop_front())
+    result = result ^ input;
+  return result;
+}
+
+template <typename A>
+static A dotEval(A x, A y, A z) {
+  return x ^ (z | (x & y));
+}
+
+struct CombExpr {
+  Location loc;
+  ConversionPatternRewriter *rewriter;
+  Value value;
+
+  friend CombExpr operator&(CombExpr lhs, CombExpr rhs) {
+    return {lhs.loc, lhs.rewriter,
+            lhs.rewriter->createOrFold<comb::AndOp>(lhs.loc, lhs.value,
+                                                    rhs.value, true)};
+  }
+
+  friend CombExpr operator|(CombExpr lhs, CombExpr rhs) {
+    return {lhs.loc, lhs.rewriter,
+            lhs.rewriter->createOrFold<comb::OrOp>(lhs.loc, lhs.value,
+                                                   rhs.value, true)};
+  }
+
+  friend CombExpr operator^(CombExpr lhs, CombExpr rhs) {
+    return {lhs.loc, lhs.rewriter,
+            lhs.rewriter->createOrFold<comb::XorOp>(lhs.loc, lhs.value,
+                                                    rhs.value, true)};
+  }
+
+  operator Value() const { return value; }
+};
+
+static CombExpr asCombExpr(Location loc, Value value,
+                           ConversionPatternRewriter &rewriter) {
+  return {loc, &rewriter, value};
+}
+
+static SmallVector<CombExpr> asCombExprs(Location loc, ArrayRef<Value> inputs,
+                                         ConversionPatternRewriter &rewriter) {
+  SmallVector<CombExpr> exprs;
+  exprs.reserve(inputs.size());
+  for (Value input : inputs)
+    exprs.push_back(asCombExpr(loc, input, rewriter));
+  return exprs;
+}
+
 struct SynthChoiceOpConversion : OpConversionPattern<synth::ChoiceOp> {
   using OpConversionPattern<synth::ChoiceOp>::OpConversionPattern;
   LogicalResult
@@ -79,7 +142,8 @@ struct SynthAndInverterOpConversion
       synth::aig::AndInverterOp>::SynthInverterOpConversion;
   Value createOp(Location loc, ArrayRef<Value> inputs,
                  ConversionPatternRewriter &rewriter) const override {
-    return rewriter.createOrFold<comb::AndOp>(loc, inputs, true);
+    auto exprs = asCombExprs(loc, inputs, rewriter);
+    return andEval(ArrayRef<CombExpr>(exprs));
   }
 };
 
@@ -89,7 +153,8 @@ struct SynthXorInverterOpConversion
       synth::XorInverterOp>::SynthInverterOpConversion;
   Value createOp(Location loc, ArrayRef<Value> inputs,
                  ConversionPatternRewriter &rewriter) const override {
-    return rewriter.createOrFold<comb::XorOp>(loc, inputs, true);
+    auto exprs = asCombExprs(loc, inputs, rewriter);
+    return xorEval(ArrayRef<CombExpr>(exprs));
   }
 };
 
@@ -98,10 +163,8 @@ struct SynthDotOpConversion : SynthInverterOpConversion<synth::DotOp> {
   Value createOp(Location loc, ArrayRef<Value> inputs,
                  ConversionPatternRewriter &rewriter) const override {
     assert(inputs.size() == 3 && "expected exactly three inputs");
-    auto xy =
-        rewriter.createOrFold<comb::AndOp>(loc, inputs[0], inputs[1], true);
-    auto zOrXy = rewriter.createOrFold<comb::OrOp>(loc, inputs[2], xy, true);
-    return rewriter.createOrFold<comb::XorOp>(loc, inputs[0], zOrXy, true);
+    auto exprs = asCombExprs(loc, inputs, rewriter);
+    return dotEval(exprs[0], exprs[1], exprs[2]);
   }
 };
 

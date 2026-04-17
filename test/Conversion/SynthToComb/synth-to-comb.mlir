@@ -6,7 +6,9 @@ hw.module @test(in %a: i32, in %b: i32, in %c: i32, in %d: i32, out out0: i32) {
   // CHECK: %[[NOT_A:.+]] = comb.xor bin %a, %[[ONES0]] : i32
   // CHECK: %[[ONES1:.+]] = hw.constant -1 : i32
   // CHECK: %[[NOT_C:.+]] = comb.xor bin %c, %[[ONES1]] : i32
-  // CHECK: %[[RESULT:.+]] = comb.and bin %[[NOT_A]], %b, %[[NOT_C]], %d : i32
+  // CHECK: %[[AB:.+]] = comb.and bin %[[NOT_A]], %b : i32
+  // CHECK: %[[ABC:.+]] = comb.and bin %[[AB]], %[[NOT_C]] : i32
+  // CHECK: %[[RESULT:.+]] = comb.and bin %[[ABC]], %d : i32
   // CHECK: hw.output %[[RESULT]] : i32
   %0 = synth.aig.and_inv not %a, %b, not %c, %d : i32
   hw.output %0 : i32
@@ -23,7 +25,8 @@ hw.module @test_choice(in %a: i32, in %b: i32, in %c: i32, out out0: i32) {
 hw.module @test_xor_inv(in %a: i8, in %b: i8, in %c: i8, out out0: i8) {
   // CHECK: %c-1_i8 = hw.constant -1 : i8
   // CHECK: %[[NOT_B:.+]] = comb.xor bin %b, %c-1_i8 : i8
-  // CHECK: %[[RESULT:.+]] = comb.xor bin %a, %[[NOT_B]], %c : i8
+  // CHECK: %[[AB:.+]] = comb.xor bin %a, %[[NOT_B]] : i8
+  // CHECK: %[[RESULT:.+]] = comb.xor bin %[[AB]], %c : i8
   %0 = synth.xor_inv %a, not %b, %c : i8
   hw.output %0 : i8
 }

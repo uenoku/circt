@@ -479,14 +479,37 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   }
 }
 
+template <typename A>
+static A andEval(ArrayRef<A> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  A result = inputs.front();
+  for (const A &input : inputs.drop_front())
+    result = result & input;
+  return result;
+}
+
+template <typename A>
+static A xorEval(ArrayRef<A> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  A result = inputs.front();
+  for (const A &input : inputs.drop_front())
+    result = result ^ input;
+  return result;
+}
+
+template <typename A>
+static A dotEval(A x, A y, A z) {
+  return x ^ (z | (x & y));
+}
+
 static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
                                              const llvm::APInt &a,
                                              const llvm::APInt &b) {
   switch (kind) {
   case LogicNetworkGate::And2:
-    return a & b;
+    return andEval(ArrayRef<llvm::APInt>{a, b});
   case LogicNetworkGate::Xor2:
-    return a ^ b;
+    return xorEval(ArrayRef<llvm::APInt>{a, b});
   default:
     llvm_unreachable(
         "Unsupported binary operation for truth table computation");
@@ -501,7 +524,7 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   case LogicNetworkGate::Maj3:
     return (a & b) | (a & c) | (b & c);
   case LogicNetworkGate::Dot3:
-    return a ^ (c | (a & b));
+    return dotEval(a, b, c);
   default:
     llvm_unreachable(
         "Unsupported ternary operation for truth table computation");
