@@ -338,6 +338,56 @@ void XorInverterOp::emitCNF(
   circt::addParityClauses(outVar, inputLits, addClause, newVar);
 }
 
+//===----------------------------------------------------------------------===//
+// DotOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult DotOp::verify() {
+  return getNumOperands() == 3 ? success()
+                               : emitOpError("requires exactly three operands");
+}
+
+bool DotOp::areInputsPermutationInvariant() { return false; }
+
+APInt DotOp::evaluateBooleanLogic(
+    llvm::function_ref<const APInt &(unsigned)> getInputValue) {
+  APInt x = applyInversion(getInputValue(0), isInverted(0));
+  APInt y = applyInversion(getInputValue(1), isInverted(1));
+  APInt z = applyInversion(getInputValue(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+llvm::KnownBits DotOp::computeKnownBits(
+    llvm::function_ref<const llvm::KnownBits &(unsigned)> getInputKnownBits) {
+  auto x = applyInversion(getInputKnownBits(0), isInverted(0));
+  auto y = applyInversion(getInputKnownBits(1), isInverted(1));
+  auto z = applyInversion(getInputKnownBits(2), isInverted(2));
+  return x ^ (z | (x & y));
+}
+
+int64_t DotOp::getLogicDepthCost() { return 1; }
+
+std::optional<uint64_t> DotOp::getLogicAreaCost() {
+  int64_t bitWidth = hw::getBitWidth(getType());
+  if (bitWidth < 0)
+    return std::nullopt;
+  return static_cast<uint64_t>(bitWidth);
+}
+
+void DotOp::emitCNF(int outVar, llvm::ArrayRef<int> inputVars,
+                    llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
+                    llvm::function_ref<int()> newVar) {
+  assert(inputVars.size() == 3 && "expected one SAT variable per operand");
+  int xLit = applyInversion(inputVars[0], isInverted(0));
+  int yLit = applyInversion(inputVars[1], isInverted(1));
+  int zLit = applyInversion(inputVars[2], isInverted(2));
+  int andVar = newVar();
+  int orVar = newVar();
+  circt::addAndClauses(andVar, {xLit, yLit}, addClause);
+  circt::addOrClauses(orVar, {zLit, andVar}, addClause);
+  circt::addXorClauses(outVar, xLit, orVar, addClause);
+}
+
 static Value lowerVariadicInvertibleOp(
     Location loc, ValueRange operands, ArrayRef<bool> inverts,
     PatternRewriter &rewriter,

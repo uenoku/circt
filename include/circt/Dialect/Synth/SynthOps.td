@@ -120,6 +120,32 @@ def XorInverterOp : InvertibleOperandsOp<"xor_inv"> {
 
 }
 
+def DotOp : InvertibleOperandsOp<"dot"> {
+  let summary = "Ordered 3-input DOT gate with invertible inputs";
+  let description = [{
+    The `synth.dot` operation represents the DIG dot gate described in
+    "Three-Input Gates for Logic Synthesis". Its ordered three-input semantics
+    are `x xor (z or (x and y))`, applied after optional per-input inversion.
+
+    Example:
+    ```mlir
+      %r0 = synth.dot %x, %y, %z : i1
+      %r1 = synth.dot not %x, %y, not %z : i8
+    ```
+  }];
+
+  let builders = [OpBuilder<(ins "Value":$x, "Value":$y, "Value":$z,
+                                CArg<"bool", "false">:$invertX,
+                                CArg<"bool", "false">:$invertY,
+                                CArg<"bool", "false">:$invertZ),
+                            [{
+      SmallVector<bool> inverted {invertX, invertY, invertZ};
+      return build($_builder, $_state, {x, y, z}, inverted);
+    }]>];
+
+  let hasVerifier = 1;
+}
+
 def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
   let summary = "Synth choice operation";
   let description = [{

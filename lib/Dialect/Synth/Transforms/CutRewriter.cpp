@@ -154,8 +154,10 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
 
   auto handleInvertibleBinaryGate = [&](auto logicOp,
                                         LogicNetworkGate::Kind kind) {
-    // The cut rewriter only has dedicated nodes for single-bit unary/binary
-    // gates. Wider or variadic forms stay as opaque cut inputs for now.
+    if (!logicOp.getType().isInteger(1)) {
+      handleOtherResults(logicOp);
+      return success();
+    }
     const auto inputs = logicOp.getInputs();
     if (inputs.size() == 1) {
       const Signal inputSignal = getInvertibleSignal(logicOp, 0);
@@ -166,9 +168,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
       const Signal lhsSignal = getInvertibleSignal(logicOp, 0);
       const Signal rhsSignal = getInvertibleSignal(logicOp, 1);
       addGate(logicOp, kind, {lhsSignal, rhsSignal});
+      return success();
     }
-    // Variadic gates with >2 inputs are treated as primary
-    // inputs for now.
     handleOtherResults(logicOp);
     return success();
   };
@@ -182,6 +183,18 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
             })
             .Case<synth::XorInverterOp>([&](synth::XorInverterOp xorOp) {
               return handleInvertibleBinaryGate(xorOp, LogicNetworkGate::Xor2);
+            })
+            .Case<synth::DotOp>([&](synth::DotOp dotOp) {
+              if (!dotOp.getType().isInteger(1)) {
+                handleOtherResults(dotOp);
+                return success();
+              }
+              const Signal xSignal = getInvertibleSignal(dotOp, 0);
+              const Signal ySignal = getInvertibleSignal(dotOp, 1);
+              const Signal zSignal = getInvertibleSignal(dotOp, 2);
+              addGate(dotOp, LogicNetworkGate::Dot3,
+                      {xSignal, ySignal, zSignal});
+              return success();
             })
             .Case<comb::XorOp>([&](comb::XorOp xorOp) {
               if (xorOp->getNumOperands() != 2) {
@@ -265,9 +278,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   const auto isOperationReady = [](Value value, Operation *op) -> bool {
     // Topologically sort AIG ops and dataflow ops. Other operations
     // can be scheduled.
-    return !(isa<aig::AndInverterOp, synth::XorInverterOp, synth::ChoiceOp,
-                 comb::XorOp, comb::AndOp, comb::OrOp, comb::ExtractOp,
-                 comb::ReplicateOp, comb::ConcatOp>(op));
+    return !(isa<aig::AndInverterOp, synth::XorInverterOp, synth::DotOp,
+                 synth::ChoiceOp, comb::XorOp, comb::AndOp, comb::OrOp,
+                 comb::ExtractOp, comb::ReplicateOp, comb::ConcatOp>(op));
   };
 
   if (failed(topologicallySortGraphRegionBlocks(topOp, isOperationReady)))
@@ -487,6 +500,8 @@ static inline llvm::APInt applyGateSemantics(LogicNetworkGate::Kind kind,
   switch (kind) {
   case LogicNetworkGate::Maj3:
     return (a & b) | (a & c) | (b & c);
+  case LogicNetworkGate::Dot3:
+    return a ^ (c | (a & b));
   default:
     llvm_unreachable(
         "Unsupported ternary operation for truth table computation");
@@ -585,6 +600,7 @@ struct MergedTruthTableBuilder {
           numMergedInputs, 1,
           applyGateSemantics(rootGate.getKind(), getEdgeTT(0), getEdgeTT(1)));
     case LogicNetworkGate::Maj3:
+    case LogicNetworkGate::Dot3:
       return BinaryTruthTable(numMergedInputs, 1,
                               applyGateSemantics(rootGate.getKind(),
                                                  getEdgeTT(0), getEdgeTT(1),
