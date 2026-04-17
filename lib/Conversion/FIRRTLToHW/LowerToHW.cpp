@@ -180,6 +180,7 @@ struct AssertVerif {
   using ImmediateOp = sv::AssertOp;
   using ConcurrentOp = sv::AssertConcurrentOp;
   using ClockedOp = verif::ClockedAssertOp;
+  using VerifOp = verif::AssertOp;
 
   static constexpr StringLiteral labelPrefix = "assert__";
   static constexpr bool isCover = false;
@@ -190,6 +191,7 @@ struct AssumeVerif {
   using ImmediateOp = sv::AssumeOp;
   using ConcurrentOp = sv::AssumeConcurrentOp;
   using ClockedOp = verif::ClockedAssumeOp;
+  using VerifOp = verif::AssumeOp;
 
   static constexpr StringLiteral labelPrefix = "assume__";
   static constexpr bool isCover = false;
@@ -200,6 +202,7 @@ struct CoverVerif {
   using ImmediateOp = sv::CoverOp;
   using ConcurrentOp = sv::CoverConcurrentOp;
   using ClockedOp = verif::ClockedCoverOp;
+  using VerifOp = verif::CoverOp;
 
   static constexpr StringLiteral labelPrefix = "cover__";
   static constexpr bool isCover = true;
@@ -2072,6 +2075,8 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitExpr(LTLClockIntrinsicOp op);
 
   template <typename TargetOp, typename IntrinsicOp>
+  LogicalResult lowerVerifIntrinsicOpTo(IntrinsicOp op);
+  template <typename Verif, typename IntrinsicOp>
   LogicalResult lowerVerifIntrinsicOp(IntrinsicOp op);
   LogicalResult visitStmt(VerifAssertIntrinsicOp op);
   LogicalResult visitStmt(VerifAssumeIntrinsicOp op);
@@ -4866,35 +4871,42 @@ LogicalResult FIRRTLLowering::visitExpr(LTLClockIntrinsicOp op) {
 }
 
 template <typename TargetOp, typename IntrinsicOp>
-LogicalResult FIRRTLLowering::lowerVerifIntrinsicOp(IntrinsicOp op) {
+LogicalResult FIRRTLLowering::lowerVerifIntrinsicOpTo(IntrinsicOp op) {
   auto property = getLoweredValue(op.getProperty());
   auto enable = op.getEnable() ? getLoweredValue(op.getEnable()) : Value();
+  if (!property || (op.getEnable() && !enable))
+    return failure();
   TargetOp::create(builder, property, enable, op.getLabelAttr());
   return success();
 }
 
+template <typename Verif, typename IntrinsicOp>
+LogicalResult FIRRTLLowering::lowerVerifIntrinsicOp(IntrinsicOp op) {
+  return lowerVerifIntrinsicOpTo<typename Verif::VerifOp>(op);
+}
+
 LogicalResult FIRRTLLowering::visitStmt(VerifAssertIntrinsicOp op) {
-  return lowerVerifIntrinsicOp<verif::AssertOp>(op);
+  return lowerVerifIntrinsicOp<AssertVerif>(op);
 }
 
 LogicalResult FIRRTLLowering::visitStmt(VerifAssumeIntrinsicOp op) {
-  return lowerVerifIntrinsicOp<verif::AssumeOp>(op);
+  return lowerVerifIntrinsicOp<AssumeVerif>(op);
 }
 
 LogicalResult FIRRTLLowering::visitStmt(VerifCoverIntrinsicOp op) {
-  return lowerVerifIntrinsicOp<verif::CoverOp>(op);
+  return lowerVerifIntrinsicOp<CoverVerif>(op);
 }
 
 LogicalResult FIRRTLLowering::visitStmt(VerifRequireIntrinsicOp op) {
   if (!isa<verif::ContractOp>(op->getParentOp()))
-    return lowerVerifIntrinsicOp<verif::AssertOp>(op);
-  return lowerVerifIntrinsicOp<verif::RequireOp>(op);
+    return lowerVerifIntrinsicOp<AssertVerif>(op);
+  return lowerVerifIntrinsicOpTo<verif::RequireOp>(op);
 }
 
 LogicalResult FIRRTLLowering::visitStmt(VerifEnsureIntrinsicOp op) {
   if (!isa<verif::ContractOp>(op->getParentOp()))
-    return lowerVerifIntrinsicOp<verif::AssertOp>(op);
-  return lowerVerifIntrinsicOp<verif::EnsureOp>(op);
+    return lowerVerifIntrinsicOp<AssertVerif>(op);
+  return lowerVerifIntrinsicOpTo<verif::EnsureOp>(op);
 }
 
 LogicalResult FIRRTLLowering::visitExpr(HasBeenResetIntrinsicOp op) {
@@ -5636,24 +5648,6 @@ LogicalResult FIRRTLLowering::visitStmt(StopOp op) {
   return success();
 }
 
-template <typename Verif, typename... Args>
-static Operation *buildImmediateVerifOp(ImplicitLocOpBuilder &builder,
-                                        Args &&...args) {
-  return Verif::ImmediateOp::create(builder, std::forward<Args>(args)...);
-}
-
-template <typename Verif, typename... Args>
-static Operation *buildConcurrentVerifOp(ImplicitLocOpBuilder &builder,
-                                         Args &&...args) {
-  return Verif::ConcurrentOp::create(builder, std::forward<Args>(args)...);
-}
-
-template <typename Verif, typename... Args>
-static Operation *buildClockedVerifOp(ImplicitLocOpBuilder &builder,
-                                      Args &&...args) {
-  return Verif::ClockedOp::create(builder, std::forward<Args>(args)...);
-}
-
 static verif::ClockEdge firrtlToVerifClockEdge(EventControl eventControl) {
   switch (eventControl) {
   case EventControl::AtPosEdge:
@@ -5685,7 +5679,7 @@ LogicalResult FIRRTLLowering::lowerVerificationStatementToCore(
       getPrefixedVerificationLabel<Verif>(builder.getContext(), opNameAttr);
 
   auto edge = firrtlToVerifClockEdge(opEventControl);
-  buildClockedVerifOp<Verif>(builder, predicate, edge, clock, enable, label);
+  Verif::ClockedOp::create(builder, predicate, edge, clock, enable, label);
   return success();
 }
 
@@ -5727,11 +5721,8 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
   if (!clock || !enable || !predicate)
     return failure();
 
-  StringAttr label;
-  if (opNameAttr && !opNameAttr.getValue().empty())
-    label = opNameAttr;
   auto prefixedLabel =
-      getPrefixedVerificationLabel<Verif>(builder.getContext(), label);
+      getPrefixedVerificationLabel<Verif>(builder.getContext(), opNameAttr);
 
   StringAttr message;
   SmallVector<Value> messageOps;
@@ -5786,8 +5777,8 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
           builder.getContext(), circt::sv::DeferAssert::Immediate);
       addToAlwaysBlock(clock, [&]() {
         addIfProceduralBlock(enable, [&]() {
-          buildImmediateVerifOp<Verif>(builder, predicate, deferImmediate,
-                                       prefixedLabel, message, messageOps);
+          Verif::ImmediateOp::create(builder, predicate, deferImmediate,
+                                     prefixedLabel, message, messageOps);
         });
       });
       return;
@@ -5850,7 +5841,7 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
         break;
       }
 
-      buildConcurrentVerifOp<Verif>(
+      Verif::ConcurrentOp::create(
           builder,
           circt::sv::EventControlAttr::get(builder.getContext(), event), clock,
           predicate, prefixedLabel, message, messageOps);
@@ -5907,7 +5898,7 @@ LogicalResult FIRRTLLowering::visitStmt(UnclockedAssumeIntrinsicOp op) {
 
     auto assumeLabel = getPrefixedVerificationLabel<AssumeVerif>(
         builder.getContext(), op.getNameAttr());
-    verif::AssumeOp::create(builder, predicate, enable, assumeLabel);
+    AssumeVerif::VerifOp::create(builder, predicate, enable, assumeLabel);
     return success();
   }
 
@@ -5942,13 +5933,13 @@ LogicalResult FIRRTLLowering::visitStmt(UnclockedAssumeIntrinsicOp op) {
         builder, ArrayRef(sv::EventControl::AtEdge), ArrayRef(predicate),
         [&]() {
           if (op.getMessageAttr().getValue().empty())
-            buildImmediateVerifOp<AssumeVerif>(
+            AssumeVerif::ImmediateOp::create(
                 builder, predicate,
                 circt::sv::DeferAssertAttr::get(
                     builder.getContext(), circt::sv::DeferAssert::Immediate),
                 assumeLabel);
           else
-            buildImmediateVerifOp<AssumeVerif>(
+            AssumeVerif::ImmediateOp::create(
                 builder, predicate,
                 circt::sv::DeferAssertAttr::get(
                     builder.getContext(), circt::sv::DeferAssert::Immediate),
