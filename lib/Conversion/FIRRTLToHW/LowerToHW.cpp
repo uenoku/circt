@@ -176,6 +176,44 @@ static void tryCopyName(Operation *dst, Operation *src) {
 
 namespace {
 
+struct AssertVerif {
+  using ImmediateOp = sv::AssertOp;
+  using ConcurrentOp = sv::AssertConcurrentOp;
+  using ClockedOp = verif::ClockedAssertOp;
+
+  static constexpr StringLiteral labelPrefix = "assert__";
+  static constexpr bool isCover = false;
+  static constexpr bool supportsIfElseFatal = true;
+};
+
+struct AssumeVerif {
+  using ImmediateOp = sv::AssumeOp;
+  using ConcurrentOp = sv::AssumeConcurrentOp;
+  using ClockedOp = verif::ClockedAssumeOp;
+
+  static constexpr StringLiteral labelPrefix = "assume__";
+  static constexpr bool isCover = false;
+  static constexpr bool supportsIfElseFatal = false;
+};
+
+struct CoverVerif {
+  using ImmediateOp = sv::CoverOp;
+  using ConcurrentOp = sv::CoverConcurrentOp;
+  using ClockedOp = verif::ClockedCoverOp;
+
+  static constexpr StringLiteral labelPrefix = "cover__";
+  static constexpr bool isCover = true;
+  static constexpr bool supportsIfElseFatal = false;
+};
+
+template <typename Verif>
+static StringAttr getPrefixedVerificationLabel(MLIRContext *context,
+                                               StringAttr label) {
+  if (!label || label.getValue().empty())
+    return {};
+  return StringAttr::get(context, Verif::labelPrefix + label.getValue());
+}
+
 // A helper strutc to hold information about output file descriptor.
 class FileDescriptorInfo {
 public:
@@ -2072,13 +2110,17 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitExpr(HierarchicalModuleNameOp op);
 
   // Statements
-  LogicalResult lowerVerificationStatement(
-      Operation *op, StringRef labelPrefix, Value clock, Value predicate,
-      Value enable, StringAttr messageAttr, ValueRange operands,
-      StringAttr nameAttr, bool isConcurrent, EventControl eventControl);
-  LogicalResult lowerVerificationStatementToCore(
-      Operation *op, StringRef labelPrefix, Value clock, Value predicate,
-      Value enable, StringAttr nameAttr, EventControl eventControl);
+  template <typename Verif>
+  LogicalResult
+  lowerVerificationStatement(Operation *op, Value clock, Value predicate,
+                             Value enable, StringAttr messageAttr,
+                             ValueRange operands, StringAttr nameAttr,
+                             bool isConcurrent, EventControl eventControl);
+  template <typename Verif>
+  LogicalResult lowerVerificationStatementToCore(Operation *op, Value clock,
+                                                 Value predicate, Value enable,
+                                                 StringAttr nameAttr,
+                                                 EventControl eventControl);
 
   LogicalResult visitStmt(SkipOp op);
 
@@ -5594,34 +5636,22 @@ LogicalResult FIRRTLLowering::visitStmt(StopOp op) {
   return success();
 }
 
-/// Helper function to build an immediate assert operation based on the
-/// original FIRRTL operation name. This reduces code duplication in
-/// `lowerVerificationStatement`.
-template <typename... Args>
+template <typename Verif, typename... Args>
 static Operation *buildImmediateVerifOp(ImplicitLocOpBuilder &builder,
-                                        StringRef opName, Args &&...args) {
-  if (opName == "assert")
-    return sv::AssertOp::create(builder, std::forward<Args>(args)...);
-  if (opName == "assume")
-    return sv::AssumeOp::create(builder, std::forward<Args>(args)...);
-  if (opName == "cover")
-    return sv::CoverOp::create(builder, std::forward<Args>(args)...);
-  llvm_unreachable("unknown verification op");
+                                        Args &&...args) {
+  return Verif::ImmediateOp::create(builder, std::forward<Args>(args)...);
 }
 
-/// Helper function to build a concurrent assert operation based on the
-/// original FIRRTL operation name. This reduces code duplication in
-/// `lowerVerificationStatement`.
-template <typename... Args>
+template <typename Verif, typename... Args>
 static Operation *buildConcurrentVerifOp(ImplicitLocOpBuilder &builder,
-                                         StringRef opName, Args &&...args) {
-  if (opName == "assert")
-    return sv::AssertConcurrentOp::create(builder, std::forward<Args>(args)...);
-  if (opName == "assume")
-    return sv::AssumeConcurrentOp::create(builder, std::forward<Args>(args)...);
-  if (opName == "cover")
-    return sv::CoverConcurrentOp::create(builder, std::forward<Args>(args)...);
-  llvm_unreachable("unknown verification op");
+                                         Args &&...args) {
+  return Verif::ConcurrentOp::create(builder, std::forward<Args>(args)...);
+}
+
+template <typename Verif, typename... Args>
+static Operation *buildClockedVerifOp(ImplicitLocOpBuilder &builder,
+                                      Args &&...args) {
+  return Verif::ClockedOp::create(builder, std::forward<Args>(args)...);
 }
 
 static verif::ClockEdge firrtlToVerifClockEdge(EventControl eventControl) {
@@ -5636,9 +5666,10 @@ static verif::ClockEdge firrtlToVerifClockEdge(EventControl eventControl) {
   llvm_unreachable("unknown FIRRTL event control");
 }
 
+template <typename Verif>
 LogicalResult FIRRTLLowering::lowerVerificationStatementToCore(
-    Operation *op, StringRef labelPrefix, Value opClock, Value opPredicate,
-    Value opEnable, StringAttr opNameAttr, EventControl opEventControl) {
+    Operation *op, Value opClock, Value opPredicate, Value opEnable,
+    StringAttr opNameAttr, EventControl opEventControl) {
   auto guardsAttr = op->getAttrOfType<ArrayAttr>("guards");
   if (guardsAttr && !guardsAttr.empty())
     return op->emitOpError(
@@ -5650,29 +5681,12 @@ LogicalResult FIRRTLLowering::lowerVerificationStatementToCore(
   if (!clock || !enable || !predicate)
     return failure();
 
-  StringAttr label;
-  if (opNameAttr && !opNameAttr.getValue().empty())
-    label = StringAttr::get(builder.getContext(),
-                            labelPrefix + opNameAttr.getValue());
+  auto label =
+      getPrefixedVerificationLabel<Verif>(builder.getContext(), opNameAttr);
 
   auto edge = firrtlToVerifClockEdge(opEventControl);
-  auto opName = op->getName().stripDialect();
-  if (opName == "assert") {
-    verif::ClockedAssertOp::create(builder, predicate, edge, clock, enable,
-                                   label);
-    return success();
-  }
-  if (opName == "assume") {
-    verif::ClockedAssumeOp::create(builder, predicate, edge, clock, enable,
-                                   label);
-    return success();
-  }
-  if (opName == "cover") {
-    verif::ClockedCoverOp::create(builder, predicate, edge, clock, enable,
-                                  label);
-    return success();
-  }
-  llvm_unreachable("unknown verification op");
+  buildClockedVerifOp<Verif>(builder, predicate, edge, clock, enable, label);
+  return success();
 }
 
 /// Template for lowering verification statements from type A to
@@ -5693,23 +5707,20 @@ LogicalResult FIRRTLLowering::lowerVerificationStatementToCore(
 ///     end
 /// The above can also be reduced into a concurrent verification statement
 /// sv.assert.concurrent posedge %clock (condition && enable)
+template <typename Verif>
 LogicalResult FIRRTLLowering::lowerVerificationStatement(
-    Operation *op, StringRef labelPrefix, Value opClock, Value opPredicate,
-    Value opEnable, StringAttr opMessageAttr, ValueRange opOperands,
-    StringAttr opNameAttr, bool isConcurrent, EventControl opEventControl) {
+    Operation *op, Value opClock, Value opPredicate, Value opEnable,
+    StringAttr opMessageAttr, ValueRange opOperands, StringAttr opNameAttr,
+    bool isConcurrent, EventControl opEventControl) {
   if (circuitState.lowerToCore)
-    return lowerVerificationStatementToCore(op, labelPrefix, opClock,
-                                            opPredicate, opEnable, opNameAttr,
-                                            opEventControl);
-
-  StringRef opName = op->getName().stripDialect();
+    return lowerVerificationStatementToCore<Verif>(
+        op, opClock, opPredicate, opEnable, opNameAttr, opEventControl);
 
   // The attribute holding the compile guards
   ArrayRef<Attribute> guards{};
   if (auto guardsAttr = op->template getAttrOfType<ArrayAttr>("guards"))
     guards = guardsAttr.getValue();
 
-  auto isCover = isa<CoverOp>(op);
   auto clock = getLoweredNonClockValue(opClock);
   auto enable = getLoweredValue(opEnable);
   auto predicate = getLoweredValue(opPredicate);
@@ -5719,17 +5730,15 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
   StringAttr label;
   if (opNameAttr && !opNameAttr.getValue().empty())
     label = opNameAttr;
-  StringAttr prefixedLabel;
-  if (label)
-    prefixedLabel =
-        StringAttr::get(builder.getContext(), labelPrefix + label.getValue());
+  auto prefixedLabel =
+      getPrefixedVerificationLabel<Verif>(builder.getContext(), label);
 
   StringAttr message;
   SmallVector<Value> messageOps;
   VerificationFlavor flavor = circuitState.verificationFlavor;
 
   // For non-assertion, rollback to per-op configuration.
-  if (flavor == VerificationFlavor::IfElseFatal && !isa<AssertOp>(op))
+  if (flavor == VerificationFlavor::IfElseFatal && !Verif::supportsIfElseFatal)
     flavor = VerificationFlavor::None;
 
   if (flavor == VerificationFlavor::None) {
@@ -5739,7 +5748,7 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
     auto format = op->getAttrOfType<StringAttr>("format");
     // if-else-fatal iff concurrent and the format is specified.
     if (isConcurrent && format && format.getValue() == "ifElseFatal") {
-      if (!isa<AssertOp>(op))
+      if (!Verif::supportsIfElseFatal)
         return op->emitError()
                << "ifElseFatal format cannot be used for non-assertions";
       flavor = VerificationFlavor::IfElseFatal;
@@ -5749,7 +5758,7 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
       flavor = VerificationFlavor::Immediate;
   }
 
-  if (!isCover && opMessageAttr && !opMessageAttr.getValue().empty()) {
+  if (!Verif::isCover && opMessageAttr && !opMessageAttr.getValue().empty()) {
     // Resolve format string to handle special substitutions like
     // {{HierarchicalModuleName}} which should be replaced with %m.
     if (failed(resolveFormatString(op->getLoc(), opMessageAttr.getValue(),
@@ -5777,14 +5786,14 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
           builder.getContext(), circt::sv::DeferAssert::Immediate);
       addToAlwaysBlock(clock, [&]() {
         addIfProceduralBlock(enable, [&]() {
-          buildImmediateVerifOp(builder, opName, predicate, deferImmediate,
-                                prefixedLabel, message, messageOps);
+          buildImmediateVerifOp<Verif>(builder, predicate, deferImmediate,
+                                       prefixedLabel, message, messageOps);
         });
       });
       return;
     }
     case VerificationFlavor::IfElseFatal: {
-      assert(isa<AssertOp>(op) && "only assert is expected");
+      assert(Verif::supportsIfElseFatal && "only assert is expected");
       // Handle the `ifElseFatal` format, which does not emit an SVA but
       // rather a process that uses $error and $fatal to perform the checks.
       auto boolType = IntegerType::get(builder.getContext(), 1);
@@ -5818,7 +5827,7 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
     case VerificationFlavor::SVA: {
       // Formulate the `enable -> predicate` as `!enable | predicate`.
       // Except for covers, combine them: enable & predicate
-      if (!isCover) {
+      if (!Verif::isCover) {
         auto notEnable =
             comb::createOrFoldNot(builder, enable, /*twoState=*/true);
         predicate =
@@ -5841,8 +5850,8 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
         break;
       }
 
-      buildConcurrentVerifOp(
-          builder, opName,
+      buildConcurrentVerifOp<Verif>(
+          builder,
           circt::sv::EventControlAttr::get(builder.getContext(), event), clock,
           predicate, prefixedLabel, message, messageOps);
       return;
@@ -5861,26 +5870,26 @@ LogicalResult FIRRTLLowering::lowerVerificationStatement(
 
 // Lower an assert to SystemVerilog.
 LogicalResult FIRRTLLowering::visitStmt(AssertOp op) {
-  return lowerVerificationStatement(
-      op, "assert__", op.getClock(), op.getPredicate(), op.getEnable(),
-      op.getMessageAttr(), op.getSubstitutions(), op.getNameAttr(),
-      op.getIsConcurrent(), op.getEventControl());
+  return lowerVerificationStatement<AssertVerif>(
+      op, op.getClock(), op.getPredicate(), op.getEnable(), op.getMessageAttr(),
+      op.getSubstitutions(), op.getNameAttr(), op.getIsConcurrent(),
+      op.getEventControl());
 }
 
 // Lower an assume to SystemVerilog.
 LogicalResult FIRRTLLowering::visitStmt(AssumeOp op) {
-  return lowerVerificationStatement(
-      op, "assume__", op.getClock(), op.getPredicate(), op.getEnable(),
-      op.getMessageAttr(), op.getSubstitutions(), op.getNameAttr(),
-      op.getIsConcurrent(), op.getEventControl());
+  return lowerVerificationStatement<AssumeVerif>(
+      op, op.getClock(), op.getPredicate(), op.getEnable(), op.getMessageAttr(),
+      op.getSubstitutions(), op.getNameAttr(), op.getIsConcurrent(),
+      op.getEventControl());
 }
 
 // Lower a cover to SystemVerilog.
 LogicalResult FIRRTLLowering::visitStmt(CoverOp op) {
-  return lowerVerificationStatement(
-      op, "cover__", op.getClock(), op.getPredicate(), op.getEnable(),
-      op.getMessageAttr(), op.getSubstitutions(), op.getNameAttr(),
-      op.getIsConcurrent(), op.getEventControl());
+  return lowerVerificationStatement<CoverVerif>(
+      op, op.getClock(), op.getPredicate(), op.getEnable(), op.getMessageAttr(),
+      op.getSubstitutions(), op.getNameAttr(), op.getIsConcurrent(),
+      op.getEventControl());
 }
 
 // Lower an UNR only assume to a specific style of SV assume.
@@ -5896,11 +5905,8 @@ LogicalResult FIRRTLLowering::visitStmt(UnclockedAssumeIntrinsicOp op) {
     if (!predicate || !enable)
       return failure();
 
-    auto label = op.getNameAttr();
-    StringAttr assumeLabel;
-    if (label && !label.empty())
-      assumeLabel =
-          StringAttr::get(builder.getContext(), "assume__" + label.getValue());
+    auto assumeLabel = getPrefixedVerificationLabel<AssumeVerif>(
+        builder.getContext(), op.getNameAttr());
     verif::AssumeOp::create(builder, predicate, enable, assumeLabel);
     return success();
   }
@@ -5913,11 +5919,8 @@ LogicalResult FIRRTLLowering::visitStmt(UnclockedAssumeIntrinsicOp op) {
   ArrayRef<Attribute> guards =
       guardsAttr ? guardsAttr.getValue() : ArrayRef<Attribute>();
 
-  auto label = op.getNameAttr();
-  StringAttr assumeLabel;
-  if (label && !label.empty())
-    assumeLabel =
-        StringAttr::get(builder.getContext(), "assume__" + label.getValue());
+  auto assumeLabel = getPrefixedVerificationLabel<AssumeVerif>(
+      builder.getContext(), op.getNameAttr());
   auto predicate = getLoweredValue(op.getPredicate());
   auto enable = getLoweredValue(op.getEnable());
   auto notEnable = comb::createOrFoldNot(builder, enable, /*twoState=*/true);
@@ -5939,14 +5942,14 @@ LogicalResult FIRRTLLowering::visitStmt(UnclockedAssumeIntrinsicOp op) {
         builder, ArrayRef(sv::EventControl::AtEdge), ArrayRef(predicate),
         [&]() {
           if (op.getMessageAttr().getValue().empty())
-            buildImmediateVerifOp(
-                builder, "assume", predicate,
+            buildImmediateVerifOp<AssumeVerif>(
+                builder, predicate,
                 circt::sv::DeferAssertAttr::get(
                     builder.getContext(), circt::sv::DeferAssert::Immediate),
                 assumeLabel);
           else
-            buildImmediateVerifOp(
-                builder, "assume", predicate,
+            buildImmediateVerifOp<AssumeVerif>(
+                builder, predicate,
                 circt::sv::DeferAssertAttr::get(
                     builder.getContext(), circt::sv::DeferAssert::Immediate),
                 assumeLabel, op.getMessageAttr(), messageOps);
