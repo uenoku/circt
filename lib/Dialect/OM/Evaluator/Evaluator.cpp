@@ -183,6 +183,14 @@ class OpPattern : public OperationPattern {
 public:
   using OperationPattern::OperationPattern;
 
+  ResolvedValue evaluate(Operation *op,
+                         evaluator::EvaluatorValuePtr resultValue,
+                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                         Location loc) const final {
+    return evaluateTyped(cast<OpT>(op), std::move(resultValue), evaluateValue,
+                         loc);
+  }
+
   FailureOr<evaluator::EvaluatorValuePtr> createPlaceholder(
       Operation *op, Value value, CreatePartialValueFn createPartialValue,
       GetValueHandleFn getValueHandle, Location loc) const override {
@@ -199,6 +207,13 @@ protected:
                          GetValueHandleFn getValueHandle, Location loc) const {
     return OperationPattern::createPlaceholder(op, value, createPartialValue,
                                                getValueHandle, loc);
+  }
+
+  virtual ResolvedValue
+  evaluateTyped(OpT op, evaluator::EvaluatorValuePtr resultValue,
+                llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                Location loc) const {
+    return resolveValueState(std::move(resultValue));
   }
 };
 
@@ -487,13 +502,13 @@ public:
     return getValueHandle(op.getInput(), loc);
   }
 
-  ResolvedValue evaluate(Operation *op,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
-                         Location loc) const override {
-    if (resultValue && resultValue->isFullyEvaluated())
+  ResolvedValue
+  evaluateTyped(AnyCastOp op, evaluator::EvaluatorValuePtr resultValue,
+                llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                Location loc) const override {
+    if (resultValue && evaluator_detail::isFullyEvaluated(*resultValue))
       return resolveValueState(std::move(resultValue));
-    return evaluateValue(getOp(op).getInput());
+    return evaluateValue(op.getInput());
   }
 };
 
@@ -507,13 +522,6 @@ public:
                          Location loc) const override {
     return success(std::make_shared<evaluator::PathValue>(
         evaluator::PathValue::getEmptyPath(loc)));
-  }
-
-  ResolvedValue evaluate(Operation *op,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
-                         Location loc) const override {
-    return resolveValueState(std::move(resultValue));
   }
 };
 
