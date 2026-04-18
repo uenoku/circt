@@ -661,17 +661,7 @@ circt::om::Evaluator::getPartiallyEvaluatedValue(Type type, Location loc) {
             evaluator::AttributeValue::get(type, loc);
         return success(result);
       })
-      .Case([&](FrozenBasePathType type) {
-        return success(
-            std::make_shared<evaluator::BasePathValue>(type.getContext()));
-      })
-      .Case([&](FrozenPathType type) {
-        return success(std::make_shared<evaluator::PathValue>(
-            evaluator::PathValue::getEmptyPath(loc)));
-      })
-      .Default([&](Type type) {
-        return success(evaluator::AttributeValue::get(type, LocationAttr(loc)));
-      });
+      .Default([&](auto type) { return failure(); });
 }
 
 FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
