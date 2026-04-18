@@ -77,6 +77,29 @@ isUnknownValue(evaluator::EvaluatorValuePtr value,
          (resolvedValue && resolvedValue->isUnknown());
 }
 
+static bool isUnknownValue(evaluator::EvaluatorValuePtr value,
+                           const ResolvedValue &resolved) {
+  return isUnknownValue(std::move(value), resolved.value);
+}
+
+template <typename T>
+static T *getResolvedValueAs(const ResolvedValue &resolved,
+                             const char *assertMessage) {
+  auto *typedValue = dyn_cast<T>(resolved.value.get());
+  assert(typedValue && assertMessage);
+  return typedValue;
+}
+
+template <typename AttrT>
+static AttrT getResolvedAttrAs(const ResolvedValue &resolved,
+                               const char *assertMessage) {
+  auto *attrValue =
+      getResolvedValueAs<evaluator::AttributeValue>(resolved, assertMessage);
+  AttrT attr = attrValue->getAs<AttrT>();
+  assert(attr && assertMessage);
+  return attr;
+}
+
 } // namespace
 
 /// Construct an Evaluator with an IR module.
@@ -538,23 +561,16 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   }
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
-      isUnknownValue(rhsResult.value(), rhsValue.value)) {
+  if (isUnknownValue(lhsResult.value(), lhsValue) ||
+      isUnknownValue(rhsResult.value(), rhsValue)) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  auto *lhsAttrValue =
-      dyn_cast<evaluator::AttributeValue>(lhsValue.value.get());
-  auto *rhsAttrValue =
-      dyn_cast<evaluator::AttributeValue>(rhsValue.value.get());
-  assert(lhsAttrValue && rhsAttrValue &&
-         "expected attribute values for IntegerBinaryArithmeticOp operands");
-
-  om::IntegerAttr lhs = lhsAttrValue->getAs<om::IntegerAttr>();
-  om::IntegerAttr rhs = rhsAttrValue->getAs<om::IntegerAttr>();
-  assert(lhs && rhs &&
-         "expected om::IntegerAttr for IntegerBinaryArithmeticOp operands");
+  om::IntegerAttr lhs = getResolvedAttrAs<om::IntegerAttr>(
+      lhsValue, "expected om::IntegerAttr for IntegerBinaryArithmeticOp lhs");
+  om::IntegerAttr rhs = getResolvedAttrAs<om::IntegerAttr>(
+      rhsValue, "expected om::IntegerAttr for IntegerBinaryArithmeticOp rhs");
 
   // Extend values if necessary to match bitwidth. Most interesting arithmetic
   // on APSInt asserts that both operands are the same bitwidth, but the
@@ -613,13 +629,13 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   }
 
   // If the condition is unknown, skip silently (best-effort).
-  if (isUnknownValue(condResult.value(), resolvedCond.value))
+  if (isUnknownValue(condResult.value(), resolvedCond))
     return success();
 
-  auto *condValue =
-      dyn_cast<evaluator::AttributeValue>(resolvedCond.value.get());
-  assert(condValue && "expected attribute value for property assertion");
-  auto condAttr = condValue->getAttr();
+  auto condAttr =
+      getResolvedValueAs<evaluator::AttributeValue>(
+          resolvedCond, "expected attribute value for property assertion")
+          ->getAttr();
 
   bool isFalse = false;
   if (auto boolAttr = dyn_cast<BoolAttr>(condAttr))
@@ -722,7 +738,7 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     break;
   }
 
-  if (isUnknownValue(result, resolvedObject.value))
+  if (isUnknownValue(result, resolvedObject))
     return setUnknownFieldValue();
 
   auto *currentObject =
@@ -754,7 +770,7 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     case ResolutionState::Ready:
       break;
     }
-    if (isUnknownValue(finalField, nextObject.value))
+    if (isUnknownValue(finalField, nextObject))
       return setUnknownFieldValue();
 
     currentObject =
@@ -795,7 +811,7 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
       break;
     }
     // Check if any operand is unknown.
-    if (isUnknownValue(result.value(), evaluatedOperand.value))
+    if (isUnknownValue(result.value(), evaluatedOperand))
       hasUnknown = true;
     values.push_back(result.value());
   }
@@ -839,11 +855,11 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
     }
 
     // Check if any operand is unknown.
-    if (isUnknownValue(result.value(), subList.value))
+    if (isUnknownValue(result.value(), subList))
       hasUnknown = true;
 
-    auto *subListValue = dyn_cast<evaluator::ListValue>(subList.value.get());
-    assert(subListValue && "expected list value for list_concat operand");
+    auto *subListValue = getResolvedValueAs<evaluator::ListValue>(
+        subList, "expected list value for list_concat operand");
 
     // Append each EvaluatorValue from the sublist.
     for (const auto &subValue : subListValue->getElements())
@@ -893,17 +909,13 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
     case ResolutionState::Ready:
       break;
     }
-    if (isUnknownValue(operandResult.value(), resolvedOperand.value)) {
+    if (isUnknownValue(operandResult.value(), resolvedOperand)) {
       handle.value()->markUnknown();
       return handle;
     }
 
-    auto *operandAttrValue =
-        dyn_cast<evaluator::AttributeValue>(resolvedOperand.value.get());
-    assert(operandAttrValue &&
-           "expected attribute value for StringConcatOp operand");
-    StringAttr str = operandAttrValue->getAs<StringAttr>();
-    assert(str && "expected StringAttr for StringConcatOp operand");
+    StringAttr str = getResolvedAttrAs<StringAttr>(
+        resolvedOperand, "expected StringAttr for StringConcatOp operand");
     result += str.getValue().str();
   }
 
@@ -967,21 +979,20 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
   }
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
-      isUnknownValue(rhsResult.value(), rhsValue.value)) {
+  if (isUnknownValue(lhsResult.value(), lhsValue) ||
+      isUnknownValue(rhsResult.value(), rhsValue)) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  auto *lhsAttrValue =
-      dyn_cast<evaluator::AttributeValue>(lhsValue.value.get());
-  auto *rhsAttrValue =
-      dyn_cast<evaluator::AttributeValue>(rhsValue.value.get());
-  assert(lhsAttrValue && rhsAttrValue &&
-         "expected attribute values for BinaryEqualityOp operands");
-
-  mlir::Attribute lhs = lhsAttrValue->getAttr();
-  mlir::Attribute rhs = rhsAttrValue->getAttr();
+  mlir::Attribute lhs =
+      getResolvedValueAs<evaluator::AttributeValue>(
+          lhsValue, "expected attribute value for BinaryEqualityOp lhs")
+          ->getAttr();
+  mlir::Attribute rhs =
+      getResolvedValueAs<evaluator::AttributeValue>(
+          rhsValue, "expected attribute value for BinaryEqualityOp rhs")
+          ->getAttr();
   assert(lhs && rhs && "expected attribute for BinaryEqualityOp operands");
 
   // Perform the binary equality operation.
@@ -1024,7 +1035,7 @@ circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
   }
 
   // If the base path is unknown, mark the result as unknown.
-  if (isUnknownValue(result.value(), basePath.value)) {
+  if (isUnknownValue(result.value(), basePath)) {
     valueResult->markUnknown();
     return valueResult;
   }
@@ -1060,7 +1071,7 @@ circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
   }
 
   // If the base path is unknown, mark the result as unknown.
-  if (isUnknownValue(result.value(), basePath.value)) {
+  if (isUnknownValue(result.value(), basePath)) {
     valueResult->markUnknown();
     return valueResult;
   }
