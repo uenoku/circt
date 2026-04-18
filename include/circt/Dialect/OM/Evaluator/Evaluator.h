@@ -37,6 +37,23 @@ class EvaluatorValue;
 /// primitive Attribute. Further refinement is expected.
 using EvaluatorValuePtr = std::shared_ptr<EvaluatorValue>;
 
+enum class ResolutionState { Ready, Pending, Failure };
+
+struct ResolvedValue {
+  ResolutionState state;
+  EvaluatorValuePtr value;
+
+  static ResolvedValue ready(EvaluatorValuePtr value) {
+    return {ResolutionState::Ready, std::move(value)};
+  }
+  static ResolvedValue pending(EvaluatorValuePtr value = nullptr) {
+    return {ResolutionState::Pending, std::move(value)};
+  }
+  static ResolvedValue failure(EvaluatorValuePtr value = nullptr) {
+    return {ResolutionState::Failure, std::move(value)};
+  }
+};
+
 /// The fields of a composite Object, currently represented as a map. Further
 /// refinement is expected.
 using ObjectFields = SmallDenseMap<StringAttr, EvaluatorValuePtr>;
@@ -400,18 +417,18 @@ private:
   /// Evaluate a Value in a Class body according to the small expression grammar
   /// described in the rationale document. The actual parameters are the values
   /// supplied at the current instantiation of the Class being evaluated.
-  FailureOr<EvaluatorValuePtr>
+  evaluator::ResolvedValue
   evaluateValue(Value value, ActualParameters actualParams, Location loc);
 
   /// Evaluator dispatch functions for the small expression grammar.
-  FailureOr<EvaluatorValuePtr> evaluateParameter(BlockArgument formalParam,
-                                                 ActualParameters actualParams,
-                                                 Location loc);
+  evaluator::ResolvedValue evaluateParameter(BlockArgument formalParam,
+                                             ActualParameters actualParams,
+                                             Location loc);
 
-  FailureOr<EvaluatorValuePtr>
+  evaluator::ResolvedValue
   evaluateConstant(ConstantOp op, ActualParameters actualParams, Location loc);
 
-  FailureOr<EvaluatorValuePtr>
+  evaluator::ResolvedValue
   evaluateIntegerBinaryArithmetic(IntegerBinaryArithmeticOp op,
                                   ActualParameters actualParams, Location loc);
 
@@ -419,34 +436,34 @@ private:
   FailureOr<EvaluatorValuePtr>
   evaluateObjectInstance(StringAttr className, ActualParameters actualParams,
                          Location loc, ObjectKey instanceKey = {});
-  FailureOr<EvaluatorValuePtr>
+  evaluator::ResolvedValue
   evaluateObjectInstance(ObjectOp op, ActualParameters actualParams);
-  FailureOr<EvaluatorValuePtr>
-  evaluateObjectField(ObjectFieldOp op, ActualParameters actualParams,
-                      Location loc);
-  FailureOr<EvaluatorValuePtr> evaluateListCreate(ListCreateOp op,
+  evaluator::ResolvedValue evaluateObjectField(ObjectFieldOp op,
+                                               ActualParameters actualParams,
+                                               Location loc);
+  evaluator::ResolvedValue evaluateListCreate(ListCreateOp op,
+                                              ActualParameters actualParams,
+                                              Location loc);
+  evaluator::ResolvedValue evaluateListConcat(ListConcatOp op,
+                                              ActualParameters actualParams,
+                                              Location loc);
+  evaluator::ResolvedValue evaluateStringConcat(StringConcatOp op,
+                                                ActualParameters actualParams,
+                                                Location loc);
+  evaluator::ResolvedValue evaluateBinaryEquality(BinaryEqualityOp op,
                                                   ActualParameters actualParams,
                                                   Location loc);
-  FailureOr<EvaluatorValuePtr> evaluateListConcat(ListConcatOp op,
+  evaluator::ResolvedValue evaluateBasePathCreate(FrozenBasePathCreateOp op,
                                                   ActualParameters actualParams,
                                                   Location loc);
-  FailureOr<EvaluatorValuePtr>
-  evaluateStringConcat(StringConcatOp op, ActualParameters actualParams,
-                       Location loc);
-  FailureOr<EvaluatorValuePtr>
-  evaluateBinaryEquality(BinaryEqualityOp op, ActualParameters actualParams,
-                         Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluateBasePathCreate(FrozenBasePathCreateOp op,
-                         ActualParameters actualParams, Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluatePathCreate(FrozenPathCreateOp op, ActualParameters actualParams,
-                     Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluateEmptyPath(FrozenEmptyPathOp op, ActualParameters actualParams,
-                    Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluateUnknownValue(UnknownValueOp op, Location loc);
+  evaluator::ResolvedValue evaluatePathCreate(FrozenPathCreateOp op,
+                                              ActualParameters actualParams,
+                                              Location loc);
+  evaluator::ResolvedValue evaluateEmptyPath(FrozenEmptyPathOp op,
+                                             ActualParameters actualParams,
+                                             Location loc);
+  evaluator::ResolvedValue evaluateUnknownValue(UnknownValueOp op,
+                                                Location loc);
 
   LogicalResult evaluatePropertyAssert(PropertyAssertOp op,
                                        ActualParameters actualParams);

@@ -18,6 +18,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include <optional>
 
 #define DEBUG_TYPE "om-evaluator"
 
@@ -26,18 +27,8 @@ using namespace circt::om;
 
 namespace {
 
-enum class ResolutionState { Ready, Pending, Failure };
-
-struct ResolvedValue {
-  ResolutionState state;
-  evaluator::EvaluatorValuePtr value;
-
-  static ResolvedValue ready(evaluator::EvaluatorValuePtr value) {
-    return {ResolutionState::Ready, std::move(value)};
-  }
-  static ResolvedValue pending() { return {ResolutionState::Pending, nullptr}; }
-  static ResolvedValue failure() { return {ResolutionState::Failure, nullptr}; }
-};
+using ResolutionState = evaluator::ResolutionState;
+using ResolvedValue = evaluator::ResolvedValue;
 
 static ResolvedValue
 resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
@@ -48,7 +39,7 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   while (auto *ref =
              llvm::dyn_cast<evaluator::ReferenceValue>(currentValue.get())) {
     if (!visited.insert(ref).second)
-      return ResolvedValue::failure();
+      return ResolvedValue::failure(currentValue);
     currentValue = ref->getValue();
     if (!currentValue)
       return ResolvedValue::pending();
@@ -59,56 +50,100 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
 
 static ResolvedValue inspectValue(evaluator::EvaluatorValuePtr currentValue) {
   if (!currentValue || !currentValue->isFullyEvaluated())
-    return ResolvedValue::pending();
+    return ResolvedValue::pending(std::move(currentValue));
 
   auto resolved = resolveReferenceValue(currentValue);
   if (resolved.state != ResolutionState::Ready)
-    return resolved;
+    return {resolved.state, std::move(currentValue)};
   if (!resolved.value->isFullyEvaluated())
-    return ResolvedValue::pending();
+    return ResolvedValue::pending(std::move(currentValue));
 
-  return resolved;
+  return ResolvedValue::ready(std::move(currentValue));
 }
 
-#define CIRCT_OM_INSPECT_OR_RETURN(NAME, VALUE, ON_PENDING, ON_FAILURE)        \
-  auto NAME = inspectValue(VALUE);                                             \
-  switch (NAME.state) {                                                        \
-  case ResolutionState::Pending:                                               \
-    return ON_PENDING;                                                         \
-  case ResolutionState::Failure:                                               \
-    return ON_FAILURE;                                                         \
-  case ResolutionState::Ready:                                                 \
-    break;                                                                     \
+struct ReadyValue {
+  evaluator::EvaluatorValuePtr handle;
+  evaluator::EvaluatorValuePtr resolved;
+
+  bool isUnknown() const {
+    return (handle && handle->isUnknown()) ||
+           (resolved && resolved->isUnknown());
   }
 
-static bool
-isUnknownValue(evaluator::EvaluatorValuePtr value,
-               evaluator::EvaluatorValuePtr resolvedValue = nullptr) {
-  return (value && value->isUnknown()) ||
-         (resolvedValue && resolvedValue->isUnknown());
+  template <typename T>
+  T *getValueAs(const char *assertMessage) const {
+    assert(resolved && assertMessage);
+    auto *typedValue = dyn_cast<T>(resolved.get());
+    assert(typedValue && assertMessage);
+    return typedValue;
+  }
+
+  mlir::Attribute getAttr(const char *assertMessage) const {
+    return getValueAs<evaluator::AttributeValue>(assertMessage)->getAttr();
+  }
+
+  template <typename AttrT>
+  AttrT getAttrAs(const char *assertMessage) const {
+    AttrT attr = getValueAs<evaluator::AttributeValue>(assertMessage)
+                     ->getAs<AttrT>();
+    assert(attr && assertMessage);
+    return attr;
+  }
+};
+
+static ReadyValue materializeReadyValue(const ResolvedValue &resolved,
+                                        const char *assertMessage) {
+  assert(resolved.state == ResolutionState::Ready && assertMessage);
+  auto stripped = resolveReferenceValue(resolved.value);
+  assert(stripped.state == ResolutionState::Ready && assertMessage);
+  assert(stripped.value && stripped.value->isFullyEvaluated() && assertMessage);
+  return {resolved.value, stripped.value};
 }
 
-static bool isUnknownValue(evaluator::EvaluatorValuePtr value,
-                           const ResolvedValue &resolved) {
-  return isUnknownValue(std::move(value), resolved.value);
+template <typename EmitFailureFn>
+static std::optional<ResolvedValue>
+requireReady(const ResolvedValue &resolved,
+             evaluator::EvaluatorValuePtr pendingValue,
+             EmitFailureFn emitFailure, ReadyValue &readyValue) {
+  switch (resolved.state) {
+  case ResolutionState::Pending:
+    return ResolvedValue::pending(std::move(pendingValue));
+  case ResolutionState::Failure:
+    emitFailure();
+    return ResolvedValue::failure();
+  case ResolutionState::Ready:
+    readyValue = materializeReadyValue(resolved, "expected ready value");
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown resolution state");
 }
 
-template <typename T>
-static T *getResolvedValueAs(const ResolvedValue &resolved,
-                             const char *assertMessage) {
-  auto *typedValue = dyn_cast<T>(resolved.value.get());
-  assert(typedValue && assertMessage);
-  return typedValue;
+template <typename EvaluateFn, typename EmitFailureFn>
+static std::optional<ResolvedValue>
+requireAllOperandsReady(ValueRange operands,
+                        evaluator::EvaluatorValuePtr pendingValue,
+                        EvaluateFn evaluateOperand, EmitFailureFn emitFailure,
+                        SmallVectorImpl<ReadyValue> &readyOperands) {
+  readyOperands.clear();
+  readyOperands.reserve(operands.size());
+
+  unsigned index = 0;
+  for (auto operand : operands) {
+    ReadyValue readyOperand;
+    if (auto early = requireReady(evaluateOperand(operand), pendingValue,
+                                  [&] { emitFailure(index); }, readyOperand))
+      return *early;
+    readyOperands.push_back(std::move(readyOperand));
+    ++index;
+  }
+
+  return std::nullopt;
 }
 
-template <typename AttrT>
-static AttrT getResolvedAttrAs(const ResolvedValue &resolved,
-                               const char *assertMessage) {
-  auto *attrValue =
-      getResolvedValueAs<evaluator::AttributeValue>(resolved, assertMessage);
-  AttrT attr = attrValue->getAs<AttrT>();
-  assert(attr && assertMessage);
-  return attr;
+static ResolvedValue
+markUnknownAndReturn(evaluator::EvaluatorValuePtr value) {
+  value->markUnknown();
+  return inspectValue(std::move(value));
 }
 
 } // namespace
@@ -209,7 +244,8 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
                               FailureOr<evaluator::EvaluatorValuePtr>>(
                        result.getDefiningOp())
                 .Case([&](ConstantOp op) {
-                  return evaluateConstant(op, actualParams, loc);
+                  return success(
+                      om::evaluator::AttributeValue::get(op.getValue(), loc));
                 })
                 .Case([&](IntegerBinaryArithmeticOp op) {
                   // Create a partially evaluated AttributeValue of
@@ -263,8 +299,9 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
                 .Case<ObjectOp>([&](auto op) {
                   return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
                 })
-                .Case<UnknownValueOp>(
-                    [&](auto op) { return evaluateUnknownValue(op, loc); })
+                .Case<UnknownValueOp>([&](auto op) {
+                  return createUnknownValue(op.getType(), loc);
+                })
                 .Default([&](Operation *op) {
                   auto error = op->emitError("unable to evaluate value");
                   error.attachNote() << "value: " << value;
@@ -365,12 +402,11 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
     auto name = fieldNames[i];
     auto value = operands[i];
     auto fieldLoc = cls.getFieldLocByIndex(i);
-    FailureOr<evaluator::EvaluatorValuePtr> result =
-        evaluateValue(value, actualParams, fieldLoc);
-    if (failed(result))
-      return result;
+    auto result = evaluateValue(value, actualParams, fieldLoc);
+    if (result.state == ResolutionState::Failure)
+      return failure();
 
-    fields[cast<StringAttr>(name)] = result.value();
+    fields[cast<StringAttr>(name)] = result.value;
   }
 
   // Evaluate property assertions.
@@ -434,11 +470,11 @@ circt::om::Evaluator::instantiate(
 
     auto result = evaluateValue(value, args, loc);
 
-    if (failed(result))
+    if (result.state == ResolutionState::Failure)
       return failure();
 
     // It's possible that the value is not fully evaluated.
-    if (!result.value()->isFullyEvaluated())
+    if (result.state == ResolutionState::Pending)
       worklist.push({value, args});
   }
 
@@ -451,22 +487,23 @@ circt::om::Evaluator::instantiate(
   return object;
 }
 
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateValue(Value value, ActualParameters actualParams,
-                                    Location loc) {
-  auto evaluatorValue = getOrCreateValue(value, actualParams, loc).value();
+ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
+                                                  ActualParameters actualParams,
+                                                  Location loc) {
+  auto evaluatorValue = getOrCreateValue(value, actualParams, loc);
+  if (failed(evaluatorValue))
+    return ResolvedValue::failure();
 
   // Return if the value is already evaluated.
-  if (evaluatorValue->isFullyEvaluated())
-    return evaluatorValue;
+  if (evaluatorValue.value()->isFullyEvaluated())
+    return inspectValue(evaluatorValue.value());
 
-  return llvm::TypeSwitch<Value, FailureOr<evaluator::EvaluatorValuePtr>>(value)
+  return llvm::TypeSwitch<Value, ResolvedValue>(value)
       .Case([&](BlockArgument arg) {
         return evaluateParameter(arg, actualParams, loc);
       })
       .Case([&](OpResult result) {
-        return TypeSwitch<Operation *, FailureOr<evaluator::EvaluatorValuePtr>>(
-                   result.getDefiningOp())
+        return TypeSwitch<Operation *, ResolvedValue>(result.getDefiningOp())
             .Case([&](ConstantOp op) {
               return evaluateConstant(op, actualParams, loc);
             })
@@ -509,60 +546,57 @@ circt::om::Evaluator::evaluateValue(Value value, ActualParameters actualParams,
             .Default([&](Operation *op) {
               auto error = op->emitError("unable to evaluate value");
               error.attachNote() << "value: " << value;
-              return error;
+              return ResolvedValue::failure();
             });
       });
 }
 
 /// Evaluator dispatch function for parameters.
-FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateParameter(
+ResolvedValue circt::om::Evaluator::evaluateParameter(
     BlockArgument formalParam, ActualParameters actualParams, Location loc) {
   auto val = (*actualParams)[formalParam.getArgNumber()];
   val->setLoc(loc);
-  return success(val);
+  return inspectValue(val);
 }
 
 /// Evaluator dispatch function for constants.
-FailureOr<circt::om::evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateConstant(ConstantOp op,
-                                       ActualParameters actualParams,
-                                       Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateConstant(
+    ConstantOp op, ActualParameters actualParams, Location loc) {
   // For list constants, create ListValue.
-  return success(om::evaluator::AttributeValue::get(op.getValue(), loc));
+  return inspectValue(om::evaluator::AttributeValue::get(op.getValue(), loc));
 }
 
 // Evaluator dispatch function for integer binary arithmetic.
-FailureOr<EvaluatorValuePtr>
-circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
+ResolvedValue circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
     IntegerBinaryArithmeticOp op, ActualParameters actualParams, Location loc) {
   // Get the op's EvaluatorValue handle, in case it hasn't been evaluated yet.
   auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
+  if (failed(handle))
+    return ResolvedValue::failure();
 
   // If it's fully evaluated, we can return it.
   if (handle.value()->isFullyEvaluated())
-    return handle;
+    return inspectValue(handle.value());
 
   // Evaluate operands if necessary, and return the partially evaluated value if
   // they aren't ready.
-  auto lhsResult = evaluateValue(op.getLhs(), actualParams, loc);
-  if (failed(lhsResult))
-    return lhsResult;
-  auto rhsResult = evaluateValue(op.getRhs(), actualParams, loc);
-  if (failed(rhsResult))
-    return rhsResult;
-
-  CIRCT_OM_INSPECT_OR_RETURN(lhsValue, lhsResult.value(), handle,
-                             op->emitError("failed to resolve integer "
-                                           "arithmetic lhs"));
-  CIRCT_OM_INSPECT_OR_RETURN(rhsValue, rhsResult.value(), handle,
-                             op->emitError("failed to resolve integer "
-                                           "arithmetic rhs"));
+  auto lhsValue = evaluateValue(op.getLhs(), actualParams, loc);
+  if (auto early = returnIfNotReady(lhsValue, handle.value())) {
+    if (early->state == ResolutionState::Failure)
+      op->emitError("failed to resolve integer arithmetic lhs");
+    return *early;
+  }
+  auto rhsValue = evaluateValue(op.getRhs(), actualParams, loc);
+  if (auto early = returnIfNotReady(rhsValue, handle.value())) {
+    if (early->state == ResolutionState::Failure)
+      op->emitError("failed to resolve integer arithmetic rhs");
+    return *early;
+  }
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (isUnknownValue(lhsResult.value(), lhsValue) ||
-      isUnknownValue(rhsResult.value(), rhsValue)) {
+  if (isUnknownValue(lhsValue) || isUnknownValue(rhsValue)) {
     handle.value()->markUnknown();
-    return handle;
+    return inspectValue(handle.value());
   }
 
   om::IntegerAttr lhs = getResolvedAttrAs<om::IntegerAttr>(
@@ -585,7 +619,8 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   FailureOr<APSInt> result = op.evaluateIntegerOperation(lhsVal, rhsVal);
 
   if (failed(result))
-    return op->emitError("failed to evaluate integer operation");
+    return (op->emitError("failed to evaluate integer operation"),
+            ResolvedValue::failure());
 
   // Package the result as a new om::IntegerAttr.
   MLIRContext *ctx = op->getContext();
@@ -596,13 +631,13 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   auto *handleValue = cast<evaluator::AttributeValue>(handle.value().get());
   auto resultStatus = handleValue->setAttr(resultAttr);
   if (failed(resultStatus))
-    return resultStatus;
+    return ResolvedValue::failure();
 
   auto finalizeStatus = handleValue->finalize();
   if (failed(finalizeStatus))
-    return finalizeStatus;
+    return ResolvedValue::failure();
 
-  return handle;
+  return inspectValue(handle.value());
 }
 
 /// Evaluator dispatch function for property assertions.
@@ -612,16 +647,18 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   auto loc = op.getLoc();
 
   // Evaluate the condition, returning early if it isn't ready yet.
-  auto condResult = evaluateValue(op.getCondition(), actualParams, loc);
-  if (failed(condResult))
-    return failure();
-
-  CIRCT_OM_INSPECT_OR_RETURN(
-      resolvedCond, condResult.value(), success(),
-      op.emitError("failed to resolve property assertion condition"));
+  auto resolvedCond = evaluateValue(op.getCondition(), actualParams, loc);
+  switch (resolvedCond.state) {
+  case ResolutionState::Pending:
+    return success();
+  case ResolutionState::Failure:
+    return op.emitError("failed to resolve property assertion condition");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // If the condition is unknown, skip silently (best-effort).
-  if (isUnknownValue(condResult.value(), resolvedCond))
+  if (isUnknownValue(resolvedCond))
     return success();
 
   auto condAttr =
@@ -660,9 +697,10 @@ circt::om::Evaluator::createParametersFromOperands(
     auto inputValue = inputResult.value();
     if (isa<evaluator::ReferenceValue>(inputValue.get())) {
       auto evaluatedInput = evaluateValue(input, actualParams, loc);
-      if (failed(evaluatedInput))
+      if (evaluatedInput.state == ResolutionState::Failure)
         return failure();
-      inputValue = evaluatedInput.value();
+      if (evaluatedInput.value)
+        inputValue = evaluatedInput.value;
     }
     parameters->push_back(inputValue);
   }
@@ -672,65 +710,67 @@ circt::om::Evaluator::createParametersFromOperands(
 }
 
 /// Evaluator dispatch function for Object instances.
-FailureOr<evaluator::EvaluatorValuePtr>
+ResolvedValue
 circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
                                              ActualParameters actualParams) {
   auto loc = op.getLoc();
   auto key = ObjectKey{op, actualParams};
   if (isFullyEvaluated(key))
-    return getOrCreateValue(op, actualParams, loc);
+    return inspectValue(getOrCreateValue(op, actualParams, loc).value());
   if (!activeObjectInstances.insert(key).second)
-    return getOrCreateValue(op, actualParams, loc);
+    return inspectValue(getOrCreateValue(op, actualParams, loc).value());
   auto clearActiveObject =
       llvm::scope_exit([&] { activeObjectInstances.erase(key); });
 
   auto params =
       createParametersFromOperands(op.getOperands(), actualParams, loc);
   if (failed(params))
-    return failure();
-  return evaluateObjectInstance(op.getClassNameAttr(), params.value(), loc,
-                                {op, actualParams});
+    return ResolvedValue::failure();
+  auto result = evaluateObjectInstance(op.getClassNameAttr(), params.value(),
+                                       loc, {op, actualParams});
+  if (failed(result))
+    return ResolvedValue::failure();
+  return inspectValue(result.value());
 }
 
 /// Evaluator dispatch function for Object fields.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
-                                          ActualParameters actualParams,
-                                          Location loc) {
-  // Evaluate the Object itself, in case it hasn't been evaluated yet.
-  FailureOr<evaluator::EvaluatorValuePtr> currentObjectResult =
-      evaluateValue(op.getObject(), actualParams, loc);
-  if (failed(currentObjectResult))
-    return currentObjectResult;
-
-  auto result = currentObjectResult.value();
-
+ResolvedValue circt::om::Evaluator::evaluateObjectField(
+    ObjectFieldOp op, ActualParameters actualParams, Location loc) {
   auto objectFieldValue = getOrCreateValue(op, actualParams, loc).value();
 
-  auto setUnknownFieldValue = [&]() -> FailureOr<evaluator::EvaluatorValuePtr> {
+  // Evaluate the Object itself, in case it hasn't been evaluated yet.
+  auto resolvedObject = evaluateValue(op.getObject(), actualParams, loc);
+  if (auto early = returnIfNotReady(resolvedObject, objectFieldValue)) {
+    if (early->state == ResolutionState::Failure)
+      op.emitError("failed to resolve object field base");
+    return *early;
+  }
+
+  auto setUnknownFieldValue = [&]() -> ResolvedValue {
     auto unknownField = createUnknownValue(op.getResult().getType(), loc);
     if (failed(unknownField))
-      return unknownField;
+      return ResolvedValue::failure();
 
     if (auto *ref =
             llvm::dyn_cast<evaluator::ReferenceValue>(objectFieldValue.get()))
       ref->setValue(unknownField.value());
 
     objectFieldValue->markUnknown();
-    return objectFieldValue;
+    return ResolvedValue::ready(objectFieldValue);
   };
 
-  CIRCT_OM_INSPECT_OR_RETURN(resolvedObject, result, objectFieldValue,
-                             op.emitError("failed to resolve object field "
-                                          "base"));
+  if (isUnknownValue(resolvedObject)) {
+    auto unknownField = setUnknownFieldValue();
+    if (unknownField.state != ResolutionState::Ready)
+      return ResolvedValue::failure();
+    return inspectValue(unknownField.value);
+  }
 
-  if (isUnknownValue(result, resolvedObject))
-    return setUnknownFieldValue();
-
-  auto *currentObject =
-      llvm::dyn_cast<evaluator::ObjectValue>(resolvedObject.value.get());
+  auto *currentObject = getResolvedValueAs<evaluator::ObjectValue>(
+      resolvedObject, "resolved object field base is not an object");
   if (!currentObject)
-    return op.emitError("resolved object field base is not an object");
+    return (op.emitError("resolved object field base is not an object"),
+            ResolvedValue::failure());
 
   // Iteratively access nested fields through the path until we reach the final
   // field in the path.
@@ -740,23 +780,32 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     auto field = *it;
     // `currentObject` might no be fully evaluated.
     if (!currentObject->getFields().contains(field.getAttr()))
-      return objectFieldValue;
+      return ResolvedValue::pending(objectFieldValue);
 
     auto currentField = currentObject->getField(field.getAttr());
     finalField = currentField.value();
     if (std::next(it) == end)
       continue;
 
-    CIRCT_OM_INSPECT_OR_RETURN(
-        nextObject, finalField, objectFieldValue,
-        op.emitError("failed to resolve nested object field path"));
-    if (isUnknownValue(finalField, nextObject))
-      return setUnknownFieldValue();
+    auto nextObject = inspectValue(finalField);
+    if (auto early = returnIfNotReady(nextObject, objectFieldValue)) {
+      if (early->state == ResolutionState::Failure)
+        op.emitError("failed to resolve nested object field path");
+      return *early;
+    }
+    if (isUnknownValue(nextObject)) {
+      auto unknownField = setUnknownFieldValue();
+      if (unknownField.state != ResolutionState::Ready)
+        return ResolvedValue::failure();
+      return inspectValue(unknownField.value);
+    }
 
-    currentObject =
-        llvm::dyn_cast<evaluator::ObjectValue>(nextObject.value.get());
+    currentObject = getResolvedValueAs<evaluator::ObjectValue>(
+        nextObject, "resolved nested object field path is not an object");
     if (!currentObject)
-      return op.emitError("resolved nested object field path is not an object");
+      return (
+          op.emitError("resolved nested object field path is not an object"),
+          ResolvedValue::failure());
   }
 
   // Update the reference.
@@ -764,30 +813,29 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
       ->setValue(finalField);
 
   // Return the field being accessed.
-  return objectFieldValue;
+  return inspectValue(objectFieldValue);
 }
 
 /// Evaluator dispatch function for List creation.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
-                                         ActualParameters actualParams,
-                                         Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateListCreate(
+    ListCreateOp op, ActualParameters actualParams, Location loc) {
   // Evaluate the Object itself, in case it hasn't been evaluated yet.
   SmallVector<evaluator::EvaluatorValuePtr> values;
   auto list = getOrCreateValue(op, actualParams, loc);
+  if (failed(list))
+    return ResolvedValue::failure();
   bool hasUnknown = false;
   for (auto operand : op.getOperands()) {
-    auto result = evaluateValue(operand, actualParams, loc);
-    if (failed(result))
-      return result;
-
-    CIRCT_OM_INSPECT_OR_RETURN(evaluatedOperand, result.value(), list,
-                               op.emitError("failed to resolve list_create "
-                                            "operand"));
+    auto evaluatedOperand = evaluateValue(operand, actualParams, loc);
+    if (auto early = returnIfNotReady(evaluatedOperand, list.value())) {
+      if (early->state == ResolutionState::Failure)
+        op.emitError("failed to resolve list_create operand");
+      return *early;
+    }
     // Check if any operand is unknown.
-    if (isUnknownValue(result.value(), evaluatedOperand))
+    if (isUnknownValue(evaluatedOperand))
       hasUnknown = true;
-    values.push_back(result.value());
+    values.push_back(evaluatedOperand.value);
   }
 
   // Set the list elements (this also marks the list as fully evaluated).
@@ -800,30 +848,29 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
   if (hasUnknown)
     list.value()->markUnknown();
 
-  return list;
+  return inspectValue(list.value());
 }
 
 /// Evaluator dispatch function for List concatenation.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
-                                         ActualParameters actualParams,
-                                         Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateListConcat(
+    ListConcatOp op, ActualParameters actualParams, Location loc) {
   // Evaluate the List concat op itself, in case it hasn't been evaluated yet.
   SmallVector<evaluator::EvaluatorValuePtr> values;
   auto list = getOrCreateValue(op, actualParams, loc);
+  if (failed(list))
+    return ResolvedValue::failure();
 
   bool hasUnknown = false;
   for (auto operand : op.getOperands()) {
-    auto result = evaluateValue(operand, actualParams, loc);
-    if (failed(result))
-      return result;
-
-    CIRCT_OM_INSPECT_OR_RETURN(subList, result.value(), list,
-                               op->emitError("failed to resolve list_concat "
-                                             "operand"));
+    auto subList = evaluateValue(operand, actualParams, loc);
+    if (auto early = returnIfNotReady(subList, list.value())) {
+      if (early->state == ResolutionState::Failure)
+        op->emitError("failed to resolve list_concat operand");
+      return *early;
+    }
 
     // Check if any operand is unknown.
-    if (isUnknownValue(result.value(), subList))
+    if (isUnknownValue(subList))
       hasUnknown = true;
 
     auto *subListValue = getResolvedValueAs<evaluator::ListValue>(
@@ -844,36 +891,33 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
   if (hasUnknown)
     list.value()->markUnknown();
 
-  return list;
+  return inspectValue(list.value());
 }
 
 /// Evaluator dispatch function for String concatenation.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
-                                           ActualParameters actualParams,
-                                           Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateStringConcat(
+    StringConcatOp op, ActualParameters actualParams, Location loc) {
   // Get the op's EvaluatorValue handle, in case it hasn't been evaluated yet.
   auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
   if (failed(handle))
-    return handle;
+    return ResolvedValue::failure();
 
   // If it's fully evaluated, we can return it.
   if (handle.value()->isFullyEvaluated())
-    return handle;
+    return inspectValue(handle.value());
 
   // Evaluate all operands and concatenate them.
   std::string result;
   for (auto operand : op.getOperands()) {
-    auto operandResult = evaluateValue(operand, actualParams, loc);
-    if (failed(operandResult))
-      return operandResult;
-
-    CIRCT_OM_INSPECT_OR_RETURN(
-        resolvedOperand, operandResult.value(), handle,
-        op->emitError("failed to resolve string_concat operand"));
-    if (isUnknownValue(operandResult.value(), resolvedOperand)) {
+    auto resolvedOperand = evaluateValue(operand, actualParams, loc);
+    if (auto early = returnIfNotReady(resolvedOperand, handle.value())) {
+      if (early->state == ResolutionState::Failure)
+        op->emitError("failed to resolve string_concat operand");
+      return *early;
+    }
+    if (isUnknownValue(resolvedOperand)) {
       handle.value()->markUnknown();
-      return handle;
+      return inspectValue(handle.value());
     }
 
     StringAttr str = getResolvedAttrAs<StringAttr>(
@@ -888,48 +932,46 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
   auto *handleValue = cast<evaluator::AttributeValue>(handle.value().get());
   auto resultStatus = handleValue->setAttr(resultStr);
   if (failed(resultStatus))
-    return resultStatus;
+    return ResolvedValue::failure();
 
   auto finalizeStatus = handleValue->finalize();
   if (failed(finalizeStatus))
-    return finalizeStatus;
+    return ResolvedValue::failure();
 
-  return handle;
+  return inspectValue(handle.value());
 }
 
 // Evaluator dispatch function for binary property equality operations.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
-                                             ActualParameters actualParams,
-                                             Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateBinaryEquality(
+    BinaryEqualityOp op, ActualParameters actualParams, Location loc) {
   // Get the op's EvaluatorValue handle, in case it hasn't been evaluated yet.
   auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
   if (failed(handle))
-    return handle;
+    return ResolvedValue::failure();
 
   // If it's fully evaluated, we can return it.
   if (handle.value()->isFullyEvaluated())
-    return handle;
+    return inspectValue(handle.value());
 
   // Evaluate both operands, returning the partially evaluated handle if either
   // isn't ready yet.
-  auto lhsResult = evaluateValue(op.getLhs(), actualParams, loc);
-  if (failed(lhsResult))
-    return lhsResult;
-  auto rhsResult = evaluateValue(op.getRhs(), actualParams, loc);
-  if (failed(rhsResult))
-    return rhsResult;
-
-  CIRCT_OM_INSPECT_OR_RETURN(lhsValue, lhsResult.value(), handle,
-                             op->emitError("failed to resolve prop.eq lhs"));
-  CIRCT_OM_INSPECT_OR_RETURN(rhsValue, rhsResult.value(), handle,
-                             op->emitError("failed to resolve prop.eq rhs"));
+  auto lhsValue = evaluateValue(op.getLhs(), actualParams, loc);
+  if (auto early = returnIfNotReady(lhsValue, handle.value())) {
+    if (early->state == ResolutionState::Failure)
+      op->emitError("failed to resolve prop.eq lhs");
+    return *early;
+  }
+  auto rhsValue = evaluateValue(op.getRhs(), actualParams, loc);
+  if (auto early = returnIfNotReady(rhsValue, handle.value())) {
+    if (early->state == ResolutionState::Failure)
+      op->emitError("failed to resolve prop.eq rhs");
+    return *early;
+  }
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (isUnknownValue(lhsResult.value(), lhsValue) ||
-      isUnknownValue(rhsResult.value(), rhsValue)) {
+  if (isUnknownValue(lhsValue) || isUnknownValue(rhsValue)) {
     handle.value()->markUnknown();
-    return handle;
+    return inspectValue(handle.value());
   }
 
   mlir::Attribute lhs =
@@ -945,87 +987,82 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
   // Perform the binary equality operation.
   FailureOr<mlir::Attribute> result = op.evaluateBinaryEquality(lhs, rhs);
   if (failed(result))
-    return op->emitError("failed to evaluate binary equality operation");
+    return (op->emitError("failed to evaluate binary equality operation"),
+            ResolvedValue::failure());
 
   // Finalize the op result value.
   auto *handleValue = cast<evaluator::AttributeValue>(handle.value().get());
   auto resultStatus = handleValue->setAttr(*result);
   if (failed(resultStatus))
-    return resultStatus;
+    return ResolvedValue::failure();
 
   auto finalizeStatus = handleValue->finalize();
   if (failed(finalizeStatus))
-    return finalizeStatus;
+    return ResolvedValue::failure();
 
-  return handle;
+  return inspectValue(handle.value());
 }
 
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
-                                             ActualParameters actualParams,
-                                             Location loc) {
+ResolvedValue circt::om::Evaluator::evaluateBasePathCreate(
+    FrozenBasePathCreateOp op, ActualParameters actualParams, Location loc) {
   // Evaluate the Object itself, in case it hasn't been evaluated yet.
   auto valueResult = getOrCreateValue(op, actualParams, loc).value();
   auto *path = llvm::cast<evaluator::BasePathValue>(valueResult.get());
-  auto result = evaluateValue(op.getBasePath(), actualParams, loc);
-  if (failed(result))
-    return result;
-
-  CIRCT_OM_INSPECT_OR_RETURN(
-      basePath, result.value(), valueResult,
-      op.emitError("failed to resolve frozenbasepath_create operand"));
-
-  // If the base path is unknown, mark the result as unknown.
-  if (isUnknownValue(result.value(), basePath)) {
-    valueResult->markUnknown();
-    return valueResult;
+  auto basePath = evaluateValue(op.getBasePath(), actualParams, loc);
+  if (auto early = returnIfNotReady(basePath, valueResult)) {
+    if (early->state == ResolutionState::Failure)
+      op.emitError("failed to resolve frozenbasepath_create operand");
+    return *early;
   }
 
-  auto *basePathValue =
-      dyn_cast<evaluator::BasePathValue>(basePath.value.get());
+  // If the base path is unknown, mark the result as unknown.
+  if (isUnknownValue(basePath)) {
+    valueResult->markUnknown();
+    return inspectValue(valueResult);
+  }
+
+  auto *basePathValue = getResolvedValueAs<evaluator::BasePathValue>(
+      basePath, "resolved frozenbasepath_create operand is not a base path");
   if (!basePathValue)
-    return op.emitError(
-        "resolved frozenbasepath_create operand is not a base path");
+    return (op.emitError("resolved frozenbasepath_create operand is not a base "
+                         "path"),
+            ResolvedValue::failure());
   path->setBasepath(*basePathValue);
-  return valueResult;
+  return inspectValue(valueResult);
 }
 
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
-                                         ActualParameters actualParams,
-                                         Location loc) {
+ResolvedValue circt::om::Evaluator::evaluatePathCreate(
+    FrozenPathCreateOp op, ActualParameters actualParams, Location loc) {
   // Evaluate the Object itself, in case it hasn't been evaluated yet.
   auto valueResult = getOrCreateValue(op, actualParams, loc).value();
   auto *path = llvm::cast<evaluator::PathValue>(valueResult.get());
-  auto result = evaluateValue(op.getBasePath(), actualParams, loc);
-  if (failed(result))
-    return result;
-
-  CIRCT_OM_INSPECT_OR_RETURN(basePath, result.value(), valueResult,
-                             op.emitError("failed to resolve frozenpath_create "
-                                          "operand"));
-
-  // If the base path is unknown, mark the result as unknown.
-  if (isUnknownValue(result.value(), basePath)) {
-    valueResult->markUnknown();
-    return valueResult;
+  auto basePath = evaluateValue(op.getBasePath(), actualParams, loc);
+  if (auto early = returnIfNotReady(basePath, valueResult)) {
+    if (early->state == ResolutionState::Failure)
+      op.emitError("failed to resolve frozenpath_create operand");
+    return *early;
   }
 
-  auto *basePathValue =
-      dyn_cast<evaluator::BasePathValue>(basePath.value.get());
+  // If the base path is unknown, mark the result as unknown.
+  if (isUnknownValue(basePath)) {
+    valueResult->markUnknown();
+    return inspectValue(valueResult);
+  }
+
+  auto *basePathValue = getResolvedValueAs<evaluator::BasePathValue>(
+      basePath, "resolved frozenpath_create operand is not a base path");
   if (!basePathValue)
-    return op.emitError(
-        "resolved frozenpath_create operand is not a base path");
+    return (op.emitError("resolved frozenpath_create operand is not a base "
+                         "path"),
+            ResolvedValue::failure());
   path->setBasepath(*basePathValue);
-  return valueResult;
+  return inspectValue(valueResult);
 }
 
-#undef CIRCT_OM_INSPECT_OR_RETURN
-
-FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateEmptyPath(
+ResolvedValue circt::om::Evaluator::evaluateEmptyPath(
     FrozenEmptyPathOp op, ActualParameters actualParams, Location loc) {
   auto valueResult = getOrCreateValue(op, actualParams, loc).value();
-  return valueResult;
+  return inspectValue(valueResult);
 }
 
 /// Create an unknown value of the specified type
@@ -1074,9 +1111,12 @@ circt::om::Evaluator::createUnknownValue(Type type, Location loc) {
 }
 
 /// Evaluate an unknown value
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateUnknownValue(UnknownValueOp op, Location loc) {
-  return createUnknownValue(op.getType(), loc);
+ResolvedValue circt::om::Evaluator::evaluateUnknownValue(UnknownValueOp op,
+                                                         Location loc) {
+  auto result = createUnknownValue(op.getType(), loc);
+  if (failed(result))
+    return ResolvedValue::failure();
+  return inspectValue(result.value());
 }
 
 //===----------------------------------------------------------------------===//
