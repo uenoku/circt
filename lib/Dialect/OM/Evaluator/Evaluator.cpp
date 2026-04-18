@@ -20,6 +20,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LogicalResult.h"
 #include <memory>
 #include <optional>
 
@@ -482,14 +484,12 @@ public:
         circt::om::evaluator::AttributeValue::get(op.getValue(), loc));
   }
 
-  ResolvedValue evaluate(Operation *op,
+  LogicalResult evaluate(ConstantOp op,
                          evaluator::EvaluatorValuePtr resultValue,
                          llvm::function_ref<ResolvedValue(Value)> evaluateValue,
-                         Location loc) const override {
-    if (resultValue && resultValue->isFullyEvaluated())
-      return resolveValueState(std::move(resultValue));
-    return resolveValueState(
-        circt::om::evaluator::AttributeValue::get(getOp(op).getValue(), loc));
+                         Location loc) const {
+    llvm::report_fatal_error("The constant should have been fully evaluated in "
+                             "createTypedPlaceholder");
   }
 };
 
@@ -506,7 +506,7 @@ public:
   evaluateTyped(AnyCastOp op, evaluator::EvaluatorValuePtr resultValue,
                 llvm::function_ref<ResolvedValue(Value)> evaluateValue,
                 Location loc) const override {
-    if (resultValue && evaluator_detail::isFullyEvaluated(*resultValue))
+    if (resultValue && resultValue->isFullyEvaluated())
       return resolveValueState(std::move(resultValue));
     return evaluateValue(op.getInput());
   }
