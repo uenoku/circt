@@ -37,9 +37,23 @@ class EvaluatorValue;
 /// primitive Attribute. Further refinement is expected.
 using EvaluatorValuePtr = std::shared_ptr<EvaluatorValue>;
 
-enum class ResolutionState { Ready, Pending, Failure };
+/// The semantic evaluation state of a value handle.
+enum class ResolutionState {
+  /// The handle can be used now. For references, this means the referenced
+  /// value chain resolves to a fully evaluated runtime value.
+  Ready,
+  /// Evaluation is not complete yet. This usually means the handle itself is
+  /// still partial or that a reference chain has not been filled in yet.
+  Pending,
+  /// Evaluation cannot make progress because a hard error was found, such as a
+  /// cyclic reference chain or a reported evaluator failure.
+  Failure
+};
 
 struct ResolvedValue {
+  /// `state` classifies whether `value` is usable. The `value` field preserves
+  /// the original handle so callers can keep wiring partial results through the
+  /// evaluator even when the semantic state is Pending or Failure.
   ResolutionState state;
   EvaluatorValuePtr value;
 

@@ -20,7 +20,6 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
 #include <memory>
 #include <optional>
@@ -35,6 +34,13 @@ namespace {
 using ResolutionState = evaluator::ResolutionState;
 using ResolvedValue = evaluator::ResolvedValue;
 
+//===----------------------------------------------------------------------===//
+// Resolved value helpers
+//===----------------------------------------------------------------------===//
+
+/// Follow reference handles until a concrete runtime value is reached. If the
+/// reference chain is incomplete, report Pending. If the chain loops, report
+/// Failure and preserve the original handle.
 static ResolvedValue
 resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   llvm::SmallPtrSet<evaluator::ReferenceValue *, 4> visited;
@@ -53,6 +59,13 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   return ResolvedValue::ready(std::move(currentValue));
 }
 
+/// Classify a handle into Ready / Pending / Failure while preserving the
+/// original handle in the returned ResolvedValue.
+///
+/// Ready means callers may use the handle immediately. Pending means the handle
+/// itself, or something it references, is still incomplete. Failure means
+/// evaluation hit a hard error while chasing the handle, such as a reference
+/// cycle.
 static ResolvedValue
 resolveValueState(evaluator::EvaluatorValuePtr currentValue) {
   if (!currentValue || !currentValue->isFullyEvaluated())
@@ -66,6 +79,10 @@ resolveValueState(evaluator::EvaluatorValuePtr currentValue) {
 
   return ResolvedValue::ready(std::move(currentValue));
 }
+
+//===----------------------------------------------------------------------===//
+// Ready value helpers
+//===----------------------------------------------------------------------===//
 
 static evaluator::EvaluatorValue *
 resolveReadyValue(evaluator::EvaluatorValuePtr value) {
@@ -93,6 +110,10 @@ static AttrT getAsAttr(evaluator::EvaluatorValuePtr value) {
 static bool isUnknownReadyValue(evaluator::EvaluatorValuePtr value) {
   return (value && value->isUnknown()) || resolveReadyValue(value)->isUnknown();
 }
+
+//===----------------------------------------------------------------------===//
+// Operand resolution helpers
+//===----------------------------------------------------------------------===//
 
 static std::optional<ResolvedValue>
 requireReady(const ResolvedValue &resolved,
@@ -134,6 +155,10 @@ static std::optional<ResolvedValue> requireAllOperandsReady(
   return std::nullopt;
 }
 
+//===----------------------------------------------------------------------===//
+// Result mutation helpers
+//===----------------------------------------------------------------------===//
+
 static ResolvedValue markUnknownAndReturn(evaluator::EvaluatorValuePtr value) {
   value->markUnknown();
   return resolveValueState(std::move(value));
@@ -146,6 +171,10 @@ static LogicalResult setAttrResult(evaluator::EvaluatorValuePtr resultValue,
     return failure();
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// Operation pattern infrastructure
+//===----------------------------------------------------------------------===//
 
 class OperationPattern {
 public:
@@ -286,6 +315,10 @@ private:
                 evaluator::EvaluatorValuePtr resultValue,
                 Location loc) const = 0;
 };
+
+//===----------------------------------------------------------------------===//
+// Operation patterns
+//===----------------------------------------------------------------------===//
 
 class IntegerBinaryArithmeticPattern final
     : public OpReadyOperandsPattern<IntegerBinaryArithmeticOp> {
@@ -508,6 +541,10 @@ public:
         evaluator::PathValue::getEmptyPath(loc)));
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Operaton Pattern Registery
+//===----------------------------------------------------------------------===//
 
 class OperationPatternRegistry {
 public:
