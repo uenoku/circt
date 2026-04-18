@@ -425,10 +425,6 @@ private:
                                              ActualParameters actualParams,
                                              Location loc);
 
-  FailureOr<EvaluatorValuePtr>
-  createPlaceholderValue(Operation *op, Value value,
-                         ActualParameters actualParams, Location loc);
-
   /// Instantiate an Object with its class name and actual parameters.
   FailureOr<EvaluatorValuePtr>
   evaluateObjectInstance(StringAttr className, ActualParameters actualParams,

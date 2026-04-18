@@ -644,39 +644,6 @@ circt::om::Evaluator::getPartiallyEvaluatedValue(Type type, Location loc) {
       });
 }
 
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::createPlaceholderValue(Operation *op, Value value,
-                                             ActualParameters actualParams,
-                                             Location loc) {
-  using namespace circt::om::evaluator;
-
-  if (auto *pattern = getOperationPatternRegistry().lookup(op))
-    return pattern->createPlaceholder(
-        op, value,
-        [&](Type type, Location placeholderLoc) {
-          return getPartiallyEvaluatedValue(type, placeholderLoc);
-        },
-        [&](Value aliasedValue, Location placeholderLoc) {
-          return getOrCreateValue(aliasedValue, actualParams, placeholderLoc);
-        },
-        loc);
-
-  return TypeSwitch<Operation *, FailureOr<evaluator::EvaluatorValuePtr>>(op)
-      .Case<ObjectFieldOp>([&](auto op) {
-        return success(std::make_shared<ReferenceValue>(value.getType(), loc));
-      })
-      .Case<ObjectOp>([&](auto op) {
-        return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
-      })
-      .Case<UnknownValueOp>(
-          [&](auto op) { return createUnknownValue(op.getType(), loc); })
-      .Default([&](Operation *op) {
-        auto error = op->emitError("unable to evaluate value");
-        error.attachNote() << "value: " << value;
-        return error;
-      });
-}
-
 FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
     Value value, ActualParameters actualParams, Location loc) {
   auto it = objects.find({value, actualParams});
@@ -694,8 +661,38 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
             return val;
           })
           .Case([&](OpResult result) {
-            return createPlaceholderValue(result.getDefiningOp(), value,
-                                          actualParams, loc);
+            using namespace circt::om::evaluator;
+            Operation *op = result.getDefiningOp();
+
+            if (auto *pattern = getOperationPatternRegistry().lookup(op))
+              return pattern->createPlaceholder(
+                  op, value,
+                  [&](Type type, Location placeholderLoc) {
+                    return getPartiallyEvaluatedValue(type, placeholderLoc);
+                  },
+                  [&](Value aliasedValue, Location placeholderLoc) {
+                    return getOrCreateValue(aliasedValue, actualParams,
+                                            placeholderLoc);
+                  },
+                  loc);
+
+            return TypeSwitch<Operation *,
+                              FailureOr<evaluator::EvaluatorValuePtr>>(op)
+                .Case<ObjectFieldOp>([&](auto op) {
+                  return success(
+                      std::make_shared<ReferenceValue>(value.getType(), loc));
+                })
+                .Case<ObjectOp>([&](auto op) {
+                  return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
+                })
+                .Case<UnknownValueOp>([&](auto op) {
+                  return createUnknownValue(op.getType(), loc);
+                })
+                .Default([&](Operation *op) {
+                  auto error = op->emitError("unable to evaluate value");
+                  error.attachNote() << "value: " << value;
+                  return error;
+                });
           });
   if (failed(result))
     return result;
