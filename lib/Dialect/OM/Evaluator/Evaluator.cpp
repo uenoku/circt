@@ -140,12 +140,12 @@ static ResolvedValue markUnknownAndReturn(evaluator::EvaluatorValuePtr value) {
   return resolveValueState(std::move(value));
 }
 
-static evaluator::EvaluatorValuePtr
-setAttrResult(evaluator::EvaluatorValuePtr resultValue, Attribute attr) {
+static LogicalResult setAttrResult(evaluator::EvaluatorValuePtr resultValue,
+                                   Attribute attr) {
   auto *attrValue = cast<evaluator::AttributeValue>(resultValue.get());
   if (failed(attrValue->setAttr(attr)) || failed(attrValue->finalize()))
-    return nullptr;
-  return resultValue;
+    return failure();
+  return success();
 }
 
 class OperationPattern {
@@ -254,11 +254,9 @@ private:
                               ArrayRef<evaluator::EvaluatorValuePtr> operands,
                               evaluator::EvaluatorValuePtr resultValue,
                               Location loc) const final {
-    auto value =
-        evaluateTyped(cast<OpT>(op), operands, std::move(resultValue), loc);
-    if (!value)
+    if (failed(evaluateTyped(cast<OpT>(op), operands, resultValue, loc)))
       return ResolvedValue::failure();
-    return resolveValueState(std::move(value));
+    return resolveValueState(std::move(resultValue));
   }
 
   virtual FailureOr<evaluator::EvaluatorValuePtr>
@@ -269,7 +267,7 @@ private:
                                                getValueHandle, loc);
   }
 
-  virtual evaluator::EvaluatorValuePtr
+  virtual LogicalResult
   evaluateTyped(OpT op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
                 evaluator::EvaluatorValuePtr resultValue,
                 Location loc) const = 0;
@@ -281,11 +279,10 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  evaluator::EvaluatorValuePtr
-  evaluateTyped(IntegerBinaryArithmeticOp op,
-                ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                evaluator::EvaluatorValuePtr resultValue,
-                Location loc) const override {
+  LogicalResult evaluateTyped(IntegerBinaryArithmeticOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 2 && "expected binary arithmetic operands");
 
     circt::om::IntegerAttr lhs = llvm::dyn_cast<circt::om::IntegerAttr>(
@@ -304,7 +301,7 @@ private:
 
     FailureOr<APSInt> result = op.evaluateIntegerOperation(lhsVal, rhsVal);
     if (failed(result))
-      return (op->emitError("failed to evaluate integer operation"), nullptr);
+      return op->emitError("failed to evaluate integer operation");
 
     MLIRContext *ctx = op.getContext();
     auto resultAttr = circt::om::IntegerAttr::get(
@@ -318,9 +315,10 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  evaluator::EvaluatorValuePtr evaluateTyped(
-      ListCreateOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
-      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
+  LogicalResult evaluateTyped(ListCreateOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     values.reserve(operands.size());
     for (auto operand : operands)
@@ -328,7 +326,7 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    return resultValue;
+    return success();
   }
 };
 
@@ -337,9 +335,10 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  evaluator::EvaluatorValuePtr evaluateTyped(
-      ListConcatOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
-      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
+  LogicalResult evaluateTyped(ListConcatOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     for (auto operand : operands) {
       auto *subListValue = ready::cast<evaluator::ListValue>(operand);
@@ -348,7 +347,7 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    return resultValue;
+    return success();
   }
 };
 
@@ -358,9 +357,10 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  evaluator::EvaluatorValuePtr evaluateTyped(
-      StringConcatOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
-      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
+  LogicalResult evaluateTyped(StringConcatOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     std::string result;
     for (auto operand : operands) {
       auto attr = llvm::dyn_cast<StringAttr>(
@@ -380,9 +380,10 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  evaluator::EvaluatorValuePtr evaluateTyped(
-      BinaryEqualityOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
-      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
+  LogicalResult evaluateTyped(BinaryEqualityOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 2 && "expected binary equality operands");
 
     mlir::Attribute lhs =
@@ -392,8 +393,7 @@ private:
 
     FailureOr<mlir::Attribute> result = op.evaluateBinaryEquality(lhs, rhs);
     if (failed(result))
-      return (op->emitError("failed to evaluate binary equality operation"),
-              nullptr);
+      return op->emitError("failed to evaluate binary equality operation");
     return setAttrResult(std::move(resultValue), *result);
   }
 };
@@ -412,11 +412,10 @@ public:
   }
 
 private:
-  evaluator::EvaluatorValuePtr
-  evaluateTyped(FrozenBasePathCreateOp op,
-                ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                evaluator::EvaluatorValuePtr resultValue,
-                Location loc) const override {
+  LogicalResult evaluateTyped(FrozenBasePathCreateOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenbasepath_create");
 
@@ -424,7 +423,7 @@ private:
         ready::cast<evaluator::BasePathValue>(operands.front());
     cast<evaluator::BasePathValue>(resultValue.get())
         ->setBasepath(*basePathValue);
-    return resultValue;
+    return success();
   }
 };
 
@@ -444,16 +443,17 @@ public:
   }
 
 private:
-  evaluator::EvaluatorValuePtr evaluateTyped(
-      FrozenPathCreateOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
-      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
+  LogicalResult evaluateTyped(FrozenPathCreateOp op,
+                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenpath_create");
 
     auto *basePathValue =
         ready::cast<evaluator::BasePathValue>(operands.front());
     cast<evaluator::PathValue>(resultValue.get())->setBasepath(*basePathValue);
-    return resultValue;
+    return success();
   }
 };
 
