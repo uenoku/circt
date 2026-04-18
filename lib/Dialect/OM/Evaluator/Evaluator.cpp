@@ -51,7 +51,8 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   return ResolvedValue::ready(std::move(currentValue));
 }
 
-static ResolvedValue inspectValue(evaluator::EvaluatorValuePtr currentValue) {
+static ResolvedValue
+resolveValueState(evaluator::EvaluatorValuePtr currentValue) {
   if (!currentValue || !currentValue->isFullyEvaluated())
     return ResolvedValue::pending(std::move(currentValue));
 
@@ -136,15 +137,15 @@ static std::optional<ResolvedValue> requireAllOperandsReady(
 
 static ResolvedValue markUnknownAndReturn(evaluator::EvaluatorValuePtr value) {
   value->markUnknown();
-  return inspectValue(std::move(value));
+  return resolveValueState(std::move(value));
 }
 
-static ResolvedValue setAttrResult(evaluator::EvaluatorValuePtr resultValue,
-                                   Attribute attr) {
+static evaluator::EvaluatorValuePtr
+setAttrResult(evaluator::EvaluatorValuePtr resultValue, Attribute attr) {
   auto *attrValue = cast<evaluator::AttributeValue>(resultValue.get());
   if (failed(attrValue->setAttr(attr)) || failed(attrValue->finalize()))
-    return ResolvedValue::failure();
-  return inspectValue(std::move(resultValue));
+    return nullptr;
+  return resultValue;
 }
 
 class OperationPattern {
@@ -210,7 +211,7 @@ public:
                          llvm::function_ref<ResolvedValue(Value)> evaluateValue,
                          Location loc) const final {
     if (resultValue && resultValue->isFullyEvaluated())
-      return inspectValue(std::move(resultValue));
+      return resolveValueState(std::move(resultValue));
 
     SmallVector<evaluator::EvaluatorValuePtr, 4> readyOperands;
     bool existsUnknown = false;
@@ -253,7 +254,11 @@ private:
                               ArrayRef<evaluator::EvaluatorValuePtr> operands,
                               evaluator::EvaluatorValuePtr resultValue,
                               Location loc) const final {
-    return evaluateTyped(cast<OpT>(op), operands, std::move(resultValue), loc);
+    auto value =
+        evaluateTyped(cast<OpT>(op), operands, std::move(resultValue), loc);
+    if (!value)
+      return ResolvedValue::failure();
+    return resolveValueState(std::move(value));
   }
 
   virtual FailureOr<evaluator::EvaluatorValuePtr>
@@ -264,7 +269,7 @@ private:
                                                getValueHandle, loc);
   }
 
-  virtual ResolvedValue
+  virtual evaluator::EvaluatorValuePtr
   evaluateTyped(OpT op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
                 evaluator::EvaluatorValuePtr resultValue,
                 Location loc) const = 0;
@@ -276,10 +281,11 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  ResolvedValue evaluateTyped(IntegerBinaryArithmeticOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr
+  evaluateTyped(IntegerBinaryArithmeticOp op,
+                ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                evaluator::EvaluatorValuePtr resultValue,
+                Location loc) const override {
     assert(operands.size() == 2 && "expected binary arithmetic operands");
 
     circt::om::IntegerAttr lhs = llvm::dyn_cast<circt::om::IntegerAttr>(
@@ -298,8 +304,7 @@ private:
 
     FailureOr<APSInt> result = op.evaluateIntegerOperation(lhsVal, rhsVal);
     if (failed(result))
-      return (op->emitError("failed to evaluate integer operation"),
-              ResolvedValue::failure());
+      return (op->emitError("failed to evaluate integer operation"), nullptr);
 
     MLIRContext *ctx = op.getContext();
     auto resultAttr = circt::om::IntegerAttr::get(
@@ -313,10 +318,9 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  ResolvedValue evaluateTyped(ListCreateOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr evaluateTyped(
+      ListCreateOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
+      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     values.reserve(operands.size());
     for (auto operand : operands)
@@ -324,7 +328,7 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    return inspectValue(std::move(resultValue));
+    return resultValue;
   }
 };
 
@@ -333,10 +337,9 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  ResolvedValue evaluateTyped(ListConcatOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr evaluateTyped(
+      ListConcatOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
+      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     for (auto operand : operands) {
       auto *subListValue = ready::cast<evaluator::ListValue>(operand);
@@ -345,7 +348,7 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    return inspectValue(std::move(resultValue));
+    return resultValue;
   }
 };
 
@@ -355,10 +358,9 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  ResolvedValue evaluateTyped(StringConcatOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr evaluateTyped(
+      StringConcatOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
+      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
     std::string result;
     for (auto operand : operands) {
       auto attr = llvm::dyn_cast<StringAttr>(
@@ -378,10 +380,9 @@ public:
   using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
 private:
-  ResolvedValue evaluateTyped(BinaryEqualityOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr evaluateTyped(
+      BinaryEqualityOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
+      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
     assert(operands.size() == 2 && "expected binary equality operands");
 
     mlir::Attribute lhs =
@@ -392,7 +393,7 @@ private:
     FailureOr<mlir::Attribute> result = op.evaluateBinaryEquality(lhs, rhs);
     if (failed(result))
       return (op->emitError("failed to evaluate binary equality operation"),
-              ResolvedValue::failure());
+              nullptr);
     return setAttrResult(std::move(resultValue), *result);
   }
 };
@@ -411,10 +412,11 @@ public:
   }
 
 private:
-  ResolvedValue evaluateTyped(FrozenBasePathCreateOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr
+  evaluateTyped(FrozenBasePathCreateOp op,
+                ArrayRef<evaluator::EvaluatorValuePtr> operands,
+                evaluator::EvaluatorValuePtr resultValue,
+                Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenbasepath_create");
 
@@ -422,7 +424,7 @@ private:
         ready::cast<evaluator::BasePathValue>(operands.front());
     cast<evaluator::BasePathValue>(resultValue.get())
         ->setBasepath(*basePathValue);
-    return inspectValue(std::move(resultValue));
+    return resultValue;
   }
 };
 
@@ -442,17 +444,16 @@ public:
   }
 
 private:
-  ResolvedValue evaluateTyped(FrozenPathCreateOp op,
-                              ArrayRef<evaluator::EvaluatorValuePtr> operands,
-                              evaluator::EvaluatorValuePtr resultValue,
-                              Location loc) const override {
+  evaluator::EvaluatorValuePtr evaluateTyped(
+      FrozenPathCreateOp op, ArrayRef<evaluator::EvaluatorValuePtr> operands,
+      evaluator::EvaluatorValuePtr resultValue, Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenpath_create");
 
     auto *basePathValue =
         ready::cast<evaluator::BasePathValue>(operands.front());
     cast<evaluator::PathValue>(resultValue.get())->setBasepath(*basePathValue);
-    return inspectValue(std::move(resultValue));
+    return resultValue;
   }
 };
 
@@ -471,8 +472,8 @@ public:
                          llvm::function_ref<ResolvedValue(Value)> evaluateValue,
                          Location loc) const override {
     if (resultValue && resultValue->isFullyEvaluated())
-      return inspectValue(std::move(resultValue));
-    return inspectValue(
+      return resolveValueState(std::move(resultValue));
+    return resolveValueState(
         circt::om::evaluator::AttributeValue::get(getOp(op).getValue(), loc));
   }
 };
@@ -491,7 +492,7 @@ public:
                          llvm::function_ref<ResolvedValue(Value)> evaluateValue,
                          Location loc) const override {
     if (resultValue && resultValue->isFullyEvaluated())
-      return inspectValue(std::move(resultValue));
+      return resolveValueState(std::move(resultValue));
     return evaluateValue(getOp(op).getInput());
   }
 };
@@ -512,7 +513,7 @@ public:
                          evaluator::EvaluatorValuePtr resultValue,
                          llvm::function_ref<ResolvedValue(Value)> evaluateValue,
                          Location loc) const override {
-    return inspectValue(std::move(resultValue));
+    return resolveValueState(std::move(resultValue));
   }
 };
 
@@ -895,7 +896,7 @@ ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
               loc);
 
         if (evaluatorValue.value()->isFullyEvaluated())
-          return inspectValue(evaluatorValue.value());
+          return resolveValueState(evaluatorValue.value());
 
         return TypeSwitch<Operation *, ResolvedValue>(result.getDefiningOp())
             .Case([&](ObjectOp op) {
@@ -920,7 +921,7 @@ ResolvedValue circt::om::Evaluator::evaluateParameter(
     BlockArgument formalParam, ActualParameters actualParams, Location loc) {
   auto val = (*actualParams)[formalParam.getArgNumber()];
   val->setLoc(loc);
-  return inspectValue(val);
+  return resolveValueState(val);
 }
 
 /// Evaluator dispatch function for property assertions.
@@ -992,9 +993,9 @@ circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
   auto loc = op.getLoc();
   auto key = ObjectKey{op, actualParams};
   if (isFullyEvaluated(key))
-    return inspectValue(getOrCreateValue(op, actualParams, loc).value());
+    return resolveValueState(getOrCreateValue(op, actualParams, loc).value());
   if (!activeObjectInstances.insert(key).second)
-    return inspectValue(getOrCreateValue(op, actualParams, loc).value());
+    return resolveValueState(getOrCreateValue(op, actualParams, loc).value());
   auto clearActiveObject =
       llvm::scope_exit([&] { activeObjectInstances.erase(key); });
 
@@ -1006,7 +1007,7 @@ circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
                                        loc, {op, actualParams});
   if (failed(result))
     return ResolvedValue::failure();
-  return inspectValue(result.value());
+  return resolveValueState(result.value());
 }
 
 /// Evaluator dispatch function for Object fields.
@@ -1038,7 +1039,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
     auto unknownField = setUnknownFieldValue();
     if (unknownField.state != ResolutionState::Ready)
       return ResolvedValue::failure();
-    return inspectValue(unknownField.value);
+    return resolveValueState(unknownField.value);
   }
 
   auto *currentObject = ready::cast<evaluator::ObjectValue>(readyObject);
@@ -1060,7 +1061,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
 
     evaluator::EvaluatorValuePtr nextObject;
     if (auto early = requireReady(
-            inspectValue(finalField), objectFieldValue,
+            resolveValueState(finalField), objectFieldValue,
             [&] {
               op.emitError("failed to resolve nested object field "
                            "path");
@@ -1071,7 +1072,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
       auto unknownField = setUnknownFieldValue();
       if (unknownField.state != ResolutionState::Ready)
         return ResolvedValue::failure();
-      return inspectValue(unknownField.value);
+      return resolveValueState(unknownField.value);
     }
 
     currentObject = ready::cast<evaluator::ObjectValue>(nextObject);
@@ -1082,7 +1083,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
       ->setValue(finalField);
 
   // Return the field being accessed.
-  return inspectValue(objectFieldValue);
+  return resolveValueState(objectFieldValue);
 }
 
 /// Create an unknown value of the specified type
@@ -1136,7 +1137,7 @@ ResolvedValue circt::om::Evaluator::evaluateUnknownValue(UnknownValueOp op,
   auto result = createUnknownValue(op.getType(), loc);
   if (failed(result))
     return ResolvedValue::failure();
-  return inspectValue(result.value());
+  return resolveValueState(result.value());
 }
 
 //===----------------------------------------------------------------------===//
