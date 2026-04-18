@@ -148,20 +148,17 @@ requireReady(const ResolvedValue &resolved,
 static std::optional<ResolvedValue> requireAllOperandsReady(
     ValueRange operands, evaluator::EvaluatorValuePtr pendingValue,
     llvm::function_ref<ResolvedValue(Value)> evaluateOperand,
-    llvm::function_ref<void(unsigned)> emitFailure,
+    llvm::function_ref<void()> emitFailure,
     SmallVectorImpl<ReadyValue> &readyOperands) {
   readyOperands.clear();
   readyOperands.reserve(operands.size());
 
-  unsigned index = 0;
   for (auto operand : operands) {
     ReadyValue readyOperand;
-    if (auto early = requireReady(
-            evaluateOperand(operand), pendingValue, [&] { emitFailure(index); },
-            readyOperand))
+    if (auto early = requireReady(evaluateOperand(operand), pendingValue,
+                                  emitFailure, readyOperand))
       return *early;
     readyOperands.push_back(std::move(readyOperand));
-    ++index;
   }
 
   return std::nullopt;
@@ -189,15 +186,26 @@ static ResolvedValue setAttrResult(evaluator::EvaluatorValuePtr resultValue,
 
 class ReadyOperandsPattern {
 public:
+  explicit ReadyOperandsPattern(StringRef operationName)
+      : operationName(operationName) {}
   virtual ~ReadyOperandsPattern() = default;
+
+  void emitOperandError(Operation *op) const {
+    op->emitError() << "failed to resolve " << operationName << " operand";
+  }
 
   virtual ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                                  evaluator::EvaluatorValuePtr resultValue,
                                  Location loc) const = 0;
+
+private:
+  StringRef operationName;
 };
 
 class IntegerBinaryArithmeticPattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -232,6 +240,8 @@ public:
 
 class ListCreatePattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -250,6 +260,8 @@ public:
 
 class ListConcatPattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -270,6 +282,8 @@ public:
 
 class StringConcatPattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -292,6 +306,8 @@ public:
 
 class BinaryEqualityPattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -316,6 +332,8 @@ public:
 
 class FrozenBasePathCreatePattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -334,6 +352,8 @@ public:
 
 class FrozenPathCreatePattern final : public ReadyOperandsPattern {
 public:
+  using ReadyOperandsPattern::ReadyOperandsPattern;
+
   ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
                          evaluator::EvaluatorValuePtr resultValue,
                          Location loc) const override {
@@ -352,22 +372,36 @@ public:
 class ReadyOperandsPatternRegistry {
 public:
   ReadyOperandsPatternRegistry() {
+    addPattern(IntegerAddOp::getOperationName(),
+               std::make_unique<IntegerBinaryArithmeticPattern>(
+                   IntegerAddOp::getOperationName()));
+    addPattern(IntegerMulOp::getOperationName(),
+               std::make_unique<IntegerBinaryArithmeticPattern>(
+                   IntegerMulOp::getOperationName()));
+    addPattern(IntegerShrOp::getOperationName(),
+               std::make_unique<IntegerBinaryArithmeticPattern>(
+                   IntegerShrOp::getOperationName()));
+    addPattern(IntegerShlOp::getOperationName(),
+               std::make_unique<IntegerBinaryArithmeticPattern>(
+                   IntegerShlOp::getOperationName()));
     addPattern(
-        {IntegerAddOp::getOperationName(), IntegerMulOp::getOperationName(),
-         IntegerShrOp::getOperationName(), IntegerShlOp::getOperationName()},
-        std::make_unique<IntegerBinaryArithmeticPattern>());
-    addPattern({ListCreateOp::getOperationName()},
-               std::make_unique<ListCreatePattern>());
-    addPattern({ListConcatOp::getOperationName()},
-               std::make_unique<ListConcatPattern>());
-    addPattern({StringConcatOp::getOperationName()},
-               std::make_unique<StringConcatPattern>());
-    addPattern({PropEqOp::getOperationName()},
-               std::make_unique<BinaryEqualityPattern>());
-    addPattern({FrozenBasePathCreateOp::getOperationName()},
-               std::make_unique<FrozenBasePathCreatePattern>());
-    addPattern({FrozenPathCreateOp::getOperationName()},
-               std::make_unique<FrozenPathCreatePattern>());
+        ListCreateOp::getOperationName(),
+        std::make_unique<ListCreatePattern>(ListCreateOp::getOperationName()));
+    addPattern(
+        ListConcatOp::getOperationName(),
+        std::make_unique<ListConcatPattern>(ListConcatOp::getOperationName()));
+    addPattern(StringConcatOp::getOperationName(),
+               std::make_unique<StringConcatPattern>(
+                   StringConcatOp::getOperationName()));
+    addPattern(
+        PropEqOp::getOperationName(),
+        std::make_unique<BinaryEqualityPattern>(PropEqOp::getOperationName()));
+    addPattern(FrozenBasePathCreateOp::getOperationName(),
+               std::make_unique<FrozenBasePathCreatePattern>(
+                   FrozenBasePathCreateOp::getOperationName()));
+    addPattern(FrozenPathCreateOp::getOperationName(),
+               std::make_unique<FrozenPathCreatePattern>(
+                   FrozenPathCreateOp::getOperationName()));
   }
 
   const ReadyOperandsPattern *lookup(Operation *op) const {
@@ -376,12 +410,11 @@ public:
   }
 
 private:
-  void addPattern(std::initializer_list<StringRef> opNames,
+  void addPattern(StringRef opName,
                   std::unique_ptr<ReadyOperandsPattern> pattern) {
     const ReadyOperandsPattern *patternPtr = pattern.get();
     patterns.push_back(std::move(pattern));
-    for (StringRef opName : opNames)
-      patternsByOpName[opName] = patternPtr;
+    patternsByOpName[opName] = patternPtr;
   }
 
   SmallVector<std::unique_ptr<ReadyOperandsPattern>> patterns;
@@ -396,17 +429,14 @@ static const ReadyOperandsPatternRegistry &getReadyOperandsPatternRegistry() {
 static ResolvedValue
 dispatchReadyOperands(Operation *op, evaluator::EvaluatorValuePtr result,
                       llvm::function_ref<ResolvedValue(Value)> evaluateOperand,
-                      llvm::function_ref<void(unsigned)> emitFailure,
-                      Location loc) {
+                      const ReadyOperandsPattern &pattern, Location loc) {
   SmallVector<ReadyValue, 4> readyOperands;
-  if (auto early =
-          requireAllOperandsReady(op->getOperands(), result, evaluateOperand,
-                                  emitFailure, readyOperands))
+  if (auto early = requireAllOperandsReady(
+          op->getOperands(), result, evaluateOperand,
+          [&] { pattern.emitOperandError(op); }, readyOperands))
     return *early;
 
-  auto *pattern = getReadyOperandsPatternRegistry().lookup(op);
-  assert(pattern && "missing ready-operands evaluation pattern");
-  return pattern->evaluate(op, readyOperands, std::move(result), loc);
+  return pattern.evaluate(op, readyOperands, std::move(result), loc);
 }
 
 } // namespace
@@ -766,12 +796,13 @@ ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
         return evaluateParameter(arg, actualParams, loc);
       })
       .Case([&](OpResult result) {
+        if (getReadyOperandsPatternRegistry().lookup(result.getDefiningOp()))
+          return evaluateReadyOperandsOperation(result, evaluatorValue.value(),
+                                                actualParams, loc);
+
         return TypeSwitch<Operation *, ResolvedValue>(result.getDefiningOp())
             .Case([&](ConstantOp op) {
               return evaluateConstant(op, actualParams, loc);
-            })
-            .Case([&](IntegerBinaryArithmeticOp op) {
-              return evaluateIntegerBinaryArithmetic(op, actualParams, loc);
             })
             .Case([&](ObjectOp op) {
               return evaluateObjectInstance(op, actualParams);
@@ -779,26 +810,8 @@ ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
             .Case([&](ObjectFieldOp op) {
               return evaluateObjectField(op, actualParams, loc);
             })
-            .Case([&](ListCreateOp op) {
-              return evaluateListCreate(op, actualParams, loc);
-            })
-            .Case([&](ListConcatOp op) {
-              return evaluateListConcat(op, actualParams, loc);
-            })
-            .Case([&](StringConcatOp op) {
-              return evaluateStringConcat(op, actualParams, loc);
-            })
-            .Case([&](BinaryEqualityOp op) {
-              return evaluateBinaryEquality(op, actualParams, loc);
-            })
             .Case([&](AnyCastOp op) {
               return evaluateValue(op.getInput(), actualParams, loc);
-            })
-            .Case([&](FrozenBasePathCreateOp op) {
-              return evaluateBasePathCreate(op, actualParams, loc);
-            })
-            .Case([&](FrozenPathCreateOp op) {
-              return evaluatePathCreate(op, actualParams, loc);
             })
             .Case([&](FrozenEmptyPathOp op) {
               return evaluateEmptyPath(op, actualParams, loc);
@@ -829,22 +842,16 @@ ResolvedValue circt::om::Evaluator::evaluateConstant(
   return inspectValue(om::evaluator::AttributeValue::get(op.getValue(), loc));
 }
 
-// Evaluator dispatch function for integer binary arithmetic.
-ResolvedValue circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
-    IntegerBinaryArithmeticOp op, ActualParameters actualParams, Location loc) {
-  auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
-  if (failed(handle))
-    return ResolvedValue::failure();
-  if (handle.value()->isFullyEvaluated())
-    return inspectValue(handle.value());
+ResolvedValue circt::om::Evaluator::evaluateReadyOperandsOperation(
+    Value value, evaluator::EvaluatorValuePtr resultValue,
+    ActualParameters actualParams, Location loc) {
+  auto *op = cast<OpResult>(value).getDefiningOp();
+  auto *pattern = getReadyOperandsPatternRegistry().lookup(op);
+  assert(pattern && "missing ready-operands evaluation pattern");
   return dispatchReadyOperands(
-      op.getOperation(), handle.value(),
+      op, std::move(resultValue),
       [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned index) {
-        op->emitError(index == 0 ? "failed to resolve integer arithmetic lhs"
-                                 : "failed to resolve integer arithmetic rhs");
-      },
-      loc);
+      *pattern, loc);
 }
 
 /// Evaluator dispatch function for property assertions.
@@ -1010,99 +1017,6 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
 
   // Return the field being accessed.
   return inspectValue(objectFieldValue);
-}
-
-/// Evaluator dispatch function for List creation.
-ResolvedValue circt::om::Evaluator::evaluateListCreate(
-    ListCreateOp op, ActualParameters actualParams, Location loc) {
-  auto list = getOrCreateValue(op, actualParams, loc);
-  if (failed(list))
-    return ResolvedValue::failure();
-  if (list.value()->isFullyEvaluated())
-    return inspectValue(list.value());
-  return dispatchReadyOperands(
-      op.getOperation(), list.value(),
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned) { op.emitError("failed to resolve list_create operand"); },
-      loc);
-}
-
-/// Evaluator dispatch function for List concatenation.
-ResolvedValue circt::om::Evaluator::evaluateListConcat(
-    ListConcatOp op, ActualParameters actualParams, Location loc) {
-  auto list = getOrCreateValue(op, actualParams, loc);
-  if (failed(list))
-    return ResolvedValue::failure();
-  if (list.value()->isFullyEvaluated())
-    return inspectValue(list.value());
-  return dispatchReadyOperands(
-      op.getOperation(), list.value(),
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned) { op.emitError("failed to resolve list_concat operand"); },
-      loc);
-}
-
-/// Evaluator dispatch function for String concatenation.
-ResolvedValue circt::om::Evaluator::evaluateStringConcat(
-    StringConcatOp op, ActualParameters actualParams, Location loc) {
-  auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
-  if (failed(handle))
-    return ResolvedValue::failure();
-  if (handle.value()->isFullyEvaluated())
-    return inspectValue(handle.value());
-  return dispatchReadyOperands(
-      op.getOperation(), handle.value(),
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned) {
-        op->emitError("failed to resolve string_concat operand");
-      },
-      loc);
-}
-
-// Evaluator dispatch function for binary property equality operations.
-ResolvedValue circt::om::Evaluator::evaluateBinaryEquality(
-    BinaryEqualityOp op, ActualParameters actualParams, Location loc) {
-  auto handle = getOrCreateValue(op.getResult(), actualParams, loc);
-  if (failed(handle))
-    return ResolvedValue::failure();
-  if (handle.value()->isFullyEvaluated())
-    return inspectValue(handle.value());
-  return dispatchReadyOperands(
-      op.getOperation(), handle.value(),
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned index) {
-        op->emitError(index == 0 ? "failed to resolve prop.eq lhs"
-                                 : "failed to resolve prop.eq rhs");
-      },
-      loc);
-}
-
-ResolvedValue circt::om::Evaluator::evaluateBasePathCreate(
-    FrozenBasePathCreateOp op, ActualParameters actualParams, Location loc) {
-  auto valueResult = getOrCreateValue(op, actualParams, loc).value();
-  if (valueResult->isFullyEvaluated())
-    return inspectValue(valueResult);
-  return dispatchReadyOperands(
-      op.getOperation(), valueResult,
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned) {
-        op.emitError("failed to resolve frozenbasepath_create operand");
-      },
-      loc);
-}
-
-ResolvedValue circt::om::Evaluator::evaluatePathCreate(
-    FrozenPathCreateOp op, ActualParameters actualParams, Location loc) {
-  auto valueResult = getOrCreateValue(op, actualParams, loc).value();
-  if (valueResult->isFullyEvaluated())
-    return inspectValue(valueResult);
-  return dispatchReadyOperands(
-      op.getOperation(), valueResult,
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      [&](unsigned) {
-        op.emitError("failed to resolve frozenpath_create operand");
-      },
-      loc);
 }
 
 ResolvedValue circt::om::Evaluator::evaluateEmptyPath(

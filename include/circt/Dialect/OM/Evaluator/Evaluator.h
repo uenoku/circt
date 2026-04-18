@@ -429,8 +429,9 @@ private:
   evaluateConstant(ConstantOp op, ActualParameters actualParams, Location loc);
 
   evaluator::ResolvedValue
-  evaluateIntegerBinaryArithmetic(IntegerBinaryArithmeticOp op,
-                                  ActualParameters actualParams, Location loc);
+  evaluateReadyOperandsOperation(Value value,
+                                 evaluator::EvaluatorValuePtr resultValue,
+                                 ActualParameters actualParams, Location loc);
 
   /// Instantiate an Object with its class name and actual parameters.
   FailureOr<EvaluatorValuePtr>
@@ -441,24 +442,6 @@ private:
   evaluator::ResolvedValue evaluateObjectField(ObjectFieldOp op,
                                                ActualParameters actualParams,
                                                Location loc);
-  evaluator::ResolvedValue evaluateListCreate(ListCreateOp op,
-                                              ActualParameters actualParams,
-                                              Location loc);
-  evaluator::ResolvedValue evaluateListConcat(ListConcatOp op,
-                                              ActualParameters actualParams,
-                                              Location loc);
-  evaluator::ResolvedValue evaluateStringConcat(StringConcatOp op,
-                                                ActualParameters actualParams,
-                                                Location loc);
-  evaluator::ResolvedValue evaluateBinaryEquality(BinaryEqualityOp op,
-                                                  ActualParameters actualParams,
-                                                  Location loc);
-  evaluator::ResolvedValue evaluateBasePathCreate(FrozenBasePathCreateOp op,
-                                                  ActualParameters actualParams,
-                                                  Location loc);
-  evaluator::ResolvedValue evaluatePathCreate(FrozenPathCreateOp op,
-                                              ActualParameters actualParams,
-                                              Location loc);
   evaluator::ResolvedValue evaluateEmptyPath(FrozenEmptyPathOp op,
                                              ActualParameters actualParams,
                                              Location loc);
