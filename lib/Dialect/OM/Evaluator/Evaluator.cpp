@@ -519,44 +519,19 @@ public:
 class OperationPatternRegistry {
 public:
   OperationPatternRegistry() {
-    addPattern(
-        ConstantOp::getOperationName(),
-        std::make_unique<ConstantPattern>(ConstantOp::getOperationName()));
-    addPattern(AnyCastOp::getOperationName(),
-               std::make_unique<AnyCastPattern>(AnyCastOp::getOperationName()));
-    addPattern(FrozenEmptyPathOp::getOperationName(),
-               std::make_unique<FrozenEmptyPathPattern>(
-                   FrozenEmptyPathOp::getOperationName()));
-    addPattern(IntegerAddOp::getOperationName(),
-               std::make_unique<IntegerBinaryArithmeticPattern>(
-                   IntegerAddOp::getOperationName()));
-    addPattern(IntegerMulOp::getOperationName(),
-               std::make_unique<IntegerBinaryArithmeticPattern>(
-                   IntegerMulOp::getOperationName()));
-    addPattern(IntegerShrOp::getOperationName(),
-               std::make_unique<IntegerBinaryArithmeticPattern>(
-                   IntegerShrOp::getOperationName()));
-    addPattern(IntegerShlOp::getOperationName(),
-               std::make_unique<IntegerBinaryArithmeticPattern>(
-                   IntegerShlOp::getOperationName()));
-    addPattern(
-        ListCreateOp::getOperationName(),
-        std::make_unique<ListCreatePattern>(ListCreateOp::getOperationName()));
-    addPattern(
-        ListConcatOp::getOperationName(),
-        std::make_unique<ListConcatPattern>(ListConcatOp::getOperationName()));
-    addPattern(StringConcatOp::getOperationName(),
-               std::make_unique<StringConcatPattern>(
-                   StringConcatOp::getOperationName()));
-    addPattern(
-        PropEqOp::getOperationName(),
-        std::make_unique<BinaryEqualityPattern>(PropEqOp::getOperationName()));
-    addPattern(FrozenBasePathCreateOp::getOperationName(),
-               std::make_unique<FrozenBasePathCreatePattern>(
-                   FrozenBasePathCreateOp::getOperationName()));
-    addPattern(FrozenPathCreateOp::getOperationName(),
-               std::make_unique<FrozenPathCreatePattern>(
-                   FrozenPathCreateOp::getOperationName()));
+    addPattern<ConstantOp, ConstantPattern>();
+    addPattern<AnyCastOp, AnyCastPattern>();
+    addPattern<FrozenEmptyPathOp, FrozenEmptyPathPattern>();
+    addPattern<IntegerAddOp, IntegerBinaryArithmeticPattern>();
+    addPattern<IntegerMulOp, IntegerBinaryArithmeticPattern>();
+    addPattern<IntegerShrOp, IntegerBinaryArithmeticPattern>();
+    addPattern<IntegerShlOp, IntegerBinaryArithmeticPattern>();
+    addPattern<ListCreateOp, ListCreatePattern>();
+    addPattern<ListConcatOp, ListConcatPattern>();
+    addPattern<StringConcatOp, StringConcatPattern>();
+    addPattern<PropEqOp, BinaryEqualityPattern>();
+    addPattern<FrozenBasePathCreateOp, FrozenBasePathCreatePattern>();
+    addPattern<FrozenPathCreateOp, FrozenPathCreatePattern>();
   }
 
   const OperationPattern *lookup(Operation *op) const {
@@ -565,10 +540,12 @@ public:
   }
 
 private:
-  void addPattern(StringRef opName, std::unique_ptr<OperationPattern> pattern) {
+  template <typename OpT, typename PatternT>
+  void addPattern() {
+    auto pattern = std::make_unique<PatternT>(OpT::getOperationName());
     const OperationPattern *patternPtr = pattern.get();
     patterns.push_back(std::move(pattern));
-    patternsByOpName[opName] = patternPtr;
+    patternsByOpName[OpT::getOperationName()] = patternPtr;
   }
 
   SmallVector<std::unique_ptr<OperationPattern>> patterns;
