@@ -39,11 +39,28 @@ struct ResolvedValue {
   static ResolvedValue failure() { return {ResolutionState::Failure, nullptr}; }
 };
 
-template <typename T>
-struct ResolvedTypedValue {
+struct EvaluatedValue {
   ResolutionState state;
   evaluator::EvaluatorValuePtr value;
+  evaluator::EvaluatorValuePtr resolvedValue;
+
+  bool isUnknown() const {
+    return (value && value->isUnknown()) ||
+           (resolvedValue && resolvedValue->isUnknown());
+  }
+};
+
+template <typename T>
+struct EvaluatedTypedValue {
+  ResolutionState state;
+  evaluator::EvaluatorValuePtr value;
+  evaluator::EvaluatorValuePtr resolvedValue;
   T *typedValue;
+
+  bool isUnknown() const {
+    return (value && value->isUnknown()) ||
+           (resolvedValue && resolvedValue->isUnknown());
+  }
 };
 
 static ResolvedValue
@@ -64,15 +81,37 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   return ResolvedValue::ready(std::move(currentValue));
 }
 
-template <typename T>
-static ResolvedTypedValue<T>
-resolveValueAs(evaluator::EvaluatorValuePtr currentValue) {
-  auto resolved = resolveReferenceValue(std::move(currentValue));
+static EvaluatedValue inspectValue(evaluator::EvaluatorValuePtr currentValue) {
+  if (!currentValue || !currentValue->isFullyEvaluated())
+    return {ResolutionState::Pending, std::move(currentValue), nullptr};
+
+  auto resolved = resolveReferenceValue(currentValue);
   if (resolved.state != ResolutionState::Ready)
-    return {resolved.state, nullptr, nullptr};
-  assert(isa<T>(resolved.value.get()) && "unexpected evaluator value type");
-  return {ResolutionState::Ready, resolved.value,
-          cast<T>(resolved.value.get())};
+    return {resolved.state, std::move(currentValue), nullptr};
+  if (!resolved.value->isFullyEvaluated())
+    return {ResolutionState::Pending, std::move(currentValue), nullptr};
+
+  return {ResolutionState::Ready, std::move(currentValue), resolved.value};
+}
+
+template <typename T>
+static EvaluatedTypedValue<T>
+inspectValueIf(evaluator::EvaluatorValuePtr currentValue) {
+  auto inspected = inspectValue(std::move(currentValue));
+  if (inspected.state != ResolutionState::Ready)
+    return {inspected.state, inspected.value, nullptr, nullptr};
+  return {ResolutionState::Ready, inspected.value, inspected.resolvedValue,
+          dyn_cast<T>(inspected.resolvedValue.get())};
+}
+
+template <typename T>
+static EvaluatedTypedValue<T>
+inspectValueAs(evaluator::EvaluatorValuePtr currentValue) {
+  auto inspected = inspectValueIf<T>(std::move(currentValue));
+  if (inspected.state != ResolutionState::Ready)
+    return inspected;
+  assert(inspected.typedValue && "unexpected evaluator value type");
+  return inspected;
 }
 
 } // namespace
@@ -511,30 +550,24 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   auto lhsResult = evaluateValue(op.getLhs(), actualParams, loc);
   if (failed(lhsResult))
     return lhsResult;
-  if (!lhsResult.value()->isFullyEvaluated())
-    return handle;
-
   auto rhsResult = evaluateValue(op.getRhs(), actualParams, loc);
   if (failed(rhsResult))
     return rhsResult;
-  if (!rhsResult.value()->isFullyEvaluated())
-    return handle;
 
-  auto lhsValue = resolveValueAs<evaluator::AttributeValue>(lhsResult.value());
+  auto lhsValue = inspectValueAs<evaluator::AttributeValue>(lhsResult.value());
   if (lhsValue.state == ResolutionState::Pending)
     return handle;
   if (lhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve integer arithmetic lhs");
 
-  auto rhsValue = resolveValueAs<evaluator::AttributeValue>(rhsResult.value());
+  auto rhsValue = inspectValueAs<evaluator::AttributeValue>(rhsResult.value());
   if (rhsValue.state == ResolutionState::Pending)
     return handle;
   if (rhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve integer arithmetic rhs");
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown() ||
-      lhsValue.value->isUnknown() || rhsValue.value->isUnknown()) {
+  if (lhsValue.isUnknown() || rhsValue.isUnknown()) {
     handle.value()->markUnknown();
     return handle;
   }
@@ -589,18 +622,16 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   auto condResult = evaluateValue(op.getCondition(), actualParams, loc);
   if (failed(condResult))
     return failure();
-  if (!condResult.value()->isFullyEvaluated())
-    return success();
 
   auto resolvedCond =
-      resolveValueAs<evaluator::AttributeValue>(condResult.value());
+      inspectValueAs<evaluator::AttributeValue>(condResult.value());
   if (resolvedCond.state == ResolutionState::Pending)
     return success();
   if (resolvedCond.state == ResolutionState::Failure)
     return op.emitError("failed to resolve property assertion condition");
 
   // If the condition is unknown, skip silently (best-effort).
-  if (condResult.value()->isUnknown() || resolvedCond.value->isUnknown())
+  if (resolvedCond.isUnknown())
     return success();
 
   auto condAttr = resolvedCond.typedValue->getAttr();
@@ -696,17 +727,16 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     return objectFieldValue;
   };
 
-  auto resolvedObject = resolveReferenceValue(result);
+  auto resolvedObject = inspectValueIf<evaluator::ObjectValue>(result);
   if (resolvedObject.state == ResolutionState::Pending)
     return objectFieldValue;
   if (resolvedObject.state == ResolutionState::Failure)
     return op.emitError("failed to resolve object field base");
 
-  if (result->isUnknown() || resolvedObject.value->isUnknown())
+  if (resolvedObject.isUnknown())
     return setUnknownFieldValue();
 
-  auto *currentObject =
-      llvm::dyn_cast<evaluator::ObjectValue>(resolvedObject.value.get());
+  auto *currentObject = resolvedObject.typedValue;
   if (!currentObject)
     return op.emitError("resolved object field base is not an object");
 
@@ -725,16 +755,15 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     if (std::next(it) == end)
       continue;
 
-    auto nextObject = resolveReferenceValue(finalField);
+    auto nextObject = inspectValueIf<evaluator::ObjectValue>(finalField);
     if (nextObject.state == ResolutionState::Pending)
       return objectFieldValue;
     if (nextObject.state == ResolutionState::Failure)
       return op.emitError("failed to resolve nested object field path");
-    if (finalField->isUnknown() || nextObject.value->isUnknown())
+    if (nextObject.isUnknown())
       return setUnknownFieldValue();
 
-    currentObject =
-        llvm::dyn_cast<evaluator::ObjectValue>(nextObject.value.get());
+    currentObject = nextObject.typedValue;
     if (!currentObject)
       return op.emitError("resolved nested object field path is not an object");
   }
@@ -760,10 +789,14 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
     auto result = evaluateValue(operand, actualParams, loc);
     if (failed(result))
       return result;
-    if (!result.value()->isFullyEvaluated())
+
+    auto evaluatedOperand = inspectValue(result.value());
+    if (evaluatedOperand.state == ResolutionState::Pending)
       return list;
+    if (evaluatedOperand.state == ResolutionState::Failure)
+      return op.emitError("failed to resolve list_create operand");
     // Check if any operand is unknown.
-    if (result.value()->isUnknown())
+    if (evaluatedOperand.isUnknown())
       hasUnknown = true;
     values.push_back(result.value());
   }
@@ -795,22 +828,16 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
     auto result = evaluateValue(operand, actualParams, loc);
     if (failed(result))
       return result;
-    if (!result.value()->isFullyEvaluated())
-      return list;
 
-    auto subList = resolveValueAs<evaluator::ListValue>(result.value());
+    auto subList = inspectValueAs<evaluator::ListValue>(result.value());
     if (subList.state == ResolutionState::Pending)
       return list;
     if (subList.state == ResolutionState::Failure)
       return op->emitError("failed to resolve list_concat operand");
 
     // Check if any operand is unknown.
-    if (result.value()->isUnknown() || subList.value->isUnknown())
+    if (subList.isUnknown())
       hasUnknown = true;
-
-    // Extract this sublist and ensure it's done evaluating.
-    if (!subList.typedValue->isFullyEvaluated())
-      return list;
 
     // Append each EvaluatorValue from the sublist.
     for (const auto &subValue : subList.typedValue->getElements())
@@ -850,17 +877,14 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
     auto operandResult = evaluateValue(operand, actualParams, loc);
     if (failed(operandResult))
       return operandResult;
-    if (!operandResult.value()->isFullyEvaluated())
-      return handle;
 
     auto resolvedOperand =
-        resolveValueAs<evaluator::AttributeValue>(operandResult.value());
+        inspectValueAs<evaluator::AttributeValue>(operandResult.value());
     if (resolvedOperand.state == ResolutionState::Pending)
       return handle;
     if (resolvedOperand.state == ResolutionState::Failure)
       return op->emitError("failed to resolve string_concat operand");
-    if (operandResult.value()->isUnknown() ||
-        resolvedOperand.value->isUnknown()) {
+    if (resolvedOperand.isUnknown()) {
       handle.value()->markUnknown();
       return handle;
     }
@@ -905,30 +929,24 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
   auto lhsResult = evaluateValue(op.getLhs(), actualParams, loc);
   if (failed(lhsResult))
     return lhsResult;
-  if (!lhsResult.value()->isFullyEvaluated())
-    return handle;
-
   auto rhsResult = evaluateValue(op.getRhs(), actualParams, loc);
   if (failed(rhsResult))
     return rhsResult;
-  if (!rhsResult.value()->isFullyEvaluated())
-    return handle;
 
-  auto lhsValue = resolveValueAs<evaluator::AttributeValue>(lhsResult.value());
+  auto lhsValue = inspectValueAs<evaluator::AttributeValue>(lhsResult.value());
   if (lhsValue.state == ResolutionState::Pending)
     return handle;
   if (lhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve prop.eq lhs");
 
-  auto rhsValue = resolveValueAs<evaluator::AttributeValue>(rhsResult.value());
+  auto rhsValue = inspectValueAs<evaluator::AttributeValue>(rhsResult.value());
   if (rhsValue.state == ResolutionState::Pending)
     return handle;
   if (rhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve prop.eq rhs");
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown() ||
-      lhsValue.value->isUnknown() || rhsValue.value->isUnknown()) {
+  if (lhsValue.isUnknown() || rhsValue.isUnknown()) {
     handle.value()->markUnknown();
     return handle;
   }
@@ -965,17 +983,23 @@ circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
   auto result = evaluateValue(op.getBasePath(), actualParams, loc);
   if (failed(result))
     return result;
-  auto &value = result.value();
-  if (!value->isFullyEvaluated())
+
+  auto basePath = inspectValueIf<evaluator::BasePathValue>(result.value());
+  if (basePath.state == ResolutionState::Pending)
     return valueResult;
+  if (basePath.state == ResolutionState::Failure)
+    return op.emitError("failed to resolve frozenbasepath_create operand");
 
   // If the base path is unknown, mark the result as unknown.
-  if (result.value()->isUnknown()) {
+  if (basePath.isUnknown()) {
     valueResult->markUnknown();
     return valueResult;
   }
 
-  path->setBasepath(*llvm::cast<evaluator::BasePathValue>(value.get()));
+  if (!basePath.typedValue)
+    return op.emitError(
+        "resolved frozenbasepath_create operand is not a base path");
+  path->setBasepath(*basePath.typedValue);
   return valueResult;
 }
 
@@ -989,17 +1013,23 @@ circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
   auto result = evaluateValue(op.getBasePath(), actualParams, loc);
   if (failed(result))
     return result;
-  auto &value = result.value();
-  if (!value->isFullyEvaluated())
+
+  auto basePath = inspectValueIf<evaluator::BasePathValue>(result.value());
+  if (basePath.state == ResolutionState::Pending)
     return valueResult;
+  if (basePath.state == ResolutionState::Failure)
+    return op.emitError("failed to resolve frozenpath_create operand");
 
   // If the base path is unknown, mark the result as unknown.
-  if (result.value()->isUnknown()) {
+  if (basePath.isUnknown()) {
     valueResult->markUnknown();
     return valueResult;
   }
 
-  path->setBasepath(*llvm::cast<evaluator::BasePathValue>(value.get()));
+  if (!basePath.typedValue)
+    return op.emitError(
+        "resolved frozenpath_create operand is not a base path");
+  path->setBasepath(*basePath.typedValue);
   return valueResult;
 }
 
