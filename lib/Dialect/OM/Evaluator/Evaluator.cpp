@@ -39,30 +39,6 @@ struct ResolvedValue {
   static ResolvedValue failure() { return {ResolutionState::Failure, nullptr}; }
 };
 
-struct EvaluatedValue {
-  ResolutionState state;
-  evaluator::EvaluatorValuePtr value;
-  evaluator::EvaluatorValuePtr resolvedValue;
-
-  bool isUnknown() const {
-    return (value && value->isUnknown()) ||
-           (resolvedValue && resolvedValue->isUnknown());
-  }
-};
-
-template <typename T>
-struct EvaluatedTypedValue {
-  ResolutionState state;
-  evaluator::EvaluatorValuePtr value;
-  evaluator::EvaluatorValuePtr resolvedValue;
-  T *typedValue;
-
-  bool isUnknown() const {
-    return (value && value->isUnknown()) ||
-           (resolvedValue && resolvedValue->isUnknown());
-  }
-};
-
 static ResolvedValue
 resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   llvm::SmallPtrSet<evaluator::ReferenceValue *, 4> visited;
@@ -81,37 +57,24 @@ resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
   return ResolvedValue::ready(std::move(currentValue));
 }
 
-static EvaluatedValue inspectValue(evaluator::EvaluatorValuePtr currentValue) {
+static ResolvedValue inspectValue(evaluator::EvaluatorValuePtr currentValue) {
   if (!currentValue || !currentValue->isFullyEvaluated())
-    return {ResolutionState::Pending, std::move(currentValue), nullptr};
+    return ResolvedValue::pending();
 
   auto resolved = resolveReferenceValue(currentValue);
   if (resolved.state != ResolutionState::Ready)
-    return {resolved.state, std::move(currentValue), nullptr};
+    return resolved;
   if (!resolved.value->isFullyEvaluated())
-    return {ResolutionState::Pending, std::move(currentValue), nullptr};
+    return ResolvedValue::pending();
 
-  return {ResolutionState::Ready, std::move(currentValue), resolved.value};
+  return resolved;
 }
 
-template <typename T>
-static EvaluatedTypedValue<T>
-inspectValueIf(evaluator::EvaluatorValuePtr currentValue) {
-  auto inspected = inspectValue(std::move(currentValue));
-  if (inspected.state != ResolutionState::Ready)
-    return {inspected.state, inspected.value, nullptr, nullptr};
-  return {ResolutionState::Ready, inspected.value, inspected.resolvedValue,
-          dyn_cast<T>(inspected.resolvedValue.get())};
-}
-
-template <typename T>
-static EvaluatedTypedValue<T>
-inspectValueAs(evaluator::EvaluatorValuePtr currentValue) {
-  auto inspected = inspectValueIf<T>(std::move(currentValue));
-  if (inspected.state != ResolutionState::Ready)
-    return inspected;
-  assert(inspected.typedValue && "unexpected evaluator value type");
-  return inspected;
+static bool
+isUnknownValue(evaluator::EvaluatorValuePtr value,
+               evaluator::EvaluatorValuePtr resolvedValue = nullptr) {
+  return (value && value->isUnknown()) ||
+         (resolvedValue && resolvedValue->isUnknown());
 }
 
 } // namespace
@@ -554,26 +517,34 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   if (failed(rhsResult))
     return rhsResult;
 
-  auto lhsValue = inspectValueAs<evaluator::AttributeValue>(lhsResult.value());
+  auto lhsValue = inspectValue(lhsResult.value());
   if (lhsValue.state == ResolutionState::Pending)
     return handle;
   if (lhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve integer arithmetic lhs");
 
-  auto rhsValue = inspectValueAs<evaluator::AttributeValue>(rhsResult.value());
+  auto rhsValue = inspectValue(rhsResult.value());
   if (rhsValue.state == ResolutionState::Pending)
     return handle;
   if (rhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve integer arithmetic rhs");
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsValue.isUnknown() || rhsValue.isUnknown()) {
+  if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
+      isUnknownValue(rhsResult.value(), rhsValue.value)) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  om::IntegerAttr lhs = lhsValue.typedValue->getAs<om::IntegerAttr>();
-  om::IntegerAttr rhs = rhsValue.typedValue->getAs<om::IntegerAttr>();
+  auto *lhsAttrValue =
+      dyn_cast<evaluator::AttributeValue>(lhsValue.value.get());
+  auto *rhsAttrValue =
+      dyn_cast<evaluator::AttributeValue>(rhsValue.value.get());
+  assert(lhsAttrValue && rhsAttrValue &&
+         "expected attribute values for IntegerBinaryArithmeticOp operands");
+
+  om::IntegerAttr lhs = lhsAttrValue->getAs<om::IntegerAttr>();
+  om::IntegerAttr rhs = rhsAttrValue->getAs<om::IntegerAttr>();
   assert(lhs && rhs &&
          "expected om::IntegerAttr for IntegerBinaryArithmeticOp operands");
 
@@ -623,18 +594,20 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   if (failed(condResult))
     return failure();
 
-  auto resolvedCond =
-      inspectValueAs<evaluator::AttributeValue>(condResult.value());
+  auto resolvedCond = inspectValue(condResult.value());
   if (resolvedCond.state == ResolutionState::Pending)
     return success();
   if (resolvedCond.state == ResolutionState::Failure)
     return op.emitError("failed to resolve property assertion condition");
 
   // If the condition is unknown, skip silently (best-effort).
-  if (resolvedCond.isUnknown())
+  if (isUnknownValue(condResult.value(), resolvedCond.value))
     return success();
 
-  auto condAttr = resolvedCond.typedValue->getAttr();
+  auto *condValue =
+      dyn_cast<evaluator::AttributeValue>(resolvedCond.value.get());
+  assert(condValue && "expected attribute value for property assertion");
+  auto condAttr = condValue->getAttr();
 
   bool isFalse = false;
   if (auto boolAttr = dyn_cast<BoolAttr>(condAttr))
@@ -727,16 +700,17 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     return objectFieldValue;
   };
 
-  auto resolvedObject = inspectValueIf<evaluator::ObjectValue>(result);
+  auto resolvedObject = inspectValue(result);
   if (resolvedObject.state == ResolutionState::Pending)
     return objectFieldValue;
   if (resolvedObject.state == ResolutionState::Failure)
     return op.emitError("failed to resolve object field base");
 
-  if (resolvedObject.isUnknown())
+  if (isUnknownValue(result, resolvedObject.value))
     return setUnknownFieldValue();
 
-  auto *currentObject = resolvedObject.typedValue;
+  auto *currentObject =
+      llvm::dyn_cast<evaluator::ObjectValue>(resolvedObject.value.get());
   if (!currentObject)
     return op.emitError("resolved object field base is not an object");
 
@@ -755,15 +729,16 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     if (std::next(it) == end)
       continue;
 
-    auto nextObject = inspectValueIf<evaluator::ObjectValue>(finalField);
+    auto nextObject = inspectValue(finalField);
     if (nextObject.state == ResolutionState::Pending)
       return objectFieldValue;
     if (nextObject.state == ResolutionState::Failure)
       return op.emitError("failed to resolve nested object field path");
-    if (nextObject.isUnknown())
+    if (isUnknownValue(finalField, nextObject.value))
       return setUnknownFieldValue();
 
-    currentObject = nextObject.typedValue;
+    currentObject =
+        llvm::dyn_cast<evaluator::ObjectValue>(nextObject.value.get());
     if (!currentObject)
       return op.emitError("resolved nested object field path is not an object");
   }
@@ -796,7 +771,7 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
     if (evaluatedOperand.state == ResolutionState::Failure)
       return op.emitError("failed to resolve list_create operand");
     // Check if any operand is unknown.
-    if (evaluatedOperand.isUnknown())
+    if (isUnknownValue(result.value(), evaluatedOperand.value))
       hasUnknown = true;
     values.push_back(result.value());
   }
@@ -829,18 +804,21 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
     if (failed(result))
       return result;
 
-    auto subList = inspectValueAs<evaluator::ListValue>(result.value());
+    auto subList = inspectValue(result.value());
     if (subList.state == ResolutionState::Pending)
       return list;
     if (subList.state == ResolutionState::Failure)
       return op->emitError("failed to resolve list_concat operand");
 
     // Check if any operand is unknown.
-    if (subList.isUnknown())
+    if (isUnknownValue(result.value(), subList.value))
       hasUnknown = true;
 
+    auto *subListValue = dyn_cast<evaluator::ListValue>(subList.value.get());
+    assert(subListValue && "expected list value for list_concat operand");
+
     // Append each EvaluatorValue from the sublist.
-    for (const auto &subValue : subList.typedValue->getElements())
+    for (const auto &subValue : subListValue->getElements())
       values.push_back(subValue);
   }
 
@@ -878,18 +856,21 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
     if (failed(operandResult))
       return operandResult;
 
-    auto resolvedOperand =
-        inspectValueAs<evaluator::AttributeValue>(operandResult.value());
+    auto resolvedOperand = inspectValue(operandResult.value());
     if (resolvedOperand.state == ResolutionState::Pending)
       return handle;
     if (resolvedOperand.state == ResolutionState::Failure)
       return op->emitError("failed to resolve string_concat operand");
-    if (resolvedOperand.isUnknown()) {
+    if (isUnknownValue(operandResult.value(), resolvedOperand.value)) {
       handle.value()->markUnknown();
       return handle;
     }
 
-    StringAttr str = resolvedOperand.typedValue->getAs<StringAttr>();
+    auto *operandAttrValue =
+        dyn_cast<evaluator::AttributeValue>(resolvedOperand.value.get());
+    assert(operandAttrValue &&
+           "expected attribute value for StringConcatOp operand");
+    StringAttr str = operandAttrValue->getAs<StringAttr>();
     assert(str && "expected StringAttr for StringConcatOp operand");
     result += str.getValue().str();
   }
@@ -933,26 +914,34 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
   if (failed(rhsResult))
     return rhsResult;
 
-  auto lhsValue = inspectValueAs<evaluator::AttributeValue>(lhsResult.value());
+  auto lhsValue = inspectValue(lhsResult.value());
   if (lhsValue.state == ResolutionState::Pending)
     return handle;
   if (lhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve prop.eq lhs");
 
-  auto rhsValue = inspectValueAs<evaluator::AttributeValue>(rhsResult.value());
+  auto rhsValue = inspectValue(rhsResult.value());
   if (rhsValue.state == ResolutionState::Pending)
     return handle;
   if (rhsValue.state == ResolutionState::Failure)
     return op->emitError("failed to resolve prop.eq rhs");
 
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsValue.isUnknown() || rhsValue.isUnknown()) {
+  if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
+      isUnknownValue(rhsResult.value(), rhsValue.value)) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  mlir::Attribute lhs = lhsValue.typedValue->getAttr();
-  mlir::Attribute rhs = rhsValue.typedValue->getAttr();
+  auto *lhsAttrValue =
+      dyn_cast<evaluator::AttributeValue>(lhsValue.value.get());
+  auto *rhsAttrValue =
+      dyn_cast<evaluator::AttributeValue>(rhsValue.value.get());
+  assert(lhsAttrValue && rhsAttrValue &&
+         "expected attribute values for BinaryEqualityOp operands");
+
+  mlir::Attribute lhs = lhsAttrValue->getAttr();
+  mlir::Attribute rhs = rhsAttrValue->getAttr();
   assert(lhs && rhs && "expected attribute for BinaryEqualityOp operands");
 
   // Perform the binary equality operation.
@@ -984,22 +973,24 @@ circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
   if (failed(result))
     return result;
 
-  auto basePath = inspectValueIf<evaluator::BasePathValue>(result.value());
+  auto basePath = inspectValue(result.value());
   if (basePath.state == ResolutionState::Pending)
     return valueResult;
   if (basePath.state == ResolutionState::Failure)
     return op.emitError("failed to resolve frozenbasepath_create operand");
 
   // If the base path is unknown, mark the result as unknown.
-  if (basePath.isUnknown()) {
+  if (isUnknownValue(result.value(), basePath.value)) {
     valueResult->markUnknown();
     return valueResult;
   }
 
-  if (!basePath.typedValue)
+  auto *basePathValue =
+      dyn_cast<evaluator::BasePathValue>(basePath.value.get());
+  if (!basePathValue)
     return op.emitError(
         "resolved frozenbasepath_create operand is not a base path");
-  path->setBasepath(*basePath.typedValue);
+  path->setBasepath(*basePathValue);
   return valueResult;
 }
 
@@ -1014,22 +1005,24 @@ circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
   if (failed(result))
     return result;
 
-  auto basePath = inspectValueIf<evaluator::BasePathValue>(result.value());
+  auto basePath = inspectValue(result.value());
   if (basePath.state == ResolutionState::Pending)
     return valueResult;
   if (basePath.state == ResolutionState::Failure)
     return op.emitError("failed to resolve frozenpath_create operand");
 
   // If the base path is unknown, mark the result as unknown.
-  if (basePath.isUnknown()) {
+  if (isUnknownValue(result.value(), basePath.value)) {
     valueResult->markUnknown();
     return valueResult;
   }
 
-  if (!basePath.typedValue)
+  auto *basePathValue =
+      dyn_cast<evaluator::BasePathValue>(basePath.value.get());
+  if (!basePathValue)
     return op.emitError(
         "resolved frozenpath_create operand is not a base path");
-  path->setBasepath(*basePath.typedValue);
+  path->setBasepath(*basePathValue);
   return valueResult;
 }
 
