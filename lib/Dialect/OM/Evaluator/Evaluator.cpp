@@ -683,28 +683,32 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
 
   auto objectFieldValue = getOrCreateValue(op, actualParams, loc).value();
 
-  auto resolvedObject = resolveValueAs<evaluator::ObjectValue>(result);
+  auto setUnknownFieldValue = [&]() -> FailureOr<evaluator::EvaluatorValuePtr> {
+    auto unknownField = createUnknownValue(op.getResult().getType(), loc);
+    if (failed(unknownField))
+      return unknownField;
+
+    if (auto *ref =
+            llvm::dyn_cast<evaluator::ReferenceValue>(objectFieldValue.get()))
+      ref->setValue(unknownField.value());
+
+    objectFieldValue->markUnknown();
+    return objectFieldValue;
+  };
+
+  auto resolvedObject = resolveReferenceValue(result);
   if (resolvedObject.state == ResolutionState::Pending)
     return objectFieldValue;
   if (resolvedObject.state == ResolutionState::Failure)
     return op.emitError("failed to resolve object field base");
 
-  if (result->isUnknown() || resolvedObject.value->isUnknown()) {
-    // If objectFieldValue is a ReferenceValue, set its value to a unknown value
-    // of the proper type
-    if (auto *ref =
-            llvm::dyn_cast<evaluator::ReferenceValue>(objectFieldValue.get())) {
-      auto unknownField = createUnknownValue(op.getResult().getType(), loc);
-      if (failed(unknownField))
-        return unknownField;
-      ref->setValue(unknownField.value());
-    }
-    // markUnknown() also marks the value as fully evaluated
-    objectFieldValue->markUnknown();
-    return objectFieldValue;
-  }
+  if (result->isUnknown() || resolvedObject.value->isUnknown())
+    return setUnknownFieldValue();
 
-  auto *currentObject = resolvedObject.typedValue;
+  auto *currentObject =
+      llvm::dyn_cast<evaluator::ObjectValue>(resolvedObject.value.get());
+  if (!currentObject)
+    return op.emitError("resolved object field base is not an object");
 
   // Iteratively access nested fields through the path until we reach the final
   // field in the path.
@@ -721,12 +725,18 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     if (std::next(it) == end)
       continue;
 
-    auto nextObject = resolveValueAs<evaluator::ObjectValue>(finalField);
+    auto nextObject = resolveReferenceValue(finalField);
     if (nextObject.state == ResolutionState::Pending)
       return objectFieldValue;
     if (nextObject.state == ResolutionState::Failure)
       return op.emitError("failed to resolve nested object field path");
-    currentObject = nextObject.typedValue;
+    if (finalField->isUnknown() || nextObject.value->isUnknown())
+      return setUnknownFieldValue();
+
+    currentObject =
+        llvm::dyn_cast<evaluator::ObjectValue>(nextObject.value.get());
+    if (!currentObject)
+      return op.emitError("resolved nested object field path is not an object");
   }
 
   // Update the reference.

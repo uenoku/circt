@@ -1661,6 +1661,65 @@ om.class @Foo(
   ASSERT_TRUE(object->getField("b").value()->isUnknown());
 }
 
+TEST(EvaluatorTests, UnknownValuesNestedObjectFieldPath) {
+  StringRef mod = R"MLIR(
+om.class @Leaf(
+  %value: !om.integer
+) -> (
+  value: !om.integer
+) {
+  om.class.fields %value : !om.integer
+}
+
+om.class @Outer(
+  %leaf: !om.class.type<@Leaf>
+) -> (
+  leaf: !om.class.type<@Leaf>
+) {
+  om.class.fields %leaf : !om.class.type<@Leaf>
+}
+
+om.class @Foo(
+  %unknown_outer: !om.class.type<@Outer>
+) -> (
+  value: !om.integer
+) {
+  %0 = om.object.field %unknown_outer, [@leaf, @value] : (!om.class.type<@Outer>) -> !om.integer
+  om.class.fields %0 : !om.integer
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+
+  Evaluator evaluator(owning.release());
+
+  auto unknownLoc = UnknownLoc::get(&context);
+  auto outerClassType = circt::om::ClassType::get(
+      &context, mlir::FlatSymbolRefAttr::get(&context, "Outer"));
+  auto unknownOuter = circt::om::evaluator::AttributeValue::get(
+      outerClassType, LocationAttr(unknownLoc));
+  unknownOuter->markUnknown();
+
+  auto result =
+      evaluator.instantiate(StringAttr::get(&context, "Foo"), {unknownOuter});
+
+  ASSERT_TRUE(succeeded(result));
+
+  auto *object = llvm::cast<evaluator::ObjectValue>(result.value().get());
+  auto value = object->getField("value");
+  ASSERT_TRUE(succeeded(value));
+  ASSERT_TRUE(value->get()->isUnknown());
+  ASSERT_EQ(value->get()->getType(), circt::om::OMIntegerType::get(&context));
+  ASSERT_EQ(value->get()->getKind(), evaluator::EvaluatorValue::Kind::Attr);
+}
+
 TEST(EvaluatorTests, StringConcat) {
   const char *mod = R"MLIR(
 module {
