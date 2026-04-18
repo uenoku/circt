@@ -76,22 +76,19 @@ resolveReadyValue(evaluator::EvaluatorValuePtr value) {
   return resolved.value.get();
 }
 
-namespace ready {
-
 template <typename ValueT>
-ValueT *cast(evaluator::EvaluatorValuePtr value) {
+static ValueT *getReadyAs(evaluator::EvaluatorValuePtr value) {
   auto *typedValue =
       llvm::dyn_cast<ValueT>(resolveReadyValue(std::move(value)));
   assert(typedValue);
   return typedValue;
 }
 
-template <typename ValueT>
-ValueT *dyn_cast(evaluator::EvaluatorValuePtr value) {
-  return llvm::dyn_cast<ValueT>(resolveReadyValue(std::move(value)));
+template <typename AttrT = Attribute>
+static AttrT getAsAttr(evaluator::EvaluatorValuePtr value) {
+  return llvm::dyn_cast<AttrT>(
+      getReadyAs<evaluator::AttributeValue>(std::move(value))->getAttr());
 }
-
-} // namespace ready
 
 static bool isUnknownReadyValue(evaluator::EvaluatorValuePtr value) {
   return (value && value->isUnknown()) || resolveReadyValue(value)->isUnknown();
@@ -302,10 +299,8 @@ private:
                               Location loc) const override {
     assert(operands.size() == 2 && "expected binary arithmetic operands");
 
-    circt::om::IntegerAttr lhs = llvm::dyn_cast<circt::om::IntegerAttr>(
-        ready::cast<evaluator::AttributeValue>(operands[0])->getAttr());
-    circt::om::IntegerAttr rhs = llvm::dyn_cast<circt::om::IntegerAttr>(
-        ready::cast<evaluator::AttributeValue>(operands[1])->getAttr());
+    circt::om::IntegerAttr lhs = getAsAttr<circt::om::IntegerAttr>(operands[0]);
+    circt::om::IntegerAttr rhs = getAsAttr<circt::om::IntegerAttr>(operands[1]);
     assert(lhs && "expected om::IntegerAttr for IntegerBinaryArithmeticOp lhs");
     assert(rhs && "expected om::IntegerAttr for IntegerBinaryArithmeticOp rhs");
 
@@ -358,7 +353,7 @@ private:
                               Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     for (auto operand : operands) {
-      auto *subListValue = ready::cast<evaluator::ListValue>(operand);
+      auto *subListValue = getReadyAs<evaluator::ListValue>(operand);
       llvm::append_range(values, subListValue->getElements());
     }
 
@@ -380,8 +375,7 @@ private:
                               Location loc) const override {
     std::string result;
     for (auto operand : operands) {
-      auto attr = llvm::dyn_cast<StringAttr>(
-          ready::cast<evaluator::AttributeValue>(operand)->getAttr());
+      auto attr = getAsAttr<StringAttr>(operand);
       assert(attr && "expected StringAttr for StringConcatOp operand");
       result += attr.getValue().str();
     }
@@ -403,10 +397,8 @@ private:
                               Location loc) const override {
     assert(operands.size() == 2 && "expected binary equality operands");
 
-    mlir::Attribute lhs =
-        ready::cast<evaluator::AttributeValue>(operands[0])->getAttr();
-    mlir::Attribute rhs =
-        ready::cast<evaluator::AttributeValue>(operands[1])->getAttr();
+    mlir::Attribute lhs = getAsAttr(operands[0]);
+    mlir::Attribute rhs = getAsAttr(operands[1]);
 
     FailureOr<mlir::Attribute> result = op.evaluateBinaryEquality(lhs, rhs);
     if (failed(result))
@@ -437,7 +429,7 @@ private:
            "expected one operand for frozenbasepath_create");
 
     auto *basePathValue =
-        ready::cast<evaluator::BasePathValue>(operands.front());
+        getReadyAs<evaluator::BasePathValue>(operands.front());
     cast<evaluator::BasePathValue>(resultValue.get())
         ->setBasepath(*basePathValue);
     return success();
@@ -468,7 +460,7 @@ private:
            "expected one operand for frozenpath_create");
 
     auto *basePathValue =
-        ready::cast<evaluator::BasePathValue>(operands.front());
+        getReadyAs<evaluator::BasePathValue>(operands.front());
     cast<evaluator::PathValue>(resultValue.get())->setBasepath(*basePathValue);
     return success();
   }
@@ -482,14 +474,6 @@ public:
       GetValueHandleFn getValueHandle, Location loc) const override {
     return success(
         circt::om::evaluator::AttributeValue::get(op.getValue(), loc));
-  }
-
-  LogicalResult evaluate(ConstantOp op,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
-                         Location loc) const {
-    llvm::report_fatal_error("The constant should have been fully evaluated in "
-                             "createTypedPlaceholder");
   }
 };
 
@@ -949,7 +933,7 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   if (isUnknownReadyValue(readyCond))
     return success();
 
-  auto condAttr = ready::cast<evaluator::AttributeValue>(readyCond)->getAttr();
+  auto condAttr = getAsAttr(readyCond);
 
   bool isFalse = false;
   if (auto boolAttr = dyn_cast<BoolAttr>(condAttr))
@@ -1050,7 +1034,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
     return resolveValueState(unknownField.value);
   }
 
-  auto *currentObject = ready::cast<evaluator::ObjectValue>(readyObject);
+  auto *currentObject = getReadyAs<evaluator::ObjectValue>(readyObject);
 
   // Iteratively access nested fields through the path until we reach the final
   // field in the path.
@@ -1083,7 +1067,7 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
       return resolveValueState(unknownField.value);
     }
 
-    currentObject = ready::cast<evaluator::ObjectValue>(nextObject);
+    currentObject = getReadyAs<evaluator::ObjectValue>(nextObject);
   }
 
   // Update the reference.
