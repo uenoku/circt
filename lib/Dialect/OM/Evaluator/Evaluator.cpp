@@ -115,6 +115,8 @@ static bool isUnknownReadyValue(evaluator::EvaluatorValuePtr value) {
 // Operand resolution helpers
 //===----------------------------------------------------------------------===//
 
+/// Convert a resolved operand state into a concrete ready operand for the
+/// caller, or propagate Pending / Failure immediately.
 static std::optional<ResolvedValue>
 requireReady(const ResolvedValue &resolved,
              evaluator::EvaluatorValuePtr pendingValue,
@@ -133,6 +135,11 @@ requireReady(const ResolvedValue &resolved,
   llvm_unreachable("unknown resolution state");
 }
 
+/// Resolve every operand into a ready runtime value before entering an op
+/// pattern. If any operand is still pending or failed, return that state
+/// immediately. While doing so, also record whether any operand is unknown so
+/// the shared ready-operands path can short-circuit unknown propagation before
+/// running op-specific logic.
 static std::optional<ResolvedValue> requireAllOperandsReady(
     ValueRange operands, evaluator::EvaluatorValuePtr pendingValue,
     llvm::function_ref<ResolvedValue(Value)> evaluateOperand,
@@ -176,6 +183,10 @@ static LogicalResult setAttrResult(evaluator::EvaluatorValuePtr resultValue,
 // Operation pattern infrastructure
 //===----------------------------------------------------------------------===//
 
+/// Abstract evaluator hook for a single OM operation. Patterns are responsible
+/// for two things:
+/// 1. creating a placeholder value for the op result in `getOrCreateValue`
+/// 2. filling that placeholder when `evaluateValue` asks to evaluate the op
 class OperationPattern {
 public:
   using CreatePartialValueFn =
@@ -245,6 +256,10 @@ protected:
   }
 };
 
+/// Shared base class for operations whose evaluation only runs once every
+/// operand is semantically ready. This centralizes operand readiness checks and
+/// unknown short-circuiting so concrete patterns only implement the successful
+/// ready-operands case.
 class ReadyOperandsPattern : public OperationPattern {
 public:
   using OperationPattern::OperationPattern;
@@ -266,6 +281,7 @@ public:
             },
             readyOperands, existsUnknown))
       return *early;
+    // Unknown operands propagate without running the op-specific evaluator.
     if (existsUnknown)
       return markUnknownAndReturn(std::move(resultValue));
 
@@ -661,7 +677,22 @@ circt::om::Evaluator::getPartiallyEvaluatedValue(Type type, Location loc) {
             evaluator::AttributeValue::get(type, loc);
         return success(result);
       })
-      .Default([&](auto type) { return failure(); });
+      .Case([&](FrozenBasePathType type) {
+        evaluator::EvaluatorValuePtr result =
+            std::make_shared<evaluator::BasePathValue>(type.getContext());
+        return success(result);
+      })
+      .Case([&](FrozenPathType type) {
+        evaluator::EvaluatorValuePtr result =
+            std::make_shared<evaluator::PathValue>(
+                evaluator::PathValue::getEmptyPath(loc));
+        return success(result);
+      })
+      .Default([&](auto type) {
+        evaluator::EvaluatorValuePtr result =
+            evaluator::AttributeValue::get(type, loc);
+        return success(result);
+      });
 }
 
 FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
