@@ -184,36 +184,138 @@ static ResolvedValue setAttrResult(evaluator::EvaluatorValuePtr resultValue,
   return inspectValue(std::move(resultValue));
 }
 
-class ReadyOperandsPattern {
+class OperationPattern {
 public:
-  explicit ReadyOperandsPattern(StringRef operationName)
-      : operationName(operationName) {}
-  virtual ~ReadyOperandsPattern() = default;
+  using CreatePartialValueFn =
+      llvm::function_ref<FailureOr<evaluator::EvaluatorValuePtr>(Type,
+                                                                 Location)>;
+  using GetValueHandleFn =
+      llvm::function_ref<FailureOr<evaluator::EvaluatorValuePtr>(Value,
+                                                                 Location)>;
 
-  void emitOperandError(Operation *op) const {
-    op->emitError() << "failed to resolve " << operationName << " operand";
+  explicit OperationPattern(StringRef operationName)
+      : operationName(operationName) {}
+  virtual ~OperationPattern() = default;
+
+  StringRef getOperationName() const { return operationName; }
+  virtual FailureOr<evaluator::EvaluatorValuePtr>
+  createPlaceholder(Operation *op, Value value,
+                    CreatePartialValueFn createPartialValue,
+                    GetValueHandleFn getValueHandle, Location loc) const {
+    return createPartialValue(value.getType(), loc);
   }
 
-  virtual ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                                 evaluator::EvaluatorValuePtr resultValue,
-                                 Location loc) const = 0;
+  virtual ResolvedValue
+  evaluate(Operation *op, evaluator::EvaluatorValuePtr resultValue,
+           llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+           Location loc) const = 0;
 
 private:
   StringRef operationName;
 };
 
-class IntegerBinaryArithmeticPattern final : public ReadyOperandsPattern {
+template <typename OpT>
+class OpPattern : public OperationPattern {
+public:
+  using OperationPattern::OperationPattern;
+
+  FailureOr<evaluator::EvaluatorValuePtr> createPlaceholder(
+      Operation *op, Value value, CreatePartialValueFn createPartialValue,
+      GetValueHandleFn getValueHandle, Location loc) const override {
+    return createTypedPlaceholder(cast<OpT>(op), value, createPartialValue,
+                                  getValueHandle, loc);
+  }
+
+protected:
+  static OpT getOp(Operation *op) { return cast<OpT>(op); }
+
+  virtual FailureOr<evaluator::EvaluatorValuePtr>
+  createTypedPlaceholder(OpT op, Value value,
+                         CreatePartialValueFn createPartialValue,
+                         GetValueHandleFn getValueHandle, Location loc) const {
+    return OperationPattern::createPlaceholder(op, value, createPartialValue,
+                                               getValueHandle, loc);
+  }
+};
+
+class ReadyOperandsPattern : public OperationPattern {
+public:
+  using OperationPattern::OperationPattern;
+
+  ResolvedValue evaluate(Operation *op,
+                         evaluator::EvaluatorValuePtr resultValue,
+                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                         Location loc) const final {
+    if (resultValue && resultValue->isFullyEvaluated())
+      return inspectValue(std::move(resultValue));
+
+    SmallVector<ReadyValue, 4> readyOperands;
+    if (auto early = requireAllOperandsReady(
+            op->getOperands(), resultValue, evaluateValue,
+            [&] {
+              op->emitError()
+                  << "failed to resolve " << getOperationName() << " operand";
+            },
+            readyOperands))
+      return *early;
+
+    return evaluateReady(op, readyOperands, std::move(resultValue), loc);
+  }
+
+private:
+  virtual ResolvedValue evaluateReady(Operation *op,
+                                      ArrayRef<ReadyValue> operands,
+                                      evaluator::EvaluatorValuePtr resultValue,
+                                      Location loc) const = 0;
+};
+
+template <typename OpT>
+class OpReadyOperandsPattern : public ReadyOperandsPattern {
 public:
   using ReadyOperandsPattern::ReadyOperandsPattern;
 
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         Location loc) const override {
+private:
+  FailureOr<evaluator::EvaluatorValuePtr>
+  createPlaceholder(Operation *op, Value value,
+                    CreatePartialValueFn createPartialValue,
+                    GetValueHandleFn getValueHandle, Location loc) const final {
+    return createTypedPlaceholder(cast<OpT>(op), value, createPartialValue,
+                                  getValueHandle, loc);
+  }
+
+  ResolvedValue evaluateReady(Operation *op, ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const final {
+    return evaluateTyped(cast<OpT>(op), operands, std::move(resultValue), loc);
+  }
+
+  virtual FailureOr<evaluator::EvaluatorValuePtr>
+  createTypedPlaceholder(OpT op, Value value,
+                         CreatePartialValueFn createPartialValue,
+                         GetValueHandleFn getValueHandle, Location loc) const {
+    return OperationPattern::createPlaceholder(op, value, createPartialValue,
+                                               getValueHandle, loc);
+  }
+
+  virtual ResolvedValue evaluateTyped(OpT op, ArrayRef<ReadyValue> operands,
+                                      evaluator::EvaluatorValuePtr resultValue,
+                                      Location loc) const = 0;
+};
+
+class IntegerBinaryArithmeticPattern final
+    : public OpReadyOperandsPattern<IntegerBinaryArithmeticOp> {
+public:
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
+
+private:
+  ResolvedValue evaluateTyped(IntegerBinaryArithmeticOp op,
+                              ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 2 && "expected binary arithmetic operands");
     if (hasUnknownValue(operands))
       return markUnknownAndReturn(std::move(resultValue));
 
-    auto typedOp = cast<IntegerBinaryArithmeticOp>(op);
     circt::om::IntegerAttr lhs = operands[0].getIntegerAttr(
         "expected om::IntegerAttr for IntegerBinaryArithmeticOp lhs");
     circt::om::IntegerAttr rhs = operands[1].getIntegerAttr(
@@ -226,25 +328,26 @@ public:
     else if (rhsVal.getBitWidth() > lhsVal.getBitWidth())
       lhsVal = lhsVal.extend(rhsVal.getBitWidth());
 
-    FailureOr<APSInt> result = typedOp.evaluateIntegerOperation(lhsVal, rhsVal);
+    FailureOr<APSInt> result = op.evaluateIntegerOperation(lhsVal, rhsVal);
     if (failed(result))
       return (op->emitError("failed to evaluate integer operation"),
               ResolvedValue::failure());
 
-    MLIRContext *ctx = op->getContext();
+    MLIRContext *ctx = op.getContext();
     auto resultAttr = circt::om::IntegerAttr::get(
         ctx, mlir::IntegerAttr::get(ctx, result.value()));
     return setAttrResult(std::move(resultValue), resultAttr);
   }
 };
 
-class ListCreatePattern final : public ReadyOperandsPattern {
+class ListCreatePattern final : public OpReadyOperandsPattern<ListCreateOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         Location loc) const override {
+private:
+  ResolvedValue evaluateTyped(ListCreateOp op, ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     values.reserve(operands.size());
     for (const auto &operand : operands)
@@ -258,13 +361,14 @@ public:
   }
 };
 
-class ListConcatPattern final : public ReadyOperandsPattern {
+class ListConcatPattern final : public OpReadyOperandsPattern<ListConcatOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         Location loc) const override {
+private:
+  ResolvedValue evaluateTyped(ListConcatOp op, ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     SmallVector<evaluator::EvaluatorValuePtr> values;
     for (const auto &operand : operands) {
       auto *subListValue =
@@ -280,17 +384,18 @@ public:
   }
 };
 
-class StringConcatPattern final : public ReadyOperandsPattern {
+class StringConcatPattern final
+    : public OpReadyOperandsPattern<StringConcatOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         Location loc) const override {
+private:
+  ResolvedValue evaluateTyped(StringConcatOp op, ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     if (hasUnknownValue(operands))
       return markUnknownAndReturn(std::move(resultValue));
 
-    auto typedOp = cast<StringConcatOp>(op);
     std::string result;
     for (const auto &operand : operands)
       result +=
@@ -299,18 +404,21 @@ public:
               .getValue()
               .str();
 
-    auto resultStr = StringAttr::get(result, typedOp.getResult().getType());
+    auto resultStr = StringAttr::get(result, op.getResult().getType());
     return setAttrResult(std::move(resultValue), resultStr);
   }
 };
 
-class BinaryEqualityPattern final : public ReadyOperandsPattern {
+class BinaryEqualityPattern final
+    : public OpReadyOperandsPattern<BinaryEqualityOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
 
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
-                         Location loc) const override {
+private:
+  ResolvedValue evaluateTyped(BinaryEqualityOp op,
+                              ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 2 && "expected binary equality operands");
     if (hasUnknownValue(operands))
       return markUnknownAndReturn(std::move(resultValue));
@@ -320,9 +428,7 @@ public:
     mlir::Attribute rhs = operands[1].getAttr(
         "expected attribute value for BinaryEqualityOp rhs");
 
-    auto typedOp = cast<BinaryEqualityOp>(op);
-    FailureOr<mlir::Attribute> result =
-        typedOp.evaluateBinaryEquality(lhs, rhs);
+    FailureOr<mlir::Attribute> result = op.evaluateBinaryEquality(lhs, rhs);
     if (failed(result))
       return (op->emitError("failed to evaluate binary equality operation"),
               ResolvedValue::failure());
@@ -330,13 +436,24 @@ public:
   }
 };
 
-class FrozenBasePathCreatePattern final : public ReadyOperandsPattern {
+class FrozenBasePathCreatePattern final
+    : public OpReadyOperandsPattern<FrozenBasePathCreateOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
-
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
+  FailureOr<evaluator::EvaluatorValuePtr>
+  createTypedPlaceholder(FrozenBasePathCreateOp op, Value value,
+                         CreatePartialValueFn createPartialValue,
+                         GetValueHandleFn getValueHandle,
                          Location loc) const override {
+    return success(
+        std::make_shared<evaluator::BasePathValue>(op.getPathAttr(), loc));
+  }
+
+private:
+  ResolvedValue evaluateTyped(FrozenBasePathCreateOp op,
+                              ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenbasepath_create");
     if (operands.front().isUnknown())
@@ -350,13 +467,26 @@ public:
   }
 };
 
-class FrozenPathCreatePattern final : public ReadyOperandsPattern {
+class FrozenPathCreatePattern final
+    : public OpReadyOperandsPattern<FrozenPathCreateOp> {
 public:
-  using ReadyOperandsPattern::ReadyOperandsPattern;
-
-  ResolvedValue evaluate(Operation *op, ArrayRef<ReadyValue> operands,
-                         evaluator::EvaluatorValuePtr resultValue,
+  using OpReadyOperandsPattern::OpReadyOperandsPattern;
+  FailureOr<evaluator::EvaluatorValuePtr>
+  createTypedPlaceholder(FrozenPathCreateOp pathOp, Value value,
+                         CreatePartialValueFn createPartialValue,
+                         GetValueHandleFn getValueHandle,
                          Location loc) const override {
+    return success(std::make_shared<evaluator::PathValue>(
+        pathOp.getTargetKindAttr(), pathOp.getPathAttr(),
+        pathOp.getModuleAttr(), pathOp.getRefAttr(), pathOp.getFieldAttr(),
+        loc));
+  }
+
+private:
+  ResolvedValue evaluateTyped(FrozenPathCreateOp op,
+                              ArrayRef<ReadyValue> operands,
+                              evaluator::EvaluatorValuePtr resultValue,
+                              Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenpath_create");
     if (operands.front().isUnknown())
@@ -369,9 +499,77 @@ public:
   }
 };
 
-class ReadyOperandsPatternRegistry {
+class ConstantPattern final : public OpPattern<ConstantOp> {
 public:
-  ReadyOperandsPatternRegistry() {
+  using OpPattern::OpPattern;
+  FailureOr<evaluator::EvaluatorValuePtr> createTypedPlaceholder(
+      ConstantOp op, Value value, CreatePartialValueFn createPartialValue,
+      GetValueHandleFn getValueHandle, Location loc) const override {
+    return success(
+        circt::om::evaluator::AttributeValue::get(op.getValue(), loc));
+  }
+
+  ResolvedValue evaluate(Operation *op,
+                         evaluator::EvaluatorValuePtr resultValue,
+                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                         Location loc) const override {
+    if (resultValue && resultValue->isFullyEvaluated())
+      return inspectValue(std::move(resultValue));
+    return inspectValue(
+        circt::om::evaluator::AttributeValue::get(getOp(op).getValue(), loc));
+  }
+};
+
+class AnyCastPattern final : public OpPattern<AnyCastOp> {
+public:
+  using OpPattern::OpPattern;
+  FailureOr<evaluator::EvaluatorValuePtr> createTypedPlaceholder(
+      AnyCastOp op, Value value, CreatePartialValueFn createPartialValue,
+      GetValueHandleFn getValueHandle, Location loc) const override {
+    return getValueHandle(op.getInput(), loc);
+  }
+
+  ResolvedValue evaluate(Operation *op,
+                         evaluator::EvaluatorValuePtr resultValue,
+                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                         Location loc) const override {
+    if (resultValue && resultValue->isFullyEvaluated())
+      return inspectValue(std::move(resultValue));
+    return evaluateValue(getOp(op).getInput());
+  }
+};
+
+class FrozenEmptyPathPattern final : public OpPattern<FrozenEmptyPathOp> {
+public:
+  using OpPattern::OpPattern;
+  FailureOr<evaluator::EvaluatorValuePtr>
+  createTypedPlaceholder(FrozenEmptyPathOp op, Value value,
+                         CreatePartialValueFn createPartialValue,
+                         GetValueHandleFn getValueHandle,
+                         Location loc) const override {
+    return success(std::make_shared<evaluator::PathValue>(
+        evaluator::PathValue::getEmptyPath(loc)));
+  }
+
+  ResolvedValue evaluate(Operation *op,
+                         evaluator::EvaluatorValuePtr resultValue,
+                         llvm::function_ref<ResolvedValue(Value)> evaluateValue,
+                         Location loc) const override {
+    return inspectValue(std::move(resultValue));
+  }
+};
+
+class OperationPatternRegistry {
+public:
+  OperationPatternRegistry() {
+    addPattern(
+        ConstantOp::getOperationName(),
+        std::make_unique<ConstantPattern>(ConstantOp::getOperationName()));
+    addPattern(AnyCastOp::getOperationName(),
+               std::make_unique<AnyCastPattern>(AnyCastOp::getOperationName()));
+    addPattern(FrozenEmptyPathOp::getOperationName(),
+               std::make_unique<FrozenEmptyPathPattern>(
+                   FrozenEmptyPathOp::getOperationName()));
     addPattern(IntegerAddOp::getOperationName(),
                std::make_unique<IntegerBinaryArithmeticPattern>(
                    IntegerAddOp::getOperationName()));
@@ -404,39 +602,25 @@ public:
                    FrozenPathCreateOp::getOperationName()));
   }
 
-  const ReadyOperandsPattern *lookup(Operation *op) const {
+  const OperationPattern *lookup(Operation *op) const {
     auto it = patternsByOpName.find(op->getName().getStringRef());
     return it == patternsByOpName.end() ? nullptr : it->second;
   }
 
 private:
-  void addPattern(StringRef opName,
-                  std::unique_ptr<ReadyOperandsPattern> pattern) {
-    const ReadyOperandsPattern *patternPtr = pattern.get();
+  void addPattern(StringRef opName, std::unique_ptr<OperationPattern> pattern) {
+    const OperationPattern *patternPtr = pattern.get();
     patterns.push_back(std::move(pattern));
     patternsByOpName[opName] = patternPtr;
   }
 
-  SmallVector<std::unique_ptr<ReadyOperandsPattern>> patterns;
-  llvm::StringMap<const ReadyOperandsPattern *> patternsByOpName;
+  SmallVector<std::unique_ptr<OperationPattern>> patterns;
+  llvm::StringMap<const OperationPattern *> patternsByOpName;
 };
 
-static const ReadyOperandsPatternRegistry &getReadyOperandsPatternRegistry() {
-  static const ReadyOperandsPatternRegistry registry;
+static const OperationPatternRegistry &getOperationPatternRegistry() {
+  static const OperationPatternRegistry registry;
   return registry;
-}
-
-static ResolvedValue
-dispatchReadyOperands(Operation *op, evaluator::EvaluatorValuePtr result,
-                      llvm::function_ref<ResolvedValue(Value)> evaluateOperand,
-                      const ReadyOperandsPattern &pattern, Location loc) {
-  SmallVector<ReadyValue, 4> readyOperands;
-  if (auto early = requireAllOperandsReady(
-          op->getOperands(), result, evaluateOperand,
-          [&] { pattern.emitOperandError(op); }, readyOperands))
-    return *early;
-
-  return pattern.evaluate(op, readyOperands, std::move(result), loc);
 }
 
 } // namespace
@@ -513,7 +697,50 @@ circt::om::Evaluator::getPartiallyEvaluatedValue(Type type, Location loc) {
             evaluator::AttributeValue::get(type, loc);
         return success(result);
       })
-      .Default([&](auto type) { return failure(); });
+      .Case([&](FrozenBasePathType type) {
+        return success(
+            std::make_shared<evaluator::BasePathValue>(type.getContext()));
+      })
+      .Case([&](FrozenPathType type) {
+        return success(std::make_shared<evaluator::PathValue>(
+            evaluator::PathValue::getEmptyPath(loc)));
+      })
+      .Default([&](Type type) {
+        return success(evaluator::AttributeValue::get(type, LocationAttr(loc)));
+      });
+}
+
+FailureOr<evaluator::EvaluatorValuePtr>
+circt::om::Evaluator::createPlaceholderValue(Operation *op, Value value,
+                                             ActualParameters actualParams,
+                                             Location loc) {
+  using namespace circt::om::evaluator;
+
+  if (auto *pattern = getOperationPatternRegistry().lookup(op))
+    return pattern->createPlaceholder(
+        op, value,
+        [&](Type type, Location placeholderLoc) {
+          return getPartiallyEvaluatedValue(type, placeholderLoc);
+        },
+        [&](Value aliasedValue, Location placeholderLoc) {
+          return getOrCreateValue(aliasedValue, actualParams, placeholderLoc);
+        },
+        loc);
+
+  return TypeSwitch<Operation *, FailureOr<evaluator::EvaluatorValuePtr>>(op)
+      .Case<ObjectFieldOp>([&](auto op) {
+        return success(std::make_shared<ReferenceValue>(value.getType(), loc));
+      })
+      .Case<ObjectOp>([&](auto op) {
+        return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
+      })
+      .Case<UnknownValueOp>(
+          [&](auto op) { return createUnknownValue(op.getType(), loc); })
+      .Default([&](Operation *op) {
+        auto error = op->emitError("unable to evaluate value");
+        error.attachNote() << "value: " << value;
+        return error;
+      });
 }
 
 FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
@@ -533,73 +760,8 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
             return val;
           })
           .Case([&](OpResult result) {
-            return TypeSwitch<Operation *,
-                              FailureOr<evaluator::EvaluatorValuePtr>>(
-                       result.getDefiningOp())
-                .Case([&](ConstantOp op) {
-                  return success(
-                      om::evaluator::AttributeValue::get(op.getValue(), loc));
-                })
-                .Case([&](IntegerBinaryArithmeticOp op) {
-                  // Create a partially evaluated AttributeValue of
-                  // om::IntegerType in case we need to delay evaluation.
-                  evaluator::EvaluatorValuePtr result =
-                      evaluator::AttributeValue::get(op.getResult().getType(),
-                                                     loc);
-                  return success(result);
-                })
-                .Case<ObjectFieldOp>([&](auto op) {
-                  // Create a reference value since the value pointed by object
-                  // field op is not created yet.
-                  evaluator::EvaluatorValuePtr result =
-                      std::make_shared<evaluator::ReferenceValue>(
-                          value.getType(), loc);
-                  return success(result);
-                })
-                .Case<AnyCastOp>([&](AnyCastOp op) {
-                  return getOrCreateValue(op.getInput(), actualParams, loc);
-                })
-                .Case<FrozenBasePathCreateOp>([&](FrozenBasePathCreateOp op) {
-                  evaluator::EvaluatorValuePtr result =
-                      std::make_shared<evaluator::BasePathValue>(
-                          op.getPathAttr(), loc);
-                  return success(result);
-                })
-                .Case<FrozenPathCreateOp>([&](FrozenPathCreateOp op) {
-                  evaluator::EvaluatorValuePtr result =
-                      std::make_shared<evaluator::PathValue>(
-                          op.getTargetKindAttr(), op.getPathAttr(),
-                          op.getModuleAttr(), op.getRefAttr(),
-                          op.getFieldAttr(), loc);
-                  return success(result);
-                })
-                .Case<FrozenEmptyPathOp>([&](FrozenEmptyPathOp op) {
-                  evaluator::EvaluatorValuePtr result =
-                      std::make_shared<evaluator::PathValue>(
-                          evaluator::PathValue::getEmptyPath(loc));
-                  return success(result);
-                })
-                .Case([&](BinaryEqualityOp op) {
-                  evaluator::EvaluatorValuePtr result =
-                      evaluator::AttributeValue::get(op.getResult().getType(),
-                                                     loc);
-                  return success(result);
-                })
-                .Case<ListCreateOp, ListConcatOp, StringConcatOp,
-                      ObjectFieldOp>([&](auto op) {
-                  return getPartiallyEvaluatedValue(op.getType(), loc);
-                })
-                .Case<ObjectOp>([&](auto op) {
-                  return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
-                })
-                .Case<UnknownValueOp>([&](auto op) {
-                  return createUnknownValue(op.getType(), loc);
-                })
-                .Default([&](Operation *op) {
-                  auto error = op->emitError("unable to evaluate value");
-                  error.attachNote() << "value: " << value;
-                  return error;
-                });
+            return createPlaceholderValue(result.getDefiningOp(), value,
+                                          actualParams, loc);
           });
   if (failed(result))
     return result;
@@ -787,34 +949,29 @@ ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
   if (failed(evaluatorValue))
     return ResolvedValue::failure();
 
-  // Return if the value is already evaluated.
-  if (evaluatorValue.value()->isFullyEvaluated())
-    return inspectValue(evaluatorValue.value());
-
   return llvm::TypeSwitch<Value, ResolvedValue>(value)
       .Case([&](BlockArgument arg) {
         return evaluateParameter(arg, actualParams, loc);
       })
-      .Case([&](OpResult result) {
-        if (getReadyOperandsPatternRegistry().lookup(result.getDefiningOp()))
-          return evaluateReadyOperandsOperation(result, evaluatorValue.value(),
-                                                actualParams, loc);
+      .Case<OpResult>([&](OpResult result) {
+        if (auto *pattern =
+                getOperationPatternRegistry().lookup(result.getDefiningOp()))
+          return pattern->evaluate(
+              result.getDefiningOp(), evaluatorValue.value(),
+              [&](Value nestedValue) {
+                return evaluateValue(nestedValue, actualParams, loc);
+              },
+              loc);
+
+        if (evaluatorValue.value()->isFullyEvaluated())
+          return inspectValue(evaluatorValue.value());
 
         return TypeSwitch<Operation *, ResolvedValue>(result.getDefiningOp())
-            .Case([&](ConstantOp op) {
-              return evaluateConstant(op, actualParams, loc);
-            })
             .Case([&](ObjectOp op) {
               return evaluateObjectInstance(op, actualParams);
             })
             .Case([&](ObjectFieldOp op) {
               return evaluateObjectField(op, actualParams, loc);
-            })
-            .Case([&](AnyCastOp op) {
-              return evaluateValue(op.getInput(), actualParams, loc);
-            })
-            .Case([&](FrozenEmptyPathOp op) {
-              return evaluateEmptyPath(op, actualParams, loc);
             })
             .Case<UnknownValueOp>([&](UnknownValueOp op) {
               return evaluateUnknownValue(op, loc);
@@ -833,25 +990,6 @@ ResolvedValue circt::om::Evaluator::evaluateParameter(
   auto val = (*actualParams)[formalParam.getArgNumber()];
   val->setLoc(loc);
   return inspectValue(val);
-}
-
-/// Evaluator dispatch function for constants.
-ResolvedValue circt::om::Evaluator::evaluateConstant(
-    ConstantOp op, ActualParameters actualParams, Location loc) {
-  // For list constants, create ListValue.
-  return inspectValue(om::evaluator::AttributeValue::get(op.getValue(), loc));
-}
-
-ResolvedValue circt::om::Evaluator::evaluateReadyOperandsOperation(
-    Value value, evaluator::EvaluatorValuePtr resultValue,
-    ActualParameters actualParams, Location loc) {
-  auto *op = cast<OpResult>(value).getDefiningOp();
-  auto *pattern = getReadyOperandsPatternRegistry().lookup(op);
-  assert(pattern && "missing ready-operands evaluation pattern");
-  return dispatchReadyOperands(
-      op, std::move(resultValue),
-      [&](Value operand) { return evaluateValue(operand, actualParams, loc); },
-      *pattern, loc);
 }
 
 /// Evaluator dispatch function for property assertions.
@@ -1017,12 +1155,6 @@ ResolvedValue circt::om::Evaluator::evaluateObjectField(
 
   // Return the field being accessed.
   return inspectValue(objectFieldValue);
-}
-
-ResolvedValue circt::om::Evaluator::evaluateEmptyPath(
-    FrozenEmptyPathOp op, ActualParameters actualParams, Location loc) {
-  auto valueResult = getOrCreateValue(op, actualParams, loc).value();
-  return inspectValue(valueResult);
 }
 
 /// Create an unknown value of the specified type
