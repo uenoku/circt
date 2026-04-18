@@ -518,16 +518,24 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
     return rhsResult;
 
   auto lhsValue = inspectValue(lhsResult.value());
-  if (lhsValue.state == ResolutionState::Pending)
+  switch (lhsValue.state) {
+  case ResolutionState::Pending:
     return handle;
-  if (lhsValue.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op->emitError("failed to resolve integer arithmetic lhs");
+  case ResolutionState::Ready:
+    break;
+  }
 
   auto rhsValue = inspectValue(rhsResult.value());
-  if (rhsValue.state == ResolutionState::Pending)
+  switch (rhsValue.state) {
+  case ResolutionState::Pending:
     return handle;
-  if (rhsValue.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op->emitError("failed to resolve integer arithmetic rhs");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // Check if any operand is unknown and propagate the unknown flag.
   if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
@@ -595,10 +603,14 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
     return failure();
 
   auto resolvedCond = inspectValue(condResult.value());
-  if (resolvedCond.state == ResolutionState::Pending)
+  switch (resolvedCond.state) {
+  case ResolutionState::Pending:
     return success();
-  if (resolvedCond.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op.emitError("failed to resolve property assertion condition");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // If the condition is unknown, skip silently (best-effort).
   if (isUnknownValue(condResult.value(), resolvedCond.value))
@@ -701,10 +713,14 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
   };
 
   auto resolvedObject = inspectValue(result);
-  if (resolvedObject.state == ResolutionState::Pending)
+  switch (resolvedObject.state) {
+  case ResolutionState::Pending:
     return objectFieldValue;
-  if (resolvedObject.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op.emitError("failed to resolve object field base");
+  case ResolutionState::Ready:
+    break;
+  }
 
   if (isUnknownValue(result, resolvedObject.value))
     return setUnknownFieldValue();
@@ -730,10 +746,14 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
       continue;
 
     auto nextObject = inspectValue(finalField);
-    if (nextObject.state == ResolutionState::Pending)
+    switch (nextObject.state) {
+    case ResolutionState::Pending:
       return objectFieldValue;
-    if (nextObject.state == ResolutionState::Failure)
+    case ResolutionState::Failure:
       return op.emitError("failed to resolve nested object field path");
+    case ResolutionState::Ready:
+      break;
+    }
     if (isUnknownValue(finalField, nextObject.value))
       return setUnknownFieldValue();
 
@@ -766,10 +786,14 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
       return result;
 
     auto evaluatedOperand = inspectValue(result.value());
-    if (evaluatedOperand.state == ResolutionState::Pending)
+    switch (evaluatedOperand.state) {
+    case ResolutionState::Pending:
       return list;
-    if (evaluatedOperand.state == ResolutionState::Failure)
+    case ResolutionState::Failure:
       return op.emitError("failed to resolve list_create operand");
+    case ResolutionState::Ready:
+      break;
+    }
     // Check if any operand is unknown.
     if (isUnknownValue(result.value(), evaluatedOperand.value))
       hasUnknown = true;
@@ -805,10 +829,14 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
       return result;
 
     auto subList = inspectValue(result.value());
-    if (subList.state == ResolutionState::Pending)
+    switch (subList.state) {
+    case ResolutionState::Pending:
       return list;
-    if (subList.state == ResolutionState::Failure)
+    case ResolutionState::Failure:
       return op->emitError("failed to resolve list_concat operand");
+    case ResolutionState::Ready:
+      break;
+    }
 
     // Check if any operand is unknown.
     if (isUnknownValue(result.value(), subList.value))
@@ -857,10 +885,14 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
       return operandResult;
 
     auto resolvedOperand = inspectValue(operandResult.value());
-    if (resolvedOperand.state == ResolutionState::Pending)
+    switch (resolvedOperand.state) {
+    case ResolutionState::Pending:
       return handle;
-    if (resolvedOperand.state == ResolutionState::Failure)
+    case ResolutionState::Failure:
       return op->emitError("failed to resolve string_concat operand");
+    case ResolutionState::Ready:
+      break;
+    }
     if (isUnknownValue(operandResult.value(), resolvedOperand.value)) {
       handle.value()->markUnknown();
       return handle;
@@ -915,16 +947,24 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
     return rhsResult;
 
   auto lhsValue = inspectValue(lhsResult.value());
-  if (lhsValue.state == ResolutionState::Pending)
+  switch (lhsValue.state) {
+  case ResolutionState::Pending:
     return handle;
-  if (lhsValue.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op->emitError("failed to resolve prop.eq lhs");
+  case ResolutionState::Ready:
+    break;
+  }
 
   auto rhsValue = inspectValue(rhsResult.value());
-  if (rhsValue.state == ResolutionState::Pending)
+  switch (rhsValue.state) {
+  case ResolutionState::Pending:
     return handle;
-  if (rhsValue.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op->emitError("failed to resolve prop.eq rhs");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // Check if any operand is unknown and propagate the unknown flag.
   if (isUnknownValue(lhsResult.value(), lhsValue.value) ||
@@ -974,10 +1014,14 @@ circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
     return result;
 
   auto basePath = inspectValue(result.value());
-  if (basePath.state == ResolutionState::Pending)
+  switch (basePath.state) {
+  case ResolutionState::Pending:
     return valueResult;
-  if (basePath.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op.emitError("failed to resolve frozenbasepath_create operand");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // If the base path is unknown, mark the result as unknown.
   if (isUnknownValue(result.value(), basePath.value)) {
@@ -1006,10 +1050,14 @@ circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
     return result;
 
   auto basePath = inspectValue(result.value());
-  if (basePath.state == ResolutionState::Pending)
+  switch (basePath.state) {
+  case ResolutionState::Pending:
     return valueResult;
-  if (basePath.state == ResolutionState::Failure)
+  case ResolutionState::Failure:
     return op.emitError("failed to resolve frozenpath_create operand");
+  case ResolutionState::Ready:
+    break;
+  }
 
   // If the base path is unknown, mark the result as unknown.
   if (isUnknownValue(result.value(), basePath.value)) {
