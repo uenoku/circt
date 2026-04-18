@@ -149,15 +149,17 @@ static std::optional<ResolvedValue> requireAllOperandsReady(
     ValueRange operands, evaluator::EvaluatorValuePtr pendingValue,
     llvm::function_ref<ResolvedValue(Value)> evaluateOperand,
     llvm::function_ref<void()> emitFailure,
-    SmallVectorImpl<ReadyValue> &readyOperands) {
+    SmallVectorImpl<ReadyValue> &readyOperands, bool &existsUnknown) {
   readyOperands.clear();
   readyOperands.reserve(operands.size());
+  existsUnknown = false;
 
   for (auto operand : operands) {
     ReadyValue readyOperand;
     if (auto early = requireReady(evaluateOperand(operand), pendingValue,
                                   emitFailure, readyOperand))
       return *early;
+    existsUnknown |= readyOperand.isUnknown();
     readyOperands.push_back(std::move(readyOperand));
   }
 
@@ -167,13 +169,6 @@ static std::optional<ResolvedValue> requireAllOperandsReady(
 static ResolvedValue markUnknownAndReturn(evaluator::EvaluatorValuePtr value) {
   value->markUnknown();
   return inspectValue(std::move(value));
-}
-
-static bool hasUnknownValue(ArrayRef<ReadyValue> values) {
-  for (const auto &value : values)
-    if (value.isUnknown())
-      return true;
-  return false;
 }
 
 static ResolvedValue setAttrResult(evaluator::EvaluatorValuePtr resultValue,
@@ -250,14 +245,17 @@ public:
       return inspectValue(std::move(resultValue));
 
     SmallVector<ReadyValue, 4> readyOperands;
+    bool existsUnknown = false;
     if (auto early = requireAllOperandsReady(
             op->getOperands(), resultValue, evaluateValue,
             [&] {
               op->emitError()
                   << "failed to resolve " << getOperationName() << " operand";
             },
-            readyOperands))
+            readyOperands, existsUnknown))
       return *early;
+    if (existsUnknown)
+      return markUnknownAndReturn(std::move(resultValue));
 
     return evaluateReady(op, readyOperands, std::move(resultValue), loc);
   }
@@ -313,8 +311,6 @@ private:
                               evaluator::EvaluatorValuePtr resultValue,
                               Location loc) const override {
     assert(operands.size() == 2 && "expected binary arithmetic operands");
-    if (hasUnknownValue(operands))
-      return markUnknownAndReturn(std::move(resultValue));
 
     circt::om::IntegerAttr lhs = operands[0].getIntegerAttr(
         "expected om::IntegerAttr for IntegerBinaryArithmeticOp lhs");
@@ -355,8 +351,6 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    if (hasUnknownValue(operands))
-      resultValue->markUnknown();
     return inspectValue(std::move(resultValue));
   }
 };
@@ -378,8 +372,6 @@ private:
 
     cast<evaluator::ListValue>(resultValue.get())
         ->setElements(std::move(values));
-    if (hasUnknownValue(operands))
-      resultValue->markUnknown();
     return inspectValue(std::move(resultValue));
   }
 };
@@ -393,9 +385,6 @@ private:
   ResolvedValue evaluateTyped(StringConcatOp op, ArrayRef<ReadyValue> operands,
                               evaluator::EvaluatorValuePtr resultValue,
                               Location loc) const override {
-    if (hasUnknownValue(operands))
-      return markUnknownAndReturn(std::move(resultValue));
-
     std::string result;
     for (const auto &operand : operands)
       result +=
@@ -420,8 +409,6 @@ private:
                               evaluator::EvaluatorValuePtr resultValue,
                               Location loc) const override {
     assert(operands.size() == 2 && "expected binary equality operands");
-    if (hasUnknownValue(operands))
-      return markUnknownAndReturn(std::move(resultValue));
 
     mlir::Attribute lhs = operands[0].getAttr(
         "expected attribute value for BinaryEqualityOp lhs");
@@ -456,8 +443,6 @@ private:
                               Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenbasepath_create");
-    if (operands.front().isUnknown())
-      return markUnknownAndReturn(std::move(resultValue));
 
     auto *basePathValue = operands.front().getBasePathValue(
         "resolved frozenbasepath_create operand is not a base path");
@@ -489,8 +474,6 @@ private:
                               Location loc) const override {
     assert(operands.size() == 1 &&
            "expected one operand for frozenpath_create");
-    if (operands.front().isUnknown())
-      return markUnknownAndReturn(std::move(resultValue));
 
     auto *basePathValue = operands.front().getBasePathValue(
         "resolved frozenpath_create operand is not a base path");
