@@ -130,17 +130,7 @@ public:
   LogicalResult finalizeImpl();
 
   // Return the first non-reference value that is reachable from the reference.
-  FailureOr<EvaluatorValuePtr> getStrippedValue() const {
-    llvm::SmallPtrSet<ReferenceValue *, 4> visited;
-    auto currentValue = value;
-    while (auto *v = dyn_cast<ReferenceValue>(currentValue.get())) {
-      // Detect a cycle.
-      if (!visited.insert(v).second)
-        return failure();
-      currentValue = v->getValue();
-    }
-    return success(currentValue);
-  }
+  FailureOr<EvaluatorValuePtr> getStrippedValue() const;
 
 private:
   EvaluatorValuePtr value;
@@ -483,6 +473,10 @@ private:
   /// Evaluator value storage. Return an evaluator value for the given
   /// instantiation context (a pair of Value and parameters).
   DenseMap<ObjectKey, std::shared_ptr<evaluator::EvaluatorValue>> objects;
+
+  /// Tracks object instantiations currently being evaluated so recursive
+  /// object graphs reuse the existing placeholder instead of recursing.
+  llvm::SmallDenseSet<ObjectKey, 8> activeObjectInstances;
 };
 
 /// Helper to enable printing objects in Diagnostics.

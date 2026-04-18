@@ -1955,4 +1955,46 @@ om.class @PropEqInteger(%n: !om.integer) -> (equal: i1, not_equal: i1, unknown: 
   }
 }
 
+TEST(EvaluatorTests, ReferenceValueBounceThroughObject) {
+  StringRef mod = R"MLIR(
+om.class @Domain(%in: !om.string) -> (out: !om.string) {
+  om.class.fields %in : !om.string
+}
+om.class @Foo_Class(%basepath: !om.frozenbasepath) -> (test: i1) {
+  %0 = om.constant "A" : !om.string
+  %1 = om.object @Domain(%0) : (!om.string) -> !om.class.type<@Domain>
+  %2 = om.object.field %1, [@out] : (!om.class.type<@Domain>) -> !om.string
+  %3 = om.object @Domain(%2) : (!om.string) -> !om.class.type<@Domain>
+  %4 = om.object.field %3, [@out] : (!om.class.type<@Domain>) -> !om.string
+  %5 = om.constant "B" : !om.string
+  %6 = om.prop.eq %4, %5 : !om.string
+  om.class.fields %6 : i1
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+
+  Evaluator evaluator(owning.release());
+
+  auto result = evaluator.instantiate(
+      StringAttr::get(&context, "Foo_Class"),
+      {std::make_shared<evaluator::BasePathValue>(&context)});
+  ASSERT_TRUE(succeeded(result));
+
+  auto *obj = llvm::cast<evaluator::ObjectValue>(result.value().get());
+  auto test =
+      llvm::cast<evaluator::AttributeValue>(
+          obj->getField(StringAttr::get(&context, "test")).value().get())
+          ->getAs<mlir::IntegerAttr>();
+  ASSERT_TRUE(test);
+  ASSERT_EQ(test.getValue().getZExtValue(), 0u);
+}
+
 } // namespace

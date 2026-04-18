@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
@@ -22,6 +23,59 @@
 
 using namespace mlir;
 using namespace circt::om;
+
+namespace {
+
+enum class ResolutionState { Ready, Pending, Failure };
+
+struct ResolvedValue {
+  ResolutionState state;
+  evaluator::EvaluatorValuePtr value;
+
+  static ResolvedValue ready(evaluator::EvaluatorValuePtr value) {
+    return {ResolutionState::Ready, std::move(value)};
+  }
+  static ResolvedValue pending() { return {ResolutionState::Pending, nullptr}; }
+  static ResolvedValue failure() { return {ResolutionState::Failure, nullptr}; }
+};
+
+template <typename T>
+struct ResolvedTypedValue {
+  ResolutionState state;
+  evaluator::EvaluatorValuePtr value;
+  T *typedValue;
+};
+
+static ResolvedValue
+resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
+  llvm::SmallPtrSet<evaluator::ReferenceValue *, 4> visited;
+  if (!currentValue)
+    return ResolvedValue::pending();
+
+  while (auto *ref =
+             llvm::dyn_cast<evaluator::ReferenceValue>(currentValue.get())) {
+    if (!visited.insert(ref).second)
+      return ResolvedValue::failure();
+    currentValue = ref->getValue();
+    if (!currentValue)
+      return ResolvedValue::pending();
+  }
+
+  return ResolvedValue::ready(std::move(currentValue));
+}
+
+template <typename T>
+static ResolvedTypedValue<T>
+resolveValueAs(evaluator::EvaluatorValuePtr currentValue) {
+  auto resolved = resolveReferenceValue(std::move(currentValue));
+  if (resolved.state != ResolutionState::Ready)
+    return {resolved.state, nullptr, nullptr};
+  assert(isa<T>(resolved.value.get()) && "unexpected evaluator value type");
+  return {ResolutionState::Ready, resolved.value,
+          cast<T>(resolved.value.get())};
+}
+
+} // namespace
 
 /// Construct an Evaluator with an IR module.
 circt::om::Evaluator::Evaluator(ModuleOp mod) : symbolTable(mod) {}
@@ -466,28 +520,27 @@ circt::om::Evaluator::evaluateIntegerBinaryArithmetic(
   if (!rhsResult.value()->isFullyEvaluated())
     return handle;
 
+  auto lhsValue = resolveValueAs<evaluator::AttributeValue>(lhsResult.value());
+  if (lhsValue.state == ResolutionState::Pending)
+    return handle;
+  if (lhsValue.state == ResolutionState::Failure)
+    return op->emitError("failed to resolve integer arithmetic lhs");
+
+  auto rhsValue = resolveValueAs<evaluator::AttributeValue>(rhsResult.value());
+  if (rhsValue.state == ResolutionState::Pending)
+    return handle;
+  if (rhsValue.state == ResolutionState::Failure)
+    return op->emitError("failed to resolve integer arithmetic rhs");
+
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown()) {
+  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown() ||
+      lhsValue.value->isUnknown() || rhsValue.value->isUnknown()) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  // Extract the integer attributes.
-  auto extractAttr = [](evaluator::EvaluatorValue *value) {
-    return std::move(
-        llvm::TypeSwitch<evaluator::EvaluatorValue *, om::IntegerAttr>(value)
-            .Case([](evaluator::AttributeValue *val) {
-              return val->getAs<om::IntegerAttr>();
-            })
-            .Case([](evaluator::ReferenceValue *val) {
-              return cast<evaluator::AttributeValue>(
-                         val->getStrippedValue()->get())
-                  ->getAs<om::IntegerAttr>();
-            }));
-  };
-
-  om::IntegerAttr lhs = extractAttr(lhsResult.value().get());
-  om::IntegerAttr rhs = extractAttr(rhsResult.value().get());
+  om::IntegerAttr lhs = lhsValue.typedValue->getAs<om::IntegerAttr>();
+  om::IntegerAttr rhs = rhsValue.typedValue->getAs<om::IntegerAttr>();
   assert(lhs && rhs &&
          "expected om::IntegerAttr for IntegerBinaryArithmeticOp operands");
 
@@ -539,31 +592,18 @@ circt::om::Evaluator::evaluatePropertyAssert(PropertyAssertOp op,
   if (!condResult.value()->isFullyEvaluated())
     return success();
 
+  auto resolvedCond =
+      resolveValueAs<evaluator::AttributeValue>(condResult.value());
+  if (resolvedCond.state == ResolutionState::Pending)
+    return success();
+  if (resolvedCond.state == ResolutionState::Failure)
+    return op.emitError("failed to resolve property assertion condition");
+
   // If the condition is unknown, skip silently (best-effort).
-  if (condResult.value()->isUnknown())
+  if (condResult.value()->isUnknown() || resolvedCond.value->isUnknown())
     return success();
 
-  // Extract the attribute from the condition value, handling the case where
-  // the condition resolves through a ReferenceValue (e.g. an ObjectFieldOp or
-  // a parameter that participates in cycle resolution).
-  auto extractAttr = [](evaluator::EvaluatorValue *value) -> mlir::Attribute {
-    return llvm::TypeSwitch<evaluator::EvaluatorValue *, mlir::Attribute>(value)
-        .Case([](evaluator::AttributeValue *val) { return val->getAttr(); })
-        .Case([](evaluator::ReferenceValue *val) -> mlir::Attribute {
-          auto stripped = val->getStrippedValue();
-          if (failed(stripped))
-            return {};
-          if (auto *attr =
-                  dyn_cast<evaluator::AttributeValue>(stripped.value().get()))
-            return attr->getAttr();
-          return {};
-        })
-        .Default([](auto *) -> mlir::Attribute { return {}; });
-  };
-
-  auto condAttr = extractAttr(condResult.value().get());
-  if (!condAttr)
-    return success();
+  auto condAttr = resolvedCond.typedValue->getAttr();
 
   bool isFalse = false;
   if (auto boolAttr = dyn_cast<BoolAttr>(condAttr))
@@ -592,7 +632,15 @@ circt::om::Evaluator::createParametersFromOperands(
     auto inputResult = getOrCreateValue(input, actualParams, loc);
     if (failed(inputResult))
       return failure();
-    parameters->push_back(inputResult.value());
+
+    auto inputValue = inputResult.value();
+    if (isa<evaluator::ReferenceValue>(inputValue.get())) {
+      auto evaluatedInput = evaluateValue(input, actualParams, loc);
+      if (failed(evaluatedInput))
+        return failure();
+      inputValue = evaluatedInput.value();
+    }
+    parameters->push_back(inputValue);
   }
 
   actualParametersBuffers.push_back(std::move(parameters));
@@ -604,8 +652,13 @@ FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
                                              ActualParameters actualParams) {
   auto loc = op.getLoc();
-  if (isFullyEvaluated({op, actualParams}))
+  auto key = ObjectKey{op, actualParams};
+  if (isFullyEvaluated(key))
     return getOrCreateValue(op, actualParams, loc);
+  if (!activeObjectInstances.insert(key).second)
+    return getOrCreateValue(op, actualParams, loc);
+  auto clearActiveObject =
+      llvm::scope_exit([&] { activeObjectInstances.erase(key); });
 
   auto params =
       createParametersFromOperands(op.getOperands(), actualParams, loc);
@@ -630,7 +683,13 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
 
   auto objectFieldValue = getOrCreateValue(op, actualParams, loc).value();
 
-  if (result->isUnknown()) {
+  auto resolvedObject = resolveValueAs<evaluator::ObjectValue>(result);
+  if (resolvedObject.state == ResolutionState::Pending)
+    return objectFieldValue;
+  if (resolvedObject.state == ResolutionState::Failure)
+    return op.emitError("failed to resolve object field base");
+
+  if (result->isUnknown() || resolvedObject.value->isUnknown()) {
     // If objectFieldValue is a ReferenceValue, set its value to a unknown value
     // of the proper type
     if (auto *ref =
@@ -645,21 +704,29 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
     return objectFieldValue;
   }
 
-  auto *currentObject = llvm::cast<evaluator::ObjectValue>(result.get());
+  auto *currentObject = resolvedObject.typedValue;
 
   // Iteratively access nested fields through the path until we reach the final
   // field in the path.
   evaluator::EvaluatorValuePtr finalField;
-  for (auto field : op.getFieldPath().getAsRange<FlatSymbolRefAttr>()) {
+  auto fieldPath = op.getFieldPath().getAsRange<FlatSymbolRefAttr>();
+  for (auto it = fieldPath.begin(), end = fieldPath.end(); it != end; ++it) {
+    auto field = *it;
     // `currentObject` might no be fully evaluated.
     if (!currentObject->getFields().contains(field.getAttr()))
       return objectFieldValue;
 
     auto currentField = currentObject->getField(field.getAttr());
     finalField = currentField.value();
-    if (auto *nextObject =
-            llvm::dyn_cast<evaluator::ObjectValue>(finalField.get()))
-      currentObject = nextObject;
+    if (std::next(it) == end)
+      continue;
+
+    auto nextObject = resolveValueAs<evaluator::ObjectValue>(finalField);
+    if (nextObject.state == ResolutionState::Pending)
+      return objectFieldValue;
+    if (nextObject.state == ResolutionState::Failure)
+      return op.emitError("failed to resolve nested object field path");
+    currentObject = nextObject.typedValue;
   }
 
   // Update the reference.
@@ -713,17 +780,6 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
   SmallVector<evaluator::EvaluatorValuePtr> values;
   auto list = getOrCreateValue(op, actualParams, loc);
 
-  // Extract the ListValue, either directly or through an object reference.
-  auto extractList = [](evaluator::EvaluatorValue *value) {
-    return std::move(
-        llvm::TypeSwitch<evaluator::EvaluatorValue *, evaluator::ListValue *>(
-            value)
-            .Case([](evaluator::ListValue *val) { return val; })
-            .Case([](evaluator::ReferenceValue *val) {
-              return cast<evaluator::ListValue>(val->getStrippedValue()->get());
-            }));
-  };
-
   bool hasUnknown = false;
   for (auto operand : op.getOperands()) {
     auto result = evaluateValue(operand, actualParams, loc);
@@ -731,17 +787,23 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
       return result;
     if (!result.value()->isFullyEvaluated())
       return list;
+
+    auto subList = resolveValueAs<evaluator::ListValue>(result.value());
+    if (subList.state == ResolutionState::Pending)
+      return list;
+    if (subList.state == ResolutionState::Failure)
+      return op->emitError("failed to resolve list_concat operand");
+
     // Check if any operand is unknown.
-    if (result.value()->isUnknown())
+    if (result.value()->isUnknown() || subList.value->isUnknown())
       hasUnknown = true;
 
     // Extract this sublist and ensure it's done evaluating.
-    evaluator::ListValue *subList = extractList(result.value().get());
-    if (!subList->isFullyEvaluated())
+    if (!subList.typedValue->isFullyEvaluated())
       return list;
 
     // Append each EvaluatorValue from the sublist.
-    for (const auto &subValue : subList->getElements())
+    for (const auto &subValue : subList.typedValue->getElements())
       values.push_back(subValue);
   }
 
@@ -772,19 +834,6 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
   if (handle.value()->isFullyEvaluated())
     return handle;
 
-  // Extract the string attributes, handling both AttributeValue and
-  // ReferenceValue cases.
-  auto extractAttr = [](evaluator::EvaluatorValue *value) -> StringAttr {
-    return llvm::TypeSwitch<evaluator::EvaluatorValue *, StringAttr>(value)
-        .Case([](evaluator::AttributeValue *val) {
-          return val->getAs<StringAttr>();
-        })
-        .Case([](evaluator::ReferenceValue *val) {
-          return cast<evaluator::AttributeValue>(val->getStrippedValue()->get())
-              ->getAs<StringAttr>();
-        });
-  };
-
   // Evaluate all operands and concatenate them.
   std::string result;
   for (auto operand : op.getOperands()) {
@@ -794,7 +843,19 @@ circt::om::Evaluator::evaluateStringConcat(StringConcatOp op,
     if (!operandResult.value()->isFullyEvaluated())
       return handle;
 
-    StringAttr str = extractAttr(operandResult.value().get());
+    auto resolvedOperand =
+        resolveValueAs<evaluator::AttributeValue>(operandResult.value());
+    if (resolvedOperand.state == ResolutionState::Pending)
+      return handle;
+    if (resolvedOperand.state == ResolutionState::Failure)
+      return op->emitError("failed to resolve string_concat operand");
+    if (operandResult.value()->isUnknown() ||
+        resolvedOperand.value->isUnknown()) {
+      handle.value()->markUnknown();
+      return handle;
+    }
+
+    StringAttr str = resolvedOperand.typedValue->getAs<StringAttr>();
     assert(str && "expected StringAttr for StringConcatOp operand");
     result += str.getValue().str();
   }
@@ -843,25 +904,27 @@ circt::om::Evaluator::evaluateBinaryEquality(BinaryEqualityOp op,
   if (!rhsResult.value()->isFullyEvaluated())
     return handle;
 
+  auto lhsValue = resolveValueAs<evaluator::AttributeValue>(lhsResult.value());
+  if (lhsValue.state == ResolutionState::Pending)
+    return handle;
+  if (lhsValue.state == ResolutionState::Failure)
+    return op->emitError("failed to resolve prop.eq lhs");
+
+  auto rhsValue = resolveValueAs<evaluator::AttributeValue>(rhsResult.value());
+  if (rhsValue.state == ResolutionState::Pending)
+    return handle;
+  if (rhsValue.state == ResolutionState::Failure)
+    return op->emitError("failed to resolve prop.eq rhs");
+
   // Check if any operand is unknown and propagate the unknown flag.
-  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown()) {
+  if (lhsResult.value()->isUnknown() || rhsResult.value()->isUnknown() ||
+      lhsValue.value->isUnknown() || rhsValue.value->isUnknown()) {
     handle.value()->markUnknown();
     return handle;
   }
 
-  // Extract the underlying attribute, handling both AttributeValue and
-  // ReferenceValue cases.
-  auto extractAttr = [](evaluator::EvaluatorValue *value) -> mlir::Attribute {
-    return llvm::TypeSwitch<evaluator::EvaluatorValue *, mlir::Attribute>(value)
-        .Case([](evaluator::AttributeValue *val) { return val->getAttr(); })
-        .Case([](evaluator::ReferenceValue *val) -> mlir::Attribute {
-          return cast<evaluator::AttributeValue>(val->getStrippedValue()->get())
-              ->getAttr();
-        });
-  };
-
-  mlir::Attribute lhs = extractAttr(lhsResult.value().get());
-  mlir::Attribute rhs = extractAttr(rhsResult.value().get());
+  mlir::Attribute lhs = lhsValue.typedValue->getAttr();
+  mlir::Attribute rhs = rhsValue.typedValue->getAttr();
   assert(lhs && rhs && "expected attribute for BinaryEqualityOp operands");
 
   // Perform the binary equality operation.
@@ -1026,11 +1089,25 @@ LogicalResult circt::om::evaluator::ObjectValue::finalizeImpl() {
 // ReferenceValue
 //===----------------------------------------------------------------------===//
 
+FailureOr<EvaluatorValuePtr>
+circt::om::evaluator::ReferenceValue::getStrippedValue() const {
+  auto resolved = resolveReferenceValue(value);
+  switch (resolved.state) {
+  case ResolutionState::Ready:
+    return success(resolved.value);
+  case ResolutionState::Pending:
+    return mlir::emitError(getLoc(), "reference value is not resolved");
+  case ResolutionState::Failure:
+    return mlir::emitError(getLoc(), "reference value contains a cycle");
+  }
+  llvm_unreachable("unknown resolution state");
+}
+
 LogicalResult circt::om::evaluator::ReferenceValue::finalizeImpl() {
-  auto result = getStrippedValue();
-  if (failed(result))
-    return result;
-  value = std::move(result.value());
+  auto resolved = resolveReferenceValue(value);
+  if (resolved.state != ResolutionState::Ready)
+    return failure();
+  value = std::move(resolved.value);
   // the stripped value also needs to be finalized
   if (failed(finalizeEvaluatorValue(value)))
     return failure();
