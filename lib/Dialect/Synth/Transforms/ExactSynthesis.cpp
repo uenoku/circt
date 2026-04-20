@@ -568,7 +568,7 @@ bool GenericExactSATProblem::buildEncoding() {
     addExactlyOne(selectionVars);
   }
 
-  addAdjacentStepSymmetryBreakingConstraints();
+  // addAdjacentStepSymmetryBreakingConstraints();
   // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
   addUseAllStepsConstraints();
