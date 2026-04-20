@@ -11,12 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/OM/Evaluator/Evaluator.h"
+#include "circt/Dialect/OM/Transforms/ElaborationTransform.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -35,10 +34,6 @@ namespace {} // namespace
 } // namespace circt::om::detail
 
 namespace {
-struct BodyCloneContext {
-  IRMapping mapping;
-  llvm::SmallDenseSet<Value, 8> activeValues;
-};
 
 class ScratchIRBuilder {
 public:
@@ -68,10 +63,7 @@ public:
     wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
                               {builder.getStringAttr("root")});
 
-    if (failed(prepareObject(rootObject)))
-      return failure();
-
-    if (failed(rewriteWrapper()))
+    if (failed(applyElaborationTransform(wrapperClass, scratchSymbols)))
       return failure();
 
     if (failed(checkPropertyAssertions()))
@@ -88,101 +80,10 @@ public:
   }
 
 private:
-  template <typename OpTy>
-  struct AttrFoldOpConversionPattern : OpConversionPattern<OpTy> {
-    AttrFoldOpConversionPattern(MLIRContext *context)
-        : OpConversionPattern<OpTy>(context) {}
-
-    LogicalResult
-    matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-      bool hasUnknownOperand = false;
-      SmallVector<Attribute> operandAttrs;
-      operandAttrs.reserve(adaptor.getOperands().size());
-      for (Value operand : adaptor.getOperands()) {
-        if (operand.template getDefiningOp<UnknownValueOp>()) {
-          hasUnknownOperand = true;
-          break;
-        }
-
-        auto constant = operand.template getDefiningOp<ConstantOp>();
-        if (!constant)
-          return failure();
-        operandAttrs.push_back(constant.getValue());
-      }
-
-      if (hasUnknownOperand) {
-        rewriter.replaceOpWithNewOp<UnknownValueOp>(op, op.getType());
-        return success();
-      }
-
-      SmallVector<OpFoldResult> foldResults;
-      if (failed(op->fold(operandAttrs, foldResults)) ||
-          foldResults.size() != 1)
-        return failure();
-
-      auto foldedAttr = dyn_cast<Attribute>(foldResults.front());
-      if (!foldedAttr)
-        return failure();
-
-      auto typedAttr = dyn_cast<TypedAttr>(foldedAttr);
-      if (!typedAttr)
-        return failure();
-
-      rewriter.replaceOpWithNewOp<ConstantOp>(op, typedAttr);
-      return success();
-    }
-  };
-
-  struct ObjectOpConversionPattern : OpConversionPattern<ObjectOp> {
-    ObjectOpConversionPattern(MLIRContext *context, ScratchIRBuilder &scratch)
-        : OpConversionPattern<ObjectOp>(context), scratch(scratch) {}
-
-    LogicalResult
-    matchAndRewrite(ObjectOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-      auto converted =
-          scratch.convertObject(op, adaptor.getActualParams(), rewriter);
-      if (failed(converted))
-        return failure();
-      rewriter.replaceOp(op, converted.value());
-      return success();
-    }
-
-    ScratchIRBuilder &scratch;
-  };
-
-  struct ObjectFieldOpConversionPattern : OpConversionPattern<ObjectFieldOp> {
-    ObjectFieldOpConversionPattern(MLIRContext *context,
-                                   ScratchIRBuilder &scratch)
-        : OpConversionPattern<ObjectFieldOp>(context), scratch(scratch) {}
-
-    LogicalResult
-    matchAndRewrite(ObjectFieldOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-      auto simplified = scratch.simplifyObjectField(
-          adaptor.getObject(), op.getFieldAttr(), op.getType(), rewriter);
-      if (failed(simplified))
-        return failure();
-      if (!*simplified)
-        return failure();
-      rewriter.replaceOp(op, **simplified);
-      return success();
-    }
-
-    ScratchIRBuilder &scratch;
-  };
-
   FailureOr<ClassLike> lookupSourceClassLike(StringAttr className) {
     if (auto classLike = sourceSymbols.lookup<ClassLike>(className))
       return classLike;
     return sourceModule.emitError("unknown class name ") << className;
-  }
-
-  FailureOr<ClassLike> lookupScratchClassLike(StringAttr className) {
-    if (auto classLike = scratchSymbols.lookup<ClassLike>(className))
-      return classLike;
-    return scratchModule.emitError("unknown class name ") << className;
   }
 
   LogicalResult
@@ -267,50 +168,6 @@ private:
     return success();
   }
 
-  LogicalResult rewriteWrapper() {
-    ConversionTarget target(*sourceModule.getContext());
-    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
-    target.addIllegalOp<ObjectOp>();
-    target.addLegalOp<ElaboratedObjectOp>();
-    auto needsAttrFold = [](Operation *op) {
-      bool hasUnknownOperand = false;
-      bool allConstantOperands = true;
-      for (Value operand : op->getOperands()) {
-        if (operand.getDefiningOp<UnknownValueOp>()) {
-          hasUnknownOperand = true;
-          break;
-        }
-        allConstantOperands &= operand.getDefiningOp<ConstantOp>() != nullptr;
-      }
-      return hasUnknownOperand || allConstantOperands;
-    };
-    target.addDynamicallyLegalOp<ObjectFieldOp>([](ObjectFieldOp op) {
-      auto base = op.getObject();
-      return !base.getDefiningOp<AnyCastOp>() &&
-             !base.getDefiningOp<ElaboratedObjectOp>() &&
-             !base.getDefiningOp<UnknownValueOp>();
-    });
-    target.addDynamicallyLegalOp<IntegerAddOp, IntegerMulOp, IntegerShrOp,
-                                 IntegerShlOp, StringConcatOp, PropEqOp>(
-        [&](Operation *op) { return !needsAttrFold(op); });
-
-    RewritePatternSet patterns(sourceModule.getContext());
-    patterns.add<ObjectOpConversionPattern, ObjectFieldOpConversionPattern>(
-        sourceModule.getContext(), *this);
-    patterns.add<AttrFoldOpConversionPattern<IntegerAddOp>,
-                 AttrFoldOpConversionPattern<IntegerMulOp>,
-                 AttrFoldOpConversionPattern<IntegerShrOp>,
-                 AttrFoldOpConversionPattern<IntegerShlOp>,
-                 AttrFoldOpConversionPattern<StringConcatOp>,
-                 AttrFoldOpConversionPattern<PropEqOp>>(
-        sourceModule.getContext());
-    return applyFullConversion(wrapperClass, target, std::move(patterns));
-  }
-
-  Value createUnknownScratchValue(Type type, Location loc, OpBuilder &builder) {
-    return UnknownValueOp::create(builder, loc, type).getResult();
-  }
-
   FailureOr<EvaluatorValuePtr> createUnknownRuntimeValue(Type type,
                                                          Location loc) {
     using namespace circt::om::evaluator;
@@ -343,184 +200,6 @@ private:
       return failure();
     result.value()->markUnknown();
     return result;
-  }
-
-  FailureOr<Value> clonePreparedValue(Value value, BodyCloneContext &context,
-                                      OpBuilder &builder) {
-    if (Value mapped = context.mapping.lookupOrNull(value))
-      return mapped;
-    if (auto objectOp = dyn_cast<ObjectOp>(value.getDefiningOp())) {
-      builder.setInsertionPoint(wrapperClass.getFieldsOp());
-      SmallVector<Value> placeholderActuals;
-      placeholderActuals.reserve(objectOp.getActualParams().size());
-      for (Value actual : objectOp.getActualParams())
-        placeholderActuals.push_back(createUnknownScratchValue(
-            actual.getType(), objectOp.getLoc(), builder));
-      auto clonedObject =
-          ObjectOp::create(builder, objectOp.getLoc(), objectOp.getType(),
-                           objectOp.getClassNameAttr(), placeholderActuals);
-      context.mapping.map(value, clonedObject.getResult());
-
-      SmallVector<Value> mappedActuals;
-      mappedActuals.reserve(objectOp.getActualParams().size());
-      for (Value actual : objectOp.getActualParams()) {
-        auto mappedActual = clonePreparedValue(actual, context, builder);
-        if (failed(mappedActual))
-          return failure();
-        mappedActuals.push_back(mappedActual.value());
-      }
-      clonedObject->setOperands(mappedActuals);
-      if (failed(prepareObject(clonedObject)))
-        return failure();
-      return clonedObject.getResult();
-    }
-    if (!context.activeValues.insert(value).second)
-      return mlir::emitError(value.getLoc(),
-                             "rewritten OM evaluation contains a non-object "
-                             "dataflow cycle");
-    auto clearActive =
-        llvm::scope_exit([&] { context.activeValues.erase(value); });
-
-    Operation *op = value.getDefiningOp();
-    for (Value operand : op->getOperands()) {
-      auto mappedOperand = clonePreparedValue(operand, context, builder);
-      if (failed(mappedOperand))
-        return failure();
-    }
-    builder.setInsertionPoint(wrapperClass.getFieldsOp());
-    Operation *cloned = builder.clone(*op, context.mapping);
-    for (auto [sourceResult, clonedResult] :
-         llvm::zip(op->getResults(), cloned->getResults()))
-      context.mapping.map(sourceResult, clonedResult);
-    return context.mapping.lookupOrNull(value);
-  }
-
-  LogicalResult clonePreparedPropertyAssert(PropertyAssertOp propertyAssert,
-                                            BodyCloneContext &context,
-                                            OpBuilder &builder) {
-    auto condition =
-        clonePreparedValue(propertyAssert.getCondition(), context, builder);
-    if (failed(condition))
-      return failure();
-    builder.setInsertionPoint(wrapperClass.getFieldsOp());
-    PropertyAssertOp::create(builder, propertyAssert.getLoc(),
-                             condition.value(), propertyAssert.getMessage());
-    return success();
-  }
-
-  LogicalResult prepareObject(ObjectOp objectOp) {
-    if (!preparedObjects.insert(objectOp.getOperation()).second)
-      return success();
-
-    auto classLike = lookupScratchClassLike(objectOp.getClassNameAttr());
-    if (failed(classLike))
-      return failure();
-    if (isa<ClassExternOp>(*classLike))
-      return success();
-
-    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
-    assert(classOp && "non-external class should be a ClassOp");
-
-    BodyCloneContext context;
-    for (auto [formal, actual] :
-         llvm::zip(classOp.getBodyBlock()->getArguments(),
-                   objectOp.getActualParams()))
-      context.mapping.map(formal, actual);
-
-    SmallVector<Value> fieldValues;
-    fieldValues.reserve(classOp.getFieldsOp().getFields().size());
-    for (auto fieldValue : classOp.getFieldsOp().getOperands()) {
-      auto clonedField = clonePreparedValue(fieldValue, context, builder);
-      if (failed(clonedField))
-        return fieldValue.getDefiningOp()->emitError(
-                   "failed to clone elaborated field")
-               << " for " << objectOp.getClassNameAttr();
-      fieldValues.push_back(clonedField.value());
-    }
-    preparedFieldValues[objectOp.getOperation()] = std::move(fieldValues);
-
-    for (auto propertyAssert : classOp.getOps<PropertyAssertOp>()) {
-      if (failed(clonePreparedPropertyAssert(propertyAssert, context, builder)))
-        return propertyAssert.emitError(
-            "failed to clone property assertion condition");
-    }
-
-    return success();
-  }
-
-  FailureOr<Value> convertObject(ObjectOp objectOp, ValueRange actuals,
-                                 ConversionPatternRewriter &rewriter) {
-    if (auto it = elaboratedObjects.find(objectOp.getOperation());
-        it != elaboratedObjects.end())
-      return success(it->second);
-
-    auto classLike = lookupScratchClassLike(objectOp.getClassNameAttr());
-    if (failed(classLike))
-      return failure();
-
-    if (isa<ClassExternOp>(*classLike)) {
-      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
-      auto unknown = createUnknownScratchValue(objectOp.getType(),
-                                               objectOp.getLoc(), rewriter);
-      elaboratedObjects[objectOp.getOperation()] = unknown;
-      return success(unknown);
-    }
-
-    auto fieldNames = classLike->getFieldNames();
-    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
-    assert(classOp && "non-external class should be a ClassOp");
-    SmallVector<Value> fieldPlaceholders;
-    fieldPlaceholders.reserve(fieldNames.size());
-    for (size_t index = 0; index < fieldNames.size(); ++index)
-      fieldPlaceholders.push_back(createUnknownScratchValue(
-          classOp.getFieldsOp().getFields()[index].getType(), objectOp.getLoc(),
-          rewriter));
-
-    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
-    auto placeholder = ElaboratedObjectOp::create(
-        rewriter, objectOp.getLoc(), *classLike, fieldPlaceholders);
-    elaboratedObjects[objectOp.getOperation()] = placeholder.getResult();
-    (void)actuals;
-
-    auto it = preparedFieldValues.find(objectOp.getOperation());
-    if (it == preparedFieldValues.end())
-      return objectOp.emitError("missing prepared body for object");
-    placeholder->setOperands(it->second);
-
-    return success(placeholder.getResult());
-  }
-
-  FailureOr<std::optional<Value>> simplifyObjectField(Value base,
-                                                      FlatSymbolRefAttr field,
-                                                      Type resultType,
-                                                      OpBuilder &builder) {
-    if (auto anyCast = base.getDefiningOp<AnyCastOp>())
-      return std::optional<Value>(ObjectFieldOp::create(
-          builder, anyCast.getLoc(), resultType, anyCast.getInput(), field));
-
-    if (base.getDefiningOp<UnknownValueOp>())
-      return std::optional<Value>(
-          createUnknownScratchValue(resultType, base.getLoc(), builder));
-
-    auto elaboratedObject = base.getDefiningOp<ElaboratedObjectOp>();
-    if (!elaboratedObject)
-      return std::optional<Value>();
-
-    auto classLike =
-        lookupScratchClassLike(elaboratedObject.getClassNameAttr());
-    if (failed(classLike))
-      return failure();
-
-    auto fieldNames = classLike->getFieldNames();
-    auto fieldIt = llvm::find(fieldNames, field.getAttr());
-    if (fieldIt == fieldNames.end())
-      return elaboratedObject.emitError("field ") << field << " does not exist";
-    size_t index = std::distance(fieldNames.begin(), fieldIt);
-    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
-    assert(classOp && "elaborated object must reference a ClassOp");
-    assert(classOp.getFieldsOp().getFields()[index].getType() == resultType &&
-           "field access result type should match class field type");
-    return std::optional<Value>(elaboratedObject.getFieldValues()[index]);
   }
 
   FailureOr<EvaluatorValuePtr> exportFoldedOperation(Operation *op) {
@@ -751,9 +430,6 @@ private:
   OpBuilder builder;
   ClassOp wrapperClass;
   DenseMap<Value, EvaluatorValuePtr> actualInputs;
-  llvm::SmallDenseSet<Operation *, 16> preparedObjects;
-  DenseMap<Operation *, SmallVector<Value>> preparedFieldValues;
-  DenseMap<Operation *, Value> elaboratedObjects;
   DenseMap<Value, EvaluatorValuePtr> exportedValues;
   llvm::SmallDenseSet<Value, 16> activeExports;
 };

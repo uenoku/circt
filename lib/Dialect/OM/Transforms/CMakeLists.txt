@@ -1,9 +1,9 @@
 add_circt_dialect_library(CIRCTOMTransforms
+  ElaborateObject.cpp
   ElaborationTransform.cpp
   FreezePaths.cpp
   LinkModules.cpp
   StripOM.cpp
-  TestEvaluator.cpp
   VerifyObjectFields.cpp
 
   DEPENDS
