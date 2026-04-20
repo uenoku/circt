@@ -59,7 +59,7 @@ public:
     auto rootType = ClassType::get(ctx, FlatSymbolRefAttr::get(rootClassName));
     auto rootObject =
         ObjectOp::create(builder, unknownLoc, rootType, rootClassName,
-                         wrapperClass.getBodyBlock()->getArguments());
+                         importedActualValues);
     wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
                               {builder.getStringAttr("root")});
 
@@ -139,32 +139,35 @@ private:
     while (scratchSymbols.lookup<ClassLike>(builder.getStringAttr(wrapperName)))
       wrapperName = "__om_evaluator_wrapper_" + std::to_string(++suffix);
 
-    SmallVector<std::string> paramNameStorage;
-    SmallVector<StringRef> paramNames;
-    SmallVector<Type> paramTypes;
-    paramNameStorage.reserve(actualParams.size());
-    paramNames.reserve(actualParams.size());
-    paramTypes.reserve(actualParams.size());
-    for (auto [index, actual] : llvm::enumerate(actualParams)) {
-      paramNameStorage.push_back("arg" + std::to_string(index));
-      paramNames.push_back(paramNameStorage.back());
-      paramTypes.push_back(actual->getType());
-    }
-
     wrapperClass = ClassOp::create(
         builder, loc, builder.getStringAttr(wrapperName),
-        builder.getStrArrayAttr(paramNames), builder.getArrayAttr({}),
+        builder.getStrArrayAttr({}), builder.getArrayAttr({}),
         builder.getDictionaryAttr({}));
 
     Block *body = &wrapperClass.getRegion().emplaceBlock();
-    for (auto type : paramTypes)
-      body->addArgument(type, loc);
-
+    importedActualValues.clear();
+    importedActualValues.reserve(actualParams.size());
+    builder.setInsertionPointToEnd(body);
+    for (auto actual : actualParams) {
+      if (actual->isUnknown()) {
+        importedActualValues.push_back(
+            UnknownValueOp::create(builder, loc, actual->getType()).getResult());
+        continue;
+      }
+      if (auto *attrValue =
+              dyn_cast<evaluator::AttributeValue>(actual.get())) {
+        importedActualValues.push_back(
+            ConstantOp::create(builder, loc,
+                               cast<TypedAttr>(attrValue->getAttr()))
+                .getResult());
+        continue;
+      }
+      auto arg = body->addArgument(actual->getType(), loc);
+      importedActualValues.push_back(arg);
+      actualInputs[arg] = actual;
+    }
     builder.setInsertionPointToEnd(body);
     ClassFieldsOp::create(builder, loc, ValueRange(), builder.getArrayAttr({}));
-
-    for (auto [arg, actual] : llvm::zip(body->getArguments(), actualParams))
-      actualInputs[arg] = actual;
     return success();
   }
 
@@ -208,8 +211,9 @@ private:
     if (auto it = exportedValues.find(value); it != exportedValues.end())
       return it->second;
     if (!activeExports.insert(value).second)
-      return emitError(value.getLoc(), "rewritten OM evaluation contains a "
-                                       "non-object dataflow cycle");
+      return emitError(value.getLoc(),
+                       "failed to finalize evaluation. Probably the class "
+                       "contains a dataflow cycle");
     auto eraseActive = llvm::scope_exit([&] { activeExports.erase(value); });
 
     Operation *op = value.getDefiningOp();
@@ -246,6 +250,21 @@ private:
                   objectValue);
             })
             .Case([&](ObjectFieldOp op) -> FailureOr<EvaluatorValuePtr> {
+              if (auto elaboratedObject =
+                      op.getObject().getDefiningOp<ElaboratedObjectOp>()) {
+                auto sourceClass =
+                    lookupSourceClassLike(elaboratedObject.getClassNameAttr());
+                if (failed(sourceClass))
+                  return failure();
+                auto fieldNames = sourceClass->getFieldNames();
+                auto fieldIt =
+                    llvm::find(fieldNames, op.getFieldAttr().getAttr());
+                if (fieldIt == fieldNames.end())
+                  return op.emitError("field ") << op.getFieldAttr()
+                                                << " does not exist";
+                return exportValue(elaboratedObject.getFieldValues()[std::distance(
+                    fieldNames.begin(), fieldIt)]);
+              }
               auto baseValue = exportValue(op.getObject());
               if (failed(baseValue))
                 return failure();
@@ -387,6 +406,7 @@ private:
   DenseMap<Value, EvaluatorValuePtr> actualInputs;
   DenseMap<Value, EvaluatorValuePtr> exportedValues;
   llvm::SmallDenseSet<Value, 16> activeExports;
+  SmallVector<Value> importedActualValues;
 };
 
 } // namespace
