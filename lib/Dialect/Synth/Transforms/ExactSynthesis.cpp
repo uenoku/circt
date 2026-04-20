@@ -143,7 +143,7 @@ public:
 
 class Dot3NodeInfo final : public ExactNodeInfo {
 public:
-  Dot3NodeInfo() : ExactNodeInfo(3, false, 0x1A) {}
+  Dot3NodeInfo() : ExactNodeInfo(3, false, 0x52) {}
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
                     ArrayRef<bool> inverted) const override {
@@ -243,15 +243,8 @@ private:
         return lhs.fanins[i].source < rhs.fanins[i].source;
     }
     if (lhs.info != rhs.info)
-      return getNodeOrder(*lhs.info) < getNodeOrder(*rhs.info);
+      return lhs.info->getTruthTable() < rhs.info->getTruthTable();
     return getInversionMask(lhs) < getInversionMask(rhs);
-  }
-
-  static unsigned getNodeOrder(const ExactNodeInfo &info) {
-    for (auto [index, candidateInfo] : llvm::enumerate(getAllNodeInfos()))
-      if (candidateInfo == &info)
-        return index;
-    llvm_unreachable("unknown node info");
   }
 
   static void enumerateCommutativeOperandSources(
