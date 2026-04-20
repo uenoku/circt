@@ -807,6 +807,7 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
       liveElements.insert(newInstance);
     }
     // Remove old one.
+    liveElements.erase(instance);
     instance.erase();
   }
 
