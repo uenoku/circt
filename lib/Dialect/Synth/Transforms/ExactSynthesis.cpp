@@ -273,7 +273,7 @@ private:
       return;
     }
 
-    for (unsigned source = 1; source < availableSources; ++source) {
+    for (unsigned source = 0; source < availableSources; ++source) {
       sources.push_back(source);
       enumerateOrderedOperandSources(availableSources, arity, currentArity + 1,
                                      sources, emit);
@@ -300,7 +300,7 @@ private:
     if (info.isCommutative()) {
       enumerateCommutativeOperandSources(availableSources, info.getArity(),
                                          /*currentArity=*/0,
-                                         /*nextSource=*/1, sources,
+                                         /*nextSource=*/0, sources,
                                          emitCandidate);
       return;
     }
