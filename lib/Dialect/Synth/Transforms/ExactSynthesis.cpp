@@ -48,22 +48,6 @@ enum class ExactNodeKind {
   Dot3,
 };
 
-using MaterializeNodeFn = Value (*)(OpBuilder &builder, Location loc,
-                                    ArrayRef<Value> operands,
-                                    ArrayRef<bool> inverted);
-
-using IsNodeEnabledFn = bool (*)(const ExactSynthesisPolicy &policy);
-
-struct ExactNodeKindSpec {
-  ExactNodeKind kind;
-  unsigned arity;
-  bool commutative;
-  // Bit `i` is the output for assignment `i`, where operand 0 is the LSB.
-  uint8_t truthTable;
-  IsNodeEnabledFn isEnabled;
-  MaterializeNodeFn materialize;
-};
-
 struct ExactSignalRef {
   // `source == 0` denotes the constant-false source. All other sources are
   // numbered as 1-based primary inputs followed by synthesized steps.
@@ -84,75 +68,182 @@ struct ExactNetwork {
 
 using ExactCandidate = ExactNetworkStep;
 
-static bool isAndEnabled(const ExactSynthesisPolicy &policy) {
-  return policy.allowAnd;
-}
+class ExactNodeInfo {
+public:
+  ExactNodeInfo(ExactNodeKind kind, unsigned arity, bool commutative)
+      : kind(kind), arity(arity), commutative(commutative) {}
+  virtual ~ExactNodeInfo() = default;
 
-static bool isXorEnabled(const ExactSynthesisPolicy &policy) {
-  return policy.allowXor;
-}
+  ExactNodeKind getKind() const { return kind; }
+  unsigned getArity() const { return arity; }
+  bool isCommutative() const { return commutative; }
 
-static bool isDotEnabled(const ExactSynthesisPolicy &policy) {
-  return policy.allowDot;
-}
+  virtual bool isEnabled(const ExactSynthesisPolicy &policy) const = 0;
+  virtual void emitConditionedCNF(
+      IncrementalSATSolver &solver, int selector, int outLit,
+      const ExactCandidate &candidate, unsigned minterm,
+      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
+          getSourceLiteral) const = 0;
+  virtual Value materialize(OpBuilder &builder, Location loc,
+                            ArrayRef<Value> operands,
+                            ArrayRef<bool> inverted) const = 0;
 
-static Value materializeAnd2(OpBuilder &builder, Location loc,
-                             ArrayRef<Value> operands,
-                             ArrayRef<bool> inverted) {
-  assert(operands.size() == 2 && "and2 expects two operands");
-  assert(inverted.size() == 2 && "and2 expects two inversion flags");
-  return aig::AndInverterOp::create(builder, loc, operands[0], operands[1],
-                                    inverted[0], inverted[1]);
-}
+private:
+  ExactNodeKind kind;
+  unsigned arity;
+  bool commutative;
+};
 
-static Value materializeXor2(OpBuilder &builder, Location loc,
-                             ArrayRef<Value> operands,
-                             ArrayRef<bool> inverted) {
-  assert(operands.size() == 2 && "xor2 expects two operands");
-  assert(inverted.size() == 2 && "xor2 expects two inversion flags");
-  return XorInverterOp::create(builder, loc, operands[0], operands[1],
-                               inverted[0], inverted[1]);
-}
+class And2NodeInfo final : public ExactNodeInfo {
+public:
+  And2NodeInfo() : ExactNodeInfo(ExactNodeKind::And2, 2, true) {}
 
-static Value materializeDot3(OpBuilder &builder, Location loc,
-                             ArrayRef<Value> operands,
-                             ArrayRef<bool> inverted) {
-  assert(operands.size() == 3 && "dot3 expects three operands");
-  assert(inverted.size() == 3 && "dot3 expects three inversion flags");
-  return DotOp::create(builder, loc, operands[0], operands[1], operands[2],
-                       inverted[0], inverted[1], inverted[2]);
-}
+  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
+    return policy.allowAnd;
+  }
 
-static const ExactNodeKindSpec &getNodeKindSpec(ExactNodeKind kind) {
-  static const ExactNodeKindSpec specs[] = {
-      {ExactNodeKind::And2, 2, true, /*truthTable=*/0x8, isAndEnabled,
-       materializeAnd2},
-      {ExactNodeKind::Xor2, 2, true, /*truthTable=*/0x6, isXorEnabled,
-       materializeXor2},
-      {ExactNodeKind::Dot3, 3, false, /*truthTable=*/0x1A, isDotEnabled,
-       materializeDot3},
-  };
+  void emitConditionedCNF(
+      IncrementalSATSolver &solver, int selector, int outLit,
+      const ExactCandidate &candidate, unsigned minterm,
+      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
+          getSourceLiteral) const override {
+    auto addConditionedClause = [&](std::initializer_list<int> lits) {
+      SmallVector<int, 8> clause;
+      clause.reserve(lits.size() + 1);
+      clause.push_back(-selector);
+      clause.append(lits.begin(), lits.end());
+      solver.addClause(clause);
+    };
 
-  for (const auto &spec : specs)
-    if (spec.kind == kind)
-      return spec;
+    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                candidate.fanins[0].inverted);
+    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                candidate.fanins[1].inverted);
+    addConditionedClause({-outLit, aLit});
+    addConditionedClause({-outLit, bLit});
+    addConditionedClause({outLit, -aLit, -bLit});
+  }
+
+  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+                    ArrayRef<bool> inverted) const override {
+    assert(operands.size() == 2 && "and2 expects two operands");
+    assert(inverted.size() == 2 && "and2 expects two inversion flags");
+    return aig::AndInverterOp::create(builder, loc, operands[0], operands[1],
+                                      inverted[0], inverted[1]);
+  }
+};
+
+class Xor2NodeInfo final : public ExactNodeInfo {
+public:
+  Xor2NodeInfo() : ExactNodeInfo(ExactNodeKind::Xor2, 2, true) {}
+
+  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
+    return policy.allowXor;
+  }
+
+  void emitConditionedCNF(
+      IncrementalSATSolver &solver, int selector, int outLit,
+      const ExactCandidate &candidate, unsigned minterm,
+      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
+          getSourceLiteral) const override {
+    auto addConditionedClause = [&](std::initializer_list<int> lits) {
+      SmallVector<int, 8> clause;
+      clause.reserve(lits.size() + 1);
+      clause.push_back(-selector);
+      clause.append(lits.begin(), lits.end());
+      solver.addClause(clause);
+    };
+
+    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                candidate.fanins[0].inverted);
+    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                candidate.fanins[1].inverted);
+    addConditionedClause({aLit, bLit, -outLit});
+    addConditionedClause({-aLit, -bLit, -outLit});
+    addConditionedClause({aLit, -bLit, outLit});
+    addConditionedClause({-aLit, bLit, outLit});
+  }
+
+  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+                    ArrayRef<bool> inverted) const override {
+    assert(operands.size() == 2 && "xor2 expects two operands");
+    assert(inverted.size() == 2 && "xor2 expects two inversion flags");
+    return XorInverterOp::create(builder, loc, operands[0], operands[1],
+                                 inverted[0], inverted[1]);
+  }
+};
+
+class Dot3NodeInfo final : public ExactNodeInfo {
+public:
+  Dot3NodeInfo() : ExactNodeInfo(ExactNodeKind::Dot3, 3, false) {}
+
+  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
+    return policy.allowDot;
+  }
+
+  void emitConditionedCNF(
+      IncrementalSATSolver &solver, int selector, int outLit,
+      const ExactCandidate &candidate, unsigned minterm,
+      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
+          getSourceLiteral) const override {
+    int xLit = getSourceLiteral(candidate.fanins[0].source, minterm,
+                                candidate.fanins[0].inverted);
+    int yLit = getSourceLiteral(candidate.fanins[1].source, minterm,
+                                candidate.fanins[1].inverted);
+    int zLit = getSourceLiteral(candidate.fanins[2].source, minterm,
+                                candidate.fanins[2].inverted);
+
+    for (unsigned assignment = 0; assignment != 8; ++assignment) {
+      bool x = assignment & 1;
+      bool y = assignment & 2;
+      bool z = assignment & 4;
+      bool value = x ^ (z || (x && y));
+
+      SmallVector<int, 4> clause = {-selector, x ? -xLit : xLit,
+                                    y ? -yLit : yLit, z ? -zLit : zLit};
+      clause.push_back(value ? outLit : -outLit);
+      solver.addClause(clause);
+    }
+  }
+
+  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+                    ArrayRef<bool> inverted) const override {
+    assert(operands.size() == 3 && "dot3 expects three operands");
+    assert(inverted.size() == 3 && "dot3 expects three inversion flags");
+    return DotOp::create(builder, loc, operands[0], operands[1], operands[2],
+                         inverted[0], inverted[1], inverted[2]);
+  }
+};
+
+static const ExactNodeInfo &getNodeInfo(ExactNodeKind kind) {
+  static const And2NodeInfo and2;
+  static const Xor2NodeInfo xor2;
+  static const Dot3NodeInfo dot3;
+  switch (kind) {
+  case ExactNodeKind::And2:
+    return and2;
+  case ExactNodeKind::Xor2:
+    return xor2;
+  case ExactNodeKind::Dot3:
+    return dot3;
+  }
   llvm_unreachable("unknown exact synthesis node kind");
 }
 
-static SmallVector<const ExactNodeKindSpec *, 3>
-getEnabledNodeKindSpecs(const ExactSynthesisPolicy &policy) {
-  SmallVector<const ExactNodeKindSpec *, 3> enabledSpecs;
+static SmallVector<const ExactNodeInfo *, 3>
+getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
+  SmallVector<const ExactNodeInfo *, 3> infos;
   for (ExactNodeKind kind :
        {ExactNodeKind::And2, ExactNodeKind::Xor2, ExactNodeKind::Dot3}) {
-    const auto &spec = getNodeKindSpec(kind);
-    if (spec.isEnabled(policy))
-      enabledSpecs.push_back(&spec);
+    const auto &info = getNodeInfo(kind);
+    if (info.isEnabled(policy))
+      infos.push_back(&info);
   }
-  return enabledSpecs;
+  return infos;
 }
 
 static bool hasEnabledConstructs(const ExactSynthesisPolicy &policy) {
-  return !getEnabledNodeKindSpecs(policy).empty();
+  return !getEnabledNodeInfos(policy).empty();
 }
 
 static unsigned getCandidateInversionMask(const ExactCandidate &candidate) {
@@ -240,14 +331,14 @@ static void enumerateOrderedOperandSources(
 }
 
 static void
-enumerateNodeCandidates(const ExactNodeKindSpec &spec,
-                        unsigned availableSources,
+enumerateNodeCandidates(const ExactNodeInfo &info, unsigned availableSources,
                         SmallVectorImpl<ExactCandidate> &candidates) {
   SmallVector<unsigned, 3> sources;
   auto emitCandidate = [&](ArrayRef<unsigned> operandSources) {
-    for (unsigned invMask = 0, e = 1u << spec.arity; invMask != e; ++invMask) {
+    for (unsigned invMask = 0, e = 1u << info.getArity(); invMask != e;
+         ++invMask) {
       ExactCandidate candidate;
-      candidate.kind = spec.kind;
+      candidate.kind = info.getKind();
       for (auto [index, source] : llvm::enumerate(operandSources))
         candidate.fanins.push_back(
             {source, static_cast<bool>(invMask & (1u << index))});
@@ -255,14 +346,14 @@ enumerateNodeCandidates(const ExactNodeKindSpec &spec,
     }
   };
 
-  if (spec.commutative) {
-    enumerateCommutativeOperandSources(availableSources, spec.arity,
+  if (info.isCommutative()) {
+    enumerateCommutativeOperandSources(availableSources, info.getArity(),
                                        /*currentArity=*/0, /*nextSource=*/1,
                                        sources, emitCandidate);
     return;
   }
 
-  enumerateOrderedOperandSources(availableSources, spec.arity,
+  enumerateOrderedOperandSources(availableSources, info.getArity(),
                                  /*currentArity=*/0, sources, emitCandidate);
 }
 
@@ -270,8 +361,8 @@ static void enumerateCandidates(const ExactSynthesisPolicy &policy,
                                 unsigned availableSources,
                                 SmallVectorImpl<ExactCandidate> &candidates) {
   candidates.clear();
-  for (const auto *spec : getEnabledNodeKindSpecs(policy))
-    enumerateNodeCandidates(*spec, availableSources, candidates);
+  for (const auto *info : getEnabledNodeInfos(policy))
+    enumerateNodeCandidates(*info, availableSources, candidates);
 
   llvm::sort(candidates, isCandidateLess);
 }
@@ -281,22 +372,9 @@ static void addConditionedSemantics(
     const ExactCandidate &candidate, unsigned minterm,
     llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
         getSourceLiteral) {
-  const auto &spec = getNodeKindSpec(candidate.kind);
-
-  for (unsigned assignment = 0, e = 1u << spec.arity; assignment != e;
-       ++assignment) {
-    SmallVector<int, 8> clause;
-    clause.reserve(spec.arity + 2);
-    clause.push_back(-selector);
-    for (unsigned operand = 0; operand != spec.arity; ++operand) {
-      int lit = getSourceLiteral(candidate.fanins[operand].source, minterm,
-                                 candidate.fanins[operand].inverted);
-      clause.push_back((assignment & (1u << operand)) ? -lit : lit);
-    }
-    bool value = (spec.truthTable >> assignment) & 1u;
-    clause.push_back(value ? outLit : -outLit);
-    solver.addClause(clause);
-  }
+  getNodeInfo(candidate.kind)
+      .emitConditionedCNF(solver, selector, outLit, candidate, minterm,
+                          getSourceLiteral);
 }
 
 static Value materializeInverter(OpBuilder &builder, Location loc,
@@ -335,16 +413,16 @@ static Value materializeNetwork(OpBuilder &builder, Location loc,
   SmallVector<Value, 4> stepValues;
   stepValues.reserve(network.steps.size());
   for (const auto &step : network.steps) {
-    const auto &spec = getNodeKindSpec(step.kind);
+    const auto &info = getNodeInfo(step.kind);
     SmallVector<Value, 3> operands;
     SmallVector<bool, 3> inverted;
-    operands.reserve(spec.arity);
-    inverted.reserve(spec.arity);
+    operands.reserve(info.getArity());
+    inverted.reserve(info.getArity());
     for (const auto &fanin : step.fanins) {
       operands.push_back(getRawSignal(fanin, stepValues));
       inverted.push_back(fanin.inverted);
     }
-    stepValues.push_back(spec.materialize(builder, loc, operands, inverted));
+    stepValues.push_back(info.materialize(builder, loc, operands, inverted));
   }
 
   if (network.output.source == 0)
