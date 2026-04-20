@@ -34,6 +34,16 @@ def VerifyObjectFields: Pass<"om-verify-object-fields"> {
   let constructor = "circt::om::createVerifyObjectFieldsPass()";
 }
 
+def TestEvaluator: Pass<"om-test-evaluator", "mlir::ModuleOp"> {
+  let summary = "Create test wrappers and run OM elaboration on zero-input classes";
+  let description = [{
+    Creates synthetic zero-input wrapper classes for zero-input OM classes and
+    runs the evaluator elaboration transform on those wrappers. This is a
+    testing-only pass for inspecting elaborated OM IR.
+  }];
+  let constructor = "circt::om::createTestEvaluatorPass()";
+}
+
 def StripOMPass : Pass<"strip-om", "mlir::ModuleOp"> {
   let summary = "Remove OM information";
   let description = [{

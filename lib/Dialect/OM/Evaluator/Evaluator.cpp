@@ -789,8 +789,8 @@ LogicalResult circt::om::evaluator::EvaluatorValue::finalize() {
   finalized = true;
   assert(isSettled());
   return llvm::TypeSwitch<EvaluatorValue *, LogicalResult>(this)
-      .Case<AttributeValue, ObjectValue, ListValue, ReferenceValue,
-            BasePathValue, PathValue>([](auto v) { return v->finalizeImpl(); });
+      .Case<AttributeValue, ObjectValue, ListValue, BasePathValue, PathValue>(
+          [](auto v) { return v->finalizeImpl(); });
 }
 
 Type circt::om::evaluator::EvaluatorValue::getType() const {
@@ -798,7 +798,6 @@ Type circt::om::evaluator::EvaluatorValue::getType() const {
       .Case<AttributeValue>([](auto *attr) -> Type { return attr->getType(); })
       .Case<ObjectValue>([](auto *object) { return object->getObjectType(); })
       .Case<ListValue>([](auto *list) { return list->getListType(); })
-      .Case<ReferenceValue>([](auto *ref) { return ref->getValueType(); })
       .Case<BasePathValue>(
           [this](auto *tuple) { return FrozenBasePathType::get(ctx); })
       .Case<PathValue>(
@@ -844,36 +843,6 @@ LogicalResult circt::om::evaluator::ObjectValue::finalizeImpl() {
   for (auto &&[e, value] : fields)
     if (failed(finalizeEvaluatorValue(value)))
       return failure();
-
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// ReferenceValue
-//===----------------------------------------------------------------------===//
-
-FailureOr<EvaluatorValuePtr>
-circt::om::evaluator::ReferenceValue::getStrippedValue() const {
-  auto resolved = resolveReferenceValue(value);
-  switch (resolved.state) {
-  case ResolutionState::Ready:
-    return success(resolved.value);
-  case ResolutionState::Pending:
-    return mlir::emitError(getLoc(), "reference value is not resolved");
-  case ResolutionState::Failure:
-    return mlir::emitError(getLoc(), "reference value contains a cycle");
-  }
-  llvm_unreachable("unknown resolution state");
-}
-
-LogicalResult circt::om::evaluator::ReferenceValue::finalizeImpl() {
-  auto resolved = resolveReferenceValue(value);
-  if (resolved.state != ResolutionState::Ready)
-    return failure();
-  value = std::move(resolved.value);
-  // the stripped value also needs to be finalized
-  if (failed(finalizeEvaluatorValue(value)))
-    return failure();
 
   return success();
 }

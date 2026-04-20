@@ -2,6 +2,7 @@ add_circt_dialect_library(CIRCTOMTransforms
   FreezePaths.cpp
   LinkModules.cpp
   StripOM.cpp
+  TestEvaluator.cpp
   VerifyObjectFields.cpp
 
   DEPENDS
