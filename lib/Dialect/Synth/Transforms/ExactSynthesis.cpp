@@ -72,12 +72,13 @@ using ExactCandidate = ExactNetworkStep;
 /// Declarative description of a node kind that the exact search may place.
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable);
+  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
+      : arity(arity), commutative(commutative), truthTable(truthTable) {}
   virtual ~ExactNodeInfo() = default;
 
-  unsigned getArity() const;
-  bool isCommutative() const;
-  uint8_t getTruthTable() const;
+  unsigned getArity() const { return arity; }
+  bool isCommutative() const { return commutative; }
+  uint8_t getTruthTable() const { return truthTable; }
 
   /// Emit clauses for `selector => outLit == f(fanins...)`.
   ///
@@ -99,35 +100,27 @@ private:
   uint8_t truthTable;
 };
 
-class And2NodeInfo final : public ExactNodeInfo {
+template <typename OpTy>
+class ExactPrimitiveNodeInfo final : public ExactNodeInfo {
 public:
-  And2NodeInfo();
+  ExactPrimitiveNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
+      : ExactNodeInfo(arity, commutative, truthTable) {}
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override;
-};
-
-class Xor2NodeInfo final : public ExactNodeInfo {
-public:
-  Xor2NodeInfo();
-
-  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override;
-};
-
-class Dot3NodeInfo final : public ExactNodeInfo {
-public:
-  Dot3NodeInfo();
-
-  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override;
+                    ArrayRef<bool> inverted) const override {
+    assert(operands.size() == getArity() &&
+           "node expects fixed arity operands");
+    assert(inverted.size() == getArity() &&
+           "node expects one inversion flag per operand");
+    return OpTy::create(builder, loc, operands, inverted);
+  }
 };
 
 static SmallVector<const ExactNodeInfo *, 3>
 getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
-  static const And2NodeInfo and2;
-  static const Xor2NodeInfo xor2;
-  static const Dot3NodeInfo dot3;
+  static const ExactPrimitiveNodeInfo<aig::AndInverterOp> and2(2, true, 0x8);
+  static const ExactPrimitiveNodeInfo<XorInverterOp> xor2(2, true, 0x6);
+  static const ExactPrimitiveNodeInfo<DotOp> dot3(3, false, 0x52);
   SmallVector<const ExactNodeInfo *, 3> infos;
   if (policy.allowAnd)
     infos.push_back(&and2);
@@ -294,16 +287,6 @@ private:
   ExactCandidateEnumerator enumerator;
 };
 
-ExactNodeInfo::ExactNodeInfo(unsigned arity, bool commutative,
-                             uint8_t truthTable)
-    : arity(arity), commutative(commutative), truthTable(truthTable) {}
-
-unsigned ExactNodeInfo::getArity() const { return arity; }
-
-bool ExactNodeInfo::isCommutative() const { return commutative; }
-
-uint8_t ExactNodeInfo::getTruthTable() const { return truthTable; }
-
 void ExactNodeInfo::emitConditionedCNF(
     IncrementalSATSolver &solver, int selector, int outLit,
     const ExactCandidate &candidate, unsigned minterm,
@@ -328,39 +311,6 @@ void ExactNodeInfo::emitConditionedCNF(
     clause.push_back(value ? outLit : -outLit);
     solver.addClause(clause);
   }
-}
-
-And2NodeInfo::And2NodeInfo() : ExactNodeInfo(2, true, 0x8) {}
-
-Value And2NodeInfo::materialize(OpBuilder &builder, Location loc,
-                                ArrayRef<Value> operands,
-                                ArrayRef<bool> inverted) const {
-  assert(operands.size() == 2 && "and2 expects two operands");
-  assert(inverted.size() == 2 && "and2 expects two inversion flags");
-  return aig::AndInverterOp::create(builder, loc, operands[0], operands[1],
-                                    inverted[0], inverted[1]);
-}
-
-Xor2NodeInfo::Xor2NodeInfo() : ExactNodeInfo(2, true, 0x6) {}
-
-Value Xor2NodeInfo::materialize(OpBuilder &builder, Location loc,
-                                ArrayRef<Value> operands,
-                                ArrayRef<bool> inverted) const {
-  assert(operands.size() == 2 && "xor2 expects two operands");
-  assert(inverted.size() == 2 && "xor2 expects two inversion flags");
-  return XorInverterOp::create(builder, loc, operands[0], operands[1],
-                               inverted[0], inverted[1]);
-}
-
-Dot3NodeInfo::Dot3NodeInfo() : ExactNodeInfo(3, false, 0x52) {}
-
-Value Dot3NodeInfo::materialize(OpBuilder &builder, Location loc,
-                                ArrayRef<Value> operands,
-                                ArrayRef<bool> inverted) const {
-  assert(operands.size() == 3 && "dot3 expects three operands");
-  assert(inverted.size() == 3 && "dot3 expects three inversion flags");
-  return DotOp::create(builder, loc, operands[0], operands[1], operands[2],
-                       inverted[0], inverted[1], inverted[2]);
 }
 
 void ExactCandidateEnumerator::enumerate(

@@ -152,12 +152,15 @@ def DotOp : SynthOp<"dot", [
       return build($_builder, $_state, x.getType(), x, y, z,
                    $_builder.getDenseBoolArrayAttr(inverted));
     }]>,
-      OpBuilder<(ins "Type":$resultType, "ValueRange":$inputs,
-                                "ArrayRef<bool>":$inverted), [{
+    OpBuilder<(ins "ValueRange":$inputs, "ArrayRef<bool>":$inverted), [{
       assert(inputs.size() == 3 && "dot expects exactly three operands");
       assert(inverted.size() == 3 && "dot expects exactly three inversion flags");
-      return build($_builder, $_state, resultType, inputs[0], inputs[1],
+      return build($_builder, $_state, inputs[0].getType(), inputs[0], inputs[1],
                    inputs[2], $_builder.getDenseBoolArrayAttr(inverted));
+    }]>,
+    OpBuilder<(ins "Type":$resultType, "ValueRange":$inputs,
+                                "ArrayRef<bool>":$inverted), [{
+      return build($_builder, $_state, inputs, inverted);
     }]>];
 
   let hasCustomAssemblyFormat = 1;
