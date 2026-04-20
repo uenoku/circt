@@ -70,20 +70,38 @@ using ExactCandidate = ExactNetworkStep;
 
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(ExactNodeKind kind, unsigned arity, bool commutative)
-      : kind(kind), arity(arity), commutative(commutative) {}
+  ExactNodeInfo(ExactNodeKind kind, unsigned arity, bool commutative,
+                uint8_t truthTable)
+      : kind(kind), arity(arity), commutative(commutative),
+        truthTable(truthTable) {}
   virtual ~ExactNodeInfo() = default;
 
   ExactNodeKind getKind() const { return kind; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
+  uint8_t getTruthTable() const { return truthTable; }
 
   virtual bool isEnabled(const ExactSynthesisPolicy &policy) const = 0;
   virtual void emitConditionedCNF(
       IncrementalSATSolver &solver, int selector, int outLit,
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-          getSourceLiteral) const = 0;
+          getSourceLiteral) const {
+    for (unsigned assignment = 0, e = 1u << getArity(); assignment != e;
+         ++assignment) {
+      SmallVector<int, 8> clause;
+      clause.reserve(getArity() + 2);
+      clause.push_back(-selector);
+      for (unsigned operand = 0; operand != getArity(); ++operand) {
+        int lit = getSourceLiteral(candidate.fanins[operand].source, minterm,
+                                   candidate.fanins[operand].inverted);
+        clause.push_back((assignment & (1u << operand)) ? -lit : lit);
+      }
+      bool value = (truthTable >> assignment) & 1u;
+      clause.push_back(value ? outLit : -outLit);
+      solver.addClause(clause);
+    }
+  }
   virtual Value materialize(OpBuilder &builder, Location loc,
                             ArrayRef<Value> operands,
                             ArrayRef<bool> inverted) const = 0;
@@ -92,36 +110,15 @@ private:
   ExactNodeKind kind;
   unsigned arity;
   bool commutative;
+  uint8_t truthTable;
 };
 
 class And2NodeInfo final : public ExactNodeInfo {
 public:
-  And2NodeInfo() : ExactNodeInfo(ExactNodeKind::And2, 2, true) {}
+  And2NodeInfo() : ExactNodeInfo(ExactNodeKind::And2, 2, true, 0x8) {}
 
   bool isEnabled(const ExactSynthesisPolicy &policy) const override {
     return policy.allowAnd;
-  }
-
-  void emitConditionedCNF(
-      IncrementalSATSolver &solver, int selector, int outLit,
-      const ExactCandidate &candidate, unsigned minterm,
-      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-          getSourceLiteral) const override {
-    auto addConditionedClause = [&](std::initializer_list<int> lits) {
-      SmallVector<int, 8> clause;
-      clause.reserve(lits.size() + 1);
-      clause.push_back(-selector);
-      clause.append(lits.begin(), lits.end());
-      solver.addClause(clause);
-    };
-
-    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
-                                candidate.fanins[0].inverted);
-    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
-                                candidate.fanins[1].inverted);
-    addConditionedClause({-outLit, aLit});
-    addConditionedClause({-outLit, bLit});
-    addConditionedClause({outLit, -aLit, -bLit});
   }
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
@@ -135,33 +132,10 @@ public:
 
 class Xor2NodeInfo final : public ExactNodeInfo {
 public:
-  Xor2NodeInfo() : ExactNodeInfo(ExactNodeKind::Xor2, 2, true) {}
+  Xor2NodeInfo() : ExactNodeInfo(ExactNodeKind::Xor2, 2, true, 0x6) {}
 
   bool isEnabled(const ExactSynthesisPolicy &policy) const override {
     return policy.allowXor;
-  }
-
-  void emitConditionedCNF(
-      IncrementalSATSolver &solver, int selector, int outLit,
-      const ExactCandidate &candidate, unsigned minterm,
-      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-          getSourceLiteral) const override {
-    auto addConditionedClause = [&](std::initializer_list<int> lits) {
-      SmallVector<int, 8> clause;
-      clause.reserve(lits.size() + 1);
-      clause.push_back(-selector);
-      clause.append(lits.begin(), lits.end());
-      solver.addClause(clause);
-    };
-
-    int aLit = getSourceLiteral(candidate.fanins[0].source, minterm,
-                                candidate.fanins[0].inverted);
-    int bLit = getSourceLiteral(candidate.fanins[1].source, minterm,
-                                candidate.fanins[1].inverted);
-    addConditionedClause({aLit, bLit, -outLit});
-    addConditionedClause({-aLit, -bLit, -outLit});
-    addConditionedClause({aLit, -bLit, outLit});
-    addConditionedClause({-aLit, bLit, outLit});
   }
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
@@ -175,35 +149,10 @@ public:
 
 class Dot3NodeInfo final : public ExactNodeInfo {
 public:
-  Dot3NodeInfo() : ExactNodeInfo(ExactNodeKind::Dot3, 3, false) {}
+  Dot3NodeInfo() : ExactNodeInfo(ExactNodeKind::Dot3, 3, false, 0x1A) {}
 
   bool isEnabled(const ExactSynthesisPolicy &policy) const override {
     return policy.allowDot;
-  }
-
-  void emitConditionedCNF(
-      IncrementalSATSolver &solver, int selector, int outLit,
-      const ExactCandidate &candidate, unsigned minterm,
-      llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-          getSourceLiteral) const override {
-    int xLit = getSourceLiteral(candidate.fanins[0].source, minterm,
-                                candidate.fanins[0].inverted);
-    int yLit = getSourceLiteral(candidate.fanins[1].source, minterm,
-                                candidate.fanins[1].inverted);
-    int zLit = getSourceLiteral(candidate.fanins[2].source, minterm,
-                                candidate.fanins[2].inverted);
-
-    for (unsigned assignment = 0; assignment != 8; ++assignment) {
-      bool x = assignment & 1;
-      bool y = assignment & 2;
-      bool z = assignment & 4;
-      bool value = x ^ (z || (x && y));
-
-      SmallVector<int, 4> clause = {-selector, x ? -xLit : xLit,
-                                    y ? -yLit : yLit, z ? -zLit : zLit};
-      clause.push_back(value ? outLit : -outLit);
-      solver.addClause(clause);
-    }
   }
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
