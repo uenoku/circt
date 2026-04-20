@@ -571,6 +571,52 @@ circt::om::ObjectOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 //===----------------------------------------------------------------------===//
+// ElaboratedObjectOp
+//===----------------------------------------------------------------------===//
+
+void circt::om::ElaboratedObjectOp::build(::mlir::OpBuilder &odsBuilder,
+                                          ::mlir::OperationState &odsState,
+                                          om::ClassLike classOp,
+                                          ::mlir::ValueRange fieldValues) {
+  return build(odsBuilder, odsState,
+               om::ClassType::get(
+                   odsBuilder.getContext(),
+                   mlir::FlatSymbolRefAttr::get(classOp.getSymNameAttr())),
+               classOp.getSymNameAttr(), fieldValues);
+}
+
+LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
+    SymbolTableCollection &symbolTable) {
+  StringAttr resultClassName = getResult().getType().getClassName().getAttr();
+  StringAttr className = getClassNameAttr();
+  if (resultClassName != className)
+    return emitOpError("result type (")
+           << resultClassName << ") does not match referred to class ("
+           << className << ')';
+
+  auto classDef = dyn_cast_or_null<ClassLike>(
+      symbolTable.lookupNearestSymbolFrom(*this, className));
+  if (!classDef)
+    return emitOpError("refers to non-existant class (") << className << ')';
+
+  auto fieldNames = classDef.getFieldNames();
+  auto fieldValues = getFieldValues();
+  if (fieldValues.size() != fieldNames.size())
+    return emitOpError("field value list doesn't match class field list");
+
+  for (auto [fieldName, fieldValue] : llvm::zip(fieldNames, fieldValues)) {
+    Type expectedType =
+        classDef.getFieldType(cast<StringAttr>(fieldName)).value();
+    if (fieldValue.getType() != expectedType)
+      return emitOpError("field value type for ")
+             << cast<StringAttr>(fieldName) << " (" << fieldValue.getType()
+             << ") doesn't match class field type (" << expectedType << ')';
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // ConstantOp
 //===----------------------------------------------------------------------===//
 

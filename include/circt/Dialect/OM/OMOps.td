@@ -206,6 +206,35 @@ def ObjectOp : OMOp<"object", [
   }];
 }
 
+def ElaboratedObjectOp : OMOp<"elaborated_object", [
+  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+]> {
+  let summary = "Internal object value with explicit elaborated fields";
+  let description = [{
+    `om.elaborated_object` is an internal OM operation used by the evaluator to
+    represent an already elaborated object. Its operands are the object fields
+    in the declared field order of the referenced class.
+  }];
+
+  let arguments = (ins
+    SymbolNameAttr:$className,
+    Variadic<AnyType>:$fieldValues
+  );
+
+  let results = (outs
+    Res<ClassType, "", [MemAlloc]>:$result
+  );
+
+  let builders = [
+    OpBuilder<(ins "om::ClassLike":$classOp, "::mlir::ValueRange":$fieldValues)>
+  ];
+
+  let assemblyFormat = [{
+    $className `(` $fieldValues `)` attr-dict `:`
+      functional-type($fieldValues, $result)
+  }];
+}
+
 def ObjectFieldOp : OMOp<"object.field", [Pure]> {
   let arguments = (ins
     ClassType:$object,

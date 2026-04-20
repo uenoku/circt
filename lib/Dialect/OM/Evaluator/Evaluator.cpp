@@ -12,9 +12,13 @@
 
 #include "circt/Dialect/OM/Evaluator/Evaluator.h"
 #include "EvaluatorPatterns.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
@@ -192,6 +196,675 @@ getOperationPatternRegistry() {
   }();
   return registry;
 }
+
+struct InstanceContext {
+  Operation *owner = nullptr;
+  SmallVector<Value> actuals;
+  DenseMap<Value, Value> importedValues;
+  llvm::SmallDenseSet<Value, 8> activeImports;
+};
+
+struct ElaboratedObjectKey {
+  Operation *objectOp = nullptr;
+  const InstanceContext *parentContext = nullptr;
+};
+
+struct ElaboratedObjectKeyInfo {
+  static inline ElaboratedObjectKey getEmptyKey() {
+    return {DenseMapInfo<Operation *>::getEmptyKey(),
+            DenseMapInfo<const InstanceContext *>::getEmptyKey()};
+  }
+
+  static inline ElaboratedObjectKey getTombstoneKey() {
+    return {DenseMapInfo<Operation *>::getTombstoneKey(),
+            DenseMapInfo<const InstanceContext *>::getTombstoneKey()};
+  }
+
+  static unsigned getHashValue(const ElaboratedObjectKey &key) {
+    return llvm::hash_combine(key.objectOp, key.parentContext);
+  }
+
+  static bool isEqual(const ElaboratedObjectKey &lhs,
+                      const ElaboratedObjectKey &rhs) {
+    return lhs.objectOp == rhs.objectOp &&
+           lhs.parentContext == rhs.parentContext;
+  }
+};
+
+struct FlattenedFieldPath {
+  Value base;
+  SmallVector<FlatSymbolRefAttr> remainingPath;
+  bool unknown = false;
+};
+
+class ScratchIRBuilder {
+public:
+  explicit ScratchIRBuilder(Evaluator &evaluator)
+      : evaluator(evaluator), sourceModule(evaluator.getModule()),
+        sourceSymbols(sourceModule),
+        scratchModule(cast<ModuleOp>(sourceModule->clone())),
+        scratchSymbols(scratchModule), builder(sourceModule.getContext()) {}
+
+  FailureOr<EvaluatorValuePtr> run(StringAttr rootClassName,
+                                   ArrayRef<EvaluatorValuePtr> actualParams) {
+    auto *ctx = sourceModule.getContext();
+    auto unknownLoc = UnknownLoc::get(ctx);
+    auto rootClass = scratchSymbols.lookup<ClassLike>(rootClassName);
+    if (!rootClass)
+      return sourceModule.emitError("unknown class name ") << rootClassName;
+
+    if (failed(createWrapperClass(actualParams, unknownLoc)))
+      return failure();
+
+    builder.setInsertionPoint(wrapperClass.getFieldsOp());
+    auto rootType = ClassType::get(ctx, FlatSymbolRefAttr::get(rootClassName));
+    auto rootObject =
+        ObjectOp::create(builder, unknownLoc, rootType, rootClassName,
+                         wrapperClass.getBodyBlock()->getArguments());
+    opContexts[rootObject.getOperation()] = &wrapperContext;
+    wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
+                              {builder.getStringAttr("root")});
+
+    if (failed(rewriteWrapper()))
+      return failure();
+
+    if (failed(checkPropertyAssertions()))
+      return failure();
+
+    auto exportedRoot =
+        exportValue(wrapperClass.getFieldsOp().getFields().front());
+    if (failed(exportedRoot))
+      return failure();
+    if (failed(exportedRoot.value()->finalize()))
+      return wrapperClass.emitError(
+          "failed to finalize rewritten OM evaluation");
+    return exportedRoot;
+  }
+
+private:
+  struct ObjectOpConversionPattern : OpConversionPattern<ObjectOp> {
+    ObjectOpConversionPattern(MLIRContext *context, ScratchIRBuilder &scratch)
+        : OpConversionPattern<ObjectOp>(context), scratch(scratch) {}
+
+    LogicalResult
+    matchAndRewrite(ObjectOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+      auto converted =
+          scratch.convertObject(op, adaptor.getActualParams(), rewriter);
+      if (failed(converted))
+        return failure();
+      rewriter.replaceOp(op, converted.value());
+      return success();
+    }
+
+    ScratchIRBuilder &scratch;
+  };
+
+  struct ObjectFieldOpConversionPattern : OpConversionPattern<ObjectFieldOp> {
+    ObjectFieldOpConversionPattern(MLIRContext *context,
+                                   ScratchIRBuilder &scratch)
+        : OpConversionPattern<ObjectFieldOp>(context), scratch(scratch) {}
+
+    LogicalResult
+    matchAndRewrite(ObjectFieldOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+      auto flattened = scratch.flattenFieldPath(
+          adaptor.getObject(),
+          op.getFieldPath().getAsRange<FlatSymbolRefAttr>());
+      if (failed(flattened))
+        return failure();
+
+      if (flattened->unknown) {
+        rewriter.replaceOpWithNewOp<UnknownValueOp>(op, op.getType());
+        return success();
+      }
+
+      if (flattened->remainingPath.empty()) {
+        rewriter.replaceOp(op, flattened->base);
+        return success();
+      }
+
+      bool pathChanged =
+          flattened->base != adaptor.getObject() ||
+          flattened->remainingPath.size() != op.getFieldPath().size();
+      if (!pathChanged)
+        return failure();
+
+      auto pathAttr = rewriter.getArrayAttr(flattened->remainingPath);
+      rewriter.replaceOpWithNewOp<ObjectFieldOp>(op, op.getType(),
+                                                 flattened->base, pathAttr);
+      return success();
+    }
+
+    ScratchIRBuilder &scratch;
+  };
+
+  FailureOr<ClassLike> lookupSourceClassLike(StringAttr className) {
+    if (auto classLike = sourceSymbols.lookup<ClassLike>(className))
+      return classLike;
+    return sourceModule.emitError("unknown class name ") << className;
+  }
+
+  FailureOr<ClassLike> lookupScratchClassLike(StringAttr className) {
+    if (auto classLike = scratchSymbols.lookup<ClassLike>(className))
+      return classLike;
+    return scratchModule.emitError("unknown class name ") << className;
+  }
+
+  LogicalResult createWrapperClass(ArrayRef<EvaluatorValuePtr> actualParams,
+                                   Location loc) {
+    builder.setInsertionPointToEnd(scratchModule.getBody());
+
+    std::string wrapperName = "__om_evaluator_wrapper";
+    unsigned suffix = 0;
+    while (scratchSymbols.lookup<ClassLike>(builder.getStringAttr(wrapperName)))
+      wrapperName = "__om_evaluator_wrapper_" + std::to_string(++suffix);
+
+    SmallVector<std::string> paramNameStorage;
+    SmallVector<StringRef> paramNames;
+    SmallVector<Type> paramTypes;
+    paramNameStorage.reserve(actualParams.size());
+    paramNames.reserve(actualParams.size());
+    paramTypes.reserve(actualParams.size());
+    for (auto [index, actual] : llvm::enumerate(actualParams)) {
+      paramNameStorage.push_back("arg" + std::to_string(index));
+      paramNames.push_back(paramNameStorage.back());
+      paramTypes.push_back(actual->getType());
+    }
+
+    wrapperClass = ClassOp::create(
+        builder, loc, builder.getStringAttr(wrapperName),
+        builder.getStrArrayAttr(paramNames), builder.getArrayAttr({}),
+        builder.getDictionaryAttr({}));
+
+    Block *body = &wrapperClass.getRegion().emplaceBlock();
+    for (auto type : paramTypes)
+      body->addArgument(type, loc);
+
+    builder.setInsertionPointToEnd(body);
+    ClassFieldsOp::create(builder, loc, ValueRange(), builder.getArrayAttr({}));
+
+    wrapperContext.owner = wrapperClass.getOperation();
+    llvm::append_range(wrapperContext.actuals, body->getArguments());
+    for (auto [arg, actual] : llvm::zip(body->getArguments(), actualParams))
+      actualInputs[arg] = actual;
+    return success();
+  }
+
+  LogicalResult rewriteWrapper() {
+    ConversionTarget target(*sourceModule.getContext());
+    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    target.addIllegalOp<ObjectOp>();
+    target.addLegalOp<ElaboratedObjectOp>();
+    target.addDynamicallyLegalOp<ObjectFieldOp>([](ObjectFieldOp op) {
+      auto base = op.getObject();
+      return !base.getDefiningOp<AnyCastOp>() &&
+             !base.getDefiningOp<ElaboratedObjectOp>() &&
+             !base.getDefiningOp<ObjectFieldOp>() &&
+             !base.getDefiningOp<UnknownValueOp>();
+    });
+
+    RewritePatternSet patterns(sourceModule.getContext());
+    patterns.add<ObjectOpConversionPattern, ObjectFieldOpConversionPattern>(
+        sourceModule.getContext(), *this);
+    return applyFullConversion(wrapperClass, target, std::move(patterns));
+  }
+
+  Value createUnknownScratchValue(Type type, Location loc, OpBuilder &builder) {
+    return UnknownValueOp::create(builder, loc, type).getResult();
+  }
+
+  FailureOr<EvaluatorValuePtr> createUnknownRuntimeValue(Type type,
+                                                         Location loc) {
+    using namespace circt::om::evaluator;
+    auto result =
+        TypeSwitch<Type, FailureOr<EvaluatorValuePtr>>(type)
+            .Case([&](ListType listType) -> FailureOr<EvaluatorValuePtr> {
+              return success(
+                  std::make_shared<evaluator::ListValue>(listType, loc));
+            })
+            .Case([&](ClassType classType) -> FailureOr<EvaluatorValuePtr> {
+              auto classLike =
+                  lookupSourceClassLike(classType.getClassName().getAttr());
+              if (failed(classLike))
+                return failure();
+              return success(
+                  std::make_shared<evaluator::ObjectValue>(*classLike, loc));
+            })
+            .Case([&](FrozenBasePathType type) -> FailureOr<EvaluatorValuePtr> {
+              return success(std::make_shared<evaluator::BasePathValue>(
+                  type.getContext()));
+            })
+            .Case([&](FrozenPathType type) -> FailureOr<EvaluatorValuePtr> {
+              return success(std::make_shared<evaluator::PathValue>(
+                  evaluator::PathValue::getEmptyPath(loc)));
+            })
+            .Default([&](Type type) -> FailureOr<EvaluatorValuePtr> {
+              return success(evaluator::AttributeValue::get(type));
+            });
+    if (failed(result))
+      return failure();
+    result.value()->markUnknown();
+    return result;
+  }
+
+  FailureOr<Operation *> cloneOperation(Operation *op, ArrayRef<Value> operands,
+                                        InstanceContext &context,
+                                        OpBuilder &builder) {
+    builder.setInsertionPoint(wrapperClass.getFieldsOp());
+    OperationState state(op->getLoc(), op->getName().getStringRef());
+    state.addAttributes(op->getAttrs());
+    state.addTypes(op->getResultTypes());
+    state.addOperands(operands);
+    Operation *cloned = builder.create(state);
+    sourceOps[cloned] = op;
+    opContexts[cloned] = &context;
+    return success(cloned);
+  }
+
+  FailureOr<Value> materializeValue(Value value, InstanceContext &context,
+                                    OpBuilder &builder) {
+    if (auto arg = dyn_cast<BlockArgument>(value))
+      return success(context.actuals[arg.getArgNumber()]);
+    if (auto it = context.importedValues.find(value);
+        it != context.importedValues.end())
+      return success(it->second);
+    if (!context.activeImports.insert(value).second)
+      return mlir::emitError(value.getLoc(),
+                             "rewritten OM evaluation contains a non-object "
+                             "dataflow cycle");
+    auto clearActive =
+        llvm::scope_exit([&] { context.activeImports.erase(value); });
+
+    Operation *op = value.getDefiningOp();
+    SmallVector<Value> importedOperands;
+    importedOperands.reserve(op->getNumOperands());
+    for (auto operand : op->getOperands()) {
+      auto importedOperand = materializeValue(operand, context, builder);
+      if (failed(importedOperand))
+        return failure();
+      importedOperands.push_back(importedOperand.value());
+    }
+
+    auto clonedOp = cloneOperation(op, importedOperands, context, builder);
+    if (failed(clonedOp))
+      return failure();
+    for (auto [sourceResult, clonedResult] :
+         llvm::zip(op->getResults(), clonedOp.value()->getResults()))
+      context.importedValues[sourceResult] = clonedResult;
+    return success(context.importedValues.lookup(value));
+  }
+
+  FailureOr<Value> convertObject(ObjectOp objectOp, ValueRange actuals,
+                                 ConversionPatternRewriter &rewriter) {
+    InstanceContext *parentContext = &wrapperContext;
+    if (auto it = opContexts.find(objectOp.getOperation());
+        it != opContexts.end())
+      parentContext = it->second;
+
+    Operation *sourceObject = objectOp.getOperation();
+    if (auto it = sourceOps.find(objectOp.getOperation());
+        it != sourceOps.end())
+      sourceObject = it->second;
+
+    ElaboratedObjectKey key{sourceObject, parentContext};
+    if (auto it = elaboratedObjects.find(key); it != elaboratedObjects.end())
+      return success(it->second);
+
+    auto classLike = lookupScratchClassLike(objectOp.getClassNameAttr());
+    if (failed(classLike))
+      return failure();
+
+    if (isa<ClassExternOp>(*classLike)) {
+      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+      auto unknown = createUnknownScratchValue(objectOp.getType(),
+                                               objectOp.getLoc(), rewriter);
+      elaboratedObjects[key] = unknown;
+      return success(unknown);
+    }
+
+    auto fieldNames = classLike->getFieldNames();
+    SmallVector<Value> fieldPlaceholders;
+    fieldPlaceholders.reserve(fieldNames.size());
+    for (auto fieldName : fieldNames)
+      fieldPlaceholders.push_back(createUnknownScratchValue(
+          classLike->getFieldType(cast<StringAttr>(fieldName)).value(),
+          objectOp.getLoc(), rewriter));
+
+    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+    auto placeholder = ElaboratedObjectOp::create(
+        rewriter, objectOp.getLoc(), *classLike, fieldPlaceholders);
+    elaboratedObjects[key] = placeholder.getResult();
+
+    auto instanceContext = std::make_unique<InstanceContext>();
+    instanceContext->owner = sourceObject;
+    llvm::append_range(instanceContext->actuals, actuals);
+    InstanceContext *instanceContextPtr = instanceContext.get();
+    ownedContexts.push_back(std::move(instanceContext));
+
+    auto classOp = dyn_cast<ClassOp>(*classLike);
+    assert(classOp && "non-external class should be a ClassOp");
+
+    SmallVector<Value> fieldValues;
+    fieldValues.reserve(fieldNames.size());
+    for (auto fieldValue : classOp.getFieldsOp().getOperands()) {
+      auto importedField =
+          materializeValue(fieldValue, *instanceContextPtr, rewriter);
+      if (failed(importedField))
+        return fieldValue.getDefiningOp()->emitError(
+                   "failed to import elaborated field")
+               << " for " << objectOp.getClassNameAttr();
+      fieldValues.push_back(importedField.value());
+    }
+    placeholder->setOperands(fieldValues);
+
+    for (auto propertyAssert : classOp.getOps<PropertyAssertOp>()) {
+      auto importedCondition = materializeValue(propertyAssert.getCondition(),
+                                                *instanceContextPtr, rewriter);
+      if (failed(importedCondition))
+        return propertyAssert.emitError(
+            "failed to import property assertion condition");
+      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+      PropertyAssertOp::create(rewriter, propertyAssert.getLoc(),
+                               importedCondition.value(),
+                               propertyAssert.getMessage());
+    }
+
+    return success(placeholder.getResult());
+  }
+
+  FailureOr<FlattenedFieldPath>
+  flattenFieldPath(Value base, ArrayRef<FlatSymbolRefAttr> fieldPath) {
+    FlattenedFieldPath flattened{
+        base, SmallVector<FlatSymbolRefAttr>(fieldPath), false};
+    while (true) {
+      if (flattened.base.getDefiningOp<UnknownValueOp>()) {
+        flattened.unknown = true;
+        return flattened;
+      }
+
+      if (auto nestedField = flattened.base.getDefiningOp<ObjectFieldOp>()) {
+        auto nestedPath = llvm::to_vector(
+            nestedField.getFieldPath().getAsRange<FlatSymbolRefAttr>());
+        nestedPath.append(flattened.remainingPath.begin(),
+                          flattened.remainingPath.end());
+        flattened.base = nestedField.getObject();
+        flattened.remainingPath = std::move(nestedPath);
+        continue;
+      }
+
+      if (auto anyCast = flattened.base.getDefiningOp<AnyCastOp>()) {
+        flattened.base = anyCast.getInput();
+        continue;
+      }
+
+      if (flattened.remainingPath.empty())
+        return flattened;
+
+      auto elaboratedObject =
+          flattened.base.getDefiningOp<ElaboratedObjectOp>();
+      if (!elaboratedObject)
+        return flattened;
+
+      auto classLike =
+          lookupScratchClassLike(elaboratedObject.getClassNameAttr());
+      if (failed(classLike))
+        return failure();
+
+      auto fieldName = flattened.remainingPath.front().getAttr();
+      auto fieldNames = classLike->getFieldNames();
+      auto fieldIt = llvm::find(fieldNames, fieldName);
+      if (fieldIt == fieldNames.end())
+        return elaboratedObject.emitError("field ")
+               << fieldName << " does not exist";
+      size_t index = std::distance(fieldNames.begin(), fieldIt);
+      flattened.base = elaboratedObject.getFieldValues()[index];
+      flattened.remainingPath.erase(flattened.remainingPath.begin());
+    }
+  }
+
+  FailureOr<EvaluatorValuePtr>
+  resolveRuntimeFieldPath(EvaluatorValuePtr baseValue,
+                          ArrayRef<FlatSymbolRefAttr> fieldPath,
+                          Type resultType, Location loc) {
+    EvaluatorValuePtr current = std::move(baseValue);
+    for (auto field : fieldPath) {
+      if (current->isUnknown())
+        return createUnknownRuntimeValue(resultType, loc);
+      auto *object = dyn_cast<evaluator::ObjectValue>(current.get());
+      if (!object)
+        return emitError(loc, "expected object while resolving object.field");
+      auto fieldValue = object->getField(field.getAttr());
+      if (failed(fieldValue))
+        return failure();
+      current = fieldValue.value();
+    }
+    return current;
+  }
+
+  FailureOr<EvaluatorValuePtr> exportFoldedOperation(Operation *op) {
+    SmallVector<Attribute> operandAttrs;
+    operandAttrs.reserve(op->getNumOperands());
+    for (auto operand : op->getOperands()) {
+      auto operandValue = exportValue(operand);
+      if (failed(operandValue))
+        return failure();
+      if (operandValue.value()->isUnknown())
+        return createUnknownRuntimeValue(op->getResult(0).getType(),
+                                         op->getLoc());
+      auto *attrValue =
+          dyn_cast<evaluator::AttributeValue>(operandValue.value().get());
+      if (!attrValue)
+        return op->emitError("expected attribute-valued operand");
+      operandAttrs.push_back(attrValue->getAttr());
+    }
+
+    SmallVector<OpFoldResult> foldResults;
+    if (failed(op->fold(operandAttrs, foldResults)))
+      return op->emitError("failed to fold rewritten evaluator op");
+    if (foldResults.size() != 1)
+      return op->emitError("expected folder to produce one result");
+    auto foldedAttr = dyn_cast<Attribute>(foldResults.front());
+    if (!foldedAttr)
+      return op->emitError("folder returned a value instead of an attribute");
+    return evaluator::AttributeValue::get(foldedAttr);
+  }
+
+  FailureOr<EvaluatorValuePtr> exportValue(Value value) {
+    if (auto arg = dyn_cast<BlockArgument>(value))
+      return actualInputs.lookup(arg);
+    if (auto it = exportedValues.find(value); it != exportedValues.end())
+      return it->second;
+    if (!activeExports.insert(value).second)
+      return emitError(value.getLoc(), "rewritten OM evaluation contains a "
+                                       "non-object dataflow cycle");
+    auto eraseActive = llvm::scope_exit([&] { activeExports.erase(value); });
+
+    Operation *op = value.getDefiningOp();
+    auto result =
+        TypeSwitch<Operation *, FailureOr<EvaluatorValuePtr>>(op)
+            .Case([&](ConstantOp op) -> FailureOr<EvaluatorValuePtr> {
+              return evaluator::AttributeValue::get(op.getValue());
+            })
+            .Case([&](UnknownValueOp op) -> FailureOr<EvaluatorValuePtr> {
+              return createUnknownRuntimeValue(op.getType(), op.getLoc());
+            })
+            .Case([&](AnyCastOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportValue(op.getInput());
+            })
+            .Case([&](ElaboratedObjectOp op) -> FailureOr<EvaluatorValuePtr> {
+              auto sourceClass = lookupSourceClassLike(op.getClassNameAttr());
+              if (failed(sourceClass))
+                return failure();
+              auto objectValue = std::make_shared<evaluator::ObjectValue>(
+                  *sourceClass, op.getLoc());
+              exportedValues[value] = objectValue;
+
+              llvm::SmallDenseMap<StringAttr, EvaluatorValuePtr> fields;
+              auto fieldNames = sourceClass->getFieldNames();
+              for (auto [fieldName, fieldValue] :
+                   llvm::zip(fieldNames, op.getFieldValues())) {
+                auto exportedField = exportValue(fieldValue);
+                if (failed(exportedField))
+                  return failure();
+                fields[cast<StringAttr>(fieldName)] = exportedField.value();
+              }
+              objectValue->setFields(std::move(fields));
+              return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                  objectValue);
+            })
+            .Case([&](ObjectFieldOp op) -> FailureOr<EvaluatorValuePtr> {
+              auto flattened = flattenFieldPath(
+                  op.getObject(),
+                  op.getFieldPath().getAsRange<FlatSymbolRefAttr>());
+              if (failed(flattened))
+                return failure();
+              if (flattened->unknown)
+                return createUnknownRuntimeValue(op.getType(), op.getLoc());
+              if (flattened->remainingPath.empty())
+                return exportValue(flattened->base);
+              auto baseValue = exportValue(flattened->base);
+              if (failed(baseValue))
+                return failure();
+              return resolveRuntimeFieldPath(baseValue.value(),
+                                             flattened->remainingPath,
+                                             op.getType(), op.getLoc());
+            })
+            .Case([&](ListCreateOp op) -> FailureOr<EvaluatorValuePtr> {
+              SmallVector<EvaluatorValuePtr> elements;
+              elements.reserve(op.getInputs().size());
+              for (auto input : op.getInputs()) {
+                auto element = exportValue(input);
+                if (failed(element))
+                  return failure();
+                if (element.value()->isUnknown())
+                  return createUnknownRuntimeValue(op.getType(), op.getLoc());
+                elements.push_back(element.value());
+              }
+              return std::make_shared<evaluator::ListValue>(
+                  op.getType(), std::move(elements), op.getLoc());
+            })
+            .Case([&](ListConcatOp op) -> FailureOr<EvaluatorValuePtr> {
+              SmallVector<EvaluatorValuePtr> elements;
+              for (auto input : op.getSubLists()) {
+                auto listValue = exportValue(input);
+                if (failed(listValue))
+                  return failure();
+                if (listValue.value()->isUnknown())
+                  return createUnknownRuntimeValue(op.getType(), op.getLoc());
+                auto *list =
+                    dyn_cast<evaluator::ListValue>(listValue.value().get());
+                if (!list)
+                  return op.emitError("expected list operand");
+                llvm::append_range(elements, list->getElements());
+              }
+              return std::make_shared<evaluator::ListValue>(
+                  op.getType(), std::move(elements), op.getLoc());
+            })
+            .Case(
+                [&](FrozenBasePathCreateOp op) -> FailureOr<EvaluatorValuePtr> {
+                  auto baseValue = exportValue(op.getBasePath());
+                  if (failed(baseValue))
+                    return failure();
+                  if (baseValue.value()->isUnknown())
+                    return createUnknownRuntimeValue(op.getType(), op.getLoc());
+                  auto *basePath = dyn_cast<evaluator::BasePathValue>(
+                      baseValue.value().get());
+                  if (!basePath)
+                    return op.emitError("expected base path operand");
+                  auto result = std::make_shared<evaluator::BasePathValue>(
+                      op.getPathAttr(), op.getLoc());
+                  result->setBasepath(*basePath);
+                  return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                      result);
+                })
+            .Case([&](FrozenPathCreateOp op) -> FailureOr<EvaluatorValuePtr> {
+              auto baseValue = exportValue(op.getBasePath());
+              if (failed(baseValue))
+                return failure();
+              if (baseValue.value()->isUnknown())
+                return createUnknownRuntimeValue(op.getType(), op.getLoc());
+              auto *basePath =
+                  dyn_cast<evaluator::BasePathValue>(baseValue.value().get());
+              if (!basePath)
+                return op.emitError("expected base path operand");
+              auto result = std::make_shared<evaluator::PathValue>(
+                  op.getTargetKindAttr(), op.getPathAttr(), op.getModuleAttr(),
+                  op.getRefAttr(), op.getFieldAttr(), op.getLoc());
+              result->setBasepath(*basePath);
+              return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                  result);
+            })
+            .Case([&](FrozenEmptyPathOp op) -> FailureOr<EvaluatorValuePtr> {
+              return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                  std::make_shared<evaluator::PathValue>(
+                      evaluator::PathValue::getEmptyPath(op.getLoc())));
+            })
+            .Case<IntegerAddOp, IntegerMulOp, IntegerShrOp, IntegerShlOp,
+                  StringConcatOp, PropEqOp>(
+                [&](Operation *op) -> FailureOr<EvaluatorValuePtr> {
+                  return exportFoldedOperation(op);
+                })
+            .Default([&](Operation *op) -> FailureOr<EvaluatorValuePtr> {
+              return op->emitError("unsupported operation in rewritten OM "
+                                   "evaluator scratch IR");
+            });
+
+    if (failed(result))
+      return failure();
+    exportedValues[value] = result.value();
+    return result;
+  }
+
+  LogicalResult checkPropertyAssertions() {
+    for (auto propertyAssert : wrapperClass.getOps<PropertyAssertOp>()) {
+      auto conditionValue = exportValue(propertyAssert.getCondition());
+      if (failed(conditionValue))
+        return failure();
+      if (conditionValue.value()->isUnknown())
+        continue;
+
+      auto *attrValue =
+          dyn_cast<evaluator::AttributeValue>(conditionValue.value().get());
+      if (!attrValue)
+        return emitError(propertyAssert.getLoc(),
+                         "expected property assertion condition to evaluate "
+                         "to an attribute");
+
+      bool isFalse = false;
+      if (auto boolAttr = dyn_cast<BoolAttr>(attrValue->getAttr()))
+        isFalse = !boolAttr.getValue();
+      else if (auto intAttr = dyn_cast<mlir::IntegerAttr>(attrValue->getAttr()))
+        isFalse = intAttr.getValue().isZero();
+      else
+        return emitError(propertyAssert.getLoc(),
+                         "expected BoolAttr or IntegerAttr");
+
+      if (isFalse)
+        return emitError(propertyAssert.getLoc(),
+                         "OM property assertion failed: ")
+               << propertyAssert.getMessage();
+    }
+    return success();
+  }
+
+  Evaluator &evaluator;
+  ModuleOp sourceModule;
+  SymbolTable sourceSymbols;
+  ModuleOp scratchModule;
+  SymbolTable scratchSymbols;
+  OpBuilder builder;
+  ClassOp wrapperClass;
+  InstanceContext wrapperContext;
+  DenseMap<Value, EvaluatorValuePtr> actualInputs;
+  DenseMap<Operation *, Operation *> sourceOps;
+  DenseMap<Operation *, InstanceContext *> opContexts;
+  DenseMap<ElaboratedObjectKey, Value, ElaboratedObjectKeyInfo>
+      elaboratedObjects;
+  SmallVector<std::unique_ptr<InstanceContext>> ownedContexts;
+  DenseMap<Value, EvaluatorValuePtr> exportedValues;
+  llvm::SmallDenseSet<Value, 16> activeExports;
+};
 
 } // namespace
 
@@ -460,58 +1133,8 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
 FailureOr<std::shared_ptr<evaluator::EvaluatorValue>>
 circt::om::Evaluator::instantiate(
     StringAttr className, ArrayRef<evaluator::EvaluatorValuePtr> actualParams) {
-  auto classDef = symbolTable.lookup<ClassLike>(className);
-  if (!classDef)
-    return symbolTable.getOp()->emitError("unknown class name ") << className;
-
-  // If this is an external class, create an ObjectValue and mark it unknown
-  if (isa<ClassExternOp>(classDef)) {
-    evaluator::EvaluatorValuePtr result =
-        std::make_shared<evaluator::ObjectValue>(
-            classDef, UnknownLoc::get(classDef.getContext()));
-    result->markUnknown();
-    return result;
-  }
-
-  // Otherwise, it's a regular class, proceed normally
-  ClassOp cls = cast<ClassOp>(classDef);
-
-  auto parameters =
-      std::make_unique<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>(
-          actualParams);
-
-  actualParametersBuffers.push_back(std::move(parameters));
-
-  auto loc = cls.getLoc();
-  auto result = evaluateObjectInstance(
-      className, actualParametersBuffers.back().get(), loc);
-
-  if (failed(result))
-    return failure();
-
-  // `evaluateObjectInstance` has populated the worklist. Continue evaluations
-  // unless there is a partially evaluated value.
-  while (!worklist.empty()) {
-    auto [value, args] = worklist.front();
-    worklist.pop();
-
-    auto result = evaluateValue(value, args, loc);
-
-    if (result.state == ResolutionState::Failure)
-      return failure();
-
-    // The value may still be unsettled, so keep it on the worklist.
-    if (result.state == ResolutionState::Pending)
-      worklist.push({value, args});
-  }
-
-  auto &object = result.value();
-  // Finalize the value. This will eliminate intermidiate ReferenceValue used as
-  // an initial value during initialization.
-  if (failed(object->finalize()))
-    return cls.emitError() << "failed to finalize evaluation. Probably the "
-                              "class contains a dataflow cycle";
-  return object;
+  ScratchIRBuilder scratchBuilder(*this);
+  return scratchBuilder.run(className, actualParams);
 }
 
 ResolvedValue circt::om::Evaluator::evaluateValue(Value value,
