@@ -24,6 +24,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/DebugLog.h"
 #include <array>
 #include <optional>
 
@@ -38,10 +39,18 @@ using namespace circt;
 using namespace circt::synth;
 using namespace mlir;
 
+#define DEBUG_TYPE "synth-exact-synthesis"
+
 namespace {
 
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxExactSearchArea = 32;
+
+static SmallString<32> formatTruthTable(const APInt &truthTable) {
+  SmallString<32> text;
+  truthTable.toStringUnsigned(text, /*Radix=*/16);
+  return text;
+}
 
 //===----------------------------------------------------------------------===//
 // Exact network model
@@ -320,6 +329,8 @@ void ExactCandidateEnumerator::enumerate(
   for (const auto *info : getEnabledNodeInfos(policy))
     enumerateNodeCandidates(*info, availableSources, candidates);
   llvm::sort(candidates, isCandidateLess);
+  LDBG() << "Enumerated " << candidates.size()
+         << " candidates with availableSources=" << availableSources << "\n";
 }
 
 bool ExactCandidateEnumerator::isOrderedBefore(const ExactCandidate &lhs,
@@ -485,9 +496,19 @@ GenericExactSATProblem::GenericExactSATProblem(
       totalSources(1 + numInputs + numSteps) {}
 
 std::optional<ExactNetwork> GenericExactSATProblem::solve() {
+  LDBG() << "SAT solve start: inputs=" << numInputs << " steps=" << numSteps
+         << " minterms=" << numMinterms << " target=0x"
+         << formatTruthTable(target) << "\n";
   if (!buildEncoding())
     return std::nullopt;
-  if (solver.solve() != IncrementalSATSolver::kSAT)
+  auto result = solver.solve();
+  LDBG() << "SAT solve result: "
+         << (result == IncrementalSATSolver::kSAT
+                 ? "SAT"
+                 : result == IncrementalSATSolver::kUNSAT ? "UNSAT"
+                                                          : "UNKNOWN")
+         << "\n";
+  if (result != IncrementalSATSolver::kSAT)
     return std::nullopt;
   return decodeModel();
 }
@@ -535,6 +556,8 @@ bool GenericExactSATProblem::buildEncoding() {
   for (unsigned step = 0; step != numSteps; ++step) {
     unsigned availableSources = 1 + numInputs + step;
     enumerator.enumerate(policy, availableSources, stepCandidates[step]);
+    LDBG() << "  step " << step << ": availableSources=" << availableSources
+           << " candidates=" << stepCandidates[step].size() << "\n";
     if (stepCandidates[step].empty())
       return false;
 
@@ -641,6 +664,8 @@ ExactNetwork GenericExactSATProblem::decodeModel() const {
     }
   }
   network.output = {1 + numInputs + numSteps - 1, false};
+  LDBG() << "Decoded network with " << network.steps.size()
+         << " steps, rootSource=" << network.output.source << "\n";
   return network;
 }
 
@@ -652,15 +677,22 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   unsigned numInputs = operands.size();
   APInt normalizedTruthTable = truthTable;
   bool invertOutput = false;
+  LDBG() << "Exact synthesis request: inputs=" << numInputs << " truthTable=0x"
+         << formatTruthTable(truthTable) << " policy(and=" << policy.allowAnd
+         << ", xor=" << policy.allowXor << ", dot=" << policy.allowDot
+         << ")\n";
   if (normalizedTruthTable[0]) {
     // Normalize to a false-preserving truth table so constant false remains the
     // distinguished zero source in the encoding.
     normalizedTruthTable.flipAllBits();
     invertOutput = true;
+    LDBG() << "Normalized by output inversion: target=0x"
+           << formatTruthTable(normalizedTruthTable) << "\n";
   }
 
   auto network = synthesizeDirect(numInputs, normalizedTruthTable);
   if (network) {
+    LDBG() << "Using direct synthesis result\n";
     if (invertOutput)
       network->output.inverted = !network->output.inverted;
     return materializer.materialize(*network);
@@ -670,19 +702,25 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
     return failure();
 
   for (unsigned area = 1; area <= kMaxExactSearchArea; ++area) {
+    LDBG() << "Trying area=" << area << "\n";
     auto solver = createIncrementalSATSolver("auto");
     if (!solver)
       return failure();
     GenericExactSATProblem problem(policy, *solver, numInputs,
                                    normalizedTruthTable, area);
     auto solved = problem.solve();
-    if (!solved)
+    if (!solved) {
+      LDBG() << "Area " << area << " has no solution\n";
       continue;
+    }
 
+    LDBG() << "Found solution at area=" << area << "\n";
     if (invertOutput)
       solved->output.inverted = !solved->output.inverted;
     return materializer.materialize(*solved);
   }
+  LDBG() << "No exact solution found up to area limit " << kMaxExactSearchArea
+         << "\n";
   return failure();
 }
 
