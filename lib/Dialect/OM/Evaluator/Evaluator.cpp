@@ -30,9 +30,7 @@ using namespace mlir;
 using namespace circt::om;
 
 namespace circt::om::detail {
-namespace {
-
-} // namespace
+namespace {} // namespace
 
 } // namespace circt::om::detail
 
@@ -146,7 +144,7 @@ private:
       auto converted =
           scratch.convertObject(op, adaptor.getActualParams(), rewriter);
       if (failed(converted))
-        return op.emitError("convertObject failed");
+        return failure();
       rewriter.replaceOp(op, converted.value());
       return success();
     }

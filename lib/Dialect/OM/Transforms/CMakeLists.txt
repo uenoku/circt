@@ -1,4 +1,5 @@
 add_circt_dialect_library(CIRCTOMTransforms
+  ElaborationTransform.cpp
   FreezePaths.cpp
   LinkModules.cpp
   StripOM.cpp

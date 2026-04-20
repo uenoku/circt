@@ -1957,10 +1957,9 @@ struct ObjectSubfieldOpConversion
       return failure();
 
     auto field = FlatSymbolRefAttr::get(element.name);
-    auto path = rewriter.getArrayAttr({field});
     auto type = typeConverter->convertType(element.type);
     rewriter.replaceOpWithNewOp<om::ObjectFieldOp>(op, type, adaptor.getInput(),
-                                                   path);
+                                                   field);
     return success();
   }
 
@@ -2056,7 +2055,7 @@ struct ObjectFieldOpConversion : public OpConversionPattern<om::ObjectFieldOp> {
       return failure();
 
     rewriter.replaceOpWithNewOp<om::ObjectFieldOp>(
-        op, type, adaptor.getObject(), adaptor.getFieldPathAttr());
+        op, type, adaptor.getObject(), adaptor.getFieldAttr());
 
     return success();
   }

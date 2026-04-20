@@ -1334,7 +1334,7 @@ om.class @ListConcatPartialCycle() -> (result: !om.list<!om.any>){
   ASSERT_EQ(2U, id2->getAs<circt::om::IntegerAttr>().getValue().getValue());
 }
 
-TEST(EvaluatorTests, NestedReferenceValue) {
+TEST(EvaluatorTests, NestedAnyValue) {
   StringRef mod = R"MLIR(
 om.class @Empty() {
   om.class.fields
@@ -2051,7 +2051,7 @@ om.class @PropEqInteger(%n: !om.integer) -> (equal: i1, not_equal: i1, unknown: 
   }
 }
 
-TEST(EvaluatorTests, ReferenceValueBounceThroughObject) {
+TEST(EvaluatorTests, ValueBounceThroughObject) {
   StringRef mod = R"MLIR(
 om.class @Domain(%in: !om.string) -> (out: !om.string) {
   om.class.fields %in : !om.string
