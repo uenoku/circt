@@ -13,10 +13,10 @@
 #include "circt/Dialect/OM/Evaluator/Evaluator.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -62,39 +62,9 @@ ResolvedValue resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
 using circt::om::detail::resolveReferenceValue;
 
 namespace {
-
-struct InstanceContext {
-  Operation *owner = nullptr;
-  SmallVector<Value> actuals;
-  DenseMap<Value, Value> importedValues;
-  llvm::SmallDenseSet<Value, 8> activeImports;
-};
-
-struct ElaboratedObjectKey {
-  Operation *objectOp = nullptr;
-  const InstanceContext *parentContext = nullptr;
-};
-
-struct ElaboratedObjectKeyInfo {
-  static inline ElaboratedObjectKey getEmptyKey() {
-    return {DenseMapInfo<Operation *>::getEmptyKey(),
-            DenseMapInfo<const InstanceContext *>::getEmptyKey()};
-  }
-
-  static inline ElaboratedObjectKey getTombstoneKey() {
-    return {DenseMapInfo<Operation *>::getTombstoneKey(),
-            DenseMapInfo<const InstanceContext *>::getTombstoneKey()};
-  }
-
-  static unsigned getHashValue(const ElaboratedObjectKey &key) {
-    return llvm::hash_combine(key.objectOp, key.parentContext);
-  }
-
-  static bool isEqual(const ElaboratedObjectKey &lhs,
-                      const ElaboratedObjectKey &rhs) {
-    return lhs.objectOp == rhs.objectOp &&
-           lhs.parentContext == rhs.parentContext;
-  }
+struct BodyCloneContext {
+  IRMapping mapping;
+  llvm::SmallDenseSet<Value, 8> activeValues;
 };
 
 class ScratchIRBuilder {
@@ -122,7 +92,6 @@ public:
     auto rootObject =
         ObjectOp::create(builder, unknownLoc, rootType, rootClassName,
                          wrapperClass.getBodyBlock()->getArguments());
-    opContexts[rootObject.getOperation()] = &wrapperContext;
     wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
                               {builder.getStringAttr("root")});
 
@@ -199,7 +168,7 @@ private:
       auto converted =
           scratch.convertObject(op, adaptor.getActualParams(), rewriter);
       if (failed(converted))
-        return failure();
+        return op.emitError("convertObject failed");
       rewriter.replaceOp(op, converted.value());
       return success();
     }
@@ -317,8 +286,6 @@ private:
     builder.setInsertionPointToEnd(body);
     ClassFieldsOp::create(builder, loc, ValueRange(), builder.getArrayAttr({}));
 
-    wrapperContext.owner = wrapperClass.getOperation();
-    llvm::append_range(wrapperContext.actuals, body->getArguments());
     for (auto [arg, actual] : llvm::zip(body->getArguments(), actualParams))
       actualInputs[arg] = actual;
     return success();
@@ -402,67 +369,71 @@ private:
     return result;
   }
 
-  FailureOr<Operation *> cloneOperation(Operation *op, ArrayRef<Value> operands,
-                                        InstanceContext &context,
-                                        OpBuilder &builder) {
-    builder.setInsertionPoint(wrapperClass.getFieldsOp());
-    OperationState state(op->getLoc(), op->getName().getStringRef());
-    state.addAttributes(op->getAttrs());
-    state.addTypes(op->getResultTypes());
-    state.addOperands(operands);
-    Operation *cloned = builder.create(state);
-    sourceOps[cloned] = op;
-    opContexts[cloned] = &context;
-    return success(cloned);
-  }
+  FailureOr<Value> mapClonedValue(Value value, BodyCloneContext &context,
+                                  ConversionPatternRewriter &rewriter) {
+    if (Value mapped = context.mapping.lookupOrNull(value))
+      return mapped;
+    if (auto objectOp = dyn_cast<ObjectOp>(value.getDefiningOp())) {
+      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+      SmallVector<Value> placeholderActuals;
+      placeholderActuals.reserve(objectOp.getActualParams().size());
+      for (Value actual : objectOp.getActualParams())
+        placeholderActuals.push_back(createUnknownScratchValue(
+            actual.getType(), objectOp.getLoc(), rewriter));
+      auto clonedObject =
+          ObjectOp::create(rewriter, objectOp.getLoc(), objectOp.getType(),
+                           objectOp.getClassNameAttr(), placeholderActuals);
+      context.mapping.map(value, clonedObject.getResult());
 
-  FailureOr<Value> materializeValue(Value value, InstanceContext &context,
-                                    OpBuilder &builder) {
-    if (auto arg = dyn_cast<BlockArgument>(value))
-      return success(context.actuals[arg.getArgNumber()]);
-    if (auto it = context.importedValues.find(value);
-        it != context.importedValues.end())
-      return success(it->second);
-    if (!context.activeImports.insert(value).second)
+      SmallVector<Value> mappedActuals;
+      mappedActuals.reserve(objectOp.getActualParams().size());
+      for (Value actual : objectOp.getActualParams()) {
+        auto mappedActual = mapClonedValue(actual, context, rewriter);
+        if (failed(mappedActual))
+          return failure();
+        mappedActuals.push_back(mappedActual.value());
+      }
+      clonedObject->setOperands(mappedActuals);
+      return clonedObject.getResult();
+    }
+    if (!context.activeValues.insert(value).second)
       return mlir::emitError(value.getLoc(),
                              "rewritten OM evaluation contains a non-object "
                              "dataflow cycle");
     auto clearActive =
-        llvm::scope_exit([&] { context.activeImports.erase(value); });
+        llvm::scope_exit([&] { context.activeValues.erase(value); });
 
     Operation *op = value.getDefiningOp();
-    SmallVector<Value> importedOperands;
-    importedOperands.reserve(op->getNumOperands());
-    for (auto operand : op->getOperands()) {
-      auto importedOperand = materializeValue(operand, context, builder);
-      if (failed(importedOperand))
+    for (Value operand : op->getOperands()) {
+      auto mappedOperand = mapClonedValue(operand, context, rewriter);
+      if (failed(mappedOperand))
         return failure();
-      importedOperands.push_back(importedOperand.value());
     }
-
-    auto clonedOp = cloneOperation(op, importedOperands, context, builder);
-    if (failed(clonedOp))
-      return failure();
+    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+    Operation *cloned = rewriter.clone(*op, context.mapping);
     for (auto [sourceResult, clonedResult] :
-         llvm::zip(op->getResults(), clonedOp.value()->getResults()))
-      context.importedValues[sourceResult] = clonedResult;
-    return success(context.importedValues.lookup(value));
+         llvm::zip(op->getResults(), cloned->getResults()))
+      context.mapping.map(sourceResult, clonedResult);
+    return context.mapping.lookupOrNull(value);
+  }
+
+  LogicalResult clonePropertyAssert(PropertyAssertOp propertyAssert,
+                                    BodyCloneContext &context,
+                                    ConversionPatternRewriter &rewriter) {
+    auto condition =
+        mapClonedValue(propertyAssert.getCondition(), context, rewriter);
+    if (failed(condition))
+      return failure();
+    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+    PropertyAssertOp::create(rewriter, propertyAssert.getLoc(),
+                             condition.value(), propertyAssert.getMessage());
+    return success();
   }
 
   FailureOr<Value> convertObject(ObjectOp objectOp, ValueRange actuals,
                                  ConversionPatternRewriter &rewriter) {
-    InstanceContext *parentContext = &wrapperContext;
-    if (auto it = opContexts.find(objectOp.getOperation());
-        it != opContexts.end())
-      parentContext = it->second;
-
-    Operation *sourceObject = objectOp.getOperation();
-    if (auto it = sourceOps.find(objectOp.getOperation());
-        it != sourceOps.end())
-      sourceObject = it->second;
-
-    ElaboratedObjectKey key{sourceObject, parentContext};
-    if (auto it = elaboratedObjects.find(key); it != elaboratedObjects.end())
+    if (auto it = elaboratedObjects.find(objectOp.getOperation());
+        it != elaboratedObjects.end())
       return success(it->second);
 
     auto classLike = lookupScratchClassLike(objectOp.getClassNameAttr());
@@ -473,7 +444,7 @@ private:
       rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
       auto unknown = createUnknownScratchValue(objectOp.getType(),
                                                objectOp.getLoc(), rewriter);
-      elaboratedObjects[key] = unknown;
+      elaboratedObjects[objectOp.getOperation()] = unknown;
       return success(unknown);
     }
 
@@ -482,7 +453,7 @@ private:
     assert(classOp && "non-external class should be a ClassOp");
     SmallVector<Value> fieldPlaceholders;
     fieldPlaceholders.reserve(fieldNames.size());
-    for (auto [index, fieldName] : llvm::enumerate(fieldNames))
+    for (size_t index = 0; index < fieldNames.size(); ++index)
       fieldPlaceholders.push_back(createUnknownScratchValue(
           classOp.getFieldsOp().getFields()[index].getType(), objectOp.getLoc(),
           rewriter));
@@ -490,37 +461,29 @@ private:
     rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
     auto placeholder = ElaboratedObjectOp::create(
         rewriter, objectOp.getLoc(), *classLike, fieldPlaceholders);
-    elaboratedObjects[key] = placeholder.getResult();
+    elaboratedObjects[objectOp.getOperation()] = placeholder.getResult();
 
-    auto instanceContext = std::make_unique<InstanceContext>();
-    instanceContext->owner = sourceObject;
-    llvm::append_range(instanceContext->actuals, actuals);
-    InstanceContext *instanceContextPtr = instanceContext.get();
-    ownedContexts.push_back(std::move(instanceContext));
+    BodyCloneContext context;
+    for (auto [formal, actual] :
+         llvm::zip(classOp.getBodyBlock()->getArguments(), actuals))
+      context.mapping.map(formal, actual);
 
     SmallVector<Value> fieldValues;
     fieldValues.reserve(fieldNames.size());
     for (auto fieldValue : classOp.getFieldsOp().getOperands()) {
-      auto importedField =
-          materializeValue(fieldValue, *instanceContextPtr, rewriter);
-      if (failed(importedField))
+      auto clonedField = mapClonedValue(fieldValue, context, rewriter);
+      if (failed(clonedField))
         return fieldValue.getDefiningOp()->emitError(
-                   "failed to import elaborated field")
+                   "failed to clone elaborated field")
                << " for " << objectOp.getClassNameAttr();
-      fieldValues.push_back(importedField.value());
+      fieldValues.push_back(clonedField.value());
     }
     placeholder->setOperands(fieldValues);
 
     for (auto propertyAssert : classOp.getOps<PropertyAssertOp>()) {
-      auto importedCondition = materializeValue(propertyAssert.getCondition(),
-                                                *instanceContextPtr, rewriter);
-      if (failed(importedCondition))
+      if (failed(clonePropertyAssert(propertyAssert, context, rewriter)))
         return propertyAssert.emitError(
-            "failed to import property assertion condition");
-      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
-      PropertyAssertOp::create(rewriter, propertyAssert.getLoc(),
-                               importedCondition.value(),
-                               propertyAssert.getMessage());
+            "failed to clone property assertion condition");
     }
 
     return success(placeholder.getResult());
@@ -557,6 +520,34 @@ private:
     assert(classOp.getFieldsOp().getFields()[index].getType() == resultType &&
            "field access result type should match class field type");
     return std::optional<Value>(elaboratedObject.getFieldValues()[index]);
+  }
+
+  FailureOr<EvaluatorValuePtr> exportFoldedOperation(Operation *op) {
+    SmallVector<Attribute> operandAttrs;
+    operandAttrs.reserve(op->getNumOperands());
+    for (auto operand : op->getOperands()) {
+      auto operandValue = exportValue(operand);
+      if (failed(operandValue))
+        return failure();
+      if (operandValue.value()->isUnknown())
+        return createUnknownRuntimeValue(op->getResult(0).getType(),
+                                         op->getLoc());
+      auto *attrValue =
+          dyn_cast<evaluator::AttributeValue>(operandValue.value().get());
+      if (!attrValue)
+        return op->emitError("expected attribute-valued operand");
+      operandAttrs.push_back(attrValue->getAttr());
+    }
+
+    SmallVector<OpFoldResult> foldResults;
+    if (failed(op->fold(operandAttrs, foldResults)))
+      return op->emitError("failed to fold rewritten evaluator op");
+    if (foldResults.size() != 1)
+      return op->emitError("expected folder to produce one result");
+    auto foldedAttr = dyn_cast<Attribute>(foldResults.front());
+    if (!foldedAttr)
+      return op->emitError("folder returned a value instead of an attribute");
+    return evaluator::AttributeValue::get(foldedAttr);
   }
 
   FailureOr<EvaluatorValuePtr> exportValue(Value value) {
@@ -691,6 +682,24 @@ private:
                   std::make_shared<evaluator::PathValue>(
                       evaluator::PathValue::getEmptyPath(op.getLoc())));
             })
+            .Case([&](IntegerAddOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
+            .Case([&](IntegerMulOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
+            .Case([&](IntegerShrOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
+            .Case([&](IntegerShlOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
+            .Case([&](StringConcatOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
+            .Case([&](PropEqOp op) -> FailureOr<EvaluatorValuePtr> {
+              return exportFoldedOperation(op);
+            })
             .Default([&](Operation *op) -> FailureOr<EvaluatorValuePtr> {
               return op->emitError("unsupported operation in rewritten OM "
                                    "evaluator scratch IR");
@@ -740,13 +749,8 @@ private:
   SymbolTable scratchSymbols;
   OpBuilder builder;
   ClassOp wrapperClass;
-  InstanceContext wrapperContext;
   DenseMap<Value, EvaluatorValuePtr> actualInputs;
-  DenseMap<Operation *, Operation *> sourceOps;
-  DenseMap<Operation *, InstanceContext *> opContexts;
-  DenseMap<ElaboratedObjectKey, Value, ElaboratedObjectKeyInfo>
-      elaboratedObjects;
-  SmallVector<std::unique_ptr<InstanceContext>> ownedContexts;
+  DenseMap<Operation *, Value> elaboratedObjects;
   DenseMap<Value, EvaluatorValuePtr> exportedValues;
   llvm::SmallDenseSet<Value, 16> activeExports;
 };
