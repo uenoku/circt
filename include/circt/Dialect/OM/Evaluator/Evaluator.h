@@ -24,9 +24,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 
-#include <queue>
-#include <utility>
-
 namespace circt {
 namespace om {
 
@@ -430,81 +427,10 @@ public:
   /// Get the Module this Evaluator is built from.
   mlir::ModuleOp getModule();
 
-  FailureOr<evaluator::EvaluatorValuePtr>
-  getPartiallyEvaluatedValue(Type type, Location loc);
-
-  using ActualParameters =
-      SmallVectorImpl<std::shared_ptr<evaluator::EvaluatorValue>> *;
-
-  using ObjectKey = std::pair<Value, ActualParameters>;
-
 private:
-  bool isSettled(Value value, ActualParameters key) {
-    return isSettled({value, key});
-  }
-
-  bool isSettled(ObjectKey key) {
-    auto val = objects.lookup(key);
-    return val && val->isSettled();
-  }
-
-  FailureOr<EvaluatorValuePtr>
-  getOrCreateValue(Value value, ActualParameters actualParams, Location loc);
-  FailureOr<EvaluatorValuePtr>
-  allocateObjectInstance(StringAttr clasName, ActualParameters actualParams);
-
-  /// Evaluate a Value in a Class body according to the small expression grammar
-  /// described in the rationale document. The actual parameters are the values
-  /// supplied at the current instantiation of the Class being evaluated.
-  evaluator::ResolvedValue
-  evaluateValue(Value value, ActualParameters actualParams, Location loc);
-
-  /// Evaluator dispatch functions for the small expression grammar.
-  evaluator::ResolvedValue evaluateParameter(BlockArgument formalParam,
-                                             ActualParameters actualParams,
-                                             Location loc);
-
-  /// Instantiate an Object with its class name and actual parameters.
-  FailureOr<EvaluatorValuePtr>
-  evaluateObjectInstance(StringAttr className, ActualParameters actualParams,
-                         Location loc, ObjectKey instanceKey = {});
-  evaluator::ResolvedValue
-  evaluateObjectInstance(ObjectOp op, ActualParameters actualParams);
-  evaluator::ResolvedValue evaluateObjectField(ObjectFieldOp op,
-                                               ActualParameters actualParams,
-                                               Location loc);
-  evaluator::ResolvedValue evaluateUnknownValue(UnknownValueOp op,
-                                                Location loc);
-
-  LogicalResult evaluatePropertyAssert(PropertyAssertOp op,
-                                       ActualParameters actualParams);
-
-  FailureOr<evaluator::EvaluatorValuePtr> createUnknownValue(Type type,
-                                                             Location loc);
-
-  FailureOr<ActualParameters>
-  createParametersFromOperands(ValueRange range, ActualParameters actualParams,
-                               Location loc);
-
   /// The symbol table for the IR module the Evaluator was constructed with.
   /// Used to look up class definitions.
   SymbolTable symbolTable;
-
-  /// This uniquely stores vectors that represent parameters.
-  SmallVector<
-      std::unique_ptr<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>>
-      actualParametersBuffers;
-
-  /// A worklist that tracks values that still need more evaluation work.
-  std::queue<ObjectKey> worklist;
-
-  /// Evaluator value storage. Return an evaluator value for the given
-  /// instantiation context (a pair of Value and parameters).
-  DenseMap<ObjectKey, std::shared_ptr<evaluator::EvaluatorValue>> objects;
-
-  /// Tracks object instantiations currently being evaluated so recursive
-  /// object graphs reuse the existing placeholder instead of recursing.
-  llvm::SmallDenseSet<ObjectKey, 8> activeObjectInstances;
 };
 
 /// Helper to enable printing objects in Diagnostics.
