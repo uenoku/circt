@@ -72,13 +72,12 @@ using ExactCandidate = ExactNetworkStep;
 /// Declarative description of a node kind that the exact search may place.
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
-      : arity(arity), commutative(commutative), truthTable(truthTable) {}
+  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable);
   virtual ~ExactNodeInfo() = default;
 
-  unsigned getArity() const { return arity; }
-  bool isCommutative() const { return commutative; }
-  uint8_t getTruthTable() const { return truthTable; }
+  unsigned getArity() const;
+  bool isCommutative() const;
+  uint8_t getTruthTable() const;
 
   /// Emit clauses for `selector => outLit == f(fanins...)`.
   ///
@@ -89,22 +88,7 @@ public:
       IncrementalSATSolver &solver, int selector, int outLit,
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-          getSourceLiteral) const {
-    for (unsigned assignment = 0, e = 1u << getArity(); assignment != e;
-         ++assignment) {
-      SmallVector<int, 8> clause;
-      clause.reserve(getArity() + 2);
-      clause.push_back(-selector);
-      for (unsigned operand = 0; operand != getArity(); ++operand) {
-        int lit = getSourceLiteral(candidate.fanins[operand].source, minterm,
-                                   candidate.fanins[operand].inverted);
-        clause.push_back((assignment & (1u << operand)) ? -lit : lit);
-      }
-      bool value = (truthTable >> assignment) & 1u;
-      clause.push_back(value ? outLit : -outLit);
-      solver.addClause(clause);
-    }
-  }
+          getSourceLiteral) const;
   virtual Value materialize(OpBuilder &builder, Location loc,
                             ArrayRef<Value> operands,
                             ArrayRef<bool> inverted) const = 0;
@@ -117,41 +101,26 @@ private:
 
 class And2NodeInfo final : public ExactNodeInfo {
 public:
-  And2NodeInfo() : ExactNodeInfo(2, true, 0x8) {}
+  And2NodeInfo();
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override {
-    assert(operands.size() == 2 && "and2 expects two operands");
-    assert(inverted.size() == 2 && "and2 expects two inversion flags");
-    return aig::AndInverterOp::create(builder, loc, operands[0], operands[1],
-                                      inverted[0], inverted[1]);
-  }
+                    ArrayRef<bool> inverted) const override;
 };
 
 class Xor2NodeInfo final : public ExactNodeInfo {
 public:
-  Xor2NodeInfo() : ExactNodeInfo(2, true, 0x6) {}
+  Xor2NodeInfo();
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override {
-    assert(operands.size() == 2 && "xor2 expects two operands");
-    assert(inverted.size() == 2 && "xor2 expects two inversion flags");
-    return XorInverterOp::create(builder, loc, operands[0], operands[1],
-                                 inverted[0], inverted[1]);
-  }
+                    ArrayRef<bool> inverted) const override;
 };
 
 class Dot3NodeInfo final : public ExactNodeInfo {
 public:
-  Dot3NodeInfo() : ExactNodeInfo(3, false, 0x52) {}
+  Dot3NodeInfo();
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override {
-    assert(operands.size() == 3 && "dot3 expects three operands");
-    assert(inverted.size() == 3 && "dot3 expects three inversion flags");
-    return DotOp::create(builder, loc, operands[0], operands[1], operands[2],
-                         inverted[0], inverted[1], inverted[2]);
-  }
+                    ArrayRef<bool> inverted) const override;
 };
 
 static SmallVector<const ExactNodeInfo *, 3>
@@ -213,101 +182,29 @@ static std::optional<ExactNetwork> synthesizeDirect(unsigned numInputs,
 class ExactCandidateEnumerator {
 public:
   void enumerate(const ExactSynthesisPolicy &policy, unsigned availableSources,
-                 SmallVectorImpl<ExactCandidate> &candidates) const {
-    candidates.clear();
-    for (const auto *info : getEnabledNodeInfos(policy))
-      enumerateNodeCandidates(*info, availableSources, candidates);
-    llvm::sort(candidates, isCandidateLess);
-  }
+                 SmallVectorImpl<ExactCandidate> &candidates) const;
 
   static bool isOrderedBefore(const ExactCandidate &lhs,
-                              const ExactCandidate &rhs) {
-    return isCandidateLess(lhs, rhs);
-  }
+                              const ExactCandidate &rhs);
 
 private:
-  static unsigned getInversionMask(const ExactCandidate &candidate) {
-    unsigned mask = 0;
-    for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
-      if (fanin.inverted)
-        mask |= 1u << index;
-    return mask;
-  }
-
+  static unsigned getInversionMask(const ExactCandidate &candidate);
   static bool isCandidateLess(const ExactCandidate &lhs,
-                              const ExactCandidate &rhs) {
-    if (lhs.fanins.size() != rhs.fanins.size())
-      return lhs.fanins.size() < rhs.fanins.size();
-    for (size_t i = 0, e = lhs.fanins.size(); i != e; ++i) {
-      if (lhs.fanins[i].source != rhs.fanins[i].source)
-        return lhs.fanins[i].source < rhs.fanins[i].source;
-    }
-    if (lhs.info != rhs.info)
-      return lhs.info->getTruthTable() < rhs.info->getTruthTable();
-    return getInversionMask(lhs) < getInversionMask(rhs);
-  }
+                              const ExactCandidate &rhs);
 
   static void enumerateCommutativeOperandSources(
       unsigned availableSources, unsigned arity, unsigned currentArity,
       unsigned nextSource, SmallVectorImpl<unsigned> &sources,
-      llvm::function_ref<void(ArrayRef<unsigned>)> emit) {
-    if (currentArity == arity) {
-      emit(sources);
-      return;
-    }
-
-    for (unsigned source = nextSource; source < availableSources; ++source) {
-      sources.push_back(source);
-      enumerateCommutativeOperandSources(
-          availableSources, arity, currentArity + 1, source + 1, sources, emit);
-      sources.pop_back();
-    }
-  }
+      llvm::function_ref<void(ArrayRef<unsigned>)> emit);
 
   static void enumerateOrderedOperandSources(
       unsigned availableSources, unsigned arity, unsigned currentArity,
       SmallVectorImpl<unsigned> &sources,
-      llvm::function_ref<void(ArrayRef<unsigned>)> emit) {
-    if (currentArity == arity) {
-      emit(sources);
-      return;
-    }
-
-    for (unsigned source = 0; source < availableSources; ++source) {
-      sources.push_back(source);
-      enumerateOrderedOperandSources(availableSources, arity, currentArity + 1,
-                                     sources, emit);
-      sources.pop_back();
-    }
-  }
+      llvm::function_ref<void(ArrayRef<unsigned>)> emit);
 
   static void
   enumerateNodeCandidates(const ExactNodeInfo &info, unsigned availableSources,
-                          SmallVectorImpl<ExactCandidate> &candidates) {
-    SmallVector<unsigned, 3> sources;
-    auto emitCandidate = [&](ArrayRef<unsigned> operandSources) {
-      for (unsigned invMask = 0, e = 1u << info.getArity(); invMask != e;
-           ++invMask) {
-        ExactCandidate candidate;
-        candidate.info = &info;
-        for (auto [index, source] : llvm::enumerate(operandSources))
-          candidate.fanins.push_back(
-              {source, static_cast<bool>(invMask & (1u << index))});
-        candidates.push_back(std::move(candidate));
-      }
-    };
-
-    if (info.isCommutative()) {
-      enumerateCommutativeOperandSources(availableSources, info.getArity(),
-                                         /*currentArity=*/0,
-                                         /*nextSource=*/0, sources,
-                                         emitCandidate);
-      return;
-    }
-
-    enumerateOrderedOperandSources(availableSources, info.getArity(),
-                                   /*currentArity=*/0, sources, emitCandidate);
-  }
+                          SmallVectorImpl<ExactCandidate> &candidates);
 };
 
 //===----------------------------------------------------------------------===//
@@ -332,61 +229,14 @@ static void addConditionedSemantics(
 class ExactNetworkMaterializer {
 public:
   ExactNetworkMaterializer(OpBuilder &builder, Location loc,
-                           ArrayRef<Value> inputs)
-      : builder(builder), loc(loc), inputs(inputs) {}
+                           ArrayRef<Value> inputs);
 
-  Value materialize(const ExactNetwork &network) {
-    SmallVector<Value, 4> stepValues;
-    stepValues.reserve(network.steps.size());
-    for (const auto &step : network.steps) {
-      assert(step.info && "network step must carry node info");
-      const auto &info = *step.info;
-      SmallVector<Value, 3> operands;
-      SmallVector<bool, 3> inverted;
-      operands.reserve(info.getArity());
-      inverted.reserve(info.getArity());
-      for (const auto &fanin : step.fanins) {
-        operands.push_back(getRawSignal(fanin, stepValues));
-        inverted.push_back(fanin.inverted);
-      }
-      stepValues.push_back(info.materialize(builder, loc, operands, inverted));
-    }
-
-    if (network.output.source == 0)
-      return getConstant(network.output.inverted);
-
-    Value result = getRawSignal(network.output, stepValues);
-    if (!network.output.inverted)
-      return result;
-    return materializeInverter(result);
-  }
+  Value materialize(const ExactNetwork &network);
 
 private:
-  Value getConstant(bool value) {
-    if (!value) {
-      if (!constZero)
-        constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
-      return constZero;
-    }
-    if (!constOne)
-      constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
-    return constOne;
-  }
-
-  Value getRawSignal(ExactSignalRef signal, ArrayRef<Value> stepValues) {
-    if (signal.source == 0)
-      return getConstant(false);
-    if (signal.source <= inputs.size())
-      return inputs[signal.source - 1];
-
-    unsigned stepIndex = signal.source - (inputs.size() + 1);
-    assert(stepIndex < stepValues.size() && "invalid synthesized step index");
-    return stepValues[stepIndex];
-  }
-
-  Value materializeInverter(Value input) {
-    return aig::AndInverterOp::create(builder, loc, input, true);
-  }
+  Value getConstant(bool value);
+  Value getRawSignal(ExactSignalRef signal, ArrayRef<Value> stepValues);
+  Value materializeInverter(Value input);
 
   OpBuilder &builder;
   Location loc;
@@ -403,165 +253,32 @@ class GenericExactSATProblem {
 public:
   GenericExactSATProblem(const ExactSynthesisPolicy &policy,
                          IncrementalSATSolver &solver, unsigned numInputs,
-                         const APInt &target, unsigned numSteps)
-      : policy(policy), solver(solver), numInputs(numInputs), target(target),
-        numSteps(numSteps), numMinterms(1u << numInputs),
-        totalSources(1 + numInputs + numSteps) {}
+                         const APInt &target, unsigned numSteps);
 
-  std::optional<ExactNetwork> solve() {
-    if (!buildEncoding())
-      return std::nullopt;
-    if (solver.solve() != IncrementalSATSolver::kSAT)
-      return std::nullopt;
-    return decodeModel();
-  }
+  std::optional<ExactNetwork> solve();
 
 private:
-  int newVar() {
-    int fresh = ++nextVar;
-    solver.reserveVars(fresh);
-    return fresh;
-  }
-
-  void addExactlyOne(ArrayRef<int> vars) {
-    solver.addExactlyOne(vars, [&] { return newVar(); });
-  }
-
-  int getSourceValueVar(unsigned source, unsigned minterm) const {
-    return sourceValueVars[source][minterm];
-  }
-
-  int getSourceLiteral(unsigned source, unsigned minterm, bool inverted) const {
-    int lit = getSourceValueVar(source, minterm);
-    return inverted ? -lit : lit;
-  }
+  int newVar();
+  void addExactlyOne(ArrayRef<int> vars);
+  int getSourceValueVar(unsigned source, unsigned minterm) const;
+  int getSourceLiteral(unsigned source, unsigned minterm, bool inverted) const;
 
   /// Build the SAT encoding for a fixed-area exact synthesis problem.
-  bool buildEncoding() {
-    sourceValueVars.resize(totalSources);
-    for (unsigned source = 0; source != totalSources; ++source) {
-      sourceValueVars[source].reserve(numMinterms);
-      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-        sourceValueVars[source].push_back(newVar());
-    }
-
-    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-      solver.addClause({-getSourceValueVar(0, minterm)});
-
-    for (unsigned input = 0; input != numInputs; ++input)
-      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-        solver.addClause({((minterm >> input) & 1)
-                              ? getSourceValueVar(1 + input, minterm)
-                              : -getSourceValueVar(1 + input, minterm)});
-
-    stepCandidates.resize(numSteps);
-    stepSelectionVars.resize(numSteps);
-    for (unsigned step = 0; step != numSteps; ++step) {
-      unsigned availableSources = 1 + numInputs + step;
-      enumerator.enumerate(policy, availableSources, stepCandidates[step]);
-      if (stepCandidates[step].empty())
-        return false;
-
-      auto &selectionVars = stepSelectionVars[step];
-      selectionVars.reserve(stepCandidates[step].size());
-      for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
-        selectionVars.push_back(newVar());
-      addExactlyOne(selectionVars);
-    }
-
-    addAdjacentStepSymmetryBreakingConstraints();
-    addCandidateSemanticsConstraints();
-    addUseAllStepsConstraints();
-
-    unsigned rootSource = totalSources - 1;
-    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-      solver.addClause({target[minterm]
-                            ? getSourceValueVar(rootSource, minterm)
-                            : -getSourceValueVar(rootSource, minterm)});
-    return true;
-  }
+  bool buildEncoding();
 
   /// Enforce a canonical local ordering so equivalent adjacent steps are not
   /// explored in both permutations.
-  void addAdjacentStepSymmetryBreakingConstraints() {
-    for (unsigned step = 0; step + 1 < numSteps; ++step)
-      addAdjacentStepOrdering(step, step + 1);
-  }
-
-  void addAdjacentStepOrdering(unsigned prevStep, unsigned nextStep) {
-    const auto &prevCandidates = stepCandidates[prevStep];
-    const auto &nextCandidates = stepCandidates[nextStep];
-    const auto &prevSelectionVars = stepSelectionVars[prevStep];
-    const auto &nextSelectionVars = stepSelectionVars[nextStep];
-
-    for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
-      SmallVector<int, 64> allowedNextSelections;
-      for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-        if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
-                                                       prevCandidate))
-          allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
-      if (allowedNextSelections.empty())
-        continue;
-
-      SmallVector<int, 65> clause;
-      clause.reserve(allowedNextSelections.size() + 1);
-      clause.push_back(-prevSelectionVars[prevIndex]);
-      clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
-      solver.addClause(clause);
-    }
-  }
+  void addAdjacentStepSymmetryBreakingConstraints();
+  void addAdjacentStepOrdering(unsigned prevStep, unsigned nextStep);
 
   /// Connect each selected candidate to the truth value of the step output at
   /// every minterm.
-  void addCandidateSemanticsConstraints() {
-    for (unsigned step = 0; step != numSteps; ++step) {
-      unsigned outSource = 1 + numInputs + step;
-      const auto &selectionVars = stepSelectionVars[step];
-      for (auto [candidateIndex, candidate] :
-           llvm::enumerate(stepCandidates[step]))
-        for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-          addConditionedSemantics(
-              solver, selectionVars[candidateIndex],
-              getSourceValueVar(outSource, minterm), candidate, minterm,
-              [&](unsigned source, unsigned currentMinterm, bool inverted) {
-                return getSourceLiteral(source, currentMinterm, inverted);
-              });
-    }
-  }
+  void addCandidateSemanticsConstraints();
 
   /// Force every step except the root to feed some later selected step.
-  void addUseAllStepsConstraints() {
-    for (unsigned step = 0; step + 1 < numSteps; ++step) {
-      unsigned source = 1 + numInputs + step;
-      SmallVector<int, 32> users;
-      for (unsigned userStep = step + 1; userStep != numSteps; ++userStep)
-        for (auto [candidateIndex, candidate] :
-             llvm::enumerate(stepCandidates[userStep]))
-          if (llvm::any_of(candidate.fanins, [&](const ExactSignalRef &fanin) {
-                return fanin.source == source;
-              }))
-            users.push_back(stepSelectionVars[userStep][candidateIndex]);
-      solver.addClause(users);
-    }
-  }
+  void addUseAllStepsConstraints();
 
-  ExactNetwork decodeModel() const {
-    ExactNetwork network;
-    network.numInputs = numInputs;
-    network.steps.reserve(numSteps);
-    for (unsigned step = 0; step != numSteps; ++step) {
-      const auto &selectionVars = stepSelectionVars[step];
-      const auto &candidates = stepCandidates[step];
-      for (size_t i = 0, e = selectionVars.size(); i != e; ++i) {
-        if (solver.val(selectionVars[i]) != selectionVars[i])
-          continue;
-        network.steps.push_back(candidates[i]);
-        break;
-      }
-    }
-    network.output = {1 + numInputs + numSteps - 1, false};
-    return network;
-  }
+  ExactNetwork decodeModel() const;
 
   const ExactSynthesisPolicy &policy;
   IncrementalSATSolver &solver;
@@ -576,6 +293,405 @@ private:
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
   ExactCandidateEnumerator enumerator;
 };
+
+ExactNodeInfo::ExactNodeInfo(unsigned arity, bool commutative,
+                             uint8_t truthTable)
+    : arity(arity), commutative(commutative), truthTable(truthTable) {}
+
+unsigned ExactNodeInfo::getArity() const { return arity; }
+
+bool ExactNodeInfo::isCommutative() const { return commutative; }
+
+uint8_t ExactNodeInfo::getTruthTable() const { return truthTable; }
+
+void ExactNodeInfo::emitConditionedCNF(
+    IncrementalSATSolver &solver, int selector, int outLit,
+    const ExactCandidate &candidate, unsigned minterm,
+    llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
+        getSourceLiteral) const {
+  // Encode the selected primitive by enumerating every local input assignment:
+  //   selector => ((fanins match assignment) implies outLit = truthTable[row]).
+  //
+  // The outer SAT problem already fixes one global minterm. This helper only
+  // needs to describe how the chosen node transforms its fanins for that row.
+  for (unsigned assignment = 0, e = 1u << getArity(); assignment != e;
+       ++assignment) {
+    SmallVector<int, 8> clause;
+    clause.reserve(getArity() + 2);
+    clause.push_back(-selector);
+    for (unsigned operand = 0; operand != getArity(); ++operand) {
+      int lit = getSourceLiteral(candidate.fanins[operand].source, minterm,
+                                 candidate.fanins[operand].inverted);
+      clause.push_back((assignment & (1u << operand)) ? -lit : lit);
+    }
+    bool value = (truthTable >> assignment) & 1u;
+    clause.push_back(value ? outLit : -outLit);
+    solver.addClause(clause);
+  }
+}
+
+And2NodeInfo::And2NodeInfo() : ExactNodeInfo(2, true, 0x8) {}
+
+Value And2NodeInfo::materialize(OpBuilder &builder, Location loc,
+                                ArrayRef<Value> operands,
+                                ArrayRef<bool> inverted) const {
+  assert(operands.size() == 2 && "and2 expects two operands");
+  assert(inverted.size() == 2 && "and2 expects two inversion flags");
+  return aig::AndInverterOp::create(builder, loc, operands[0], operands[1],
+                                    inverted[0], inverted[1]);
+}
+
+Xor2NodeInfo::Xor2NodeInfo() : ExactNodeInfo(2, true, 0x6) {}
+
+Value Xor2NodeInfo::materialize(OpBuilder &builder, Location loc,
+                                ArrayRef<Value> operands,
+                                ArrayRef<bool> inverted) const {
+  assert(operands.size() == 2 && "xor2 expects two operands");
+  assert(inverted.size() == 2 && "xor2 expects two inversion flags");
+  return XorInverterOp::create(builder, loc, operands[0], operands[1],
+                               inverted[0], inverted[1]);
+}
+
+Dot3NodeInfo::Dot3NodeInfo() : ExactNodeInfo(3, false, 0x52) {}
+
+Value Dot3NodeInfo::materialize(OpBuilder &builder, Location loc,
+                                ArrayRef<Value> operands,
+                                ArrayRef<bool> inverted) const {
+  assert(operands.size() == 3 && "dot3 expects three operands");
+  assert(inverted.size() == 3 && "dot3 expects three inversion flags");
+  return DotOp::create(builder, loc, operands[0], operands[1], operands[2],
+                       inverted[0], inverted[1], inverted[2]);
+}
+
+void ExactCandidateEnumerator::enumerate(
+    const ExactSynthesisPolicy &policy, unsigned availableSources,
+    SmallVectorImpl<ExactCandidate> &candidates) const {
+  candidates.clear();
+  for (const auto *info : getEnabledNodeInfos(policy))
+    enumerateNodeCandidates(*info, availableSources, candidates);
+  llvm::sort(candidates, isCandidateLess);
+}
+
+bool ExactCandidateEnumerator::isOrderedBefore(const ExactCandidate &lhs,
+                                               const ExactCandidate &rhs) {
+  return isCandidateLess(lhs, rhs);
+}
+
+unsigned
+ExactCandidateEnumerator::getInversionMask(const ExactCandidate &candidate) {
+  unsigned mask = 0;
+  for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
+    if (fanin.inverted)
+      mask |= 1u << index;
+  return mask;
+}
+
+bool ExactCandidateEnumerator::isCandidateLess(const ExactCandidate &lhs,
+                                               const ExactCandidate &rhs) {
+  if (lhs.fanins.size() != rhs.fanins.size())
+    return lhs.fanins.size() < rhs.fanins.size();
+  for (size_t i = 0, e = lhs.fanins.size(); i != e; ++i) {
+    if (lhs.fanins[i].source != rhs.fanins[i].source)
+      return lhs.fanins[i].source < rhs.fanins[i].source;
+  }
+  if (lhs.info != rhs.info)
+    return lhs.info->getTruthTable() < rhs.info->getTruthTable();
+  return getInversionMask(lhs) < getInversionMask(rhs);
+}
+
+void ExactCandidateEnumerator::enumerateCommutativeOperandSources(
+    unsigned availableSources, unsigned arity, unsigned currentArity,
+    unsigned nextSource, SmallVectorImpl<unsigned> &sources,
+    llvm::function_ref<void(ArrayRef<unsigned>)> emit) {
+  if (currentArity == arity) {
+    emit(sources);
+    return;
+  }
+
+  for (unsigned source = nextSource; source < availableSources; ++source) {
+    sources.push_back(source);
+    enumerateCommutativeOperandSources(
+        availableSources, arity, currentArity + 1, source + 1, sources, emit);
+    sources.pop_back();
+  }
+}
+
+void ExactCandidateEnumerator::enumerateOrderedOperandSources(
+    unsigned availableSources, unsigned arity, unsigned currentArity,
+    SmallVectorImpl<unsigned> &sources,
+    llvm::function_ref<void(ArrayRef<unsigned>)> emit) {
+  if (currentArity == arity) {
+    emit(sources);
+    return;
+  }
+
+  // Ordered nodes such as DOT may reuse sources and may also bind the
+  // dedicated constant-false source `0`.
+  for (unsigned source = 0; source < availableSources; ++source) {
+    sources.push_back(source);
+    enumerateOrderedOperandSources(availableSources, arity, currentArity + 1,
+                                   sources, emit);
+    sources.pop_back();
+  }
+}
+
+void ExactCandidateEnumerator::enumerateNodeCandidates(
+    const ExactNodeInfo &info, unsigned availableSources,
+    SmallVectorImpl<ExactCandidate> &candidates) {
+  SmallVector<unsigned, 3> sources;
+  auto emitCandidate = [&](ArrayRef<unsigned> operandSources) {
+    for (unsigned invMask = 0, e = 1u << info.getArity(); invMask != e;
+         ++invMask) {
+      ExactCandidate candidate;
+      candidate.info = &info;
+      for (auto [index, source] : llvm::enumerate(operandSources))
+        candidate.fanins.push_back(
+            {source, static_cast<bool>(invMask & (1u << index))});
+      candidates.push_back(std::move(candidate));
+    }
+  };
+
+  // Structural enumeration is intentionally independent of Boolean semantics.
+  // At this stage we only choose which available sources feed the node and
+  // which edges are inverted; the node truth table is imposed later in CNF.
+  if (info.isCommutative()) {
+    // The commutative basis currently consists of AND/XOR. They may use the
+    // constant-false source, but we still enumerate their fanins in sorted
+    // order so equivalent operand permutations collapse to one candidate.
+    enumerateCommutativeOperandSources(availableSources, info.getArity(),
+                                       /*currentArity=*/0,
+                                       /*nextSource=*/0, sources,
+                                       emitCandidate);
+    return;
+  }
+
+  enumerateOrderedOperandSources(availableSources, info.getArity(),
+                                 /*currentArity=*/0, sources, emitCandidate);
+}
+
+ExactNetworkMaterializer::ExactNetworkMaterializer(OpBuilder &builder,
+                                                   Location loc,
+                                                   ArrayRef<Value> inputs)
+    : builder(builder), loc(loc), inputs(inputs) {}
+
+Value ExactNetworkMaterializer::materialize(const ExactNetwork &network) {
+  SmallVector<Value, 4> stepValues;
+  stepValues.reserve(network.steps.size());
+  for (const auto &step : network.steps) {
+    assert(step.info && "network step must carry node info");
+    const auto &info = *step.info;
+    SmallVector<Value, 3> operands;
+    SmallVector<bool, 3> inverted;
+    operands.reserve(info.getArity());
+    inverted.reserve(info.getArity());
+    for (const auto &fanin : step.fanins) {
+      operands.push_back(getRawSignal(fanin, stepValues));
+      inverted.push_back(fanin.inverted);
+    }
+    stepValues.push_back(info.materialize(builder, loc, operands, inverted));
+  }
+
+  if (network.output.source == 0)
+    return getConstant(network.output.inverted);
+
+  Value result = getRawSignal(network.output, stepValues);
+  if (!network.output.inverted)
+    return result;
+  return materializeInverter(result);
+}
+
+Value ExactNetworkMaterializer::getConstant(bool value) {
+  if (!value) {
+    if (!constZero)
+      constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
+    return constZero;
+  }
+  if (!constOne)
+    constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
+  return constOne;
+}
+
+Value ExactNetworkMaterializer::getRawSignal(ExactSignalRef signal,
+                                             ArrayRef<Value> stepValues) {
+  if (signal.source == 0)
+    return getConstant(false);
+  if (signal.source <= inputs.size())
+    return inputs[signal.source - 1];
+
+  unsigned stepIndex = signal.source - (inputs.size() + 1);
+  assert(stepIndex < stepValues.size() && "invalid synthesized step index");
+  return stepValues[stepIndex];
+}
+
+Value ExactNetworkMaterializer::materializeInverter(Value input) {
+  return aig::AndInverterOp::create(builder, loc, input, true);
+}
+
+GenericExactSATProblem::GenericExactSATProblem(
+    const ExactSynthesisPolicy &policy, IncrementalSATSolver &solver,
+    unsigned numInputs, const APInt &target, unsigned numSteps)
+    : policy(policy), solver(solver), numInputs(numInputs), target(target),
+      numSteps(numSteps), numMinterms(1u << numInputs),
+      totalSources(1 + numInputs + numSteps) {}
+
+std::optional<ExactNetwork> GenericExactSATProblem::solve() {
+  if (!buildEncoding())
+    return std::nullopt;
+  if (solver.solve() != IncrementalSATSolver::kSAT)
+    return std::nullopt;
+  return decodeModel();
+}
+
+int GenericExactSATProblem::newVar() {
+  int fresh = ++nextVar;
+  solver.reserveVars(fresh);
+  return fresh;
+}
+
+void GenericExactSATProblem::addExactlyOne(ArrayRef<int> vars) {
+  solver.addExactlyOne(vars, [&] { return newVar(); });
+}
+
+int GenericExactSATProblem::getSourceValueVar(unsigned source,
+                                              unsigned minterm) const {
+  return sourceValueVars[source][minterm];
+}
+
+int GenericExactSATProblem::getSourceLiteral(unsigned source, unsigned minterm,
+                                             bool inverted) const {
+  int lit = getSourceValueVar(source, minterm);
+  return inverted ? -lit : lit;
+}
+
+bool GenericExactSATProblem::buildEncoding() {
+  sourceValueVars.resize(totalSources);
+  for (unsigned source = 0; source != totalSources; ++source) {
+    sourceValueVars[source].reserve(numMinterms);
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      sourceValueVars[source].push_back(newVar());
+  }
+
+  for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+    solver.addClause({-getSourceValueVar(0, minterm)});
+
+  for (unsigned input = 0; input != numInputs; ++input)
+    for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+      solver.addClause({((minterm >> input) & 1)
+                            ? getSourceValueVar(1 + input, minterm)
+                            : -getSourceValueVar(1 + input, minterm)});
+
+  stepCandidates.resize(numSteps);
+  stepSelectionVars.resize(numSteps);
+  for (unsigned step = 0; step != numSteps; ++step) {
+    unsigned availableSources = 1 + numInputs + step;
+    enumerator.enumerate(policy, availableSources, stepCandidates[step]);
+    if (stepCandidates[step].empty())
+      return false;
+
+    auto &selectionVars = stepSelectionVars[step];
+    selectionVars.reserve(stepCandidates[step].size());
+    for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
+      selectionVars.push_back(newVar());
+    addExactlyOne(selectionVars);
+  }
+
+  addAdjacentStepSymmetryBreakingConstraints();
+  addCandidateSemanticsConstraints();
+  addUseAllStepsConstraints();
+
+  unsigned rootSource = totalSources - 1;
+  for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+    solver.addClause({target[minterm]
+                          ? getSourceValueVar(rootSource, minterm)
+                          : -getSourceValueVar(rootSource, minterm)});
+  return true;
+}
+
+void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
+  for (unsigned step = 0; step + 1 < numSteps; ++step)
+    addAdjacentStepOrdering(step, step + 1);
+}
+
+void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
+                                                     unsigned nextStep) {
+  const auto &prevCandidates = stepCandidates[prevStep];
+  const auto &nextCandidates = stepCandidates[nextStep];
+  const auto &prevSelectionVars = stepSelectionVars[prevStep];
+  const auto &nextSelectionVars = stepSelectionVars[nextStep];
+
+  for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
+    SmallVector<int, 64> allowedNextSelections;
+    for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
+      if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
+                                                     prevCandidate))
+        allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
+    if (allowedNextSelections.empty())
+      continue;
+
+    // Adjacent steps are interchangeable in the abstract network: swapping
+    // their SAT identities does not change the realized DAG. This clause keeps
+    // only the nondecreasing ordering of adjacent selected candidates, cutting
+    // away the duplicate model where the same two steps are swapped.
+    SmallVector<int, 65> clause;
+    clause.reserve(allowedNextSelections.size() + 1);
+    clause.push_back(-prevSelectionVars[prevIndex]);
+    clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
+    solver.addClause(clause);
+  }
+}
+
+void GenericExactSATProblem::addCandidateSemanticsConstraints() {
+  for (unsigned step = 0; step != numSteps; ++step) {
+    unsigned outSource = 1 + numInputs + step;
+    const auto &selectionVars = stepSelectionVars[step];
+    for (auto [candidateIndex, candidate] :
+         llvm::enumerate(stepCandidates[step]))
+      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
+        addConditionedSemantics(
+            solver, selectionVars[candidateIndex],
+            getSourceValueVar(outSource, minterm), candidate, minterm,
+            [&](unsigned source, unsigned currentMinterm, bool inverted) {
+              return getSourceLiteral(source, currentMinterm, inverted);
+            });
+  }
+}
+
+void GenericExactSATProblem::addUseAllStepsConstraints() {
+  for (unsigned step = 0; step + 1 < numSteps; ++step) {
+    unsigned source = 1 + numInputs + step;
+    SmallVector<int, 32> users;
+    for (unsigned userStep = step + 1; userStep != numSteps; ++userStep)
+      for (auto [candidateIndex, candidate] :
+           llvm::enumerate(stepCandidates[userStep]))
+        if (llvm::any_of(candidate.fanins, [&](const ExactSignalRef &fanin) {
+              return fanin.source == source;
+            }))
+          users.push_back(stepSelectionVars[userStep][candidateIndex]);
+
+    // Every non-root step must feed a later selected step. Without this, the
+    // area-bounded encoding could satisfy the problem with dead logic that is
+    // disconnected from the final output.
+    solver.addClause(users);
+  }
+}
+
+ExactNetwork GenericExactSATProblem::decodeModel() const {
+  ExactNetwork network;
+  network.numInputs = numInputs;
+  network.steps.reserve(numSteps);
+  for (unsigned step = 0; step != numSteps; ++step) {
+    const auto &selectionVars = stepSelectionVars[step];
+    const auto &candidates = stepCandidates[step];
+    for (size_t i = 0, e = selectionVars.size(); i != e; ++i) {
+      if (solver.val(selectionVars[i]) != selectionVars[i])
+        continue;
+      network.steps.push_back(candidates[i]);
+      break;
+    }
+  }
+  network.output = {1 + numInputs + numSteps - 1, false};
+  return network;
+}
 
 static FailureOr<Value>
 exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
