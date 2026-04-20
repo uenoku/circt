@@ -545,7 +545,8 @@ bool GenericExactSATProblem::buildEncoding() {
     addExactlyOne(selectionVars);
   }
 
-  addAdjacentStepSymmetryBreakingConstraints();
+  // addAdjacentStepSymmetryBreakingConstraints();
+  // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
   addUseAllStepsConstraints();
 
@@ -557,38 +558,38 @@ bool GenericExactSATProblem::buildEncoding() {
   return true;
 }
 
-void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
-  for (unsigned step = 0; step + 1 < numSteps; ++step)
-    addAdjacentStepOrdering(step, step + 1);
-}
-
-void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
-                                                     unsigned nextStep) {
-  const auto &prevCandidates = stepCandidates[prevStep];
-  const auto &nextCandidates = stepCandidates[nextStep];
-  const auto &prevSelectionVars = stepSelectionVars[prevStep];
-  const auto &nextSelectionVars = stepSelectionVars[nextStep];
-
-  for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
-    SmallVector<int, 64> allowedNextSelections;
-    for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-      if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
-                                                     prevCandidate))
-        allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
-    if (allowedNextSelections.empty())
-      continue;
-
-    // Adjacent steps are interchangeable in the abstract network: swapping
-    // their SAT identities does not change the realized DAG. This clause keeps
-    // only the nondecreasing ordering of adjacent selected candidates, cutting
-    // away the duplicate model where the same two steps are swapped.
-    SmallVector<int, 65> clause;
-    clause.reserve(allowedNextSelections.size() + 1);
-    clause.push_back(-prevSelectionVars[prevIndex]);
-    clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
-    solver.addClause(clause);
-  }
-}
+// void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
+//   for (unsigned step = 0; step + 1 < numSteps; ++step)
+//     addAdjacentStepOrdering(step, step + 1);
+// }
+// 
+// void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
+//                                                      unsigned nextStep) {
+//   const auto &prevCandidates = stepCandidates[prevStep];
+//   const auto &nextCandidates = stepCandidates[nextStep];
+//   const auto &prevSelectionVars = stepSelectionVars[prevStep];
+//   const auto &nextSelectionVars = stepSelectionVars[nextStep];
+// 
+//   for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
+//     SmallVector<int, 64> allowedNextSelections;
+//     for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
+//       if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
+//                                                      prevCandidate))
+//         allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
+//     if (allowedNextSelections.empty())
+//       continue;
+// 
+//     // Adjacent steps are interchangeable in the abstract network: swapping
+//     // their SAT identities does not change the realized DAG. This clause keeps
+//     // only the nondecreasing ordering of adjacent selected candidates, cutting
+//     // away the duplicate model where the same two steps are swapped.
+//     SmallVector<int, 65> clause;
+//     clause.reserve(allowedNextSelections.size() + 1);
+//     clause.push_back(-prevSelectionVars[prevIndex]);
+//     clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
+//     solver.addClause(clause);
+//   }
+// }
 
 void GenericExactSATProblem::addCandidateSemanticsConstraints() {
   for (unsigned step = 0; step != numSteps; ++step) {
