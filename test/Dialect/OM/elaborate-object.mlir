@@ -1,25 +1,37 @@
-// RUN: circt-opt -om-elaborate-object %s | FileCheck %s
+// RUN: circt-opt -om-elaborate-object='target-class=Top' %s | FileCheck %s
 
-om.class @Leaf() -> (x: !om.integer) {
-  %c0 = om.constant #om.integer<42 : i6> : !om.integer
+!list = !om.class.type<@LinkedList>
+
+om.class @InputBox(%input: !om.integer) -> (value: !om.integer) {
+  om.class.fields %input : !om.integer
+}
+
+om.class @LinkedList(%input: !om.integer, %next: !list) -> (value: !om.integer, next: !list) {
+  %box = om.object @InputBox(%input) : (!om.integer) -> !om.class.type<@InputBox>
+  %value = om.object.field %box[@value] : (!om.class.type<@InputBox>) -> !om.integer
+  om.class.fields %value, %next : !om.integer, !list
+}
+
+om.class @Top() -> (list: !list, head: !om.integer, tail: !list) {
+  %one = om.constant #om.integer<1 : i6> : !om.integer
+  %two = om.constant #om.integer<2 : i6> : !om.integer
+  %tail = om.object @LinkedList(%two, %list) : (!om.integer, !list) -> !list
+  %list = om.object @LinkedList(%one, %tail) : (!om.integer, !list) -> !list
+  %head = om.object.field %list[@value] : (!list) -> !om.integer
+  om.class.fields %list, %head, %tail : !list, !om.integer, !list
+}
+
+om.class @Other() -> (unused: !om.integer) {
+  %c0 = om.constant #om.integer<0 : i1> : !om.integer
   om.class.fields %c0 : !om.integer
 }
 
-om.class @Inner() -> (leaf: !om.class.type<@Leaf>, x: !om.integer) {
-  %leaf = om.object @Leaf() : () -> !om.class.type<@Leaf>
-  %x = om.object.field %leaf[@x] : (!om.class.type<@Leaf>) -> !om.integer
-  om.class.fields %leaf, %x : !om.class.type<@Leaf>, !om.integer
-}
-
-// CHECK: om.class @__om_elaborated_Leaf() -> (root: !om.class.type<@Leaf>) {
-// CHECK:   %[[C0:.+]] = om.constant #om.integer<42 : i6> : !om.integer
-// CHECK:   %[[ROOT0:.+]] = om.elaborated_object @Leaf(%[[C0]]) : (!om.integer) -> !om.class.type<@Leaf>
-// CHECK:   om.class.fields %[[ROOT0]] : !om.class.type<@Leaf>
+// CHECK: om.class @__om_elaborated_Top() -> (root: !om.class.type<@Top>) {
+// CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i6> : !om.integer
+// CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i6> : !om.integer
+// CHECK:   %{{.+}} = om.elaborated_object @Top(%{{.+}}, %[[ONE]], %{{.+}}) : (!om.class.type<@LinkedList>, !om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@Top>
+// CHECK:   %{{.+}} = om.elaborated_object @LinkedList(%[[ONE]], %{{.+}}) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
+// CHECK:   %{{.+}} = om.elaborated_object @LinkedList(%[[TWO]], %{{.+}}) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
+// CHECK:   om.class.fields %{{.+}} : !om.class.type<@Top>
 // CHECK: }
-
-// CHECK: om.class @__om_elaborated_Inner() -> (root: !om.class.type<@Inner>) {
-// CHECK:   %[[C1:.+]] = om.constant #om.integer<42 : i6> : !om.integer
-// CHECK:   %[[LEAF:.+]] = om.elaborated_object @Leaf(%[[C1]]) : (!om.integer) -> !om.class.type<@Leaf>
-// CHECK:   %[[ROOT1:.+]] = om.elaborated_object @Inner(%[[LEAF]], %[[C1]]) : (!om.class.type<@Leaf>, !om.integer) -> !om.class.type<@Inner>
-// CHECK:   om.class.fields %[[ROOT1]] : !om.class.type<@Inner>
-// CHECK: }
+// CHECK-NOT: om.class @__om_elaborated_Other()
