@@ -154,24 +154,18 @@ public:
   }
 };
 
-static ArrayRef<const ExactNodeInfo *> getAllNodeInfos() {
+static SmallVector<const ExactNodeInfo *, 3>
+getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
   static const And2NodeInfo and2;
   static const Xor2NodeInfo xor2;
   static const Dot3NodeInfo dot3;
-  static const std::array<const ExactNodeInfo *, 3> infos = {&and2, &xor2,
-                                                             &dot3};
-  return infos;
-}
-
-static SmallVector<const ExactNodeInfo *, 3>
-getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
   SmallVector<const ExactNodeInfo *, 3> infos;
   if (policy.allowAnd)
-    infos.push_back(getAllNodeInfos()[0]);
+    infos.push_back(&and2);
   if (policy.allowXor)
-    infos.push_back(getAllNodeInfos()[1]);
+    infos.push_back(&xor2);
   if (policy.allowDot)
-    infos.push_back(getAllNodeInfos()[2]);
+    infos.push_back(&dot3);
   return infos;
 }
 
