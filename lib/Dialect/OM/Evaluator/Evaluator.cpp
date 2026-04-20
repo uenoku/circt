@@ -29,37 +29,12 @@
 using namespace mlir;
 using namespace circt::om;
 
-namespace {
-using ResolvedValue = evaluator::ResolvedValue;
-} // namespace
-
 namespace circt::om::detail {
 namespace {
-
-/// Walk through reference values until we reach a non-reference value.
-/// Return Pending if the chain ends at null. Return Failure if the chain loops.
-ResolvedValue resolveReferenceValue(evaluator::EvaluatorValuePtr currentValue) {
-  llvm::SmallPtrSet<evaluator::ReferenceValue *, 4> visited;
-  if (!currentValue)
-    return ResolvedValue::pending();
-
-  while (auto *ref =
-             llvm::dyn_cast<evaluator::ReferenceValue>(currentValue.get())) {
-    if (!visited.insert(ref).second)
-      return ResolvedValue::failure(currentValue);
-    currentValue = ref->getValue();
-    if (!currentValue)
-      return ResolvedValue::pending();
-  }
-
-  return ResolvedValue::ready(std::move(currentValue));
-}
 
 } // namespace
 
 } // namespace circt::om::detail
-
-using circt::om::detail::resolveReferenceValue;
 
 namespace {
 struct BodyCloneContext {
@@ -94,6 +69,9 @@ public:
                          wrapperClass.getBodyBlock()->getArguments());
     wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
                               {builder.getStringAttr("root")});
+
+    if (failed(prepareObject(rootObject)))
+      return failure();
 
     if (failed(rewriteWrapper()))
       return failure();
@@ -369,31 +347,33 @@ private:
     return result;
   }
 
-  FailureOr<Value> mapClonedValue(Value value, BodyCloneContext &context,
-                                  ConversionPatternRewriter &rewriter) {
+  FailureOr<Value> clonePreparedValue(Value value, BodyCloneContext &context,
+                                      OpBuilder &builder) {
     if (Value mapped = context.mapping.lookupOrNull(value))
       return mapped;
     if (auto objectOp = dyn_cast<ObjectOp>(value.getDefiningOp())) {
-      rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
+      builder.setInsertionPoint(wrapperClass.getFieldsOp());
       SmallVector<Value> placeholderActuals;
       placeholderActuals.reserve(objectOp.getActualParams().size());
       for (Value actual : objectOp.getActualParams())
         placeholderActuals.push_back(createUnknownScratchValue(
-            actual.getType(), objectOp.getLoc(), rewriter));
+            actual.getType(), objectOp.getLoc(), builder));
       auto clonedObject =
-          ObjectOp::create(rewriter, objectOp.getLoc(), objectOp.getType(),
+          ObjectOp::create(builder, objectOp.getLoc(), objectOp.getType(),
                            objectOp.getClassNameAttr(), placeholderActuals);
       context.mapping.map(value, clonedObject.getResult());
 
       SmallVector<Value> mappedActuals;
       mappedActuals.reserve(objectOp.getActualParams().size());
       for (Value actual : objectOp.getActualParams()) {
-        auto mappedActual = mapClonedValue(actual, context, rewriter);
+        auto mappedActual = clonePreparedValue(actual, context, builder);
         if (failed(mappedActual))
           return failure();
         mappedActuals.push_back(mappedActual.value());
       }
       clonedObject->setOperands(mappedActuals);
+      if (failed(prepareObject(clonedObject)))
+        return failure();
       return clonedObject.getResult();
     }
     if (!context.activeValues.insert(value).second)
@@ -405,28 +385,68 @@ private:
 
     Operation *op = value.getDefiningOp();
     for (Value operand : op->getOperands()) {
-      auto mappedOperand = mapClonedValue(operand, context, rewriter);
+      auto mappedOperand = clonePreparedValue(operand, context, builder);
       if (failed(mappedOperand))
         return failure();
     }
-    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
-    Operation *cloned = rewriter.clone(*op, context.mapping);
+    builder.setInsertionPoint(wrapperClass.getFieldsOp());
+    Operation *cloned = builder.clone(*op, context.mapping);
     for (auto [sourceResult, clonedResult] :
          llvm::zip(op->getResults(), cloned->getResults()))
       context.mapping.map(sourceResult, clonedResult);
     return context.mapping.lookupOrNull(value);
   }
 
-  LogicalResult clonePropertyAssert(PropertyAssertOp propertyAssert,
-                                    BodyCloneContext &context,
-                                    ConversionPatternRewriter &rewriter) {
+  LogicalResult clonePreparedPropertyAssert(PropertyAssertOp propertyAssert,
+                                            BodyCloneContext &context,
+                                            OpBuilder &builder) {
     auto condition =
-        mapClonedValue(propertyAssert.getCondition(), context, rewriter);
+        clonePreparedValue(propertyAssert.getCondition(), context, builder);
     if (failed(condition))
       return failure();
-    rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
-    PropertyAssertOp::create(rewriter, propertyAssert.getLoc(),
+    builder.setInsertionPoint(wrapperClass.getFieldsOp());
+    PropertyAssertOp::create(builder, propertyAssert.getLoc(),
                              condition.value(), propertyAssert.getMessage());
+    return success();
+  }
+
+  LogicalResult prepareObject(ObjectOp objectOp) {
+    if (!preparedObjects.insert(objectOp.getOperation()).second)
+      return success();
+
+    auto classLike = lookupScratchClassLike(objectOp.getClassNameAttr());
+    if (failed(classLike))
+      return failure();
+    if (isa<ClassExternOp>(*classLike))
+      return success();
+
+    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
+    assert(classOp && "non-external class should be a ClassOp");
+
+    BodyCloneContext context;
+    for (auto [formal, actual] :
+         llvm::zip(classOp.getBodyBlock()->getArguments(),
+                   objectOp.getActualParams()))
+      context.mapping.map(formal, actual);
+
+    SmallVector<Value> fieldValues;
+    fieldValues.reserve(classOp.getFieldsOp().getFields().size());
+    for (auto fieldValue : classOp.getFieldsOp().getOperands()) {
+      auto clonedField = clonePreparedValue(fieldValue, context, builder);
+      if (failed(clonedField))
+        return fieldValue.getDefiningOp()->emitError(
+                   "failed to clone elaborated field")
+               << " for " << objectOp.getClassNameAttr();
+      fieldValues.push_back(clonedField.value());
+    }
+    preparedFieldValues[objectOp.getOperation()] = std::move(fieldValues);
+
+    for (auto propertyAssert : classOp.getOps<PropertyAssertOp>()) {
+      if (failed(clonePreparedPropertyAssert(propertyAssert, context, builder)))
+        return propertyAssert.emitError(
+            "failed to clone property assertion condition");
+    }
+
     return success();
   }
 
@@ -462,29 +482,12 @@ private:
     auto placeholder = ElaboratedObjectOp::create(
         rewriter, objectOp.getLoc(), *classLike, fieldPlaceholders);
     elaboratedObjects[objectOp.getOperation()] = placeholder.getResult();
+    (void)actuals;
 
-    BodyCloneContext context;
-    for (auto [formal, actual] :
-         llvm::zip(classOp.getBodyBlock()->getArguments(), actuals))
-      context.mapping.map(formal, actual);
-
-    SmallVector<Value> fieldValues;
-    fieldValues.reserve(fieldNames.size());
-    for (auto fieldValue : classOp.getFieldsOp().getOperands()) {
-      auto clonedField = mapClonedValue(fieldValue, context, rewriter);
-      if (failed(clonedField))
-        return fieldValue.getDefiningOp()->emitError(
-                   "failed to clone elaborated field")
-               << " for " << objectOp.getClassNameAttr();
-      fieldValues.push_back(clonedField.value());
-    }
-    placeholder->setOperands(fieldValues);
-
-    for (auto propertyAssert : classOp.getOps<PropertyAssertOp>()) {
-      if (failed(clonePropertyAssert(propertyAssert, context, rewriter)))
-        return propertyAssert.emitError(
-            "failed to clone property assertion condition");
-    }
+    auto it = preparedFieldValues.find(objectOp.getOperation());
+    if (it == preparedFieldValues.end())
+      return objectOp.emitError("missing prepared body for object");
+    placeholder->setOperands(it->second);
 
     return success(placeholder.getResult());
   }
@@ -750,6 +753,8 @@ private:
   OpBuilder builder;
   ClassOp wrapperClass;
   DenseMap<Value, EvaluatorValuePtr> actualInputs;
+  llvm::SmallDenseSet<Operation *, 16> preparedObjects;
+  DenseMap<Operation *, SmallVector<Value>> preparedFieldValues;
   DenseMap<Operation *, Value> elaboratedObjects;
   DenseMap<Value, EvaluatorValuePtr> exportedValues;
   llvm::SmallDenseSet<Value, 16> activeExports;

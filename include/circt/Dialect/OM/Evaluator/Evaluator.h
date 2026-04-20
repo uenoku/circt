@@ -21,7 +21,6 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Support/LogicalResult.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 
 namespace circt {
@@ -34,60 +33,6 @@ class EvaluatorValue;
 /// primitive Attribute. Further refinement is expected.
 using EvaluatorValuePtr = std::shared_ptr<EvaluatorValue>;
 
-/// The evaluator tracks two different things:
-///
-///   1. Local state of one value object: `isSettled()`
-///
-///      false -> this value object may still change
-///      true  -> this value object has finished its own local work
-///
-///   2. State of using a value handle: `ResolutionState`
-///
-///      Pending -> the handle still cannot be used
-///      Ready   -> the handle can be used now
-///      Failure -> evaluation hit a hard error
-///
-/// These are not the same thing. A reference may itself be settled, but using
-/// the handle may still be pending:
-///
-///   ReferenceValue (settled = true)
-///          |
-///          v
-///      pending target
-///
-/// So `isSettled()` is about one value object, while `ResolvedValue` is about
-/// whether the whole handle is usable.
-///
-/// The evaluation state of a value handle.
-enum class ResolutionState {
-  /// The handle can be used now. For references, this means the whole
-  /// reference chain leads to a settled value.
-  Ready,
-  /// Evaluation is not done yet. The handle itself may still be partial, or a
-  /// reference in the chain may still be missing.
-  Pending,
-  /// Evaluation hit a hard error, such as a reference cycle.
-  Failure
-};
-
-struct ResolvedValue {
-  /// `state` says whether `value` can be used. `value` keeps the original
-  /// handle so callers can keep passing it around even when it is still pending
-  /// or has already failed.
-  ResolutionState state;
-  EvaluatorValuePtr value;
-
-  static ResolvedValue ready(EvaluatorValuePtr value) {
-    return {ResolutionState::Ready, std::move(value)};
-  }
-  static ResolvedValue pending(EvaluatorValuePtr value = nullptr) {
-    return {ResolutionState::Pending, std::move(value)};
-  }
-  static ResolvedValue failure(EvaluatorValuePtr value = nullptr) {
-    return {ResolutionState::Failure, std::move(value)};
-  }
-};
-
 /// The fields of a composite Object, currently represented as a map. Further
 /// refinement is expected.
 using ObjectFields = SmallDenseMap<StringAttr, EvaluatorValuePtr>;
@@ -99,15 +44,13 @@ using ObjectFields = SmallDenseMap<StringAttr, EvaluatorValuePtr>;
 class EvaluatorValue : public std::enable_shared_from_this<EvaluatorValue> {
 public:
   // Implement LLVM RTTI.
-  enum class Kind { Attr, Object, List, Reference, BasePath, Path };
+  enum class Kind { Attr, Object, List, BasePath, Path };
   EvaluatorValue(MLIRContext *ctx, Kind kind, Location loc)
       : kind(kind), ctx(ctx), loc(loc) {}
   Kind getKind() const { return kind; }
   MLIRContext *getContext() const { return ctx; }
 
   // Return true if this value object has finished its own local work.
-  // This is not the same as semantic Ready/Pending state: for example, a
-  // ReferenceValue can be settled but still point to a pending value.
   // Unknown values are considered settled.
   bool isSettled() const { return settled; }
   void markSettled() {
@@ -136,7 +79,7 @@ public:
   // Return a MLIR type which the value represents.
   Type getType() const;
 
-  // Finalize the evaluator value. Strip intermidiate reference values.
+  // Finalize the evaluator value.
   LogicalResult finalize();
 
   // Return the Location associated with the Value.
@@ -156,38 +99,6 @@ private:
   bool settled = false;
   bool finalized = false;
   bool unknown = false;
-};
-
-/// Values which can be used as pointers to different values.
-/// ReferenceValue is replaced with its element and erased at the end of
-/// evaluation.
-class ReferenceValue : public EvaluatorValue {
-public:
-  ReferenceValue(Type type, Location loc)
-      : EvaluatorValue(type.getContext(), Kind::Reference, loc), value(nullptr),
-        type(type) {}
-
-  // Implement LLVM RTTI.
-  static bool classof(const EvaluatorValue *e) {
-    return e->getKind() == Kind::Reference;
-  }
-
-  Type getValueType() const { return type; }
-  EvaluatorValuePtr getValue() const { return value; }
-  void setValue(EvaluatorValuePtr newValue) {
-    value = std::move(newValue);
-    markSettled();
-  }
-
-  // Finalize the value.
-  LogicalResult finalizeImpl();
-
-  // Return the first non-reference value that is reachable from the reference.
-  FailureOr<EvaluatorValuePtr> getStrippedValue() const;
-
-private:
-  EvaluatorValuePtr value;
-  Type type;
 };
 
 /// Values which can be directly representable by MLIR attributes.
@@ -240,15 +151,7 @@ private:
 
 // This perform finalization to `value`.
 static inline LogicalResult finalizeEvaluatorValue(EvaluatorValuePtr &value) {
-  if (failed(value->finalize()))
-    return failure();
-  if (auto *ref = llvm::dyn_cast<ReferenceValue>(value.get())) {
-    auto v = ref->getStrippedValue();
-    if (failed(v))
-      return v;
-    value = v.value();
-  }
-  return success();
+  return value->finalize();
 }
 
 /// A List which contains variadic length of elements with the same type.
