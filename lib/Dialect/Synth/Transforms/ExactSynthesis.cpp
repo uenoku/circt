@@ -503,10 +503,9 @@ std::optional<ExactNetwork> GenericExactSATProblem::solve() {
     return std::nullopt;
   auto result = solver.solve();
   LDBG() << "SAT solve result: "
-         << (result == IncrementalSATSolver::kSAT
-                 ? "SAT"
-                 : result == IncrementalSATSolver::kUNSAT ? "UNSAT"
-                                                          : "UNKNOWN")
+         << (result == IncrementalSATSolver::kSAT     ? "SAT"
+             : result == IncrementalSATSolver::kUNSAT ? "UNSAT"
+                                                      : "UNKNOWN")
          << "\n";
   if (result != IncrementalSATSolver::kSAT)
     return std::nullopt;
@@ -571,7 +570,7 @@ bool GenericExactSATProblem::buildEncoding() {
   // addAdjacentStepSymmetryBreakingConstraints();
   // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
-  addUseAllStepsConstraints();
+  // addUseAllStepsConstraints();
 
   unsigned rootSource = totalSources - 1;
   for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
@@ -585,14 +584,14 @@ bool GenericExactSATProblem::buildEncoding() {
 //   for (unsigned step = 0; step + 1 < numSteps; ++step)
 //     addAdjacentStepOrdering(step, step + 1);
 // }
-// 
+//
 // void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
 //                                                      unsigned nextStep) {
 //   const auto &prevCandidates = stepCandidates[prevStep];
 //   const auto &nextCandidates = stepCandidates[nextStep];
 //   const auto &prevSelectionVars = stepSelectionVars[prevStep];
 //   const auto &nextSelectionVars = stepSelectionVars[nextStep];
-// 
+//
 //   for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
 //     SmallVector<int, 64> allowedNextSelections;
 //     for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
@@ -601,16 +600,18 @@ bool GenericExactSATProblem::buildEncoding() {
 //         allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
 //     if (allowedNextSelections.empty())
 //       continue;
-// 
+//
 //     // Adjacent steps are interchangeable in the abstract network: swapping
-//     // their SAT identities does not change the realized DAG. This clause keeps
-//     // only the nondecreasing ordering of adjacent selected candidates, cutting
+//     // their SAT identities does not change the realized DAG. This clause
+//     keeps
+//     // only the nondecreasing ordering of adjacent selected candidates,
+//     cutting
 //     // away the duplicate model where the same two steps are swapped.
 //     SmallVector<int, 65> clause;
 //     clause.reserve(allowedNextSelections.size() + 1);
 //     clause.push_back(-prevSelectionVars[prevIndex]);
-//     clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
-//     solver.addClause(clause);
+//     clause.append(allowedNextSelections.begin(),
+//     allowedNextSelections.end()); solver.addClause(clause);
 //   }
 // }
 
@@ -675,49 +676,56 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
                              const ExactSynthesisPolicy &policy) {
   ExactNetworkMaterializer materializer(builder, loc, operands);
   unsigned numInputs = operands.size();
-  APInt normalizedTruthTable = truthTable;
-  bool invertOutput = false;
   LDBG() << "Exact synthesis request: inputs=" << numInputs << " truthTable=0x"
          << formatTruthTable(truthTable) << " policy(and=" << policy.allowAnd
-         << ", xor=" << policy.allowXor << ", dot=" << policy.allowDot
-         << ")\n";
-  if (normalizedTruthTable[0]) {
-    // Normalize to a false-preserving truth table so constant false remains the
-    // distinguished zero source in the encoding.
-    normalizedTruthTable.flipAllBits();
-    invertOutput = true;
-    LDBG() << "Normalized by output inversion: target=0x"
-           << formatTruthTable(normalizedTruthTable) << "\n";
-  }
+         << ", xor=" << policy.allowXor << ", dot=" << policy.allowDot << ")\n";
 
-  auto network = synthesizeDirect(numInputs, normalizedTruthTable);
-  if (network) {
+  if (!hasEnabledConstructs(policy))
+    return failure();
+
+  SmallVector<std::pair<APInt, bool>, 2> targets;
+  targets.emplace_back(truthTable, /*invertOutput=*/false);
+  APInt invertedTruthTable = truthTable;
+  invertedTruthTable.flipAllBits();
+  if (invertedTruthTable != truthTable)
+    targets.emplace_back(invertedTruthTable, /*invertOutput=*/true);
+
+  for (const auto &[target, invertOutput] : targets) {
+    LDBG() << "Trying direct synthesis for target=0x"
+           << formatTruthTable(target) << " invertOutput=" << invertOutput
+           << "\n";
+    auto network = synthesizeDirect(numInputs, target);
+    if (!network)
+      continue;
+
     LDBG() << "Using direct synthesis result\n";
     if (invertOutput)
       network->output.inverted = !network->output.inverted;
     return materializer.materialize(*network);
   }
 
-  if (!hasEnabledConstructs(policy))
-    return failure();
-
   for (unsigned area = 1; area <= kMaxExactSearchArea; ++area) {
     LDBG() << "Trying area=" << area << "\n";
-    auto solver = createIncrementalSATSolver("auto");
-    if (!solver)
-      return failure();
-    GenericExactSATProblem problem(policy, *solver, numInputs,
-                                   normalizedTruthTable, area);
-    auto solved = problem.solve();
-    if (!solved) {
-      LDBG() << "Area " << area << " has no solution\n";
-      continue;
-    }
+    for (const auto &[target, invertOutput] : targets) {
+      LDBG() << "  target=0x" << formatTruthTable(target)
+             << " invertOutput=" << invertOutput << "\n";
+      auto solver = createIncrementalSATSolver("auto");
+      if (!solver)
+        return failure();
+      GenericExactSATProblem problem(policy, *solver, numInputs, target, area);
+      auto solved = problem.solve();
+      if (!solved) {
+        LDBG() << "  area " << area << " target=0x" << formatTruthTable(target)
+               << " has no solution\n";
+        continue;
+      }
 
-    LDBG() << "Found solution at area=" << area << "\n";
-    if (invertOutput)
-      solved->output.inverted = !solved->output.inverted;
-    return materializer.materialize(*solved);
+      LDBG() << "Found solution at area=" << area << " for target=0x"
+             << formatTruthTable(target) << "\n";
+      if (invertOutput)
+        solved->output.inverted = !solved->output.inverted;
+      return materializer.materialize(*solved);
+    }
   }
   LDBG() << "No exact solution found up to area limit " << kMaxExactSearchArea
          << "\n";
