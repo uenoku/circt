@@ -332,4 +332,23 @@ def FunctionalReduction : Pass<"synth-functional-reduction", "hw::HWModuleOp"> {
   let dependentDialects = ["synth::SynthDialect"];
 }
 
+def ExactSynthesis : Pass<"synth-exact-synthesis"> {
+  let summary = "Rewrite small comb.truth_table ops with exact synthesis";
+  let description = [{
+    This pass exact-synthesizes small single-bit `comb.truth_table` operations
+    into Synth IR using a SAT-based minimum-area search. Unsupported or
+    unsolved truth tables are left unchanged.
+  }];
+  let options = [
+    Option<"allowAnd", "allow-and", "bool", "true",
+           "Allow synth.aig.and_inv nodes in synthesized implementations">,
+    Option<"allowXor", "allow-xor", "bool", "true",
+           "Allow synth.xor_inv nodes in synthesized implementations">,
+    Option<"allowDot", "allow-dot", "bool", "true",
+           "Allow synth.dot nodes in synthesized implementations">
+  ];
+  let dependentDialects = ["comb::CombDialect", "hw::HWDialect",
+                           "synth::SynthDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD
