@@ -30,8 +30,8 @@ om.class @Other() -> (unused: !om.integer) {
 // CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i6> : !om.integer
 // CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i6> : !om.integer
 // CHECK:   %{{.+}} = om.elaborated_object @Top(%{{.+}}, %[[ONE]], %{{.+}}) : (!om.class.type<@LinkedList>, !om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@Top>
-// CHECK:   %{{.+}} = om.elaborated_object @LinkedList(%[[ONE]], %{{.+}}) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
 // CHECK:   %{{.+}} = om.elaborated_object @LinkedList(%[[TWO]], %{{.+}}) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
+// CHECK:   %{{.+}} = om.elaborated_object @LinkedList(%[[ONE]], %{{.+}}) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
 // CHECK:   om.class.fields %{{.+}} : !om.class.type<@Top>
 // CHECK: }
 // CHECK-NOT: om.class @__om_elaborated_Other()

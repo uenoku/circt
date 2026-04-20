@@ -336,7 +336,8 @@ private:
             })
             .Default([&](Operation *op) -> FailureOr<EvaluatorValuePtr> {
               return op->emitError("unsupported operation in rewritten OM "
-                                   "evaluator scratch IR");
+                                   "evaluator scratch IR: ")
+                     << op->getName();
             });
 
     if (failed(result))
