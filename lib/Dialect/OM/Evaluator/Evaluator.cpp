@@ -240,8 +240,7 @@ struct FlattenedFieldPath {
 class ScratchIRBuilder {
 public:
   explicit ScratchIRBuilder(Evaluator &evaluator)
-      : evaluator(evaluator), sourceModule(evaluator.getModule()),
-        sourceSymbols(sourceModule),
+      : sourceModule(evaluator.getModule()), sourceSymbols(sourceModule),
         scratchModule(cast<ModuleOp>(sourceModule->clone())),
         scratchSymbols(scratchModule), builder(sourceModule.getContext()) {}
 
@@ -282,6 +281,52 @@ public:
   }
 
 private:
+  template <typename OpTy>
+  struct AttrFoldOpConversionPattern : OpConversionPattern<OpTy> {
+    AttrFoldOpConversionPattern(MLIRContext *context)
+        : OpConversionPattern<OpTy>(context) {}
+
+    LogicalResult
+    matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+      bool hasUnknownOperand = false;
+      SmallVector<Attribute> operandAttrs;
+      operandAttrs.reserve(adaptor.getOperands().size());
+      for (Value operand : adaptor.getOperands()) {
+        if (operand.template getDefiningOp<UnknownValueOp>()) {
+          hasUnknownOperand = true;
+          break;
+        }
+
+        auto constant = operand.template getDefiningOp<ConstantOp>();
+        if (!constant)
+          return failure();
+        operandAttrs.push_back(constant.getValue());
+      }
+
+      if (hasUnknownOperand) {
+        rewriter.replaceOpWithNewOp<UnknownValueOp>(op, op.getType());
+        return success();
+      }
+
+      SmallVector<OpFoldResult> foldResults;
+      if (failed(op->fold(operandAttrs, foldResults)) ||
+          foldResults.size() != 1)
+        return failure();
+
+      auto foldedAttr = dyn_cast<Attribute>(foldResults.front());
+      if (!foldedAttr)
+        return failure();
+
+      auto typedAttr = dyn_cast<TypedAttr>(foldedAttr);
+      if (!typedAttr)
+        return failure();
+
+      rewriter.replaceOpWithNewOp<ConstantOp>(op, typedAttr);
+      return success();
+    }
+  };
+
   struct ObjectOpConversionPattern : OpConversionPattern<ObjectOp> {
     ObjectOpConversionPattern(MLIRContext *context, ScratchIRBuilder &scratch)
         : OpConversionPattern<ObjectOp>(context), scratch(scratch) {}
@@ -310,7 +355,7 @@ private:
                     ConversionPatternRewriter &rewriter) const override {
       auto flattened = scratch.flattenFieldPath(
           adaptor.getObject(),
-          op.getFieldPath().getAsRange<FlatSymbolRefAttr>());
+          llvm::to_vector(op.getFieldPath().getAsRange<FlatSymbolRefAttr>()));
       if (failed(flattened))
         return failure();
 
@@ -330,7 +375,9 @@ private:
       if (!pathChanged)
         return failure();
 
-      auto pathAttr = rewriter.getArrayAttr(flattened->remainingPath);
+      SmallVector<Attribute> pathAttrs(flattened->remainingPath.begin(),
+                                       flattened->remainingPath.end());
+      auto pathAttr = rewriter.getArrayAttr(pathAttrs);
       rewriter.replaceOpWithNewOp<ObjectFieldOp>(op, op.getType(),
                                                  flattened->base, pathAttr);
       return success();
@@ -396,6 +443,18 @@ private:
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
     target.addIllegalOp<ObjectOp>();
     target.addLegalOp<ElaboratedObjectOp>();
+    auto needsAttrFold = [](Operation *op) {
+      bool hasUnknownOperand = false;
+      bool allConstantOperands = true;
+      for (Value operand : op->getOperands()) {
+        if (operand.getDefiningOp<UnknownValueOp>()) {
+          hasUnknownOperand = true;
+          break;
+        }
+        allConstantOperands &= operand.getDefiningOp<ConstantOp>() != nullptr;
+      }
+      return hasUnknownOperand || allConstantOperands;
+    };
     target.addDynamicallyLegalOp<ObjectFieldOp>([](ObjectFieldOp op) {
       auto base = op.getObject();
       return !base.getDefiningOp<AnyCastOp>() &&
@@ -403,10 +462,20 @@ private:
              !base.getDefiningOp<ObjectFieldOp>() &&
              !base.getDefiningOp<UnknownValueOp>();
     });
+    target.addDynamicallyLegalOp<IntegerAddOp, IntegerMulOp, IntegerShrOp,
+                                 IntegerShlOp, StringConcatOp, PropEqOp>(
+        [&](Operation *op) { return !needsAttrFold(op); });
 
     RewritePatternSet patterns(sourceModule.getContext());
     patterns.add<ObjectOpConversionPattern, ObjectFieldOpConversionPattern>(
         sourceModule.getContext(), *this);
+    patterns.add<AttrFoldOpConversionPattern<IntegerAddOp>,
+                 AttrFoldOpConversionPattern<IntegerMulOp>,
+                 AttrFoldOpConversionPattern<IntegerShrOp>,
+                 AttrFoldOpConversionPattern<IntegerShlOp>,
+                 AttrFoldOpConversionPattern<StringConcatOp>,
+                 AttrFoldOpConversionPattern<PropEqOp>>(
+        sourceModule.getContext());
     return applyFullConversion(wrapperClass, target, std::move(patterns));
   }
 
@@ -542,7 +611,7 @@ private:
     InstanceContext *instanceContextPtr = instanceContext.get();
     ownedContexts.push_back(std::move(instanceContext));
 
-    auto classOp = dyn_cast<ClassOp>(*classLike);
+    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
     assert(classOp && "non-external class should be a ClassOp");
 
     SmallVector<Value> fieldValues;
@@ -716,7 +785,8 @@ private:
             .Case([&](ObjectFieldOp op) -> FailureOr<EvaluatorValuePtr> {
               auto flattened = flattenFieldPath(
                   op.getObject(),
-                  op.getFieldPath().getAsRange<FlatSymbolRefAttr>());
+                  llvm::to_vector(
+                      op.getFieldPath().getAsRange<FlatSymbolRefAttr>()));
               if (failed(flattened))
                 return failure();
               if (flattened->unknown)
@@ -741,8 +811,9 @@ private:
                   return createUnknownRuntimeValue(op.getType(), op.getLoc());
                 elements.push_back(element.value());
               }
-              return std::make_shared<evaluator::ListValue>(
-                  op.getType(), std::move(elements), op.getLoc());
+              return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                  std::make_shared<evaluator::ListValue>(
+                      op.getType(), std::move(elements), op.getLoc()));
             })
             .Case([&](ListConcatOp op) -> FailureOr<EvaluatorValuePtr> {
               SmallVector<EvaluatorValuePtr> elements;
@@ -758,8 +829,9 @@ private:
                   return op.emitError("expected list operand");
                 llvm::append_range(elements, list->getElements());
               }
-              return std::make_shared<evaluator::ListValue>(
-                  op.getType(), std::move(elements), op.getLoc());
+              return std::static_pointer_cast<evaluator::EvaluatorValue>(
+                  std::make_shared<evaluator::ListValue>(
+                      op.getType(), std::move(elements), op.getLoc()));
             })
             .Case(
                 [&](FrozenBasePathCreateOp op) -> FailureOr<EvaluatorValuePtr> {
@@ -848,7 +920,6 @@ private:
     return success();
   }
 
-  Evaluator &evaluator;
   ModuleOp sourceModule;
   SymbolTable sourceSymbols;
   ModuleOp scratchModule;
