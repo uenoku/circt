@@ -370,17 +370,17 @@ om.class @RefecenceEachOthersField(% blue_1 : i8, % green_1 : i32) {
   // (i8, i32) -> !om.class.type<@Widget>
   % 0 = om.object @Widget(% blue_1, % 3)
       : (i8, i32)->!om.class.type<@Widget>
-        // CHECK-NEXT: %[[field1:.+]] = om.object.field  :
+        // CHECK-NEXT: %[[field1:.+]] = om.object.field %[[obj1]][@blue_1] :
         // (!om.class.type<@Widget>) -> i8
-        % 1 = om.object.field : (!om.class.type<@Widget>)->i8
+        % 1 = om.object.field % 0[@blue_1] : (!om.class.type<@Widget>)->i8
 
               // CHECK-NEXT: %[[obj2:.+]] = om.object @Widget(%[[field1]],
               // %green_1) : (i8, i32) -> !om.class.type<@Widget>
               % 2 = om.object @Widget(% 1, % green_1)
       : (i8, i32)->!om.class.type<@Widget>
-                    // CHECK-NEXT: %[[field2]] = om.object.field  :
+                    // CHECK-NEXT: %[[field2]] = om.object.field %[[obj2]][@green_1] :
                     // (!om.class.type<@Widget>) -> i32
-                    % 3 = om.object.field : (!om.class.type<@Widget>)
+                    % 3 = om.object.field % 2[@green_1] : (!om.class.type<@Widget>)
                                                 ->i32 om.class.fields
 }
 

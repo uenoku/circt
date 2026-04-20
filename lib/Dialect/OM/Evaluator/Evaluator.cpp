@@ -202,34 +202,6 @@ private:
     return result;
   }
 
-  FailureOr<EvaluatorValuePtr> exportFoldedOperation(Operation *op) {
-    SmallVector<Attribute> operandAttrs;
-    operandAttrs.reserve(op->getNumOperands());
-    for (auto operand : op->getOperands()) {
-      auto operandValue = exportValue(operand);
-      if (failed(operandValue))
-        return failure();
-      if (operandValue.value()->isUnknown())
-        return createUnknownRuntimeValue(op->getResult(0).getType(),
-                                         op->getLoc());
-      auto *attrValue =
-          dyn_cast<evaluator::AttributeValue>(operandValue.value().get());
-      if (!attrValue)
-        return op->emitError("expected attribute-valued operand");
-      operandAttrs.push_back(attrValue->getAttr());
-    }
-
-    SmallVector<OpFoldResult> foldResults;
-    if (failed(op->fold(operandAttrs, foldResults)))
-      return op->emitError("failed to fold rewritten evaluator op");
-    if (foldResults.size() != 1)
-      return op->emitError("expected folder to produce one result");
-    auto foldedAttr = dyn_cast<Attribute>(foldResults.front());
-    if (!foldedAttr)
-      return op->emitError("folder returned a value instead of an attribute");
-    return evaluator::AttributeValue::get(foldedAttr);
-  }
-
   FailureOr<EvaluatorValuePtr> exportValue(Value value) {
     if (auto arg = dyn_cast<BlockArgument>(value))
       return actualInputs.lookup(arg);
@@ -361,24 +333,6 @@ private:
               return std::static_pointer_cast<evaluator::EvaluatorValue>(
                   std::make_shared<evaluator::PathValue>(
                       evaluator::PathValue::getEmptyPath(op.getLoc())));
-            })
-            .Case([&](IntegerAddOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
-            })
-            .Case([&](IntegerMulOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
-            })
-            .Case([&](IntegerShrOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
-            })
-            .Case([&](IntegerShlOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
-            })
-            .Case([&](StringConcatOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
-            })
-            .Case([&](PropEqOp op) -> FailureOr<EvaluatorValuePtr> {
-              return exportFoldedOperation(op);
             })
             .Default([&](Operation *op) -> FailureOr<EvaluatorValuePtr> {
               return op->emitError("unsupported operation in rewritten OM "
