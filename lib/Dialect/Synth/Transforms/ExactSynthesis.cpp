@@ -24,6 +24,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include <array>
 #include <optional>
 
 namespace circt {
@@ -46,11 +47,7 @@ static constexpr unsigned kMaxExactSearchArea = 32;
 // Exact network model
 //===----------------------------------------------------------------------===//
 
-enum class ExactNodeKind {
-  And2,
-  Xor2,
-  Dot3,
-};
+class ExactNodeInfo;
 
 struct ExactSignalRef {
   // `source == 0` denotes the constant-false source. All other sources are
@@ -60,7 +57,7 @@ struct ExactSignalRef {
 };
 
 struct ExactNetworkStep {
-  ExactNodeKind kind = ExactNodeKind::And2;
+  const ExactNodeInfo *info = nullptr;
   SmallVector<ExactSignalRef, 3> fanins;
 };
 
@@ -75,18 +72,13 @@ using ExactCandidate = ExactNetworkStep;
 /// Declarative description of a node kind that the exact search may place.
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(ExactNodeKind kind, unsigned arity, bool commutative,
-                uint8_t truthTable)
-      : kind(kind), arity(arity), commutative(commutative),
-        truthTable(truthTable) {}
+  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
+      : arity(arity), commutative(commutative), truthTable(truthTable) {}
   virtual ~ExactNodeInfo() = default;
 
-  ExactNodeKind getKind() const { return kind; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
   uint8_t getTruthTable() const { return truthTable; }
-
-  virtual bool isEnabled(const ExactSynthesisPolicy &policy) const = 0;
 
   /// Emit clauses for `selector => outLit == f(fanins...)`.
   ///
@@ -118,7 +110,6 @@ public:
                             ArrayRef<bool> inverted) const = 0;
 
 private:
-  ExactNodeKind kind;
   unsigned arity;
   bool commutative;
   uint8_t truthTable;
@@ -126,11 +117,7 @@ private:
 
 class And2NodeInfo final : public ExactNodeInfo {
 public:
-  And2NodeInfo() : ExactNodeInfo(ExactNodeKind::And2, 2, true, 0x8) {}
-
-  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
-    return policy.allowAnd;
-  }
+  And2NodeInfo() : ExactNodeInfo(2, true, 0x8) {}
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
                     ArrayRef<bool> inverted) const override {
@@ -143,11 +130,7 @@ public:
 
 class Xor2NodeInfo final : public ExactNodeInfo {
 public:
-  Xor2NodeInfo() : ExactNodeInfo(ExactNodeKind::Xor2, 2, true, 0x6) {}
-
-  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
-    return policy.allowXor;
-  }
+  Xor2NodeInfo() : ExactNodeInfo(2, true, 0x6) {}
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
                     ArrayRef<bool> inverted) const override {
@@ -160,11 +143,7 @@ public:
 
 class Dot3NodeInfo final : public ExactNodeInfo {
 public:
-  Dot3NodeInfo() : ExactNodeInfo(ExactNodeKind::Dot3, 3, false, 0x1A) {}
-
-  bool isEnabled(const ExactSynthesisPolicy &policy) const override {
-    return policy.allowDot;
-  }
+  Dot3NodeInfo() : ExactNodeInfo(3, false, 0x1A) {}
 
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
                     ArrayRef<bool> inverted) const override {
@@ -175,30 +154,24 @@ public:
   }
 };
 
-static const ExactNodeInfo &getNodeInfo(ExactNodeKind kind) {
+static ArrayRef<const ExactNodeInfo *> getAllNodeInfos() {
   static const And2NodeInfo and2;
   static const Xor2NodeInfo xor2;
   static const Dot3NodeInfo dot3;
-  switch (kind) {
-  case ExactNodeKind::And2:
-    return and2;
-  case ExactNodeKind::Xor2:
-    return xor2;
-  case ExactNodeKind::Dot3:
-    return dot3;
-  }
-  llvm_unreachable("unknown exact synthesis node kind");
+  static const std::array<const ExactNodeInfo *, 3> infos = {&and2, &xor2,
+                                                             &dot3};
+  return infos;
 }
 
 static SmallVector<const ExactNodeInfo *, 3>
 getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
   SmallVector<const ExactNodeInfo *, 3> infos;
-  for (ExactNodeKind kind :
-       {ExactNodeKind::And2, ExactNodeKind::Xor2, ExactNodeKind::Dot3}) {
-    const auto &info = getNodeInfo(kind);
-    if (info.isEnabled(policy))
-      infos.push_back(&info);
-  }
+  if (policy.allowAnd)
+    infos.push_back(getAllNodeInfos()[0]);
+  if (policy.allowXor)
+    infos.push_back(getAllNodeInfos()[1]);
+  if (policy.allowDot)
+    infos.push_back(getAllNodeInfos()[2]);
   return infos;
 }
 
@@ -275,9 +248,16 @@ private:
       if (lhs.fanins[i].source != rhs.fanins[i].source)
         return lhs.fanins[i].source < rhs.fanins[i].source;
     }
-    if (lhs.kind != rhs.kind)
-      return static_cast<unsigned>(lhs.kind) < static_cast<unsigned>(rhs.kind);
+    if (lhs.info != rhs.info)
+      return getNodeOrder(*lhs.info) < getNodeOrder(*rhs.info);
     return getInversionMask(lhs) < getInversionMask(rhs);
+  }
+
+  static unsigned getNodeOrder(const ExactNodeInfo &info) {
+    for (auto [index, candidateInfo] : llvm::enumerate(getAllNodeInfos()))
+      if (candidateInfo == &info)
+        return index;
+    llvm_unreachable("unknown node info");
   }
 
   static void enumerateCommutativeOperandSources(
@@ -322,7 +302,7 @@ private:
       for (unsigned invMask = 0, e = 1u << info.getArity(); invMask != e;
            ++invMask) {
         ExactCandidate candidate;
-        candidate.kind = info.getKind();
+        candidate.info = &info;
         for (auto [index, source] : llvm::enumerate(operandSources))
           candidate.fanins.push_back(
               {source, static_cast<bool>(invMask & (1u << index))});
@@ -352,9 +332,9 @@ static void addConditionedSemantics(
     const ExactCandidate &candidate, unsigned minterm,
     llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
         getSourceLiteral) {
-  getNodeInfo(candidate.kind)
-      .emitConditionedCNF(solver, selector, outLit, candidate, minterm,
-                          getSourceLiteral);
+  assert(candidate.info && "candidate must carry node info");
+  candidate.info->emitConditionedCNF(solver, selector, outLit, candidate,
+                                     minterm, getSourceLiteral);
 }
 
 //===----------------------------------------------------------------------===//
@@ -372,7 +352,8 @@ public:
     SmallVector<Value, 4> stepValues;
     stepValues.reserve(network.steps.size());
     for (const auto &step : network.steps) {
-      const auto &info = getNodeInfo(step.kind);
+      assert(step.info && "network step must carry node info");
+      const auto &info = *step.info;
       SmallVector<Value, 3> operands;
       SmallVector<bool, 3> inverted;
       operands.reserve(info.getArity());
