@@ -66,7 +66,7 @@ struct IMDeadCodeElimPass
   /// Return true if the value is known alive.
   bool isKnownAlive(Value value) const {
     assert(value && "null should not be used");
-    return liveElements.count(value);
+    return liveElements.contains(value);
   }
 
   /// Return true if the value is assumed dead.
@@ -488,6 +488,18 @@ void IMDeadCodeElimPass::runOnOperation() {
       // Note that post-order traversal on the instance graph never visit
       // unreachable modules so it's safe to erase the module even though
       // `modules` seems to be capturing module pointers.
+      module.walk([&](Operation *op) {
+        for (auto &region : op->getRegions()) {
+          for (auto &block : region.getBlocks()) {
+            for (auto arg : block.getArguments())
+              liveElements.erase(arg);
+          }
+        }
+        for (auto result : op->getResults())
+          liveElements.erase(result);
+        liveElements.erase(op);
+      });
+
       module.erase();
     }
   }
@@ -714,8 +726,8 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
     assert((!hasDontTouch(argument) || isKnownAlive(argument)) &&
            "If the port has don't touch, it should be known alive");
 
-    // llvm::errs() << argument << " " << isKnownAlive(argument) << " " << isAssumedDead(argument) << "\n";
-    // If the port has dontTouch, skip.
+    // llvm::errs() << argument << " " << isKnownAlive(argument) << " " <<
+    // isAssumedDead(argument) << "\n"; If the port has dontTouch, skip.
     if (hasDontTouch(argument))
       continue;
 
@@ -756,6 +768,14 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
             ->getResult(0);
 
     argument.replaceAllUsesWith(wire);
+    for (auto elem : liveElements) {
+      if (auto *op = elem.dyn_cast<Operation *>()) {
+        llvm::errs() << "op " << op << "is alived " << *op << "\n";
+      } else {
+        llvm::errs() << "value " << elem.dyn_cast<Value>().getAsOpaquePointer()
+                     << "is alive " << elem.dyn_cast<Value>() << "\n";
+      }
+    }
     assert(isAssumedDead(wire) && "dummy wire must be dead");
     deadPortIndexes.set(index);
   }
