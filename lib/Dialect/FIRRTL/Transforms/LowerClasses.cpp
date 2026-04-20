@@ -1462,13 +1462,11 @@ updateInstanceInClass(InstanceOp firrtlInstance, hw::HierPathOp hierPath,
     if (!isa<PropertyType>(result.getType()))
       continue;
 
-    // The path to the field is just this output's name.
-    auto objectFieldPath = builder.getArrayAttr({FlatSymbolRefAttr::get(
-        firrtlInstance.getPortNameAttr(result.getResultNumber()))});
-
     // Create the field access.
     auto objectField = om::ObjectFieldOp::create(
-        builder, object.getLoc(), result.getType(), object, objectFieldPath);
+        builder, object.getLoc(), result.getType(), object,
+        FlatSymbolRefAttr::get(
+            firrtlInstance.getPortNameAttr(result.getResultNumber())));
 
     result.replaceAllUsesWith(objectField);
   }

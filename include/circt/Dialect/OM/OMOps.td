@@ -238,7 +238,7 @@ def ElaboratedObjectOp : OMOp<"elaborated_object", [
 def ObjectFieldOp : OMOp<"object.field", [Pure]> {
   let arguments = (ins
     ClassType:$object,
-    FlatSymbolRefArrayAttr:$fieldPath
+    FlatSymbolRefAttr:$field
   );
 
   let results = (outs
@@ -246,7 +246,7 @@ def ObjectFieldOp : OMOp<"object.field", [Pure]> {
   );
 
   let assemblyFormat = [{
-    $object `,` $fieldPath attr-dict `:` functional-type($object, $result)
+    $object `[` $field `]` attr-dict `:` functional-type($object, $result)
   }];
 }
 

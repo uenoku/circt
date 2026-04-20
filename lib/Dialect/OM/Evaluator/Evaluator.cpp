@@ -97,12 +97,6 @@ struct ElaboratedObjectKeyInfo {
   }
 };
 
-struct FlattenedFieldPath {
-  Value base;
-  SmallVector<FlatSymbolRefAttr> remainingPath;
-  bool unknown = false;
-};
-
 class ScratchIRBuilder {
 public:
   explicit ScratchIRBuilder(Evaluator &evaluator)
@@ -117,6 +111,8 @@ public:
     auto rootClass = scratchSymbols.lookup<ClassLike>(rootClassName);
     if (!rootClass)
       return sourceModule.emitError("unknown class name ") << rootClassName;
+    if (failed(verifyActualParameters(rootClass, actualParams)))
+      return failure();
 
     if (failed(createWrapperClass(actualParams, unknownLoc)))
       return failure();
@@ -219,33 +215,13 @@ private:
     LogicalResult
     matchAndRewrite(ObjectFieldOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-      auto flattened = scratch.flattenFieldPath(
-          adaptor.getObject(),
-          llvm::to_vector(op.getFieldPath().getAsRange<FlatSymbolRefAttr>()));
-      if (failed(flattened))
+      auto simplified = scratch.simplifyObjectField(
+          adaptor.getObject(), op.getFieldAttr(), op.getType(), rewriter);
+      if (failed(simplified))
         return failure();
-
-      if (flattened->unknown) {
-        rewriter.replaceOpWithNewOp<UnknownValueOp>(op, op.getType());
-        return success();
-      }
-
-      if (flattened->remainingPath.empty()) {
-        rewriter.replaceOp(op, flattened->base);
-        return success();
-      }
-
-      bool pathChanged =
-          flattened->base != adaptor.getObject() ||
-          flattened->remainingPath.size() != op.getFieldPath().size();
-      if (!pathChanged)
+      if (!*simplified)
         return failure();
-
-      SmallVector<Attribute> pathAttrs(flattened->remainingPath.begin(),
-                                       flattened->remainingPath.end());
-      auto pathAttr = rewriter.getArrayAttr(pathAttrs);
-      rewriter.replaceOpWithNewOp<ObjectFieldOp>(op, op.getType(),
-                                                 flattened->base, pathAttr);
+      rewriter.replaceOp(op, **simplified);
       return success();
     }
 
@@ -262,6 +238,50 @@ private:
     if (auto classLike = scratchSymbols.lookup<ClassLike>(className))
       return classLike;
     return scratchModule.emitError("unknown class name ") << className;
+  }
+
+  LogicalResult
+  verifyActualParameters(ClassLike classLike,
+                         ArrayRef<EvaluatorValuePtr> actualParams) {
+    auto formalParamNames =
+        classLike.getFormalParamNames().getAsRange<StringAttr>();
+    auto formalParamTypes = classLike.getBodyBlock()->getArgumentTypes();
+
+    if (actualParams.size() != formalParamTypes.size()) {
+      auto error = classLike.emitError("actual parameter list length (")
+                   << actualParams.size() << ") does not match formal "
+                   << "parameter list length (" << formalParamTypes.size()
+                   << ")";
+      auto &diag = error.attachNote() << "actual parameters: ";
+      bool isFirst = true;
+      for (const auto &param : actualParams) {
+        if (isFirst)
+          isFirst = false;
+        else
+          diag << ", ";
+        diag << param;
+      }
+      error.attachNote(classLike.getLoc())
+          << "formal parameters: " << formalParamTypes;
+      return failure();
+    }
+
+    for (auto [actualParam, formalParamName, formalParamType] :
+         llvm::zip(actualParams, formalParamNames, formalParamTypes)) {
+      if (!actualParam || !actualParam.get())
+        return classLike.emitError("actual parameter for ")
+               << formalParamName << " is null";
+      if (isa<AnyType>(formalParamType))
+        continue;
+      if (actualParam->getType() != formalParamType) {
+        auto error = classLike.emitError("actual parameter for ")
+                     << formalParamName << " has invalid type";
+        error.attachNote() << "actual parameter: " << *actualParam;
+        error.attachNote() << "format parameter type: " << formalParamType;
+        return failure();
+      }
+    }
+    return success();
   }
 
   LogicalResult createWrapperClass(ArrayRef<EvaluatorValuePtr> actualParams,
@@ -325,7 +345,6 @@ private:
       auto base = op.getObject();
       return !base.getDefiningOp<AnyCastOp>() &&
              !base.getDefiningOp<ElaboratedObjectOp>() &&
-             !base.getDefiningOp<ObjectFieldOp>() &&
              !base.getDefiningOp<UnknownValueOp>();
     });
     target.addDynamicallyLegalOp<IntegerAddOp, IntegerMulOp, IntegerShrOp,
@@ -459,12 +478,14 @@ private:
     }
 
     auto fieldNames = classLike->getFieldNames();
+    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
+    assert(classOp && "non-external class should be a ClassOp");
     SmallVector<Value> fieldPlaceholders;
     fieldPlaceholders.reserve(fieldNames.size());
-    for (auto fieldName : fieldNames)
+    for (auto [index, fieldName] : llvm::enumerate(fieldNames))
       fieldPlaceholders.push_back(createUnknownScratchValue(
-          classLike->getFieldType(cast<StringAttr>(fieldName)).value(),
-          objectOp.getLoc(), rewriter));
+          classOp.getFieldsOp().getFields()[index].getType(), objectOp.getLoc(),
+          rewriter));
 
     rewriter.setInsertionPoint(wrapperClass.getFieldsOp());
     auto placeholder = ElaboratedObjectOp::create(
@@ -476,9 +497,6 @@ private:
     llvm::append_range(instanceContext->actuals, actuals);
     InstanceContext *instanceContextPtr = instanceContext.get();
     ownedContexts.push_back(std::move(instanceContext));
-
-    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
-    assert(classOp && "non-external class should be a ClassOp");
 
     SmallVector<Value> fieldValues;
     fieldValues.reserve(fieldNames.size());
@@ -508,73 +526,37 @@ private:
     return success(placeholder.getResult());
   }
 
-  FailureOr<FlattenedFieldPath>
-  flattenFieldPath(Value base, ArrayRef<FlatSymbolRefAttr> fieldPath) {
-    FlattenedFieldPath flattened{
-        base, SmallVector<FlatSymbolRefAttr>(fieldPath), false};
-    while (true) {
-      if (flattened.base.getDefiningOp<UnknownValueOp>()) {
-        flattened.unknown = true;
-        return flattened;
-      }
+  FailureOr<std::optional<Value>> simplifyObjectField(Value base,
+                                                      FlatSymbolRefAttr field,
+                                                      Type resultType,
+                                                      OpBuilder &builder) {
+    if (auto anyCast = base.getDefiningOp<AnyCastOp>())
+      return std::optional<Value>(ObjectFieldOp::create(
+          builder, anyCast.getLoc(), resultType, anyCast.getInput(), field));
 
-      if (auto nestedField = flattened.base.getDefiningOp<ObjectFieldOp>()) {
-        auto nestedPath = llvm::to_vector(
-            nestedField.getFieldPath().getAsRange<FlatSymbolRefAttr>());
-        nestedPath.append(flattened.remainingPath.begin(),
-                          flattened.remainingPath.end());
-        flattened.base = nestedField.getObject();
-        flattened.remainingPath = std::move(nestedPath);
-        continue;
-      }
+    if (base.getDefiningOp<UnknownValueOp>())
+      return std::optional<Value>(
+          createUnknownScratchValue(resultType, base.getLoc(), builder));
 
-      if (auto anyCast = flattened.base.getDefiningOp<AnyCastOp>()) {
-        flattened.base = anyCast.getInput();
-        continue;
-      }
+    auto elaboratedObject = base.getDefiningOp<ElaboratedObjectOp>();
+    if (!elaboratedObject)
+      return std::optional<Value>();
 
-      if (flattened.remainingPath.empty())
-        return flattened;
+    auto classLike =
+        lookupScratchClassLike(elaboratedObject.getClassNameAttr());
+    if (failed(classLike))
+      return failure();
 
-      auto elaboratedObject =
-          flattened.base.getDefiningOp<ElaboratedObjectOp>();
-      if (!elaboratedObject)
-        return flattened;
-
-      auto classLike =
-          lookupScratchClassLike(elaboratedObject.getClassNameAttr());
-      if (failed(classLike))
-        return failure();
-
-      auto fieldName = flattened.remainingPath.front().getAttr();
-      auto fieldNames = classLike->getFieldNames();
-      auto fieldIt = llvm::find(fieldNames, fieldName);
-      if (fieldIt == fieldNames.end())
-        return elaboratedObject.emitError("field ")
-               << fieldName << " does not exist";
-      size_t index = std::distance(fieldNames.begin(), fieldIt);
-      flattened.base = elaboratedObject.getFieldValues()[index];
-      flattened.remainingPath.erase(flattened.remainingPath.begin());
-    }
-  }
-
-  FailureOr<EvaluatorValuePtr>
-  resolveRuntimeFieldPath(EvaluatorValuePtr baseValue,
-                          ArrayRef<FlatSymbolRefAttr> fieldPath,
-                          Type resultType, Location loc) {
-    EvaluatorValuePtr current = std::move(baseValue);
-    for (auto field : fieldPath) {
-      if (current->isUnknown())
-        return createUnknownRuntimeValue(resultType, loc);
-      auto *object = dyn_cast<evaluator::ObjectValue>(current.get());
-      if (!object)
-        return emitError(loc, "expected object while resolving object.field");
-      auto fieldValue = object->getField(field.getAttr());
-      if (failed(fieldValue))
-        return failure();
-      current = fieldValue.value();
-    }
-    return current;
+    auto fieldNames = classLike->getFieldNames();
+    auto fieldIt = llvm::find(fieldNames, field.getAttr());
+    if (fieldIt == fieldNames.end())
+      return elaboratedObject.emitError("field ") << field << " does not exist";
+    size_t index = std::distance(fieldNames.begin(), fieldIt);
+    auto classOp = dyn_cast<ClassOp>(classLike.value().getOperation());
+    assert(classOp && "elaborated object must reference a ClassOp");
+    assert(classOp.getFieldsOp().getFields()[index].getType() == resultType &&
+           "field access result type should match class field type");
+    return std::optional<Value>(elaboratedObject.getFieldValues()[index]);
   }
 
   FailureOr<EvaluatorValuePtr> exportValue(Value value) {
@@ -621,22 +603,21 @@ private:
                   objectValue);
             })
             .Case([&](ObjectFieldOp op) -> FailureOr<EvaluatorValuePtr> {
-              auto flattened = flattenFieldPath(
-                  op.getObject(),
-                  llvm::to_vector(
-                      op.getFieldPath().getAsRange<FlatSymbolRefAttr>()));
-              if (failed(flattened))
-                return failure();
-              if (flattened->unknown)
-                return createUnknownRuntimeValue(op.getType(), op.getLoc());
-              if (flattened->remainingPath.empty())
-                return exportValue(flattened->base);
-              auto baseValue = exportValue(flattened->base);
+              auto baseValue = exportValue(op.getObject());
               if (failed(baseValue))
                 return failure();
-              return resolveRuntimeFieldPath(baseValue.value(),
-                                             flattened->remainingPath,
-                                             op.getType(), op.getLoc());
+              if (baseValue.value()->isUnknown())
+                return createUnknownRuntimeValue(op.getType(), op.getLoc());
+              auto *object =
+                  dyn_cast<evaluator::ObjectValue>(baseValue.value().get());
+              if (!object)
+                return emitError(
+                    op.getLoc(),
+                    "expected object while resolving object.field");
+              auto fieldValue = object->getField(op.getFieldAttr().getAttr());
+              if (failed(fieldValue))
+                return failure();
+              return fieldValue.value();
             })
             .Case([&](ListCreateOp op) -> FailureOr<EvaluatorValuePtr> {
               SmallVector<EvaluatorValuePtr> elements;
