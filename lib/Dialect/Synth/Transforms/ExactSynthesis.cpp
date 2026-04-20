@@ -290,6 +290,7 @@ private:
   unsigned numMinterms;
   unsigned totalSources;
   int nextVar = 0;
+  int rootInvertVar = 0;
   SmallVector<SmallVector<int, 16>, 8> sourceValueVars;
   SmallVector<SmallVector<ExactCandidate, 64>, 8> stepCandidates;
   SmallVector<SmallVector<int, 64>, 8> stepSelectionVars;
@@ -567,53 +568,60 @@ bool GenericExactSATProblem::buildEncoding() {
     addExactlyOne(selectionVars);
   }
 
-  // addAdjacentStepSymmetryBreakingConstraints();
+  addAdjacentStepSymmetryBreakingConstraints();
   // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
-  // addUseAllStepsConstraints();
+  addUseAllStepsConstraints();
 
   unsigned rootSource = totalSources - 1;
-  for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-    solver.addClause({target[minterm]
-                          ? getSourceValueVar(rootSource, minterm)
-                          : -getSourceValueVar(rootSource, minterm)});
+  rootInvertVar = newVar();
+  for (unsigned minterm = 0; minterm != numMinterms; ++minterm) {
+    int rootLit = getSourceValueVar(rootSource, minterm);
+    if (target[minterm]) {
+      // target = root xor rootInvert, with target fixed to 1.
+      solver.addClause({rootLit, rootInvertVar});
+      solver.addClause({-rootLit, -rootInvertVar});
+    } else {
+      // target = root xor rootInvert, with target fixed to 0.
+      solver.addClause({rootLit, -rootInvertVar});
+      solver.addClause({-rootLit, rootInvertVar});
+    }
+  }
   return true;
 }
 
-// void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
-//   for (unsigned step = 0; step + 1 < numSteps; ++step)
-//     addAdjacentStepOrdering(step, step + 1);
-// }
-//
-// void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
-//                                                      unsigned nextStep) {
-//   const auto &prevCandidates = stepCandidates[prevStep];
-//   const auto &nextCandidates = stepCandidates[nextStep];
-//   const auto &prevSelectionVars = stepSelectionVars[prevStep];
-//   const auto &nextSelectionVars = stepSelectionVars[nextStep];
-//
-//   for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
-//     SmallVector<int, 64> allowedNextSelections;
-//     for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-//       if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
-//                                                      prevCandidate))
-//         allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
-//     if (allowedNextSelections.empty())
-//       continue;
-//
-//     // Adjacent steps are interchangeable in the abstract network: swapping
-//     // their SAT identities does not change the realized DAG. This clause
-//     keeps
-//     // only the nondecreasing ordering of adjacent selected candidates,
-//     cutting
-//     // away the duplicate model where the same two steps are swapped.
-//     SmallVector<int, 65> clause;
-//     clause.reserve(allowedNextSelections.size() + 1);
-//     clause.push_back(-prevSelectionVars[prevIndex]);
-//     clause.append(allowedNextSelections.begin(),
-//     allowedNextSelections.end()); solver.addClause(clause);
-//   }
-// }
+void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
+  for (unsigned step = 0; step + 1 < numSteps; ++step)
+    addAdjacentStepOrdering(step, step + 1);
+}
+
+void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
+                                                     unsigned nextStep) {
+  const auto &prevCandidates = stepCandidates[prevStep];
+  const auto &nextCandidates = stepCandidates[nextStep];
+  const auto &prevSelectionVars = stepSelectionVars[prevStep];
+  const auto &nextSelectionVars = stepSelectionVars[nextStep];
+
+  for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
+    SmallVector<int, 64> allowedNextSelections;
+    for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
+      if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
+                                                     prevCandidate))
+        allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
+    if (allowedNextSelections.empty())
+      continue;
+
+    // Adjacent steps are interchangeable in the abstract network: swapping
+    // their SAT identities does not change the realized DAG. This clause
+    // keeps only the nondecreasing ordering of adjacent selected candidates,
+    // cutting away the duplicate model where the same two steps are swapped.
+    SmallVector<int, 65> clause;
+    clause.reserve(allowedNextSelections.size() + 1);
+    clause.push_back(-prevSelectionVars[prevIndex]);
+    clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
+    solver.addClause(clause);
+  }
+}
 
 void GenericExactSATProblem::addCandidateSemanticsConstraints() {
   for (unsigned step = 0; step != numSteps; ++step) {
@@ -664,9 +672,11 @@ ExactNetwork GenericExactSATProblem::decodeModel() const {
       break;
     }
   }
-  network.output = {1 + numInputs + numSteps - 1, false};
+  network.output = {1 + numInputs + numSteps - 1,
+                    solver.val(rootInvertVar) == rootInvertVar};
   LDBG() << "Decoded network with " << network.steps.size()
-         << " steps, rootSource=" << network.output.source << "\n";
+         << " steps, rootSource=" << network.output.source
+         << " rootInvert=" << network.output.inverted << "\n";
   return network;
 }
 
@@ -683,49 +693,28 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   if (!hasEnabledConstructs(policy))
     return failure();
 
-  SmallVector<std::pair<APInt, bool>, 2> targets;
-  targets.emplace_back(truthTable, /*invertOutput=*/false);
-  APInt invertedTruthTable = truthTable;
-  invertedTruthTable.flipAllBits();
-  if (invertedTruthTable != truthTable)
-    targets.emplace_back(invertedTruthTable, /*invertOutput=*/true);
-
-  for (const auto &[target, invertOutput] : targets) {
-    LDBG() << "Trying direct synthesis for target=0x"
-           << formatTruthTable(target) << " invertOutput=" << invertOutput
-           << "\n";
-    auto network = synthesizeDirect(numInputs, target);
-    if (!network)
-      continue;
-
+  LDBG() << "Trying direct synthesis for target=0x"
+         << formatTruthTable(truthTable) << "\n";
+  auto network = synthesizeDirect(numInputs, truthTable);
+  if (network) {
     LDBG() << "Using direct synthesis result\n";
-    if (invertOutput)
-      network->output.inverted = !network->output.inverted;
     return materializer.materialize(*network);
   }
 
   for (unsigned area = 1; area <= kMaxExactSearchArea; ++area) {
     LDBG() << "Trying area=" << area << "\n";
-    for (const auto &[target, invertOutput] : targets) {
-      LDBG() << "  target=0x" << formatTruthTable(target)
-             << " invertOutput=" << invertOutput << "\n";
-      auto solver = createIncrementalSATSolver("auto");
-      if (!solver)
-        return failure();
-      GenericExactSATProblem problem(policy, *solver, numInputs, target, area);
-      auto solved = problem.solve();
-      if (!solved) {
-        LDBG() << "  area " << area << " target=0x" << formatTruthTable(target)
-               << " has no solution\n";
-        continue;
-      }
-
-      LDBG() << "Found solution at area=" << area << " for target=0x"
-             << formatTruthTable(target) << "\n";
-      if (invertOutput)
-        solved->output.inverted = !solved->output.inverted;
-      return materializer.materialize(*solved);
+    auto solver = createIncrementalSATSolver("auto");
+    if (!solver)
+      return failure();
+    GenericExactSATProblem problem(policy, *solver, numInputs, truthTable,
+                                   area);
+    auto solved = problem.solve();
+    if (!solved) {
+      LDBG() << "Area " << area << " has no solution\n";
+      continue;
     }
+    LDBG() << "Found solution at area=" << area << "\n";
+    return materializer.materialize(*solved);
   }
   LDBG() << "No exact solution found up to area limit " << kMaxExactSearchArea
          << "\n";
