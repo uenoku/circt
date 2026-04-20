@@ -160,3 +160,16 @@ hw.module @extract_concat_test(in %data : i4, in %ctrl : i2, out result : i3) {
     
     hw.output %result_concat : i3
 }
+
+hw.module @dot_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attributes {hw.techlib.info = {area = 1.0 : f64, delay = [[1], [1], [1]]}} {
+    %0 = synth.dot %x, %y, %z : i1
+    hw.output %0 : i1
+}
+
+// CHECK-LABEL: @dot_test
+hw.module @dot_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
+    // CHECK-NEXT: %[[DOT:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @dot_lib(x: %x: i1, y: %y: i1, z: %z: i1) -> (result: i1) {test.arrival_times = [1]}
+    // CHECK-NEXT: hw.output %[[DOT]] : i1
+    %0 = synth.dot %x, %y, %z : i1
+    hw.output %0 : i1
+}

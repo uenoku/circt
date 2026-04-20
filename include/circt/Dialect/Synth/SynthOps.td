@@ -120,6 +120,50 @@ def XorInverterOp : InvertibleOperandsOp<"xor_inv"> {
 
 }
 
+def DotOp : SynthOp<"dot", [
+    SameOperandsAndResultType, Pure,
+    DeclareOpInterfaceMethods<BooleanLogicOpInterface, [
+      "getLogicAreaCost"
+    ]>
+  ]> {
+  let summary = "Ordered 3-input DOT gate with invertible inputs";
+  let description = [{
+    The `synth.dot` operation represents the DIG dot gate described in
+    "Three-Input Gates for Logic Synthesis". Its ordered three-input semantics
+    are `x xor (z or (x and y))`, applied after optional per-input inversion.
+
+    Example:
+    ```mlir
+      %r0 = synth.dot %x, %y, %z : i1
+      %r1 = synth.dot not %x, %y, not %z : i8
+    ```
+  }];
+
+  let arguments = (ins AnyType:$x, AnyType:$y, AnyType:$z,
+                       DenseBoolArrayAttr:$inverted);
+  let results = (outs AnyType:$result);
+
+  let builders = [
+    OpBuilder<(ins "Value":$x, "Value":$y, "Value":$z,
+                                CArg<"bool", "false">:$invertX,
+                                CArg<"bool", "false">:$invertY,
+                                CArg<"bool", "false">:$invertZ), [{
+      SmallVector<bool> inverted{invertX, invertY, invertZ};
+      return build($_builder, $_state, x.getType(), x, y, z,
+                   $_builder.getDenseBoolArrayAttr(inverted));
+    }]>,
+      OpBuilder<(ins "Type":$resultType, "ValueRange":$inputs,
+                                "ArrayRef<bool>":$inverted), [{
+      assert(inputs.size() == 3 && "dot expects exactly three operands");
+      assert(inverted.size() == 3 && "dot expects exactly three inversion flags");
+      return build($_builder, $_state, resultType, inputs[0], inputs[1],
+                   inputs[2], $_builder.getDenseBoolArrayAttr(inverted));
+    }]>];
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
   let summary = "Synth choice operation";
   let description = [{

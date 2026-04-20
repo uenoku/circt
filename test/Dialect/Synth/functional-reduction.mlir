@@ -79,3 +79,37 @@ hw.module @test_xor_inv_equiv(in %a: i1, in %b: i1, out out0: i1, out out1: i1) 
   %1 = comb.xor %b, %a {synth.test.fc_equiv_class = 11} : i1
   hw.output %0, %1 : i1, i1
 }
+
+// CHECK-LABEL: hw.module @test_xor_inv_input_inversion
+hw.module @test_xor_inv_input_inversion(in %a: i1, in %b: i1,
+                                        out out0: i1, out out1: i1) {
+  // CHECK: %[[XOR_INV:.+]] = synth.xor_inv not %a, %b
+  // CHECK: %[[XOR:.+]] = comb.xor %a, %b
+  // CHECK: %[[NOT_XOR:.+]] = synth.aig.and_inv not %[[XOR]]
+  // CHECK: %[[CHOICE:.+]] = synth.choice %[[XOR_INV]], %[[NOT_XOR]] : i1
+  // CHECK: hw.output %[[CHOICE]], %[[CHOICE]] : i1, i1
+  %0 = synth.xor_inv not %a, %b {synth.test.fc_equiv_class = 12} : i1
+  %1 = comb.xor %a, %b : i1
+  %2 = synth.aig.and_inv not %1 {synth.test.fc_equiv_class = 12} : i1
+  hw.output %0, %2 : i1, i1
+}
+
+// CHECK-LABEL: hw.module @test_dot_input_inversion
+hw.module @test_dot_input_inversion(in %a: i1, in %b: i1, in %c: i1,
+                                    out out0: i1, out out1: i1) {
+  // CHECK: %[[NOT_A:.+]] = synth.aig.and_inv not %a
+  // CHECK: %[[NOT_C:.+]] = synth.aig.and_inv not %c
+  // CHECK: %[[AND:.+]] = comb.and %[[NOT_A]], %b
+  // CHECK: %[[OR:.+]] = comb.or %[[NOT_C]], %[[AND]]
+  // CHECK: %[[XOR:.+]] = comb.xor %[[NOT_A]], %[[OR]]
+  // CHECK: %[[DOT:.+]] = synth.dot not %a, %b, not %c
+  // CHECK: %[[CHOICE:.+]] = synth.choice %[[XOR]], %[[DOT]] : i1
+  // CHECK: hw.output %[[CHOICE]], %[[CHOICE]] : i1, i1
+  %notA = synth.aig.and_inv not %a : i1
+  %notC = synth.aig.and_inv not %c : i1
+  %0 = comb.and %notA, %b : i1
+  %1 = comb.or %notC, %0 : i1
+  %2 = comb.xor %notA, %1 {synth.test.fc_equiv_class = 13} : i1
+  %3 = synth.dot not %a, %b, not %c {synth.test.fc_equiv_class = 13} : i1
+  hw.output %2, %3 : i1, i1
+}
