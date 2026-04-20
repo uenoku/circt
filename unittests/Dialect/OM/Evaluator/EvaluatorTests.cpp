@@ -799,7 +799,10 @@ om.class @IntegerBinaryArithmeticShrNegative() -> (result: !om.integer){
       ASSERT_EQ(diag.str(),
                 "'om.integer.shr' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate operation");
+      ASSERT_EQ(diag.str(),
+                "failed to legalize operation 'om.integer.shr': %5 = "
+                "\"om.integer.shr\"(%3, %4) : (!om.integer, !om.integer) -> "
+                "!om.integer");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -835,7 +838,10 @@ om.class @IntegerBinaryArithmeticShrTooLarge() -> (result: !om.integer){
           diag.str(),
           "'om.integer.shr' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate operation");
+      ASSERT_EQ(diag.str(),
+                "failed to legalize operation 'om.integer.shr': %5 = "
+                "\"om.integer.shr\"(%3, %4) : (!om.integer, !om.integer) -> "
+                "!om.integer");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -906,7 +912,10 @@ om.class @IntegerBinaryArithmeticShlNegative() -> (result: !om.integer) {
       ASSERT_EQ(diag.str(),
                 "'om.integer.shl' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate operation");
+      ASSERT_EQ(diag.str(),
+                "failed to legalize operation 'om.integer.shl': %5 = "
+                "\"om.integer.shl\"(%3, %4) : (!om.integer, !om.integer) -> "
+                "!om.integer");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -942,7 +951,10 @@ om.class @IntegerBinaryArithmeticShlTooLarge() -> (result: !om.integer) {
           diag.str(),
           "'om.integer.shl' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate operation");
+      ASSERT_EQ(diag.str(),
+                "failed to legalize operation 'om.integer.shl': %5 = "
+                "\"om.integer.shl\"(%3, %4) : (!om.integer, !om.integer) -> "
+                "!om.integer");
   });
 
   OwningOpRef<ModuleOp> owning =
