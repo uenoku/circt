@@ -351,8 +351,11 @@ LogicalResult circt::om::ClassOp::verifyRegions() {
   for (auto [fieldName, terminatorOperandType] :
        llvm::zip(this->getFieldNames(), fieldsOp.getOperandTypes())) {
 
-    if (terminatorOperandType ==
-        cast<TypeAttr>(types.get(cast<StringAttr>(fieldName))).getValue())
+    auto operandType =
+        dyn_cast<TypeAttr>(types.get(cast<StringAttr>(fieldName)));
+    if (!operandType)
+      return this->emitOpError() << "expected typed attr for " << fieldName;
+    if (operandType && terminatorOperandType == operandType.getValue())
       continue;
 
     auto diag = this->emitOpError()

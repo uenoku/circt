@@ -17,6 +17,9 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <cstdint>
+#include <mlir/IR/BuiltinAttributes.h>
 
 #define DEBUG_TYPE "om-evaluator"
 
@@ -24,7 +27,11 @@ using namespace mlir;
 using namespace circt::om;
 
 /// Construct an Evaluator with an IR module.
-circt::om::Evaluator::Evaluator(ModuleOp mod) : symbolTable(mod) {}
+circt::om::Evaluator::Evaluator(ModuleOp mod) : symbolTable(mod) {
+  mod.dump();
+  if (failed(mod.verify()))
+    llvm::report_fatal_error("failed to verify");
+}
 
 /// Get the Module this Evaluator is built from.
 ModuleOp circt::om::Evaluator::getModule() {
@@ -380,7 +387,15 @@ circt::om::Evaluator::instantiate(
   // `evaluateObjectInstance` has populated the worklist. Continue evaluations
   // unless there is a partially evaluated value.
   LLVM_DEBUG(dbgs() << "worklist:\n");
+  uint64_t lastWorklistSize = 0, lastSizeIteration = 0;
   while (!worklist.empty()) {
+    if (lastWorklistSize == worklist.size()) {
+      lastSizeIteration++;
+    } else {
+      lastWorklistSize = worklist.size();
+      lastSizeIteration = 0;
+    }
+
     auto [value, args] = worklist.front();
     worklist.pop();
 
@@ -390,8 +405,12 @@ circt::om::Evaluator::instantiate(
       return failure();
 
     // It's possible that the value is not fully evaluated.
-    if (!result.value()->isFullyEvaluated())
+    if (result.value()->isFullyEvaluated()) {
+    } else {
       worklist.push({value, args});
+      if (lastSizeIteration > 1000)
+        return cls.emitError() << "worklist size not shrinking";
+    }
   }
 
   // Now that all values are fully resolved, evaluate the deferred property
@@ -731,6 +750,9 @@ circt::om::Evaluator::evaluateObjectField(ObjectFieldOp op,
             llvm::dyn_cast<evaluator::ObjectValue>(finalField.get()))
       currentObject = nextObject;
   }
+
+  if (!finalField->isFullyEvaluated())
+    return objectFieldValue;
 
   // Update the reference.
   llvm::cast<evaluator::ReferenceValue>(objectFieldValue.get())
