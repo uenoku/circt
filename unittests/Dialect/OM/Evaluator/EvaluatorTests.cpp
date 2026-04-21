@@ -654,8 +654,7 @@ om.class @ReferenceEachOther() -> (field: !ty){
   context.getOrLoadDialect<OMDialect>();
 
   context.getDiagEngine().registerHandler([&](Diagnostic &diag) {
-    ASSERT_EQ(diag.str(), "failed to finalize evaluation. Probably the class "
-                          "contains a dataflow cycle");
+    ASSERT_EQ(diag.str(), "cycle detected: 1 values remain partially evaluated after full pass with no progress (total fully evaluated: 1)");
   });
 
   OwningOpRef<ModuleOp> owning =
