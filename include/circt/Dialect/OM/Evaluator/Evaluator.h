@@ -42,15 +42,6 @@ using EvaluatorValuePtr = std::shared_ptr<EvaluatorValue>;
 /// refinement is expected.
 using ObjectFields = SmallDenseMap<StringAttr, EvaluatorValuePtr>;
 
-/// Listener interface for tracking when values become fully evaluated.
-class EvaluatorValueListener {
-public:
-  virtual ~EvaluatorValueListener() = default;
-
-  /// Called when a value becomes fully evaluated.
-  virtual void onFullyEvaluated(EvaluatorValue *value) = 0;
-};
-
 /// Base class for evaluator runtime values.
 /// Enables the shared_from_this functionality so Evaluator Value pointers can
 /// be passed through the CAPI and unwrapped back into C++ smart pointers with
@@ -70,13 +61,15 @@ public:
   void markFullyEvaluated() {
     assert(!fullyEvaluated && "should not mark twice");
     fullyEvaluated = true;
-    // Notify the listener if one is set.
-    if (listener)
-      listener->onFullyEvaluated(this);
+    // Increment the counter if one is set.
+    if (fullyEvaluatedCounter)
+      (*fullyEvaluatedCounter)++;
   }
 
-  /// Set a listener to be notified when this value becomes fully evaluated.
-  void setListener(EvaluatorValueListener *l) { listener = l; }
+  /// Set a counter to increment when this value becomes fully evaluated.
+  void setFullyEvaluatedCounter(uint64_t *counter) {
+    fullyEvaluatedCounter = counter;
+  }
 
   /// Return true if the value is unknown (has unknown in its fan-in).
   /// A value is unknown if it depends on an UnknownValueOp or if any of its
@@ -119,7 +112,7 @@ private:
   bool fullyEvaluated = false;
   bool finalized = false;
   bool unknown = false;
-  EvaluatorValueListener *listener = nullptr;
+  uint64_t *fullyEvaluatedCounter = nullptr;
 };
 
 /// Values which can be used as pointers to different values.
@@ -425,10 +418,10 @@ private:
     return val && val->isFullyEvaluated();
   }
 
-  /// Attach the evaluation listener to a newly created value.
-  void attachListener(evaluator::EvaluatorValuePtr &value) {
+  /// Attach the evaluation counter to a newly created value.
+  void attachCounter(evaluator::EvaluatorValuePtr &value) {
     if (value && !value->isFullyEvaluated())
-      value->setListener(&evaluationListener);
+      value->setFullyEvaluatedCounter(&fullyEvaluatedCount);
   }
 
   FailureOr<EvaluatorValuePtr>
@@ -523,24 +516,8 @@ private:
   /// instantiation context (a pair of Value and parameters).
   DenseMap<ObjectKey, std::shared_ptr<evaluator::EvaluatorValue>> objects;
 
-  /// Listener implementation to track fully evaluated nodes.
-  class EvaluationCountListener : public evaluator::EvaluatorValueListener {
-  public:
-    EvaluationCountListener(Evaluator &evaluator) : evaluator(evaluator) {}
-
-    void onFullyEvaluated(evaluator::EvaluatorValue *value) override {
-      evaluator.fullyEvaluatedCount++;
-    }
-
-  private:
-    Evaluator &evaluator;
-  };
-
   /// Counter for fully evaluated nodes.
   uint64_t fullyEvaluatedCount = 0;
-
-  /// Listener instance for tracking evaluations.
-  EvaluationCountListener evaluationListener{*this};
 
 #ifndef NDEBUG
   /// Current nesting depth for debug output indentation.

@@ -106,7 +106,7 @@ circt::om::Evaluator::getPartiallyEvaluatedValue(Type type, Location loc) {
           .Default([&](auto type) { return failure(); });
 
   if (succeeded(result))
-    attachListener(result.value());
+    attachCounter(result.value());
 
   return result;
 }
@@ -200,7 +200,7 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
     return result;
 
   // Attach listener to newly created values
-  attachListener(result.value());
+  attachCounter(result.value());
   objects[{value, actualParams}] = result.value();
   return result;
 }
@@ -227,7 +227,7 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
   if (isa<ClassExternOp>(classDef)) {
     evaluator::EvaluatorValuePtr result =
         std::make_shared<evaluator::ObjectValue>(classDef, loc);
-    attachListener(result);
+    attachCounter(result);
     result->markUnknown();
     LLVM_DEBUG(dbgs(1) << "extern: <unknown-value>\n");
     return result;
@@ -372,7 +372,7 @@ circt::om::Evaluator::instantiate(
     evaluator::EvaluatorValuePtr result =
         std::make_shared<evaluator::ObjectValue>(
             classDef, UnknownLoc::get(classDef.getContext()));
-    attachListener(result);
+    attachCounter(result);
     result->markUnknown();
     LLVM_DEBUG(dbgs(1) << "result: <unknown extern>\n");
     return result;
@@ -1097,7 +1097,7 @@ circt::om::Evaluator::createUnknownValue(Type type, Location loc) {
 
   // Mark the result as unknown if successful
   if (succeeded(result)) {
-    attachListener(result.value());
+    attachCounter(result.value());
     result->get()->markUnknown();
   }
 
