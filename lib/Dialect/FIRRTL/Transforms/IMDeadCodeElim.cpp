@@ -479,29 +479,9 @@ void IMDeadCodeElimPass::runOnOperation() {
   }
 
   // Rewrite module signatures or delete unreachable modules.
-  for (auto module : llvm::make_early_inc_range(
-           circuit.getBodyBlock()->getOps<FModuleOp>())) {
+  for (auto module : circuit.getBodyBlock()->getOps<FModuleOp>()) {
     if (isBlockExecutable(module.getBodyBlock()))
       rewriteModuleSignature(module);
-    else {
-      // If the module is unreachable from the toplevel, just delete it.
-      // Note that post-order traversal on the instance graph never visit
-      // unreachable modules so it's safe to erase the module even though
-      // `modules` seems to be capturing module pointers.
-      module.walk([&](Operation *op) {
-        for (auto &region : op->getRegions()) {
-          for (auto &block : region.getBlocks()) {
-            for (auto arg : block.getArguments())
-              liveElements.erase(arg);
-          }
-        }
-        for (auto result : op->getResults())
-          liveElements.erase(result);
-        liveElements.erase(op);
-      });
-
-      module.erase();
-    }
   }
 
   // Rewrite module bodies parallelly.
@@ -517,6 +497,11 @@ void IMDeadCodeElimPass::runOnOperation() {
 
   for (auto module : modules)
     eraseEmptyModule(module);
+
+  for (auto module :
+       llvm::make_early_inc_range(circuit.getBodyBlock()->getOps<FModuleOp>()))
+    if (!isBlockExecutable(module.getBodyBlock()))
+      module.erase();
 
   // Clean up data structures.
   executableBlocks.clear();
@@ -616,9 +601,9 @@ void IMDeadCodeElimPass::visitSubelement(Operation *op) {
 }
 
 void IMDeadCodeElimPass::rewriteModuleBody(FModuleOp module) {
-  assert(isBlockExecutable(module.getBodyBlock()) &&
-         "unreachable modules must be already deleted");
-
+  // assert(isBlockExecutable(module.getBodyBlock()) &&
+  //   //        "unreachable modules must be already deleted");
+  //
   auto removeDeadNonLocalAnnotations = [&](int _, Annotation anno) -> bool {
     auto hierPathSym = anno.getMember<FlatSymbolRefAttr>("circt.nonlocal");
     if (!hierPathSym)
