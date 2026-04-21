@@ -405,9 +405,6 @@ public:
   /// Get the number of fully evaluated nodes tracked by this evaluator.
   uint64_t getFullyEvaluatedCount() const { return fullyEvaluatedCount; }
 
-  /// Reset the fully evaluated count to zero.
-  void resetFullyEvaluatedCount() { fullyEvaluatedCount = 0; }
-
 private:
   bool isFullyEvaluated(Value value, ActualParameters key) {
     return isFullyEvaluated({value, key});
