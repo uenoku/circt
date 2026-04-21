@@ -477,17 +477,26 @@ void IMDeadCodeElimPass::runOnOperation() {
       visitModuleOp(*module);
   }
 
+  SmallVector<Operation *> toRemove;
+
   // Rewrite module signatures or delete unreachable modules.
-  for (auto module : llvm::make_early_inc_range(
-           circuit.getBodyBlock()->getOps<FModuleOp>())) {
-    if (isBlockExecutable(module.getBodyBlock()))
-      rewriteModuleSignature(module);
-    else {
-      // If the module is unreachable from the toplevel, just delete it.
-      // Note that post-order traversal on the instance graph never visit
-      // unreachable modules so it's safe to erase the module even though
-      // `modules` seems to be capturing module pointers.
-      module.erase();
+  for (auto &op : circuit.getBodyBlock()->getOperations()) {
+    if (auto hierpath = dyn_cast<hw::HierPathOp>(&op)) {
+      if (!liveElements.count(hierpath))
+        toRemove.push_back(hierpath);
+      continue;
+    }
+    if (auto module = dyn_cast<FModuleOp>(op)) {
+      if (isBlockExecutable(module.getBodyBlock()))
+        rewriteModuleSignature(module);
+      else {
+        // If the module is unreachable from the toplevel, just delete it.
+        // Note that post-order traversal on the instance graph never visit
+        // unreachable modules so it's safe to erase the module even though
+        // `modules` seems to be capturing module pointers.
+        toRemove.push_back(module);
+      }
+      continue;
     }
   }
 
@@ -496,14 +505,11 @@ void IMDeadCodeElimPass::runOnOperation() {
                         circuit.getBodyBlock()->getOps<FModuleOp>(),
                         [&](auto op) { rewriteModuleBody(op); });
 
-  // Clean up hierpaths.
-  for (auto op : llvm::make_early_inc_range(
-           circuit.getBodyBlock()->getOps<hw::HierPathOp>()))
-    if (!liveElements.count(op))
-      op.erase();
-
   for (auto module : modules)
     eraseEmptyModule(module);
+
+  for (auto *op : toRemove)
+    op->erase();
 
   // Clean up data structures.
   executableBlocks.clear();
@@ -523,12 +529,13 @@ void IMDeadCodeElimPass::visitValue(Value value) {
     if (auto module =
             dyn_cast<FModuleOp>(blockArg.getParentBlock()->getParentOp())) {
       auto portDirection = module.getPortDirection(blockArg.getArgNumber());
-      // If the port is input, it's necessary to mark corresponding input ports
-      // of instances as alive. We don't have to propagate the liveness of
-      // output ports.
+      // If the port is input, it's necessary to mark corresponding input
+      // ports of instances as alive. We don't have to propagate the liveness
+      // of output ports.
       if (portDirection == Direction::In) {
         for (auto *instRec : instanceGraph->lookup(module)->uses()) {
-          // If this is not an instance, it must be marked overdefined already.
+          // If this is not an instance, it must be marked overdefined
+          // already.
           if (auto instance = instRec->getInstance<InstanceOp>()) {
             if (liveElements.contains(instance))
               markAlive(instance.getResult(blockArg.getArgNumber()));
@@ -603,8 +610,8 @@ void IMDeadCodeElimPass::visitSubelement(Operation *op) {
 }
 
 void IMDeadCodeElimPass::rewriteModuleBody(FModuleOp module) {
-  assert(isBlockExecutable(module.getBodyBlock()) &&
-         "unreachable modules must be already deleted");
+  if (!isBlockExecutable(module.getBodyBlock()))
+    return;
 
   auto removeDeadNonLocalAnnotations = [&](int _, Annotation anno) -> bool {
     auto hierPathSym = anno.getMember<FlatSymbolRefAttr>("circt.nonlocal");
@@ -653,8 +660,8 @@ void IMDeadCodeElimPass::rewriteModuleBody(FModuleOp module) {
 }
 
 void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
-  assert(isBlockExecutable(module.getBodyBlock()) &&
-         "unreachable modules must be already deleted");
+  if (!isBlockExecutable(module.getBodyBlock()))
+    return;
   InstanceGraphNode *instanceGraphNode = instanceGraph->lookup(module);
   LLVM_DEBUG(llvm::dbgs() << "Prune ports of module: " << module.getName()
                           << "\n");
@@ -724,8 +731,8 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
       if (module.getPortDirection(index) == Direction::In)
         continue;
 
-      // Check if the output port is demanded by any instance.  If not, then it
-      // is only demanded internally to the module.
+      // Check if the output port is demanded by any instance.  If not, then
+      // it is only demanded internally to the module.
       if (llvm::any_of(instanceGraph->lookup(module)->uses(),
                        [&](InstanceRecord *record) {
                          return isKnownAlive(
@@ -734,8 +741,8 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
                        }))
         continue;
 
-      // Ok, this port is used only within its defined module. So we can replace
-      // the port with a wire.
+      // Ok, this port is used only within its defined module. So we can
+      // replace the port with a wire.
       auto wire = WireOp::create(builder, argument.getType()).getResult();
 
       // Since `liveSet` contains the port, we have to erase it from the set.
