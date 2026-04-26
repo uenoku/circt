@@ -10,7 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Dialect/Synth/Transforms/ExactSynthesis.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOps.h"
@@ -28,6 +27,7 @@
 #include "llvm/Support/DebugLog.h"
 #include <array>
 #include <optional>
+#include <string>
 
 namespace circt {
 namespace synth {
@@ -43,6 +43,20 @@ using namespace mlir;
 #define DEBUG_TYPE "synth-exact-synthesis"
 
 namespace {
+
+struct ExactSynthesisPolicy {
+  struct PrimitiveSpec {
+    std::string opName;
+    unsigned arity;
+
+    bool operator==(const PrimitiveSpec &other) const {
+      return opName == other.opName && arity == other.arity;
+    }
+  };
+
+  SmallVector<PrimitiveSpec, 4> allowedPrimitives;
+  MLIRContext *context = nullptr;
+};
 
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxExactSearchArea = 32;
@@ -826,23 +840,3 @@ struct ExactSynthesisPass
 };
 
 } // namespace
-
-FailureOr<Value>
-circt::synth::ExactSynthesis(OpBuilder &builder, APInt truthTable,
-                             ArrayRef<Value> operands,
-                             const ExactSynthesisPolicy &policy) {
-  if (operands.size() > kMaxExactSynthesisInputs)
-    return failure();
-  if (truthTable.getBitWidth() != (1u << operands.size()))
-    return failure();
-  if (llvm::any_of(operands, [](Value operand) {
-        return !operand.getType().isInteger(1);
-      }))
-    return failure();
-
-  auto effectivePolicy = policy;
-  effectivePolicy.context = builder.getContext();
-  Location loc = builder.getUnknownLoc();
-  return exactSynthesizeAreaMinimized(builder, loc, truthTable, operands,
-                                      effectivePolicy);
-}
