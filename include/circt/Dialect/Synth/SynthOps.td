@@ -142,15 +142,9 @@ def DotOp : SynthOp<"dot", [
   ]> {
   let summary = "Ordered 3-input DOT gate with invertible inputs";
   let description = [{
-    The `synth.dot` operation represents the ordered three-input Boolean
-    function `x xor (z or (x and y))`, applied after optional per-input
-    inversion.
-
-    Unlike common AND, OR, XOR, and majority gates, `synth.dot` is not
-    permutation-invariant: its operands play distinct roles in the Boolean
-    expression. Dot gates are known to be a promising intermediate
-    representation for area optimization, as discussed in "Three-Input Gates
-    for Logic Synthesis" (Dewmini Sudara Marakkalage et al., TCAD 2021).
+    The `synth.dot` operation represents the DIG dot gate described in
+    "Three-Input Gates for Logic Synthesis". Its ordered three-input semantics
+    are `x xor (z or (x and y))`, applied after optional per-input inversion.
 
     Example:
     ```mlir
