@@ -16,7 +16,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include <memory>
+#include <utility>
 
 namespace circt {
 template <typename T>
@@ -192,6 +194,36 @@ public:
   }
   /// Add a fresh variable for safe incremental SAT solving.
   virtual int newVar() = 0;
+
+  /// Add a sequential-ladder at-most-one constraint over `vars`.
+  ///
+  /// Callers provide `newVar()` so the helper can allocate any auxiliary SAT
+  /// variables in the numbering scheme owned by the encoding.
+  template <typename NewVarFn>
+  void addAtMostOne(llvm::ArrayRef<int> vars, NewVarFn &&newVar) {
+    if (vars.size() < 2)
+      return;
+
+    llvm::SmallVector<int, 8> ladder(vars.size() - 1);
+    for (int &var : ladder)
+      var = newVar();
+
+    addClause({-vars.front(), ladder.front()});
+    for (unsigned i = 1, e = vars.size() - 1; i < e; ++i) {
+      addClause({-vars[i], ladder[i]});
+      addClause({-ladder[i - 1], ladder[i]});
+      addClause({-vars[i], -ladder[i - 1]});
+    }
+    addClause({-vars.back(), -ladder.back()});
+  }
+
+  /// Add an exactly-one constraint using one positive clause plus the
+  /// sequential-ladder at-most-one encoding above.
+  template <typename NewVarFn>
+  void addExactlyOne(llvm::ArrayRef<int> vars, NewVarFn &&newVar) {
+    addClause(vars);
+    addAtMostOne(vars, std::forward<NewVarFn>(newVar));
+  }
 };
 
 /// Emit clauses encoding `outVar <=> and(inputLits)`.
@@ -239,6 +271,21 @@ struct CadicalSATSolverOptions {
 /// Construct a CaDiCaL-backed incremental IPASIR-style SAT solver.
 std::unique_ptr<IncrementalSATSolver>
 createCadicalSATSolver(const CadicalSATSolverOptions &options = {});
+/// Construct an incremental SAT solver from a backend name.
+///
+/// Recognized backend names are `auto`, `cadical`, and `z3`. `auto` prefers
+/// CaDiCaL when available and falls back to Z3. Returns null for unknown or
+/// unavailable backends.
+std::unique_ptr<IncrementalSATSolver>
+createIncrementalSATSolver(llvm::StringRef backend);
+/// Construct an incremental SAT solver from a backend name with explicit
+/// CaDiCaL configuration.
+///
+/// The `cadicalOptions` are used when the chosen backend is CaDiCaL, whether
+/// selected directly via `cadical` or indirectly via `auto`.
+std::unique_ptr<IncrementalSATSolver>
+createIncrementalSATSolver(llvm::StringRef backend,
+                           const CadicalSATSolverOptions &cadicalOptions);
 /// Return true when at least one incremental SAT backend is available.
 bool hasIncrementalSATSolverBackend();
 

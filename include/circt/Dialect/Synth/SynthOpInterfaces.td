@@ -79,15 +79,35 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         return $_op->getResult(0);
       }]
     >,
-    InterfaceMethod<[{
+    StaticInterfaceMethod<[{
         Return whether the operation semantics are invariant under
         permutation of logical input pairs. Reordering a logical input means
         moving both the input value and its inversion flag together.
       }],
-      "bool", "areInputsPermutationInvariant", (ins), "",
-      [{
-        return false;
-      }]
+      "bool", "areInputsPermutationInvariant", (ins)
+    >,
+    StaticInterfaceMethod<[{
+        Evaluate the boolean logic operation for the provided raw operand
+        inputs. The implementations are responsible for applying any per-input
+        inversion described by the operation itself.
+      }],
+      "::llvm::APInt", "evaluateBooleanLogicWithoutInversion",
+      (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs)
+    >,
+    StaticInterfaceMethod<[{
+        Return whether this op supports the given number of logical inputs.
+      }],
+      "bool", "isSupportedNumInputs",
+      (ins "unsigned":$numInputs)
+    >,
+    StaticInterfaceMethod<[{
+        Materialize this boolean logic operation with the given operands and
+        per-input inversion flags.
+      }],
+      "::mlir::Value", "materializeBooleanLogic",
+      (ins "::mlir::OpBuilder &":$builder, "::mlir::Location":$loc,
+           "::llvm::ArrayRef<::mlir::Value>":$operands,
+           "::llvm::ArrayRef<bool>":$inverted)
     >,
     InterfaceMethod<[{
         Evaluate the boolean logic operation for the provided raw operand
@@ -96,6 +116,19 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       }],
       "::llvm::APInt", "evaluateBooleanLogic",
       (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
+    >,
+    InterfaceMethod<[{
+        Evaluate the boolean logic operation for the provided raw operand
+        inputs.
+      }],
+      "::llvm::APInt", "evaluateBooleanLogic",
+      (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs), "", 
+      [{
+        auto getInputValue = [&](unsigned index) -> const ::llvm::APInt & {
+          return inputs[index];
+        };
+        return $_op.evaluateBooleanLogic(getInputValue);
+      }]
     >,
     InterfaceMethod<[{
         Compute known bits for the result from the logical inputs.
