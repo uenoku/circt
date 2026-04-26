@@ -95,7 +95,29 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         inversion described by the operation itself.
       }],
       "::llvm::APInt", "evaluateBooleanLogicWithoutInversion",
-      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
+      (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs)
+    >,
+    StaticInterfaceMethod<[{
+        Return whether exact-synthesis should treat the primitive as
+        permutation-invariant for the given arity.
+      }],
+      "bool", "isExactSynthesisPermutationInvariant",
+      (ins "unsigned":$arity)
+    >,
+    StaticInterfaceMethod<[{
+        Return whether this op supports the given number of logical inputs.
+      }],
+      "bool", "isSupportedNumInputs",
+      (ins "unsigned":$numInputs)
+    >,
+    StaticInterfaceMethod<[{
+        Materialize an exact-synthesis primitive with the given operands and
+        per-input inversion flags.
+      }],
+      "::mlir::Value", "materializeExactSynthesisPrimitive",
+      (ins "::mlir::OpBuilder &":$builder, "::mlir::Location":$loc,
+           "::llvm::ArrayRef<::mlir::Value>":$operands,
+           "::llvm::ArrayRef<bool>":$inverted)
     >,
     InterfaceMethod<[{
         Evaluate the boolean logic operation for the provided raw operand

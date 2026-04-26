@@ -19,6 +19,7 @@
 #include "circt/Support/SATSolver.h"
 #include "circt/Support/TruthTable.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -52,6 +53,29 @@ static SmallString<32> formatTruthTable(const APInt &truthTable) {
   return text;
 }
 
+using BooleanLogicConcept =
+    circt::synth::detail::BooleanLogicOpInterfaceInterfaceTraits::Concept;
+
+static void appendPrimitiveSummary(raw_ostream &os,
+                                   const ExactSynthesisPolicy &policy) {
+  llvm::interleaveComma(policy.allowedPrimitives, os,
+                        [&](ExactSynthesisPolicy::PrimitiveSpec spec) {
+                          os << spec.opName << ":" << spec.arity;
+                        });
+}
+
+static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
+                                    unsigned arity) {
+  SmallVector<APInt, 4> inputs;
+  inputs.reserve(arity);
+  for (unsigned input = 0; input != arity; ++input)
+    inputs.push_back(circt::createVarMask(arity, input, true));
+  APInt truthTable = iface->evaluateBooleanLogicWithoutInversion(inputs);
+  assert(truthTable.getBitWidth() <= 8 &&
+         "exact-synthesis nodes expect <= 8 bits");
+  return static_cast<uint8_t>(truthTable.getZExtValue());
+}
+
 //===----------------------------------------------------------------------===//
 // Exact network model
 //===----------------------------------------------------------------------===//
@@ -81,10 +105,13 @@ using ExactCandidate = ExactNetworkStep;
 /// Declarative description of a node kind that the exact search may place.
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
-      : arity(arity), commutative(commutative), truthTable(truthTable) {}
+  ExactNodeInfo(std::string opName, unsigned arity, bool commutative,
+                uint8_t truthTable, const BooleanLogicConcept *iface)
+      : opName(std::move(opName)), arity(arity), commutative(commutative),
+        truthTable(truthTable), iface(iface) {}
   virtual ~ExactNodeInfo() = default;
 
+  StringRef getOperationName() const { return opName; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
   uint8_t getTruthTable() const { return truthTable; }
@@ -99,44 +126,46 @@ public:
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
           getSourceLiteral) const;
-  virtual Value materialize(OpBuilder &builder, Location loc,
-                            ArrayRef<Value> operands,
-                            ArrayRef<bool> inverted) const = 0;
+  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+                    ArrayRef<bool> inverted) const {
+    return iface->materializeExactSynthesisPrimitive(builder, loc, operands,
+                                                     inverted);
+  }
 
 private:
+  std::string opName;
   unsigned arity;
   bool commutative;
   uint8_t truthTable;
+  const BooleanLogicConcept *iface;
 };
 
-template <typename OpTy>
-class ExactPrimitiveNodeInfo final : public ExactNodeInfo {
-public:
-  ExactPrimitiveNodeInfo(unsigned arity, bool commutative, uint8_t truthTable)
-      : ExactNodeInfo(arity, commutative, truthTable) {}
+static const ExactNodeInfo *
+getPrimitiveNodeInfo(MLIRContext *context, StringRef opName, unsigned arity) {
+  static SmallVector<std::unique_ptr<ExactNodeInfo>, 4> infos;
+  for (const auto &info : infos)
+    if (info->getArity() == arity && opName == info->getOperationName())
+      return info.get();
 
-  Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-                    ArrayRef<bool> inverted) const override {
-    assert(operands.size() == getArity() &&
-           "node expects fixed arity operands");
-    assert(inverted.size() == getArity() &&
-           "node expects one inversion flag per operand");
-    return OpTy::create(builder, loc, operands, inverted);
-  }
-};
+  auto registeredInfo = RegisteredOperationName::lookup(opName, context);
+  assert(registeredInfo && "exact-synthesis op must be registered");
+  auto *iface = registeredInfo->getInterface<BooleanLogicOpInterface>();
+  assert(iface && "exact-synthesis op must implement BooleanLogicOpInterface");
+  bool commutative = iface->isExactSynthesisPermutationInvariant(arity);
+  infos.push_back(std::make_unique<ExactNodeInfo>(
+      opName.str(), arity, commutative, deriveNodeTruthTable(iface, arity),
+      iface));
+  return infos.back().get();
+}
 
-static SmallVector<const ExactNodeInfo *, 3>
+static SmallVector<const ExactNodeInfo *, 4>
 getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
-  static const ExactPrimitiveNodeInfo<aig::AndInverterOp> and2(2, true, 0x8);
-  static const ExactPrimitiveNodeInfo<XorInverterOp> xor2(2, true, 0x6);
-  static const ExactPrimitiveNodeInfo<DotOp> dot3(3, false, 0x52);
-  SmallVector<const ExactNodeInfo *, 3> infos;
-  if (policy.allowAnd)
-    infos.push_back(&and2);
-  if (policy.allowXor)
-    infos.push_back(&xor2);
-  if (policy.allowDot)
-    infos.push_back(&dot3);
+  SmallVector<const ExactNodeInfo *, 4> infos;
+  infos.reserve(policy.allowedPrimitives.size());
+  assert(policy.context && "exact-synthesis policy must carry an MLIRContext");
+  for (const auto &spec : policy.allowedPrimitives)
+    infos.push_back(
+        getPrimitiveNodeInfo(policy.context, spec.opName, spec.arity));
   return infos;
 }
 
@@ -267,11 +296,6 @@ private:
 
   /// Build the SAT encoding for a fixed-area exact synthesis problem.
   bool buildEncoding();
-
-  /// Enforce a canonical local ordering so equivalent adjacent steps are not
-  /// explored in both permutations.
-  void addAdjacentStepSymmetryBreakingConstraints();
-  void addAdjacentStepOrdering(unsigned prevStep, unsigned nextStep);
 
   /// Connect each selected candidate to the truth value of the step output at
   /// every minterm.
@@ -568,7 +592,6 @@ bool GenericExactSATProblem::buildEncoding() {
     addExactlyOne(selectionVars);
   }
 
-  // addAdjacentStepSymmetryBreakingConstraints();
   // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
   addUseAllStepsConstraints();
@@ -588,39 +611,6 @@ bool GenericExactSATProblem::buildEncoding() {
     }
   }
   return true;
-}
-
-void GenericExactSATProblem::addAdjacentStepSymmetryBreakingConstraints() {
-  for (unsigned step = 0; step + 1 < numSteps; ++step)
-    addAdjacentStepOrdering(step, step + 1);
-}
-
-void GenericExactSATProblem::addAdjacentStepOrdering(unsigned prevStep,
-                                                     unsigned nextStep) {
-  const auto &prevCandidates = stepCandidates[prevStep];
-  const auto &nextCandidates = stepCandidates[nextStep];
-  const auto &prevSelectionVars = stepSelectionVars[prevStep];
-  const auto &nextSelectionVars = stepSelectionVars[nextStep];
-
-  for (auto [prevIndex, prevCandidate] : llvm::enumerate(prevCandidates)) {
-    SmallVector<int, 64> allowedNextSelections;
-    for (auto [nextIndex, nextCandidate] : llvm::enumerate(nextCandidates))
-      if (!ExactCandidateEnumerator::isOrderedBefore(nextCandidate,
-                                                     prevCandidate))
-        allowedNextSelections.push_back(nextSelectionVars[nextIndex]);
-    if (allowedNextSelections.empty())
-      continue;
-
-    // Adjacent steps are interchangeable in the abstract network: swapping
-    // their SAT identities does not change the realized DAG. This clause
-    // keeps only the nondecreasing ordering of adjacent selected candidates,
-    // cutting away the duplicate model where the same two steps are swapped.
-    SmallVector<int, 65> clause;
-    clause.reserve(allowedNextSelections.size() + 1);
-    clause.push_back(-prevSelectionVars[prevIndex]);
-    clause.append(allowedNextSelections.begin(), allowedNextSelections.end());
-    solver.addClause(clause);
-  }
 }
 
 void GenericExactSATProblem::addCandidateSemanticsConstraints() {
@@ -687,8 +677,9 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   ExactNetworkMaterializer materializer(builder, loc, operands);
   unsigned numInputs = operands.size();
   LDBG() << "Exact synthesis request: inputs=" << numInputs << " truthTable=0x"
-         << formatTruthTable(truthTable) << " policy(and=" << policy.allowAnd
-         << ", xor=" << policy.allowXor << ", dot=" << policy.allowDot << ")\n";
+         << formatTruthTable(truthTable) << " allowed-primitives=";
+  appendPrimitiveSummary(llvm::dbgs(), policy);
+  LDBG() << "\n";
 
   if (!hasEnabledConstructs(policy))
     return failure();
@@ -763,10 +754,73 @@ struct ExactSynthesisPass
     : public circt::synth::impl::ExactSynthesisBase<ExactSynthesisPass> {
   using ExactSynthesisBase::ExactSynthesisBase;
 
+  FailureOr<ExactSynthesisPolicy> getPolicy() {
+    ExactSynthesisPolicy policy;
+    policy.context = &getContext();
+
+    if (allowedOps.empty()) {
+      getOperation()->emitError() << "synth-exact-synthesis requires at least "
+                                     "one 'allowed-ops=name:arity' entry";
+      return failure();
+    }
+
+    for (const std::string &allowedOp : allowedOps) {
+      StringRef spelling = allowedOp;
+      auto parts = spelling.split(':');
+      StringRef name = parts.first.trim();
+      StringRef arityText = parts.second.trim();
+      auto registeredInfo =
+          RegisteredOperationName::lookup(name, policy.context);
+      if (!registeredInfo) {
+        getOperation()->emitError()
+            << "unknown allowed exact-synthesis op '" << name << "'";
+        return failure();
+      }
+      auto *iface = registeredInfo->getInterface<BooleanLogicOpInterface>();
+      if (!iface) {
+        getOperation()->emitError()
+            << "op '" << name << "' does not implement BooleanLogicOpInterface";
+        return failure();
+      }
+
+      auto addUnique = [&](ExactSynthesisPolicy::PrimitiveSpec spec) {
+        if (!llvm::is_contained(policy.allowedPrimitives, spec))
+          policy.allowedPrimitives.push_back(spec);
+      };
+
+      if (arityText.empty()) {
+        getOperation()->emitError() << "expected explicit arity for '" << name
+                                    << "', e.g. '" << name << ":3'";
+        return failure();
+      }
+      unsigned arity = 0;
+      if (arityText.getAsInteger(10, arity)) {
+        getOperation()->emitError()
+            << "invalid arity in allowed op '" << spelling << "'";
+        return failure();
+      }
+      if (arity < 2 || arity > kMaxExactSynthesisInputs) {
+        getOperation()->emitError()
+            << "unsupported arity " << arity << " for '" << name << "'";
+        return failure();
+      }
+      if (!iface->isSupportedNumInputs(arity)) {
+        getOperation()->emitError()
+            << "op '" << name << "' does not support exact-synthesis arity "
+            << arity;
+        return failure();
+      }
+      addUnique({name.str(), arity});
+    }
+    return policy;
+  }
+
   void runOnOperation() override {
+    auto policy = getPolicy();
+    if (failed(policy))
+      return signalPassFailure();
     RewritePatternSet patterns(&getContext());
-    patterns.add<ExactSynthesisPattern>(
-        &getContext(), ExactSynthesisPolicy{allowAnd, allowXor, allowDot});
+    patterns.add<ExactSynthesisPattern>(&getContext(), *policy);
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
 };
@@ -786,7 +840,9 @@ circt::synth::ExactSynthesis(OpBuilder &builder, APInt truthTable,
       }))
     return failure();
 
+  auto effectivePolicy = policy;
+  effectivePolicy.context = builder.getContext();
   Location loc = builder.getUnknownLoc();
   return exactSynthesizeAreaMinimized(builder, loc, truthTable, operands,
-                                      policy);
+                                      effectivePolicy);
 }

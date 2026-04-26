@@ -1,4 +1,4 @@
-// RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allow-and=false allow-xor=false})' | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot:3})' | FileCheck %s
 
 // CHECK-LABEL: hw.module @dot_tt
 // CHECK: %[[DOT:.+]] = synth.dot{{.*}}: i1

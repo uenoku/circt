@@ -1,4 +1,4 @@
-// RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allow-xor=false allow-dot=false})' | FileCheck %s
+// RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.aig.and_inv:2})' | FileCheck %s
 
 // CHECK-LABEL: hw.module @and_tt
 // CHECK: %[[AND:.+]] = synth.aig.and_inv %b, %a : i1

@@ -340,12 +340,8 @@ def ExactSynthesis : Pass<"synth-exact-synthesis"> {
     unsolved truth tables are left unchanged.
   }];
   let options = [
-    Option<"allowAnd", "allow-and", "bool", "true",
-           "Allow synth.aig.and_inv nodes in synthesized implementations">,
-    Option<"allowXor", "allow-xor", "bool", "true",
-           "Allow synth.xor_inv nodes in synthesized implementations">,
-    Option<"allowDot", "allow-dot", "bool", "true",
-           "Allow synth.dot nodes in synthesized implementations">
+    ListOption<"allowedOps", "allowed-ops", "std::string",
+               "Allowed exact-synthesis primitives with explicit arity.">,
   ];
   let dependentDialects = ["comb::CombDialect", "hw::HWDialect",
                            "synth::SynthDialect"];

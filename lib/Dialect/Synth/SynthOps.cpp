@@ -251,14 +251,35 @@ LogicalResult AndInverterOp::canonicalize(AndInverterOp op,
 
 APInt AndInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  assert(getNumOperands() > 0 && "Expected non-empty input list");
-  APInt result = APInt::getAllOnes(getInputValue(0).getBitWidth());
-  for (auto [idx, inverted] : llvm::enumerate(getInverted())) {
-    const APInt &input = getInputValue(idx);
-    // Model each operand inversion before intersecting with the running AND.
-    result &= applyInversion(input, inverted);
-  }
+  SmallVector<APInt, 4> adjustedInputs;
+  adjustedInputs.reserve(getNumOperands());
+  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
+    adjustedInputs.push_back(applyInversion(getInputValue(idx), inverted));
+  return evaluateBooleanLogicWithoutInversion(adjustedInputs);
+}
+
+APInt AndInverterOp::evaluateBooleanLogicWithoutInversion(
+    llvm::ArrayRef<APInt> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  APInt result = APInt::getAllOnes(inputs.front().getBitWidth());
+  for (const APInt &input : inputs)
+    result &= input;
   return result;
+}
+
+bool AndInverterOp::isExactSynthesisPermutationInvariant(unsigned arity) {
+  (void)arity;
+  return true;
+}
+
+bool AndInverterOp::isSupportedNumInputs(unsigned numInputs) {
+  return numInputs >= 2;
+}
+
+Value AndInverterOp::materializeExactSynthesisPrimitive(
+    OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+    ArrayRef<bool> inverted) {
+  return AndInverterOp::create(builder, loc, operands, inverted);
 }
 
 llvm::KnownBits AndInverterOp::computeKnownBits(
@@ -404,11 +425,35 @@ LogicalResult XorInverterOp::canonicalize(XorInverterOp op,
 
 APInt XorInverterOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  assert(getNumOperands() > 0 && "Expected non-empty input list");
-  APInt result = APInt::getZero(getInputValue(0).getBitWidth());
+  SmallVector<APInt, 4> adjustedInputs;
+  adjustedInputs.reserve(getNumOperands());
   for (auto [idx, inverted] : llvm::enumerate(getInverted()))
-    result ^= applyInversion(getInputValue(idx), inverted);
+    adjustedInputs.push_back(applyInversion(getInputValue(idx), inverted));
+  return evaluateBooleanLogicWithoutInversion(adjustedInputs);
+}
+
+APInt XorInverterOp::evaluateBooleanLogicWithoutInversion(
+    llvm::ArrayRef<APInt> inputs) {
+  assert(!inputs.empty() && "expected non-empty input list");
+  APInt result = APInt::getZero(inputs.front().getBitWidth());
+  for (const APInt &input : inputs)
+    result ^= input;
   return result;
+}
+
+bool XorInverterOp::isExactSynthesisPermutationInvariant(unsigned arity) {
+  (void)arity;
+  return true;
+}
+
+bool XorInverterOp::isSupportedNumInputs(unsigned numInputs) {
+  return numInputs >= 2;
+}
+
+Value XorInverterOp::materializeExactSynthesisPrimitive(
+    OpBuilder &builder, Location loc, ArrayRef<Value> operands,
+    ArrayRef<bool> inverted) {
+  return XorInverterOp::create(builder, loc, operands, inverted);
 }
 
 llvm::KnownBits XorInverterOp::computeKnownBits(
@@ -479,10 +524,35 @@ LogicalResult DotOp::verify() {
 
 APInt DotOp::evaluateBooleanLogic(
     llvm::function_ref<const APInt &(unsigned)> getInputValue) {
-  APInt x = applyInversion(getInputValue(0), isInverted(0));
-  APInt y = applyInversion(getInputValue(1), isInverted(1));
-  APInt z = applyInversion(getInputValue(2), isInverted(2));
+  SmallVector<APInt, 3> adjustedInputs;
+  adjustedInputs.reserve(3);
+  for (auto [idx, inverted] : llvm::enumerate(getInverted()))
+    adjustedInputs.push_back(applyInversion(getInputValue(idx), inverted));
+  return evaluateBooleanLogicWithoutInversion(adjustedInputs);
+}
+
+APInt DotOp::evaluateBooleanLogicWithoutInversion(
+    llvm::ArrayRef<APInt> inputs) {
+  assert(inputs.size() == 3 && "dot expects exactly three operands");
+  const APInt &x = inputs[0];
+  const APInt &y = inputs[1];
+  const APInt &z = inputs[2];
   return evaluateDotLogic(x, y, z);
+}
+
+bool DotOp::isExactSynthesisPermutationInvariant(unsigned arity) {
+  assert(arity == 3 && "dot expects exactly three operands");
+  return false;
+}
+
+bool DotOp::isSupportedNumInputs(unsigned numInputs) {
+  return numInputs == 3;
+}
+
+Value DotOp::materializeExactSynthesisPrimitive(OpBuilder &builder, Location loc,
+                                                ArrayRef<Value> operands,
+                                                ArrayRef<bool> inverted) {
+  return DotOp::create(builder, loc, operands, inverted);
 }
 
 llvm::KnownBits DotOp::computeKnownBits(
