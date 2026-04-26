@@ -192,7 +192,10 @@ void StructuralHashDriver::visitVariadicOp(BooleanLogicOpInterface logicOp) {
 
   // Canonicalize operand order only when the operation semantics permit
   // reordering full (input, inverted) pairs.
-  if (logicOp.areInputsPermutationInvariant()) {
+  auto *iface =
+      op->getName().getInterface<circt::synth::BooleanLogicOpInterface>();
+  assert(iface && "expected BooleanLogicOpInterface on logic op");
+  if (iface->areInputsPermutationInvariant()) {
     llvm::sort(key.operandPairs, [&](auto a, auto b) {
       size_t aNum = getNumber(a.getPointer());
       size_t bNum = getNumber(b.getPointer());

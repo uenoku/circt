@@ -94,3 +94,13 @@ hw.module @onehot_commutative(in %x: i1, in %y: i1, in %z: i1, out o0: i1, out o
   %1 = synth.onehot not %y, %x, %z : i1
   hw.output %0, %1 : i1, i1
 }
+
+// CHECK-LABEL: hw.module @dot_ordered_permutation
+hw.module @dot_ordered_permutation(in %x: i1, in %y: i1, in %z: i1, out o0: i1, out o1: i1) {
+  // CHECK: %[[D0:.+]] = synth.dot %x, %y, %z : i1
+  // CHECK-NEXT: %[[D1:.+]] = synth.dot %y, %x, %z : i1
+  // CHECK-NEXT: hw.output %[[D0]], %[[D1]] : i1, i1
+  %0 = synth.dot %x, %y, %z : i1
+  %1 = synth.dot %y, %x, %z : i1
+  hw.output %0, %1 : i1, i1
+}
