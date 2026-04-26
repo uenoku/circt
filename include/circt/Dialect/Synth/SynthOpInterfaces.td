@@ -89,6 +89,14 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         return false;
       }]
     >,
+    StaticInterfaceMethod<[{
+        Evaluate the boolean logic operation for the provided raw operand
+        inputs. The implementations are responsible for applying any per-input
+        inversion described by the operation itself.
+      }],
+      "::llvm::APInt", "evaluateBooleanLogicWithoutInversion",
+      (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
+    >,
     InterfaceMethod<[{
         Evaluate the boolean logic operation for the provided raw operand
         inputs. The implementations are responsible for applying any per-input
@@ -96,6 +104,19 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       }],
       "::llvm::APInt", "evaluateBooleanLogic",
       (ins "::llvm::function_ref<const ::llvm::APInt &(unsigned)>":$getInputValue)
+    >,
+    InterfaceMethod<[{
+        Evaluate the boolean logic operation for the provided raw operand
+        inputs.
+      }],
+      "::llvm::APInt", "evaluateBooleanLogic",
+      (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs), "", 
+      [{
+        auto getInputValue = [&](unsigned index) -> const ::llvm::APInt & {
+          return inputs[index];
+        };
+        return $_op.evaluateBooleanLogic(getInputValue);
+      }]
     >,
     InterfaceMethod<[{
         Compute known bits for the result from the logical inputs.
