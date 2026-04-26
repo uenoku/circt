@@ -46,7 +46,7 @@ namespace {
 
 struct ExactSynthesisPolicy {
   struct PrimitiveSpec {
-    std::string opName;
+    OperationName opName;
     unsigned arity;
 
     bool operator==(const PrimitiveSpec &other) const {
@@ -74,7 +74,7 @@ static void appendPrimitiveSummary(raw_ostream &os,
                                    const ExactSynthesisPolicy &policy) {
   llvm::interleaveComma(policy.allowedPrimitives, os,
                         [&](ExactSynthesisPolicy::PrimitiveSpec spec) {
-                          os << spec.opName << ":" << spec.arity;
+                          os << spec.opName.getStringRef() << ":" << spec.arity;
                         });
 }
 
@@ -119,13 +119,13 @@ using ExactCandidate = ExactNetworkStep;
 /// Declarative description of a node kind that the exact search may place.
 class ExactNodeInfo {
 public:
-  ExactNodeInfo(std::string opName, unsigned arity, bool commutative,
+  ExactNodeInfo(OperationName opName, unsigned arity, bool commutative,
                 uint8_t truthTable, const BooleanLogicConcept *iface)
-      : opName(std::move(opName)), arity(arity), commutative(commutative),
+      : opName(opName), arity(arity), commutative(commutative),
         truthTable(truthTable), iface(iface) {}
   virtual ~ExactNodeInfo() = default;
 
-  StringRef getOperationName() const { return opName; }
+  OperationName getOperationName() const { return opName; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
   uint8_t getTruthTable() const { return truthTable; }
@@ -147,28 +147,25 @@ public:
   }
 
 private:
-  std::string opName;
+  OperationName opName;
   unsigned arity;
   bool commutative;
   uint8_t truthTable;
   const BooleanLogicConcept *iface;
 };
 
-static const ExactNodeInfo *
-getPrimitiveNodeInfo(MLIRContext *context, StringRef opName, unsigned arity) {
+static const ExactNodeInfo *getPrimitiveNodeInfo(OperationName opName,
+                                                 unsigned arity) {
   static SmallVector<std::unique_ptr<ExactNodeInfo>, 4> infos;
   for (const auto &info : infos)
     if (info->getArity() == arity && opName == info->getOperationName())
       return info.get();
 
-  auto registeredInfo = RegisteredOperationName::lookup(opName, context);
-  assert(registeredInfo && "exact-synthesis op must be registered");
-  auto *iface = registeredInfo->getInterface<BooleanLogicOpInterface>();
+  auto *iface = opName.getInterface<BooleanLogicOpInterface>();
   assert(iface && "exact-synthesis op must implement BooleanLogicOpInterface");
   bool commutative = iface->isExactSynthesisPermutationInvariant(arity);
   infos.push_back(std::make_unique<ExactNodeInfo>(
-      opName.str(), arity, commutative, deriveNodeTruthTable(iface, arity),
-      iface));
+      opName, arity, commutative, deriveNodeTruthTable(iface, arity), iface));
   return infos.back().get();
 }
 
@@ -178,8 +175,7 @@ getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
   infos.reserve(policy.allowedPrimitives.size());
   assert(policy.context && "exact-synthesis policy must carry an MLIRContext");
   for (const auto &spec : policy.allowedPrimitives)
-    infos.push_back(
-        getPrimitiveNodeInfo(policy.context, spec.opName, spec.arity));
+    infos.push_back(getPrimitiveNodeInfo(spec.opName, spec.arity));
   return infos;
 }
 
@@ -726,15 +722,8 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   return failure();
 }
 
-static APInt convertLookupTableToAPInt(ArrayRef<bool> table) {
-  APInt truthTable(table.size(), 0);
-  for (size_t index = 0, e = table.size(); index != e; ++index)
-    truthTable.setBitVal(index, table[index]);
-  return truthTable;
-}
-
 //===----------------------------------------------------------------------===//
-// Rewrite plumbing
+// Rewrite Pass
 //===----------------------------------------------------------------------===//
 
 struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
@@ -750,9 +739,12 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
     operands.reserve(op.getInputs().size());
     for (Value operand : llvm::reverse(op.getInputs()))
       operands.push_back(operand);
-    auto result = exactSynthesizeAreaMinimized(
-        rewriter, op.getLoc(), convertLookupTableToAPInt(op.getLookupTable()),
-        operands, policy);
+
+    APInt truthTable(op.getLookupTable().size(), 0);
+    for (size_t index = 0, e = op.getLookupTable().size(); index != e; ++index)
+      truthTable.setBitVal(index, op.getLookupTable()[index]);
+    auto result = exactSynthesizeAreaMinimized(rewriter, op.getLoc(),
+                                               truthTable, operands, policy);
     if (failed(result))
       return failure();
 
@@ -768,13 +760,14 @@ struct ExactSynthesisPass
     : public circt::synth::impl::ExactSynthesisBase<ExactSynthesisPass> {
   using ExactSynthesisBase::ExactSynthesisBase;
 
-  FailureOr<ExactSynthesisPolicy> getPolicy() {
+  FailureOr<ExactSynthesisPolicy> parsePolicy(MLIRContext *context) const {
     ExactSynthesisPolicy policy;
-    policy.context = &getContext();
+    policy.context = context;
 
     if (allowedOps.empty()) {
-      getOperation()->emitError() << "synth-exact-synthesis requires at least "
-                                     "one 'allowed-ops=name:arity' entry";
+      emitError(UnknownLoc::get(context))
+          << "synth-exact-synthesis requires at least one "
+             "'allowed-ops=name:arity' entry";
       return failure();
     }
 
@@ -783,16 +776,15 @@ struct ExactSynthesisPass
       auto parts = spelling.split(':');
       StringRef name = parts.first.trim();
       StringRef arityText = parts.second.trim();
-      auto registeredInfo =
-          RegisteredOperationName::lookup(name, policy.context);
+      auto registeredInfo = RegisteredOperationName::lookup(name, context);
       if (!registeredInfo) {
-        getOperation()->emitError()
+        emitError(UnknownLoc::get(context))
             << "unknown allowed exact-synthesis op '" << name << "'";
         return failure();
       }
       auto *iface = registeredInfo->getInterface<BooleanLogicOpInterface>();
       if (!iface) {
-        getOperation()->emitError()
+        emitError(UnknownLoc::get(context))
             << "op '" << name << "' does not implement BooleanLogicOpInterface";
         return failure();
       }
@@ -803,40 +795,49 @@ struct ExactSynthesisPass
       };
 
       if (arityText.empty()) {
-        getOperation()->emitError() << "expected explicit arity for '" << name
-                                    << "', e.g. '" << name << ":3'";
+        emitError(UnknownLoc::get(context))
+            << "expected explicit arity for '" << name << "', e.g. '" << name
+            << ":3'";
         return failure();
       }
       unsigned arity = 0;
       if (arityText.getAsInteger(10, arity)) {
-        getOperation()->emitError()
+        emitError(UnknownLoc::get(context))
             << "invalid arity in allowed op '" << spelling << "'";
         return failure();
       }
       if (arity < 2 || arity > kMaxExactSynthesisInputs) {
-        getOperation()->emitError()
+        emitError(UnknownLoc::get(context))
             << "unsupported arity " << arity << " for '" << name << "'";
         return failure();
       }
       if (!iface->isSupportedNumInputs(arity)) {
-        getOperation()->emitError()
+        emitError(UnknownLoc::get(context))
             << "op '" << name << "' does not support exact-synthesis arity "
             << arity;
         return failure();
       }
-      addUnique({name.str(), arity});
+      addUnique({OperationName(*registeredInfo), arity});
     }
     return policy;
   }
 
+  LogicalResult initialize(MLIRContext *context) override {
+    auto parsedPolicy = parsePolicy(context);
+    if (failed(parsedPolicy))
+      return failure();
+    policy = *parsedPolicy;
+    return success();
+  }
+
   void runOnOperation() override {
-    auto policy = getPolicy();
-    if (failed(policy))
-      return signalPassFailure();
     RewritePatternSet patterns(&getContext());
-    patterns.add<ExactSynthesisPattern>(&getContext(), *policy);
+    patterns.add<ExactSynthesisPattern>(&getContext(), policy);
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
+
+private:
+  ExactSynthesisPolicy policy;
 };
 
 } // namespace
