@@ -106,6 +106,9 @@ struct ExactSignalRef {
 struct ExactNetworkStep {
   const ExactNodeInfo *info = nullptr;
   SmallVector<ExactSignalRef, 3> fanins;
+
+  unsigned getInversionMask() const;
+  bool operator<(const ExactNetworkStep &rhs) const;
 };
 
 struct ExactNetwork {
@@ -142,8 +145,7 @@ public:
           getSourceLiteral) const;
   Value materialize(OpBuilder &builder, Location loc, ArrayRef<Value> operands,
                     ArrayRef<bool> inverted) const {
-    return iface->materializeExactSynthesisPrimitive(builder, loc, operands,
-                                                     inverted);
+    return iface->materializeBooleanLogic(builder, loc, operands, inverted);
   }
 
 private:
@@ -154,6 +156,26 @@ private:
   const BooleanLogicConcept *iface;
 };
 
+unsigned ExactNetworkStep::getInversionMask() const {
+  unsigned mask = 0;
+  for (auto [index, fanin] : llvm::enumerate(fanins))
+    if (fanin.inverted)
+      mask |= 1u << index;
+  return mask;
+}
+
+bool ExactNetworkStep::operator<(const ExactNetworkStep &rhs) const {
+  if (fanins.size() != rhs.fanins.size())
+    return fanins.size() < rhs.fanins.size();
+  for (size_t i = 0, e = fanins.size(); i != e; ++i) {
+    if (fanins[i].source != rhs.fanins[i].source)
+      return fanins[i].source < rhs.fanins[i].source;
+  }
+  if (info != rhs.info)
+    return info->getTruthTable() < rhs.info->getTruthTable();
+  return getInversionMask() < rhs.getInversionMask();
+}
+
 static const ExactNodeInfo *getPrimitiveNodeInfo(OperationName opName,
                                                  unsigned arity) {
   static SmallVector<std::unique_ptr<ExactNodeInfo>, 4> infos;
@@ -163,7 +185,7 @@ static const ExactNodeInfo *getPrimitiveNodeInfo(OperationName opName,
 
   auto *iface = opName.getInterface<BooleanLogicOpInterface>();
   assert(iface && "exact-synthesis op must implement BooleanLogicOpInterface");
-  bool commutative = iface->isExactSynthesisPermutationInvariant(arity);
+  bool commutative = iface->areInputsPermutationInvariant();
   infos.push_back(std::make_unique<ExactNodeInfo>(
       opName, arity, commutative, deriveNodeTruthTable(iface, arity), iface));
   return infos.back().get();
@@ -225,14 +247,7 @@ public:
   void enumerate(const ExactSynthesisPolicy &policy, unsigned availableSources,
                  SmallVectorImpl<ExactCandidate> &candidates) const;
 
-  static bool isOrderedBefore(const ExactCandidate &lhs,
-                              const ExactCandidate &rhs);
-
 private:
-  static unsigned getInversionMask(const ExactCandidate &candidate);
-  static bool isCandidateLess(const ExactCandidate &lhs,
-                              const ExactCandidate &rhs);
-
   static void enumerateCommutativeOperandSources(
       unsigned availableSources, unsigned arity, unsigned currentArity,
       unsigned nextSource, SmallVectorImpl<unsigned> &sources,
@@ -282,8 +297,7 @@ private:
   OpBuilder &builder;
   Location loc;
   ArrayRef<Value> inputs;
-  Value constZero;
-  Value constOne;
+  std::array<Value, 2> constValues;
 };
 
 //===----------------------------------------------------------------------===//
@@ -301,14 +315,17 @@ public:
 private:
   int newVar();
   void addExactlyOne(ArrayRef<int> vars);
+  /// Return the SAT variable for one source under one concrete input pattern.
   int getSourceValueVar(unsigned source, unsigned minterm) const;
+  /// Return that same variable as a literal, optionally negated.
   int getSourceLiteral(unsigned source, unsigned minterm, bool inverted) const;
 
-  /// Build the SAT encoding for a fixed-area exact synthesis problem.
+  /// Build the SAT model for "can this truth table be implemented with exactly
+  /// `numSteps` internal nodes?".
   bool buildEncoding();
 
-  /// Connect each selected candidate to the truth value of the step output at
-  /// every minterm.
+  /// Say what each step output must be for each candidate and each input
+  /// pattern.
   void addCandidateSemanticsConstraints();
 
   /// Force every step except the root to feed some later selected step.
@@ -363,36 +380,9 @@ void ExactCandidateEnumerator::enumerate(
   candidates.clear();
   for (const auto *info : getEnabledNodeInfos(policy))
     enumerateNodeCandidates(*info, availableSources, candidates);
-  llvm::sort(candidates, isCandidateLess);
+  llvm::sort(candidates);
   LDBG() << "Enumerated " << candidates.size()
          << " candidates with availableSources=" << availableSources << "\n";
-}
-
-bool ExactCandidateEnumerator::isOrderedBefore(const ExactCandidate &lhs,
-                                               const ExactCandidate &rhs) {
-  return isCandidateLess(lhs, rhs);
-}
-
-unsigned
-ExactCandidateEnumerator::getInversionMask(const ExactCandidate &candidate) {
-  unsigned mask = 0;
-  for (auto [index, fanin] : llvm::enumerate(candidate.fanins))
-    if (fanin.inverted)
-      mask |= 1u << index;
-  return mask;
-}
-
-bool ExactCandidateEnumerator::isCandidateLess(const ExactCandidate &lhs,
-                                               const ExactCandidate &rhs) {
-  if (lhs.fanins.size() != rhs.fanins.size())
-    return lhs.fanins.size() < rhs.fanins.size();
-  for (size_t i = 0, e = lhs.fanins.size(); i != e; ++i) {
-    if (lhs.fanins[i].source != rhs.fanins[i].source)
-      return lhs.fanins[i].source < rhs.fanins[i].source;
-  }
-  if (lhs.info != rhs.info)
-    return lhs.info->getTruthTable() < rhs.info->getTruthTable();
-  return getInversionMask(lhs) < getInversionMask(rhs);
 }
 
 void ExactCandidateEnumerator::enumerateCommutativeOperandSources(
@@ -497,14 +487,10 @@ Value ExactNetworkMaterializer::materialize(const ExactNetwork &network) {
 }
 
 Value ExactNetworkMaterializer::getConstant(bool value) {
-  if (!value) {
-    if (!constZero)
-      constZero = hw::ConstantOp::create(builder, loc, APInt(1, 0));
-    return constZero;
-  }
-  if (!constOne)
-    constOne = hw::ConstantOp::create(builder, loc, APInt(1, 1));
-  return constOne;
+  if (constValues[value])
+    return constValues[value];
+  return constValues[value] =
+             hw::ConstantOp::create(builder, loc, APInt(1, value));
 }
 
 Value ExactNetworkMaterializer::getRawSignal(ExactSignalRef signal,
@@ -569,6 +555,15 @@ int GenericExactSATProblem::getSourceLiteral(unsigned source, unsigned minterm,
 }
 
 bool GenericExactSATProblem::buildEncoding() {
+  // A minterm is one concrete input pattern, e.g. for 3 inputs:
+  //   000, 001, 010, ... , 111.
+  //
+  // For every source and every minterm, create one SAT variable that means:
+  //   "this source has value 1 under this input pattern".
+  //
+  // Source 0 is the built-in constant 0.
+  // Sources [1, numInputs] are the primary inputs.
+  // The remaining sources are the synthesized internal steps.
   sourceValueVars.resize(totalSources);
   for (unsigned source = 0; source != totalSources; ++source) {
     sourceValueVars[source].reserve(numMinterms);
@@ -576,15 +571,23 @@ bool GenericExactSATProblem::buildEncoding() {
       sourceValueVars[source].push_back(newVar());
   }
 
+  // Source 0 is always false, for every input pattern.
   for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
     solver.addClause({-getSourceValueVar(0, minterm)});
 
+  // Fix the primary input sources to match each input pattern.
+  // Example: if minterm = 5 (binary 101), then input 0 is 1, input 1 is 0,
+  // and input 2 is 1.
   for (unsigned input = 0; input != numInputs; ++input)
     for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
       solver.addClause({((minterm >> input) & 1)
                             ? getSourceValueVar(1 + input, minterm)
                             : -getSourceValueVar(1 + input, minterm)});
 
+  // For each internal step:
+  // 1. list every legal candidate node that could be placed here
+  // 2. create one selector variable per candidate
+  // 3. force exactly one candidate to be chosen
   stepCandidates.resize(numSteps);
   stepSelectionVars.resize(numSteps);
   for (unsigned step = 0; step != numSteps; ++step) {
@@ -602,10 +605,15 @@ bool GenericExactSATProblem::buildEncoding() {
     addExactlyOne(selectionVars);
   }
 
+  // Now describe what the chosen candidate means, and forbid dead internal
+  // nodes that do not feed anything later.
   // TODO: Add symmetry breaking constraints to reduce the search space.
   addCandidateSemanticsConstraints();
   addUseAllStepsConstraints();
 
+  // The final answer is the value produced by the last internal step, possibly
+  // with one final inversion. This single inversion bit is shared by all input
+  // patterns, so the solver must choose one global output polarity.
   unsigned rootSource = totalSources - 1;
   rootInvertVar = newVar();
   for (unsigned minterm = 0; minterm != numMinterms; ++minterm) {
@@ -627,6 +635,10 @@ void GenericExactSATProblem::addCandidateSemanticsConstraints() {
   for (unsigned step = 0; step != numSteps; ++step) {
     unsigned outSource = 1 + numInputs + step;
     const auto &selectionVars = stepSelectionVars[step];
+    // For every candidate of this step, and for every input pattern, add the
+    // clauses that say:
+    //   if this candidate is selected, then the step output must match that
+    //   candidate's truth table on that input pattern.
     for (auto [candidateIndex, candidate] :
          llvm::enumerate(stepCandidates[step]))
       for (unsigned minterm = 0; minterm != numMinterms; ++minterm)

@@ -79,15 +79,12 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
         return $_op->getResult(0);
       }]
     >,
-    InterfaceMethod<[{
+    StaticInterfaceMethod<[{
         Return whether the operation semantics are invariant under
         permutation of logical input pairs. Reordering a logical input means
         moving both the input value and its inversion flag together.
       }],
-      "bool", "areInputsPermutationInvariant", (ins), "",
-      [{
-        return false;
-      }]
+      "bool", "areInputsPermutationInvariant", (ins)
     >,
     StaticInterfaceMethod<[{
         Evaluate the boolean logic operation for the provided raw operand
@@ -98,23 +95,16 @@ def BooleanLogicOpInterface : OpInterface<"BooleanLogicOpInterface"> {
       (ins "::llvm::ArrayRef<::llvm::APInt>":$inputs)
     >,
     StaticInterfaceMethod<[{
-        Return whether exact-synthesis should treat the primitive as
-        permutation-invariant for the given arity.
-      }],
-      "bool", "isExactSynthesisPermutationInvariant",
-      (ins "unsigned":$arity)
-    >,
-    StaticInterfaceMethod<[{
         Return whether this op supports the given number of logical inputs.
       }],
       "bool", "isSupportedNumInputs",
       (ins "unsigned":$numInputs)
     >,
     StaticInterfaceMethod<[{
-        Materialize an exact-synthesis primitive with the given operands and
+        Materialize this boolean logic operation with the given operands and
         per-input inversion flags.
       }],
-      "::mlir::Value", "materializeExactSynthesisPrimitive",
+      "::mlir::Value", "materializeBooleanLogic",
       (ins "::mlir::OpBuilder &":$builder, "::mlir::Location":$loc,
            "::llvm::ArrayRef<::mlir::Value>":$operands,
            "::llvm::ArrayRef<bool>":$inverted)

@@ -267,18 +267,13 @@ APInt AndInverterOp::evaluateBooleanLogicWithoutInversion(
   return result;
 }
 
-bool AndInverterOp::isExactSynthesisPermutationInvariant(unsigned arity) {
-  (void)arity;
-  return true;
-}
-
 bool AndInverterOp::isSupportedNumInputs(unsigned numInputs) {
   return numInputs >= 2;
 }
 
-Value AndInverterOp::materializeExactSynthesisPrimitive(
-    OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-    ArrayRef<bool> inverted) {
+Value AndInverterOp::materializeBooleanLogic(OpBuilder &builder, Location loc,
+                                             ArrayRef<Value> operands,
+                                             ArrayRef<bool> inverted) {
   return AndInverterOp::create(builder, loc, operands, inverted);
 }
 
@@ -441,18 +436,13 @@ APInt XorInverterOp::evaluateBooleanLogicWithoutInversion(
   return result;
 }
 
-bool XorInverterOp::isExactSynthesisPermutationInvariant(unsigned arity) {
-  (void)arity;
-  return true;
-}
-
 bool XorInverterOp::isSupportedNumInputs(unsigned numInputs) {
   return numInputs >= 2;
 }
 
-Value XorInverterOp::materializeExactSynthesisPrimitive(
-    OpBuilder &builder, Location loc, ArrayRef<Value> operands,
-    ArrayRef<bool> inverted) {
+Value XorInverterOp::materializeBooleanLogic(OpBuilder &builder, Location loc,
+                                             ArrayRef<Value> operands,
+                                             ArrayRef<bool> inverted) {
   return XorInverterOp::create(builder, loc, operands, inverted);
 }
 
@@ -540,18 +530,13 @@ APInt DotOp::evaluateBooleanLogicWithoutInversion(
   return evaluateDotLogic(x, y, z);
 }
 
-bool DotOp::isExactSynthesisPermutationInvariant(unsigned arity) {
-  assert(arity == 3 && "dot expects exactly three operands");
-  return false;
-}
+bool DotOp::areInputsPermutationInvariant() { return false; }
 
-bool DotOp::isSupportedNumInputs(unsigned numInputs) {
-  return numInputs == 3;
-}
+bool DotOp::isSupportedNumInputs(unsigned numInputs) { return numInputs == 3; }
 
-Value DotOp::materializeExactSynthesisPrimitive(OpBuilder &builder, Location loc,
-                                                ArrayRef<Value> operands,
-                                                ArrayRef<bool> inverted) {
+Value DotOp::materializeBooleanLogic(OpBuilder &builder, Location loc,
+                                     ArrayRef<Value> operands,
+                                     ArrayRef<bool> inverted) {
   return DotOp::create(builder, loc, operands, inverted);
 }
 
