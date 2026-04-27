@@ -13,11 +13,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/CombToSMT.h"
+#include "circt/Conversion/ConvertToArcs.h"
 #include "circt/Conversion/DatapathToSMT.h"
 #include "circt/Conversion/HWToSMT.h"
 #include "circt/Conversion/SMTToZ3LLVM.h"
 #include "circt/Conversion/SynthToComb.h"
 #include "circt/Conversion/VerifToSMT.h"
+#include "circt/Dialect/Arc/ArcDialect.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Datapath/DatapathDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
@@ -25,6 +27,7 @@
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/OM/OMPasses.h"
+#include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
 #include "circt/Support/Passes.h"
@@ -100,6 +103,14 @@ static cl::opt<bool>
     verbosePassExecutions("verbose-pass-executions",
                           cl::desc("Log executions of toplevel module passes"),
                           cl::init(false), cl::cat(mainCategory));
+
+static cl::opt<lec::SequentialModeEnum> sequentialMode(
+    "sequential", cl::desc("Specify sequential equivalence lowering mode"),
+    cl::values(clEnumValN(lec::SequentialModeEnum::None, "none",
+                          "Construct a single combinational LEC problem"),
+               clEnumValN(lec::SequentialModeEnum::ArcState, "arc-state",
+                          "Use Arc state cutpoints and compare each cone")),
+    cl::init(lec::SequentialModeEnum::None), cl::cat(mainCategory));
 
 #ifdef CIRCT_LEC_ENABLE_JIT
 
@@ -229,10 +240,13 @@ static LogicalResult executeLEC(MLIRContext &context) {
 
   pm.addPass(om::createStripOMPass());
   pm.addPass(emit::createStripEmitPass());
+  if (sequentialMode == lec::SequentialModeEnum::ArcState)
+    pm.addPass(createConvertToArcsPass());
   {
     ConstructLECOptions opts;
     opts.firstModule = firstModuleName;
     opts.secondModule = secondModuleName;
+    opts.sequentialMode = sequentialMode;
     if (outputFormat == OutputSMTLIB)
       opts.insertMode = lec::InsertAdditionalModeEnum::None;
     pm.addPass(createConstructLEC(opts));
@@ -376,11 +390,13 @@ int main(int argc, char **argv) {
   DialectRegistry registry;
   // clang-format off
   registry.insert<
+    circt::arc::ArcDialect,
     circt::comb::CombDialect,
     circt::datapath::DatapathDialect,
     circt::emit::EmitDialect,
     circt::hw::HWDialect,
     circt::om::OMDialect,
+    circt::seq::SeqDialect,
     circt::synth::SynthDialect,
     mlir::smt::SMTDialect,
     circt::verif::VerifDialect,

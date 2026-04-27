@@ -5,6 +5,7 @@ add_circt_library(CIRCTLECTransforms
   CIRCTLECTransformsIncGen
 
   LINK_LIBS PUBLIC
+  CIRCTArc
   CIRCTHW
   CIRCTVerif
 

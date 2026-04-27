@@ -12,8 +12,10 @@ set(LLVM_LINK_COMPONENTS Support ${CIRCT_LEC_JIT_LLVM_COMPONENTS})
 add_circt_tool(circt-lec circt-lec.cpp)
 target_link_libraries(circt-lec
   PRIVATE
+  CIRCTArc
   CIRCTComb
   CIRCTCombToSMT
+  CIRCTConvertToArcs
   CIRCTDatapath
   CIRCTDatapathToSMT
   CIRCTEmitTransforms
@@ -24,6 +26,7 @@ target_link_libraries(circt-lec
   CIRCTSMTToZ3LLVM
   CIRCTSynth
   CIRCTSynthToComb
+  CIRCTSeq
   CIRCTSupport
   CIRCTVerif
   CIRCTVerifToSMT

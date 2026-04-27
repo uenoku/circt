@@ -49,12 +49,21 @@ def ConstructLEC : Pass<"construct-lec", "::mlir::ModuleOp"> {
              clEnumValN(lec::InsertAdditionalModeEnum::Main,
              "main", "Insert main function for AOT compilation and reporting.")
            )}]>,
+    Option<"sequentialMode", "sequential-mode", "lec::SequentialModeEnum",
+           /*default=*/"lec::SequentialModeEnum::None",
+            "Select how sequential circuits are lowered.",
+            [{::llvm::cl::values(
+             clEnumValN(lec::SequentialModeEnum::None,
+             "none", "Construct a single combinational LEC problem."),
+             clEnumValN(lec::SequentialModeEnum::ArcState,
+             "arc-state", "Use Arc state cutpoints and compare each cone.")
+           )}]>,
   ];
 
   let dependentDialects = [
-    "verif::VerifDialect", "mlir::func::FuncDialect", "mlir::LLVM::LLVMDialect"
+    "arc::ArcDialect", "verif::VerifDialect", "mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect"
   ];
 }
 
 #endif // CIRCT_TOOLS_CIRCT_LEC_PASSES_TD
-

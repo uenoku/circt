@@ -28,7 +28,15 @@ enum class InsertAdditionalModeEnum {
   /// Insert a main function for AOT compilation.
   Main,
 };
-}
+
+enum class SequentialModeEnum {
+  /// Construct the existing combinational LEC problem.
+  None,
+
+  /// Match Arc state operations and compare each state/output cone.
+  ArcState,
+};
+} // namespace lec
 
 /// Generate the code for registering passes.
 #define GEN_PASS_DECL_CONSTRUCTLEC
