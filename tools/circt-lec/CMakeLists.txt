@@ -20,6 +20,7 @@ target_link_libraries(circt-lec
   CIRCTDatapathToSMT
   CIRCTEmitTransforms
   CIRCTHW
+  CIRCTHWTransforms
   CIRCTHWToSMT
   CIRCTLECTransforms
   CIRCTOMTransforms

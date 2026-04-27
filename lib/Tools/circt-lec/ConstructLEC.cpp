@@ -9,6 +9,7 @@
 #include "circt/Dialect/Arc/ArcOps.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Dialect/Verif/VerifOps.h"
 #include "circt/Tools/circt-lec/Passes.h"
@@ -48,10 +49,20 @@ struct ConstructLECPass
 };
 
 struct NamedState {
-  arc::StateOp op;
-  unsigned resultIndex;
+  Operation *op;
   Value result;
   StringAttr name;
+  Value clock;
+  Value enable;
+  Value reset;
+  Value resetValue;
+  Value nextValue;
+  unsigned latency;
+  std::optional<APInt> initialValue;
+  bool isAsyncReset;
+  std::optional<FlatSymbolRefAttr> arcName;
+  SmallVector<Value> arcInputs;
+  unsigned arcResultIndex;
 };
 
 static StringAttr getStateResultName(arc::StateOp op, unsigned index) {
@@ -68,32 +79,197 @@ static StringAttr getStateResultName(arc::StateOp op, unsigned index) {
   return {};
 }
 
+static StringAttr getRegisterName(seq::CompRegOp op) {
+  if (auto name = op.getName())
+    if (!name->empty())
+      return StringAttr::get(op.getContext(), *name);
+  return {};
+}
+
+static StringAttr getRegisterName(seq::CompRegClockEnabledOp op) {
+  if (auto name = op.getName())
+    if (!name->empty())
+      return StringAttr::get(op.getContext(), *name);
+  return {};
+}
+
+static StringAttr getRegisterName(seq::FirRegOp op) {
+  if (!op.getName().empty())
+    return StringAttr::get(op.getContext(), op.getName());
+  return {};
+}
+
+static FailureOr<APInt> getConstInt(Value value);
+
 static FailureOr<llvm::MapVector<StringAttr, NamedState>>
 collectNamedStates(hw::HWModuleOp module) {
   llvm::MapVector<StringAttr, NamedState> states;
+  unsigned unnamedRegIndex = 0;
   for (Operation &op : module.getBodyBlock()->without_terminator()) {
-    auto state = dyn_cast<arc::StateOp>(&op);
-    if (!state)
+    if (auto state = dyn_cast<arc::StateOp>(&op)) {
+      for (auto [index, result] : llvm::enumerate(state.getResults())) {
+        auto name = getStateResultName(state, index);
+        if (!name) {
+          state.emitError()
+              << "sequential arc-state mode requires every state result to "
+                 "have a stable name";
+          return failure();
+        }
+        std::optional<APInt> initialValue;
+        if (!state.getInitials().empty()) {
+          auto initial = getConstInt(state.getInitials()[index]);
+          if (failed(initial)) {
+            state.emitError()
+                << "sequential arc-state mode requires state initial values "
+                   "to be constant integers";
+            return failure();
+          }
+          initialValue = *initial;
+        }
+        auto [it, inserted] = states.insert(
+            {name, NamedState{state, result, name, state.getClock(),
+                              state.getEnable(), state.getReset(), Value{},
+                              Value{}, state.getLatency(), initialValue, false,
+                              state.getArcAttr(),
+                              SmallVector<Value>(state.getInputs()),
+                              static_cast<unsigned>(index)}});
+        if (!inserted) {
+          state.emitError()
+              << "duplicate state name '" << name.getValue() << "'";
+          return failure();
+        }
+      }
       continue;
-    for (auto [index, result] : llvm::enumerate(state.getResults())) {
-      auto name = getStateResultName(state, index);
+    }
+
+    auto addRegister = [&](auto reg, Value nextValue, Value clock, Value enable,
+                           Value reset, Value resetValue,
+                           std::optional<APInt> initialValue,
+                           bool isAsyncReset) -> LogicalResult {
+      auto name = getRegisterName(reg);
       if (!name) {
-        state.emitError()
-            << "sequential arc-state mode requires every state result to "
-               "have a stable name";
-        return failure();
+        auto generatedName = ("reg_" + Twine(unnamedRegIndex++)).str();
+        name = StringAttr::get(module.getContext(), generatedName);
       }
-      auto [it, inserted] =
-          states.insert({name, NamedState{state, static_cast<unsigned>(index),
-                                          result, name}});
+      auto [it, inserted] = states.insert({name, NamedState{reg,
+                                                            reg.getResult(),
+                                                            name,
+                                                            clock,
+                                                            enable,
+                                                            reset,
+                                                            resetValue,
+                                                            nextValue,
+                                                            1,
+                                                            initialValue,
+                                                            isAsyncReset,
+                                                            std::nullopt,
+                                                            {},
+                                                            0}});
       if (!inserted) {
-        state.emitError() << "duplicate state name '" << name.getValue() << "'";
+        reg.emitError() << "duplicate state name '" << name.getValue() << "'";
         return failure();
       }
-      (void)result;
+      return success();
+    };
+
+    if (auto reg = dyn_cast<seq::CompRegOp>(&op)) {
+      std::optional<APInt> initialValue;
+      if (auto initial = reg.getInitialValue()) {
+        auto constInitial =
+            getConstInt(circt::seq::unwrapImmutableValue(initial));
+        if (failed(constInitial)) {
+          reg.emitError() << "sequential arc-state mode requires register "
+                             "initial values to be constant integers";
+          return failure();
+        }
+        initialValue = *constInitial;
+      }
+      if (failed(addRegister(reg, reg.getInput(), reg.getClk(), Value{},
+                             reg.getReset(), reg.getResetValue(), initialValue,
+                             false)))
+        return failure();
+      continue;
+    }
+
+    if (auto reg = dyn_cast<seq::CompRegClockEnabledOp>(&op)) {
+      std::optional<APInt> initialValue;
+      if (auto initial = reg.getInitialValue()) {
+        auto constInitial =
+            getConstInt(circt::seq::unwrapImmutableValue(initial));
+        if (failed(constInitial)) {
+          reg.emitError() << "sequential arc-state mode requires register "
+                             "initial values to be constant integers";
+          return failure();
+        }
+        initialValue = *constInitial;
+      }
+      if (failed(addRegister(reg, reg.getInput(), reg.getClk(),
+                             reg.getClockEnable(), reg.getReset(),
+                             reg.getResetValue(), initialValue, false)))
+        return failure();
+      continue;
+    }
+
+    if (auto reg = dyn_cast<seq::FirRegOp>(&op)) {
+      std::optional<APInt> initialValue;
+      if (auto preset = reg.getPreset())
+        initialValue = *preset;
+      if (failed(addRegister(reg, reg.getNext(), reg.getClk(), Value{},
+                             reg.getReset(), reg.getResetValue(), initialValue,
+                             reg.getIsAsync())))
+        return failure();
     }
   }
   return states;
+}
+
+static LogicalResult verifyNoNestedStatefulInstances(hw::HWModuleOp module) {
+  auto root = dyn_cast<ModuleOp>(module->getParentOp());
+  if (!root)
+    return module.emitError(
+        "expected compared module to be nested in a module");
+
+  DenseSet<Operation *> visited;
+  SmallVector<hw::HWModuleOp> worklist;
+  visited.insert(module);
+  worklist.push_back(module);
+
+  auto hasUnsupportedNestedState = [&](hw::HWModuleOp child,
+                                       hw::InstanceOp inst) -> LogicalResult {
+    WalkResult result =
+        child.walk([&](Operation *op) {
+          if (isa<arc::StateOp, arc::MemoryOp, arc::MemoryReadOp,
+                  arc::MemoryWriteOp, arc::MemoryReadPortOp,
+                  arc::MemoryWritePortOp>(op)) {
+            inst.emitError()
+                << "sequential arc-state mode does not yet support nested "
+                   "stateful instances";
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
+        });
+    return result.wasInterrupted() ? failure() : success();
+  };
+
+  while (!worklist.empty()) {
+    auto current = worklist.pop_back_val();
+    for (Operation &op : current.getBodyBlock()->without_terminator()) {
+      auto inst = dyn_cast<hw::InstanceOp>(&op);
+      if (!inst)
+        continue;
+      auto child =
+          root.lookupSymbol<hw::HWModuleOp>(inst.getModuleNameAttr().getAttr());
+      if (!child)
+        return inst.emitError() << "failed to resolve instance target '"
+                                << inst.getModuleName() << "'";
+      if (!visited.insert(child).second)
+        continue;
+      if (failed(hasUnsupportedNestedState(child, inst)))
+        return failure();
+      worklist.push_back(child);
+    }
+  }
+  return success();
 }
 
 static FailureOr<APInt> getConstInt(Value value) {
@@ -112,52 +288,44 @@ static FailureOr<unsigned> getModuleInputIndex(Value value) {
 }
 
 static LogicalResult verifyStateCompatibility(NamedState lhs, NamedState rhs) {
+  auto *lhsOp = lhs.op;
   if (lhs.result.getType() != rhs.result.getType())
-    return lhs.op.emitError()
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' has mismatched types";
-  if (lhs.op.getLatency() != rhs.op.getLatency())
-    return lhs.op.emitError()
+  if (lhs.latency != rhs.latency)
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' has mismatched latencies";
-  if (lhs.op.getLatency() != 1)
-    return lhs.op.emitError()
+  if (lhs.latency != 1)
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' uses latency "
-           << lhs.op.getLatency()
-           << "; only latency-1 states are currently supported";
-  if (static_cast<bool>(lhs.op.getClock()) !=
-      static_cast<bool>(rhs.op.getClock()))
-    return lhs.op.emitError()
+           << lhs.latency << "; only latency-1 states are currently supported";
+  if (static_cast<bool>(lhs.clock) != static_cast<bool>(rhs.clock))
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' has mismatched clocks";
-  if (auto lhsClock = lhs.op.getClock()) {
+  if (auto lhsClock = lhs.clock) {
     auto lhsIndex = getModuleInputIndex(lhsClock);
-    auto rhsIndex = getModuleInputIndex(rhs.op.getClock());
+    auto rhsIndex = getModuleInputIndex(rhs.clock);
     if (failed(lhsIndex) || failed(rhsIndex))
-      return lhs.op.emitError()
+      return lhsOp->emitError()
              << "state '" << lhs.name.getValue()
              << "' must be clocked directly by a module input";
     if (*lhsIndex != *rhsIndex)
-      return lhs.op.emitError() << "state '" << lhs.name.getValue()
+      return lhsOp->emitError() << "state '" << lhs.name.getValue()
                                 << "' has mismatched clock inputs";
   }
-  if (static_cast<bool>(lhs.op.getEnable()) !=
-      static_cast<bool>(rhs.op.getEnable()))
-    return lhs.op.emitError()
+  if (static_cast<bool>(lhs.enable) != static_cast<bool>(rhs.enable))
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' has mismatched enables";
-  if (static_cast<bool>(lhs.op.getReset()) !=
-      static_cast<bool>(rhs.op.getReset()))
-    return lhs.op.emitError()
+  if (static_cast<bool>(lhs.reset) != static_cast<bool>(rhs.reset))
+    return lhsOp->emitError()
            << "state '" << lhs.name.getValue() << "' has mismatched resets";
-  if (lhs.op.getInitials().size() != rhs.op.getInitials().size())
-    return lhs.op.emitError() << "state '" << lhs.name.getValue()
-                              << "' has mismatched initial values";
-  for (auto [leftInit, rightInit] :
-       llvm::zip(lhs.op.getInitials(), rhs.op.getInitials())) {
-    auto left = getConstInt(leftInit);
-    auto right = getConstInt(rightInit);
-    if (failed(left) || failed(right) || *left != *right)
-      return lhs.op.emitError()
-             << "state '" << lhs.name.getValue()
-             << "' has unsupported or mismatched initial values";
-  }
+  if (lhs.isAsyncReset != rhs.isAsyncReset)
+    return lhsOp->emitError() << "state '" << lhs.name.getValue()
+                              << "' has mismatched reset synchrony";
+  if (lhs.initialValue != rhs.initialValue)
+    return lhsOp->emitError()
+           << "state '" << lhs.name.getValue()
+           << "' has unsupported or mismatched initial values";
   return success();
 }
 
@@ -188,34 +356,44 @@ struct RegionMaterializer {
   }
 
   FailureOr<Value> materializeEffectiveNextState(NamedState state) {
-    auto next = materializeArcResult(state.op.getArcAttr(),
-                                     state.op.getInputs(), state.resultIndex);
+    FailureOr<Value> next = failure();
+    if (state.arcName)
+      next = materializeArcResult(*state.arcName, state.arcInputs,
+                                  state.arcResultIndex);
+    else
+      next = materialize(state.nextValue);
     if (failed(next))
       return failure();
     Value current = stateCutpoints.lookup(state.result);
     assert(current && "state cutpoint must exist");
-    if (auto enable = state.op.getEnable()) {
+    if (auto enable = state.enable) {
       auto mappedEnable = materialize(enable);
       if (failed(mappedEnable))
         return failure();
-      next = comb::MuxOp::create(builder, state.op.getLoc(), current.getType(),
+      next = comb::MuxOp::create(builder, state.op->getLoc(), current.getType(),
                                  *mappedEnable, *next, current)
                  .getResult();
     }
-    if (auto reset = state.op.getReset()) {
+    if (auto reset = state.reset) {
+      if (state.isAsyncReset) {
+        state.op->emitError("async resets are not yet supported in sequential "
+                            "arc-state mode");
+        return failure();
+      }
       auto mappedReset = materialize(reset);
       if (failed(mappedReset))
         return failure();
       auto intType = dyn_cast<IntegerType>(current.getType());
       if (!intType) {
-        state.op.emitError()
+        state.op->emitError()
             << "reset handling currently requires integer state types";
         return failure();
       }
-      Value zero =
-          hw::ConstantOp::create(builder, state.op.getLoc(), intType, 0);
-      next = comb::MuxOp::create(builder, state.op.getLoc(), current.getType(),
-                                 *mappedReset, zero, *next)
+      auto mappedResetValue = materialize(state.resetValue);
+      if (failed(mappedResetValue))
+        return failure();
+      next = comb::MuxOp::create(builder, state.op->getLoc(), current.getType(),
+                                 *mappedReset, *mappedResetValue, *next)
                  .getResult();
     }
     return next;
@@ -253,6 +431,17 @@ private:
       }
       if (!isValueInsideDefine(value))
         cache[value] = mapped;
+      return mapped;
+    }
+
+    if (isa<seq::CompRegOp, seq::CompRegClockEnabledOp, seq::FirRegOp>(def)) {
+      auto mapped = stateCutpoints.lookup(value);
+      if (!mapped) {
+        def->emitError("encountered unmatched sequential state while "
+                       "materializing sequential cone");
+        return failure();
+      }
+      cache[value] = mapped;
       return mapped;
     }
 
@@ -485,6 +674,20 @@ void ConstructLECPass::runOnOperation() {
 LogicalResult ConstructLECPass::constructSequentialLEC(
     OpBuilder &builder, Location loc, hw::HWModuleOp moduleA,
     hw::HWModuleOp moduleB, bool withResult, SmallVectorImpl<Value> *results) {
+  if (moduleA == moduleB) {
+    if (withResult && results) {
+      auto proven = hw::ConstantOp::create(builder, loc, builder.getI1Type(), 1);
+      results->push_back(proven);
+    }
+    moduleA->erase();
+    SmallVector<Operation *> defsToErase;
+    for (auto def : getOperation().getOps<arc::DefineOp>())
+      defsToErase.push_back(def);
+    for (auto *def : defsToErase)
+      def->erase();
+    return success();
+  }
+
   auto walkForUnsupportedOps = [&](hw::HWModuleOp module) -> LogicalResult {
     WalkResult result = module.walk([&](Operation *op) {
       if (isa<arc::MemoryOp, arc::MemoryReadOp, arc::MemoryWriteOp,
@@ -499,6 +702,9 @@ LogicalResult ConstructLECPass::constructSequentialLEC(
   };
   if (failed(walkForUnsupportedOps(moduleA)) ||
       failed(walkForUnsupportedOps(moduleB)))
+    return failure();
+  if (failed(verifyNoNestedStatefulInstances(moduleA)) ||
+      failed(verifyNoNestedStatefulInstances(moduleB)))
     return failure();
 
   auto statesA = collectNamedStates(moduleA);

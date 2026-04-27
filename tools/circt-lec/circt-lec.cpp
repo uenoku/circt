@@ -25,6 +25,7 @@
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/Emit/EmitPasses.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWPasses.h"
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
@@ -240,8 +241,10 @@ static LogicalResult executeLEC(MLIRContext &context) {
 
   pm.addPass(om::createStripOMPass());
   pm.addPass(emit::createStripEmitPass());
-  if (sequentialMode == lec::SequentialModeEnum::ArcState)
+  if (sequentialMode == lec::SequentialModeEnum::ArcState) {
     pm.addPass(createConvertToArcsPass());
+    pm.addPass(hw::createFlattenModules());
+  }
   {
     ConstructLECOptions opts;
     opts.firstModule = firstModuleName;
