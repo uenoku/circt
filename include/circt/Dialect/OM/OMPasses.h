@@ -22,6 +22,7 @@ namespace om {
 
 std::unique_ptr<mlir::Pass> createFreezePathsPass(
     std::function<StringAttr(Operation *)> getOpNameFallback = {});
+std::unique_ptr<mlir::Pass> createElaborateObjectPass();
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION

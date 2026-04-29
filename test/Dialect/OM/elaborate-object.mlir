@@ -1,0 +1,166 @@
+// RUN: circt-opt -om-elaborate-object='target-class=Top' %s | FileCheck %s --check-prefix=TOP
+// RUN: circt-opt -om-elaborate-object='test=true' %s | FileCheck %s
+
+!list = !om.class.type<@LinkedList>
+
+om.class @InputBox(%input: !om.integer) -> (value: !om.integer) {
+  om.class.fields %input : !om.integer
+}
+
+om.class @LinkedList(%input: !om.integer, %next: !list) -> (value: !om.integer, next: !list) {
+  %box = om.object @InputBox(%input) : (!om.integer) -> !om.class.type<@InputBox>
+  %value = om.object.field %box["value"] : (!om.class.type<@InputBox>) -> !om.integer
+  om.class.fields %value, %next : !om.integer, !list
+}
+
+om.class @Top() -> (list: !list, head: !om.integer, tail: !list) {
+  %one = om.constant #om.integer<1 : i6> : !om.integer
+  %two = om.constant #om.integer<2 : i6> : !om.integer
+  %tail = om.object @LinkedList(%two, %list) : (!om.integer, !list) -> !list
+  %list = om.object @LinkedList(%one, %tail) : (!om.integer, !list) -> !list
+  %head = om.object.field %list["value"] : (!list) -> !om.integer
+  om.class.fields %list, %head, %tail : !list, !om.integer, !list
+}
+
+om.class @Other() -> (unused: !om.integer) {
+  %c0 = om.constant #om.integer<0 : i1> : !om.integer
+  om.class.fields %c0 : !om.integer
+}
+
+// TOP-LABEL: om.class @Top() -> (list: !om.class.type<@LinkedList>, head: !om.integer, tail: !om.class.type<@LinkedList>) {
+// TOP-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i6> : !om.integer
+// TOP-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i6> : !om.integer
+// TOP:   %[[tail:.+]] = om.elaborated_object @LinkedList(%[[TWO]], %[[list:.+]]) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
+// TOP:   %{{.+}} = om.elaborated_object @InputBox(%[[TWO]]) : (!om.integer) -> !om.class.type<@InputBox>
+// TOP:   %[[list]] = om.elaborated_object @LinkedList(%[[ONE]], %[[tail]]) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
+// TOP:   %{{.+}} = om.elaborated_object @InputBox(%[[ONE]]) : (!om.integer) -> !om.class.type<@InputBox>
+// TOP:   om.class.fields %[[list]], %[[ONE]], %[[tail]] : !om.class.type<@LinkedList>, !om.integer, !om.class.type<@LinkedList>
+// TOP: }
+
+// TOP-LABEL: om.class @Other() -> (unused: !om.integer) {
+// TOP-NOT: om.elaborated_object
+
+// CHECK-LABEL: om.class @Top() -> (list: !om.class.type<@LinkedList>, head: !om.integer, tail: !om.class.type<@LinkedList>) {
+// CHECK:   %{{.+}} = om.elaborated_object
+// CHECK:   %{{.+}} = om.elaborated_object
+// CHECK: }
+
+// CHECK-LABEL: om.class @Other() -> (unused: !om.integer) {
+// CHECK-NOT: om.elaborated_object
+
+// -----
+
+// Test nested field references (Issue #10264)
+
+om.class @Domain(%in: !om.string) -> (out: !om.string) {
+  om.class.fields %in : !om.string
+}
+
+om.class @NestedFieldTop() -> (result: !om.string) {
+  %0 = om.constant "A" : !om.string
+  %1 = om.object @Domain(%0) : (!om.string) -> !om.class.type<@Domain>
+  %2 = om.object.field %1["out"] : (!om.class.type<@Domain>) -> !om.string
+  %3 = om.object @Domain(%2) : (!om.string) -> !om.class.type<@Domain>
+  %4 = om.object.field %3["out"] : (!om.class.type<@Domain>) -> !om.string
+  om.class.fields %4 : !om.string
+}
+
+// CHECK-LABEL: om.class @NestedFieldTop() -> (result: !om.string) {
+// CHECK:   %[[STR:.+]] = om.constant "A" : !om.string
+// CHECK:   %{{.+}} = om.elaborated_object @Domain(%[[STR]]) : (!om.string) -> !om.class.type<@Domain>
+// CHECK:   %{{.+}} = om.elaborated_object @Domain(%[[STR]]) : (!om.string) -> !om.class.type<@Domain>
+// CHECK:   om.class.fields %[[STR]] : !om.string
+// CHECK: }
+
+// -----
+
+// Test integer arithmetic with object field access
+
+om.class @ValueBox(%val: !om.integer) -> (value: !om.integer) {
+  om.class.fields %val : !om.integer
+}
+
+om.class @IntegerArithTop() -> (result: !om.integer) {
+  %1 = om.constant #om.integer<1 : si3> : !om.integer
+  %2 = om.constant #om.integer<2 : si3> : !om.integer
+  %box1 = om.object @ValueBox(%1) : (!om.integer) -> !om.class.type<@ValueBox>
+  %val1 = om.object.field %box1["value"] : (!om.class.type<@ValueBox>) -> !om.integer
+  %box2 = om.object @ValueBox(%2) : (!om.integer) -> !om.class.type<@ValueBox>
+  %val2 = om.object.field %box2["value"] : (!om.class.type<@ValueBox>) -> !om.integer
+  %sum = om.integer.add %val1, %val2 : !om.integer
+  om.class.fields %sum : !om.integer
+}
+
+// CHECK-LABEL: om.class @IntegerArithTop() -> (result: !om.integer) {
+// CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : si3> : !om.integer
+// CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : si3> : !om.integer
+// CHECK:   %{{.+}} = om.elaborated_object @ValueBox(%[[ONE]]) : (!om.integer) -> !om.class.type<@ValueBox>
+// CHECK:   %{{.+}} = om.elaborated_object @ValueBox(%[[TWO]]) : (!om.integer) -> !om.class.type<@ValueBox>
+// CHECK:   %[[SUM:.+]] = om.integer.add %[[ONE]], %[[TWO]] : !om.integer
+// CHECK:   om.class.fields %[[SUM]] : !om.integer
+// CHECK: }
+
+// -----
+
+// Test list operations with object fields
+
+om.class @ListBox(%l: !om.list<!om.integer>) -> (value: !om.list<!om.integer>) {
+  om.class.fields %l : !om.list<!om.integer>
+}
+
+om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
+  %0 = om.constant #om.integer<0 : i8> : !om.integer
+  %1 = om.constant #om.integer<1 : i8> : !om.integer
+  %2 = om.constant #om.integer<2 : i8> : !om.integer
+  %l0 = om.list_create %0, %1 : !om.integer
+  %box = om.object @ListBox(%l0) : (!om.list<!om.integer>) -> !om.class.type<@ListBox>
+  %l1 = om.object.field %box["value"] : (!om.class.type<@ListBox>) -> !om.list<!om.integer>
+  %l2 = om.list_create %2 : !om.integer
+  %concat = om.list_concat %l1, %l2 : !om.list<!om.integer>
+  om.class.fields %concat : !om.list<!om.integer>
+}
+
+// CHECK-LABEL: om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
+// CHECK-DAG:   %[[ZERO:.+]] = om.constant #om.integer<0 : i8> : !om.integer
+// CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i8> : !om.integer
+// CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i8> : !om.integer
+// CHECK:   %[[L0:.+]] = om.list_create %[[ZERO]], %[[ONE]] : !om.integer
+// CHECK:   %{{.+}} = om.elaborated_object @ListBox(%[[L0]]) : (!om.list<!om.integer>) -> !om.class.type<@ListBox>
+// CHECK:   %[[L2:.+]] = om.list_create %[[TWO]] : !om.integer
+// CHECK:   %[[CONCAT:.+]] = om.list_concat %[[L0]], %[[L2]] : !om.list<!om.integer>
+// CHECK:   om.class.fields %[[CONCAT]] : !om.list<!om.integer>
+// CHECK: }
+
+// -----
+
+// Test mode: elaborate all nullary classes
+
+om.class @NullaryA() -> (value: !om.integer) {
+  %0 = om.constant #om.integer<42 : i32> : !om.integer
+  om.class.fields %0 : !om.integer
+}
+
+om.class @NullaryB() -> (result: !om.integer) {
+  %0 = om.object @NullaryA() : () -> !om.class.type<@NullaryA>
+  %1 = om.object.field %0["value"] : (!om.class.type<@NullaryA>) -> !om.integer
+  om.class.fields %1 : !om.integer
+}
+
+om.class @HasParams(%x: !om.integer) -> (value: !om.integer) {
+  om.class.fields %x : !om.integer
+}
+
+// CHECK-LABEL: om.class @NullaryA() -> (value: !om.integer) {
+// CHECK:   %[[VAL:.+]] = om.constant #om.integer<42 : i32> : !om.integer
+// CHECK:   om.class.fields %[[VAL]] : !om.integer
+// CHECK: }
+
+// CHECK-LABEL: om.class @NullaryB() -> (result: !om.integer) {
+// CHECK:   %[[CONST:.+]] = om.constant #om.integer<42 : i32> : !om.integer
+// CHECK:   %{{.+}} = om.elaborated_object @NullaryA() : () -> !om.class.type<@NullaryA>
+// CHECK:   om.class.fields %[[CONST]] : !om.integer
+// CHECK: }
+
+// CHECK-LABEL: om.class @HasParams(%x: !om.integer) -> (value: !om.integer) {
+// CHECK:   om.class.fields %x : !om.integer
+// CHECK: }

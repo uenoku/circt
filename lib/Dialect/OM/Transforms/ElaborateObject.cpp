@@ -1,0 +1,217 @@
+//===- ElaborateObject.cpp - OM elaboration pass --------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "circt/Dialect/OM/OMDialect.h"
+#include "circt/Dialect/OM/OMOps.h"
+#include "circt/Dialect/OM/OMPasses.h"
+#include "circt/Support/LLVM.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+namespace circt {
+namespace om {
+#define GEN_PASS_DEF_ELABORATEOBJECT
+#include "circt/Dialect/OM/OMPasses.h.inc"
+} // namespace om
+} // namespace circt
+
+using namespace mlir;
+using namespace circt;
+using namespace om;
+
+namespace {
+
+// Pattern to inline ObjectOp and replace with ElaboratedObjectOp
+struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
+  ObjectOpInliningPattern(MLIRContext *context, SymbolTable &symbols)
+      : OpRewritePattern<ObjectOp>(context), symbols(symbols) {}
+
+  LogicalResult matchAndRewrite(ObjectOp objOp,
+                                PatternRewriter &rewriter) const override {
+    auto classLike = symbols.lookup<ClassLike>(objOp.getClassNameAttr());
+    if (!classLike)
+      return objOp.emitError("unknown class ") << objOp.getClassNameAttr();
+
+    // External classes become unknown
+    if (isa<ClassExternOp>(classLike)) {
+      rewriter.replaceOpWithNewOp<UnknownValueOp>(objOp, objOp.getType());
+      return success();
+    }
+
+    auto classOp = cast<ClassOp>(classLike);
+
+    // Map formal parameters to actual parameters
+    IRMapping mapper;
+    for (auto [formal, actual] : llvm::zip(
+             classOp.getBodyBlock()->getArguments(), objOp.getActualParams()))
+      mapper.map(formal, actual);
+
+    // Clone the class body into a temporary region
+    Region clonedRegion;
+    classOp.getBody().cloneInto(&clonedRegion, mapper);
+    Block *clonedBlock = &clonedRegion.front();
+
+    // Get field values from the terminator before inlining
+    auto clonedFields = cast<ClassFieldsOp>(clonedBlock->getTerminator());
+    SmallVector<Value> fieldValues(clonedFields.getFields());
+
+    // Erase the terminator
+    rewriter.eraseOp(clonedFields);
+
+    // Inline the cloned block before the ObjectOp using rewriter
+    rewriter.inlineBlockBefore(clonedBlock, objOp);
+
+    // Replace the ObjectOp with an ElaboratedObjectOp
+    rewriter.replaceOpWithNewOp<ElaboratedObjectOp>(objOp, classLike,
+                                                    fieldValues);
+
+    return success();
+  }
+
+  SymbolTable &symbols;
+};
+
+struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
+  ObjectFieldOpConversionPattern(MLIRContext *context, SymbolTable &symbols)
+      : OpRewritePattern<ObjectFieldOp>(context), symbols(symbols) {}
+
+  LogicalResult matchAndRewrite(ObjectFieldOp op,
+                                PatternRewriter &rewriter) const override {
+    // Only fold if the object is an ElaboratedObjectOp
+    auto elaboratedOp = op.getObject().getDefiningOp<ElaboratedObjectOp>();
+    if (!elaboratedOp)
+      return failure();
+
+    // Look up the class to get field names
+    auto classLike = symbols.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
+    if (!classLike)
+      return elaboratedOp.emitError("unknown class ")
+             << elaboratedOp.getClassNameAttr();
+
+    auto fieldNames = classLike.getFieldNames().getAsRange<StringAttr>();
+    auto fieldIt = llvm::find_if(
+        fieldNames, [&](StringAttr name) { return name == op.getField(); });
+    if (fieldIt == fieldNames.end())
+      return elaboratedOp.emitError("field ")
+             << op.getField() << " does not exist";
+
+    size_t fieldIndex = std::distance(fieldNames.begin(), fieldIt);
+
+    // Replace with the corresponding field value from the elaborated object
+    rewriter.replaceOp(op, elaboratedOp.getFieldValues()[fieldIndex]);
+    return success();
+  }
+
+  SymbolTable &symbols;
+};
+
+// Propagate UnknownValueOp through Pure OM operations
+struct UnknownPropagationPattern : RewritePattern {
+  UnknownPropagationPattern(MLIRContext *context)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa_and_nonnull<OMDialect>(op->getDialect()) || !isPure(op))
+      return failure();
+
+    // Check if any operand is an UnknownValueOp
+    // TODO: This is directly port of the existing Evaluator sematics, but it
+    // causes inconsistent evaluation for operations that can reason about
+    // "known" value "and(0, unknown) -> 0".
+    bool hasUnknown = false;
+    for (Value operand : op->getOperands()) {
+      if (operand.getDefiningOp<UnknownValueOp>()) {
+        hasUnknown = true;
+        break;
+      }
+    }
+
+    if (!hasUnknown)
+      return failure();
+
+    // Replace with UnknownValueOp for each result
+    SmallVector<Value> unknowns;
+    for (Type resultType : op->getResultTypes()) {
+      auto unknown = rewriter.create<UnknownValueOp>(op->getLoc(), resultType);
+      unknowns.push_back(unknown.getResult());
+    }
+
+    rewriter.replaceOp(op, unknowns);
+    return success();
+  }
+};
+
+struct ElaborateObjectPass
+    : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
+
+  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symbols) {
+    // Step 1: Inline all ObjectOps using greedy pattern rewriter
+    RewritePatternSet patterns(classOp.getContext());
+    patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symbols);
+    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symbols);
+    patterns.add<UnknownPropagationPattern>(classOp.getContext());
+    if (failed(applyPatternsGreedily(classOp, std::move(patterns))))
+      return failure();
+
+    return success();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto &symbols = getAnalysis<SymbolTable>();
+
+    // Test mode: elaborate all nullary classes
+    if (test) {
+      for (auto classOp : module.getOps<ClassOp>()) {
+        if (classOp.getBodyBlock()->getNumArguments() == 0)
+          if (failed(elaborateClass(classOp, symbols)))
+            return signalPassFailure();
+      }
+      return;
+    }
+
+    // Target class must be specified
+    if (targetClass.empty()) {
+      module.emitError("om-elaborate-object requires --target-class option ");
+      return signalPassFailure();
+    }
+
+    // Find the target class
+    auto classOp = symbols.lookup<ClassOp>(targetClass);
+    if (!classOp) {
+      module.emitError("om-elaborate-object could not find class ")
+          << targetClass;
+      return signalPassFailure();
+    }
+
+    // Only accept classes with zero inputs
+    if (classOp.getBodyBlock()->getNumArguments() != 0) {
+      classOp.emitError(
+          "om-elaborate-object only accepts zero-input classes, but ")
+          << targetClass << " has " << classOp.getBodyBlock()->getNumArguments()
+          << " inputs";
+      return signalPassFailure();
+    }
+
+    if (failed(elaborateClass(classOp, symbols)))
+      return signalPassFailure();
+  }
+};
+
+} // namespace
+
+std::unique_ptr<Pass> circt::om::createElaborateObjectPass() {
+  return std::make_unique<ElaborateObjectPass>();
+}
