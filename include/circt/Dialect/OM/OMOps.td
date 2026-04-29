@@ -240,7 +240,7 @@ def ElaboratedObjectOp : OMOp<"elaborated_object", [
 
   let extraClassDeclaration = [{
     // Get the index of a field by name. Returns std::nullopt if not found.
-    std::optional<size_t> getFieldIndex(mlir::StringAttr fieldName);
+    std::optional<uint64_t> getFieldIndex(mlir::StringAttr fieldName);
   }];
 }
 

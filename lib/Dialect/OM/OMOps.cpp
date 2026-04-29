@@ -627,12 +627,13 @@ OpFoldResult circt::om::ObjectFieldOp::fold(FoldAdaptor adaptor) {
 // ElaboratedObjectOp
 //===----------------------------------------------------------------------===//
 
-std::optional<size_t>
+std::optional<uint64_t>
 circt::om::ElaboratedObjectOp::getFieldIndex(StringAttr fieldName) {
   auto indexAttr = getFieldIndices().get(fieldName);
   if (!indexAttr)
     return std::nullopt;
-  return cast<mlir::IntegerAttr>(indexAttr).getInt();
+
+  return static_cast<uint64_t>(cast<mlir::IntegerAttr>(indexAttr).getInt());
 }
 
 void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
@@ -642,7 +643,7 @@ void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
   // Build a dictionary mapping field names to their indices.
   SmallVector<NamedAttribute> fieldIndexAttrs;
   for (auto [idx, fieldName] : llvm::enumerate(classOp.getFieldNames())) {
-    auto indexAttr = odsBuilder.getI32IntegerAttr(idx);
+    auto indexAttr = odsBuilder.getIndexAttr(idx);
     fieldIndexAttrs.push_back(
         NamedAttribute(cast<StringAttr>(fieldName), indexAttr));
   }
@@ -676,6 +677,25 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
     return emitOpError("field value list doesn't match class field list, "
                        "expected ")
            << classFieldNames.size() << " values but got " << fieldValues.size();
+
+  // Verify all indices are within bounds and unique.
+  llvm::SmallDenseSet<uint64_t> seenIndices;
+  for (auto namedAttr : fieldIndices) {
+    uint64_t index =
+        static_cast<uint64_t>(cast<mlir::IntegerAttr>(namedAttr.getValue()).getInt());
+
+    // Check index is within bounds.
+    if (index >= classFieldNames.size())
+      return emitOpError("field ") << namedAttr.getName()
+                                   << " has index " << index
+                                   << " which is out of bounds (expected < "
+                                   << classFieldNames.size() << ")";
+
+    // Check for duplicate indices.
+    if (!seenIndices.insert(index).second)
+      return emitOpError("duplicate index ") << index
+                                             << " for field " << namedAttr.getName();
+  }
 
   // Verify each class field exists in the dictionary with correct index and type.
   for (auto [idx, classFieldName] : llvm::enumerate(classFieldNames)) {
@@ -723,7 +743,7 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
         return failure();
 
       auto fieldNameAttr = StringAttr::get(parser.getContext(), fieldName);
-      auto indexAttr = parser.getBuilder().getI32IntegerAttr(idx++);
+      auto indexAttr = parser.getBuilder().getIndexAttr(idx++);
       fieldIndexAttrs.push_back(NamedAttribute(fieldNameAttr, indexAttr));
 
       OpAsmParser::UnresolvedOperand fieldValue;
@@ -765,10 +785,11 @@ void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
   auto fieldIndices = getFieldIndices();
   auto fieldValues = getFieldValues();
 
-  SmallVector<std::tuple<unsigned, StringAttr, Value>> sortedFields;
+  SmallVector<std::tuple<uint64_t, StringAttr, Value>> sortedFields;
   for (auto namedAttr : fieldIndices) {
     auto name = namedAttr.getName();
-    auto index = cast<mlir::IntegerAttr>(namedAttr.getValue()).getInt();
+    uint64_t index =
+        static_cast<uint64_t>(cast<mlir::IntegerAttr>(namedAttr.getValue()).getInt());
     sortedFields.push_back(std::make_tuple(index, name, fieldValues[index]));
   }
   llvm::sort(sortedFields, [](auto &a, auto &b) {
