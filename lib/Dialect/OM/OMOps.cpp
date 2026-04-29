@@ -618,19 +618,17 @@ OpFoldResult circt::om::ObjectFieldOp::fold(FoldAdaptor adaptor) {
   if (!elaboratedObject)
     return {};
 
-  // Find the field index by matching the field name.
-  auto fieldNames = elaboratedObject.getFieldNames();
+  // Look up the field index in the dictionary for O(1) access.
+  auto fieldIndices = elaboratedObject.getFieldIndices();
   auto requestedField = getFieldAttr();
 
-  for (auto [idx, fieldName] : llvm::enumerate(fieldNames)) {
-    if (cast<StringAttr>(fieldName).getValue() == requestedField.getValue()) {
-      // Return the corresponding field value.
-      return elaboratedObject.getFieldValues()[idx];
-    }
-  }
+  auto indexAttr = fieldIndices.get(requestedField);
+  if (!indexAttr)
+    return {}; // Field not found (should have been caught by verifier).
 
-  // Field not found (this should have been caught by verifier).
-  return {};
+  // Get the index and return the corresponding field value.
+  auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
+  return elaboratedObject.getFieldValues()[index];
 }
 
 //===----------------------------------------------------------------------===//
@@ -642,16 +640,21 @@ void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
                                           om::ClassLike classOp,
                                           ValueRange fieldValues) {
   auto fieldNames = classOp.getFieldNames();
-  SmallVector<Attribute> fieldNameAttrs;
-  for (auto fieldName : fieldNames)
-    fieldNameAttrs.push_back(fieldName);
+
+  // Build a dictionary mapping field names to their indices.
+  SmallVector<NamedAttribute> fieldIndexAttrs;
+  for (auto [idx, fieldName] : llvm::enumerate(fieldNames)) {
+    auto indexAttr = odsBuilder.getI32IntegerAttr(idx);
+    fieldIndexAttrs.push_back(
+        NamedAttribute(cast<StringAttr>(fieldName), indexAttr));
+  }
 
   return build(odsBuilder, odsState,
                om::ClassType::get(
                    odsBuilder.getContext(),
                    mlir::FlatSymbolRefAttr::get(classOp.getSymNameAttr())),
                classOp.getSymNameAttr(),
-               odsBuilder.getArrayAttr(fieldNameAttrs),
+               odsBuilder.getDictionaryAttr(fieldIndexAttrs),
                fieldValues);
 }
 
@@ -663,35 +666,39 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
     return failure();
 
   auto classFieldNames = classDef->getFieldNames();
-  auto opFieldNames = getFieldNames();
+  auto fieldIndices = getFieldIndices();
   auto fieldValues = getFieldValues();
 
-  // Verify field names match
-  if (opFieldNames.size() != classFieldNames.size())
-    return emitOpError("field name list doesn't match class field list, "
-                       "expected ")
-           << classFieldNames.size() << " names but got " << opFieldNames.size();
+  // Verify field count matches
+  if (fieldIndices.size() != classFieldNames.size())
+    return emitOpError("field count doesn't match class field list, expected ")
+           << classFieldNames.size() << " fields but got " << fieldIndices.size();
 
-  for (auto [opFieldName, classFieldName] :
-       llvm::zip(opFieldNames, classFieldNames)) {
-    if (cast<StringAttr>(opFieldName) != cast<StringAttr>(classFieldName))
-      return emitOpError("field name mismatch: expected ")
-             << cast<StringAttr>(classFieldName) << " but got "
-             << cast<StringAttr>(opFieldName);
-  }
-
-  // Verify field values match
   if (fieldValues.size() != classFieldNames.size())
     return emitOpError("field value list doesn't match class field list, "
                        "expected ")
            << classFieldNames.size() << " values but got " << fieldValues.size();
 
-  for (auto [fieldName, fieldValue] : llvm::zip(classFieldNames, fieldValues)) {
-    Type expectedType =
-        classDef->getFieldType(cast<StringAttr>(fieldName)).value();
-    if (fieldValue.getType() != expectedType)
+  // Verify each class field exists in the dictionary with correct index and type
+  for (auto [idx, classFieldName] : llvm::enumerate(classFieldNames)) {
+    auto fieldNameStr = cast<StringAttr>(classFieldName);
+
+    // Check field exists in dictionary
+    auto indexAttr = fieldIndices.get(fieldNameStr);
+    if (!indexAttr)
+      return emitOpError("missing field ") << fieldNameStr;
+
+    // Check index is correct
+    auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
+    if (index != idx)
+      return emitOpError("field ") << fieldNameStr << " has index " << index
+                                   << " but expected " << idx;
+
+    // Check field type matches
+    Type expectedType = classDef->getFieldType(fieldNameStr).value();
+    if (fieldValues[idx].getType() != expectedType)
       return emitOpError("field value type for ")
-             << cast<StringAttr>(fieldName) << " (" << fieldValue.getType()
+             << fieldNameStr << " (" << fieldValues[idx].getType()
              << ") doesn't match class field type (" << expectedType << ')';
   }
 
@@ -707,7 +714,7 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
   StringAttr className = classNameRef.getAttr();
 
   // Parse the fields as name-value pairs: (name1: %val1 : type1, ...)
-  SmallVector<Attribute> fieldNames;
+  SmallVector<NamedAttribute> fieldIndexAttrs;
   SmallVector<OpAsmParser::UnresolvedOperand> fieldValues;
   SmallVector<Type> fieldTypes;
 
@@ -715,12 +722,17 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
     return failure();
 
   if (parser.parseOptionalRParen()) {
+    unsigned idx = 0;
     do {
       // Parse field name (keyword or string).
       std::string fieldName;
       if (parser.parseKeywordOrString(&fieldName) || parser.parseColon())
         return failure();
-      fieldNames.push_back(StringAttr::get(parser.getContext(), fieldName));
+
+      // Add field name to index mapping.
+      auto fieldNameAttr = StringAttr::get(parser.getContext(), fieldName);
+      auto indexAttr = parser.getBuilder().getI32IntegerAttr(idx++);
+      fieldIndexAttrs.push_back(NamedAttribute(fieldNameAttr, indexAttr));
 
       // Parse field value and type: %value : type
       OpAsmParser::UnresolvedOperand fieldValue;
@@ -745,9 +757,9 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Add the field names attribute.
-  result.addAttribute("fieldNames",
-                      parser.getBuilder().getArrayAttr(fieldNames));
+  // Add the field indices dictionary attribute.
+  result.addAttribute("fieldIndices",
+                      parser.getBuilder().getDictionaryAttr(fieldIndexAttrs));
 
   // Add the class name attribute.
   result.addAttribute("className", className);
@@ -765,23 +777,36 @@ void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
   // Print the class name as @ClassName
   p << " @" << getClassNameAttr().getValue();
 
+  // Extract field names from the dictionary and sort by index.
+  auto fieldIndices = getFieldIndices();
+  auto fieldValues = getFieldValues();
+
+  // Build a vector of (index, name, value) and sort by index.
+  SmallVector<std::tuple<unsigned, StringAttr, Value>> sortedFields;
+  for (auto namedAttr : fieldIndices) {
+    auto name = namedAttr.getName();
+    auto index = cast<mlir::IntegerAttr>(namedAttr.getValue()).getInt();
+    sortedFields.push_back(std::make_tuple(index, name, fieldValues[index]));
+  }
+  llvm::sort(sortedFields, [](auto &a, auto &b) {
+    return std::get<0>(a) < std::get<0>(b);
+  });
+
   // Print the fields as name-value pairs: (name1: %val1 : type1, ...)
   p << "(";
-  llvm::interleaveComma(
-      llvm::zip(getFieldNames(), getFieldValues()), p,
-      [&](auto pair) {
-        auto [name, value] = pair;
-        // Use printKeywordOrString to avoid quotes when possible
-        p.printKeywordOrString(cast<StringAttr>(name).getValue());
-        p << ": ";
-        p.printOperand(value);
-        p << " : ";
-        p.printType(value.getType());
-      });
+  llvm::interleaveComma(sortedFields, p, [&](auto &tuple) {
+    auto [index, name, value] = tuple;
+    // Use printKeywordOrString to avoid quotes when possible
+    p.printKeywordOrString(name.getValue());
+    p << ": ";
+    p.printOperand(value);
+    p << " : ";
+    p.printType(value.getType());
+  });
   p << ")";
 
-  // Print optional attributes (excluding className and fieldNames).
-  p.printOptionalAttrDict((*this)->getAttrs(), {"className", "fieldNames"});
+  // Print optional attributes (excluding className and fieldIndices).
+  p.printOptionalAttrDict((*this)->getAttrs(), {"className", "fieldIndices"});
 
   // Print result type.
   p << " : ";
