@@ -10,7 +10,7 @@ om.class @Class() {
 
 om.class @Class() {
   // expected-error @+1 {{'om.elaborated_object' op result type ("Bar") does not match referred to class ("Foo")}}
-  %0 = om.elaborated_object @Foo() : () -> !om.class.type<@Bar>
+  %0 = om.elaborated_object @Foo() : !om.class.type<@Bar>
   om.class.fields
 }
 
@@ -18,7 +18,7 @@ om.class @Class() {
 
 om.class @Class() {
   // expected-error @+1 {{'om.elaborated_object' op refers to non-existant class ("NonExistant")}}
-  %0 = om.elaborated_object @NonExistant() : () -> !om.class.type<@NonExistant>
+  %0 = om.elaborated_object @NonExistant() : !om.class.type<@NonExistant>
   om.class.fields
 }
 
@@ -30,8 +30,8 @@ om.class @Foo() -> (bar: i1) {
 }
 
 om.class @Class() {
-  // expected-error @+1 {{'om.elaborated_object' op field value list doesn't match class field list, expected 1 values but got 0}}
-  %0 = om.elaborated_object @Foo() : () -> !om.class.type<@Foo>
+  // expected-error @+1 {{'om.elaborated_object' op field count doesn't match class field list, expected 1 fields but got 0}}
+  %0 = om.elaborated_object @Foo() : !om.class.type<@Foo>
   om.class.fields
 }
 
@@ -45,7 +45,7 @@ om.class @Foo() -> (bar: i1) {
 om.class @Class() {
   %0 = om.constant 0 : i2
   // expected-error @+1 {{'om.elaborated_object' op field value type for "bar" ('i2') doesn't match class field type ('i1')}}
-  %1 = om.elaborated_object @Foo(%0) : (i2) -> !om.class.type<@Foo>
+  %1 = om.elaborated_object @Foo(bar: %0 : i2) : !om.class.type<@Foo>
   om.class.fields
 }
 
@@ -206,5 +206,37 @@ om.class @A(%arg: i1) -> (a: i1) {
 om.class@A() -> () {
   // expected-error @+1 {{'om.unknown' op refers to non-existant class ("NonExistant")}}
   %0 = om.unknown : !om.class.type<@NonExistant>
+  om.class.fields
+}
+
+// -----
+
+om.class @FieldMissing() -> (a: i1, b: i2) {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  om.class.fields %0, %1 : i1, i2
+}
+
+om.class @TestFieldMissing() {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  // expected-error @+1 {{'om.elaborated_object' op field count doesn't match class field list, expected 2 fields but got 1}}
+  %2 = "om.elaborated_object"(%0, %1) {className = "FieldMissing", fieldIndices = {a = 0 : i32}} : (i1, i2) -> !om.class.type<@FieldMissing>
+  om.class.fields
+}
+
+// -----
+
+om.class @WrongIndex() -> (a: i1, b: i2) {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  om.class.fields %0, %1 : i1, i2
+}
+
+om.class @TestWrongIndex() {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  // expected-error @+1 {{'om.elaborated_object' op field "a" has index 1 but expected 0}}
+  %2 = "om.elaborated_object"(%0, %1) {className = "WrongIndex", fieldIndices = {a = 1 : i32, b = 0 : i32}} : (i1, i2) -> !om.class.type<@WrongIndex>
   om.class.fields
 }

@@ -200,3 +200,27 @@ om.class @IntegerBitwiseFold(%b: i8) -> (out1: i8, out2: i8, out3: i8,
   // CHECK: om.class.fields [[ZERO]], [[ONES]], [[ONES]], [[ZERO]], [[AND]], [[OR]], [[XOR]], %b
   om.class.fields %0, %1, %2, %3, %4, %5, %6, %7 : i8, i8, i8, i8, i8, i8, i8, i8
 }
+
+om.class @Widget() -> (blue: i8, green: i32) {
+  %0 = om.constant 5 : i8
+  %1 = om.constant 6 : i32
+  om.class.fields %0, %1 : i8, i32
+}
+
+// CHECK-LABEL: @ObjectFieldFold
+om.class @ObjectFieldFold() -> (out1: i8, out2: i32, out3: i8) {
+  %blue_val = om.constant 5 : i8
+  %green_val = om.constant 6 : i32
+
+  // CHECK-DAG: [[BLUE:%.+]] = om.constant 5 : i8
+  // CHECK-DAG: [[GREEN:%.+]] = om.constant 6 : i32
+
+  %widget = om.elaborated_object @Widget(blue: %blue_val : i8, green: %green_val : i32) : !om.class.type<@Widget>
+
+  %0 = om.object.field %widget["blue"] : (!om.class.type<@Widget>) -> i8
+  %1 = om.object.field %widget["green"] : (!om.class.type<@Widget>) -> i32
+  %2 = om.object.field %widget["blue"] : (!om.class.type<@Widget>) -> i8
+
+  // CHECK: om.class.fields [[BLUE]], [[GREEN]], [[BLUE]]
+  om.class.fields %0, %1, %2 : i8, i32, i8
+}
