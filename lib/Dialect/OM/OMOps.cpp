@@ -612,21 +612,15 @@ circt::om::ObjectFieldOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 OpFoldResult circt::om::ObjectFieldOp::fold(FoldAdaptor adaptor) {
-  // If the object is an ElaboratedObjectOp, we can fold by looking up the field
-  // value directly.
   auto elaboratedObject = getObject().getDefiningOp<ElaboratedObjectOp>();
   if (!elaboratedObject)
     return {};
 
-  // Look up the field index in the dictionary for O(1) access.
   auto fieldIndices = elaboratedObject.getFieldIndices();
-  auto requestedField = getFieldAttr();
-
-  auto indexAttr = fieldIndices.get(requestedField);
+  auto indexAttr = fieldIndices.get(getFieldAttr());
   if (!indexAttr)
-    return {}; // Field not found (should have been caught by verifier).
+    return {};
 
-  // Get the index and return the corresponding field value.
   auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
   return elaboratedObject.getFieldValues()[index];
 }
@@ -639,11 +633,8 @@ void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
                                           OperationState &odsState,
                                           om::ClassLike classOp,
                                           ValueRange fieldValues) {
-  auto fieldNames = classOp.getFieldNames();
-
-  // Build a dictionary mapping field names to their indices.
   SmallVector<NamedAttribute> fieldIndexAttrs;
-  for (auto [idx, fieldName] : llvm::enumerate(fieldNames)) {
+  for (auto [idx, fieldName] : llvm::enumerate(classOp.getFieldNames())) {
     auto indexAttr = odsBuilder.getI32IntegerAttr(idx);
     fieldIndexAttrs.push_back(
         NamedAttribute(cast<StringAttr>(fieldName), indexAttr));
@@ -669,7 +660,6 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
   auto fieldIndices = getFieldIndices();
   auto fieldValues = getFieldValues();
 
-  // Verify field count matches
   if (fieldIndices.size() != classFieldNames.size())
     return emitOpError("field count doesn't match class field list, expected ")
            << classFieldNames.size() << " fields but got " << fieldIndices.size();
@@ -679,22 +669,18 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
                        "expected ")
            << classFieldNames.size() << " values but got " << fieldValues.size();
 
-  // Verify each class field exists in the dictionary with correct index and type
   for (auto [idx, classFieldName] : llvm::enumerate(classFieldNames)) {
     auto fieldNameStr = cast<StringAttr>(classFieldName);
 
-    // Check field exists in dictionary
     auto indexAttr = fieldIndices.get(fieldNameStr);
     if (!indexAttr)
       return emitOpError("missing field ") << fieldNameStr;
 
-    // Check index is correct
     auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
     if (index != idx)
       return emitOpError("field ") << fieldNameStr << " has index " << index
                                    << " but expected " << idx;
 
-    // Check field type matches
     Type expectedType = classDef->getFieldType(fieldNameStr).value();
     if (fieldValues[idx].getType() != expectedType)
       return emitOpError("field value type for ")
@@ -707,13 +693,11 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
 
 ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
                                                  OperationState &result) {
-  // Parse the class name as a symbol reference.
   FlatSymbolRefAttr classNameRef;
   if (parser.parseAttribute(classNameRef))
     return failure();
   StringAttr className = classNameRef.getAttr();
 
-  // Parse the fields as name-value pairs: (name1: %val1 : type1, ...)
   SmallVector<NamedAttribute> fieldIndexAttrs;
   SmallVector<OpAsmParser::UnresolvedOperand> fieldValues;
   SmallVector<Type> fieldTypes;
@@ -724,17 +708,14 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalRParen()) {
     unsigned idx = 0;
     do {
-      // Parse field name (keyword or string).
       std::string fieldName;
       if (parser.parseKeywordOrString(&fieldName) || parser.parseColon())
         return failure();
 
-      // Add field name to index mapping.
       auto fieldNameAttr = StringAttr::get(parser.getContext(), fieldName);
       auto indexAttr = parser.getBuilder().getI32IntegerAttr(idx++);
       fieldIndexAttrs.push_back(NamedAttribute(fieldNameAttr, indexAttr));
 
-      // Parse field value and type: %value : type
       OpAsmParser::UnresolvedOperand fieldValue;
       Type fieldType;
       if (parser.parseOperand(fieldValue) || parser.parseColon() ||
@@ -748,23 +729,17 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
       return failure();
   }
 
-  // Resolve operands.
   if (parser.resolveOperands(fieldValues, fieldTypes, parser.getNameLoc(),
                              result.operands))
     return failure();
 
-  // Parse optional attributes.
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Add the field indices dictionary attribute.
   result.addAttribute("fieldIndices",
                       parser.getBuilder().getDictionaryAttr(fieldIndexAttrs));
-
-  // Add the class name attribute.
   result.addAttribute("className", className);
 
-  // Parse the result type.
   Type resultType;
   if (parser.parseColon() || parser.parseType(resultType))
     return failure();
@@ -774,14 +749,11 @@ ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
 }
 
 void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
-  // Print the class name as @ClassName
   p << " @" << getClassNameAttr().getValue();
 
-  // Extract field names from the dictionary and sort by index.
   auto fieldIndices = getFieldIndices();
   auto fieldValues = getFieldValues();
 
-  // Build a vector of (index, name, value) and sort by index.
   SmallVector<std::tuple<unsigned, StringAttr, Value>> sortedFields;
   for (auto namedAttr : fieldIndices) {
     auto name = namedAttr.getName();
@@ -792,11 +764,9 @@ void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
     return std::get<0>(a) < std::get<0>(b);
   });
 
-  // Print the fields as name-value pairs: (name1: %val1 : type1, ...)
   p << "(";
   llvm::interleaveComma(sortedFields, p, [&](auto &tuple) {
     auto [index, name, value] = tuple;
-    // Use printKeywordOrString to avoid quotes when possible
     p.printKeywordOrString(name.getValue());
     p << ": ";
     p.printOperand(value);
@@ -805,10 +775,8 @@ void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
   });
   p << ")";
 
-  // Print optional attributes (excluding className and fieldIndices).
   p.printOptionalAttrDict((*this)->getAttrs(), {"className", "fieldIndices"});
 
-  // Print result type.
   p << " : ";
   p.printType(getResult().getType());
 }
