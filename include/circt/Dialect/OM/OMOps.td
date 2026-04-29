@@ -237,6 +237,7 @@ def ElaboratedObjectOp : OMOp<"elaborated_object", [
   ];
 
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 
   let extraClassDeclaration = [{
     // Get the index of a field by name. Returns std::nullopt if not found.

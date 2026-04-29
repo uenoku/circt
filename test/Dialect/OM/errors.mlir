@@ -220,7 +220,7 @@ om.class @FieldMissing() -> (a: i1, b: i2) {
 om.class @TestFieldMissing() {
   %0 = om.constant true
   %1 = om.constant 0 : i2
-  // expected-error @+1 {{'om.elaborated_object' op field count doesn't match class field list, expected 2 fields but got 1}}
+  // expected-error @+1 {{'om.elaborated_object' op field count mismatch: dictionary has 1 fields but 2 values provided}}
   %2 = "om.elaborated_object"(%0, %1) {className = "FieldMissing", fieldIndices = {a = 0 : index}} : (i1, i2) -> !om.class.type<@FieldMissing>
   om.class.fields
 }

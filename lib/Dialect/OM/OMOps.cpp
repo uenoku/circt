@@ -657,6 +657,46 @@ void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
                fieldValues);
 }
 
+LogicalResult circt::om::ElaboratedObjectOp::verify() {
+  auto fieldIndices = getFieldIndices();
+  auto fieldValues = getFieldValues();
+
+  // Verify field count matches between dictionary and values.
+  if (fieldIndices.size() != fieldValues.size())
+    return emitOpError("field count mismatch: dictionary has ")
+           << fieldIndices.size() << " fields but " << fieldValues.size()
+           << " values provided";
+
+  // Verify all indices are within bounds and unique.
+  SmallVector<bool> seenIndices(fieldValues.size(), false);
+  for (auto namedAttr : fieldIndices) {
+    auto indexAttr = dyn_cast<mlir::IntegerAttr>(namedAttr.getValue());
+    if (!indexAttr)
+      return emitOpError("field ") << namedAttr.getName()
+                                   << " has non-integer index";
+
+    if (!indexAttr.getType().isIndex())
+      return emitOpError("field ") << namedAttr.getName()
+                                   << " index must be of index type";
+
+    uint64_t index = static_cast<uint64_t>(indexAttr.getInt());
+
+    // Check index is within bounds.
+    if (index >= fieldValues.size())
+      return emitOpError("field ") << namedAttr.getName() << " has index "
+                                   << index << " which is out of bounds (expected < "
+                                   << fieldValues.size() << ")";
+
+    // Check for duplicate indices.
+    if (seenIndices[index])
+      return emitOpError("duplicate index ") << index << " for field "
+                                             << namedAttr.getName();
+    seenIndices[index] = true;
+  }
+
+  return success();
+}
+
 LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
     SymbolTableCollection &symbolTable) {
   auto classDef = verifyClassLikeSymbolUser(
@@ -677,25 +717,6 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
     return emitOpError("field value list doesn't match class field list, "
                        "expected ")
            << classFieldNames.size() << " values but got " << fieldValues.size();
-
-  // Verify all indices are within bounds and unique.
-  llvm::SmallDenseSet<uint64_t> seenIndices;
-  for (auto namedAttr : fieldIndices) {
-    uint64_t index =
-        static_cast<uint64_t>(cast<mlir::IntegerAttr>(namedAttr.getValue()).getInt());
-
-    // Check index is within bounds.
-    if (index >= classFieldNames.size())
-      return emitOpError("field ") << namedAttr.getName()
-                                   << " has index " << index
-                                   << " which is out of bounds (expected < "
-                                   << classFieldNames.size() << ")";
-
-    // Check for duplicate indices.
-    if (!seenIndices.insert(index).second)
-      return emitOpError("duplicate index ") << index
-                                             << " for field " << namedAttr.getName();
-  }
 
   // Verify each class field exists in the dictionary with correct index and type.
   for (auto [idx, classFieldName] : llvm::enumerate(classFieldNames)) {
