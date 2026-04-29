@@ -616,18 +616,24 @@ OpFoldResult circt::om::ObjectFieldOp::fold(FoldAdaptor adaptor) {
   if (!elaboratedObject)
     return {};
 
-  auto fieldIndices = elaboratedObject.getFieldIndices();
-  auto indexAttr = fieldIndices.get(getFieldAttr());
-  if (!indexAttr)
+  auto index = elaboratedObject.getFieldIndex(getFieldAttr());
+  if (!index)
     return {};
 
-  auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
-  return elaboratedObject.getFieldValues()[index];
+  return elaboratedObject.getFieldValues()[*index];
 }
 
 //===----------------------------------------------------------------------===//
 // ElaboratedObjectOp
 //===----------------------------------------------------------------------===//
+
+std::optional<size_t>
+circt::om::ElaboratedObjectOp::getFieldIndex(StringAttr fieldName) {
+  auto indexAttr = getFieldIndices().get(fieldName);
+  if (!indexAttr)
+    return std::nullopt;
+  return cast<mlir::IntegerAttr>(indexAttr).getInt();
+}
 
 void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
                                           OperationState &odsState,
@@ -672,13 +678,12 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
   for (auto [idx, classFieldName] : llvm::enumerate(classFieldNames)) {
     auto fieldNameStr = cast<StringAttr>(classFieldName);
 
-    auto indexAttr = fieldIndices.get(fieldNameStr);
-    if (!indexAttr)
+    auto index = getFieldIndex(fieldNameStr);
+    if (!index)
       return emitOpError("missing field ") << fieldNameStr;
 
-    auto index = cast<mlir::IntegerAttr>(indexAttr).getInt();
-    if (index != idx)
-      return emitOpError("field ") << fieldNameStr << " has index " << index
+    if (*index != idx)
+      return emitOpError("field ") << fieldNameStr << " has index " << *index
                                    << " but expected " << idx;
 
     Type expectedType = classDef->getFieldType(fieldNameStr).value();
