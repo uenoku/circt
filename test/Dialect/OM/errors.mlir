@@ -208,3 +208,35 @@ om.class@A() -> () {
   %0 = om.unknown : !om.class.type<@NonExistant>
   om.class.fields
 }
+
+// -----
+
+om.class @FieldMissing() -> (a: i1, b: i2) {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  om.class.fields %0, %1 : i1, i2
+}
+
+om.class @TestFieldMissing() {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  // expected-error @+1 {{'om.elaborated_object' op field count doesn't match class field list, expected 2 fields but got 1}}
+  %2 = "om.elaborated_object"(%0, %1) {className = "FieldMissing", fieldIndices = {a = 0 : i32}} : (i1, i2) -> !om.class.type<@FieldMissing>
+  om.class.fields
+}
+
+// -----
+
+om.class @WrongIndex() -> (a: i1, b: i2) {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  om.class.fields %0, %1 : i1, i2
+}
+
+om.class @TestWrongIndex() {
+  %0 = om.constant true
+  %1 = om.constant 0 : i2
+  // expected-error @+1 {{'om.elaborated_object' op field "a" has index 1 but expected 0}}
+  %2 = "om.elaborated_object"(%0, %1) {className = "WrongIndex", fieldIndices = {a = 1 : i32, b = 0 : i32}} : (i1, i2) -> !om.class.type<@WrongIndex>
+  om.class.fields
+}

@@ -200,3 +200,65 @@ om.class @IntegerBitwiseFold(%b: i8) -> (out1: i8, out2: i8, out3: i8,
   // CHECK: om.class.fields [[ZERO]], [[ONES]], [[ONES]], [[ZERO]], [[AND]], [[OR]], [[XOR]], %b
   om.class.fields %0, %1, %2, %3, %4, %5, %6, %7 : i8, i8, i8, i8, i8, i8, i8, i8
 }
+
+om.class @Widget() -> (blue: i8, green: i32) {
+  %0 = om.constant 5 : i8
+  %1 = om.constant 6 : i32
+  om.class.fields %0, %1 : i8, i32
+}
+
+// CHECK-LABEL: @ObjectFieldFold
+om.class @ObjectFieldFold() -> (out1: i8, out2: i32, out3: i8, out4: i32) {
+  %blue_val = om.constant 5 : i8
+  %green_val = om.constant 6 : i32
+
+  // CHECK-DAG: [[BLUE:%.+]] = om.constant 5 : i8
+  // CHECK-DAG: [[GREEN:%.+]] = om.constant 6 : i32
+
+  // Create an elaborated object with explicit field mappings
+  %widget = om.elaborated_object @Widget(blue: %blue_val : i8, green: %green_val : i32) : !om.class.type<@Widget>
+
+  // These field accesses should fold to the constant values
+  %0 = om.object.field %widget["blue"] : (!om.class.type<@Widget>) -> i8
+  %1 = om.object.field %widget["green"] : (!om.class.type<@Widget>) -> i32
+
+  // Field accesses in different order should still fold correctly
+  %2 = om.object.field %widget["blue"] : (!om.class.type<@Widget>) -> i8
+  %3 = om.object.field %widget["green"] : (!om.class.type<@Widget>) -> i32
+
+  // CHECK: om.class.fields [[BLUE]], [[GREEN]], [[BLUE]], [[GREEN]]
+  om.class.fields %0, %1, %2, %3 : i8, i32, i8, i32
+}
+
+om.class @ComplexWidget() -> (a: i1, b: i8, c: i16, d: i32) {
+  %0 = om.constant true
+  %1 = om.constant 10 : i8
+  %2 = om.constant 20 : i16
+  %3 = om.constant 30 : i32
+  om.class.fields %0, %1, %2, %3 : i1, i8, i16, i32
+}
+
+// CHECK-LABEL: @ObjectFieldFoldMultipleFields
+om.class @ObjectFieldFoldMultipleFields() -> (out_a: i1, out_b: i8, out_c: i16, out_d: i32, out_b2: i8) {
+  %v0 = om.constant true
+  %v1 = om.constant 10 : i8
+  %v2 = om.constant 20 : i16
+  %v3 = om.constant 30 : i32
+
+  // CHECK-DAG: [[TRUE:%.+]] = om.constant true
+  // CHECK-DAG: [[I8_10:%.+]] = om.constant 10 : i8
+  // CHECK-DAG: [[I16_20:%.+]] = om.constant 20 : i16
+  // CHECK-DAG: [[I32_30:%.+]] = om.constant 30 : i32
+
+  %obj = om.elaborated_object @ComplexWidget(a: %v0 : i1, b: %v1 : i8, c: %v2 : i16, d: %v3 : i32) : !om.class.type<@ComplexWidget>
+
+  // Access fields in various orders - all should fold via dictionary lookup
+  %out_a = om.object.field %obj["a"] : (!om.class.type<@ComplexWidget>) -> i1
+  %out_b = om.object.field %obj["b"] : (!om.class.type<@ComplexWidget>) -> i8
+  %out_c = om.object.field %obj["c"] : (!om.class.type<@ComplexWidget>) -> i16
+  %out_d = om.object.field %obj["d"] : (!om.class.type<@ComplexWidget>) -> i32
+  %out_b2 = om.object.field %obj["b"] : (!om.class.type<@ComplexWidget>) -> i8
+
+  // CHECK: om.class.fields [[TRUE]], [[I8_10]], [[I16_20]], [[I32_30]], [[I8_10]]
+  om.class.fields %out_a, %out_b, %out_c, %out_d, %out_b2 : i1, i8, i16, i32, i8
+}
