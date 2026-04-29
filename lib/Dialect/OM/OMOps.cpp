@@ -611,6 +611,28 @@ circt::om::ObjectFieldOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+OpFoldResult circt::om::ObjectFieldOp::fold(FoldAdaptor adaptor) {
+  // If the object is an ElaboratedObjectOp, we can fold by looking up the field
+  // value directly.
+  auto elaboratedObject = getObject().getDefiningOp<ElaboratedObjectOp>();
+  if (!elaboratedObject)
+    return {};
+
+  // Find the field index by matching the field name.
+  auto fieldNames = elaboratedObject.getFieldNames();
+  auto requestedField = getFieldAttr();
+
+  for (auto [idx, fieldName] : llvm::enumerate(fieldNames)) {
+    if (cast<StringAttr>(fieldName).getValue() == requestedField.getValue()) {
+      // Return the corresponding field value.
+      return elaboratedObject.getFieldValues()[idx];
+    }
+  }
+
+  // Field not found (this should have been caught by verifier).
+  return {};
+}
+
 //===----------------------------------------------------------------------===//
 // ElaboratedObjectOp
 //===----------------------------------------------------------------------===//
@@ -619,11 +641,18 @@ void circt::om::ElaboratedObjectOp::build(OpBuilder &odsBuilder,
                                           OperationState &odsState,
                                           om::ClassLike classOp,
                                           ValueRange fieldValues) {
+  auto fieldNames = classOp.getFieldNames();
+  SmallVector<Attribute> fieldNameAttrs;
+  for (auto fieldName : fieldNames)
+    fieldNameAttrs.push_back(fieldName);
+
   return build(odsBuilder, odsState,
                om::ClassType::get(
                    odsBuilder.getContext(),
                    mlir::FlatSymbolRefAttr::get(classOp.getSymNameAttr())),
-               classOp.getSymNameAttr(), fieldValues);
+               classOp.getSymNameAttr(),
+               odsBuilder.getArrayAttr(fieldNameAttrs),
+               fieldValues);
 }
 
 LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
@@ -633,14 +662,31 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
   if (failed(classDef))
     return failure();
 
-  auto fieldNames = classDef->getFieldNames();
+  auto classFieldNames = classDef->getFieldNames();
+  auto opFieldNames = getFieldNames();
   auto fieldValues = getFieldValues();
-  if (fieldValues.size() != fieldNames.size())
+
+  // Verify field names match
+  if (opFieldNames.size() != classFieldNames.size())
+    return emitOpError("field name list doesn't match class field list, "
+                       "expected ")
+           << classFieldNames.size() << " names but got " << opFieldNames.size();
+
+  for (auto [opFieldName, classFieldName] :
+       llvm::zip(opFieldNames, classFieldNames)) {
+    if (cast<StringAttr>(opFieldName) != cast<StringAttr>(classFieldName))
+      return emitOpError("field name mismatch: expected ")
+             << cast<StringAttr>(classFieldName) << " but got "
+             << cast<StringAttr>(opFieldName);
+  }
+
+  // Verify field values match
+  if (fieldValues.size() != classFieldNames.size())
     return emitOpError("field value list doesn't match class field list, "
                        "expected ")
-           << fieldNames.size() << " values but got " << fieldValues.size();
+           << classFieldNames.size() << " values but got " << fieldValues.size();
 
-  for (auto [fieldName, fieldValue] : llvm::zip(fieldNames, fieldValues)) {
+  for (auto [fieldName, fieldValue] : llvm::zip(classFieldNames, fieldValues)) {
     Type expectedType =
         classDef->getFieldType(cast<StringAttr>(fieldName)).value();
     if (fieldValue.getType() != expectedType)
@@ -650,6 +696,96 @@ LogicalResult circt::om::ElaboratedObjectOp::verifySymbolUses(
   }
 
   return success();
+}
+
+ParseResult circt::om::ElaboratedObjectOp::parse(OpAsmParser &parser,
+                                                 OperationState &result) {
+  // Parse the class name as a symbol reference.
+  FlatSymbolRefAttr classNameRef;
+  if (parser.parseAttribute(classNameRef))
+    return failure();
+  StringAttr className = classNameRef.getAttr();
+
+  // Parse the fields as name-value pairs: (name1: %val1 : type1, ...)
+  SmallVector<Attribute> fieldNames;
+  SmallVector<OpAsmParser::UnresolvedOperand> fieldValues;
+  SmallVector<Type> fieldTypes;
+
+  if (parser.parseLParen())
+    return failure();
+
+  if (parser.parseOptionalRParen()) {
+    do {
+      // Parse field name (keyword or string).
+      std::string fieldName;
+      if (parser.parseKeywordOrString(&fieldName) || parser.parseColon())
+        return failure();
+      fieldNames.push_back(StringAttr::get(parser.getContext(), fieldName));
+
+      // Parse field value and type: %value : type
+      OpAsmParser::UnresolvedOperand fieldValue;
+      Type fieldType;
+      if (parser.parseOperand(fieldValue) || parser.parseColon() ||
+          parser.parseType(fieldType))
+        return failure();
+      fieldValues.push_back(fieldValue);
+      fieldTypes.push_back(fieldType);
+    } while (succeeded(parser.parseOptionalComma()));
+
+    if (parser.parseRParen())
+      return failure();
+  }
+
+  // Resolve operands.
+  if (parser.resolveOperands(fieldValues, fieldTypes, parser.getNameLoc(),
+                             result.operands))
+    return failure();
+
+  // Parse optional attributes.
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  // Add the field names attribute.
+  result.addAttribute("fieldNames",
+                      parser.getBuilder().getArrayAttr(fieldNames));
+
+  // Add the class name attribute.
+  result.addAttribute("className", className);
+
+  // Parse the result type.
+  Type resultType;
+  if (parser.parseColon() || parser.parseType(resultType))
+    return failure();
+  result.addTypes(resultType);
+
+  return success();
+}
+
+void circt::om::ElaboratedObjectOp::print(OpAsmPrinter &p) {
+  // Print the class name as @ClassName
+  p << " @" << getClassNameAttr().getValue();
+
+  // Print the fields as name-value pairs: (name1: %val1 : type1, ...)
+  p << "(";
+  llvm::interleaveComma(
+      llvm::zip(getFieldNames(), getFieldValues()), p,
+      [&](auto pair) {
+        auto [name, value] = pair;
+        // Use printKeywordOrString to avoid quotes when possible
+        p.printKeywordOrString(cast<StringAttr>(name).getValue());
+        p << ": ";
+        p.printOperand(value);
+        p << " : ";
+        p.printType(value.getType());
+      });
+  p << ")";
+
+  // Print optional attributes (excluding className and fieldNames).
+  p.printOptionalAttrDict((*this)->getAttrs(), {"className", "fieldNames"});
+
+  // Print result type.
+  p << " : ";
+  p.printType(getResult().getType());
 }
 
 //===----------------------------------------------------------------------===//

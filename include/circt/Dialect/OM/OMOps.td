@@ -221,6 +221,7 @@ def ElaboratedObjectOp : OMOp<"elaborated_object", [
 
   let arguments = (ins
     SymbolNameAttr:$className,
+    StrArrayAttr:$fieldNames,
     Variadic<AnyType>:$fieldValues
   );
 
@@ -232,10 +233,7 @@ def ElaboratedObjectOp : OMOp<"elaborated_object", [
     OpBuilder<(ins "om::ClassLike":$classOp, "::mlir::ValueRange":$fieldValues)>
   ];
 
-  let assemblyFormat = [{
-    $className `(` $fieldValues `)` attr-dict `:`
-      functional-type($fieldValues, $result)
-  }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def ObjectFieldOp : OMOp<"object.field", [
@@ -254,6 +252,8 @@ def ObjectFieldOp : OMOp<"object.field", [
   let assemblyFormat = [{
     $object `[` $field `]` attr-dict `:` functional-type($object, $result)
   }];
+
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
