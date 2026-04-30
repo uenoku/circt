@@ -12,6 +12,7 @@
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -157,13 +158,24 @@ struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
 
   LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symbols) {
-    // Step 1: Inline all ObjectOps using greedy pattern rewriter
+    // Elaboration can be performed by inlining all ObjectOps and constant folds
+    // using greedy pattern rewriter.
+    // NOTE: Conversion framework didn't work well with inlining because
+    //       inlining pattern needs to be applied recursively.
     RewritePatternSet patterns(classOp.getContext());
     patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symbols);
     patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symbols);
     patterns.add<UnknownPropagationPattern>(classOp.getContext());
-    if (failed(applyPatternsGreedily(classOp, std::move(patterns))))
+    GreedyRewriteConfig config;
+    // Disable iteration limit.
+    config.setMaxIterations(GreedyRewriteConfig::kNoLimit);
+    if (failed(applyPatternsGreedily(classOp, std::move(patterns), config)))
       return failure();
+
+    // Check that the class is fully elaborated(= serializable)
+    classOp.walk([](Operation *op) {
+
+    });
 
     return success();
   }

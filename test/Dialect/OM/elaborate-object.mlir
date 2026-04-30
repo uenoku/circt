@@ -68,10 +68,8 @@ om.class @NestedFieldTop() -> (result: !om.string) {
 // CHECK:   om.class.fields %[[STR]] : !om.string
 // CHECK: }
 
-// -----
 
 // Test integer arithmetic with object field access
-
 om.class @ValueBox(%val: !om.integer) -> (value: !om.integer) {
   om.class.fields %val : !om.integer
 }
