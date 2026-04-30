@@ -195,6 +195,7 @@ LogicalResult verifyResult(ClassOp module) {
                    << assertOp.getMessage(),
                WalkResult::interrupt();
       };
+
       if (matchPattern(assertOp.getCondition(), m_ConstantInt(&value)))
         return checkAssert(!value.isZero());
 
@@ -202,7 +203,7 @@ LogicalResult verifyResult(ClassOp module) {
       if (auto unknownOp = dyn_cast_or_null<UnknownValueOp>(defOp))
         return checkAssert(true);
 
-      // This means condition was not fully evaluated.
+      // This means the condition was not fully evaluated.
       return emitError(op->getLoc(), "failed to evaluate assertion condition"),
              WalkResult::interrupt();
     }

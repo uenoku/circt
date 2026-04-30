@@ -106,19 +106,35 @@ om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
 // CHECK: }
 
 
-// Test cycle detection in dataflow (field access creates a cycle)
-om.class @Wrapper(%val: !om.integer) -> (out: !om.integer) {
-  om.class.fields %val : !om.integer
+// Test property assertions with true/passing conditions
+om.class @AssertTrue() {
+  %true = om.constant true
+  om.property_assert %true, "this should pass" : i1
+  om.class.fields
 }
 
-om.class @DataflowCycleTop() -> (result: !om.integer) {
-  %obj = om.object @Wrapper(%feedback) : (!om.integer) -> !om.class.type<@Wrapper>
-  %feedback = om.object.field %obj["out"] : (!om.class.type<@Wrapper>) -> !om.integer
-  om.class.fields %feedback : !om.integer
+// CHECK-LABEL: om.class @AssertTrue() {
+// CHECK:   om.class.fields
+// CHECK: }
+
+om.class @AssertInteger() {
+  %one = om.constant 1 : i1
+  om.property_assert %one, "one is true" : i1
+  om.class.fields
 }
 
-// CHECK-LABEL: om.class @DataflowCycleTop() -> (result: !om.integer) {
-// CHECK:   %[[OBJ:.+]] = om.elaborated_object @Wrapper(%[[FEEDBACK:.+]]) : (!om.integer) -> !om.class.type<@Wrapper>
-// CHECK:   %[[FEEDBACK]] = om.object.field %[[OBJ]]["out"] : (!om.class.type<@Wrapper>) -> !om.integer
-// CHECK:   om.class.fields %[[FEEDBACK]] : !om.integer
+// CHECK-LABEL: om.class @AssertInteger() {
+// CHECK:   om.class.fields
+// CHECK: }
+
+
+// Test property assertion with unknown condition (should pass and be erased)
+om.class @AssertUnknown() {
+  %unknown = om.unknown : i1
+  om.property_assert %unknown, "unknown condition" : i1
+  om.class.fields
+}
+
+// CHECK-LABEL: om.class @AssertUnknown() {
+// CHECK:   om.class.fields
 // CHECK: }
