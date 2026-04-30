@@ -43,8 +43,7 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
   LogicalResult matchAndRewrite(ObjectOp objOp,
                                 PatternRewriter &rewriter) const override {
     auto classLike = symbols.lookup<ClassLike>(objOp.getClassNameAttr());
-    if (!classLike)
-      return objOp.emitError("unknown class ") << objOp.getClassNameAttr();
+    assert(classLike);
 
     // External classes become unknown
     if (isa<ClassExternOp>(classLike)) {
@@ -69,10 +68,8 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     auto clonedFields = cast<ClassFieldsOp>(clonedBlock->getTerminator());
     SmallVector<Value> fieldValues(clonedFields.getFields());
 
-    // Erase the terminator
+    // Erase the terminator and inline.
     rewriter.eraseOp(clonedFields);
-
-    // Inline the cloned block before the ObjectOp using rewriter
     rewriter.inlineBlockBefore(clonedBlock, objOp);
 
     // Replace the ObjectOp with an ElaboratedObjectOp
@@ -101,9 +98,8 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
 
     // Look up the class to get field names
     auto classLike = symbols.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
-    if (!classLike)
-      return elaboratedOp.emitError("unknown class ")
-             << elaboratedOp.getClassNameAttr();
+    assert(classLike);
+
     auto index =
         fieldIndexes.at({classLike.getSymNameAttr(), op.getFieldAttr()});
     auto result = elaboratedOp.getFieldValues()[index];
