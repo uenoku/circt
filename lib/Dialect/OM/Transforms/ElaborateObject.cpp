@@ -178,22 +178,22 @@ bool isSeriazable(Operation *op) {
 }
 
 LogicalResult verifyResult(ClassOp module) {
-  auto isLegal = [](Operation *op) {
+  auto isLegal = [](Operation *op) -> LogicalResult {
     // Check assert satisfied.
     if (auto assertOp = dyn_cast<PropertyAssertOp>(op)) {
       // Check if the condition is a constant false, which means the assertion
       // is violated.
       auto *defOp = assertOp.getCondition().getDefiningOp();
       APInt value;
-      auto checkAssert = [&](bool cond) {
+      auto checkAssert = [&](bool cond) -> LogicalResult {
         if (cond) {
+          // Erase when success, serialization doesn't need to care about this.
           op->erase();
-          return WalkResult::advance();
+          return success();
         }
 
         return op->emitError("OM property assertion failed: ")
-                   << assertOp.getMessage(),
-               WalkResult::interrupt();
+               << assertOp.getMessage();
       };
 
       if (matchPattern(assertOp.getCondition(), m_ConstantInt(&value)))
@@ -204,16 +204,18 @@ LogicalResult verifyResult(ClassOp module) {
         return checkAssert(true);
 
       // This means the condition was not fully evaluated.
-      return emitError(op->getLoc(), "failed to evaluate assertion condition"),
-             WalkResult::interrupt();
+      return emitError(op->getLoc(), "failed to evaluate assertion condition");
     }
 
     if (!isSeriazable(op))
-      return emitError(op->getLoc()) << "failed to evaluate " << op->getName(),
-             WalkResult::interrupt();
-    return WalkResult::advance();
+      return emitError(op->getLoc()) << "failed to evaluate " << op->getName();
+
+    return success();
   };
-  return failure(module.walk(isLegal).wasInterrupted());
+  bool encounteredError = false;
+  module.walk([&](Operation *op) { encounteredError |= failed(isLegal(op)); });
+
+  return failure(encounteredError);
 }
 
 struct ElaborateObjectPass
