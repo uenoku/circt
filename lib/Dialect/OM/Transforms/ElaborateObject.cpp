@@ -149,6 +149,7 @@ struct UnknownPropagationPattern : RewritePattern {
 
 struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
+  using Base::Base;
 
   LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symTable,
                                FieldIndex &fieldIndexes) {
