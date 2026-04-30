@@ -13,11 +13,9 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -37,12 +35,12 @@ using FieldIndex = DenseMap<std::pair<StringAttr, StringAttr>, unsigned>;
 
 // Pattern to inline ObjectOp and replace with ElaboratedObjectOp
 struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
-  ObjectOpInliningPattern(MLIRContext *context, SymbolTable &symbols)
-      : OpRewritePattern<ObjectOp>(context), symbols(symbols) {}
+  ObjectOpInliningPattern(MLIRContext *context, SymbolTable &symTable)
+      : OpRewritePattern<ObjectOp>(context), symTable(symTable) {}
 
   LogicalResult matchAndRewrite(ObjectOp objOp,
                                 PatternRewriter &rewriter) const override {
-    auto classLike = symbols.lookup<ClassLike>(objOp.getClassNameAttr());
+    auto classLike = symTable.lookup<ClassLike>(objOp.getClassNameAttr());
     assert(classLike);
 
     // External classes become unknown
@@ -51,7 +49,9 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
       return success();
     }
 
-    auto classOp = cast<ClassOp>(classLike);
+    auto classOp = dyn_cast<ClassOp>(classLike.getOperation());
+    if (!classOp)
+      return failure();
 
     // Map formal parameters to actual parameters
     IRMapping mapper;
@@ -79,14 +79,14 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     return success();
   }
 
-  SymbolTable &symbols;
+  SymbolTable &symTable;
 };
 
 struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
   ObjectFieldOpConversionPattern(MLIRContext *context,
-                                 const SymbolTable &symbols,
+                                 const SymbolTable &symTable,
                                  const FieldIndex &fieldIndexes)
-      : OpRewritePattern<ObjectFieldOp>(context), symbols(symbols),
+      : OpRewritePattern<ObjectFieldOp>(context), symTable(symTable),
         fieldIndexes(fieldIndexes) {}
 
   LogicalResult matchAndRewrite(ObjectFieldOp op,
@@ -97,7 +97,8 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
       return failure();
 
     // Look up the class to get field names
-    auto classLike = symbols.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
+    auto classLike =
+        symTable.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
     assert(classLike);
 
     auto index =
@@ -111,7 +112,7 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
     return success();
   }
 
-  const SymbolTable &symbols;
+  const SymbolTable &symTable;
   const FieldIndex &fieldIndexes;
 };
 
@@ -122,6 +123,7 @@ struct UnknownPropagationPattern : RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
+    // Target pure OM operations.
     if (!isa_and_nonnull<OMDialect>(op->getDialect()) || !isPure(op))
       return failure();
 
@@ -148,15 +150,15 @@ struct UnknownPropagationPattern : RewritePattern {
 struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
 
-  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symbols,
+  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symTable,
                                FieldIndex &fieldIndexes) {
     // Elaboration can be performed by inlining all ObjectOps and constant folds
     // using greedy pattern rewriter.
     // NOTE: Conversion framework didn't work well with inlining because
     //       inlining pattern needs to be applied recursively.
     RewritePatternSet patterns(classOp.getContext());
-    patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symbols);
-    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symbols,
+    patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symTable);
+    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symTable,
                                                  fieldIndexes);
     patterns.add<UnknownPropagationPattern>(classOp.getContext());
     GreedyRewriteConfig config;
@@ -170,7 +172,7 @@ struct ElaborateObjectPass
 
   void runOnOperation() override {
     auto module = getOperation();
-    auto &symbols = getAnalysis<SymbolTable>();
+    auto &symTable = getAnalysis<SymbolTable>();
     FieldIndex fieldIndexes;
     for (auto classOp : module.getOps<ClassLike>()) {
       auto name = classOp.getSymNameAttr();
@@ -183,7 +185,7 @@ struct ElaborateObjectPass
     if (test) {
       for (auto classOp : module.getOps<ClassOp>()) {
         if (classOp.getBodyBlock()->getNumArguments() == 0)
-          if (failed(elaborateClass(classOp, symbols, fieldIndexes)))
+          if (failed(elaborateClass(classOp, symTable, fieldIndexes)))
             return signalPassFailure();
       }
       return;
@@ -197,20 +199,16 @@ struct ElaborateObjectPass
     }
 
     // Find the target class
-    auto classOp = symbols.lookup<ClassOp>(targetClass);
+    auto classOp = symTable.lookup<ClassOp>(targetClass);
     if (!classOp) {
       emitError(classOp.getLoc(), "om-elaborate-object could not find class ")
           << targetClass;
       return signalPassFailure();
     }
 
-    if (failed(elaborateClass(classOp, symbols, fieldIndexes)))
+    if (failed(elaborateClass(classOp, symTable, fieldIndexes)))
       return signalPassFailure();
   }
 };
 
 } // namespace
-
-std::unique_ptr<Pass> circt::om::createElaborateObjectPass() {
-  return std::make_unique<ElaborateObjectPass>();
-}

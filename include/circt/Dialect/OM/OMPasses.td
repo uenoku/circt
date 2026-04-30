@@ -26,7 +26,7 @@ def LinkModules: Pass<"om-link-modules", "mlir::ModuleOp"> {
 }
 
 def ElaborateObject: Pass<"om-elaborate-object", "mlir::ModuleOp"> {
-  let summary = "Elaborate a zero-input OM class into om.elaborated_object form";
+  let summary = "Elaborate a OM object into om.elaborated_object form";
   let description = [{
     Elaborates a specified zero-input OM class by inlining all object
     instantiations and converting them to om.elaborated_object form.
@@ -41,7 +41,6 @@ def ElaborateObject: Pass<"om-elaborate-object", "mlir::ModuleOp"> {
     Option<"test", "test", "bool", /*default=*/"false",
            "Test mode: elaborate all nullary classes in the module">
   ];
-  let constructor = "circt::om::createElaborateObjectPass()";
 }
 
 def StripOMPass : Pass<"strip-om", "mlir::ModuleOp"> {
