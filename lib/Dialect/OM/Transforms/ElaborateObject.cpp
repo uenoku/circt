@@ -165,11 +165,6 @@ struct ElaborateObjectPass
     if (failed(applyPatternsGreedily(classOp, std::move(patterns), config)))
       return failure();
 
-    // Check that the class is fully elaborated(= serializable)
-    classOp.walk([](Operation *op) {
-
-    });
-
     return success();
   }
 
@@ -196,24 +191,16 @@ struct ElaborateObjectPass
 
     // Target class must be specified
     if (targetClass.empty()) {
-      module.emitError("om-elaborate-object requires --target-class option ");
+      emitError(module.getLoc(),
+                "om-elaborate-object requires --target-class option ");
       return signalPassFailure();
     }
 
     // Find the target class
     auto classOp = symbols.lookup<ClassOp>(targetClass);
     if (!classOp) {
-      module.emitError("om-elaborate-object could not find class ")
+      emitError(classOp.getLoc(), "om-elaborate-object could not find class ")
           << targetClass;
-      return signalPassFailure();
-    }
-
-    // Only accept classes with zero inputs
-    if (classOp.getBodyBlock()->getNumArguments() != 0) {
-      classOp.emitError(
-          "om-elaborate-object only accepts zero-input classes, but ")
-          << targetClass << " has " << classOp.getBodyBlock()->getNumArguments()
-          << " inputs";
       return signalPassFailure();
     }
 

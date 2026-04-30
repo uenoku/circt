@@ -37,7 +37,7 @@ def ElaborateObject: Pass<"om-elaborate-object", "mlir::ModuleOp"> {
   }];
   let options = [
     Option<"targetClass", "target-class", "std::string", /*default=*/"",
-           "The zero-input class to elaborate (required unless test is set)">,
+           "The class to elaborate">,
     Option<"test", "test", "bool", /*default=*/"false",
            "Test mode: elaborate all nullary classes in the module">
   ];
