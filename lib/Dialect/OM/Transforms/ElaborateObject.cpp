@@ -19,6 +19,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -164,20 +165,55 @@ struct UnknownPropagationPattern : RewritePattern {
 };
 
 bool isSeriazable(Operation *op) {
-  return isa<ClassOp, ClassFieldsOp, ElaboratedObjectOp, ConstantOp,
-             UnknownValueOp, AnyCastOp, EmptyPathOp, FrozenBasePathCreateOp,
-             FrozenPathCreateOp, FrozenEmptyPathOp>(op);
+  return isa<
+      // Structure.
+      ClassOp, ClassFieldsOp, ElaboratedObjectOp, AnyCastOp,
+      // Constant-like.
+      ConstantOp, UnknownValueOp,
+      // Path.
+      EmptyPathOp, FrozenBasePathCreateOp, FrozenPathCreateOp,
+      FrozenEmptyPathOp,
+      // List.
+      ListCreateOp, ListConcatOp>(op);
 }
 
 LogicalResult verifyResult(ClassOp module) {
-  module.walk([](Operation *op) {
+  WalkResult result = module.walk([](Operation *op) {
     // Check assert satisfied.
     if (auto assertOp = dyn_cast<PropertyAssertOp>(op)) {
-    }
-    if (!isSeriazable(op))
-      return emitError(op->getLoc()) << "failed to legalize " << op->getName(),
+      // Check if the condition is a constant false, which means the assertion
+      // is violated.
+      auto *defOp = assertOp.getCondition().getDefiningOp();
+      APInt value;
+      auto checkAssert = [&](bool cond) {
+        if (cond) {
+          op->erase();
+          return WalkResult::advance();
+        }
+
+        return op->emitError("OM property assertion failed: ")
+                   << assertOp.getMessage(),
+               WalkResult::interrupt();
+      };
+      if (matchPattern(assertOp.getCondition(), m_ConstantInt(&value)))
+        return checkAssert(!value.isZero());
+
+      // Ok.
+      if (auto unknownOp = dyn_cast_or_null<UnknownValueOp>(defOp))
+        return checkAssert(true);
+
+      // This means condition was not fully evaluated.
+      return emitError(op->getLoc(), "failed to evaluate assertion condition"),
              WalkResult::interrupt();
+    }
+
+    if (!isSeriazable(op))
+      return emitError(op->getLoc()) << "failed to evaluate " << op->getName(),
+             WalkResult::interrupt();
+    return WalkResult::advance();
   });
+
+  return failure(result.wasInterrupted());
 }
 
 struct ElaborateObjectPass
