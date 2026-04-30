@@ -164,7 +164,7 @@ struct UnknownPropagationPattern : RewritePattern {
   }
 };
 
-bool isSeriazable(Operation *op) {
+bool isSerializable(Operation *op) {
   return isa<
       // Structure.
       ClassOp, ClassFieldsOp, ElaboratedObjectOp, AnyCastOp,
@@ -207,7 +207,7 @@ LogicalResult verifyResult(ClassOp module) {
       return emitError(op->getLoc(), "failed to evaluate assertion condition");
     }
 
-    if (!isSeriazable(op))
+    if (!isSerializable(op))
       return emitError(op->getLoc()) << "failed to evaluate " << op->getName();
 
     return success();
