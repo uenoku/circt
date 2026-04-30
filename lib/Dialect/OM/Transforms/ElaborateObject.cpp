@@ -109,7 +109,6 @@ struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
     if (!elaboratedOp)
       return failure();
 
-    // Look up the class to get field names.
     auto classLike =
         symTable.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
     assert(classLike);
@@ -120,10 +119,10 @@ struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
     auto result = elaboratedOp.getFieldValues()[index];
 
     // Skip cycles where a field references itself.
+    // This will be raised as an error later.
     if (op.getResult() == result)
       return failure();
 
-    // Replace the field access with the field value.
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -224,9 +223,9 @@ struct ElaborateObjectPass
 
   static LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symTable,
                                       FieldIndex &fieldIndexes) {
-    // Perform compile-time evaluation by inlining all ObjectOps and folding
-    // field accesses using a greedy pattern rewriter.
-    // NOTE: The conversion framework is not suitable here because inlining
+    // Elaborate objects by inlining all ObjectOps and folding field accesses
+    // using a greedy pattern rewriter. NOTE: The conversion framework is not
+    // suitable here because inlining
     //       patterns need to be applied recursively to fully evaluate nested
     //       object instantiations.
     RewritePatternSet patterns(classOp.getContext());
