@@ -19,6 +19,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace circt {
 namespace om {
@@ -132,23 +133,16 @@ struct UnknownPropagationPattern : RewritePattern {
     // TODO: This is directly port of the existing Evaluator sematics, but it
     // causes inconsistent evaluation for operations that can reason about
     // "known" value "and(0, unknown) -> 0".
-    bool hasUnknown = false;
-    for (Value operand : op->getOperands()) {
-      if (operand.getDefiningOp<UnknownValueOp>()) {
-        hasUnknown = true;
-        break;
-      }
-    }
-
-    if (!hasUnknown)
+    if (!llvm::any_of(op->getOperands(), [](Value operand) {
+          return operand.getDefiningOp<UnknownValueOp>();
+        }))
       return failure();
 
     // Replace with UnknownValueOp for each result
     SmallVector<Value> unknowns;
-    for (Type resultType : op->getResultTypes()) {
-      auto unknown = rewriter.create<UnknownValueOp>(op->getLoc(), resultType);
-      unknowns.push_back(unknown.getResult());
-    }
+    for (Type resultType : op->getResultTypes())
+      unknowns.push_back(
+          UnknownValueOp::create(rewriter, op->getLoc(), resultType));
 
     rewriter.replaceOp(op, unknowns);
     return success();
