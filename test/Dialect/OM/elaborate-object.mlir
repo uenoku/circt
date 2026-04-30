@@ -31,9 +31,7 @@ om.class @Other() -> (unused: !om.integer) {
 // TOP-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i6> : !om.integer
 // TOP-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i6> : !om.integer
 // TOP:   %[[tail:.+]] = om.elaborated_object @LinkedList(%[[TWO]], %[[list:.+]]) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
-// TOP:   %{{.+}} = om.elaborated_object @InputBox(%[[TWO]]) : (!om.integer) -> !om.class.type<@InputBox>
 // TOP:   %[[list]] = om.elaborated_object @LinkedList(%[[ONE]], %[[tail]]) : (!om.integer, !om.class.type<@LinkedList>) -> !om.class.type<@LinkedList>
-// TOP:   %{{.+}} = om.elaborated_object @InputBox(%[[ONE]]) : (!om.integer) -> !om.class.type<@InputBox>
 // TOP:   om.class.fields %[[list]], %[[ONE]], %[[tail]] : !om.class.type<@LinkedList>, !om.integer, !om.class.type<@LinkedList>
 // TOP: }
 
@@ -67,8 +65,6 @@ om.class @NestedFieldTop() -> (result: !om.string) {
 
 // CHECK-LABEL: om.class @NestedFieldTop() -> (result: !om.string) {
 // CHECK:   %[[STR:.+]] = om.constant "A" : !om.string
-// CHECK:   %{{.+}} = om.elaborated_object @Domain(%[[STR]]) : (!om.string) -> !om.class.type<@Domain>
-// CHECK:   %{{.+}} = om.elaborated_object @Domain(%[[STR]]) : (!om.string) -> !om.class.type<@Domain>
 // CHECK:   om.class.fields %[[STR]] : !om.string
 // CHECK: }
 
@@ -92,12 +88,8 @@ om.class @IntegerArithTop() -> (result: !om.integer) {
 }
 
 // CHECK-LABEL: om.class @IntegerArithTop() -> (result: !om.integer) {
-// CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : si3> : !om.integer
-// CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : si3> : !om.integer
-// CHECK:   %{{.+}} = om.elaborated_object @ValueBox(%[[ONE]]) : (!om.integer) -> !om.class.type<@ValueBox>
-// CHECK:   %{{.+}} = om.elaborated_object @ValueBox(%[[TWO]]) : (!om.integer) -> !om.class.type<@ValueBox>
-// CHECK:   %[[SUM:.+]] = om.integer.add %[[ONE]], %[[TWO]] : !om.integer
-// CHECK:   om.class.fields %[[SUM]] : !om.integer
+// CHECK-DAG:   %[[RESULT:.+]] = om.constant #om.integer<3 : si3> : !om.integer
+// CHECK:   om.class.fields %[[RESULT]] : !om.integer
 // CHECK: }
 
 // -----
@@ -124,10 +116,9 @@ om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
 // CHECK-DAG:   %[[ZERO:.+]] = om.constant #om.integer<0 : i8> : !om.integer
 // CHECK-DAG:   %[[ONE:.+]] = om.constant #om.integer<1 : i8> : !om.integer
 // CHECK-DAG:   %[[TWO:.+]] = om.constant #om.integer<2 : i8> : !om.integer
-// CHECK:   %[[L0:.+]] = om.list_create %[[ZERO]], %[[ONE]] : !om.integer
-// CHECK:   %{{.+}} = om.elaborated_object @ListBox(%[[L0]]) : (!om.list<!om.integer>) -> !om.class.type<@ListBox>
-// CHECK:   %[[L2:.+]] = om.list_create %[[TWO]] : !om.integer
-// CHECK:   %[[CONCAT:.+]] = om.list_concat %[[L0]], %[[L2]] : !om.list<!om.integer>
+// CHECK:   %[[L0:.+]] = om.list_create %[[ZERO]], %[[ONE]]
+// CHECK:   %[[L2:.+]] = om.list_create %[[TWO]]
+// CHECK:   %[[CONCAT:.+]] = om.list_concat %[[L0]], %[[L2]]
 // CHECK:   om.class.fields %[[CONCAT]] : !om.list<!om.integer>
 // CHECK: }
 
@@ -157,7 +148,6 @@ om.class @HasParams(%x: !om.integer) -> (value: !om.integer) {
 
 // CHECK-LABEL: om.class @NullaryB() -> (result: !om.integer) {
 // CHECK:   %[[CONST:.+]] = om.constant #om.integer<42 : i32> : !om.integer
-// CHECK:   %{{.+}} = om.elaborated_object @NullaryA() : () -> !om.class.type<@NullaryA>
 // CHECK:   om.class.fields %[[CONST]] : !om.integer
 // CHECK: }
 
