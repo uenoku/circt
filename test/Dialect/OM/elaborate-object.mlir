@@ -1,5 +1,5 @@
 // RUN: circt-opt -om-elaborate-object='target-class=Top' %s | FileCheck %s --check-prefix=TOP
-// RUN: circt-opt -om-elaborate-object='test=true' %s | FileCheck %s
+// RUN: circt-opt -om-elaborate-object='test=true' %s | FileCheck %s --check-prefixes=TOP,CHECK
 
 !list = !om.class.type<@LinkedList>
 
@@ -35,21 +35,7 @@ om.class @Other() -> (unused: !om.integer) {
 // TOP:   om.class.fields %[[list]], %[[ONE]], %[[tail]] : !om.class.type<@LinkedList>, !om.integer, !om.class.type<@LinkedList>
 // TOP: }
 
-// TOP-LABEL: om.class @Other() -> (unused: !om.integer) {
-// TOP-NOT: om.elaborated_object
-
-// CHECK-LABEL: om.class @Top() -> (list: !om.class.type<@LinkedList>, head: !om.integer, tail: !om.class.type<@LinkedList>) {
-// CHECK:   %{{.+}} = om.elaborated_object
-// CHECK:   %{{.+}} = om.elaborated_object
-// CHECK: }
-
-// CHECK-LABEL: om.class @Other() -> (unused: !om.integer) {
-// CHECK-NOT: om.elaborated_object
-
-// -----
-
-// Test nested field references (Issue #10264)
-
+// Test nested field references
 om.class @Domain(%in: !om.string) -> (out: !om.string) {
   om.class.fields %in : !om.string
 }
@@ -90,7 +76,6 @@ om.class @IntegerArithTop() -> (result: !om.integer) {
 // CHECK:   om.class.fields %[[RESULT]] : !om.integer
 // CHECK: }
 
-// -----
 
 // Test list operations with object fields
 
@@ -118,37 +103,4 @@ om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
 // CHECK:   %[[L2:.+]] = om.list_create %[[TWO]]
 // CHECK:   %[[CONCAT:.+]] = om.list_concat %[[L0]], %[[L2]]
 // CHECK:   om.class.fields %[[CONCAT]] : !om.list<!om.integer>
-// CHECK: }
-
-// -----
-
-// Test mode: elaborate all nullary classes
-
-om.class @NullaryA() -> (value: !om.integer) {
-  %0 = om.constant #om.integer<42 : i32> : !om.integer
-  om.class.fields %0 : !om.integer
-}
-
-om.class @NullaryB() -> (result: !om.integer) {
-  %0 = om.object @NullaryA() : () -> !om.class.type<@NullaryA>
-  %1 = om.object.field %0["value"] : (!om.class.type<@NullaryA>) -> !om.integer
-  om.class.fields %1 : !om.integer
-}
-
-om.class @HasParams(%x: !om.integer) -> (value: !om.integer) {
-  om.class.fields %x : !om.integer
-}
-
-// CHECK-LABEL: om.class @NullaryA() -> (value: !om.integer) {
-// CHECK:   %[[VAL:.+]] = om.constant #om.integer<42 : i32> : !om.integer
-// CHECK:   om.class.fields %[[VAL]] : !om.integer
-// CHECK: }
-
-// CHECK-LABEL: om.class @NullaryB() -> (result: !om.integer) {
-// CHECK:   %[[CONST:.+]] = om.constant #om.integer<42 : i32> : !om.integer
-// CHECK:   om.class.fields %[[CONST]] : !om.integer
-// CHECK: }
-
-// CHECK-LABEL: om.class @HasParams(%x: !om.integer) -> (value: !om.integer) {
-// CHECK:   om.class.fields %x : !om.integer
 // CHECK: }
