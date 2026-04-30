@@ -1,4 +1,4 @@
-//===- ElaborateObject.cpp - OM elaboration pass --------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -15,7 +15,6 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -31,6 +30,7 @@ using namespace circt;
 using namespace om;
 
 namespace {
+// A map from class and field to an output index.
 using FieldIndex = DenseMap<std::pair<StringAttr, StringAttr>, unsigned>;
 
 // Pattern to inline ObjectOp and replace with ElaboratedObjectOp
@@ -184,11 +184,10 @@ struct ElaborateObjectPass
 
     // Test mode: elaborate all nullary classes
     if (test) {
-      for (auto classOp : module.getOps<ClassOp>()) {
+      for (auto classOp : module.getOps<ClassOp>())
         if (classOp.getBodyBlock()->getNumArguments() == 0)
           if (failed(elaborateClass(classOp, symTable, fieldIndexes)))
             return signalPassFailure();
-      }
       return;
     }
 
