@@ -32,6 +32,7 @@ using namespace circt;
 using namespace om;
 
 namespace {
+using FieldIndex = DenseMap<std::pair<StringAttr, StringAttr>, unsigned>;
 
 // Pattern to inline ObjectOp and replace with ElaboratedObjectOp
 struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
@@ -84,8 +85,11 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
 };
 
 struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
-  ObjectFieldOpConversionPattern(MLIRContext *context, SymbolTable &symbols)
-      : OpRewritePattern<ObjectFieldOp>(context), symbols(symbols) {}
+  ObjectFieldOpConversionPattern(MLIRContext *context,
+                                 const SymbolTable &symbols,
+                                 const FieldIndex &fieldIndexes)
+      : OpRewritePattern<ObjectFieldOp>(context), symbols(symbols),
+        fieldIndexes(fieldIndexes) {}
 
   LogicalResult matchAndRewrite(ObjectFieldOp op,
                                 PatternRewriter &rewriter) const override {
@@ -99,25 +103,19 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
     if (!classLike)
       return elaboratedOp.emitError("unknown class ")
              << elaboratedOp.getClassNameAttr();
-
-    auto fieldNames = classLike.getFieldNames().getAsRange<StringAttr>();
-    auto fieldIt = llvm::find_if(
-        fieldNames, [&](StringAttr name) { return name == op.getField(); });
-    if (fieldIt == fieldNames.end())
-      return elaboratedOp.emitError("field ")
-             << op.getField() << " does not exist";
-
-    size_t fieldIndex = std::distance(fieldNames.begin(), fieldIt);
-
-    if (op.getResult() == elaboratedOp.getFieldValues()[fieldIndex])
+    auto index =
+        fieldIndexes.at({classLike.getSymNameAttr(), op.getFieldAttr()});
+    auto result = elaboratedOp.getFieldValues()[index];
+    if (op.getResult() == result)
       return rewriter.notifyMatchFailure(op.getLoc(), "found cycle");
 
     // Replace with the corresponding field value from the elaborated object
-    rewriter.replaceOp(op, elaboratedOp.getFieldValues()[fieldIndex]);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
-  SymbolTable &symbols;
+  const SymbolTable &symbols;
+  const FieldIndex &fieldIndexes;
 };
 
 // Propagate UnknownValueOp through Pure OM operations
@@ -160,14 +158,16 @@ struct UnknownPropagationPattern : RewritePattern {
 struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
 
-  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symbols) {
+  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symbols,
+                               FieldIndex &fieldIndexes) {
     // Elaboration can be performed by inlining all ObjectOps and constant folds
     // using greedy pattern rewriter.
     // NOTE: Conversion framework didn't work well with inlining because
     //       inlining pattern needs to be applied recursively.
     RewritePatternSet patterns(classOp.getContext());
     patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symbols);
-    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symbols);
+    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symbols,
+                                                 fieldIndexes);
     patterns.add<UnknownPropagationPattern>(classOp.getContext());
     GreedyRewriteConfig config;
     // Disable iteration limit.
@@ -186,7 +186,7 @@ struct ElaborateObjectPass
   void runOnOperation() override {
     auto module = getOperation();
     auto &symbols = getAnalysis<SymbolTable>();
-    DenseMap<std::pair<StringAttr, StringAttr>, unsigned> fieldIndexes;
+    FieldIndex fieldIndexes;
     for (auto classOp : module.getOps<ClassLike>()) {
       auto name = classOp.getSymNameAttr();
       for (auto [idx, fieldName] :
@@ -198,7 +198,7 @@ struct ElaborateObjectPass
     if (test) {
       for (auto classOp : module.getOps<ClassOp>()) {
         if (classOp.getBodyBlock()->getNumArguments() == 0)
-          if (failed(elaborateClass(classOp, symbols)))
+          if (failed(elaborateClass(classOp, symbols, fieldIndexes)))
             return signalPassFailure();
       }
       return;
@@ -227,7 +227,7 @@ struct ElaborateObjectPass
       return signalPassFailure();
     }
 
-    if (failed(elaborateClass(classOp, symbols)))
+    if (failed(elaborateClass(classOp, symbols, fieldIndexes)))
       return signalPassFailure();
   }
 };
