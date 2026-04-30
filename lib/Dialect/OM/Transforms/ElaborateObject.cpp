@@ -178,7 +178,7 @@ bool isSeriazable(Operation *op) {
 }
 
 LogicalResult verifyResult(ClassOp module) {
-  WalkResult result = module.walk([](Operation *op) {
+  auto isLegal = [](Operation *op) {
     // Check assert satisfied.
     if (auto assertOp = dyn_cast<PropertyAssertOp>(op)) {
       // Check if the condition is a constant false, which means the assertion
@@ -211,9 +211,8 @@ LogicalResult verifyResult(ClassOp module) {
       return emitError(op->getLoc()) << "failed to evaluate " << op->getName(),
              WalkResult::interrupt();
     return WalkResult::advance();
-  });
-
-  return failure(result.wasInterrupted());
+  };
+  return failure(module.walk(isLegal).wasInterrupted());
 }
 
 struct ElaborateObjectPass
