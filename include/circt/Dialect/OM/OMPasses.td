@@ -26,7 +26,7 @@ def LinkModules: Pass<"om-link-modules", "mlir::ModuleOp"> {
 }
 
 def ElaborateObject: Pass<"om-elaborate-object", "mlir::ModuleOp"> {
-  let summary = "Perform compile-time evaluation of OM objects";
+  let summary = "Perform elaboration of OM objects";
   let description = [{
     Performs evaluation of a specified OM class by inlining all object
     instantiations and folding field accesses.

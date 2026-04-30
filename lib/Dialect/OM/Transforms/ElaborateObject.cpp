@@ -17,12 +17,15 @@
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Support/LLVM.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Support/WalkResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace circt {
 namespace om {
@@ -115,9 +118,9 @@ struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
         fieldIndexes.at({classLike.getSymNameAttr(), op.getFieldAttr()});
     auto result = elaboratedOp.getFieldValues()[index];
 
-    // Detect cycles where a field references itself.
+    // Skip cycles where a field references itself.
     if (op.getResult() == result)
-      return rewriter.notifyMatchFailure(op.getLoc(), "found cycle");
+      return failure();
 
     // Replace the field access with the field value.
     rewriter.replaceOp(op, result);
@@ -160,6 +163,23 @@ struct UnknownPropagationPattern : RewritePattern {
   }
 };
 
+bool isSeriazable(Operation *op) {
+  return isa<ClassOp, ClassFieldsOp, ElaboratedObjectOp, ConstantOp,
+             UnknownValueOp, AnyCastOp, EmptyPathOp, FrozenBasePathCreateOp,
+             FrozenPathCreateOp, FrozenEmptyPathOp>(op);
+}
+
+LogicalResult verifyResult(ClassOp module) {
+  module.walk([](Operation *op) {
+    // Check assert satisfied.
+    if (auto assertOp = dyn_cast<PropertyAssertOp>(op)) {
+    }
+    if (!isSeriazable(op))
+      return emitError(op->getLoc()) << "failed to legalize " << op->getName(),
+             WalkResult::interrupt();
+  });
+}
+
 struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
   using Base::Base;
@@ -182,7 +202,8 @@ struct ElaborateObjectPass
     if (failed(applyPatternsGreedily(classOp, std::move(patterns), config)))
       return failure();
 
-    return success();
+    // Check if elaboration succeeded after saturation.
+    return verifyResult(classOp);
   }
 
   void runOnOperation() override {

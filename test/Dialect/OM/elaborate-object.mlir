@@ -106,20 +106,19 @@ om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
 // CHECK: }
 
 
-// Test cycle detection in object field access
-om.class @SelfRef() -> (self: !om.class.type<@SelfRef>) {
-  %obj = om.object @SelfRef() : () -> !om.class.type<@SelfRef>
-  om.class.fields %obj : !om.class.type<@SelfRef>
+// Test cycle detection in dataflow (field access creates a cycle)
+om.class @Wrapper(%val: !om.integer) -> (out: !om.integer) {
+  om.class.fields %val : !om.integer
 }
 
-om.class @CycleTop() -> (result: !om.class.type<@SelfRef>) {
-  %obj = om.object @SelfRef() : () -> !om.class.type<@SelfRef>
-  %self = om.object.field %obj["self"] : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
-  om.class.fields %self : !om.class.type<@SelfRef>
+om.class @DataflowCycleTop() -> (result: !om.integer) {
+  %obj = om.object @Wrapper(%feedback) : (!om.integer) -> !om.class.type<@Wrapper>
+  %feedback = om.object.field %obj["out"] : (!om.class.type<@Wrapper>) -> !om.integer
+  om.class.fields %feedback : !om.integer
 }
 
-// CHECK-LABEL: om.class @CycleTop() -> (result: !om.class.type<@SelfRef>) {
-// CHECK:   %[[OBJ1:.+]] = om.elaborated_object @SelfRef(%[[OBJ2:.+]]) : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
-// CHECK:   %[[OBJ2]] = om.elaborated_object @SelfRef(%[[OBJ1]]) : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
-// CHECK:   om.class.fields %[[OBJ2]] : !om.class.type<@SelfRef>
+// CHECK-LABEL: om.class @DataflowCycleTop() -> (result: !om.integer) {
+// CHECK:   %[[OBJ:.+]] = om.elaborated_object @Wrapper(%[[FEEDBACK:.+]]) : (!om.integer) -> !om.class.type<@Wrapper>
+// CHECK:   %[[FEEDBACK]] = om.object.field %[[OBJ]]["out"] : (!om.class.type<@Wrapper>) -> !om.integer
+// CHECK:   om.class.fields %[[FEEDBACK]] : !om.integer
 // CHECK: }
