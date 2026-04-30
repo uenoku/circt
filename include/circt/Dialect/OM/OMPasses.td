@@ -26,20 +26,16 @@ def LinkModules: Pass<"om-link-modules", "mlir::ModuleOp"> {
 }
 
 def ElaborateObject: Pass<"om-elaborate-object", "mlir::ModuleOp"> {
-  let summary = "Elaborate a OM object into om.elaborated_object form";
+  let summary = "Perform compile-time evaluation of OM objects";
   let description = [{
-    Elaborates a specified zero-input OM class by inlining all object
-    instantiations and converting them to om.elaborated_object form.
-    The transformation happens in-place within the specified class.
-
-    If test is true, elaborates all nullary classes in the module
-    for testing purposes.
+    Performs evaluation of a specified OM class by inlining all object
+    instantiations and folding field accesses.
   }];
   let options = [
     Option<"targetClass", "target-class", "std::string", /*default=*/"",
            "The class to elaborate">,
     Option<"test", "test", "bool", /*default=*/"false",
-           "Test mode: elaborate all nullary classes in the module">
+           "Test mode: elaborate all zero-argument classes in the module">
   ];
 }
 

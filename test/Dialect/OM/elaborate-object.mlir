@@ -104,3 +104,22 @@ om.class @ListConcatTop() -> (result: !om.list<!om.integer>) {
 // CHECK:   %[[CONCAT:.+]] = om.list_concat %[[L0]], %[[L2]]
 // CHECK:   om.class.fields %[[CONCAT]] : !om.list<!om.integer>
 // CHECK: }
+
+
+// Test cycle detection in object field access
+om.class @SelfRef() -> (self: !om.class.type<@SelfRef>) {
+  %obj = om.object @SelfRef() : () -> !om.class.type<@SelfRef>
+  om.class.fields %obj : !om.class.type<@SelfRef>
+}
+
+om.class @CycleTop() -> (result: !om.class.type<@SelfRef>) {
+  %obj = om.object @SelfRef() : () -> !om.class.type<@SelfRef>
+  %self = om.object.field %obj["self"] : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
+  om.class.fields %self : !om.class.type<@SelfRef>
+}
+
+// CHECK-LABEL: om.class @CycleTop() -> (result: !om.class.type<@SelfRef>) {
+// CHECK:   %[[OBJ1:.+]] = om.elaborated_object @SelfRef(%[[OBJ2:.+]]) : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
+// CHECK:   %[[OBJ2]] = om.elaborated_object @SelfRef(%[[OBJ1]]) : (!om.class.type<@SelfRef>) -> !om.class.type<@SelfRef>
+// CHECK:   om.class.fields %[[OBJ2]] : !om.class.type<@SelfRef>
+// CHECK: }

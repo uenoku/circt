@@ -1,8 +1,14 @@
-//===----------------------------------------------------------------------===//
+//===- ElaborateObject.cpp - OM compile-time evaluation pass --------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This pass performs evaluation of OM classes by inlining object
+// instantiations and folding field accesses. It replaces the runtime Evaluator
+// framework with static compile-time evaluation.
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,10 +36,11 @@ using namespace circt;
 using namespace om;
 
 namespace {
-// A map from class and field to an output index.
+// A map from (class name, field name) to field index.
 using FieldIndex = DenseMap<std::pair<StringAttr, StringAttr>, unsigned>;
 
-// Pattern to inline ObjectOp and replace with ElaboratedObjectOp
+/// Pattern to inline ObjectOp instances by cloning the class body and
+/// replacing them with ElaboratedObjectOp.
 struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
   ObjectOpInliningPattern(MLIRContext *context, SymbolTable &symTable)
       : OpRewritePattern<ObjectOp>(context), symTable(symTable) {}
@@ -43,7 +50,7 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     auto classLike = symTable.lookup<ClassLike>(objOp.getClassNameAttr());
     assert(classLike);
 
-    // External classes become unknown
+    // External classes cannot be elaborated; replace with unknown values.
     if (isa<ClassExternOp>(classLike)) {
       rewriter.replaceOpWithNewOp<UnknownValueOp>(objOp, objOp.getType());
       return success();
@@ -53,26 +60,27 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     if (!classOp)
       return failure();
 
-    // Map formal parameters to actual parameters
+    // Map formal parameters to actual arguments.
     IRMapping mapper;
     for (auto [formal, actual] : llvm::zip(
              classOp.getBodyBlock()->getArguments(), objOp.getActualParams()))
       mapper.map(formal, actual);
 
-    // Clone the class body into a temporary region
+    // Clone the class body into a temporary region with argument substitution.
     Region clonedRegion;
     classOp.getBody().cloneInto(&clonedRegion, mapper);
     Block *clonedBlock = &clonedRegion.front();
 
-    // Get field values from the terminator before inlining
+    // Extract field values from the terminator.
     auto clonedFields = cast<ClassFieldsOp>(clonedBlock->getTerminator());
     SmallVector<Value> fieldValues(clonedFields.getFields());
 
-    // Erase the terminator and inline.
+    // Erase the terminator and inline the body at the object instantiation.
     rewriter.eraseOp(clonedFields);
     rewriter.inlineBlockBefore(clonedBlock, objOp);
 
-    // Replace the ObjectOp with an ElaboratedObjectOp
+    // Replace the ObjectOp with an ElaboratedObjectOp that has explicit
+    // field operands.
     rewriter.replaceOpWithNewOp<ElaboratedObjectOp>(objOp, classLike,
                                                     fieldValues);
 
@@ -82,32 +90,36 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
   SymbolTable &symTable;
 };
 
-struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
-  ObjectFieldOpConversionPattern(MLIRContext *context,
-                                 const SymbolTable &symTable,
-                                 const FieldIndex &fieldIndexes)
+/// Pattern to fold ObjectFieldOp on ElaboratedObjectOp by directly accessing
+/// the field value operands.
+struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
+  EvaluateObjectField(MLIRContext *context, const SymbolTable &symTable,
+                      const FieldIndex &fieldIndexes)
       : OpRewritePattern<ObjectFieldOp>(context), symTable(symTable),
         fieldIndexes(fieldIndexes) {}
 
   LogicalResult matchAndRewrite(ObjectFieldOp op,
                                 PatternRewriter &rewriter) const override {
-    // Only fold if the object is an ElaboratedObjectOp
+    // Only fold if the object is an ElaboratedObjectOp.
     auto elaboratedOp = op.getObject().getDefiningOp<ElaboratedObjectOp>();
     if (!elaboratedOp)
       return failure();
 
-    // Look up the class to get field names
+    // Look up the class to get field names.
     auto classLike =
         symTable.lookup<ClassLike>(elaboratedOp.getClassNameAttr());
     assert(classLike);
 
+    // Find the field index and get the corresponding value.
     auto index =
         fieldIndexes.at({classLike.getSymNameAttr(), op.getFieldAttr()});
     auto result = elaboratedOp.getFieldValues()[index];
+
+    // Detect cycles where a field references itself.
     if (op.getResult() == result)
       return rewriter.notifyMatchFailure(op.getLoc(), "found cycle");
 
-    // Replace with the corresponding field value from the elaborated object
+    // Replace the field access with the field value.
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -116,27 +128,28 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
   const FieldIndex &fieldIndexes;
 };
 
-// Propagate UnknownValueOp through Pure OM operations
+/// Pattern to propagate UnknownValueOp through pure OM operations.
+/// If any operand is unknown, all results become unknown.
 struct UnknownPropagationPattern : RewritePattern {
   UnknownPropagationPattern(MLIRContext *context)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    // Target pure OM operations.
+    // Only target pure OM operations.
     if (!isa_and_nonnull<OMDialect>(op->getDialect()) || !isPure(op))
       return failure();
 
-    // Check if any operand is an UnknownValueOp
-    // TODO: This is directly port of the existing Evaluator sematics, but it
+    // Check if any operand is an UnknownValueOp.
+    // TODO: This directly ports the existing Evaluator semantics, but it
     // causes inconsistent evaluation for operations that can reason about
-    // "known" value "and(0, unknown) -> 0".
+    // known values, e.g., "and(0, unknown) -> 0".
     if (!llvm::any_of(op->getOperands(), [](Value operand) {
           return operand.getDefiningOp<UnknownValueOp>();
         }))
       return failure();
 
-    // Replace with UnknownValueOp for each result
+    // Replace all results with UnknownValueOp.
     SmallVector<Value> unknowns;
     for (Type resultType : op->getResultTypes())
       unknowns.push_back(
@@ -151,19 +164,20 @@ struct ElaborateObjectPass
     : public circt::om::impl::ElaborateObjectBase<ElaborateObjectPass> {
   using Base::Base;
 
-  LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symTable,
-                               FieldIndex &fieldIndexes) {
-    // Elaboration can be performed by inlining all ObjectOps and constant folds
-    // using greedy pattern rewriter.
-    // NOTE: Conversion framework didn't work well with inlining because
-    //       inlining pattern needs to be applied recursively.
+  static LogicalResult elaborateClass(ClassOp classOp, SymbolTable &symTable,
+                                      FieldIndex &fieldIndexes) {
+    // Perform compile-time evaluation by inlining all ObjectOps and folding
+    // field accesses using a greedy pattern rewriter.
+    // NOTE: The conversion framework is not suitable here because inlining
+    //       patterns need to be applied recursively to fully evaluate nested
+    //       object instantiations.
     RewritePatternSet patterns(classOp.getContext());
     patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symTable);
-    patterns.add<ObjectFieldOpConversionPattern>(classOp.getContext(), symTable,
-                                                 fieldIndexes);
+    patterns.add<EvaluateObjectField>(classOp.getContext(), symTable,
+                                      fieldIndexes);
     patterns.add<UnknownPropagationPattern>(classOp.getContext());
     GreedyRewriteConfig config;
-    // Disable iteration limit.
+    // Disable iteration limit to allow full recursive inlining.
     config.setMaxIterations(GreedyRewriteConfig::kNoLimit);
     if (failed(applyPatternsGreedily(classOp, std::move(patterns), config)))
       return failure();
@@ -174,6 +188,8 @@ struct ElaborateObjectPass
   void runOnOperation() override {
     auto module = getOperation();
     auto &symTable = getAnalysis<SymbolTable>();
+
+    // Build a map from (class name, field name) to field index for all classes.
     FieldIndex fieldIndexes;
     for (auto classOp : module.getOps<ClassLike>()) {
       auto name = classOp.getSymNameAttr();
@@ -182,7 +198,7 @@ struct ElaborateObjectPass
         fieldIndexes[{name, fieldName}] = idx;
     }
 
-    // Test mode: elaborate all nullary classes
+    // Test mode: elaborate all zero-argument classes.
     if (test) {
       for (auto classOp : module.getOps<ClassOp>())
         if (classOp.getBodyBlock()->getNumArguments() == 0)
@@ -191,18 +207,11 @@ struct ElaborateObjectPass
       return;
     }
 
-    // Target class must be specified
-    if (targetClass.empty()) {
-      emitError(module.getLoc(),
-                "om-elaborate-object requires --target-class option ");
-      return signalPassFailure();
-    }
-
-    // Find the target class
+    // Normal mode: elaborate the specified target class.
     auto classOp = symTable.lookup<ClassOp>(targetClass);
     if (!classOp) {
-      emitError(classOp.getLoc(), "om-elaborate-object could not find class ")
-          << targetClass;
+      emitError(module.getLoc())
+          << "target class '" << targetClass << "' was not found";
       return signalPassFailure();
     }
 
