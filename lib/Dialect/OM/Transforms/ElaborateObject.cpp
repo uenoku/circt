@@ -109,6 +109,9 @@ struct ObjectFieldOpConversionPattern : OpRewritePattern<ObjectFieldOp> {
 
     size_t fieldIndex = std::distance(fieldNames.begin(), fieldIt);
 
+    if (op.getResult() == elaboratedOp.getFieldValues()[fieldIndex])
+      return rewriter.notifyMatchFailure(op.getLoc(), "found cycle");
+
     // Replace with the corresponding field value from the elaborated object
     rewriter.replaceOp(op, elaboratedOp.getFieldValues()[fieldIndex]);
     return success();
@@ -183,6 +186,13 @@ struct ElaborateObjectPass
   void runOnOperation() override {
     auto module = getOperation();
     auto &symbols = getAnalysis<SymbolTable>();
+    DenseMap<std::pair<StringAttr, StringAttr>, unsigned> fieldIndexes;
+    for (auto classOp : module.getOps<ClassLike>()) {
+      auto name = classOp.getSymNameAttr();
+      for (auto [idx, fieldName] :
+           llvm::enumerate(classOp.getFieldNames().getAsRange<StringAttr>()))
+        fieldIndexes[{name, fieldName}] = idx;
+    }
 
     // Test mode: elaborate all nullary classes
     if (test) {
