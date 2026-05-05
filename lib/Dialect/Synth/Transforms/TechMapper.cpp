@@ -18,6 +18,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CutRewriterInternal.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "mlir/IR/Builders.h"
@@ -40,90 +41,52 @@ using namespace circt::synth;
 
 #define DEBUG_TYPE "synth-tech-mapper"
 
-//===----------------------------------------------------------------------===//
-// Tech Mapper Pass
-//===----------------------------------------------------------------------===//
+namespace {
 
-static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
-  // Get input and output ports
-  auto inputTypes = module.getInputTypes();
-  auto outputTypes = module.getOutputTypes();
+static LogicalResult
+importExternalLibraries(ModuleOp targetModule,
+                        MutableArrayRef<OwningOpRef<ModuleOp>> libraryFiles) {
+  OpBuilder builder(targetModule.getContext());
+  builder.setInsertionPointToEnd(targetModule.getBody());
 
-  unsigned numInputs = inputTypes.size();
-  unsigned numOutputs = outputTypes.size();
-  if (numOutputs != 1)
-    return module->emitError(
-        "Modules with multiple outputs are not supported yet");
-
-  // Verify all ports are single bit
-  for (auto type : inputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All input ports must be single bit");
-  }
-  for (auto type : outputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All output ports must be single bit");
+  for (auto &libraryFile : libraryFiles) {
+    for (auto hwModule : libraryFile->getOps<hw::HWModuleOp>()) {
+      auto existing = targetModule.lookupSymbol<hw::HWModuleOp>(
+          hwModule.getModuleNameAttr());
+      if (existing) {
+        if (!existing->getAttrOfType<DictionaryAttr>("hw.techlib.info"))
+          return emitError(existing.getLoc())
+                 << "external tech library module '" << hwModule.getModuleName()
+                 << "' conflicts with an existing non-library module";
+        continue;
+      }
+      builder.clone(*hwModule.getOperation());
+    }
   }
 
-  if (numInputs > maxTruthTableInputs)
-    return module->emitError("Too many inputs for truth table generation");
-
-  SmallVector<Value> results;
-  results.reserve(numOutputs);
-  // Get the body block of the module
-  auto *bodyBlock = module.getBodyBlock();
-  assert(bodyBlock && "Module must have a body block");
-  // Collect output values from the body block
-  for (auto result : bodyBlock->getTerminator()->getOperands())
-    results.push_back(result);
-
-  // Create a truth table for the module
-  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
-  if (failed(truthTable))
-    return failure();
-
-  return NPNClass::computeNPNCanonicalForm(*truthTable);
+  return success();
 }
 
 /// Simple technology library encoded as a HWModuleOp.
-struct TechLibraryPattern : public CutRewritePattern {
+struct TechLibraryPattern : public NPNCutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,
                      SmallVector<DelayType> delay, NPNClass npnClass)
-      : CutRewritePattern(module->getContext()), area(area),
-        delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
+      : NPNCutRewritePattern(module->getContext(), module.getModuleName().str(),
+                             area, std::move(delay), std::move(npnClass)),
+        module(module) {
 
     LLVM_DEBUG({
       llvm::dbgs() << "Created Tech Library Pattern for module: "
                    << module.getModuleName() << "\n"
-                   << "NPN Class: " << this->npnClass.truthTable.table << "\n"
-                   << "Inputs: " << this->npnClass.inputPermutation.size()
+                   << "NPN Class: " << this->getNPNClass().truthTable.table
                    << "\n"
-                   << "Input Negation: " << this->npnClass.inputNegation << "\n"
-                   << "Output Negation: " << this->npnClass.outputNegation
+                   << "Inputs: " << this->getNPNClass().inputPermutation.size()
+                   << "\n"
+                   << "Input Negation: " << this->getNPNClass().inputNegation
+                   << "\n"
+                   << "Output Negation: " << this->getNPNClass().outputNegation
                    << "\n";
     });
-  }
-
-  StringRef getPatternName() const override {
-    auto moduleCp = module;
-    return moduleCp.getModuleName();
-  }
-
-  /// Match the cut set against this library primitive
-  std::optional<MatchResult> match(CutEnumerator &enumerator,
-                                   const Cut &cut) const override {
-    if (!cut.getNPNClass(enumerator.getOptions().npnTable)
-             .equivalentOtherThanPermutation(npnClass))
-      return std::nullopt;
-
-    return MatchResult(area, delay);
-  }
-
-  /// Enable truth table matching for this pattern
-  bool useTruthTableMatcher(
-      SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
-    matchingNPNClasses.push_back(npnClass);
-    return true;
   }
 
   /// Rewrite the cut set using this library primitive
@@ -133,8 +96,8 @@ struct TechLibraryPattern : public CutRewritePattern {
     const auto &network = enumerator.getLogicNetwork();
     // Create a new instance of the module
     SmallVector<unsigned> permutedInputIndices;
-    cut.getPermutatedInputIndices(enumerator.getOptions().npnTable, npnClass,
-                                  permutedInputIndices);
+    cut.getPermutatedInputIndices(enumerator.getOptions().npnTable,
+                                  getNPNClass(), permutedInputIndices);
 
     SmallVector<Value> inputs;
     inputs.reserve(permutedInputIndices.size());
@@ -156,23 +119,15 @@ struct TechLibraryPattern : public CutRewritePattern {
     return static_cast<hw::HWModuleOp>(module).getNumInputPorts();
   }
 
-  unsigned getNumOutputs() const override {
-    return static_cast<hw::HWModuleOp>(module).getNumOutputPorts();
-  }
-
   LocationAttr getLoc() const override {
     auto module = this->module;
     return module.getLoc();
   }
 
 private:
-  const double area;
-  const SmallVector<DelayType> delay;
   hw::HWModuleOp module;
-  NPNClass npnClass;
 };
 
-namespace {
 struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
   using TechMapperBase<TechMapperPass>::TechMapperBase;
 
@@ -184,6 +139,19 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
   void runOnOperation() override {
     auto module = getOperation();
+    SmallVector<OwningOpRef<ModuleOp>> loadedLibraryFiles;
+    for (const std::string &libFile : libFiles) {
+      auto parsedModule = parseModuleFile(libFile, &getContext());
+      if (failed(parsedModule)) {
+        signalPassFailure();
+        return;
+      }
+      loadedLibraryFiles.push_back(std::move(*parsedModule));
+    }
+    if (failed(importExternalLibraries(module, loadedLibraryFiles))) {
+      signalPassFailure();
+      return;
+    }
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 

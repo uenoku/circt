@@ -21,6 +21,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
+#include "SynthTransformsInternals.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
@@ -36,6 +37,8 @@
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
@@ -50,6 +53,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/SourceMgr.h"
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -60,6 +64,23 @@
 
 using namespace circt;
 using namespace circt::synth;
+
+FailureOr<OwningOpRef<ModuleOp>>
+circt::synth::parseModuleFile(StringRef path, MLIRContext *context) {
+  std::string errorMessage;
+  auto input = mlir::openInputFile(path, &errorMessage);
+  if (!input) {
+    emitError(UnknownLoc::get(context)) << errorMessage;
+    return failure();
+  }
+
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
+  auto parsedModule = mlir::parseSourceFile<ModuleOp>(sourceMgr, context);
+  if (!parsedModule)
+    return failure();
+  return parsedModule;
+}
 
 //===----------------------------------------------------------------------===//
 // LogicNetwork
@@ -357,6 +378,36 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
   }
 
   return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+}
+
+FailureOr<NPNClass> circt::synth::getNPNClassFromModule(hw::HWModuleOp module) {
+  auto inputTypes = module.getInputTypes();
+  auto outputTypes = module.getOutputTypes();
+  if (outputTypes.size() != 1)
+    return module.emitError("modules with multiple outputs are not supported");
+
+  for (Type type : inputTypes)
+    if (!type.isInteger(1))
+      return module.emitError("all input ports must be single bit");
+  for (Type type : outputTypes)
+    if (!type.isInteger(1))
+      return module.emitError("all output ports must be single bit");
+
+  if (inputTypes.size() > maxTruthTableInputs)
+    return module.emitError("too many inputs for truth table generation");
+
+  auto *bodyBlock = module.getBodyBlock();
+  assert(bodyBlock && "module must have a body block");
+
+  SmallVector<Value> results;
+  results.reserve(outputTypes.size());
+  for (Value result : bodyBlock->getTerminator()->getOperands())
+    results.push_back(result);
+
+  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
+  if (failed(truthTable))
+    return failure();
+  return NPNClass::computeNPNCanonicalForm(*truthTable);
 }
 
 //===----------------------------------------------------------------------===//
