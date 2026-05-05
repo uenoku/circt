@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/FIRRTLTypes.h"
 #include "circt/Dialect/FIRRTL/FIRRTLUtils.h"
@@ -1599,41 +1600,44 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
             SkipOp, StopOp, UnclockedAssumeIntrinsicOp, WhenOp>([&](auto) {})
 
       // Handle instances of other modules.
-      .Case<InstanceOp>([&](auto op) {
-        auto refdModule = op.getReferencedOperation(symtbl);
-        auto module = dyn_cast<FModuleOp>(&*refdModule);
-        if (!module) {
-          auto diag = mlir::emitError(op.getLoc());
-          diag << "extern module `" << op.getModuleName()
-               << "` has ports of uninferred width";
+      .Case<FInstanceLike>([&](FInstanceLike op) {
+        for (auto refdModuleAttr :
+             op.getReferencedModuleNamesAttr().getAsRange<StringAttr>()) {
+          auto *refdModule = symtbl.lookup(refdModuleAttr);
+          auto module = dyn_cast<FModuleOp>(refdModule);
+          if (!module) {
+            auto diag = mlir::emitError(op.getLoc());
+            diag << "extern module `" << refdModuleAttr.getValue()
+                 << "` has ports of uninferred width";
 
-          auto fml = cast<FModuleLike>(&*refdModule);
-          auto ports = fml.getPorts();
-          for (auto &port : ports) {
-            auto baseType = getBaseType(port.type);
-            if (baseType && baseType.hasUninferredWidth()) {
-              diag.attachNote(op.getLoc()) << "Port: " << port.name;
-              if (!baseType.isGround())
-                diagnoseUninferredType(diag, baseType, port.name.getValue());
+            auto fml = cast<FModuleLike>(&*refdModule);
+            auto ports = fml.getPorts();
+            for (auto &port : ports) {
+              auto baseType = getBaseType(port.type);
+              if (baseType && baseType.hasUninferredWidth()) {
+                diag.attachNote(op.getLoc()) << "Port: " << port.name;
+                if (!baseType.isGround())
+                  diagnoseUninferredType(diag, baseType, port.name.getValue());
+              }
             }
-          }
 
-          diag.attachNote(op.getLoc())
-              << "Only non-extern FIRRTL modules may contain unspecified "
-                 "widths to be inferred automatically.";
-          diag.attachNote(refdModule->getLoc())
-              << "Module `" << op.getModuleName() << "` defined here:";
-          mappingFailed = true;
-          return;
+            diag.attachNote(op.getLoc())
+                << "Only non-extern FIRRTL modules may contain unspecified "
+                   "widths to be inferred automatically.";
+            diag.attachNote(refdModule->getLoc())
+                << "Module `" << refdModuleAttr.getValue() << "` defined here:";
+            mappingFailed = true;
+            return;
+          }
+          // Simply look up the free variables created for the instantiated
+          // module's ports, and use them for instance port wires. This way,
+          // constraints imposed onto the ports of the instance will
+          // transparently apply to the ports of the instantiated module.
+          for (auto [result, arg] :
+               llvm::zip(op->getResults(), module.getArguments()))
+            unifyTypes({result, 0}, {arg, 0},
+                       type_cast<FIRRTLType>(result.getType()));
         }
-        // Simply look up the free variables created for the instantiated
-        // module's ports, and use them for instance port wires. This way,
-        // constraints imposed onto the ports of the instance will transparently
-        // apply to the ports of the instantiated module.
-        for (auto [result, arg] :
-             llvm::zip(op->getResults(), module.getArguments()))
-          unifyTypes({result, 0}, {arg, 0},
-                     type_cast<FIRRTLType>(result.getType()));
       })
 
       // Handle memories.

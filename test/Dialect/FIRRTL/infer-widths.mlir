@@ -600,6 +600,24 @@ firrtl.circuit "Foo" {
     firrtl.connect %out, %0 : !firrtl.uint, !firrtl.uint
   }
 
+  // Inter-module width inference with instance_choice
+  firrtl.option @Platform {
+    firrtl.option_case @FPGA
+  }
+  // CHECK-LABEL: @InstanceChoiceTarget
+  // CHECK-SAME: in %in: !firrtl.uint<8>
+  // CHECK-SAME: out %out: !firrtl.uint<8>
+  firrtl.module @InstanceChoiceTarget(in %in: !firrtl.uint, out %out: !firrtl.uint) {
+    firrtl.connect %out, %in : !firrtl.uint, !firrtl.uint
+  }
+  // CHECK-LABEL: @InstanceChoiceTop
+  firrtl.module @InstanceChoiceTop(in %in: !firrtl.uint<8>) {
+    %inst_in, %inst_out = firrtl.instance_choice inst @InstanceChoiceTarget alternatives @Platform {
+      @FPGA -> @InstanceChoiceTarget
+    } (in in: !firrtl.uint, out out: !firrtl.uint)
+    firrtl.connect %inst_in, %in : !firrtl.uint, !firrtl.uint<8>
+  }
+
   // Inter-module width inference for multiple instances per module.
   // CHECK-LABEL: @InterModuleMultipleFoo
   // CHECK-SAME: in %in: !firrtl.uint<42>
