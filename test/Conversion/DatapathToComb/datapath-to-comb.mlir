@@ -47,6 +47,26 @@ hw.module @compress_const_ones(in %a : i2, out carry : i2, out save : i2) {
   hw.output %0#0, %0#1 : i2, i2
 }
 
+// CHECK-LABEL: @compress_const_one
+hw.module @compress_const_one(in %a : i2, in %b : i2, out carry : i2, out save : i2) {
+  // CHECK-NEXT: %false = hw.constant false
+  // CHECK-NEXT: %true = hw.constant true
+  // CHECK-NEXT: %[[A0:.+]] = comb.extract %a from 0 : (i2) -> i1
+  // CHECK-NEXT: %[[A1:.+]] = comb.extract %a from 1 : (i2) -> i1
+  // CHECK-NEXT: %[[B0:.+]] = comb.extract %b from 0 : (i2) -> i1
+  // CHECK-NEXT: %[[B1:.+]] = comb.extract %b from 1 : (i2) -> i1
+  // CHECK-NEXT: %[[NB0:.+]] = comb.xor bin %[[B0]], %true : i1
+  // CHECK-NEXT: %[[S0:.+]] = comb.xor bin %[[NB0]], %[[A0]] : i1
+  // CHECK-NEXT: %[[AC0:.+]] = comb.and bin %[[NB0]], %[[A0]] : i1
+  // CHECK-NEXT: %[[C0:.+]] = comb.or bin %[[B0]], %[[AC0]] : i1
+  // CHECK-NEXT: %[[S1:.+]] = comb.xor bin %[[B1]], %[[A1]] : i1
+  // CHECK-NEXT: comb.concat %[[C0]], %[[S0]] : i1, i1
+  // CHECK-NEXT: comb.concat %[[S1]], %false : i1, i1
+  %c1_i2 = hw.constant 1 : i2
+  %0:2 = datapath.compress %a, %b, %c1_i2 : i2 [3 -> 2]
+  hw.output %0#0, %0#1 : i2, i2
+}
+
 // CHECK-LABEL: @partial_product
 hw.module @partial_product(in %a : i3, in %b : i3, out pp0 : i3, out pp1 : i3, out pp2 : i3) {
   // CHECK-NEXT: %c0_i2 = hw.constant 0 : i2
@@ -68,23 +88,23 @@ hw.module @partial_product(in %a : i3, in %b : i3, out pp0 : i3, out pp1 : i3, o
   hw.output %0#0, %0#1, %0#2 : i3, i3, i3
 }
 
-// CHECK-LABEL: @partial_product_replicate_known_bits
+// CHECK-LABEL: @partial_product_partial_known_bits
 hw.module @partial_product_partial_known_bits(in %a : i3, in %x : i2, out pp0 : i3, out pp1 : i3, out pp2 : i3) {
   // CHECK: %[[ZERO2:.+]] = hw.constant 0 : i2
+  // CHECK: %false = hw.constant false
   // CHECK: %true = hw.constant true
-  // CHECK: %[[PAIR:.+]] = comb.concat %x, %true : i1, i1
-  // CHECK: %[[REPL:.+]] = comb.replicate %[[PAIR]] : (i2) -> i4
-  // CHECK: %[[B1:.+]] = comb.extract %[[REPL]] from 1 : (i4) -> i1
-  // CHECK: %[[B3:.+]] = comb.extract %[[REPL]] from 3 : (i4) -> i1
-  // CHECK: %[[B1R:.+]] = comb.replicate %[[B1]] : (i1) -> i4
-  // CHECK: %[[PP1:.+]] = comb.and %[[B1R]], %a : i4
-  // CHECK: %[[PP1S:.+]] = comb.concat %[[PP1]], %false : i4, i1
-  // CHECK: %[[ROW1:.+]] = comb.extract %[[PP1S]] from 0 : (i5) -> i4
-  // CHECK: %[[ROW2S:.+]] = comb.concat %a, %[[ZERO2]] : i4, i2
-  // CHECK: %[[ROW2:.+]] = comb.extract %[[ROW2S]] from 0 : (i6) -> i4
-  // CHECK: %[[B3R:.+]] = comb.replicate %[[B3]] : (i1) -> i4
-  // CHECK: %[[PP3:.+]] = comb.and %[[B3R]], %a : i4
-  // CHECK: hw.output %a, %[[ROW1]], %[[ROW2]], {{.+}} : i4, i4, i4, i4
+  // CHECK: %[[IN:.+]] = comb.concat %x, %true : i2, i1
+  // CHECK: %[[B1:.+]] = comb.extract %[[IN]] from 1 : (i3) -> i1
+  // CHECK: %[[B2:.+]] = comb.extract %[[IN]] from 2 : (i3) -> i1
+  // CHECK: %[[B1R:.+]] = comb.replicate %[[B1]] : (i1) -> i3
+  // CHECK: %[[PP1:.+]] = comb.and %[[B1R]], %a : i3
+  // CHECK: %[[ROW1S:.+]] = comb.concat %[[PP1]], %false : i3, i1
+  // CHECK: %[[ROW1:.+]] = comb.extract %[[ROW1S]] from 0 : (i4) -> i3
+  // CHECK: %[[B2R:.+]] = comb.replicate %[[B2]] : (i1) -> i3
+  // CHECK: %[[PP2:.+]] = comb.and %[[B2R]], %a : i3
+  // CHECK: %[[ROW2S:.+]] = comb.concat %[[PP2]], %[[ZERO2]] : i3, i2
+  // CHECK: %[[ROW2:.+]] = comb.extract %[[ROW2S]] from 0 : (i5) -> i3
+  // CHECK: hw.output %a, %[[ROW1]], %[[ROW2]] : i3, i3, i3
   %true = hw.constant true
   %in = comb.concat %x, %true : i2, i1
   %0:3 = datapath.partial_product %a, %in : (i3, i3) -> (i3, i3, i3)
