@@ -18,7 +18,6 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
@@ -546,44 +545,33 @@ circt::om::Evaluator::instantiate(
       dbgs() << "- " << param << "\n";
   });
 
-  auto classNameToInstantiate = className;
-  ArrayRef<evaluator::EvaluatorValuePtr> actualParamsToInstantiate =
-      actualParams;
-  SmallVector<evaluator::EvaluatorValuePtr> transformedActualParams;
+  if (!shouldRunElaborationTransform(getModule()))
+    return instantiateImpl(className, actualParams);
 
-  bool usedElaborationTransform = false;
-  auto oldSkipElaborationTransformAttr =
-      getModule()->getAttr(skipElaborationTransformAttr);
-  auto restoreSkipElaborationTransform = llvm::scope_exit([&] {
-    if (!usedElaborationTransform)
-      return;
-    if (oldSkipElaborationTransformAttr)
-      getModule()->setAttr(skipElaborationTransformAttr,
-                           oldSkipElaborationTransformAttr);
-    else
-      getModule()->removeAttr(skipElaborationTransformAttr);
-  });
+  ScratchIRBuilder scratchBuilder(*this);
+  auto transformedInstantiation = scratchBuilder.run(className, actualParams);
+  if (failed(transformedInstantiation))
+    return failure();
 
-  if (shouldRunElaborationTransform(getModule())) {
-    ScratchIRBuilder scratchBuilder(*this);
-    auto transformedInstantiation = scratchBuilder.run(className, actualParams);
-    if (failed(transformedInstantiation))
-      return failure();
+  symbolTable = SymbolTable(getModule());
+  auto wrapper = instantiateImpl(transformedInstantiation->className,
+                                 transformedInstantiation->actualParams);
+  if (failed(wrapper))
+    return failure();
 
-    classNameToInstantiate = transformedInstantiation->className;
-    transformedActualParams = std::move(transformedInstantiation->actualParams);
-    actualParamsToInstantiate = transformedActualParams;
+  auto root =
+      cast<evaluator::ObjectValue>(wrapper.value().get())->getField("root");
+  if (failed(root))
+    return failure();
+  return root.value();
+}
 
-    symbolTable = SymbolTable(getModule());
-    getModule()->setAttr(skipElaborationTransformAttr,
-                         UnitAttr::get(getModule()->getContext()));
-    usedElaborationTransform = true;
-  }
-
-  auto classDef = symbolTable.lookup<ClassLike>(classNameToInstantiate);
+FailureOr<std::shared_ptr<evaluator::EvaluatorValue>>
+circt::om::Evaluator::instantiateImpl(
+    StringAttr className, ArrayRef<evaluator::EvaluatorValuePtr> actualParams) {
+  auto classDef = symbolTable.lookup<ClassLike>(className);
   if (!classDef)
-    return symbolTable.getOp()->emitError("unknown class name ")
-           << classNameToInstantiate;
+    return symbolTable.getOp()->emitError("unknown class name ") << className;
 
   // If this is an external class, create an ObjectValue and mark it unknown
   if (isa<ClassExternOp>(classDef)) {
@@ -601,14 +589,14 @@ circt::om::Evaluator::instantiate(
 
   auto parameters =
       std::make_unique<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>(
-          actualParamsToInstantiate);
+          actualParams);
 
   actualParametersBuffers.push_back(std::move(parameters));
 
   auto loc = cls.getLoc();
   LLVM_DEBUG(dbgs() << "evaluate object:\n");
   auto result = evaluateObjectInstance(
-      classNameToInstantiate, actualParametersBuffers.back().get(), loc);
+      className, actualParametersBuffers.back().get(), loc);
 
   if (failed(result))
     return failure();
@@ -678,13 +666,6 @@ circt::om::Evaluator::instantiate(
     return cls.emitError() << "failed to finalize evaluation. Probably the "
                               "class contains a dataflow cycle";
   LLVM_DEBUG(dbgs() << "result: " << object << "\n");
-
-  if (usedElaborationTransform) {
-    auto root = cast<evaluator::ObjectValue>(object.get())->getField("root");
-    if (failed(root))
-      return failure();
-    return root.value();
-  }
 
   return object;
 }

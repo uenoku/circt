@@ -421,6 +421,10 @@ private:
       value->setFullyEvaluatedCounter(&fullyEvaluatedCount);
   }
 
+  FailureOr<evaluator::EvaluatorValuePtr>
+  instantiateImpl(StringAttr className,
+                  ArrayRef<EvaluatorValuePtr> actualParams);
+
   FailureOr<EvaluatorValuePtr>
   getOrCreateValue(Value value, ActualParameters actualParams, Location loc);
   FailureOr<EvaluatorValuePtr>
