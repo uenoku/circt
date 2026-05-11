@@ -35,11 +35,16 @@ constexpr StringLiteral skipElaborationTransformAttr =
 
 class ScratchIRBuilder {
 public:
+  struct InstantiationInfo {
+    StringAttr className;
+    SmallVector<EvaluatorValuePtr> actualParams;
+  };
+
   explicit ScratchIRBuilder(Evaluator &evaluator)
       : sourceModule(evaluator.getModule()), sourceSymbols(sourceModule),
         builder(sourceModule.getContext()) {}
 
-  FailureOr<EvaluatorValuePtr> run(StringAttr rootClassName,
+  FailureOr<InstantiationInfo> run(StringAttr rootClassName,
                                    ArrayRef<EvaluatorValuePtr> actualParams) {
     auto *ctx = sourceModule.getContext();
     auto unknownLoc = UnknownLoc::get(ctx);
@@ -76,26 +81,8 @@ public:
     if (failed(pm.run(sourceModule)))
       return failure();
 
-    auto oldFlag = sourceModule->getAttr(skipElaborationTransformAttr);
-    sourceModule->setAttr(skipElaborationTransformAttr, builder.getUnitAttr());
-    auto restoreFlag = llvm::scope_exit([&] {
-      if (oldFlag)
-        sourceModule->setAttr(skipElaborationTransformAttr, oldFlag);
-      else
-        sourceModule->removeAttr(skipElaborationTransformAttr);
-    });
-
-    Evaluator evaluator(sourceModule);
-    auto wrapper = evaluator.instantiate(builder.getStringAttr(*wrapperName),
-                                         wrapperActualParams);
-    if (failed(wrapper))
-      return failure();
-
-    auto root =
-        cast<evaluator::ObjectValue>(wrapper.value().get())->getField("root");
-    if (failed(root))
-      return failure();
-    return root.value();
+    return InstantiationInfo{builder.getStringAttr(*wrapperName),
+                             std::move(wrapperActualParams)};
   }
 
 private:
@@ -559,14 +546,44 @@ circt::om::Evaluator::instantiate(
       dbgs() << "- " << param << "\n";
   });
 
+  auto classNameToInstantiate = className;
+  ArrayRef<evaluator::EvaluatorValuePtr> actualParamsToInstantiate =
+      actualParams;
+  SmallVector<evaluator::EvaluatorValuePtr> transformedActualParams;
+
+  bool usedElaborationTransform = false;
+  auto oldSkipElaborationTransformAttr =
+      getModule()->getAttr(skipElaborationTransformAttr);
+  auto restoreSkipElaborationTransform = llvm::scope_exit([&] {
+    if (!usedElaborationTransform)
+      return;
+    if (oldSkipElaborationTransformAttr)
+      getModule()->setAttr(skipElaborationTransformAttr,
+                           oldSkipElaborationTransformAttr);
+    else
+      getModule()->removeAttr(skipElaborationTransformAttr);
+  });
+
   if (shouldRunElaborationTransform(getModule())) {
     ScratchIRBuilder scratchBuilder(*this);
-    return scratchBuilder.run(className, actualParams);
+    auto transformedInstantiation = scratchBuilder.run(className, actualParams);
+    if (failed(transformedInstantiation))
+      return failure();
+
+    classNameToInstantiate = transformedInstantiation->className;
+    transformedActualParams = std::move(transformedInstantiation->actualParams);
+    actualParamsToInstantiate = transformedActualParams;
+
+    symbolTable = SymbolTable(getModule());
+    getModule()->setAttr(skipElaborationTransformAttr,
+                         UnitAttr::get(getModule()->getContext()));
+    usedElaborationTransform = true;
   }
 
-  auto classDef = symbolTable.lookup<ClassLike>(className);
+  auto classDef = symbolTable.lookup<ClassLike>(classNameToInstantiate);
   if (!classDef)
-    return symbolTable.getOp()->emitError("unknown class name ") << className;
+    return symbolTable.getOp()->emitError("unknown class name ")
+           << classNameToInstantiate;
 
   // If this is an external class, create an ObjectValue and mark it unknown
   if (isa<ClassExternOp>(classDef)) {
@@ -584,14 +601,14 @@ circt::om::Evaluator::instantiate(
 
   auto parameters =
       std::make_unique<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>(
-          actualParams);
+          actualParamsToInstantiate);
 
   actualParametersBuffers.push_back(std::move(parameters));
 
   auto loc = cls.getLoc();
   LLVM_DEBUG(dbgs() << "evaluate object:\n");
   auto result = evaluateObjectInstance(
-      className, actualParametersBuffers.back().get(), loc);
+      classNameToInstantiate, actualParametersBuffers.back().get(), loc);
 
   if (failed(result))
     return failure();
@@ -661,6 +678,14 @@ circt::om::Evaluator::instantiate(
     return cls.emitError() << "failed to finalize evaluation. Probably the "
                               "class contains a dataflow cycle";
   LLVM_DEBUG(dbgs() << "result: " << object << "\n");
+
+  if (usedElaborationTransform) {
+    auto root = cast<evaluator::ObjectValue>(object.get())->getField("root");
+    if (failed(root))
+      return failure();
+    return root.value();
+  }
+
   return object;
 }
 
