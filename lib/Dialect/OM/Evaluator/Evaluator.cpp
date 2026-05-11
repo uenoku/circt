@@ -53,12 +53,10 @@ public:
     auto wrapperName = createWrapperClass(unknownLoc);
     if (failed(wrapperName))
       return failure();
-    auto eraseWrapper = llvm::scope_exit([&] { wrapperClass->erase(); });
-
     builder.setInsertionPoint(wrapperClass.getFieldsOp());
     SmallVector<Value> importedActualValues;
     importedActualValues.reserve(actualParams.size());
-    for (auto actual : actualParams) {
+    for (auto &actual : actualParams) {
       auto imported = materializeInput(actual, unknownLoc);
       if (failed(imported))
         return failure();
@@ -72,7 +70,6 @@ public:
                               {builder.getStringAttr("root")});
 
     PassManager pm(ctx);
-    pm.enableVerifier(false);
     ElaborateObjectOptions options;
     options.targetClass = *wrapperName;
     pm.addPass(createElaborateObject(std::move(options)));
@@ -562,6 +559,8 @@ circt::om::Evaluator::instantiate(
       dbgs() << "- " << param << "\n";
   });
 
+  getModule()->dump();
+
   if (shouldRunElaborationTransform(getModule())) {
     ScratchIRBuilder scratchBuilder(*this);
     return scratchBuilder.run(className, actualParams);
@@ -925,6 +924,9 @@ FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
                                                ActualParameters actualParams,
                                                Location loc) {
+  if (isFullyEvaluated({op, actualParams}))
+    return getOrCreateValue(op, actualParams, loc);
+
   auto objectValue = getOrCreateValue(op, actualParams, loc);
   if (failed(objectValue))
     return failure();
@@ -939,11 +941,13 @@ circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
   evaluator::ObjectFields fields;
   for (auto [fieldName, fieldValue] :
        llvm::zip(classDef.getFieldNames(), op.getFieldValues())) {
-    auto result = evaluateValue(fieldValue, actualParams, loc);
+    auto result = getOrCreateValue(fieldValue, actualParams, loc);
     if (failed(result))
       return failure();
+
     if (!result.value()->isFullyEvaluated())
-      return objectValue;
+      worklist.push_back({fieldValue, actualParams});
+
     fields[cast<StringAttr>(fieldName)] = result.value();
   }
 

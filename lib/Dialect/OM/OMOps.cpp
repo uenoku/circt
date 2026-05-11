@@ -14,9 +14,12 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/OM/OMOpInterfaces.h"
 #include "circt/Dialect/OM/OMUtils.h"
+#include "circt/Support/LLVM.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 
 using namespace mlir;
 using namespace circt::om;
@@ -277,9 +280,9 @@ std::optional<Type> getClassLikeFieldType(ClassLike classLike,
   DictionaryAttr fieldTypes = mlir::cast<DictionaryAttr>(
       classLike.getOperation()->getAttr("fieldTypes"));
   Attribute type = fieldTypes.get(name);
-  if (!type)
-    return std::nullopt;
-  return cast<TypeAttr>(type).getValue();
+  if (auto field = dyn_cast_or_null<TypeAttr>(type))
+    return field.getValue();
+  return std::nullopt;
 }
 
 void replaceClassLikeFieldTypes(ClassLike classLike,
@@ -336,7 +339,10 @@ void circt::om::ClassOp::print(OpAsmPrinter &printer) {
 LogicalResult circt::om::ClassOp::verify() { return verifyClassLike(*this); }
 
 LogicalResult circt::om::ClassOp::verifyRegions() {
-  auto fieldsOp = cast<ClassFieldsOp>(this->getBodyBlock()->getTerminator());
+  auto fieldsOp =
+      dyn_cast_or_null<ClassFieldsOp>(this->getBodyBlock()->getTerminator());
+  if (!fieldsOp)
+    return this->emitOpError("expected terminator to be ClassFieldsOp");
 
   // The number of results matches the number of terminator operands.
   if (fieldsOp.getNumOperands() != this->getFieldNames().size()) {
@@ -352,9 +358,13 @@ LogicalResult circt::om::ClassOp::verifyRegions() {
   for (auto [fieldName, terminatorOperandType] :
        llvm::zip(this->getFieldNames(), fieldsOp.getOperandTypes())) {
 
-    if (terminatorOperandType ==
-        cast<TypeAttr>(types.get(cast<StringAttr>(fieldName))).getValue())
-      continue;
+    if (!llvm::isa_and_nonnull<StringAttr>(fieldName))
+      return this->emitOpError("field name is not a StringAttr");
+
+    if (auto fieldType =
+            getClassLikeFieldType(*this, cast<StringAttr>(fieldName)))
+      if (*fieldType == terminatorOperandType)
+        continue;
 
     auto diag = this->emitOpError()
                 << "returns different field types than its terminator";

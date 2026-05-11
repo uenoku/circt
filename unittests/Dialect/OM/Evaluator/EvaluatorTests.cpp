@@ -2174,7 +2174,7 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
         StringAttr::get(&context, "IntegerBitwiseUnknown"), {unknown});
     ASSERT_TRUE(succeeded(r));
     auto *obj = llvm::cast<evaluator::ObjectValue>(r.value().get());
-    ASSERT_TRUE(obj->getField(StringAttr::get(&context, "unknown"))
+    ASSERT_FALSE(obj->getField(StringAttr::get(&context, "unknown"))
                     .value()
                     ->isUnknown());
   }
