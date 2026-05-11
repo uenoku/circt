@@ -36,7 +36,7 @@ hw.module @compressor_add(in %a : i2, in %b : i2, in %c : i2, out carry : i2, ou
 }
 
 // CHECK-LABEL: @compress_const_one
-hw.module @compress_const_one(in %a : i2, in %b : i2, out carry : i2, out save : i2) {
+hw.module @compress_const_one(in %a : i2, in %b : i2, in %c: i1, out carry : i2, out save : i2) {
   // CHECK-NEXT: %false = hw.constant false
   // CHECK-NEXT: %true = hw.constant true
   // CHECK-NEXT: %[[A0:.+]] = comb.extract %a from 0 : (i2) -> i1
@@ -50,8 +50,9 @@ hw.module @compress_const_one(in %a : i2, in %b : i2, out carry : i2, out save :
   // CHECK-NEXT: %[[S1:.+]] = comb.xor bin %[[B1]], %[[A1]] : i1
   // CHECK-NEXT: comb.concat %[[C0]], %[[S0]] : i1, i1
   // CHECK-NEXT: comb.concat %[[S1]], %false : i1, i1
-  %c1_i2 = hw.constant 1 : i2
-  %0:2 = datapath.compress %a, %b, %c1_i2 : i2 [3 -> 2]
+  %c1_i1 = hw.constant 1 : i1
+  %concat = comb.concat %c, %c1_i1 : i1, i1
+  %0:2 = datapath.compress %a, %a, %b, %concat : i2 [4 -> 2]
   hw.output %0#0, %0#1 : i2, i2
 }
 
