@@ -229,6 +229,55 @@ TEST(EvaluatorTests, InstantiateObjectWithParamField) {
   ASSERT_EQ(fieldValue.getValue().getValue(), 42);
 }
 
+TEST(EvaluatorTests, InstantiateWithElaborationTransform) {
+  StringRef mod = R"MLIR(
+module {
+  om.class @Leaf(%value: !om.integer) -> (value: !om.integer) {
+    om.class.fields %value : !om.integer
+  }
+
+  om.class @Top(%value: !om.integer) -> (value: !om.integer) {
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    %leaf_value = om.object.field %leaf["value"] : (!om.class.type<@Leaf>) -> !om.integer
+    om.class.fields %leaf_value : !om.integer
+  }
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto getOMIntegerValue = [](EvaluatorValuePtr value) {
+    return llvm::cast<evaluator::AttributeValue>(value.get())
+        ->getAs<circt::om::IntegerAttr>()
+        .getValue()
+        .getValue();
+  };
+
+  auto seven = evaluator::AttributeValue::get(
+      circt::om::IntegerAttr::get(
+          &context,
+          mlir::IntegerAttr::get(
+              mlir::IntegerType::get(&context, 8, mlir::IntegerType::Signed),
+              7)),
+      LocationAttr(UnknownLoc::get(&context)));
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {seven});
+  ASSERT_TRUE(succeeded(topResult));
+
+  auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
+  ASSERT_EQ(getOMIntegerValue(top->getField("value").value()), 7);
+}
+
 TEST(EvaluatorTests, InstantiateObjectWithConstantField) {
   DialectRegistry registry;
   registry.insert<OMDialect>();

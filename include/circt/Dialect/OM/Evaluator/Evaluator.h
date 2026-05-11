@@ -447,6 +447,9 @@ private:
   FailureOr<EvaluatorValuePtr>
   evaluateObjectInstance(ObjectOp op, ActualParameters actualParams);
   FailureOr<EvaluatorValuePtr>
+  evaluateElaboratedObject(ElaboratedObjectOp op, ActualParameters actualParams,
+                           Location loc);
+  FailureOr<EvaluatorValuePtr>
   evaluateObjectField(ObjectFieldOp op, ActualParameters actualParams,
                       Location loc);
   FailureOr<EvaluatorValuePtr> evaluateListCreate(ListCreateOp op,
