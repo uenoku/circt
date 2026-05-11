@@ -559,8 +559,6 @@ circt::om::Evaluator::instantiate(
       dbgs() << "- " << param << "\n";
   });
 
-  getModule()->dump();
-
   if (shouldRunElaborationTransform(getModule())) {
     ScratchIRBuilder scratchBuilder(*this);
     return scratchBuilder.run(className, actualParams);
