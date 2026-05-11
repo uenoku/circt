@@ -35,23 +35,20 @@ hw.module @compressor_add(in %a : i2, in %b : i2, in %c : i2, out carry : i2, ou
   hw.output %0#0, %0#1 : i2, i2
 }
 
-// CHECK-LABEL: @compress_const_one
-hw.module @compress_const_one(in %a : i2, in %b : i2, out carry : i2, out save : i2) {
+// CHECK-LABEL: @compress_const_one_pairs
+hw.module @compress_const_one_pairs(in %a : i2, in %b : i2, out carry : i2, out save : i2) {
   // CHECK-NEXT: %false = hw.constant false
   // CHECK-NEXT: %true = hw.constant true
   // CHECK-NEXT: %[[A0:.+]] = comb.extract %a from 0 : (i2) -> i1
   // CHECK-NEXT: %[[A1:.+]] = comb.extract %a from 1 : (i2) -> i1
   // CHECK-NEXT: %[[B0:.+]] = comb.extract %b from 0 : (i2) -> i1
   // CHECK-NEXT: %[[B1:.+]] = comb.extract %b from 1 : (i2) -> i1
-  // CHECK-NEXT: %[[NB0:.+]] = comb.xor bin %[[B0]], %true : i1
-  // CHECK-NEXT: %[[S0:.+]] = comb.xor bin %[[NB0]], %[[A0]] : i1
-  // CHECK-NEXT: %[[AC0:.+]] = comb.and bin %[[NB0]], %[[A0]] : i1
-  // CHECK-NEXT: %[[C0:.+]] = comb.or bin %[[B0]], %[[AC0]] : i1
-  // CHECK-NEXT: %[[S1:.+]] = comb.xor bin %[[B1]], %[[A1]] : i1
-  // CHECK-NEXT: comb.concat %[[C0]], %[[S0]] : i1, i1
-  // CHECK-NEXT: comb.concat %[[S1]], %false : i1, i1
-  %c1_i2 = hw.constant 1 : i2
-  %0:2 = datapath.compress %a, %b, %c1_i2 : i2 [3 -> 2]
+  // CHECK-NEXT: %[[NB1:.+]] = comb.xor bin %[[B1]], %true : i1
+  // CHECK-NEXT: %[[S1:.+]] = comb.xor bin %[[NB1]], %[[A1]] : i1
+  // CHECK-NEXT: comb.concat %[[S1]], %[[A0]] : i1, i1
+  // CHECK-NEXT: comb.concat %false, %[[B0]] : i1, i1
+  %c3_i2 = hw.constant 3 : i2
+  %0:2 = datapath.compress %a, %b, %c3_i2, %c3_i2 : i2 [4 -> 2]
   hw.output %0#0, %0#1 : i2, i2
 }
 
