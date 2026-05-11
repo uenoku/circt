@@ -296,7 +296,9 @@ TEST(EvaluatorTests, InstantiateObjectWithConstantField) {
   auto cls = ClassOp::create(
       builder, "MyClass", builder.getStrArrayAttr({"field"}),
       builder.getDictionaryAttr({
-          NamedAttribute(builder.getStringAttr("field"), constantType),
+          NamedAttribute(builder.getStringAttr("field"),
+                         TypeAttr::get(circt::om::OMIntegerType::get(
+                             builder.getContext()))),
 
       }));
   auto &body = cls.getBody().emplaceBlock();
@@ -404,20 +406,21 @@ TEST(EvaluatorTests, InstantiateObjectWithFieldAccess) {
                                               params, fields, types);
 
   builder.setInsertionPointToStart(&mod.getBodyRegion().front());
-  auto innerType = TypeAttr::get(ClassType::get(
-      builder.getContext(), mlir::FlatSymbolRefAttr::get(innerCls)));
   auto cls = ClassOp::create(
       builder, "MyClass", params, builder.getStrArrayAttr({"field"}),
       builder.getDictionaryAttr({
-          NamedAttribute(builder.getStringAttr("field"), innerType),
+          NamedAttribute(builder.getStringAttr("field"),
+                         TypeAttr::get(circt::om::OMIntegerType::get(
+                             builder.getContext()))),
 
       }));
   auto &body = cls.getBody().emplaceBlock();
   body.addArgument(circt::om::OMIntegerType::get(&context), cls.getLoc());
   builder.setInsertionPointToStart(&body);
   auto object = ObjectOp::create(builder, innerCls, body.getArguments());
-  auto field = ObjectFieldOp::create(builder, builder.getI32Type(), object,
-                                     builder.getStringAttr("field"));
+  auto field =
+      ObjectFieldOp::create(builder, circt::om::OMIntegerType::get(&context),
+                            object, builder.getStringAttr("field"));
   ClassFieldsOp::create(builder, loc, ValueRange{field}, ArrayAttr{});
 
   Evaluator evaluator(mod);
@@ -532,14 +535,13 @@ TEST(EvaluatorTests, AnyCastObject) {
                         ArrayAttr{});
 
   builder.setInsertionPointToStart(&mod.getBodyRegion().front());
-  auto innerType = TypeAttr::get(ClassType::get(
-      builder.getContext(), mlir::FlatSymbolRefAttr::get(innerCls)));
-  auto cls = ClassOp::create(
-      builder, "MyClass", builder.getStrArrayAttr({"field"}),
-      builder.getDictionaryAttr({
-          NamedAttribute(builder.getStringAttr("field"), innerType),
+  auto cls =
+      ClassOp::create(builder, "MyClass", builder.getStrArrayAttr({"field"}),
+                      builder.getDictionaryAttr({
+                          NamedAttribute(builder.getStringAttr("field"),
+                                         TypeAttr::get(AnyType::get(&context))),
 
-      }));
+                      }));
   auto &body = cls.getBody().emplaceBlock();
   builder.setInsertionPointToStart(&body);
   auto object = ObjectOp::create(builder, innerCls, body.getArguments());
@@ -703,9 +705,7 @@ om.class @ReferenceEachOther() -> (field: !ty){
   context.getOrLoadDialect<OMDialect>();
 
   context.getDiagEngine().registerHandler([&](Diagnostic &diag) {
-    ASSERT_EQ(diag.str(),
-              "cycle detected: 1 values remain partially evaluated after full "
-              "pass with no progress (total fully evaluated: 1)");
+    ASSERT_EQ(diag.str(), "failed to evaluate om.object.field");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -892,7 +892,7 @@ om.class @IntegerBinaryArithmeticShrNegative() -> (result: !om.integer){
       ASSERT_EQ(diag.str(),
                 "'om.integer.shr' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shr");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -928,7 +928,7 @@ om.class @IntegerBinaryArithmeticShrTooLarge() -> (result: !om.integer){
           diag.str(),
           "'om.integer.shr' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shr");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -999,7 +999,7 @@ om.class @IntegerBinaryArithmeticShlNegative() -> (result: !om.integer) {
       ASSERT_EQ(diag.str(),
                 "'om.integer.shl' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shl");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -1035,7 +1035,7 @@ om.class @IntegerBinaryArithmeticShlTooLarge() -> (result: !om.integer) {
           diag.str(),
           "'om.integer.shl' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shl");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -2175,8 +2175,8 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
     ASSERT_TRUE(succeeded(r));
     auto *obj = llvm::cast<evaluator::ObjectValue>(r.value().get());
     ASSERT_FALSE(obj->getField(StringAttr::get(&context, "unknown"))
-                    .value()
-                    ->isUnknown());
+                     .value()
+                     ->isUnknown());
   }
 }
 
