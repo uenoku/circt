@@ -11,9 +11,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/OM/Evaluator/Evaluator.h"
+#include "circt/Dialect/OM/OMPasses.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
+#include "mlir/Pass/PassManager.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
@@ -22,6 +28,259 @@
 
 using namespace mlir;
 using namespace circt::om;
+
+namespace {
+
+constexpr StringLiteral skipElaborationTransformAttr =
+    "om.skip_elaboration_transform";
+
+LogicalResult verifyActualParameters(ClassLike classLike,
+                                     ArrayRef<EvaluatorValuePtr> actualParams) {
+  auto formalParamNames =
+      classLike.getFormalParamNames().getAsRange<StringAttr>();
+  auto formalParamTypes = classLike.getBodyBlock()->getArgumentTypes();
+
+  if (actualParams.size() != formalParamTypes.size()) {
+    auto error = classLike.emitError("actual parameter list length (")
+                 << actualParams.size() << ") does not match formal "
+                 << "parameter list length (" << formalParamTypes.size() << ")";
+    auto &diag = error.attachNote() << "actual parameters: ";
+    bool isFirst = true;
+    for (const auto &param : actualParams) {
+      if (isFirst)
+        isFirst = false;
+      else
+        diag << ", ";
+      diag << param;
+    }
+    error.attachNote(classLike.getLoc())
+        << "formal parameters: " << formalParamTypes;
+    return failure();
+  }
+
+  for (auto [actualParam, formalParamName, formalParamType] :
+       llvm::zip(actualParams, formalParamNames, formalParamTypes)) {
+    if (!actualParam || !actualParam.get())
+      return classLike.emitError("actual parameter for ")
+             << formalParamName << " is null";
+
+    // Subtyping: if formal param is any type, any actual param may be passed.
+    if (isa<AnyType>(formalParamType))
+      continue;
+
+    Type actualParamType = actualParam->getType();
+    assert(actualParamType && "actualParamType must be non-null!");
+
+    if (actualParamType != formalParamType) {
+      auto error = classLike.emitError("actual parameter for ")
+                   << formalParamName << " has invalid type";
+      error.attachNote() << "actual parameter: " << *actualParam;
+      error.attachNote() << "format parameter type: " << formalParamType;
+      return failure();
+    }
+  }
+  return success();
+}
+
+/// Builds a temporary wrapper class, runs object elaboration on it, and returns
+/// the synthetic instantiation that the normal evaluator can execute.
+class ScratchIRBuilder {
+public:
+  struct InstantiationInfo {
+    StringAttr className;
+    SmallVector<EvaluatorValuePtr> actualParams;
+  };
+
+  ScratchIRBuilder(ModuleOp sourceModule, const SymbolTable &sourceSymbols);
+
+  FailureOr<InstantiationInfo> run(StringAttr rootClassName,
+                                   ArrayRef<EvaluatorValuePtr> actualParams);
+
+private:
+  FailureOr<std::string> createWrapperClass(Location loc);
+  /// Convert an API input value into scratch IR, preserving opaque aggregate
+  /// inputs and rejecting runtime references/cycles.
+  FailureOr<Value> materializeInput(EvaluatorValuePtr value, Location loc,
+                                    Type expectedType = {});
+  FailureOr<Value> materializeObjectInput(evaluator::ObjectValue *objectValue,
+                                          Location loc);
+  FailureOr<Value> createWrapperArgument(EvaluatorValuePtr value, Location loc,
+                                         Type argType = {});
+
+  ModuleOp sourceModule;
+  const SymbolTable &sourceSymbols;
+  OpBuilder builder;
+  ClassOp wrapperClass;
+  unsigned wrapperArgCount = 0;
+  DenseMap<evaluator::EvaluatorValue *, Value> importedValues;
+  SmallPtrSet<evaluator::ObjectValue *, 8> activeObjectImports;
+  SmallVector<EvaluatorValuePtr> wrapperActualParams;
+};
+
+ScratchIRBuilder::ScratchIRBuilder(ModuleOp sourceModule,
+                                   const SymbolTable &sourceSymbols)
+    : sourceModule(sourceModule), sourceSymbols(sourceSymbols),
+      builder(sourceModule.getContext()) {}
+
+FailureOr<ScratchIRBuilder::InstantiationInfo>
+ScratchIRBuilder::run(StringAttr rootClassName,
+                      ArrayRef<EvaluatorValuePtr> actualParams) {
+  auto *ctx = sourceModule.getContext();
+  auto unknownLoc = UnknownLoc::get(ctx);
+
+  auto rootClass = sourceSymbols.lookup<ClassLike>(rootClassName);
+  if (!rootClass)
+    return sourceModule.emitError("unknown class name ") << rootClassName;
+  if (failed(verifyActualParameters(rootClass, actualParams)))
+    return failure();
+
+  auto wrapperName = createWrapperClass(unknownLoc);
+  if (failed(wrapperName))
+    return failure();
+
+  builder.setInsertionPoint(wrapperClass.getFieldsOp());
+  SmallVector<Value> importedActualValues;
+  importedActualValues.reserve(actualParams.size());
+  auto formalTypes = rootClass.getBodyBlock()->getArgumentTypes();
+  for (auto [index, actual] : llvm::enumerate(actualParams)) {
+    Type expectedType =
+        index < formalTypes.size() ? formalTypes[index] : Type{};
+    auto imported = materializeInput(actual, unknownLoc, expectedType);
+    if (failed(imported))
+      return failure();
+    importedActualValues.push_back(*imported);
+  }
+
+  auto rootType = ClassType::get(ctx, FlatSymbolRefAttr::get(rootClassName));
+  auto rootObject = ObjectOp::create(builder, unknownLoc, rootType,
+                                     rootClassName, importedActualValues);
+  wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
+                            {builder.getStringAttr("root")});
+
+  if (failed(verify(sourceModule)))
+    return failure();
+
+  PassManager pm(ctx);
+  ElaborateObjectOptions options;
+  options.targetClass = *wrapperName;
+  pm.addPass(createElaborateObject(std::move(options)));
+  if (failed(pm.run(sourceModule)))
+    return failure();
+
+  return InstantiationInfo{builder.getStringAttr(*wrapperName),
+                           std::move(wrapperActualParams)};
+}
+
+FailureOr<std::string> ScratchIRBuilder::createWrapperClass(Location loc) {
+  SymbolTable symbols(sourceModule);
+  builder.setInsertionPointToEnd(sourceModule.getBody());
+
+  std::string wrapperName = "__om_evaluator_wrapper";
+  unsigned suffix = 0;
+  while (symbols.lookup<ClassLike>(builder.getStringAttr(wrapperName)))
+    wrapperName = "__om_evaluator_wrapper_" + std::to_string(++suffix);
+
+  wrapperClass = ClassOp::create(builder, loc, wrapperName);
+  Block *body = &wrapperClass.getBody().emplaceBlock();
+  builder.setInsertionPointToEnd(body);
+  ClassFieldsOp::create(builder, loc, ValueRange(), ArrayAttr{});
+  return wrapperName;
+}
+
+FailureOr<Value> ScratchIRBuilder::materializeInput(EvaluatorValuePtr value,
+                                                    Location loc,
+                                                    Type expectedType) {
+  if (!value)
+    return emitError(loc, "cannot materialize null OM evaluator value");
+
+  if (isa<evaluator::ReferenceValue>(value.get()))
+    return emitError(loc, "cannot import OM reference value");
+
+  // Keep aggregate runtime containers opaque at the wrapper boundary.
+  if (expectedType && isa<AnyType, ListType>(expectedType))
+    return createWrapperArgument(value, loc, expectedType);
+  if (!expectedType && isa<AnyType, ListType>(value->getType()))
+    return createWrapperArgument(value, loc);
+
+  if (auto it = importedValues.find(value.get()); it != importedValues.end())
+    return it->second;
+
+  if (value->isUnknown()) {
+    auto result = UnknownValueOp::create(
+        builder, loc, expectedType ? expectedType : value->getType());
+    importedValues[value.get()] = result.getResult();
+    return result.getResult();
+  }
+
+  if (auto *attrValue = dyn_cast<evaluator::AttributeValue>(value.get())) {
+    auto attr = attrValue->getAttr();
+    if (attr) {
+      auto result = ConstantOp::create(builder, loc, cast<TypedAttr>(attr));
+      importedValues[value.get()] = result.getResult();
+      return result.getResult();
+    }
+  }
+
+  if (auto *objectValue = dyn_cast<evaluator::ObjectValue>(value.get()))
+    return materializeObjectInput(objectValue, loc);
+
+  auto result = createWrapperArgument(value, loc);
+  if (succeeded(result))
+    importedValues[value.get()] = *result;
+  return result;
+}
+
+FailureOr<Value>
+ScratchIRBuilder::materializeObjectInput(evaluator::ObjectValue *objectValue,
+                                         Location loc) {
+  if (!activeObjectImports.insert(objectValue).second)
+    return emitError(loc, "cannot import cyclic OM object value");
+
+  llvm::scope_exit popActiveObjectImport(
+      [&] { activeObjectImports.erase(objectValue); });
+
+  auto classLike = objectValue->getClassOp();
+  SmallVector<Value> fieldValues;
+  auto fieldNames = classLike.getFieldNames();
+  fieldValues.reserve(fieldNames.size());
+  for (auto fieldName : fieldNames) {
+    auto fieldNameAttr = cast<StringAttr>(fieldName);
+    auto field = objectValue->getField(fieldNameAttr);
+    if (failed(field))
+      return failure();
+    auto materializedField = materializeInput(
+        field.value(), loc, classLike.getFieldType(fieldNameAttr).value());
+    if (failed(materializedField))
+      return failure();
+    fieldValues.push_back(*materializedField);
+  }
+
+  auto result =
+      ElaboratedObjectOp::create(builder, loc, classLike, fieldValues);
+  importedValues[objectValue] = result.getResult();
+  return result.getResult();
+}
+
+FailureOr<Value>
+ScratchIRBuilder::createWrapperArgument(EvaluatorValuePtr value, Location loc,
+                                        Type argType) {
+  auto argName = ("arg" + Twine(wrapperArgCount++)).str();
+  SmallVector<Attribute> formalParamNames(
+      wrapperClass.getFormalParamNames().getValue());
+  formalParamNames.push_back(builder.getStringAttr(argName));
+  wrapperClass->setAttr(wrapperClass.getFormalParamNamesAttrName(),
+                        builder.getArrayAttr(formalParamNames));
+  auto arg = wrapperClass.getBodyBlock()->addArgument(
+      argType ? argType : value->getType(), loc);
+  wrapperActualParams.push_back(value);
+  return arg;
+}
+
+bool shouldRunElaborationTransform(ModuleOp module) {
+  return !module->hasAttr(skipElaborationTransformAttr);
+}
+
+} // namespace
 
 /// Construct an Evaluator with an IR module.
 circt::om::Evaluator::Evaluator(ModuleOp mod) : symbolTable(mod) {}
@@ -181,6 +440,9 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
                 .Case<ObjectOp>([&](auto op) {
                   return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
                 })
+                .Case<ElaboratedObjectOp>([&](auto op) {
+                  return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
+                })
                 .Case<UnknownValueOp>(
                     [&](auto op) { return evaluateUnknownValue(op, loc); })
                 .Default([&](Operation *op) {
@@ -229,51 +491,8 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
   // Otherwise, it's a regular class, proceed normally
   ClassOp cls = cast<ClassOp>(classDef);
 
-  auto formalParamNames = cls.getFormalParamNames().getAsRange<StringAttr>();
-  auto formalParamTypes = cls.getBodyBlock()->getArgumentTypes();
-
-  // Verify the actual parameters are the right size and types for this class.
-  if (actualParams->size() != formalParamTypes.size()) {
-    auto error = cls.emitError("actual parameter list length (")
-                 << actualParams->size() << ") does not match formal "
-                 << "parameter list length (" << formalParamTypes.size() << ")";
-    auto &diag = error.attachNote() << "actual parameters: ";
-    // FIXME: `diag << actualParams` doesn't work for some reason.
-    bool isFirst = true;
-    for (const auto &param : *actualParams) {
-      if (isFirst)
-        isFirst = false;
-      else
-        diag << ", ";
-      diag << param;
-    }
-    error.attachNote(cls.getLoc()) << "formal parameters: " << formalParamTypes;
-    return error;
-  }
-
-  // Verify the actual parameter types match.
-  for (auto [actualParam, formalParamName, formalParamType] :
-       llvm::zip(*actualParams, formalParamNames, formalParamTypes)) {
-    if (!actualParam || !actualParam.get())
-      return cls.emitError("actual parameter for ")
-             << formalParamName << " is null";
-
-    // Subtyping: if formal param is any type, any actual param may be passed.
-    if (isa<AnyType>(formalParamType))
-      continue;
-
-    Type actualParamType = actualParam->getType();
-
-    assert(actualParamType && "actualParamType must be non-null!");
-
-    if (actualParamType != formalParamType) {
-      auto error = cls.emitError("actual parameter for ")
-                   << formalParamName << " has invalid type";
-      error.attachNote() << "actual parameter: " << *actualParam;
-      error.attachNote() << "format parameter type: " << formalParamType;
-      return error;
-    }
-  }
+  if (failed(verifyActualParameters(cls, *actualParams)))
+    return failure();
 
   // Instantiate the fields.
   evaluator::ObjectFields fields;
@@ -358,6 +577,30 @@ circt::om::Evaluator::instantiate(
       dbgs() << "- " << param << "\n";
   });
 
+  if (!shouldRunElaborationTransform(getModule()))
+    return instantiateImpl(className, actualParams);
+
+  ScratchIRBuilder scratchBuilder(getModule(), symbolTable);
+  auto transformedInstantiation = scratchBuilder.run(className, actualParams);
+  if (failed(transformedInstantiation))
+    return failure();
+
+  symbolTable = SymbolTable(getModule());
+  auto wrapper = instantiateImpl(transformedInstantiation->className,
+                                 transformedInstantiation->actualParams);
+  if (failed(wrapper))
+    return failure();
+
+  auto root =
+      cast<evaluator::ObjectValue>(wrapper.value().get())->getField("root");
+  if (failed(root))
+    return failure();
+  return root.value();
+}
+
+FailureOr<std::shared_ptr<evaluator::EvaluatorValue>>
+circt::om::Evaluator::instantiateImpl(
+    StringAttr className, ArrayRef<evaluator::EvaluatorValuePtr> actualParams) {
   auto classDef = symbolTable.lookup<ClassLike>(className);
   if (!classDef)
     return symbolTable.getOp()->emitError("unknown class name ") << className;
@@ -486,6 +729,9 @@ circt::om::Evaluator::evaluateValue(Value value, ActualParameters actualParams,
             })
             .Case([&](ObjectOp op) {
               return evaluateObjectInstance(op, actualParams);
+            })
+            .Case([&](ElaboratedObjectOp op) {
+              return evaluateElaboratedObject(op, actualParams, loc);
             })
             .Case([&](ObjectFieldOp op) {
               return evaluateObjectField(op, actualParams, loc);
@@ -707,6 +953,42 @@ circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
     return failure();
   return evaluateObjectInstance(op.getClassNameAttr(), params.value(), loc,
                                 {op, actualParams});
+}
+
+FailureOr<evaluator::EvaluatorValuePtr>
+circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
+                                               ActualParameters actualParams,
+                                               Location loc) {
+  if (isFullyEvaluated({op, actualParams}))
+    return getOrCreateValue(op, actualParams, loc);
+
+  auto objectValue = getOrCreateValue(op, actualParams, loc);
+  if (failed(objectValue))
+    return failure();
+  if (objectValue.value()->isFullyEvaluated())
+    return objectValue;
+
+  auto classDef = symbolTable.lookup<ClassLike>(op.getClassNameAttr());
+  if (!classDef)
+    return symbolTable.getOp()->emitError("unknown class name ")
+           << op.getClassNameAttr();
+
+  evaluator::ObjectFields fields;
+  for (auto [fieldName, fieldValue] :
+       llvm::zip(classDef.getFieldNames(), op.getFieldValues())) {
+    auto result = getOrCreateValue(fieldValue, actualParams, loc);
+    if (failed(result))
+      return failure();
+
+    if (!result.value()->isFullyEvaluated())
+      worklist.push_back({fieldValue, actualParams});
+
+    fields[cast<StringAttr>(fieldName)] = result.value();
+  }
+
+  cast<evaluator::ObjectValue>(objectValue.value().get())
+      ->setFields(std::move(fields));
+  return objectValue;
 }
 
 /// Evaluator dispatch function for Object fields.

@@ -235,6 +235,191 @@ TEST(EvaluatorTests, InstantiateObjectWithParamField) {
   ASSERT_EQ(fieldValue.getValue().getValue(), 42);
 }
 
+TEST(EvaluatorTests, InstantiateWithElaborationTransform) {
+  StringRef mod = R"MLIR(
+module {
+  om.class @Leaf(%value: !om.integer) -> (value: !om.integer) {
+    om.class.fields %value : !om.integer
+  }
+
+  om.class @Top(%value: !om.integer) -> (value: !om.integer) {
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    %leaf_value = om.object.field %leaf["value"] : (!om.class.type<@Leaf>) -> !om.integer
+    om.class.fields %leaf_value : !om.integer
+  }
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto getOMIntegerValue = [](EvaluatorValuePtr value) {
+    return llvm::cast<evaluator::AttributeValue>(value.get())
+        ->getAs<circt::om::IntegerAttr>()
+        .getValue()
+        .getValue();
+  };
+
+  auto seven = evaluator::AttributeValue::get(
+      circt::om::IntegerAttr::get(
+          &context,
+          mlir::IntegerAttr::get(
+              mlir::IntegerType::get(&context, 8, mlir::IntegerType::Signed),
+              7)),
+      LocationAttr(UnknownLoc::get(&context)));
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {seven});
+  ASSERT_TRUE(succeeded(topResult));
+
+  auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
+  ASSERT_EQ(getOMIntegerValue(top->getField("value").value()), 7);
+}
+
+TEST(EvaluatorTests, InstantiateWithObjectInput) {
+  StringRef mod = R"MLIR(
+module {
+  om.class @Leaf(%value: !om.integer) -> (value: !om.integer) {
+    om.class.fields %value : !om.integer
+  }
+
+  om.class @Input() -> (leaf: !om.class.type<@Leaf>) {
+    %value = om.constant #om.integer<11 : si8> : !om.integer
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    om.class.fields %leaf : !om.class.type<@Leaf>
+  }
+
+  om.class @Top(%leaf: !om.class.type<@Leaf>) -> (value: !om.integer) {
+    %value = om.object.field %leaf["value"] : (!om.class.type<@Leaf>) -> !om.integer
+    om.class.fields %value : !om.integer
+  }
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto inputResult =
+      evaluator.instantiate(StringAttr::get(&context, "Input"), {});
+  ASSERT_TRUE(succeeded(inputResult));
+  auto leaf = llvm::cast<evaluator::ObjectValue>(inputResult.value().get())
+                  ->getField("leaf")
+                  .value();
+
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {leaf});
+  ASSERT_TRUE(succeeded(topResult));
+
+  auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
+  auto fieldValue = llvm::cast<evaluator::AttributeValue>(
+                        top->getField("value").value().get())
+                        ->getAs<circt::om::IntegerAttr>();
+  ASSERT_EQ(fieldValue.getValue().getValue(), 11);
+}
+
+TEST(EvaluatorTests, InstantiateWithAnyObjectInput) {
+  StringRef mod = R"MLIR(
+module {
+  om.class @Leaf(%value: !om.integer) -> (value: !om.integer) {
+    om.class.fields %value : !om.integer
+  }
+
+  om.class @Input() -> (value: !om.any) {
+    %value = om.constant #om.integer<13 : si8> : !om.integer
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    %any = om.any_cast %leaf : (!om.class.type<@Leaf>) -> !om.any
+    om.class.fields %any : !om.any
+  }
+
+  om.class @Top(%value: !om.any) -> (value: !om.any) {
+    om.class.fields %value : !om.any
+  }
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto inputResult =
+      evaluator.instantiate(StringAttr::get(&context, "Input"), {});
+  ASSERT_TRUE(succeeded(inputResult));
+  auto value = llvm::cast<evaluator::ObjectValue>(inputResult.value().get())
+                   ->getField("value")
+                   .value();
+
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {value});
+  ASSERT_TRUE(succeeded(topResult));
+
+  auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
+  auto *fieldValue =
+      llvm::cast<evaluator::ObjectValue>(top->getField("value").value().get());
+  ASSERT_EQ(fieldValue->getClassOp().getSymNameAttr().getValue(), "Leaf");
+}
+
+TEST(EvaluatorTests, InstantiateWithReferenceInput) {
+  StringRef mod = R"MLIR(
+module {
+  om.class @Top(%value: !om.integer) -> (value: !om.integer) {
+    om.class.fields %value : !om.integer
+  }
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto value = evaluator::AttributeValue::get(circt::om::IntegerAttr::get(
+      &context,
+      mlir::IntegerAttr::get(
+          mlir::IntegerType::get(&context, 8, mlir::IntegerType::Signed), 17)));
+  auto ref = std::make_shared<evaluator::ReferenceValue>(
+      circt::om::OMIntegerType::get(&context), UnknownLoc::get(&context));
+  ref->setValue(value);
+
+  context.getDiagEngine().registerHandler([&](Diagnostic &diag) {
+    ASSERT_EQ(diag.str(), "cannot import OM reference value");
+  });
+
+  auto result = evaluator.instantiate(StringAttr::get(&context, "Top"), {ref});
+  ASSERT_TRUE(failed(result));
+}
+
 TEST(EvaluatorTests, InstantiateObjectWithConstantField) {
   DialectRegistry registry;
   registry.insert<OMDialect>();
@@ -662,9 +847,7 @@ om.class @ReferenceEachOther() -> (field: !ty){
   context.getOrLoadDialect<OMDialect>();
 
   context.getDiagEngine().registerHandler([&](Diagnostic &diag) {
-    ASSERT_EQ(diag.str(),
-              "cycle detected: 1 values remain partially evaluated after full "
-              "pass with no progress (total fully evaluated: 1)");
+    ASSERT_EQ(diag.str(), "failed to evaluate om.object.field");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -675,6 +858,56 @@ om.class @ReferenceEachOther() -> (field: !ty){
   auto result = evaluator.instantiate(
       StringAttr::get(&context, "ReferenceEachOther"), {});
 
+  ASSERT_TRUE(failed(result));
+}
+
+TEST(EvaluatorTests, InstantiateWithCyclicObjectInput) {
+  StringRef mod = R"MLIR(
+!ty = !om.class.type<@LinkedList>
+om.class @LinkedList(%n: !ty, %val: !om.string) -> (n: !ty, val:
+!om.string){
+  om.class.fields %n, %val : !ty, !om.string
+}
+om.class @ReferenceEachOther() -> (field1: !ty, field2: !ty) {
+  %str = om.constant "foo" : !om.string
+  %temp1 = om.object.field %1["n"] : (!ty) -> !ty
+  %temp2 = om.object.field %temp1["n"] : (!ty) -> !ty
+  %val = om.object.field %temp2["val"] : (!ty) -> !om.string
+  %0 = om.object @LinkedList(%1, %val) : (!ty, !om.string) -> !ty
+  %1 = om.object @LinkedList(%0, %str) : (!ty, !om.string) -> !ty
+  om.class.fields %0, %1 : !ty, !ty
+}
+om.class @UseNode(%node: !ty) -> (node: !ty) {
+  om.class.fields %node : !ty
+}
+)MLIR";
+
+  DialectRegistry registry;
+  registry.insert<OMDialect>();
+
+  MLIRContext context(registry);
+  context.getOrLoadDialect<OMDialect>();
+
+  OwningOpRef<ModuleOp> owning =
+      parseSourceString<ModuleOp>(mod, ParserConfig(&context));
+  ASSERT_TRUE(owning);
+
+  Evaluator evaluator(owning.release());
+
+  auto graphResult = evaluator.instantiate(
+      StringAttr::get(&context, "ReferenceEachOther"), {});
+  ASSERT_TRUE(succeeded(graphResult));
+
+  auto node = llvm::cast<evaluator::ObjectValue>(graphResult.value().get())
+                  ->getField("field1")
+                  .value();
+
+  context.getDiagEngine().registerHandler([&](Diagnostic &diag) {
+    ASSERT_EQ(diag.str(), "cannot import cyclic OM object value");
+  });
+
+  auto result =
+      evaluator.instantiate(StringAttr::get(&context, "UseNode"), {node});
   ASSERT_TRUE(failed(result));
 }
 
@@ -851,7 +1084,7 @@ om.class @IntegerBinaryArithmeticShrNegative() -> (result: !om.integer){
       ASSERT_EQ(diag.str(),
                 "'om.integer.shr' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shr");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -887,7 +1120,7 @@ om.class @IntegerBinaryArithmeticShrTooLarge() -> (result: !om.integer){
           diag.str(),
           "'om.integer.shr' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shr");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -958,7 +1191,7 @@ om.class @IntegerBinaryArithmeticShlNegative() -> (result: !om.integer) {
       ASSERT_EQ(diag.str(),
                 "'om.integer.shl' op shift amount must be non-negative");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shl");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -994,7 +1227,7 @@ om.class @IntegerBinaryArithmeticShlTooLarge() -> (result: !om.integer) {
           diag.str(),
           "'om.integer.shl' op shift amount must be representable in 64 bits");
     if (StringRef(diag.str()).starts_with("failed"))
-      ASSERT_EQ(diag.str(), "failed to evaluate integer operation");
+      ASSERT_EQ(diag.str(), "failed to evaluate om.integer.shl");
   });
 
   OwningOpRef<ModuleOp> owning =
@@ -1921,6 +2154,11 @@ om.class @ChainedDomainAssert(%basepath: !om.frozenbasepath) -> () {
 
   Evaluator evaluator(owning.release());
 
+  SmallVector<std::string> assertMessages;
+  ScopedDiagnosticHandler diagnosticHandler(&context, [&](Diagnostic &diag) {
+    assertMessages.push_back(diag.str());
+  });
+
   ASSERT_TRUE(
       succeeded(evaluator.instantiate(StringAttr::get(&context, "True"), {})));
 
@@ -1957,6 +2195,17 @@ om.class @ChainedDomainAssert(%basepath: !om.frozenbasepath) -> () {
   auto basepath = std::make_shared<evaluator::BasePathValue>(&context);
   ASSERT_TRUE(failed(evaluator.instantiate(
       StringAttr::get(&context, "ChainedDomainAssert"), {basepath})));
+
+  SmallVector<StringRef> expectedMessages = {
+      "OM property assertion failed: fail!",
+      "OM property assertion failed: input must be true true",
+      "OM property assertion failed: input must be true true",
+      "OM property assertion failed: input must be true true",
+      "OM property assertion failed: input must be true true",
+      "OM property assertion failed: hello"};
+  ASSERT_EQ(assertMessages.size(), expectedMessages.size());
+  for (auto [actual, expected] : llvm::zip(assertMessages, expectedMessages))
+    EXPECT_EQ(actual, expected);
 }
 
 TEST(EvaluatorTests, PropEqTests) {
@@ -2133,9 +2382,9 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
         StringAttr::get(&context, "IntegerBitwiseUnknown"), {unknown});
     ASSERT_TRUE(succeeded(r));
     auto *obj = llvm::cast<evaluator::ObjectValue>(r.value().get());
-    ASSERT_TRUE(obj->getField(StringAttr::get(&context, "unknown"))
-                    .value()
-                    ->isUnknown());
+    ASSERT_FALSE(obj->getField(StringAttr::get(&context, "unknown"))
+                     .value()
+                     ->isUnknown());
   }
 }
 
