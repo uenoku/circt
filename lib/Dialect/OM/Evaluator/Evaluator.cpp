@@ -34,6 +34,54 @@ namespace {
 constexpr StringLiteral skipElaborationTransformAttr =
     "om.skip_elaboration_transform";
 
+LogicalResult verifyActualParameters(ClassLike classLike,
+                                     ArrayRef<EvaluatorValuePtr> actualParams) {
+  auto formalParamNames =
+      classLike.getFormalParamNames().getAsRange<StringAttr>();
+  auto formalParamTypes = classLike.getBodyBlock()->getArgumentTypes();
+
+  if (actualParams.size() != formalParamTypes.size()) {
+    auto error = classLike.emitError("actual parameter list length (")
+                 << actualParams.size() << ") does not match formal "
+                 << "parameter list length (" << formalParamTypes.size() << ")";
+    auto &diag = error.attachNote() << "actual parameters: ";
+    bool isFirst = true;
+    for (const auto &param : actualParams) {
+      if (isFirst)
+        isFirst = false;
+      else
+        diag << ", ";
+      diag << param;
+    }
+    error.attachNote(classLike.getLoc())
+        << "formal parameters: " << formalParamTypes;
+    return failure();
+  }
+
+  for (auto [actualParam, formalParamName, formalParamType] :
+       llvm::zip(actualParams, formalParamNames, formalParamTypes)) {
+    if (!actualParam || !actualParam.get())
+      return classLike.emitError("actual parameter for ")
+             << formalParamName << " is null";
+
+    // Subtyping: if formal param is any type, any actual param may be passed.
+    if (isa<AnyType>(formalParamType))
+      continue;
+
+    Type actualParamType = actualParam->getType();
+    assert(actualParamType && "actualParamType must be non-null!");
+
+    if (actualParamType != formalParamType) {
+      auto error = classLike.emitError("actual parameter for ")
+                   << formalParamName << " has invalid type";
+      error.attachNote() << "actual parameter: " << *actualParam;
+      error.attachNote() << "format parameter type: " << formalParamType;
+      return failure();
+    }
+  }
+  return success();
+}
+
 class ScratchIRBuilder {
 public:
   struct InstantiationInfo {
@@ -93,56 +141,6 @@ public:
   }
 
 private:
-  LogicalResult
-  verifyActualParameters(ClassLike classLike,
-                         ArrayRef<EvaluatorValuePtr> actualParams) {
-    auto formalParamNames =
-        classLike.getFormalParamNames().getAsRange<StringAttr>();
-    auto formalParamTypes = classLike.getBodyBlock()->getArgumentTypes();
-
-    if (actualParams.size() != formalParamTypes.size()) {
-      auto error = classLike.emitError("actual parameter list length (")
-                   << actualParams.size() << ") does not match formal "
-                   << "parameter list length (" << formalParamTypes.size()
-                   << ")";
-      auto &diag = error.attachNote() << "actual parameters: ";
-      bool isFirst = true;
-      for (const auto &param : actualParams) {
-        if (isFirst)
-          isFirst = false;
-        else
-          diag << ", ";
-        diag << param;
-      }
-      error.attachNote(classLike.getLoc())
-          << "formal parameters: " << formalParamTypes;
-      return failure();
-    }
-
-    for (auto [actualParam, formalParamName, formalParamType] :
-         llvm::zip(actualParams, formalParamNames, formalParamTypes)) {
-      if (!actualParam || !actualParam.get())
-        return classLike.emitError("actual parameter for ")
-               << formalParamName << " is null";
-
-      // Subtyping: if formal param is any type, any actual param may be passed.
-      if (isa<AnyType>(formalParamType))
-        continue;
-
-      Type actualParamType = actualParam->getType();
-      assert(actualParamType && "actualParamType must be non-null!");
-
-      if (actualParamType != formalParamType) {
-        auto error = classLike.emitError("actual parameter for ")
-                     << formalParamName << " has invalid type";
-        error.attachNote() << "actual parameter: " << *actualParam;
-        error.attachNote() << "format parameter type: " << formalParamType;
-        return failure();
-      }
-    }
-    return success();
-  }
-
   FailureOr<std::string> createWrapperClass(Location loc) {
     SymbolTable symbols(sourceModule);
     builder.setInsertionPointToEnd(sourceModule.getBody());
@@ -472,51 +470,8 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
   // Otherwise, it's a regular class, proceed normally
   ClassOp cls = cast<ClassOp>(classDef);
 
-  auto formalParamNames = cls.getFormalParamNames().getAsRange<StringAttr>();
-  auto formalParamTypes = cls.getBodyBlock()->getArgumentTypes();
-
-  // Verify the actual parameters are the right size and types for this class.
-  if (actualParams->size() != formalParamTypes.size()) {
-    auto error = cls.emitError("actual parameter list length (")
-                 << actualParams->size() << ") does not match formal "
-                 << "parameter list length (" << formalParamTypes.size() << ")";
-    auto &diag = error.attachNote() << "actual parameters: ";
-    // FIXME: `diag << actualParams` doesn't work for some reason.
-    bool isFirst = true;
-    for (const auto &param : *actualParams) {
-      if (isFirst)
-        isFirst = false;
-      else
-        diag << ", ";
-      diag << param;
-    }
-    error.attachNote(cls.getLoc()) << "formal parameters: " << formalParamTypes;
-    return error;
-  }
-
-  // Verify the actual parameter types match.
-  for (auto [actualParam, formalParamName, formalParamType] :
-       llvm::zip(*actualParams, formalParamNames, formalParamTypes)) {
-    if (!actualParam || !actualParam.get())
-      return cls.emitError("actual parameter for ")
-             << formalParamName << " is null";
-
-    // Subtyping: if formal param is any type, any actual param may be passed.
-    if (isa<AnyType>(formalParamType))
-      continue;
-
-    Type actualParamType = actualParam->getType();
-
-    assert(actualParamType && "actualParamType must be non-null!");
-
-    if (actualParamType != formalParamType) {
-      auto error = cls.emitError("actual parameter for ")
-                   << formalParamName << " has invalid type";
-      error.attachNote() << "actual parameter: " << *actualParam;
-      error.attachNote() << "format parameter type: " << formalParamType;
-      return error;
-    }
-  }
+  if (failed(verifyActualParameters(cls, *actualParams)))
+    return failure();
 
   // Instantiate the fields.
   evaluator::ObjectFields fields;

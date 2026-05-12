@@ -291,6 +291,12 @@ module {
     om.class.fields %value : !om.integer
   }
 
+  om.class @Input() -> (leaf: !om.class.type<@Leaf>) {
+    %value = om.constant #om.integer<11 : si8> : !om.integer
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    om.class.fields %leaf : !om.class.type<@Leaf>
+  }
+
   om.class @Top(%leaf: !om.class.type<@Leaf>) -> (value: !om.integer) {
     %value = om.object.field %leaf["value"] : (!om.class.type<@Leaf>) -> !om.integer
     om.class.fields %value : !om.integer
@@ -310,17 +316,15 @@ module {
 
   Evaluator evaluator(owning.release());
 
-  auto value = evaluator::AttributeValue::get(circt::om::IntegerAttr::get(
-      &context,
-      mlir::IntegerAttr::get(
-          mlir::IntegerType::get(&context, 8, mlir::IntegerType::Signed), 11)));
+  auto inputResult =
+      evaluator.instantiate(StringAttr::get(&context, "Input"), {});
+  ASSERT_TRUE(succeeded(inputResult));
+  auto leaf = llvm::cast<evaluator::ObjectValue>(inputResult.value().get())
+                  ->getField("leaf")
+                  .value();
 
-  auto leafResult =
-      evaluator.instantiate(StringAttr::get(&context, "Leaf"), {value});
-  ASSERT_TRUE(succeeded(leafResult));
-
-  auto topResult = evaluator.instantiate(StringAttr::get(&context, "Top"),
-                                         {leafResult.value()});
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {leaf});
   ASSERT_TRUE(succeeded(topResult));
 
   auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
@@ -335,6 +339,13 @@ TEST(EvaluatorTests, InstantiateWithAnyObjectInput) {
 module {
   om.class @Leaf(%value: !om.integer) -> (value: !om.integer) {
     om.class.fields %value : !om.integer
+  }
+
+  om.class @Input() -> (value: !om.any) {
+    %value = om.constant #om.integer<13 : si8> : !om.integer
+    %leaf = om.object @Leaf(%value) : (!om.integer) -> !om.class.type<@Leaf>
+    %any = om.any_cast %leaf : (!om.class.type<@Leaf>) -> !om.any
+    om.class.fields %any : !om.any
   }
 
   om.class @Top(%value: !om.any) -> (value: !om.any) {
@@ -355,17 +366,15 @@ module {
 
   Evaluator evaluator(owning.release());
 
-  auto value = evaluator::AttributeValue::get(circt::om::IntegerAttr::get(
-      &context,
-      mlir::IntegerAttr::get(
-          mlir::IntegerType::get(&context, 8, mlir::IntegerType::Signed), 13)));
+  auto inputResult =
+      evaluator.instantiate(StringAttr::get(&context, "Input"), {});
+  ASSERT_TRUE(succeeded(inputResult));
+  auto value = llvm::cast<evaluator::ObjectValue>(inputResult.value().get())
+                   ->getField("value")
+                   .value();
 
-  auto leafResult =
-      evaluator.instantiate(StringAttr::get(&context, "Leaf"), {value});
-  ASSERT_TRUE(succeeded(leafResult));
-
-  auto topResult = evaluator.instantiate(StringAttr::get(&context, "Top"),
-                                         {leafResult.value()});
+  auto topResult =
+      evaluator.instantiate(StringAttr::get(&context, "Top"), {value});
   ASSERT_TRUE(succeeded(topResult));
 
   auto *top = llvm::cast<evaluator::ObjectValue>(topResult.value().get());
