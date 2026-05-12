@@ -18,6 +18,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
@@ -60,8 +61,9 @@ public:
     builder.setInsertionPoint(wrapperClass.getFieldsOp());
     SmallVector<Value> importedActualValues;
     importedActualValues.reserve(actualParams.size());
-    for (auto &actual : actualParams) {
-      auto imported = materializeInput(actual, unknownLoc);
+    for (auto [actual, formalType] : llvm::zip(
+             actualParams, rootClass.getBodyBlock()->getArgumentTypes())) {
+      auto imported = materializeInput(actual, unknownLoc, formalType);
       if (failed(imported))
         return failure();
       importedActualValues.push_back(*imported);
@@ -151,15 +153,28 @@ private:
     return wrapperName;
   }
 
-  FailureOr<Value> materializeInput(EvaluatorValuePtr value, Location loc) {
+  FailureOr<Value> materializeInput(EvaluatorValuePtr value, Location loc,
+                                    Type expectedType = {}) {
     if (!value)
       return emitError(loc, "cannot materialize null OM evaluator value");
+
+    if (isa<evaluator::ReferenceValue>(value.get()))
+      return emitError(loc, "cannot import OM reference value");
+
+    // Keep aggregate runtime containers opaque at the wrapper boundary. In
+    // particular, `om.any` and `om.list` may hide object values that cannot be
+    // faithfully reified without deeper type-specific import support.
+    if (expectedType && isa<AnyType, ListType>(expectedType))
+      return createWrapperArgument(value, loc, expectedType);
+    if (!expectedType && isa<AnyType, ListType>(value->getType()))
+      return createWrapperArgument(value, loc);
 
     if (auto it = importedValues.find(value.get()); it != importedValues.end())
       return it->second;
 
     if (value->isUnknown()) {
-      auto result = UnknownValueOp::create(builder, loc, value->getType());
+      auto result = UnknownValueOp::create(
+          builder, loc, expectedType ? expectedType : value->getType());
       importedValues[value.get()] = result.getResult();
       return result.getResult();
     }
@@ -173,21 +188,55 @@ private:
       }
     }
 
+    if (auto *objectValue = dyn_cast<evaluator::ObjectValue>(value.get()))
+      return materializeObjectInput(objectValue, loc);
+
     auto result = createWrapperArgument(value, loc);
     if (succeeded(result))
       importedValues[value.get()] = *result;
     return result;
   }
 
-  FailureOr<Value> createWrapperArgument(EvaluatorValuePtr value,
-                                         Location loc) {
+  FailureOr<Value> materializeObjectInput(evaluator::ObjectValue *objectValue,
+                                          Location loc) {
+    if (!activeObjectImports.insert(objectValue).second)
+      return emitError(loc, "cannot import cyclic OM object value");
+
+    llvm::scope_exit popActiveObjectImport(
+        [&] { activeObjectImports.erase(objectValue); });
+
+    auto classLike = objectValue->getClassOp();
+    SmallVector<Value> fieldValues;
+    auto fieldNames = classLike.getFieldNames();
+    fieldValues.reserve(fieldNames.size());
+    for (auto fieldName : fieldNames) {
+      auto fieldNameAttr = cast<StringAttr>(fieldName);
+      auto field = objectValue->getField(fieldNameAttr);
+      if (failed(field))
+        return failure();
+      auto materializedField = materializeInput(
+          field.value(), loc, classLike.getFieldType(fieldNameAttr).value());
+      if (failed(materializedField))
+        return failure();
+      fieldValues.push_back(*materializedField);
+    }
+
+    auto result =
+        ElaboratedObjectOp::create(builder, loc, classLike, fieldValues);
+    importedValues[objectValue] = result.getResult();
+    return result.getResult();
+  }
+
+  FailureOr<Value> createWrapperArgument(EvaluatorValuePtr value, Location loc,
+                                         Type argType = {}) {
     auto argName = ("arg" + Twine(wrapperArgCount++)).str();
     SmallVector<Attribute> formalParamNames(
         wrapperClass.getFormalParamNames().getValue());
     formalParamNames.push_back(builder.getStringAttr(argName));
     wrapperClass->setAttr(wrapperClass.getFormalParamNamesAttrName(),
                           builder.getArrayAttr(formalParamNames));
-    auto arg = wrapperClass.getBodyBlock()->addArgument(value->getType(), loc);
+    auto arg = wrapperClass.getBodyBlock()->addArgument(
+        argType ? argType : value->getType(), loc);
     wrapperActualParams.push_back(value);
     return arg;
   }
@@ -198,6 +247,7 @@ private:
   ClassOp wrapperClass;
   unsigned wrapperArgCount = 0;
   DenseMap<evaluator::EvaluatorValue *, Value> importedValues;
+  SmallPtrSet<evaluator::ObjectValue *, 8> activeObjectImports;
   SmallVector<EvaluatorValuePtr> wrapperActualParams;
 };
 
