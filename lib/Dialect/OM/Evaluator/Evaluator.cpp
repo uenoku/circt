@@ -16,6 +16,7 @@
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -61,9 +62,11 @@ public:
     builder.setInsertionPoint(wrapperClass.getFieldsOp());
     SmallVector<Value> importedActualValues;
     importedActualValues.reserve(actualParams.size());
-    for (auto [actual, formalType] : llvm::zip(
-             actualParams, rootClass.getBodyBlock()->getArgumentTypes())) {
-      auto imported = materializeInput(actual, unknownLoc, formalType);
+    auto formalTypes = rootClass.getBodyBlock()->getArgumentTypes();
+    for (auto [index, actual] : llvm::enumerate(actualParams)) {
+      Type expectedType =
+          index < formalTypes.size() ? formalTypes[index] : Type{};
+      auto imported = materializeInput(actual, unknownLoc, expectedType);
       if (failed(imported))
         return failure();
       importedActualValues.push_back(*imported);
@@ -74,6 +77,9 @@ public:
                                        rootClassName, importedActualValues);
     wrapperClass.updateFields({unknownLoc}, {rootObject.getResult()},
                               {builder.getStringAttr("root")});
+
+    if (failed(verify(sourceModule)))
+      return failure();
 
     PassManager pm(ctx);
     ElaborateObjectOptions options;

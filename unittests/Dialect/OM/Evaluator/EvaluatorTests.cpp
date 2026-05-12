@@ -70,8 +70,10 @@ TEST(EvaluatorTests, InstantiateInvalidParamSize) {
   builder.setInsertionPointToStart(&mod.getBodyRegion().front());
   StringRef params[] = {"param"};
   auto cls = ClassOp::create(builder, "MyClass", params);
-  cls.getBody().emplaceBlock().addArgument(
-      circt::om::OMIntegerType::get(&context), cls.getLoc());
+  auto &body = cls.getBody().emplaceBlock();
+  body.addArgument(circt::om::OMIntegerType::get(&context), cls.getLoc());
+  builder.setInsertionPointToStart(&body);
+  ClassFieldsOp::create(builder, loc, ValueRange{}, ArrayAttr{});
 
   Evaluator evaluator(mod);
 
@@ -103,8 +105,10 @@ TEST(EvaluatorTests, InstantiateNullParam) {
   builder.setInsertionPointToStart(&mod.getBodyRegion().front());
   StringRef params[] = {"param"};
   auto cls = ClassOp::create(builder, "MyClass", params);
-  cls.getBody().emplaceBlock().addArgument(
-      circt::om::OMIntegerType::get(&context), cls.getLoc());
+  auto &body = cls.getBody().emplaceBlock();
+  body.addArgument(circt::om::OMIntegerType::get(&context), cls.getLoc());
+  builder.setInsertionPointToStart(&body);
+  ClassFieldsOp::create(builder, loc, ValueRange{}, ArrayAttr{});
 
   Evaluator evaluator(mod);
 
@@ -134,8 +138,10 @@ TEST(EvaluatorTests, InstantiateInvalidParamType) {
   builder.setInsertionPointToStart(&mod.getBodyRegion().front());
   StringRef params[] = {"param"};
   auto cls = ClassOp::create(builder, "MyClass", params);
-  cls.getBody().emplaceBlock().addArgument(
-      circt::om::OMIntegerType::get(&context), cls.getLoc());
+  auto &body = cls.getBody().emplaceBlock();
+  body.addArgument(circt::om::OMIntegerType::get(&context), cls.getLoc());
+  builder.setInsertionPointToStart(&body);
+  ClassFieldsOp::create(builder, loc, ValueRange{}, ArrayAttr{});
 
   Evaluator evaluator(mod);
 
