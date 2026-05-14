@@ -49,6 +49,11 @@ enum HWAttributeCode {
   kInnerSymAttr = 2,
 };
 
+enum HWTypeCode {
+  kModuleType = 0,
+  kInOutType = 1,
+};
+
 struct HWBytecodeDialectInterface : public mlir::BytecodeDialectInterface {
   using BytecodeDialectInterface::BytecodeDialectInterface;
 
@@ -110,6 +115,64 @@ struct HWBytecodeDialectInterface : public mlir::BytecodeDialectInterface {
     if (auto innerSym = dyn_cast<InnerSymAttr>(attr)) {
       writer.writeVarInt(kInnerSymAttr);
       writer.writeAttributes(innerSym.getProps());
+      return success();
+    }
+
+    return failure();
+  }
+
+  Type readType(mlir::DialectBytecodeReader &reader) const final {
+    uint64_t code;
+    if (failed(reader.readVarInt(code)))
+      return {};
+
+    MLIRContext *context = getContext();
+    switch (code) {
+    case kModuleType: {
+      SmallVector<ModulePort> ports;
+      if (failed(reader.readList(ports, [&](ModulePort &port) {
+            uint64_t dir;
+            if (failed(reader.readOptionalAttribute(port.name)) ||
+                failed(reader.readType(port.type)) ||
+                failed(reader.readVarInt(dir)))
+              return failure();
+            if (dir > ModulePort::Direction::InOut) {
+              reader.emitError() << "unknown hw module port direction: " << dir;
+              return failure();
+            }
+            port.dir = static_cast<ModulePort::Direction>(dir);
+            return success();
+          })))
+        return {};
+      return ModuleType::get(context, ports);
+    }
+    case kInOutType: {
+      Type elementType;
+      if (failed(reader.readType(elementType)))
+        return {};
+      return InOutType::get(elementType);
+    }
+    default:
+      reader.emitError() << "unknown hw type code: " << code;
+      return {};
+    }
+  }
+
+  LogicalResult writeType(Type type,
+                          mlir::DialectBytecodeWriter &writer) const final {
+    if (auto moduleType = dyn_cast<ModuleType>(type)) {
+      writer.writeVarInt(kModuleType);
+      writer.writeList(moduleType.getPorts(), [&](const ModulePort &port) {
+        writer.writeOptionalAttribute(port.name);
+        writer.writeType(port.type);
+        writer.writeVarInt(port.dir);
+      });
+      return success();
+    }
+
+    if (auto inOutType = dyn_cast<InOutType>(type)) {
+      writer.writeVarInt(kInOutType);
+      writer.writeType(inOutType.getElementType());
       return success();
     }
 

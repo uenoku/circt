@@ -6,11 +6,13 @@ sv.macro.decl @FOO
 sv.ifdef @FOO {
 }
 
-// CHECK-LABEL: hw.module @Child
-hw.module @Child(in %in: !hw.struct<a: i1>) {
+// CHECK-LABEL: hw.module @Child(in %in : !hw.struct<a: i1>, inout %bus : i1, out out : !hw.struct<a: i1>) {
+hw.module @Child(in %in: !hw.struct<a: i1>, inout %bus: i1, out out: !hw.struct<a: i1>) {
   // CHECK: hw.wire %in sym [<@wire,1,private>] : !hw.struct<a: i1>
   %wire = hw.wire %in sym [<@wire, 1, private>] : !hw.struct<a: i1>
-  hw.output
+  // CHECK: sv.wire : !hw.inout<i1>
+  %direct_inout = sv.wire : !hw.inout<i1>
+  hw.output %wire : !hw.struct<a: i1>
 }
 
 // CHECK-LABEL: hw.module @Top
