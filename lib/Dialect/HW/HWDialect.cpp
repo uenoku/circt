@@ -14,6 +14,7 @@
 #include "circt/Dialect/HW/HWAttributes.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWTypes.h"
+#include "mlir/Bytecode/BytecodeImplementation.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -40,6 +41,80 @@ struct HWOpAsmDialectInterface : public OpAsmDialectInterface {
   /// Get a special name to use when printing the given operation. See
   /// OpAsmInterface.td#getAsmResultNames for usage details and documentation.
   void getAsmResultNames(Operation *op, OpAsmSetValueNameFn setNameFn) const {}
+};
+
+enum HWAttributeCode {
+  kInnerRefAttr = 0,
+  kInnerSymPropertiesAttr = 1,
+  kInnerSymAttr = 2,
+};
+
+struct HWBytecodeDialectInterface : public mlir::BytecodeDialectInterface {
+  using BytecodeDialectInterface::BytecodeDialectInterface;
+
+  Attribute readAttribute(mlir::DialectBytecodeReader &reader) const final {
+    uint64_t code;
+    if (failed(reader.readVarInt(code)))
+      return {};
+
+    MLIRContext *context = getContext();
+    switch (code) {
+    case kInnerRefAttr: {
+      StringRef module, name;
+      if (failed(reader.readString(module)) || failed(reader.readString(name)))
+        return {};
+      return InnerRefAttr::get(StringAttr::get(context, module),
+                               StringAttr::get(context, name));
+    }
+    case kInnerSymPropertiesAttr: {
+      StringRef name, symVisibility;
+      uint64_t fieldID;
+      if (failed(reader.readString(name)) ||
+          failed(reader.readVarInt(fieldID)) ||
+          failed(reader.readString(symVisibility)))
+        return {};
+      return InnerSymPropertiesAttr::get(
+          context, StringAttr::get(context, name), fieldID,
+          StringAttr::get(context, symVisibility));
+    }
+    case kInnerSymAttr: {
+      SmallVector<InnerSymPropertiesAttr> props;
+      if (failed(reader.readAttributes(props)))
+        return {};
+      return InnerSymAttr::get(context, props);
+    }
+    default:
+      reader.emitError() << "unknown hw attribute code: " << code;
+      return {};
+    }
+  }
+
+  LogicalResult
+  writeAttribute(Attribute attr,
+                 mlir::DialectBytecodeWriter &writer) const final {
+    if (auto innerRef = dyn_cast<InnerRefAttr>(attr)) {
+      writer.writeVarInt(kInnerRefAttr);
+      writer.writeOwnedString(innerRef.getModule().getValue());
+      writer.writeOwnedString(innerRef.getName().getValue());
+      return success();
+    }
+
+    if (auto props = dyn_cast<InnerSymPropertiesAttr>(attr)) {
+      writer.writeVarInt(kInnerSymPropertiesAttr);
+      writer.writeOwnedString(props.getName().getValue());
+      writer.writeVarInt(props.getFieldID());
+      writer.writeOwnedString(props.getSymVisibility().getValue());
+      return success();
+    }
+
+    if (auto innerSym = dyn_cast<InnerSymAttr>(attr)) {
+      writer.writeVarInt(kInnerSymAttr);
+      writer.writeAttributes(innerSym.getProps());
+      return success();
+    }
+
+    return failure();
+  }
 };
 } // end anonymous namespace
 
@@ -78,7 +153,8 @@ void HWDialect::initialize() {
       >();
 
   // Register interface implementations.
-  addInterfaces<HWOpAsmDialectInterface, HWInlinerInterface>();
+  addInterfaces<HWOpAsmDialectInterface, HWInlinerInterface,
+                HWBytecodeDialectInterface>();
 }
 
 /// Registered hook to materialize a single constant operation from a given

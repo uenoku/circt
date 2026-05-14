@@ -12,9 +12,11 @@
 
 #include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/SV/SVAttributes.h"
 #include "circt/Dialect/SV/SVOps.h"
 #include "circt/Dialect/SV/SVTypes.h"
 
+#include "mlir/Bytecode/BytecodeImplementation.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
@@ -24,6 +26,47 @@
 
 using namespace circt;
 using namespace circt::sv;
+
+namespace {
+enum SVAttributeCode {
+  kMacroIdentAttr = 0,
+};
+
+struct SVBytecodeDialectInterface : public mlir::BytecodeDialectInterface {
+  using BytecodeDialectInterface::BytecodeDialectInterface;
+
+  Attribute readAttribute(mlir::DialectBytecodeReader &reader) const final {
+    uint64_t code;
+    if (failed(reader.readVarInt(code)))
+      return {};
+
+    MLIRContext *context = getContext();
+    switch (code) {
+    case kMacroIdentAttr: {
+      StringRef ident;
+      if (failed(reader.readString(ident)))
+        return {};
+      return MacroIdentAttr::get(StringAttr::get(context, ident));
+    }
+    default:
+      reader.emitError() << "unknown sv attribute code: " << code;
+      return {};
+    }
+  }
+
+  LogicalResult
+  writeAttribute(Attribute attr,
+                 mlir::DialectBytecodeWriter &writer) const final {
+    if (auto macroIdent = dyn_cast<MacroIdentAttr>(attr)) {
+      writer.writeVarInt(kMacroIdentAttr);
+      writer.writeOwnedString(macroIdent.getIdent().getValue());
+      return success();
+    }
+
+    return failure();
+  }
+};
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Dialect specification.
@@ -39,6 +82,8 @@ void SVDialect::initialize() {
 #define GET_OP_LIST
 #include "circt/Dialect/SV/SV.cpp.inc"
       >();
+
+  addInterfaces<SVBytecodeDialectInterface>();
 }
 
 #define GET_ATTRDEF_CLASSES
