@@ -12,10 +12,81 @@
 
 #include "circt/Dialect/OM/OMDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/OM/OMAttributes.h"
 #include "circt/Dialect/OM/OMOps.h"
+#include "mlir/Bytecode/BytecodeImplementation.h"
 #include "mlir/IR/Builders.h"
 
 #include "circt/Dialect/OM/OMDialect.cpp.inc"
+
+namespace {
+enum OMAttributeCode {
+  kPathAttr = 0,
+  kIntegerAttr = 1,
+};
+
+struct OMBytecodeDialectInterface : public mlir::BytecodeDialectInterface {
+  using BytecodeDialectInterface::BytecodeDialectInterface;
+
+  mlir::Attribute
+  readAttribute(mlir::DialectBytecodeReader &reader) const final {
+    uint64_t code;
+    if (mlir::failed(reader.readVarInt(code)))
+      return {};
+
+    auto *context = getContext();
+    switch (code) {
+    case kPathAttr: {
+      llvm::SmallVector<circt::om::PathElement> path;
+      uint64_t size;
+      if (mlir::failed(reader.readVarInt(size)))
+        return {};
+      path.reserve(size);
+      for (uint64_t i = 0; i != size; ++i) {
+        mlir::StringAttr module;
+        mlir::StringAttr instance;
+        if (mlir::failed(reader.readAttribute(module)) ||
+            mlir::failed(reader.readAttribute(instance)))
+          return {};
+        path.emplace_back(module, instance);
+      }
+      return circt::om::PathAttr::get(context, path);
+    }
+    case kIntegerAttr: {
+      mlir::IntegerAttr value;
+      if (mlir::failed(reader.readAttribute(value)))
+        return {};
+      return circt::om::IntegerAttr::get(context, value);
+    }
+    default:
+      reader.emitError() << "unknown om attribute code: " << code;
+      return {};
+    }
+  }
+
+  mlir::LogicalResult
+  writeAttribute(mlir::Attribute attr,
+                 mlir::DialectBytecodeWriter &writer) const final {
+    if (auto path = mlir::dyn_cast<circt::om::PathAttr>(attr)) {
+      writer.writeVarInt(kPathAttr);
+      writer.writeList(path.getPath(),
+                       [&](const circt::om::PathElement &element) {
+                         writer.writeAttribute(element.module);
+                         writer.writeAttribute(element.instance);
+                       });
+      return mlir::success();
+    }
+
+    if (auto integer = mlir::dyn_cast<circt::om::IntegerAttr>(attr)) {
+      writer.writeVarInt(kIntegerAttr);
+      writer.writeAttribute(integer.getValue());
+      return mlir::success();
+    }
+
+    return mlir::failure();
+  }
+};
+} // namespace
 
 void circt::om::OMDialect::initialize() {
   addOperations<
@@ -25,6 +96,7 @@ void circt::om::OMDialect::initialize() {
 
   registerTypes();
   registerAttributes();
+  addInterfaces<OMBytecodeDialectInterface>();
 }
 
 mlir::Operation *
