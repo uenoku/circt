@@ -389,7 +389,7 @@ TEST_F(FlatTimingTest, ReportsCriticalTimingPath) {
   EXPECT_TRUE(StringRef(report).contains("via root_output"));
 }
 
-TEST_F(FlatTimingTest, SpeculatesCriticalPathReplacementArrival) {
+TEST_F(FlatTimingTest, SpeculatesWorstEndpointReplacementArrival) {
   auto module = parse(propagationIR);
   ASSERT_TRUE(module);
   auto hwModule = getModule(*module, "prop");
@@ -400,33 +400,39 @@ TEST_F(FlatTimingTest, SpeculatesCriticalPathReplacementArrival) {
 
   auto context = TimingSpeculationContext::create(network);
   ASSERT_TRUE(succeeded(context));
-  EXPECT_EQ(context->getCriticalPath().delay, 3);
+  EXPECT_EQ(context->getWorstEndpointDelay(), 3);
 
   auto xorOp = *hwModule.getOps<comb::XorOp>().begin();
   auto xorArrival = context->getArrival(xorOp.getResult(), 0);
   ASSERT_TRUE(succeeded(xorArrival));
   EXPECT_EQ(*xorArrival, 3);
-  EXPECT_TRUE(context->isOnCriticalPath(xorOp.getResult(), 0));
+  EXPECT_TRUE(context->isOnWorstEndpointPath(xorOp.getResult(), 0));
 
   TimingArrivalReplacement replacement;
   replacement.value = xorOp.getResult();
   replacement.bit = 0;
   replacement.arrival = 1;
-  auto speculation = context->speculateCriticalPathDelay(replacement);
+  auto endpointDelay =
+      context->speculateEndpointDelay(context->getWorstEndpointPath().end,
+                                      replacement);
+  ASSERT_TRUE(succeeded(endpointDelay));
+  EXPECT_EQ(*endpointDelay, 1);
+
+  auto speculation = context->speculateWorstEndpointDelay(replacement);
   ASSERT_TRUE(succeeded(speculation));
-  EXPECT_TRUE(speculation->affectedCriticalPath);
+  EXPECT_TRUE(speculation->affectedWorstEndpointPath);
   EXPECT_EQ(speculation->baselineDelay, 3);
   EXPECT_EQ(speculation->oldArrival, 3);
   EXPECT_EQ(speculation->newArrival, 1);
   EXPECT_EQ(speculation->predictedDelay, 1);
 
   auto fastAnd = *hwModule.getOps<comb::AndOp>().begin();
-  EXPECT_FALSE(context->isOnCriticalPath(fastAnd.getResult(), 0));
+  EXPECT_FALSE(context->isOnWorstEndpointPath(fastAnd.getResult(), 0));
   replacement.value = fastAnd.getResult();
   replacement.arrival = 0;
-  auto unaffected = context->speculateCriticalPathDelay(replacement);
+  auto unaffected = context->speculateWorstEndpointDelay(replacement);
   ASSERT_TRUE(succeeded(unaffected));
-  EXPECT_FALSE(unaffected->affectedCriticalPath);
+  EXPECT_FALSE(unaffected->affectedWorstEndpointPath);
   EXPECT_EQ(unaffected->predictedDelay, 3);
 }
 

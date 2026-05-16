@@ -76,10 +76,11 @@ struct TimingGuidedRewriteState {
     auto speculation = timingv2::TimingSpeculationContext::create(*network,
                                                                   options);
     if (llvm::failed(speculation)) {
-      mlir::emitError(loc) << "failed to reconstruct TimingV2 critical path";
+      mlir::emitError(loc)
+          << "failed to reconstruct TimingV2 worst endpoint path";
       return mlir::failure();
     }
-    return speculation->getCriticalPath().delay;
+    return speculation->getWorstEndpointDelay();
   }
 
   mlir::LogicalResult repair(mlir::Location loc) {
@@ -250,7 +251,7 @@ speculatePriorityMuxBalance(TimingGuidedRewriteState &state, MuxOp rootMux,
     replacements.push_back({result, bit, *newArrival});
   }
 
-  auto speculation = context->speculateCriticalPathDelay(replacements);
+  auto speculation = context->speculateWorstEndpointDelay(replacements);
   if (llvm::failed(speculation))
     return mlir::failure();
   return MuxBalanceSpeculation{speculation->baselineDelay,

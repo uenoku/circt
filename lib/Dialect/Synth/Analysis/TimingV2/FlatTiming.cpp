@@ -782,22 +782,66 @@ TimingSpeculationContext::getArrival(Value value, uint32_t bit) const {
   return state->arrival;
 }
 
-bool TimingSpeculationContext::isOnCriticalPath(Value value,
-                                                uint32_t bit) const {
+bool TimingSpeculationContext::isOnWorstEndpointPath(Value value,
+                                                     uint32_t bit) const {
   auto id = network.findValueBit(value, bit);
   if (!id.isValid())
     return false;
-  return llvm::any_of(criticalPath.steps, [&](ReconstructedTimingStep step) {
-    return step.point == id;
-  });
+  return llvm::any_of(worstEndpointPath.steps,
+                      [&](ReconstructedTimingStep step) {
+                        return step.point == id;
+                      });
 }
 
-FailureOr<TimingCriticalPathSpeculation>
-TimingSpeculationContext::speculateCriticalPathDelay(
+FailureOr<int64_t> TimingSpeculationContext::speculateEndpointDelay(
+    TimingPointId endpoint,
     ArrayRef<TimingArrivalReplacement> replacements) const {
-  TimingCriticalPathSpeculation speculation;
-  speculation.baselineDelay = criticalPath.delay;
-  speculation.predictedDelay = criticalPath.delay;
+  DenseMap<TimingPointId, int64_t> replacementArrivals;
+  for (const auto &replacement : replacements) {
+    auto point = network.findValueBit(replacement.value, replacement.bit);
+    if (!point.isValid())
+      return failure();
+    auto *state = propagation.getState(point);
+    if (!state || !state->hasArrival)
+      return failure();
+    replacementArrivals[point] = replacement.arrival;
+  }
+
+  TimingPathReconstructor reconstructor(network, propagation);
+  auto path = reconstructor.reconstructTo(endpoint);
+  if (!path)
+    return failure();
+
+  auto *endpointState = propagation.getState(endpoint);
+  if (!endpointState || !endpointState->hasArrival)
+    return failure();
+
+  TimingPointId selectedPoint;
+  int64_t selectedReplacementArrival = 0;
+  for (auto step : path->steps) {
+    auto replacement = replacementArrivals.find(step.point);
+    if (replacement == replacementArrivals.end())
+      continue;
+    selectedPoint = step.point;
+    selectedReplacementArrival = replacement->second;
+  }
+
+  if (!selectedPoint.isValid())
+    return endpointState->arrival;
+
+  auto *selectedState = propagation.getState(selectedPoint);
+  if (!selectedState || !selectedState->hasArrival)
+    return failure();
+  return endpointState->arrival - selectedState->arrival +
+         selectedReplacementArrival;
+}
+
+FailureOr<TimingEndpointSpeculation>
+TimingSpeculationContext::speculateWorstEndpointDelay(
+    ArrayRef<TimingArrivalReplacement> replacements) const {
+  TimingEndpointSpeculation speculation;
+  speculation.baselineDelay = worstEndpointPath.delay;
+  speculation.predictedDelay = worstEndpointPath.delay;
 
   DenseMap<TimingPointId, int64_t> replacementArrivals;
   for (const auto &replacement : replacements) {
@@ -840,8 +884,8 @@ TimingSpeculationContext::speculateCriticalPathDelay(
           endpointState->arrival - selectedState->arrival +
           selectedReplacementArrival;
 
-      if (endpointState->arrival == criticalPath.delay) {
-        speculation.affectedCriticalPath = true;
+      if (endpointState->arrival == worstEndpointPath.delay) {
+        speculation.affectedWorstEndpointPath = true;
         speculation.affectedPoint = selectedPoint;
         speculation.oldArrival = selectedState->arrival;
         speculation.newArrival = selectedReplacementArrival;

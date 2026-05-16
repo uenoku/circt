@@ -586,9 +586,9 @@ private:
 };
 
 /// One side-effect-free arrival replacement used for timing-guided rewrite
-/// speculation. A transform computes the predicted arrival for a value bit
-/// after a candidate rewrite, without first mutating IR, and asks TimingV2 to
-/// estimate the impact on the currently reconstructed critical path.
+/// speculation. A transform computes the predicted arrival for a value bit after
+/// a candidate rewrite, without first mutating IR, and asks TimingV2 to estimate
+/// the impact on endpoint arrivals.
 struct TimingArrivalReplacement {
   /// Value bit whose arrival would change.
   mlir::Value value;
@@ -597,75 +597,84 @@ struct TimingArrivalReplacement {
   int64_t arrival = 0;
 };
 
-/// Estimated effect of a set of side-effect-free arrival replacements.
-struct TimingCriticalPathSpeculation {
-  /// Critical-path delay before applying replacements.
+/// Estimated effect of a set of side-effect-free arrival replacements on the
+/// current worst endpoint under the active objective.
+struct TimingEndpointSpeculation {
+  /// Worst endpoint delay before applying replacements.
   int64_t baselineDelay = 0;
-  /// Estimated critical delay after applying replacements to every endpoint
+  /// Estimated worst endpoint delay after applying replacements to every endpoint
   /// path that contains a replaced point. Unaffected endpoints keep their
   /// current propagated arrivals.
   int64_t predictedDelay = 0;
-  /// True when at least one replacement matched a point on the reconstructed
-  /// critical path.
-  bool affectedCriticalPath = false;
-  /// Latest replaced point on the current critical path. Invalid when
-  /// `affectedCriticalPath` is false.
+  /// True when at least one replacement matched a point on a current worst
+  /// endpoint path.
+  bool affectedWorstEndpointPath = false;
+  /// Latest replaced point on a current worst endpoint path. Invalid when
+  /// `affectedWorstEndpointPath` is false.
   TimingPointId affectedPoint;
   /// Old and new arrivals at `affectedPoint`.
   int64_t oldArrival = 0;
   int64_t newArrival = 0;
 };
 
-/// Cached propagation and critical-path query context for side-effect-free
+/// Cached propagation and endpoint query context for side-effect-free
 /// transform speculation.
 ///
 /// This is intentionally not a clone-based API. The transform owns the
 /// candidate model: it computes replacement arrivals for the values it would
-/// rewrite, while TimingV2 handles propagation state, critical-path membership,
+/// rewrite, while TimingV2 handles propagation state, endpoint-path membership,
 /// and endpoint-delay estimation against the unmodified network.
 class TimingSpeculationContext {
 public:
-  /// Propagate `network` and reconstruct the current critical path for
+  /// Propagate `network` and reconstruct the current worst endpoint path for
   /// `options`.
   static mlir::FailureOr<TimingSpeculationContext>
   create(const TimingNetwork &network, TimingPropagationOptions options = {});
 
-  /// Return the graph, propagation result, options, and current critical path.
+  /// Return the graph, propagation result, options, and current worst endpoint
+  /// path.
   const TimingNetwork &getNetwork() const { return network; }
   const TimingPropagationResult &getPropagation() const { return propagation; }
   TimingPropagationOptions getOptions() const { return options; }
-  const ReconstructedTimingPath &getCriticalPath() const {
-    return criticalPath;
+  const ReconstructedTimingPath &getWorstEndpointPath() const {
+    return worstEndpointPath;
   }
+  /// Return the current worst endpoint delay under the active objective.
+  int64_t getWorstEndpointDelay() const { return worstEndpointPath.delay; }
 
   /// Query propagated arrival by value bit.
   mlir::FailureOr<int64_t> getArrival(mlir::Value value, uint32_t bit) const;
-  /// Return true when the value bit is present on the reconstructed critical
-  /// path.
-  bool isOnCriticalPath(mlir::Value value, uint32_t bit) const;
+  /// Return true when the value bit is present on the reconstructed worst
+  /// endpoint path.
+  bool isOnWorstEndpointPath(mlir::Value value, uint32_t bit) const;
 
-  /// Estimate critical delay after applying replacement arrivals to each
-  /// endpoint path. If multiple replacements are on one endpoint path, the
-  /// latest path point wins; this matches the common rewrite use case where the
-  /// transform supplies arrivals for rewritten outputs rather than every
-  /// internal candidate node.
-  mlir::FailureOr<TimingCriticalPathSpeculation>
-  speculateCriticalPathDelay(
+  /// Estimate one endpoint arrival after applying replacement arrivals to that
+  /// endpoint path. If multiple replacements are on the path, the latest path
+  /// point wins; this matches the common rewrite use case where the transform
+  /// supplies arrivals for rewritten outputs rather than every internal
+  /// candidate node.
+  mlir::FailureOr<int64_t> speculateEndpointDelay(
+      TimingPointId endpoint,
+      llvm::ArrayRef<TimingArrivalReplacement> replacements) const;
+  /// Estimate the current worst endpoint delay after applying replacement
+  /// arrivals across all endpoint paths.
+  mlir::FailureOr<TimingEndpointSpeculation>
+  speculateWorstEndpointDelay(
       llvm::ArrayRef<TimingArrivalReplacement> replacements) const;
 
 private:
   TimingSpeculationContext(const TimingNetwork &network,
                            TimingPropagationOptions options,
                            TimingPropagationResult propagation,
-                           ReconstructedTimingPath criticalPath)
+                           ReconstructedTimingPath worstEndpointPath)
       : network(network), options(std::move(options)),
         propagation(std::move(propagation)),
-        criticalPath(std::move(criticalPath)) {}
+        worstEndpointPath(std::move(worstEndpointPath)) {}
 
   const TimingNetwork &network;
   TimingPropagationOptions options;
   TimingPropagationResult propagation;
-  ReconstructedTimingPath criticalPath;
+  ReconstructedTimingPath worstEndpointPath;
 };
 
 /// Propagate timing and reconstruct the best endpoint path for `options`.
