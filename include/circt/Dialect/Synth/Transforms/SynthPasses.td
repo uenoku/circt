@@ -120,6 +120,30 @@ def LowerWordToBits : Pass<"synth-lower-word-to-bits"> {
   ];
 }
 
+def TimingV2GuidedRewrite
+    : Pass<"synth-timing-v2-guided-rewrite", "hw::HWModuleOp"> {
+  let summary = "Demonstrate TimingV2-guided greedy rewrite patterns";
+  let description = [{
+    This pass demonstrates how an MLIR greedy rewrite pattern can use TimingV2
+    to speculate about a transform without first mutating IR, then commit the
+    rewrite through PatternRewriter with a TimingRepairSession listener attached.
+
+    The demo pattern recognizes false-side priority mux chains, predicts
+    whether balancing the chain improves the current TimingV2 critical path,
+    and only applies the rewrite if the side-effect-free estimate improves.
+  }];
+  let options = [
+    Option<"requiredTime", "required-time", "int64_t", "0",
+           "Default required time used for backward propagation">,
+    Option<"printReport", "print-report", "bool", "false",
+           "Print the TimingV2 guided rewrite report to stdout">
+  ];
+  let dependentDialects = [
+    "circt::comb::CombDialect", "circt::hw::HWDialect",
+    "circt::seq::SeqDialect", "circt::synth::SynthDialect"
+  ];
+}
+
 def PrintLongestPathAnalysis
     : Pass<"synth-print-longest-path-analysis", "mlir::ModuleOp"> {
   let summary =

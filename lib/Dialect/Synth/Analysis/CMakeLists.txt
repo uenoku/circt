@@ -10,6 +10,9 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   LongestPathAnalysis.cpp
   PrintLongestPathAnalysis.cpp
   ResourceUsageAnalysis.cpp
+  TimingV2/DatapathTimingSemantics.cpp
+  TimingV2/DefaultTimingSemantics.cpp
+  TimingV2/FlatTiming.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CIRCT_MAIN_INCLUDE_DIR}/circt/Dialect/Synth
@@ -22,6 +25,7 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   Support
 
   LINK_LIBS PUBLIC
+  CIRCTDatapath
   CIRCTHW
   CIRCTComb
   CIRCTSupport
