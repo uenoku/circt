@@ -50,20 +50,6 @@ struct MuxBalanceSpeculation {
   int64_t predicted = 0;
 };
 
-static mlir::FailureOr<int64_t>
-computeCriticalDelay(const timingv2::TimingNetwork &network,
-                     int64_t requiredTime) {
-  timingv2::TimingPropagationOptions options;
-  options.defaultRequiredTime = requiredTime;
-  auto path = timingv2::reconstructCriticalPath(network, options);
-  if (llvm::failed(path)) {
-    mlir::emitError(network.getRoot()->getLoc())
-        << "failed to reconstruct TimingV2 critical path";
-    return mlir::failure();
-  }
-  return path->delay;
-}
-
 static unsigned getBitWidth(mlir::Value value) {
   if (auto type = mlir::dyn_cast<mlir::IntegerType>(value.getType()))
     return type.getWidth();
@@ -85,25 +71,21 @@ struct TimingGuidedRewriteState {
       mlir::emitError(loc) << "TimingV2 network is not initialized";
       return mlir::failure();
     }
-    return computeCriticalDelay(*network, requiredTime);
+    timingv2::TimingPropagationOptions options;
+    options.defaultRequiredTime = requiredTime;
+    auto speculation = timingv2::TimingSpeculationContext::create(*network,
+                                                                  options);
+    if (llvm::failed(speculation)) {
+      mlir::emitError(loc) << "failed to reconstruct TimingV2 critical path";
+      return mlir::failure();
+    }
+    return speculation->getCriticalPath().delay;
   }
 
   mlir::LogicalResult repair(mlir::Location loc) {
     if (llvm::failed(timingSession.repair()))
       return mlir::emitError(loc) << "failed to repair TimingV2 network";
     return mlir::success();
-  }
-
-  mlir::FailureOr<timingv2::TimingPropagationResult>
-  propagate(mlir::Location loc) const {
-    auto *network = timingSession.getNetwork();
-    if (!network) {
-      mlir::emitError(loc) << "TimingV2 network is not initialized";
-      return mlir::failure();
-    }
-    timingv2::TimingPropagationOptions options;
-    options.defaultRequiredTime = requiredTime;
-    return timingv2::TimingPropagator::run(*network, options);
   }
 };
 
@@ -190,67 +172,50 @@ static mlir::LogicalResult rewritePriorityMuxChain(MuxOp rootMux,
 }
 
 static mlir::FailureOr<int64_t>
-getPropagatedArrival(const timingv2::TimingNetwork &network,
-                     const timingv2::TimingPropagationResult &propagation,
-                     mlir::Value value, uint32_t bit, mlir::Location loc) {
-  auto point = network.findValueBit(value, bit);
-  if (!point.isValid())
-    return mlir::emitError(loc) << "missing TimingV2 point for value bit";
-  auto *state = propagation.getState(point);
-  if (!state || !state->hasArrival)
-    return mlir::emitError(loc) << "missing TimingV2 arrival for value bit";
-  return state->arrival;
-}
-
-static mlir::FailureOr<int64_t>
-speculateBalancedMuxArrival(const timingv2::TimingNetwork &network,
-                            const timingv2::TimingPropagationResult &propagation,
+speculateBalancedMuxArrival(const timingv2::TimingSpeculationContext &context,
                             llvm::ArrayRef<mlir::Value> conds,
                             llvm::ArrayRef<mlir::Value> results,
                             mlir::Value defaultValue, uint32_t bit,
                             mlir::Location loc) {
   size_t size = conds.size();
   if (size == 0)
-    return getPropagatedArrival(network, propagation, defaultValue, bit, loc);
+    return context.getArrival(defaultValue, bit);
 
   if (size == 1) {
-    auto resultArrival =
-        getPropagatedArrival(network, propagation, results.front(), bit, loc);
+    auto resultArrival = context.getArrival(results.front(), bit);
     if (llvm::failed(resultArrival))
-      return mlir::failure();
+      return mlir::emitError(loc) << "missing TimingV2 result arrival";
     if (results.front() == defaultValue)
       return *resultArrival;
 
-    auto defaultArrival =
-        getPropagatedArrival(network, propagation, defaultValue, bit, loc);
+    auto defaultArrival = context.getArrival(defaultValue, bit);
     if (llvm::failed(defaultArrival))
-      return mlir::failure();
-    auto condArrival =
-        getPropagatedArrival(network, propagation, conds.front(), 0, loc);
+      return mlir::emitError(loc) << "missing TimingV2 default arrival";
+    auto condArrival = context.getArrival(conds.front(), 0);
     if (llvm::failed(condArrival))
-      return mlir::failure();
+      return mlir::emitError(loc) << "missing TimingV2 condition arrival";
     return std::max({*condArrival + 1, *resultArrival + 1,
                      *defaultArrival + 1});
   }
 
   unsigned mid = llvm::divideCeil(size, 2);
   auto left = speculateBalancedMuxArrival(
-      network, propagation, conds.take_front(mid), results.take_front(mid),
+      context, conds.take_front(mid), results.take_front(mid),
       results.take_front(mid).back(), bit, loc);
   if (llvm::failed(left))
     return mlir::failure();
   auto right = speculateBalancedMuxArrival(
-      network, propagation, conds.drop_front(mid), results.drop_front(mid),
-      defaultValue, bit, loc);
+      context, conds.drop_front(mid), results.drop_front(mid), defaultValue,
+      bit, loc);
   if (llvm::failed(right))
     return mlir::failure();
 
   int64_t combinedCondArrival = 0;
   bool hasCondArrival = false;
   for (auto cond : conds.take_front(mid)) {
-    auto condArrival = getPropagatedArrival(network, propagation, cond, 0, loc);
+    auto condArrival = context.getArrival(cond, 0);
     if (llvm::failed(condArrival))
-      return mlir::failure();
+      return mlir::emitError(loc) << "missing TimingV2 condition arrival";
     combinedCondArrival =
         hasCondArrival ? std::max(combinedCondArrival, *condArrival)
                        : *condArrival;
@@ -270,50 +235,26 @@ speculatePriorityMuxBalance(TimingGuidedRewriteState &state, MuxOp rootMux,
 
   timingv2::TimingPropagationOptions options;
   options.defaultRequiredTime = state.requiredTime;
-  auto criticalPath = timingv2::reconstructCriticalPath(*network, options);
-  if (llvm::failed(criticalPath))
-    return mlir::failure();
-  auto propagation = state.propagate(loc);
-  if (llvm::failed(propagation))
+  auto context = timingv2::TimingSpeculationContext::create(*network, options);
+  if (llvm::failed(context))
     return mlir::failure();
 
   auto result = rootMux.getResult();
-  int64_t bestPredicted = criticalPath->delay;
-  bool foundAffectedCriticalBit = false;
+  llvm::SmallVector<timingv2::TimingArrivalReplacement, 8> replacements;
   for (uint32_t bit = 0, width = getBitWidth(result); bit < width; ++bit) {
-    auto point = network->findValueBit(result, bit);
-    if (!point.isValid())
-      continue;
-
-    bool isOnCriticalPath = llvm::any_of(
-        criticalPath->steps,
-        [&](const timingv2::ReconstructedTimingStep &step) {
-          return step.point == point;
-        });
-    if (!isOnCriticalPath)
-      continue;
-
-    auto oldArrival =
-        getPropagatedArrival(*network, *propagation, result, bit, loc);
-    if (llvm::failed(oldArrival))
-      return mlir::failure();
     auto newArrival = speculateBalancedMuxArrival(
-        *network, *propagation, chain.conditions,
-        llvm::ArrayRef(chain.results).drop_back(), chain.results.back(), bit,
-        loc);
+        *context, chain.conditions, llvm::ArrayRef(chain.results).drop_back(),
+        chain.results.back(), bit, loc);
     if (llvm::failed(newArrival))
       return mlir::failure();
-
-    int64_t predicted = criticalPath->delay - *oldArrival + *newArrival;
-    bestPredicted =
-        foundAffectedCriticalBit ? std::min(bestPredicted, predicted)
-                                 : predicted;
-    foundAffectedCriticalBit = true;
+    replacements.push_back({result, bit, *newArrival});
   }
 
-  if (!foundAffectedCriticalBit)
-    return MuxBalanceSpeculation{criticalPath->delay, criticalPath->delay};
-  return MuxBalanceSpeculation{criticalPath->delay, bestPredicted};
+  auto speculation = context->speculateCriticalPathDelay(replacements);
+  if (llvm::failed(speculation))
+    return mlir::failure();
+  return MuxBalanceSpeculation{speculation->baselineDelay,
+                               speculation->predictedDelay};
 }
 
 class BalancePriorityMuxPattern : public mlir::OpRewritePattern<MuxOp> {

@@ -721,6 +721,147 @@ TimingPathReconstructor::reconstructTo(TimingPointId end) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Timing speculation
+//===----------------------------------------------------------------------===//
+
+static bool isBetterArrival(TimingObjective objective, int64_t candidate,
+                            int64_t current) {
+  return objective == TimingObjective::HoldMin ? candidate < current
+                                               : candidate > current;
+}
+
+static FailureOr<TimingPointId>
+findBestEndpoint(const TimingNetwork &network,
+                 const TimingPropagationResult &result,
+                 TimingObjective objective) {
+  TimingPointId bestEnd;
+  int64_t bestArrival = 0;
+  for (auto id : network.getEndPoints()) {
+    auto *state = result.getState(id);
+    if (!state || !state->hasArrival)
+      continue;
+    if (bestEnd.isValid() &&
+        !isBetterArrival(objective, state->arrival, bestArrival))
+      continue;
+    bestEnd = id;
+    bestArrival = state->arrival;
+  }
+  if (!bestEnd.isValid())
+    return failure();
+  return bestEnd;
+}
+
+FailureOr<TimingSpeculationContext>
+TimingSpeculationContext::create(const TimingNetwork &network,
+                                 TimingPropagationOptions options) {
+  auto result = TimingPropagator::run(network, options);
+  if (failed(result))
+    return failure();
+
+  auto bestEnd = findBestEndpoint(network, *result, options.objective);
+  if (failed(bestEnd))
+    return failure();
+
+  TimingPathReconstructor reconstructor(network, *result);
+  auto path = reconstructor.reconstructTo(*bestEnd);
+  if (!path)
+    return failure();
+
+  return TimingSpeculationContext(network, std::move(options),
+                                  std::move(*result), std::move(*path));
+}
+
+FailureOr<int64_t>
+TimingSpeculationContext::getArrival(Value value, uint32_t bit) const {
+  auto id = network.findValueBit(value, bit);
+  if (!id.isValid())
+    return failure();
+  auto *state = propagation.getState(id);
+  if (!state || !state->hasArrival)
+    return failure();
+  return state->arrival;
+}
+
+bool TimingSpeculationContext::isOnCriticalPath(Value value,
+                                                uint32_t bit) const {
+  auto id = network.findValueBit(value, bit);
+  if (!id.isValid())
+    return false;
+  return llvm::any_of(criticalPath.steps, [&](ReconstructedTimingStep step) {
+    return step.point == id;
+  });
+}
+
+FailureOr<TimingCriticalPathSpeculation>
+TimingSpeculationContext::speculateCriticalPathDelay(
+    ArrayRef<TimingArrivalReplacement> replacements) const {
+  TimingCriticalPathSpeculation speculation;
+  speculation.baselineDelay = criticalPath.delay;
+  speculation.predictedDelay = criticalPath.delay;
+
+  DenseMap<TimingPointId, int64_t> replacementArrivals;
+  for (const auto &replacement : replacements) {
+    auto point = network.findValueBit(replacement.value, replacement.bit);
+    if (!point.isValid())
+      return failure();
+    auto *state = propagation.getState(point);
+    if (!state || !state->hasArrival)
+      return failure();
+    replacementArrivals[point] = replacement.arrival;
+  }
+
+  std::optional<int64_t> predictedBestEndpoint;
+  TimingPathReconstructor reconstructor(network, propagation);
+  for (auto endpoint : network.getEndPoints()) {
+    auto *endpointState = propagation.getState(endpoint);
+    if (!endpointState || !endpointState->hasArrival)
+      continue;
+
+    auto path = reconstructor.reconstructTo(endpoint);
+    if (!path)
+      return failure();
+
+    TimingPointId selectedPoint;
+    int64_t selectedReplacementArrival = 0;
+    for (auto step : path->steps) {
+      auto replacement = replacementArrivals.find(step.point);
+      if (replacement == replacementArrivals.end())
+        continue;
+      selectedPoint = step.point;
+      selectedReplacementArrival = replacement->second;
+    }
+
+    int64_t predictedEndpoint = endpointState->arrival;
+    if (selectedPoint.isValid()) {
+      auto *selectedState = propagation.getState(selectedPoint);
+      if (!selectedState || !selectedState->hasArrival)
+        return failure();
+      predictedEndpoint =
+          endpointState->arrival - selectedState->arrival +
+          selectedReplacementArrival;
+
+      if (endpointState->arrival == criticalPath.delay) {
+        speculation.affectedCriticalPath = true;
+        speculation.affectedPoint = selectedPoint;
+        speculation.oldArrival = selectedState->arrival;
+        speculation.newArrival = selectedReplacementArrival;
+      }
+    }
+
+    if (predictedBestEndpoint &&
+        !isBetterArrival(options.objective, predictedEndpoint,
+                         *predictedBestEndpoint))
+      continue;
+    predictedBestEndpoint = predictedEndpoint;
+  }
+
+  if (predictedBestEndpoint)
+    speculation.predictedDelay = *predictedBestEndpoint;
+
+  return speculation;
+}
+
+//===----------------------------------------------------------------------===//
 // Timing reports
 //===----------------------------------------------------------------------===//
 
@@ -788,27 +929,12 @@ circt::synth::timingv2::reconstructCriticalPath(
   if (failed(result))
     return failure();
 
-  bool minMode = options.objective == TimingObjective::HoldMin;
-  TimingPointId bestEnd;
-  int64_t bestArrival = 0;
-  for (auto id : network.getEndPoints()) {
-    auto *state = result->getState(id);
-    if (!state || !state->hasArrival)
-      continue;
-    bool better = !bestEnd.isValid() ||
-                  (minMode ? state->arrival < bestArrival
-                           : state->arrival > bestArrival);
-    if (!better)
-      continue;
-    bestEnd = id;
-    bestArrival = state->arrival;
-  }
-
-  if (!bestEnd.isValid())
+  auto bestEnd = findBestEndpoint(network, *result, options.objective);
+  if (failed(bestEnd))
     return failure();
 
   TimingPathReconstructor reconstructor(network, *result);
-  auto path = reconstructor.reconstructTo(bestEnd);
+  auto path = reconstructor.reconstructTo(*bestEnd);
   if (!path)
     return failure();
   return *path;
@@ -821,27 +947,12 @@ LogicalResult circt::synth::timingv2::printCriticalTimingReport(
   if (failed(result))
     return failure();
 
-  bool minMode = options.objective == TimingObjective::HoldMin;
-  TimingPointId bestEnd;
-  int64_t bestArrival = 0;
-  for (auto id : network.getEndPoints()) {
-    auto *state = result->getState(id);
-    if (!state || !state->hasArrival)
-      continue;
-    bool better = !bestEnd.isValid() ||
-                  (minMode ? state->arrival < bestArrival
-                           : state->arrival > bestArrival);
-    if (!better)
-      continue;
-    bestEnd = id;
-    bestArrival = state->arrival;
-  }
-
-  if (!bestEnd.isValid())
+  auto bestEnd = findBestEndpoint(network, *result, options.objective);
+  if (failed(bestEnd))
     return failure();
 
   TimingPathReconstructor reconstructor(network, *result);
-  auto path = reconstructor.reconstructTo(bestEnd);
+  auto path = reconstructor.reconstructTo(*bestEnd);
   if (!path)
     return failure();
 
