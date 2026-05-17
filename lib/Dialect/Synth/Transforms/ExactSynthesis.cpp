@@ -44,7 +44,7 @@ using namespace mlir;
 
 namespace {
 
-static constexpr unsigned kMaxExactSynthesisInputs = 4;
+static constexpr unsigned kMaxExactSynthesisInputs = 6;
 static constexpr unsigned kMaxExactSearchArea = 32;
 
 static SmallString<32> formatTruthTable(const APInt &truthTable) {
@@ -56,6 +56,11 @@ static SmallString<32> formatTruthTable(const APInt &truthTable) {
 using BooleanLogicConcept =
     circt::synth::detail::BooleanLogicOpInterfaceInterfaceTraits::Concept;
 
+struct ExactCandidatePolicy {
+  bool mayUseConstantSource = true;
+  bool enumerateInputInversions = true;
+};
+
 static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
                                     unsigned arity) {
   SmallVector<APInt, 4> inputs;
@@ -66,6 +71,22 @@ static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
   assert(truthTable.getBitWidth() <= 8 &&
          "exact-synthesis nodes expect <= 8 bits");
   return static_cast<uint8_t>(truthTable.getZExtValue());
+}
+
+static ExactCandidatePolicy getCandidatePolicy(OperationName opName,
+                                               unsigned arity) {
+  // `xor_inv` is a parity operator. Constants and input inversion masks only
+  // produce constants, projections, or a complemented parity result. The exact
+  // network can express those cases through direct sources, per-use fanin
+  // inversions, and the root inversion bit, so keep one canonical XOR form.
+  if (opName.getStringRef() == XorInverterOp::getOperationName() &&
+      arity == 2) {
+    ExactCandidatePolicy policy;
+    policy.mayUseConstantSource = false;
+    policy.enumerateInputInversions = false;
+    return policy;
+  }
+  return {};
 }
 
 //===----------------------------------------------------------------------===//
@@ -101,15 +122,23 @@ using ExactCandidate = ExactNetworkStep;
 class ExactNodeInfo {
 public:
   ExactNodeInfo(OperationName opName, unsigned arity, bool commutative,
-                uint8_t truthTable, const BooleanLogicConcept *iface)
+                uint8_t truthTable, const BooleanLogicConcept *iface,
+                ExactCandidatePolicy candidatePolicy)
       : opName(opName), arity(arity), commutative(commutative),
-        truthTable(truthTable), iface(iface) {}
+        truthTable(truthTable), iface(iface), candidatePolicy(candidatePolicy) {
+  }
   virtual ~ExactNodeInfo() = default;
 
   OperationName getOperationName() const { return opName; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
   uint8_t getTruthTable() const { return truthTable; }
+  bool mayUseConstantSource() const {
+    return candidatePolicy.mayUseConstantSource;
+  }
+  bool shouldEnumerateInputInversions() const {
+    return candidatePolicy.enumerateInputInversions;
+  }
 
   /// Emit clauses for `selector => outLit == f(fanins...)`.
   ///
@@ -132,6 +161,7 @@ private:
   bool commutative;
   uint8_t truthTable;
   const BooleanLogicConcept *iface;
+  ExactCandidatePolicy candidatePolicy;
 };
 
 struct ExactSynthesisPolicy {
@@ -225,8 +255,8 @@ private:
       llvm::function_ref<void(ArrayRef<unsigned>)> emit);
 
   static void enumerateOrderedOperandSources(
-      unsigned availableSources, unsigned arity, unsigned currentArity,
-      SmallVectorImpl<unsigned> &sources,
+      unsigned availableSources, unsigned arity, unsigned firstSource,
+      unsigned currentArity, SmallVectorImpl<unsigned> &sources,
       llvm::function_ref<void(ArrayRef<unsigned>)> emit);
 
   static void
@@ -373,8 +403,8 @@ void ExactCandidateEnumerator::enumerateCommutativeOperandSources(
 }
 
 void ExactCandidateEnumerator::enumerateOrderedOperandSources(
-    unsigned availableSources, unsigned arity, unsigned currentArity,
-    SmallVectorImpl<unsigned> &sources,
+    unsigned availableSources, unsigned arity, unsigned firstSource,
+    unsigned currentArity, SmallVectorImpl<unsigned> &sources,
     llvm::function_ref<void(ArrayRef<unsigned>)> emit) {
   if (currentArity == arity) {
     emit(sources);
@@ -383,10 +413,10 @@ void ExactCandidateEnumerator::enumerateOrderedOperandSources(
 
   // Ordered nodes such as DOT may reuse sources and may also bind the
   // dedicated constant-false source `0`.
-  for (unsigned source = 0; source < availableSources; ++source) {
+  for (unsigned source = firstSource; source < availableSources; ++source) {
     sources.push_back(source);
-    enumerateOrderedOperandSources(availableSources, arity, currentArity + 1,
-                                   sources, emit);
+    enumerateOrderedOperandSources(availableSources, arity, firstSource,
+                                   currentArity + 1, sources, emit);
     sources.pop_back();
   }
 }
@@ -396,8 +426,9 @@ void ExactCandidateEnumerator::enumerateNodeCandidates(
     SmallVectorImpl<ExactCandidate> &candidates) {
   SmallVector<unsigned, 3> sources;
   auto emitCandidate = [&](ArrayRef<unsigned> operandSources) {
-    for (unsigned invMask = 0, e = 1u << info.getArity(); invMask != e;
-         ++invMask) {
+    unsigned numInversionMasks =
+        info.shouldEnumerateInputInversions() ? (1u << info.getArity()) : 1;
+    for (unsigned invMask = 0; invMask != numInversionMasks; ++invMask) {
       ExactCandidate candidate;
       candidate.info = &info;
       for (auto [index, source] : llvm::enumerate(operandSources))
@@ -410,18 +441,17 @@ void ExactCandidateEnumerator::enumerateNodeCandidates(
   // Structural enumeration is intentionally independent of Boolean semantics.
   // At this stage we only choose which available sources feed the node and
   // which edges are inverted; the node truth table is imposed later in CNF.
+  unsigned firstSource = info.mayUseConstantSource() ? 0 : 1;
   if (info.isCommutative()) {
-    // The commutative basis currently consists of AND/XOR. They may use the
-    // constant-false source, but we still enumerate their fanins in sorted
-    // order so equivalent operand permutations collapse to one candidate.
+    // Commutative nodes enumerate fanins in sorted order so equivalent operand
+    // permutations collapse to one candidate.
     enumerateCommutativeOperandSources(availableSources, info.getArity(),
-                                       /*currentArity=*/0,
-                                       /*nextSource=*/0, sources,
+                                       /*currentArity=*/0, firstSource, sources,
                                        emitCandidate);
     return;
   }
 
-  enumerateOrderedOperandSources(availableSources, info.getArity(),
+  enumerateOrderedOperandSources(availableSources, info.getArity(), firstSource,
                                  /*currentArity=*/0, sources, emitCandidate);
 }
 
@@ -684,6 +714,8 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   for (unsigned area = 1; area <= kMaxExactSearchArea; ++area) {
     LDBG() << "Trying area=" << area << "\n";
     auto solver = createCadicalSATSolver();
+    if (solver)
+      LDBG() << "Using CaDiCaL SAT solver\n";
     if (!solver)
       solver = createZ3SATSolver();
     if (!solver)
@@ -804,7 +836,8 @@ struct ExactSynthesisPass
       }
       policy.primitiveInfos.emplace_back(
           opName, arity, iface->areInputsPermutationInvariant(),
-          deriveNodeTruthTable(iface, arity), iface);
+          deriveNodeTruthTable(iface, arity), iface,
+          getCandidatePolicy(opName, arity));
     }
     return policy;
   }

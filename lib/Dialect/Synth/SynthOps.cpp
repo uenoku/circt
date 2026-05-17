@@ -23,6 +23,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
+#include <functional>
 
 using namespace mlir;
 using namespace circt;
@@ -582,22 +583,66 @@ APInt MajorityOp::evaluateBooleanLogicWithoutInversion(
   return evaluateMajorityLogic(inputs[0], inputs[1], inputs[2]);
 }
 
+static void enumerateLiteralSubsets(
+    llvm::ArrayRef<int> inputLits, size_t subsetSize,
+    llvm::function_ref<void(llvm::ArrayRef<int>)> callback) {
+  SmallVector<int> subset;
+  subset.reserve(subsetSize);
+  std::function<void(size_t, size_t)> visit = [&](size_t start,
+                                                  size_t remaining) {
+    if (remaining == 0) {
+      callback(subset);
+      return;
+    }
+    for (size_t i = start; i + remaining <= inputLits.size(); ++i) {
+      subset.push_back(inputLits[i]);
+      visit(i + 1, remaining - 1);
+      subset.pop_back();
+    }
+  };
+  visit(0, subsetSize);
+}
+
+static void
+addMajorityClauses(int outVar, llvm::ArrayRef<int> inputLits,
+                   llvm::function_ref<void(llvm::ArrayRef<int>)> addClause) {
+  assert(inputLits.size() % 2 == 1 &&
+         "majority requires an odd number of inputs");
+  size_t threshold = inputLits.size() / 2 + 1;
+
+  // If any threshold-sized subset is all true, the majority output must be
+  // true as well. For 5 inputs, these are all 3-input subsets.
+  enumerateLiteralSubsets(inputLits, threshold,
+                          [&](llvm::ArrayRef<int> subset) {
+                            SmallVector<int> clause;
+                            clause.reserve(subset.size() + 1);
+                            for (int lit : subset)
+                              clause.push_back(-lit);
+                            clause.push_back(outVar);
+                            addClause(clause);
+                          });
+
+  // Conversely, if any threshold-sized subset is all false, the majority
+  // output must be false. Writing that implication in positive-literal form is
+  // equivalent to `outVar ->` not(all literals in the subset are false).
+  // For example with 3-input majority, `(-outVar v a v b)` prevents
+  // `outVar = 1` when both `a` and `b` are 0.
+  enumerateLiteralSubsets(inputLits, threshold,
+                          [&](llvm::ArrayRef<int> subset) {
+                            SmallVector<int> clause;
+                            clause.reserve(subset.size() + 1);
+                            clause.push_back(-outVar);
+                            clause.append(subset.begin(), subset.end());
+                            addClause(clause);
+                          });
+}
+
 void MajorityOp::emitCNFWithoutInversion(
     int outVar, llvm::ArrayRef<int> inputVars,
     llvm::function_ref<void(llvm::ArrayRef<int>)> addClause,
     llvm::function_ref<int()> newVar) {
   assert(inputVars.size() == 3 && "expected exactly three inputs");
-  int ab = newVar();
-  int ac = newVar();
-  int bc = newVar();
-  // ab = a & b
-  circt::addAndClauses(ab, {inputVars[0], inputVars[1]}, addClause);
-  // ac = a & c
-  circt::addAndClauses(ac, {inputVars[0], inputVars[2]}, addClause);
-  // bc = b & c
-  circt::addAndClauses(bc, {inputVars[1], inputVars[2]}, addClause);
-  // out = ab | ac | bc
-  circt::addOrClauses(outVar, {ab, ac, bc}, addClause);
+  addMajorityClauses(outVar, inputVars, addClause);
 }
 
 static Value lowerVariadicInvertibleOp(
