@@ -1,4 +1,5 @@
 // RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.aig.and_inv:3})' | FileCheck %s --check-prefix=AND3
+// RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.majority:3})' | FileCheck %s --check-prefix=MAJ3
 // RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot:3})' | FileCheck %s --check-prefix=DOT
 // RUN: not circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis)' 2>&1 | FileCheck %s --check-prefix=NO-OPS
 // RUN: not circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot})' 2>&1 | FileCheck %s --check-prefix=MISSING-ARITY
@@ -17,6 +18,14 @@ hw.module @and3_tt(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
   hw.output %0 : i1
 }
 
+// MAJ3-LABEL: hw.module @maj3_tt
+// MAJ3: %[[MAJ:.+]] = synth.majority{{.*}}: i1
+// MAJ3-NEXT: hw.output %[[MAJ]] : i1
+hw.module @maj3_tt(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
+  %0 = comb.truth_table %a, %b, %c -> [false, false, false, true,
+                                        false, true, true, true]
+  hw.output %0 : i1
+}
 
 // DOT-LABEL: hw.module @dot_tt
 // DOT: %[[DOT:.+]] = synth.dot{{.*}}: i1
