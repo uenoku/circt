@@ -44,20 +44,6 @@ using namespace mlir;
 
 namespace {
 
-struct ExactSynthesisPolicy {
-  struct PrimitiveSpec {
-    OperationName opName;
-    unsigned arity;
-
-    bool operator==(const PrimitiveSpec &other) const {
-      return opName == other.opName && arity == other.arity;
-    }
-  };
-
-  SmallVector<PrimitiveSpec, 4> allowedPrimitives;
-  MLIRContext *context = nullptr;
-};
-
 static constexpr unsigned kMaxExactSynthesisInputs = 4;
 static constexpr unsigned kMaxExactSearchArea = 32;
 
@@ -69,14 +55,6 @@ static SmallString<32> formatTruthTable(const APInt &truthTable) {
 
 using BooleanLogicConcept =
     circt::synth::detail::BooleanLogicOpInterfaceInterfaceTraits::Concept;
-
-static void appendPrimitiveSummary(raw_ostream &os,
-                                   const ExactSynthesisPolicy &policy) {
-  llvm::interleaveComma(policy.allowedPrimitives, os,
-                        [&](ExactSynthesisPolicy::PrimitiveSpec spec) {
-                          os << spec.opName.getStringRef() << ":" << spec.arity;
-                        });
-}
 
 static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
                                     unsigned arity) {
@@ -156,6 +134,20 @@ private:
   const BooleanLogicConcept *iface;
 };
 
+struct ExactSynthesisPolicy {
+  SmallVector<ExactNodeInfo, 4> primitiveInfos;
+};
+
+static SmallString<64>
+formatPrimitiveSummary(const ExactSynthesisPolicy &policy) {
+  SmallString<64> text;
+  llvm::raw_svector_ostream os(text);
+  llvm::interleaveComma(policy.primitiveInfos, os, [&](const auto &info) {
+    os << info.getOperationName().getStringRef() << ":" << info.getArity();
+  });
+  return text;
+}
+
 unsigned ExactNetworkStep::getInversionMask() const {
   unsigned mask = 0;
   for (auto [index, fanin] : llvm::enumerate(fanins))
@@ -171,38 +163,17 @@ bool ExactNetworkStep::operator<(const ExactNetworkStep &rhs) const {
     if (fanins[i].source != rhs.fanins[i].source)
       return fanins[i].source < rhs.fanins[i].source;
   }
-  if (info != rhs.info)
+  if (info != rhs.info) {
+    if (info->getOperationName() != rhs.info->getOperationName())
+      return info->getOperationName().getStringRef() <
+             rhs.info->getOperationName().getStringRef();
     return info->getTruthTable() < rhs.info->getTruthTable();
+  }
   return getInversionMask() < rhs.getInversionMask();
 }
 
-static const ExactNodeInfo *getPrimitiveNodeInfo(OperationName opName,
-                                                 unsigned arity) {
-  static SmallVector<std::unique_ptr<ExactNodeInfo>, 4> infos;
-  for (const auto &info : infos)
-    if (info->getArity() == arity && opName == info->getOperationName())
-      return info.get();
-
-  auto *iface = opName.getInterface<BooleanLogicOpInterface>();
-  assert(iface && "exact-synthesis op must implement BooleanLogicOpInterface");
-  bool commutative = iface->areInputsPermutationInvariant();
-  infos.push_back(std::make_unique<ExactNodeInfo>(
-      opName, arity, commutative, deriveNodeTruthTable(iface, arity), iface));
-  return infos.back().get();
-}
-
-static SmallVector<const ExactNodeInfo *, 4>
-getEnabledNodeInfos(const ExactSynthesisPolicy &policy) {
-  SmallVector<const ExactNodeInfo *, 4> infos;
-  infos.reserve(policy.allowedPrimitives.size());
-  assert(policy.context && "exact-synthesis policy must carry an MLIRContext");
-  for (const auto &spec : policy.allowedPrimitives)
-    infos.push_back(getPrimitiveNodeInfo(spec.opName, spec.arity));
-  return infos;
-}
-
 static bool hasEnabledConstructs(const ExactSynthesisPolicy &policy) {
-  return !getEnabledNodeInfos(policy).empty();
+  return !policy.primitiveInfos.empty();
 }
 
 static std::optional<ExactNetwork> synthesizeDirect(unsigned numInputs,
@@ -377,8 +348,8 @@ void ExactCandidateEnumerator::enumerate(
     const ExactSynthesisPolicy &policy, unsigned availableSources,
     SmallVectorImpl<ExactCandidate> &candidates) const {
   candidates.clear();
-  for (const auto *info : getEnabledNodeInfos(policy))
-    enumerateNodeCandidates(*info, availableSources, candidates);
+  for (const auto &info : policy.primitiveInfos)
+    enumerateNodeCandidates(info, availableSources, candidates);
   llvm::sort(candidates);
   LDBG() << "Enumerated " << candidates.size()
          << " candidates with availableSources=" << availableSources << "\n";
@@ -696,9 +667,8 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
   ExactNetworkMaterializer materializer(builder, loc, operands);
   unsigned numInputs = operands.size();
   LDBG() << "Exact synthesis request: inputs=" << numInputs << " truthTable=0x"
-         << formatTruthTable(truthTable) << " allowed-primitives=";
-  appendPrimitiveSummary(llvm::dbgs(), policy);
-  LDBG() << "\n";
+         << formatTruthTable(truthTable)
+         << " allowed-primitives=" << formatPrimitiveSummary(policy) << "\n";
 
   if (!hasEnabledConstructs(policy))
     return failure();
@@ -774,7 +744,6 @@ struct ExactSynthesisPass
 
   FailureOr<ExactSynthesisPolicy> parsePolicy(MLIRContext *context) const {
     ExactSynthesisPolicy policy;
-    policy.context = context;
 
     if (allowedOps.empty()) {
       emitError(UnknownLoc::get(context))
@@ -824,14 +793,18 @@ struct ExactSynthesisPass
             << arity;
         return failure();
       }
-      ExactSynthesisPolicy::PrimitiveSpec spec{OperationName(*registeredInfo),
-                                               arity};
-      if (llvm::is_contained(policy.allowedPrimitives, spec)) {
+      OperationName opName(*registeredInfo);
+      if (llvm::any_of(policy.primitiveInfos, [&](const ExactNodeInfo &info) {
+            return info.getOperationName() == opName &&
+                   info.getArity() == arity;
+          })) {
         emitError(UnknownLoc::get(context))
             << "duplicate allowed exact-synthesis op '" << spelling << "'";
         return failure();
       }
-      policy.allowedPrimitives.push_back(spec);
+      policy.primitiveInfos.emplace_back(
+          opName, arity, iface->areInputsPermutationInvariant(),
+          deriveNodeTruthTable(iface, arity), iface);
     }
     return policy;
   }
