@@ -738,7 +738,8 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
 //===----------------------------------------------------------------------===//
 
 struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
-  ExactSynthesisPattern(MLIRContext *context, ExactSynthesisPolicy policy)
+  ExactSynthesisPattern(MLIRContext *context,
+                        const ExactSynthesisPolicy &policy)
       : OpRewritePattern(context), policy(policy) {}
 
   LogicalResult matchAndRewrite(comb::TruthTableOp op,
@@ -764,7 +765,7 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
   }
 
 private:
-  ExactSynthesisPolicy policy;
+  const ExactSynthesisPolicy &policy;
 };
 
 struct ExactSynthesisPass
@@ -800,11 +801,6 @@ struct ExactSynthesisPass
         return failure();
       }
 
-      auto addUnique = [&](ExactSynthesisPolicy::PrimitiveSpec spec) {
-        if (!llvm::is_contained(policy.allowedPrimitives, spec))
-          policy.allowedPrimitives.push_back(spec);
-      };
-
       if (arityText.empty()) {
         emitError(UnknownLoc::get(context))
             << "expected explicit arity for '" << name << "', e.g. '" << name
@@ -828,7 +824,14 @@ struct ExactSynthesisPass
             << arity;
         return failure();
       }
-      addUnique({OperationName(*registeredInfo), arity});
+      ExactSynthesisPolicy::PrimitiveSpec spec{OperationName(*registeredInfo),
+                                               arity};
+      if (llvm::is_contained(policy.allowedPrimitives, spec)) {
+        emitError(UnknownLoc::get(context))
+            << "duplicate allowed exact-synthesis op '" << spelling << "'";
+        return failure();
+      }
+      policy.allowedPrimitives.push_back(spec);
     }
     return policy;
   }

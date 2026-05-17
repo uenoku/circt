@@ -2,9 +2,11 @@
 // RUN: circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot:3})' | FileCheck %s --check-prefix=DOT
 // RUN: not circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis)' 2>&1 | FileCheck %s --check-prefix=NO-OPS
 // RUN: not circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot})' 2>&1 | FileCheck %s --check-prefix=MISSING-ARITY
+// RUN: not circt-opt %s --pass-pipeline='builtin.module(synth-exact-synthesis{allowed-ops=synth.dot:3 allowed-ops=synth.dot:3})' 2>&1 | FileCheck %s --check-prefix=DUPLICATE
 
 // NO-OPS: synth-exact-synthesis requires at least one 'allowed-ops=name:arity' entry
 // MISSING-ARITY: expected explicit arity for 'synth.dot', e.g. 'synth.dot:3'
+// DUPLICATE: duplicate allowed exact-synthesis op 'synth.dot:3'
 
 // AND3-LABEL: hw.module @and3_tt
 // AND3: %[[AND:.+]] = synth.aig.and_inv %c, %b, %a : i1
