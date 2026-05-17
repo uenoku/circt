@@ -340,7 +340,6 @@ private:
   unsigned numSteps;
   unsigned numMinterms;
   unsigned totalSources;
-  int nextVar = 0;
   int rootInvertVar = 0;
   SmallVector<SmallVector<int, 16>, 8> sourceValueVars;
   SmallVector<SmallVector<ExactCandidate, 64>, 8> stepCandidates;
@@ -533,11 +532,7 @@ std::optional<ExactNetwork> GenericExactSATProblem::solve() {
   return decodeModel();
 }
 
-int GenericExactSATProblem::newVar() {
-  int fresh = ++nextVar;
-  solver.reserveVars(fresh);
-  return fresh;
-}
+int GenericExactSATProblem::newVar() { return solver.newVar(); }
 
 void GenericExactSATProblem::addExactlyOne(ArrayRef<int> vars) {
   addExactlyOneClauses(
