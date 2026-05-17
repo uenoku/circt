@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/DebugLog.h"
 #include <array>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -794,6 +795,7 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
 // Rewrite Pass
 //===----------------------------------------------------------------------===//
 
+std::mutex gExactSynthesisMutex;
 struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
   ExactSynthesisPattern(MLIRContext *context,
                         const ExactSynthesisPolicy &policy)
@@ -804,6 +806,10 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
     if (op.getInputs().size() > kMaxExactSynthesisInputs)
       return failure();
 
+    {
+      std::scoped_lock lock(gExactSynthesisMutex);
+      llvm::errs() << "ExactSynthesisPattern: " << op << " start\n";
+    }
     SmallVector<Value> operands;
     operands.reserve(op.getInputs().size());
     for (Value operand : llvm::reverse(op.getInputs()))
@@ -816,6 +822,10 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
                                                truthTable, operands, policy);
     if (failed(result))
       return failure();
+    {
+      std::scoped_lock lock(gExactSynthesisMutex);
+      llvm::errs() << "ExactSynthesisPattern: " << op << " done\n";
+    }
 
     replaceOpAndCopyNamehint(rewriter, op, *result);
     return success();
