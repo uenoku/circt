@@ -57,16 +57,9 @@ static SmallString<32> formatTruthTable(const APInt &truthTable) {
 using BooleanLogicConcept =
     circt::synth::detail::BooleanLogicOpInterfaceInterfaceTraits::Concept;
 
-enum class ExactNodeEncoding {
-  TruthTable,
-  Majority3,
-  Xor2,
-};
-
 struct ExactCandidatePolicy {
   bool mayUseConstantSource = true;
   bool enumerateInputInversions = true;
-  ExactNodeEncoding encoding = ExactNodeEncoding::TruthTable;
 };
 
 static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
@@ -83,12 +76,6 @@ static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
 
 static ExactCandidatePolicy getCandidatePolicy(OperationName opName,
                                                unsigned arity) {
-  if (opName.getStringRef() == MajorityOp::getOperationName() && arity == 3) {
-    ExactCandidatePolicy policy;
-    policy.encoding = ExactNodeEncoding::Majority3;
-    return policy;
-  }
-
   // `xor_inv` is a parity operator. Constants and input inversion masks only
   // produce constants, projections, or a complemented parity result. The exact
   // network can express those cases through direct sources, per-use fanin
@@ -98,7 +85,6 @@ static ExactCandidatePolicy getCandidatePolicy(OperationName opName,
     ExactCandidatePolicy policy;
     policy.mayUseConstantSource = false;
     policy.enumerateInputInversions = false;
-    policy.encoding = ExactNodeEncoding::Xor2;
     return policy;
   }
   return {};
@@ -368,10 +354,6 @@ void ExactNodeInfo::emitConditionedCNF(
     const ExactCandidate &candidate, unsigned minterm,
     llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
         getSourceLiteral) const {
-  auto getFaninLiteral = [&](unsigned operand) {
-    return getSourceLiteral(candidate.fanins[operand].source, minterm,
-                            candidate.fanins[operand].inverted);
-  };
   auto addConditionedClause = [&](ArrayRef<int> literals) {
     SmallVector<int, 8> clause;
     clause.reserve(literals.size() + 1);
@@ -380,54 +362,19 @@ void ExactNodeInfo::emitConditionedCNF(
     solver.addClause(clause);
   };
 
-  switch (candidatePolicy.encoding) {
-  case ExactNodeEncoding::Majority3: {
-    assert(getArity() == 3 && "majority encoding expects arity 3");
-    int aLit = getFaninLiteral(0);
-    int bLit = getFaninLiteral(1);
-    int cLit = getFaninLiteral(2);
-
-    addConditionedClause({-aLit, -bLit, outLit});
-    addConditionedClause({-aLit, -cLit, outLit});
-    addConditionedClause({-bLit, -cLit, outLit});
-    addConditionedClause({aLit, bLit, -outLit});
-    addConditionedClause({aLit, cLit, -outLit});
-    addConditionedClause({bLit, cLit, -outLit});
-    return;
+  // Materialize this candidate's per-edge inversions into SAT literals and let
+  // the Synth op interface provide the primitive-specific CNF. Each emitted
+  // clause is guarded by `selector`, so unselected candidates place no
+  // constraints on the step output or any auxiliary variables.
+  SmallVector<int, 4> inputLits;
+  inputLits.reserve(getArity());
+  for (unsigned operand = 0; operand != getArity(); ++operand) {
+    const auto &fanin = candidate.fanins[operand];
+    inputLits.push_back(
+        getSourceLiteral(fanin.source, minterm, fanin.inverted));
   }
-  case ExactNodeEncoding::Xor2: {
-    assert(getArity() == 2 && "xor encoding expects arity 2");
-    int aLit = getFaninLiteral(0);
-    int bLit = getFaninLiteral(1);
-
-    addConditionedClause({aLit, bLit, -outLit});
-    addConditionedClause({aLit, -bLit, outLit});
-    addConditionedClause({-aLit, bLit, outLit});
-    addConditionedClause({-aLit, -bLit, -outLit});
-    return;
-  }
-  case ExactNodeEncoding::TruthTable:
-    break;
-  }
-
-  // Encode the selected primitive by enumerating every local input assignment:
-  //   selector => ((fanins match assignment) implies outLit = truthTable[row]).
-  //
-  // The outer SAT problem already fixes one global minterm. This helper only
-  // needs to describe how the chosen node transforms its fanins for that row.
-  for (unsigned assignment = 0, e = 1u << getArity(); assignment != e;
-       ++assignment) {
-    SmallVector<int, 8> clause;
-    clause.reserve(getArity() + 2);
-    clause.push_back(-selector);
-    for (unsigned operand = 0; operand != getArity(); ++operand) {
-      int lit = getFaninLiteral(operand);
-      clause.push_back((assignment & (1u << operand)) ? -lit : lit);
-    }
-    bool value = (truthTable >> assignment) & 1u;
-    clause.push_back(value ? outLit : -outLit);
-    solver.addClause(clause);
-  }
+  iface->emitCNFWithoutInversion(outLit, inputLits, addConditionedClause,
+                                 [&] { return solver.newVar(); });
 }
 
 void ExactCandidateEnumerator::enumerate(
