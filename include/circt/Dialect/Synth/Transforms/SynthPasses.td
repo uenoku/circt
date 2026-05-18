@@ -341,10 +341,11 @@ def ExactSynthesis : Pass<"synth-exact-synthesis"> {
   }];
   let options = [
     ListOption<"allowedOps", "allowed-ops", "std::string",
-               "Allowed exact-synthesis primitives with explicit arity.">,
+               "Allowed BooleanLogicOpInterface primitives, written as "
+               "'operation-name:arity' entries such as "
+               "'synth.aig.and_inv:2'. May be specified multiple times.">,
   ];
-  let dependentDialects = ["comb::CombDialect", "hw::HWDialect",
-                           "synth::SynthDialect"];
+  let dependentDialects = ["hw::HWDialect", "synth::SynthDialect"];
 }
 
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

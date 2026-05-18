@@ -181,10 +181,6 @@ bool ExactNetworkStep::operator<(const ExactNetworkStep &rhs) const {
   return getInversionMask() < rhs.getInversionMask();
 }
 
-static bool hasEnabledConstructs(const ExactSynthesisPolicy &policy) {
-  return !policy.primitiveInfos.empty();
-}
-
 static std::optional<ExactNetwork> synthesizeDirect(unsigned numInputs,
                                                     const APInt &target) {
   ExactNetwork network;
@@ -280,7 +276,6 @@ public:
 
 private:
   int newVar();
-  void addExactlyOne(ArrayRef<int> vars);
   /// Return the SAT variable for one source under one concrete input pattern.
   int getSourceValueVar(unsigned source, unsigned minterm) const;
   /// Return that same variable as a literal, optionally negated.
@@ -502,12 +497,6 @@ std::optional<ExactNetwork> GenericExactSATProblem::solve() {
 
 int GenericExactSATProblem::newVar() { return solver.newVar(); }
 
-void GenericExactSATProblem::addExactlyOne(ArrayRef<int> vars) {
-  addExactlyOneClauses(
-      vars, [&](ArrayRef<int> clause) { solver.addClause(clause); },
-      [&] { return newVar(); });
-}
-
 int GenericExactSATProblem::getSourceValueVar(unsigned source,
                                               unsigned minterm) const {
   return sourceValueVars[source][minterm];
@@ -567,7 +556,9 @@ bool GenericExactSATProblem::buildEncoding() {
     selectionVars.reserve(stepCandidates[step].size());
     for (size_t i = 0, e = stepCandidates[step].size(); i != e; ++i)
       selectionVars.push_back(newVar());
-    addExactlyOne(selectionVars);
+    addExactlyOneClauses(
+        selectionVars, [&](ArrayRef<int> clause) { solver.addClause(clause); },
+        [&] { return newVar(); });
   }
 
   // Now describe what the chosen candidate means, and forbid dead internal
@@ -669,7 +660,7 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
          << formatTruthTable(truthTable)
          << " allowed-primitives=" << formatPrimitiveSummary(policy) << "\n";
 
-  if (!hasEnabledConstructs(policy))
+  if (policy.primitiveInfos.empty())
     return failure();
 
   LDBG() << "Trying direct synthesis for target=0x"
@@ -771,16 +762,12 @@ struct ExactSynthesisPass
         return failure();
       }
 
-      if (arityText.empty()) {
-        emitError(UnknownLoc::get(context))
-            << "expected explicit arity for '" << name << "', e.g. '" << name
-            << ":3'";
-        return failure();
-      }
       unsigned arity = 0;
-      if (arityText.getAsInteger(10, arity)) {
+      if (arityText.empty() || arityText.getAsInteger(10, arity)) {
         emitError(UnknownLoc::get(context))
-            << "invalid arity in allowed op '" << spelling << "'";
+            << "expected allowed exact-synthesis op in 'name:arity' form, "
+               "e.g. '"
+            << name << ":3'";
         return failure();
       }
       if (arity < 2 || arity > kMaxExactSynthesisInputs) {
