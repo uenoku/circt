@@ -61,22 +61,6 @@ struct ExactCandidatePolicy {
   bool enumerateInputInversions = true;
 };
 
-static ExactCandidatePolicy getCandidatePolicy(OperationName opName,
-                                               unsigned arity) {
-  // `xor_inv` is a parity operator. Constants and input inversion masks only
-  // produce constants, projections, or a complemented parity result. The exact
-  // network can express those cases through direct sources, per-use fanin
-  // inversions, and the root inversion bit, so keep one canonical XOR form.
-  if (opName.getStringRef() == XorInverterOp::getOperationName() &&
-      arity == 2) {
-    ExactCandidatePolicy policy;
-    policy.mayUseConstantSource = false;
-    policy.enumerateInputInversions = false;
-    return policy;
-  }
-  return {};
-}
-
 //===----------------------------------------------------------------------===//
 // Exact network model
 //===----------------------------------------------------------------------===//
@@ -782,6 +766,16 @@ struct ExactSynthesisPass
         return failure();
       }
       OperationName opName(*registeredInfo);
+      ExactCandidatePolicy candidatePolicy;
+      if (name == XorInverterOp::getOperationName() && arity == 2) {
+        // `xor_inv` is a parity operator. Constants and input inversion masks
+        // only produce constants, projections, or a complemented parity result.
+        // The exact network can express those cases through direct sources,
+        // per-use fanin inversions, and the root inversion bit, so keep one
+        // canonical XOR form.
+        candidatePolicy.mayUseConstantSource = false;
+        candidatePolicy.enumerateInputInversions = false;
+      }
       if (llvm::any_of(policy.primitiveInfos, [&](const ExactNodeInfo &info) {
             return info.getOperationName() == opName &&
                    info.getArity() == arity;
@@ -790,9 +784,9 @@ struct ExactSynthesisPass
             << "duplicate allowed exact-synthesis op '" << spelling << "'";
         return failure();
       }
-      policy.primitiveInfos.emplace_back(
-          opName, arity, iface->areInputsPermutationInvariant(), iface,
-          getCandidatePolicy(opName, arity));
+      policy.primitiveInfos.emplace_back(opName, arity,
+                                         iface->areInputsPermutationInvariant(),
+                                         iface, candidatePolicy);
     }
     return policy;
   }
