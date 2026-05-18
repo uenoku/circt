@@ -23,6 +23,7 @@
 #include "circt/Support/Version.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -91,6 +92,9 @@ static LogicalResult printOp(Operation *op, raw_ostream &os) {
 /// command line options are parsed and LLVM/MLIR are all set up and ready to
 /// go.
 static LogicalResult executeOMLinker(MLIRContext &context) {
+  llvm::SourceMgr diagSrcMgr;
+  SourceMgrDiagnosticHandler sourceMgrHandler(diagSrcMgr, &context);
+
   // Create the timing manager we use to sample execution times.
   DefaultTimingManager tm;
   applyDefaultTimingManagerCLOptions(tm);

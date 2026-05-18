@@ -78,6 +78,13 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     classOp.getBody().cloneInto(&clonedRegion, mapper);
     Block *clonedBlock = &clonedRegion.front();
 
+    // Wrap cloned locations with CallSiteLoc so diagnostics show the full
+    // instantiation chain when evaluation fails inside inlined ops.
+    Location callSite = objOp.getLoc();
+    clonedBlock->walk([callSite](Operation *op) {
+      op->setLoc(CallSiteLoc::get(op->getLoc(), callSite));
+    });
+
     auto clonedFields = cast<ClassFieldsOp>(clonedBlock->getTerminator());
     SmallVector<Value> fieldValues(clonedFields.getFields());
 
@@ -182,7 +189,14 @@ bool isFullyEvaluated(Operation *op) {
 }
 
 LogicalResult verifyResult(ClassOp module, bool allowUnevaluated) {
-  auto isLegal = [allowUnevaluated](Operation *op) -> LogicalResult {
+  Location moduleLoc = module.getLoc();
+  StringRef moduleName = module.getSymName();
+  auto attachNote = [&](InFlightDiagnostic diag) -> InFlightDiagnostic {
+    diag.attachNote(moduleLoc) << "while elaborating '" << moduleName << "'";
+    return diag;
+  };
+  auto isLegal = [allowUnevaluated,
+                  attachNote](Operation *op) -> LogicalResult {
     // Check assert satisfied.
     if (auto assertOp = dyn_cast<PropertyAssertOp>(op)) {
       // Check if the condition is a constant false, which means the assertion
@@ -197,8 +211,8 @@ LogicalResult verifyResult(ClassOp module, bool allowUnevaluated) {
           return success();
         }
 
-        return op->emitError("OM property assertion failed: ")
-               << assertOp.getMessage();
+        return attachNote(op->emitError("OM property assertion failed: ")
+                          << assertOp.getMessage());
       };
 
       // Condition is a constant integer/bool - check if it's true.
@@ -212,13 +226,16 @@ LogicalResult verifyResult(ClassOp module, bool allowUnevaluated) {
       // This means the condition was not fully evaluated.
       if (allowUnevaluated)
         return success();
-      return emitError(op->getLoc(), "failed to evaluate assertion condition");
+
+      return attachNote(
+          op->emitError("failed to evaluate assertion condition"));
     }
 
     if (!isFullyEvaluated(op)) {
       if (allowUnevaluated)
         return success();
-      return emitError(op->getLoc()) << "failed to evaluate " << op->getName();
+      return attachNote(op->emitError()
+                        << "failed to evaluate " << op->getName());
     }
 
     return success();
