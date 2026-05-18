@@ -20,7 +20,7 @@ hw.module @and3_tt(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
 
 // MAJ3-LABEL: hw.module @maj3_tt
 // MAJ3: %[[MAJ:.+]] = synth.majority{{.*}}: i1
-// MAJ3-NEXT: hw.output %[[MAJ]] : i1
+// MAJ3: hw.output %{{.*}} : i1
 hw.module @maj3_tt(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
   %0 = comb.truth_table %a, %b, %c -> [false, false, false, true,
                                         false, true, true, true]

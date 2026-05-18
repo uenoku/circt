@@ -26,7 +26,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/DebugLog.h"
 #include <array>
-#include <mutex>
 #include <optional>
 #include <string>
 
@@ -61,18 +60,6 @@ struct ExactCandidatePolicy {
   bool mayUseConstantSource = true;
   bool enumerateInputInversions = true;
 };
-
-static uint8_t deriveNodeTruthTable(const BooleanLogicConcept *iface,
-                                    unsigned arity) {
-  SmallVector<APInt, 4> inputs;
-  inputs.reserve(arity);
-  for (unsigned input = 0; input != arity; ++input)
-    inputs.push_back(circt::createVarMask(arity, input, true));
-  APInt truthTable = iface->evaluateBooleanLogicWithoutInversion(inputs);
-  assert(truthTable.getBitWidth() <= 8 &&
-         "exact-synthesis nodes expect <= 8 bits");
-  return static_cast<uint8_t>(truthTable.getZExtValue());
-}
 
 static ExactCandidatePolicy getCandidatePolicy(OperationName opName,
                                                unsigned arity) {
@@ -123,17 +110,14 @@ using ExactCandidate = ExactNetworkStep;
 class ExactNodeInfo {
 public:
   ExactNodeInfo(OperationName opName, unsigned arity, bool commutative,
-                uint8_t truthTable, const BooleanLogicConcept *iface,
+                const BooleanLogicConcept *iface,
                 ExactCandidatePolicy candidatePolicy)
-      : opName(opName), arity(arity), commutative(commutative),
-        truthTable(truthTable), iface(iface), candidatePolicy(candidatePolicy) {
-  }
-  virtual ~ExactNodeInfo() = default;
+      : opName(opName), arity(arity), commutative(commutative), iface(iface),
+        candidatePolicy(candidatePolicy) {}
 
   OperationName getOperationName() const { return opName; }
   unsigned getArity() const { return arity; }
   bool isCommutative() const { return commutative; }
-  uint8_t getTruthTable() const { return truthTable; }
   bool mayUseConstantSource() const {
     return candidatePolicy.mayUseConstantSource;
   }
@@ -142,11 +126,7 @@ public:
   }
 
   /// Emit clauses for `selector => outLit == f(fanins...)`.
-  ///
-  /// By default the SAT semantics are derived directly from the node truth
-  /// table. That keeps node definitions compact while still allowing an
-  /// override if a future node kind ever needs a specialized encoding.
-  virtual void emitConditionedCNF(
+  void emitConditionedCNF(
       IncrementalSATSolver &solver, int selector, int outLit,
       const ExactCandidate &candidate, unsigned minterm,
       llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
@@ -160,7 +140,6 @@ private:
   OperationName opName;
   unsigned arity;
   bool commutative;
-  uint8_t truthTable;
   const BooleanLogicConcept *iface;
   ExactCandidatePolicy candidatePolicy;
 };
@@ -198,7 +177,6 @@ bool ExactNetworkStep::operator<(const ExactNetworkStep &rhs) const {
     if (info->getOperationName() != rhs.info->getOperationName())
       return info->getOperationName().getStringRef() <
              rhs.info->getOperationName().getStringRef();
-    return info->getTruthTable() < rhs.info->getTruthTable();
   }
   return getInversionMask() < rhs.getInversionMask();
 }
@@ -264,20 +242,6 @@ private:
   enumerateNodeCandidates(const ExactNodeInfo &info, unsigned availableSources,
                           SmallVectorImpl<ExactCandidate> &candidates);
 };
-
-//===----------------------------------------------------------------------===//
-// Constraints
-//===----------------------------------------------------------------------===//
-
-static void addConditionedSemantics(
-    IncrementalSATSolver &solver, int selector, int outLit,
-    const ExactCandidate &candidate, unsigned minterm,
-    llvm::function_ref<int(unsigned source, unsigned minterm, bool inverted)>
-        getSourceLiteral) {
-  assert(candidate.info && "candidate must carry node info");
-  candidate.info->emitConditionedCNF(solver, selector, outLit, candidate,
-                                     minterm, getSourceLiteral);
-}
 
 //===----------------------------------------------------------------------===//
 // Materialization
@@ -642,13 +606,15 @@ void GenericExactSATProblem::addCandidateSemanticsConstraints() {
     //   candidate's truth table on that input pattern.
     for (auto [candidateIndex, candidate] :
          llvm::enumerate(stepCandidates[step]))
-      for (unsigned minterm = 0; minterm != numMinterms; ++minterm)
-        addConditionedSemantics(
+      for (unsigned minterm = 0; minterm != numMinterms; ++minterm) {
+        assert(candidate.info && "candidate must carry node info");
+        candidate.info->emitConditionedCNF(
             solver, selectionVars[candidateIndex],
             getSourceValueVar(outSource, minterm), candidate, minterm,
             [&](unsigned source, unsigned currentMinterm, bool inverted) {
               return getSourceLiteral(source, currentMinterm, inverted);
             });
+      }
   }
 }
 
@@ -742,7 +708,6 @@ exactSynthesizeAreaMinimized(OpBuilder &builder, Location loc, APInt truthTable,
 // Rewrite Pass
 //===----------------------------------------------------------------------===//
 
-std::mutex gExactSynthesisMutex;
 struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
   ExactSynthesisPattern(MLIRContext *context,
                         const ExactSynthesisPolicy &policy)
@@ -753,10 +718,6 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
     if (op.getInputs().size() > kMaxExactSynthesisInputs)
       return failure();
 
-    {
-      std::scoped_lock lock(gExactSynthesisMutex);
-      llvm::errs() << "ExactSynthesisPattern: " << op << " start\n";
-    }
     SmallVector<Value> operands;
     operands.reserve(op.getInputs().size());
     for (Value operand : llvm::reverse(op.getInputs()))
@@ -769,10 +730,6 @@ struct ExactSynthesisPattern : public OpRewritePattern<comb::TruthTableOp> {
                                                truthTable, operands, policy);
     if (failed(result))
       return failure();
-    {
-      std::scoped_lock lock(gExactSynthesisMutex);
-      llvm::errs() << "ExactSynthesisPattern: " << op << " done\n";
-    }
 
     replaceOpAndCopyNamehint(rewriter, op, *result);
     return success();
@@ -847,8 +804,7 @@ struct ExactSynthesisPass
         return failure();
       }
       policy.primitiveInfos.emplace_back(
-          opName, arity, iface->areInputsPermutationInvariant(),
-          deriveNodeTruthTable(iface, arity), iface,
+          opName, arity, iface->areInputsPermutationInvariant(), iface,
           getCandidatePolicy(opName, arity));
     }
     return policy;
