@@ -175,11 +175,10 @@ Flow firrtl::foldFlow(Value val, Flow accumulatedFlow) {
 
   if (auto blockArg = dyn_cast<BlockArgument>(val)) {
     auto *op = val.getParentBlock()->getParentOp();
-    if (auto moduleLike = dyn_cast<FModuleLike>(op)) {
-      auto direction = moduleLike.getPortDirection(blockArg.getArgNumber());
-      if (direction == Direction::Out)
+    if (auto moduleLike = dyn_cast<FModuleLike>(op))
+      if (moduleLike.getPortDirection(blockArg.getArgNumber()) ==
+          Direction::Out)
         return swapFlow(accumulatedFlow);
-    }
     return accumulatedFlow;
   }
 
@@ -197,8 +196,8 @@ Flow firrtl::foldFlow(Value val, Flow accumulatedFlow) {
       .Case<RegOp, RegResetOp, WireOp, MemoryPortOp>(
           [](auto) { return Flow::Duplex; })
       .Case<InstanceOp, InstanceChoiceOp>([&](auto inst) {
-        auto resultNo = cast<OpResult>(val).getResultNumber();
-        if (inst.getPortDirection(resultNo) == Direction::Out)
+        if (inst.getPortDirection(cast<OpResult>(val).getResultNumber()) ==
+            Direction::Out)
           return accumulatedFlow;
         return swapFlow(accumulatedFlow);
       })
@@ -440,11 +439,12 @@ void CircuitOp::build(OpBuilder &builder, OperationState &result,
 
 static ParseResult parseCircuitOpAttrs(OpAsmParser &parser,
                                        NamedAttrList &resultAttrs) {
-  auto result = parser.parseOptionalAttrDictWithKeyword(resultAttrs);
+  if (parser.parseOptionalAttrDictWithKeyword(resultAttrs))
+    return failure();
   if (!resultAttrs.get("annotations"))
     resultAttrs.append("annotations", parser.getBuilder().getArrayAttr({}));
 
-  return result;
+  return success();
 }
 
 static void printCircuitOpAttrs(OpAsmPrinter &p, Operation *op,
@@ -452,8 +452,7 @@ static void printCircuitOpAttrs(OpAsmPrinter &p, Operation *op,
   // "name" is always elided.
   SmallVector<StringRef> elidedAttrs = {"name"};
   // Elide "annotations" if it doesn't exist or if it is empty
-  auto annotationsAttr = op->getAttrOfType<ArrayAttr>("annotations");
-  if (annotationsAttr.empty())
+  if (op->getAttrOfType<ArrayAttr>("annotations").empty())
     elidedAttrs.push_back("annotations");
 
   p.printOptionalAttrDictWithKeyword(op->getAttrs(), elidedAttrs);
@@ -680,15 +679,14 @@ SmallVector<::circt::hw::PortInfo> FMemModuleOp::getPortList() {
 
 static hw::PortInfo getPortImpl(FModuleLike module, size_t idx) {
   auto sym = module.getPortSymbolAttr(idx);
-  auto attrs = sym ? DictionaryAttr::getWithSorted(
-                         module.getContext(),
-                         ArrayRef(mlir::NamedAttribute(
-                             hw::HWModuleLike::getPortSymbolAttrName(), sym)))
-                   : DictionaryAttr::get(module.getContext());
   return {{module.getPortNameAttr(idx), module.getPortType(idx),
            dirFtoH(module.getPortDirection(idx))},
           idx,
-          attrs,
+          sym ? DictionaryAttr::getWithSorted(
+                    module.getContext(),
+                    ArrayRef(mlir::NamedAttribute(
+                        hw::HWModuleLike::getPortSymbolAttrName(), sym)))
+              : DictionaryAttr::get(module.getContext()),
           module.getPortLocation(idx)};
 }
 
@@ -761,7 +759,7 @@ static void insertPorts(FModuleLike op,
   ArrayRef<Attribute> existingNames = op.getPortNames();
   ArrayRef<Attribute> existingTypes = op.getPortTypes();
   ArrayRef<Attribute> existingLocs = op.getPortLocations();
-  assert(existingDirections.size() == oldNumArgs);
+  assert(op.getPortDirectionsAttr().size() == oldNumArgs);
   assert(existingNames.size() == oldNumArgs);
   assert(existingTypes.size() == oldNumArgs);
   assert(existingLocs.size() == oldNumArgs);
@@ -1208,14 +1206,15 @@ printModulePorts(OpAsmPrinter &p, Block *block, ArrayRef<bool> portDirections,
       p.printOperand(block->getArgument(idx), tmpStream);
       // If the name wasn't printable in a way that agreed with portName, make
       // sure to print out an explicit portNames attribute.
-      auto portName = cast<StringAttr>(portNames[idx]).getValue();
-      if (tmpStream.str().drop_front() != portName)
+      if (tmpStream.str().drop_front() !=
+          cast<StringAttr>(portNames[idx]).getValue())
         printedNamesDontMatch = true;
       return ssaNames.insert({idx, tmpStream.str().str()}).first->getSecond();
     }
 
-    auto name = cast<StringAttr>(portNames[idx]).getValue();
-    return ssaNames.insert({idx, name.str()}).first->getSecond();
+    return ssaNames
+        .insert({idx, cast<StringAttr>(portNames[idx]).getValue().str()})
+        .first->getSecond();
   };
 
   // If we are printing the ports as block arguments the op must have a first
@@ -1766,8 +1765,6 @@ LogicalResult FModuleOp::verify() {
 }
 
 LogicalResult FExtModuleOp::verify() {
-  auto params = getParameters();
-
   auto checkParmValue = [&](Attribute elt) -> bool {
     auto param = cast<ParamDeclAttr>(elt);
     auto value = param.getValue();
@@ -1778,7 +1775,7 @@ LogicalResult FExtModuleOp::verify() {
     return false;
   };
 
-  if (!llvm::all_of(params, checkParmValue))
+  if (!llvm::all_of(getParameters(), checkParmValue))
     return failure();
 
   // Verify that any mentioned layers are marked as known.
@@ -2027,8 +2024,8 @@ ClassType firrtl::detail::getInstanceTypeForClassLike(ClassLike classOp) {
   for (size_t i = 0; i < n; ++i)
     elements.push_back({classOp.getPortNameAttr(i), classOp.getPortType(i),
                         classOp.getPortDirection(i)});
-  auto name = FlatSymbolRefAttr::get(classOp.getNameAttr());
-  return ClassType::get(name, elements);
+  return ClassType::get(FlatSymbolRefAttr::get(classOp.getNameAttr()),
+                        elements);
 }
 
 template <typename OpTy>
@@ -2147,9 +2144,8 @@ static void printClassLike(OpAsmPrinter &p, ClassLike op) {
   // print the body if it exists.
   if (!region.empty()) {
     p << " ";
-    auto printEntryBlockArgs = false;
-    auto printBlockTerminators = false;
-    p.printRegion(region, printEntryBlockArgs, printBlockTerminators);
+    p.printRegion(region, /*printEntryBlockArgs=*/false,
+                  /*printBlockTerminators=*/false);
   }
 }
 
@@ -2206,8 +2202,7 @@ void ClassOp::print(OpAsmPrinter &p) {
 }
 
 ParseResult ClassOp::parse(OpAsmParser &parser, OperationState &result) {
-  auto hasSSAIdentifiers = true;
-  return parseClassLike<ClassOp>(parser, result, hasSSAIdentifiers);
+  return parseClassLike<ClassOp>(parser, result, /*hasSSAIdentifiers=*/true);
 }
 
 LogicalResult ClassOp::verify() {
@@ -2304,8 +2299,8 @@ void ExtClassOp::print(OpAsmPrinter &p) {
 }
 
 ParseResult ExtClassOp::parse(OpAsmParser &parser, OperationState &result) {
-  auto hasSSAIdentifiers = false;
-  return parseClassLike<ExtClassOp>(parser, result, hasSSAIdentifiers);
+  return parseClassLike<ExtClassOp>(parser, result,
+                                    /*hasSSAIdentifiers=*/false);
 }
 
 LogicalResult
@@ -3491,10 +3486,8 @@ LogicalResult MemOp::verify() {
     oldDataType = dataType;
   }
 
-  auto maskWidth = getMaskBits();
-
   auto dataWidth = getDataType().getBitWidthOrSentinel();
-  if (dataWidth > 0 && maskWidth > (size_t)dataWidth)
+  if (dataWidth > 0 && getMaskBits() > (size_t)dataWidth)
     return emitOpError("the mask width cannot be greater than "
                        "data width");
 
@@ -3530,9 +3523,8 @@ FIRRTLType MemOp::getTypeForPort(uint64_t depth, FIRRTLBaseType dataType,
 
   SmallVector<BundleType::BundleElement, 7> portFields;
 
-  auto addressType = UIntType::get(context, getAddressWidth(depth));
-
-  portFields.push_back({getId("addr"), false, addressType});
+  portFields.push_back(
+      {getId("addr"), false, UIntType::get(context, getAddressWidth(depth))});
   portFields.push_back({getId("en"), false, UIntType::get(context, 1)});
   portFields.push_back({getId("clk"), false, ClockType::get(context)});
 
@@ -4041,8 +4033,8 @@ OptionCaseOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return success();
 
   // Verify that the referenced macro exists in the circuit.
-  auto circuitOp = getOperation()->getParentOfType<CircuitOp>();
-  auto *refOp = symbolTable.lookupSymbolIn(circuitOp, caseMacro);
+  auto *refOp = symbolTable.lookupSymbolIn(
+      getOperation()->getParentOfType<CircuitOp>(), caseMacro);
   if (!refOp)
     return emitOpError("case_macro references an undefined symbol: ")
            << caseMacro;
@@ -4064,13 +4056,12 @@ void ObjectOp::build(OpBuilder &builder, OperationState &state, ClassLike klass,
 }
 
 LogicalResult ObjectOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto circuitOp = getOperation()->getParentOfType<CircuitOp>();
   auto classType = getType();
   auto className = classType.getNameAttr();
 
   // verify that the class exists.
-  auto classOp = dyn_cast_or_null<ClassLike>(
-      symbolTable.lookupSymbolIn(circuitOp, className));
+  auto classOp = dyn_cast_or_null<ClassLike>(symbolTable.lookupSymbolIn(
+      getOperation()->getParentOfType<CircuitOp>(), className));
   if (!classOp)
     return emitOpError() << "references unknown class " << className;
 
@@ -4088,8 +4079,8 @@ StringAttr ObjectOp::getClassNameAttr() {
 StringRef ObjectOp::getClassName() { return getType().getName(); }
 
 ClassLike ObjectOp::getReferencedClass(const SymbolTable &symbolTable) {
-  auto symRef = getType().getNameAttr();
-  return symbolTable.lookup<ClassLike>(symRef.getLeafReference());
+  return symbolTable.lookup<ClassLike>(
+      getType().getNameAttr().getLeafReference());
 }
 
 Operation *ObjectOp::getReferencedOperation(const SymbolTable &symtbl) {
@@ -4391,13 +4382,12 @@ LogicalResult RefDefineOp::verify() {
   // This define is only enabled when its ambient layers are active. Check
   // that whenever the destination's layer requirements are met, that this
   // op is enabled.
-  auto ambientLayers = getAmbientLayersAt(getOperation());
-  auto dstLayers = getLayersFor(getDest());
   SmallVector<SymbolRefAttr> missingLayers;
 
-  return checkLayerCompatibility(getOperation(), ambientLayers, dstLayers,
-                                 "has more layer requirements than destination",
-                                 "additional layers required");
+  return checkLayerCompatibility(
+      getOperation(), getAmbientLayersAt(getOperation()),
+      getLayersFor(getDest()), "has more layer requirements than destination",
+      "additional layers required");
 }
 
 LogicalResult PropAssignOp::verify() {
@@ -4722,10 +4712,10 @@ ParseResult ConstantOp::parse(OpAsmParser &parser, OperationState &result) {
     }
   }
 
-  auto intType = parser.getBuilder().getIntegerType(value.getBitWidth(),
-                                                    resultType.isSigned());
-  auto valueAttr = parser.getBuilder().getIntegerAttr(intType, value);
-  properties.setValue(valueAttr);
+  properties.setValue(parser.getBuilder().getIntegerAttr(
+      parser.getBuilder().getIntegerType(value.getBitWidth(),
+                                         resultType.isSigned()),
+      value));
   return success();
 }
 
@@ -4754,19 +4744,19 @@ void ConstantOp::build(OpBuilder &builder, OperationState &result, IntType type,
   assert((width == -1 || (int32_t)value.getBitWidth() == width) &&
          "incorrect attribute bitwidth for firrtl.constant");
 
-  auto attr =
-      IntegerAttr::get(type.getContext(), APSInt(value, !type.isSigned()));
-  return build(builder, result, type, attr);
+  return build(
+      builder, result, type,
+      IntegerAttr::get(type.getContext(), APSInt(value, !type.isSigned())));
 }
 
 /// Build a ConstantOp from an APSInt, handling the attribute formation for the
 /// 'value' attribute and inferring the FIRRTL type.
 void ConstantOp::build(OpBuilder &builder, OperationState &result,
                        const APSInt &value) {
-  auto attr = IntegerAttr::get(builder.getContext(), value);
-  auto type =
-      IntType::get(builder.getContext(), value.isSigned(), value.getBitWidth());
-  return build(builder, result, type, attr);
+  return build(
+      builder, result,
+      IntType::get(builder.getContext(), value.isSigned(), value.getBitWidth()),
+      IntegerAttr::get(builder.getContext(), value));
 }
 
 void ConstantOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
@@ -4820,8 +4810,7 @@ ParseResult SpecialConstantOp::parse(OpAsmParser &parser,
   result.addTypes(resultType);
 
   // Create the attribute.
-  auto valueAttr = parser.getBuilder().getBoolAttr(value == 1);
-  properties.setValue(valueAttr);
+  properties.setValue(parser.getBuilder().getBoolAttr(value == 1));
   return success();
 }
 
@@ -4916,8 +4905,7 @@ Attribute AggregateConstantOp::getAttributeFromFieldID(uint64_t fieldID) {
 }
 
 LogicalResult FIntegerConstantOp::verify() {
-  auto i = getValueAttr();
-  if (!i.getType().isSignedInteger())
+  if (!getValueAttr().getType().isSignedInteger())
     return emitOpError("value must be signed");
   return success();
 }
@@ -4937,10 +4925,9 @@ ParseResult FIntegerConstantOp::parse(OpAsmParser &parser,
       parser.parseOptionalAttrDict(result.attributes))
     return failure();
   result.addTypes(FIntegerType::get(context));
-  auto intType =
-      IntegerType::get(context, value.getBitWidth(), IntegerType::Signed);
-  auto valueAttr = parser.getBuilder().getIntegerAttr(intType, value);
-  properties.setValue(valueAttr);
+  properties.setValue(parser.getBuilder().getIntegerAttr(
+      IntegerType::get(context, value.getBitWidth(), IntegerType::Signed),
+      value));
   return success();
 }
 
@@ -5074,8 +5061,7 @@ ParseResult FEnumCreateOp::parse(OpAsmParser &parser, OperationState &result) {
   if (functionType.getNumResults() != 1)
     return parser.emitError(parser.getNameLoc(), "single result type required");
 
-  auto inputType = functionType.getInput(0);
-  if (parser.resolveOperand(input, inputType, result.operands))
+  if (parser.resolveOperand(input, functionType.getInput(0), result.operands))
     return failure();
 
   auto outputType = functionType.getResult(0);
@@ -6369,11 +6355,12 @@ LogicalResult BitCastOp::verify() {
 /// attribute if not specified.
 static ParseResult parseElideAnnotations(OpAsmParser &parser,
                                          NamedAttrList &resultAttrs) {
-  auto result = parser.parseOptionalAttrDict(resultAttrs);
+  if (parser.parseOptionalAttrDict(resultAttrs))
+    return failure();
   if (!resultAttrs.get("annotations"))
     resultAttrs.append("annotations", parser.getBuilder().getArrayAttr({}));
 
-  return result;
+  return success();
 }
 
 static void printElideAnnotations(OpAsmPrinter &p, Operation *op,
@@ -6393,7 +6380,8 @@ static void printElideAnnotations(OpAsmPrinter &p, Operation *op,
 /// 'portAnnotations' attributes if not specified.
 static ParseResult parseElidePortAnnotations(OpAsmParser &parser,
                                              NamedAttrList &resultAttrs) {
-  auto result = parseElideAnnotations(parser, resultAttrs);
+  if (failed(parseElideAnnotations(parser, resultAttrs)))
+    return failure();
 
   if (!resultAttrs.get("portAnnotations")) {
     SmallVector<Attribute, 16> portAnnotations(
@@ -6401,7 +6389,7 @@ static ParseResult parseElidePortAnnotations(OpAsmParser &parser,
     resultAttrs.append("portAnnotations",
                        parser.getBuilder().getArrayAttr(portAnnotations));
   }
-  return result;
+  return success();
 }
 
 // Elide 'annotations' and 'portAnnotations' attributes if they are empty.
@@ -6426,8 +6414,8 @@ static ParseResult parseNameKind(OpAsmParser &parser,
 
   if (!parser.parseOptionalKeyword(&keyword,
                                    {"interesting_name", "droppable_name"})) {
-    auto kind = symbolizeNameKindEnum(keyword);
-    result = NameKindEnumAttr::get(parser.getContext(), kind.value());
+    result = NameKindEnumAttr::get(parser.getContext(),
+                                   symbolizeNameKindEnum(keyword).value());
     return success();
   }
 
@@ -6543,11 +6531,12 @@ static void printClassInterface(OpAsmPrinter &p, Operation *, ClassType type) {
 
 static ParseResult parseElideEmptyName(OpAsmParser &p,
                                        NamedAttrList &resultAttrs) {
-  auto result = p.parseOptionalAttrDict(resultAttrs);
+  if (p.parseOptionalAttrDict(resultAttrs))
+    return failure();
   if (!resultAttrs.get("name"))
     resultAttrs.append("name", p.getBuilder().getStringAttr(""));
 
-  return result;
+  return success();
 }
 
 static void printElideEmptyName(OpAsmPrinter &p, Operation *op,
@@ -6913,19 +6902,16 @@ FIRRTLType RefSubOp::inferReturnType(Type type, uint32_t fieldIndex,
 }
 
 LogicalResult RefCastOp::verify() {
-  auto srcLayers = getLayersFor(getInput());
-  auto dstLayers = getLayersFor(getResult());
   return checkLayerCompatibility(
-      getOperation(), srcLayers, dstLayers,
+      getOperation(), getLayersFor(getInput()), getLayersFor(getResult()),
       "cannot discard layer requirements of input reference",
       "discarding layer requirements");
 }
 
 LogicalResult RefResolveOp::verify() {
-  auto srcLayers = getLayersFor(getRef());
-  auto dstLayers = getAmbientLayersAt(getOperation());
   return checkLayerCompatibility(
-      getOperation(), srcLayers, dstLayers,
+      getOperation(), getLayersFor(getRef()),
+      getAmbientLayersAt(getOperation()),
       "ambient layers are insufficient to resolve reference");
 }
 
@@ -6974,34 +6960,30 @@ LogicalResult RWProbeOp::verifyInnerRefs(hw::InnerRefNamespace &ns) {
 }
 
 LogicalResult RefForceOp::verify() {
-  auto ambientLayers = getAmbientLayersAt(getOperation());
-  auto destLayers = getLayersFor(getDest());
   return checkLayerCompatibility(
-      getOperation(), destLayers, ambientLayers,
+      getOperation(), getLayersFor(getDest()),
+      getAmbientLayersAt(getOperation()),
       "has insufficient ambient layers to force its reference");
 }
 
 LogicalResult RefForceInitialOp::verify() {
-  auto ambientLayers = getAmbientLayersAt(getOperation());
-  auto destLayers = getLayersFor(getDest());
   return checkLayerCompatibility(
-      getOperation(), destLayers, ambientLayers,
+      getOperation(), getLayersFor(getDest()),
+      getAmbientLayersAt(getOperation()),
       "has insufficient ambient layers to force its reference");
 }
 
 LogicalResult RefReleaseOp::verify() {
-  auto ambientLayers = getAmbientLayersAt(getOperation());
-  auto destLayers = getLayersFor(getDest());
   return checkLayerCompatibility(
-      getOperation(), destLayers, ambientLayers,
+      getOperation(), getLayersFor(getDest()),
+      getAmbientLayersAt(getOperation()),
       "has insufficient ambient layers to release its reference");
 }
 
 LogicalResult RefReleaseInitialOp::verify() {
-  auto ambientLayers = getAmbientLayersAt(getOperation());
-  auto destLayers = getLayersFor(getDest());
   return checkLayerCompatibility(
-      getOperation(), destLayers, ambientLayers,
+      getOperation(), getLayersFor(getDest()),
+      getAmbientLayersAt(getOperation()),
       "has insufficient ambient layers to release its reference");
 }
 
@@ -7073,79 +7055,88 @@ LogicalResult LayerBlockOp::verify() {
 
   // Verify the body of the region.
   FieldRefCache fieldRefCache;
-  auto result = getBody(0)->walk<mlir::WalkOrder::PreOrder>(
-      [&](Operation *op) -> WalkResult {
-        // Skip nested layer blocks.  Those will be verified separately.
-        if (isa<LayerBlockOp>(op))
-          return WalkResult::skip();
+  return failure(
+      getBody(0)
+          ->walk<mlir::WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
+            // Skip nested layer blocks.  Those will be verified
+            // separately.
+            if (isa<LayerBlockOp>(op))
+              return WalkResult::skip();
 
-        // Check all the operands of each op to make sure that only legal things
-        // are captured.
-        for (auto operand : op->getOperands()) {
-          // Any value captured from the current layer block is fine.
-          if (auto *definingOp = operand.getDefiningOp())
-            if (getOperation()->isAncestor(definingOp))
-              continue;
+            // Check all the operands of each op to make sure
+            // that only legal things are captured.
+            for (auto operand : op->getOperands()) {
+              // Any value captured from the current layer block
+              // is fine.
+              if (auto *definingOp = operand.getDefiningOp())
+                if (getOperation()->isAncestor(definingOp))
+                  continue;
 
-          auto type = operand.getType();
+              auto type = operand.getType();
 
-          // Capture of a non-base type, e.g., reference, is allowed.
-          if (isa<PropertyType>(type)) {
-            auto diag = emitOpError() << "captures a property operand";
-            diag.attachNote(operand.getLoc()) << "operand is defined here";
-            diag.attachNote(op->getLoc()) << "operand is used here";
-            return WalkResult::interrupt();
-          }
-        }
+              // Capture of a non-base type, e.g., reference, is
+              // allowed.
+              if (isa<PropertyType>(type)) {
+                auto diag = emitOpError() << "captures a property operand";
+                diag.attachNote(operand.getLoc()) << "operand is defined here";
+                diag.attachNote(op->getLoc()) << "operand is used here";
+                return WalkResult::interrupt();
+              }
+            }
 
-        // Ensure that the layer block does not drive any sinks outside.
-        if (auto connect = dyn_cast<FConnectLike>(op)) {
-          // ref.define is allowed to drive probes outside the layerblock.
-          if (isa<RefDefineOp>(connect))
+            // Ensure that the layer block does not drive any
+            // sinks outside.
+            if (auto connect = dyn_cast<FConnectLike>(op)) {
+              // ref.define is allowed to drive probes outside
+              // the layerblock.
+              if (isa<RefDefineOp>(connect))
+                return WalkResult::advance();
+
+              // Verify that connects only drive values declared
+              // in the layer block. If we see a non-passive
+              // connect destination, then verify that the source
+              // is in the same layer block so that the source is
+              // not driven.
+              auto dest = fieldRefCache.getFieldRefFromValue(connect.getDest())
+                              .getValue();
+              bool passive = true;
+              if (auto type = type_dyn_cast<FIRRTLBaseType>(
+                      connect.getDest().getType()))
+                passive = type.isPassive();
+              // TODO: Improve this verifier.  This is
+              // intentionally _not_ verifying a non-passive
+              // ConnectLike because it is hugely annoying to do
+              // so---it requires a full understanding of if the
+              // connect is driving destination-to-source,
+              // source-to-destination, or bi-directionally which
+              // requires deep inspection of the type.
+              // Eventually, the FIRRTL pass pipeline will remove
+              // all flips (e.g., canonicalize connect to
+              // matchingconnect) and this hole won't exist.
+              if (!passive)
+                return WalkResult::advance();
+
+              if (isAncestorOfValueOwner(getOperation(), dest))
+                return WalkResult::advance();
+
+              auto diag = connect.emitOpError()
+                          << "connects to a destination which is defined "
+                             "outside its enclosing layer block";
+              diag.attachNote(getLoc())
+                  << "enclosing layer block is defined here";
+              diag.attachNote(dest.getLoc()) << "destination is defined here";
+              return WalkResult::interrupt();
+            }
+
             return WalkResult::advance();
-
-          // Verify that connects only drive values declared in the layer block.
-          // If we see a non-passive connect destination, then verify that the
-          // source is in the same layer block so that the source is not driven.
-          auto dest =
-              fieldRefCache.getFieldRefFromValue(connect.getDest()).getValue();
-          bool passive = true;
-          if (auto type =
-                  type_dyn_cast<FIRRTLBaseType>(connect.getDest().getType()))
-            passive = type.isPassive();
-          // TODO: Improve this verifier.  This is intentionally _not_ verifying
-          // a non-passive ConnectLike because it is hugely annoying to do
-          // so---it requires a full understanding of if the connect is driving
-          // destination-to-source, source-to-destination, or bi-directionally
-          // which requires deep inspection of the type.  Eventually, the FIRRTL
-          // pass pipeline will remove all flips (e.g., canonicalize connect to
-          // matchingconnect) and this hole won't exist.
-          if (!passive)
-            return WalkResult::advance();
-
-          if (isAncestorOfValueOwner(getOperation(), dest))
-            return WalkResult::advance();
-
-          auto diag =
-              connect.emitOpError()
-              << "connects to a destination which is defined outside its "
-                 "enclosing layer block";
-          diag.attachNote(getLoc()) << "enclosing layer block is defined here";
-          diag.attachNote(dest.getLoc()) << "destination is defined here";
-          return WalkResult::interrupt();
-        }
-
-        return WalkResult::advance();
-      });
-
-  return failure(result.wasInterrupted());
+          })
+          .wasInterrupted());
 }
 
 LogicalResult
 LayerBlockOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto layerOp =
-      symbolTable.lookupNearestSymbolFrom<LayerOp>(*this, getLayerNameAttr());
-  if (!layerOp) {
+  if (!symbolTable.lookupNearestSymbolFrom<LayerOp>(*this,
+                                                    getLayerNameAttr())) {
     return emitOpError("invalid symbol reference");
   }
 
@@ -7312,10 +7303,10 @@ void DomainCreateAnonOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
 
 LogicalResult
 DomainCreateAnonOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto circuitOp = getOperation()->getParentOfType<CircuitOp>();
   auto domainAttr = getDomainAttr();
 
-  auto *symbol = symbolTable.lookupSymbolIn(circuitOp, domainAttr);
+  auto *symbol = symbolTable.lookupSymbolIn(
+      getOperation()->getParentOfType<CircuitOp>(), domainAttr);
   if (!symbol)
     return emitOpError() << "references undefined symbol '" << domainAttr
                          << "'";
@@ -7325,8 +7316,7 @@ DomainCreateAnonOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
                          << "' which is not a domain";
 
   // Verify that the result type matches the domain definition
-  auto domainType = getResult().getType();
-  return domainType.verifySymbolUses(getOperation(), symbolTable);
+  return getResult().getType().verifySymbolUses(getOperation(), symbolTable);
 }
 
 void DomainCreateOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
@@ -7335,10 +7325,10 @@ void DomainCreateOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
 
 LogicalResult
 DomainCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto circuitOp = getOperation()->getParentOfType<CircuitOp>();
   auto domainAttr = getDomainAttr();
 
-  auto *symbol = symbolTable.lookupSymbolIn(circuitOp, domainAttr);
+  auto *symbol = symbolTable.lookupSymbolIn(
+      getOperation()->getParentOfType<CircuitOp>(), domainAttr);
   if (!symbol)
     return emitOpError() << "references undefined symbol '" << domainAttr
                          << "'";
@@ -7348,8 +7338,7 @@ DomainCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
                          << "' which is not a domain";
 
   // Verify that the result type matches the domain definition
-  auto domainType = getResult().getType();
-  return domainType.verifySymbolUses(getOperation(), symbolTable);
+  return getResult().getType().verifySymbolUses(getOperation(), symbolTable);
 }
 
 LogicalResult DomainCreateOp::verify() {
@@ -7387,8 +7376,7 @@ LogicalResult DomainCreateOp::verify() {
 //===----------------------------------------------------------------------===//
 
 StringAttr DomainSubfieldOp::getFieldName() {
-  auto domainType = getInput().getType();
-  auto fields = domainType.getFields();
+  auto fields = getInput().getType().getFields();
   auto index = getFieldIndex();
 
   if (index >= fields.size())
