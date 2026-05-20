@@ -505,8 +505,7 @@ void ModuleState::render(Term *term, T &out) {
     return;
   }
   if (auto *val = dyn_cast<ValueTerm>(term)) {
-    auto value = val->value;
-    render(value, out);
+    render(val->value, out);
     return;
   }
   if (auto *row = dyn_cast<RowTerm>(term)) {
@@ -638,8 +637,7 @@ RowTerm *ModuleState::allocRow(size_t size) {
 }
 
 RowTerm *ModuleState::allocRow(ArrayRef<Term *> elements) {
-  auto ds = allocArray(elements);
-  return alloc<RowTerm>(ds);
+  return alloc<RowTerm>(allocArray(elements));
 }
 
 VariableTerm *ModuleState::allocVar() { return alloc<VariableTerm>(); }
@@ -936,22 +934,18 @@ template <typename T>
 void ModuleState::emitDuplicatePortDomainError(
     T op, size_t i, DomainTypeID domainTypeID, IntegerAttr domainPortIndexAttr1,
     IntegerAttr domainPortIndexAttr2) {
-  auto portName = op.getPortNameAttr(i);
-  auto portLoc = op.getPortLocation(i);
-  auto domainDecl = getDomain(domainTypeID);
-  auto domainName = domainDecl.getNameAttr();
+  auto domainName = getDomain(domainTypeID).getNameAttr();
   auto domainPortIndex1 = domainPortIndexAttr1.getUInt();
   auto domainPortIndex2 = domainPortIndexAttr2.getUInt();
-  auto domainPortName1 = op.getPortNameAttr(domainPortIndex1);
-  auto domainPortName2 = op.getPortNameAttr(domainPortIndex2);
-  auto domainPortLoc1 = op.getPortLocation(domainPortIndex1);
-  auto domainPortLoc2 = op.getPortLocation(domainPortIndex2);
-  auto diag = emitError(portLoc);
-  diag << "duplicate " << domainName << " association for port " << portName;
-  auto &note1 = diag.attachNote(domainPortLoc1);
-  note1 << "associated with " << domainName << " port " << domainPortName1;
-  auto &note2 = diag.attachNote(domainPortLoc2);
-  note2 << "associated with " << domainName << " port " << domainPortName2;
+  auto diag = emitError(op.getPortLocation(i));
+  diag << "duplicate " << domainName << " association for port "
+       << op.getPortNameAttr(i);
+  auto &note1 = diag.attachNote(op.getPortLocation(domainPortIndex1));
+  note1 << "associated with " << domainName << " port "
+        << op.getPortNameAttr(domainPortIndex1);
+  auto &note2 = diag.attachNote(op.getPortLocation(domainPortIndex2));
+  note2 << "associated with " << domainName << " port "
+        << op.getPortNameAttr(domainPortIndex2);
   noteLocation(diag, op);
 }
 
@@ -959,10 +953,10 @@ void ModuleState::emitDuplicatePortDomainError(
 /// domain port.
 template <typename T>
 void ModuleState::emitDomainPortInferenceError(T op, size_t i) {
-  auto name = op.getPortNameAttr(i);
   auto diag = emitError(op->getLoc());
   auto info = op.getDomainInfo();
-  diag << "unable to infer value for undriven domain port " << name;
+  diag << "unable to infer value for undriven domain port "
+       << op.getPortNameAttr(i);
   for (size_t j = 0, e = op.getNumPorts(); j < e; ++j) {
     if (auto assocs = dyn_cast<ArrayAttr>(info[j])) {
       for (auto assoc : assocs) {
@@ -982,12 +976,9 @@ template <typename T>
 void ModuleState::emitAmbiguousPortDomainAssociation(
     T op, const llvm::TinyPtrVector<DomainValue> &exports, DomainTypeID typeID,
     size_t i) {
-  auto portName = op.getPortNameAttr(i);
-  auto portLoc = op.getPortLocation(i);
-  auto domainDecl = getDomain(typeID);
-  auto domainName = domainDecl.getNameAttr();
-  auto diag = emitError(portLoc) << "ambiguous " << domainName
-                                 << " association for port " << portName;
+  auto diag = emitError(op.getPortLocation(i))
+              << "ambiguous " << getDomain(typeID).getNameAttr()
+              << " association for port " << op.getPortNameAttr(i);
   for (auto e : exports) {
     auto arg = cast<BlockArgument>(e);
     auto name = op.getPortNameAttr(arg.getArgNumber());
@@ -1001,11 +992,9 @@ template <typename T>
 void ModuleState::emitMissingPortDomainAssociationError(T op,
                                                         DomainTypeID typeID,
                                                         size_t i) {
-  auto domainName = getDomain(typeID).getNameAttr();
-  auto portName = op.getPortNameAttr(i);
   auto diag = emitError(op.getPortLocation(i))
-              << "missing " << domainName << " association for port "
-              << portName;
+              << "missing " << getDomain(typeID).getNameAttr()
+              << " association for port " << op.getPortNameAttr(i);
   noteLocation(diag, op);
 }
 
@@ -1189,10 +1178,9 @@ FInstanceLike ModuleState::fixInstancePorts(FInstanceLike op,
 }
 
 LogicalResult ModuleState::processOp(FInstanceLike op) {
-  auto moduleName =
-      cast<StringAttr>(cast<ArrayAttr>(op.getReferencedModuleNamesAttr())[0]);
   auto updateTable = getModuleUpdateTable();
-  auto lookup = updateTable.find(moduleName);
+  auto lookup = updateTable.find(
+      cast<StringAttr>(cast<ArrayAttr>(op.getReferencedModuleNamesAttr())[0]));
   if (lookup != updateTable.end())
     op = fixInstancePorts(op, lookup->second);
   return processInstancePorts(op);
@@ -1203,9 +1191,8 @@ LogicalResult ModuleState::processOp(UnsafeDomainCastOp op) {
   if (domains.empty())
     return unifyAssociations(op, op.getInput(), op.getResult());
 
-  auto input = op.getInput();
-  RowTerm *inputRow = getDomainAssociationAsRow(input);
-  SmallVector<Term *> elements(inputRow->elements);
+  SmallVector<Term *> elements(
+      getDomainAssociationAsRow(op.getInput())->elements);
   for (auto value : op.getDomains()) {
     auto domain = cast<DomainValue>(value);
     auto typeID = getDomainTypeID(domain);
@@ -1265,14 +1252,14 @@ LogicalResult ModuleState::processOp(RWProbeOp op) {
   auto target = globals.getInnerRefNamespace().lookup(op.getTarget());
 
   if (target.isPort()) {
-    auto targetOp = cast<FModuleOp>(target.getOp());
-    auto targetValue = targetOp.getArgument(target.getPort());
-    return unifyAssociations(op, targetValue, op.getResult());
+    return unifyAssociations(
+        op, cast<FModuleOp>(target.getOp()).getArgument(target.getPort()),
+        op.getResult());
   }
 
-  auto targetOp = cast<hw::InnerSymbolOpInterface>(target.getOp());
-  auto targetValue = targetOp.getTargetResult();
-  return unifyAssociations(op, targetValue, op.getResult());
+  return unifyAssociations(
+      op, cast<hw::InnerSymbolOpInterface>(target.getOp()).getTargetResult(),
+      op.getResult());
 }
 
 LogicalResult ModuleState::processOp(Operation *op) {
@@ -1348,21 +1335,16 @@ void ModuleState::ensureSolved(Namespace &ns, DomainTypeID typeID, size_t ip,
 
   auto *context = loc.getContext();
   auto domainDecl = getDomain(typeID);
-  auto domainName = domainDecl.getNameAttr();
-
-  auto portName = StringAttr::get(context, ns.newName(domainName.getValue()));
-  auto portType = DomainType::getFromDomainOp(domainDecl);
-  auto portDirection = Direction::In;
-  auto portSym = StringAttr();
-  auto portLoc = loc;
-  auto portAnnos = std::nullopt;
-  // Domain type ports have no associations (domain info is in the type).
-  auto portDomainInfo = ArrayAttr::get(context, {});
-  PortInfo portInfo(portName, portType, portDirection, portSym, portLoc,
-                    portAnnos, portDomainInfo);
-
   pending.solutions[var] = pending.insertions.size() + ip;
-  pending.insertions.push_back({ip, portInfo});
+  pending.insertions.push_back(
+      {ip,
+       PortInfo(StringAttr::get(
+                    context, ns.newName(domainDecl.getNameAttr().getValue())),
+                DomainType::getFromDomainOp(domainDecl), Direction::In,
+                StringAttr(), loc, std::nullopt,
+                // Domain type ports have no associations (domain info is in the
+                // type).
+                ArrayAttr::get(context, {}))});
 }
 
 void ModuleState::ensureExported(Namespace &ns, const ExportTable &exports,
@@ -1378,19 +1360,16 @@ void ModuleState::ensureExported(Namespace &ns, const ExportTable &exports,
   auto *context = loc.getContext();
 
   auto domainDecl = getDomain(typeID);
-  auto domainName = domainDecl.getNameAttr();
-
-  auto portName = StringAttr::get(context, ns.newName(domainName.getValue()));
-  auto portType = DomainType::getFromDomainOp(domainDecl);
-  auto portDirection = Direction::Out;
-  auto portSym = StringAttr();
-  auto portAnnos = std::nullopt;
-  // Domain type ports have no associations (domain info is in the type).
-  auto portDomainInfo = ArrayAttr::get(context, {});
-  PortInfo portInfo(portName, portType, portDirection, portSym, loc, portAnnos,
-                    portDomainInfo);
   pending.exports[value] = pending.insertions.size() + ip;
-  pending.insertions.push_back({ip, portInfo});
+  pending.insertions.push_back(
+      {ip,
+       PortInfo(StringAttr::get(
+                    context, ns.newName(domainDecl.getNameAttr().getValue())),
+                DomainType::getFromDomainOp(domainDecl), Direction::Out,
+                StringAttr(), loc, std::nullopt,
+                // Domain type ports have no associations (domain info is in the
+                // type).
+                ArrayAttr::get(context, {}))});
 }
 
 void ModuleState::getUpdatesForDomainAssociationOfPort(
@@ -1523,9 +1502,7 @@ LogicalResult ModuleState::updateModuleDomainInfo(
 
   for (size_t i = 0; i < numPorts; ++i) {
     auto port = moduleOp.getArgument(i);
-    auto type = port.getType();
-
-    if (isa<DomainType>(type)) {
+    if (isa<DomainType>(port.getType())) {
       // Domain type ports have no associations (domain info is in the type).
       newModuleDomainInfo[i] = ArrayAttr::get(context, {});
       continue;
@@ -1547,12 +1524,9 @@ LogicalResult ModuleState::updateModuleDomainInfo(
       auto domain = cast<ValueTerm>(find(row->elements[domainIndex]))->value;
       auto &exports = exportTable.at(domain);
       if (exports.empty()) {
-        auto portName = moduleOp.getPortNameAttr(i);
-        auto portLoc = moduleOp.getPortLocation(i);
-        auto domainDecl = getDomain(domainTypeID);
-        auto domainName = domainDecl.getNameAttr();
-        auto diag = emitError(portLoc) << "private " << domainName
-                                       << " association for port " << portName;
+        auto diag = emitError(moduleOp.getPortLocation(i))
+                    << "private " << getDomain(domainTypeID).getNameAttr()
+                    << " association for port " << moduleOp.getPortNameAttr(i);
         diag.attachNote(domain.getLoc()) << "associated domain: " << domain;
         noteLocation(diag, moduleOp);
         return failure();
@@ -1563,11 +1537,9 @@ LogicalResult ModuleState::updateModuleDomainInfo(
         return failure();
       }
 
-      auto argument = cast<BlockArgument>(exports[0]);
-      auto domainPortIndex = argument.getArgNumber();
       associations[domainTypeID.index] =
           IntegerAttr::get(IntegerType::get(context, 32, IntegerType::Unsigned),
-                           domainPortIndex);
+                           cast<BlockArgument>(exports[0]).getArgNumber());
     }
 
     newModuleDomainInfo[i] = ArrayAttr::get(context, associations);
@@ -1581,9 +1553,8 @@ LogicalResult ModuleState::updateModuleDomainInfo(
 DomainValue ModuleState::solveVarWithAnonDomain(
     OpBuilder &builder, DenseMap<DomainValue, DomainValue> &domainsInScope,
     Operation *user, DomainType type, VariableTerm *var) {
-  auto name = type.getName().getAttr();
-  DomainValue anon =
-      DomainCreateAnonOp::create(builder, user->getLoc(), type, name);
+  DomainValue anon = DomainCreateAnonOp::create(builder, user->getLoc(), type,
+                                                type.getName().getAttr());
   dirty();
   LLVM_DEBUG(llvm::dbgs().indent(6) << "create anon " << render(anon) << "\n");
   solve(var, allocVal(anon));
@@ -1724,20 +1695,22 @@ LogicalResult ModuleState::updateModuleBody(FModuleOp moduleOp) {
       if (moduleOp.getPortDirection(i) == Direction::In)
         domainsInScope[port] = port;
 
-  auto result = moduleOp.getBodyBlock()->walk([&](Operation *op) -> WalkResult {
-    return TypeSwitch<Operation *, WalkResult>(op)
-        .Case<WireOp>(
-            [&](auto wire) { return updateWire(domainsInScope, wire); })
-        .Case<FInstanceLike>([&](auto instance) {
-          return updateInstance(domainsInScope, instance);
-        })
-        .Case<DomainCreateOp, DomainCreateAnonOp>([&](auto domain) {
-          domainsInScope[domain] = domain;
-          return success();
-        })
-        .Default([&](auto op) { return success(); });
-  });
-  return failure(result.wasInterrupted());
+  return failure(
+      moduleOp.getBodyBlock()
+          ->walk([&](Operation *op) -> WalkResult {
+            return TypeSwitch<Operation *, WalkResult>(op)
+                .Case<WireOp>(
+                    [&](auto wire) { return updateWire(domainsInScope, wire); })
+                .Case<FInstanceLike>([&](auto instance) {
+                  return updateInstance(domainsInScope, instance);
+                })
+                .Case<DomainCreateOp, DomainCreateAnonOp>([&](auto domain) {
+                  domainsInScope[domain] = domain;
+                  return success();
+                })
+                .Default([&](auto op) { return success(); });
+          })
+          .wasInterrupted());
 }
 
 LogicalResult ModuleState::updateModule(FModuleOp moduleOp) {
@@ -1830,9 +1803,8 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
         isDriven(port))
       continue;
 
-    auto name = moduleOp.getPortNameAttr(i);
     auto diag = emitError(moduleOp.getPortLocation(i))
-                << "undriven domain port " << name;
+                << "undriven domain port " << moduleOp.getPortNameAttr(i);
     noteLocation(diag, moduleOp);
     return failure();
   }
@@ -1843,15 +1815,11 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
 LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
   for (size_t i = 0, e = op->getNumResults(); i < e; ++i) {
     auto port = dyn_cast<DomainValue>(op->getResult(i));
-
-    auto type = port.getType();
-    if (!isa<DomainType>(type) || op.getPortDirection(i) != Direction::In ||
-        isDriven(port))
+    if (!port || op.getPortDirection(i) != Direction::In || isDriven(port))
       continue;
 
-    auto name = op.getPortNameAttr(i);
     auto diag = emitError(op.getPortLocation(i))
-                << "undriven domain port " << name;
+                << "undriven domain port " << op.getPortNameAttr(i);
     noteLocation(diag, op);
     return failure();
   }
@@ -1860,10 +1828,11 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
 }
 
 LogicalResult ModuleState::checkModuleBody(FModuleOp moduleOp) {
-  auto result = moduleOp.getBody().walk([&](FInstanceLike op) -> WalkResult {
-    return checkInstanceDomainPortDrivers(op);
-  });
-  return failure(result.wasInterrupted());
+  return failure(moduleOp.getBody()
+                     .walk([&](FInstanceLike op) -> WalkResult {
+                       return checkInstanceDomainPortDrivers(op);
+                     })
+                     .wasInterrupted());
 }
 
 LogicalResult ModuleState::inferModule(FModuleOp moduleOp) {
