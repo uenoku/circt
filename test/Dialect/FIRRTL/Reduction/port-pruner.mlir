@@ -1,14 +1,12 @@
 // UNSUPPORTED: system-windows
 //   See https://github.com/llvm/circt/issues/4129
-// RUN: circt-reduce %s --test /usr/bin/env --test-arg grep --test-arg -q --test-arg "firrtl.module private @Bar" --keep-best=0 --include firrtl-remove-unused-ports | FileCheck %s
+// RUN: circt-reduce %s --test /usr/bin/env --test-arg grep --test-arg -q --test-arg "firrtl.module private @Bar" --keep-best=0 --include firrtl-imdeadcodeelim-remove-ports | FileCheck %s
 
 firrtl.circuit "Foo" {
   // CHECK-LABEL: firrtl.module @Foo
   firrtl.module @Foo(in %x: !firrtl.uint<1>, out %y: !firrtl.uint<3>) {
     // CHECK-NOT: %bar_a
-    // CHECK-NOT: %bar_c
-    // CHECK-NOT: %bar_e
-    // CHECK: %bar_b, %bar_d = firrtl.instance bar @Bar
+    // CHECK: %bar_b, %bar_c, %bar_d, %bar_e = firrtl.instance bar @Bar
     %bar_a, %bar_b, %bar_c, %bar_d, %bar_e = firrtl.instance bar @Bar (in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d: !firrtl.uint<1>, out e: !firrtl.uint<1>)
     firrtl.connect %bar_a, %x : !firrtl.uint<1>, !firrtl.uint<1>
     firrtl.connect %bar_b, %x : !firrtl.uint<1>, !firrtl.uint<1>
@@ -17,13 +15,14 @@ firrtl.circuit "Foo" {
     firrtl.connect %y, %1 : !firrtl.uint<3>, !firrtl.uint<3>
   }
 
-  // We're only ever using ports %b and %d -- the rest should be stripped.
+  // Port-only IMDCE keeps body operations alive, so only the unused input is
+  // stripped here.
   // CHECK-LABEL: firrtl.module private @Bar
   // CHECK-NOT: in %a
   // CHECK-SAME: in %b
-  // CHECK-NOT: out %c
+  // CHECK-SAME: out %c
   // CHECK-SAME: out %d
-  // CHECK-NOT: out %e
+  // CHECK-SAME: out %e
   firrtl.module private @Bar(
     in %a: !firrtl.uint<1>,
     in %b: !firrtl.uint<1>,

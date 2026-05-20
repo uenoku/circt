@@ -1,16 +1,16 @@
-// RUN: circt-opt -pass-pipeline='builtin.module(firrtl.circuit(firrtl-remove-unused-ports))' %s -split-input-file | FileCheck %s
+// RUN: circt-opt -pass-pipeline='builtin.module(firrtl-imdeadcodeelim{remove-ports-only})' %s -split-input-file | FileCheck %s
 firrtl.circuit "Top"   {
   // CHECK-LABEL: firrtl.module @Top(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
   // CHECK-SAME:                     out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>)
   firrtl.module @Top(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                      out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @UseBar(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
-    // CHECK: %A_b, %A_c = firrtl.instance A @UseBar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
+    // CHECK: %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A @UseBar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     // CHECK-NEXT: firrtl.connect %A_b, %b
     // CHECK-NEXT: firrtl.connect %c, %A_c
-    // CHECK-NEXT: firrtl.connect %d_unused, %{{invalid_ui1.*}}
-    // CHECK-NEXT: firrtl.connect %d_invalid, %{{invalid_ui1.*}}
-    // CHECK-NEXT: firrtl.connect %d_constant, %{{c1_ui1.*}}
+    // CHECK-NEXT: firrtl.connect %d_unused, %A_d_unused
+    // CHECK-NEXT: firrtl.connect %d_invalid, %A_d_invalid
+    // CHECK-NEXT: firrtl.connect %d_constant, %A_d_constant
     firrtl.connect %A_a, %a : !firrtl.uint<1>, !firrtl.uint<1>
     firrtl.connect %A_b, %b : !firrtl.uint<1>, !firrtl.uint<1>
     firrtl.connect %c, %A_c : !firrtl.uint<1>, !firrtl.uint<1>
@@ -19,10 +19,9 @@ firrtl.circuit "Top"   {
     firrtl.connect %d_constant, %A_d_constant : !firrtl.uint<1>, !firrtl.uint<1>
   }
 
-  // Check that %a, %d_unused, %d_invalid and %d_constant are removed.
-  // CHECK-LABEL: firrtl.module private @Bar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>)
+  // Check that %a is removed while internally used body operations stay live.
+  // CHECK-LABEL: firrtl.module private @Bar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>, out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>)
   // CHECK-NEXT:    firrtl.connect %c, %b
-  // CHECK-NEXT:  }
   firrtl.module private @Bar(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                      out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     firrtl.connect %c, %b : !firrtl.uint<1>, !firrtl.uint<1>
@@ -33,13 +32,13 @@ firrtl.circuit "Top"   {
     firrtl.connect %d_constant, %c1_i1 : !firrtl.uint<1>, !firrtl.uint<1>
   }
 
-  // Check that %a, %d_unused, %d_invalid and %d_constant are removed.
-  // CHECK-LABEL: firrtl.module private @UseBar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>) {
+  // Check that %a is removed while internally used body operations stay live.
+  // CHECK-LABEL: firrtl.module private @UseBar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>, out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
   firrtl.module private @UseBar(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                         out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @Bar(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     firrtl.connect %A_a, %a : !firrtl.uint<1>, !firrtl.uint<1>
-    // CHECK: %A_b, %A_c = firrtl.instance A  @Bar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
+    // CHECK: %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @Bar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     firrtl.connect %A_b, %b : !firrtl.uint<1>, !firrtl.uint<1>
     firrtl.connect %c, %A_c : !firrtl.uint<1>, !firrtl.uint<1>
     firrtl.connect %d_unused, %A_d_unused : !firrtl.uint<1>, !firrtl.uint<1>
@@ -57,7 +56,7 @@ firrtl.circuit "Top"   {
     firrtl.connect %c, %invalid_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
   }
 
-  // CHECK-LABEL: firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>)
+  // CHECK-LABEL: firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>)
   firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c = firrtl.instance A  @Foo(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
     // CHECK: %A_a, %A_b, %A_c = firrtl.instance A @Foo(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
@@ -76,12 +75,12 @@ firrtl.circuit "Top"   {
   firrtl.module @Top(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                      out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @UseBar(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
-    // CHECK: %A_b, %A_c = firrtl.instance A @UseBar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
+    // CHECK: %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A @UseBar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     // CHECK-NEXT: firrtl.matchingconnect %A_b, %b
     // CHECK-NEXT: firrtl.matchingconnect %c, %A_c
-    // CHECK-NEXT: firrtl.matchingconnect %d_unused, %{{invalid_ui1.*}}
-    // CHECK-NEXT: firrtl.matchingconnect %d_invalid, %{{invalid_ui1.*}}
-    // CHECK-NEXT: firrtl.matchingconnect %d_constant, %{{c1_ui1.*}}
+    // CHECK-NEXT: firrtl.matchingconnect %d_unused, %A_d_unused
+    // CHECK-NEXT: firrtl.matchingconnect %d_invalid, %A_d_invalid
+    // CHECK-NEXT: firrtl.matchingconnect %d_constant, %A_d_constant
     firrtl.matchingconnect %A_a, %a : !firrtl.uint<1>
     firrtl.matchingconnect %A_b, %b : !firrtl.uint<1>
     firrtl.matchingconnect %c, %A_c : !firrtl.uint<1>
@@ -90,10 +89,9 @@ firrtl.circuit "Top"   {
     firrtl.matchingconnect %d_constant, %A_d_constant : !firrtl.uint<1>
   }
 
-  // Check that %a, %d_unused, %d_invalid and %d_constant are removed.
-  // CHECK-LABEL: firrtl.module private @Bar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>)
+  // Check that %a is removed while internally used body operations stay live.
+  // CHECK-LABEL: firrtl.module private @Bar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>, out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>)
   // CHECK-NEXT:    firrtl.matchingconnect %c, %b
-  // CHECK-NEXT:  }
   firrtl.module private @Bar(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                      out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     firrtl.matchingconnect %c, %b : !firrtl.uint<1>
@@ -104,13 +102,13 @@ firrtl.circuit "Top"   {
     firrtl.matchingconnect %d_constant, %c1_i1 : !firrtl.uint<1>
   }
 
-  // Check that %a, %d_unused, %d_invalid and %d_constant are removed.
-  // CHECK-LABEL: firrtl.module private @UseBar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>) {
+  // Check that %a is removed while internally used body operations stay live.
+  // CHECK-LABEL: firrtl.module private @UseBar(in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>, out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
   firrtl.module private @UseBar(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>,
                         out %d_unused: !firrtl.uint<1>, out %d_invalid: !firrtl.uint<1>, out %d_constant: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @Bar(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     firrtl.matchingconnect %A_a, %a : !firrtl.uint<1>
-    // CHECK: %A_b, %A_c = firrtl.instance A  @Bar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
+    // CHECK: %A_b, %A_c, %A_d_unused, %A_d_invalid, %A_d_constant = firrtl.instance A  @Bar(in b: !firrtl.uint<1>, out c: !firrtl.uint<1>, out d_unused: !firrtl.uint<1>, out d_invalid: !firrtl.uint<1>, out d_constant: !firrtl.uint<1>)
     firrtl.matchingconnect %A_b, %b : !firrtl.uint<1>
     firrtl.matchingconnect %c, %A_c : !firrtl.uint<1>
     firrtl.matchingconnect %d_unused, %A_d_unused : !firrtl.uint<1>
@@ -128,7 +126,7 @@ firrtl.circuit "Top"   {
     firrtl.matchingconnect %c, %invalid_ui1 : !firrtl.uint<1>
   }
 
-  // CHECK-LABEL: firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>)
+  // CHECK-LABEL: firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>)
   firrtl.module private @UseFoo(in %a: !firrtl.uint<1>, in %b: !firrtl.uint<1>, out %c: !firrtl.uint<1>) {
     %A_a, %A_b, %A_c = firrtl.instance A  @Foo(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
     // CHECK: %A_a, %A_b, %A_c = firrtl.instance A @Foo(in a: !firrtl.uint<1>, in b: !firrtl.uint<1>, out c: !firrtl.uint<1>)
@@ -140,9 +138,9 @@ firrtl.circuit "Top"   {
 
 // -----
 
-// Ensure that the "output_file" attribute isn't destroyed by RemoveUnusedPorts.
+// Ensure that the "output_file" attribute isn't destroyed by IMDCE port-only mode.
 // This matters for interactions between Grand Central (which sets these) and
-// RemoveUnusedPorts which may clone modules with stripped ports.
+// IMDCE port-only mode which may clone modules with stripped ports.
 //
 // CHECK-LABEL: "PreserveOutputFile"
 firrtl.circuit "PreserveOutputFile" {

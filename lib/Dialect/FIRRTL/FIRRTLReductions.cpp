@@ -2635,6 +2635,23 @@ struct ExtmoduleConventionRemover : public OpReduction<FExtModuleOp> {
   bool isOneShot() const override { return true; }
 };
 
+struct IMDCEPortReduction : public Reduction {
+  IMDCEPortReduction(MLIRContext *context) {
+    pm = std::make_unique<mlir::PassManager>(
+        context, "builtin.module", mlir::OpPassManager::Nesting::Explicit);
+    pm->addPass(firrtl::createIMDeadCodeElim({/*removePortsOnly=*/true,
+                                              /*ignoreDontTouch=*/true}));
+  }
+
+  uint64_t match(Operation *op) override { return isa<mlir::ModuleOp>(op); }
+  LogicalResult rewrite(Operation *op) override { return pm->run(op); }
+  std::string getName() const override {
+    return "firrtl-imdeadcodeelim-remove-ports";
+  }
+
+  std::unique_ptr<mlir::PassManager> pm;
+};
+
 //===----------------------------------------------------------------------===//
 // Reduction Registration
 //===----------------------------------------------------------------------===//
@@ -2673,9 +2690,7 @@ void firrtl::FIRRTLReducePatternDialectInterface::populateReducePatterns(
                                   true, true);
   patterns.add<PassReduction, 19>(getContext(), firrtl::createInliner());
   patterns.add<PassReduction, 18>(getContext(), firrtl::createIMConstProp());
-  patterns.add<PassReduction, 17>(
-      getContext(),
-      firrtl::createRemoveUnusedPorts({/*ignoreDontTouch=*/true}));
+  patterns.add<IMDCEPortReduction, 17>(getContext());
   patterns.add<NodeSymbolRemover, 16>();
   patterns.add<PassReduction, 15>(getContext(), firrtl::createIMDeadCodeElim());
   patterns.add<ConnectForwarder, 14>();

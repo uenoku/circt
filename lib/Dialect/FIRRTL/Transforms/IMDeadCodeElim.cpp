@@ -56,8 +56,11 @@ static bool isDeletableDeclaration(Operation *op) {
 namespace {
 struct IMDeadCodeElimPass
     : public circt::firrtl::impl::IMDeadCodeElimBase<IMDeadCodeElimPass> {
+  using Base::Base;
+
   void runOnOperation() override;
 
+  void initializePortOnlyLiveness(CircuitOp circuit);
   void rewriteModuleSignature(FModuleOp module);
   void rewriteModuleBody(FModuleOp module);
   void eraseEmptyModule(FModuleOp module);
@@ -298,6 +301,29 @@ void IMDeadCodeElimPass::markBlockExecutable(Block *block) {
   }
 }
 
+void IMDeadCodeElimPass::initializePortOnlyLiveness(CircuitOp circuit) {
+  for (auto module : circuit.getBodyBlock()->getOps<FModuleOp>()) {
+    executableBlocks.insert(module.getBodyBlock());
+    markAlive(module);
+    for (auto argument : module.getBodyBlock()->getArguments())
+      if (!ignoreDontTouch && hasDontTouch(argument))
+        markAlive(argument);
+  }
+
+  circuit.walk([&](Operation *op) {
+    if (auto instance = dyn_cast<FInstanceLike>(op)) {
+      if (isa<InstanceOp>(*instance))
+        markAlive(instance);
+      else
+        markFInstanceLikeOp(instance);
+      return;
+    }
+
+    for (auto result : op->getResults())
+      markAlive(result);
+  });
+}
+
 void IMDeadCodeElimPass::forwardConstantOutputPort(FModuleOp module) {
   // This tracks constant values of output ports.
   SmallVector<std::pair<unsigned, APSInt>> constantPortIndicesAndValues;
@@ -363,6 +389,9 @@ void IMDeadCodeElimPass::runOnOperation() {
 
   circt::hw::InnerRefNamespace theInnerRefNamespace{*symbolTable, istc};
   innerRefNamespace = &theInnerRefNamespace;
+
+  if (removePortsOnly)
+    initializePortOnlyLiveness(circuit);
 
   // Walk attributes and find unknown uses of inner symbols or hierpaths.
   getOperation().walk([&](Operation *op) {
@@ -431,8 +460,9 @@ void IMDeadCodeElimPass::runOnOperation() {
 
   // Forward constant output ports to caller sides so that we can eliminate
   // constant outputs.
-  for (auto module : modules)
-    forwardConstantOutputPort(module);
+  if (!removePortsOnly)
+    for (auto module : modules)
+      forwardConstantOutputPort(module);
 
   for (auto module : circuit.getBodyBlock()->getOps<FModuleOp>()) {
     // Mark the ports of public modules as alive.
@@ -459,9 +489,11 @@ void IMDeadCodeElimPass::runOnOperation() {
       return false;
     };
 
-    AnnotationSet::removePortAnnotations(module, visitAnnotation);
-    AnnotationSet::removeAnnotations(
-        module, std::bind(visitAnnotation, -1, std::placeholders::_1));
+    if (!ignoreDontTouch) {
+      AnnotationSet::removePortAnnotations(module, visitAnnotation);
+      AnnotationSet::removeAnnotations(
+          module, std::bind(visitAnnotation, -1, std::placeholders::_1));
+    }
   }
 
   // If an element changed liveness then propagate liveness through it.
@@ -502,8 +534,9 @@ void IMDeadCodeElimPass::runOnOperation() {
     if (!liveElements.count(op))
       op.erase();
 
-  for (auto module : modules)
-    eraseEmptyModule(module);
+  if (!removePortsOnly)
+    for (auto module : modules)
+      eraseEmptyModule(module);
 
   // Clean up data structures.
   executableBlocks.clear();
@@ -710,11 +743,13 @@ void IMDeadCodeElimPass::rewriteModuleSignature(FModuleOp module) {
 
   for (auto index : llvm::seq(0u, numOldPorts)) {
     auto argument = module.getArgument(index);
-    assert((!hasDontTouch(argument) || isKnownAlive(argument)) &&
+    assert((ignoreDontTouch || !hasDontTouch(argument) ||
+            isKnownAlive(argument)) &&
            "If the port has don't touch, it should be known alive");
 
-    // If the port has dontTouch, skip.
-    if (hasDontTouch(argument))
+    // If the port has dontTouch, a symbol, or annotations, skip.
+    if ((hasDontTouch(argument) || !oldPorts[index].annotations.empty()) &&
+        !ignoreDontTouch)
       continue;
 
     if (isKnownAlive(argument)) {
