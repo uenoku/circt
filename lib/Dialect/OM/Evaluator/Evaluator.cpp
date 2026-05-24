@@ -433,9 +433,6 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
                 .Case<ListCreateOp, ListConcatOp>([&](auto op) {
                   return getPartiallyEvaluatedValue(op.getType(), loc);
                 })
-                .Case<ObjectOp>([&](auto op) {
-                  return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
-                })
                 .Case<ElaboratedObjectOp>([&](auto op) {
                   return getPartiallyEvaluatedValue(op.getType(), op.getLoc());
                 })
@@ -454,11 +451,8 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
   return result;
 }
 
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
-                                             ActualParameters actualParams,
-                                             Location loc,
-                                             ObjectKey instanceKey) {
+FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
+    StringAttr className, ActualParameters actualParams, Location loc) {
 #ifndef NDEBUG
   DebugNesting nestOps(debugNesting);
 #endif
@@ -539,20 +533,8 @@ circt::om::Evaluator::evaluateObjectInstance(StringAttr className,
     fields[cast<StringAttr>(name)] = result.value();
   }
 
-  // If there is an instance, update the object placeholder allocated above.
-  LLVM_DEBUG(dbgs() << "object value:\n");
-  if (instanceKey.first) {
-    auto result =
-        getOrCreateValue(instanceKey.first, instanceKey.second, loc).value();
-    auto *object = llvm::cast<evaluator::ObjectValue>(result.get());
-    object->setFields(std::move(fields));
-    return result;
-  }
-
-  // If it's external call, just allocate new ObjectValue.
   evaluator::EvaluatorValuePtr result =
       std::make_shared<evaluator::ObjectValue>(cls, fields, loc);
-  // Object is already fully evaluated when created with fields.
   assert(result->isFullyEvaluated() &&
          "object with fields should be fully evaluated");
   return result;
@@ -623,8 +605,8 @@ circt::om::Evaluator::instantiateImpl(
 
   auto loc = cls.getLoc();
   LLVM_DEBUG(dbgs() << "evaluate object:\n");
-  auto result = evaluateObjectInstance(
-      className, actualParametersBuffers.back().get(), loc);
+  auto result =
+      evaluateClass(className, actualParametersBuffers.back().get(), loc);
 
   if (failed(result))
     return failure();
@@ -655,9 +637,6 @@ circt::om::Evaluator::evaluateValue(Value value, ActualParameters actualParams,
                    result.getDefiningOp())
             .Case([&](ConstantOp op) {
               return evaluateConstant(op, actualParams, loc);
-            })
-            .Case([&](ObjectOp op) {
-              return evaluateObjectInstance(op, actualParams);
             })
             .Case([&](ElaboratedObjectOp op) {
               return evaluateElaboratedObject(op, actualParams, loc);
@@ -706,42 +685,6 @@ circt::om::Evaluator::evaluateConstant(ConstantOp op,
                                        Location loc) {
   // For list constants, create ListValue.
   return success(om::evaluator::AttributeValue::get(op.getValue(), loc));
-}
-
-/// Evaluator dispatch function for Object instances.
-FailureOr<circt::om::Evaluator::ActualParameters>
-circt::om::Evaluator::createParametersFromOperands(
-    ValueRange range, ActualParameters actualParams, Location loc) {
-  // Create an unique storage to store parameters.
-  auto parameters = std::make_unique<
-      SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>();
-
-  // Collect operands' evaluator values in the current instantiation context.
-  for (auto input : range) {
-    auto inputResult = getOrCreateValue(input, actualParams, loc);
-    if (failed(inputResult))
-      return failure();
-    parameters->push_back(inputResult.value());
-  }
-
-  actualParametersBuffers.push_back(std::move(parameters));
-  return actualParametersBuffers.back().get();
-}
-
-/// Evaluator dispatch function for Object instances.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateObjectInstance(ObjectOp op,
-                                             ActualParameters actualParams) {
-  auto loc = op.getLoc();
-  if (isFullyEvaluated({op, actualParams}))
-    return getOrCreateValue(op, actualParams, loc);
-
-  auto params =
-      createParametersFromOperands(op.getOperands(), actualParams, loc);
-  if (failed(params))
-    return failure();
-  return evaluateObjectInstance(op.getClassNameAttr(), params.value(), loc,
-                                {op, actualParams});
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>

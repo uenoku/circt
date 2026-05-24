@@ -318,23 +318,12 @@ public:
   using ObjectKey = std::pair<Value, ActualParameters>;
 
 private:
-  bool isFullyEvaluated(Value value, ActualParameters key) {
-    return isFullyEvaluated({value, key});
-  }
-
-  bool isFullyEvaluated(ObjectKey key) {
-    auto val = objects.lookup(key);
-    return val && val->isFullyEvaluated();
-  }
-
   FailureOr<evaluator::EvaluatorValuePtr>
   instantiateImpl(StringAttr className,
                   ArrayRef<EvaluatorValuePtr> actualParams);
 
   FailureOr<EvaluatorValuePtr>
   getOrCreateValue(Value value, ActualParameters actualParams, Location loc);
-  FailureOr<EvaluatorValuePtr>
-  allocateObjectInstance(StringAttr clasName, ActualParameters actualParams);
 
   /// Evaluate a Value in a Class body according to the small expression grammar
   /// described in the rationale document. The actual parameters are the values
@@ -350,12 +339,10 @@ private:
   FailureOr<EvaluatorValuePtr>
   evaluateConstant(ConstantOp op, ActualParameters actualParams, Location loc);
 
-  /// Instantiate an Object with its class name and actual parameters.
-  FailureOr<EvaluatorValuePtr>
-  evaluateObjectInstance(StringAttr className, ActualParameters actualParams,
-                         Location loc, ObjectKey instanceKey = {});
-  FailureOr<EvaluatorValuePtr>
-  evaluateObjectInstance(ObjectOp op, ActualParameters actualParams);
+  /// Evaluate a class body with actual parameters.
+  FailureOr<EvaluatorValuePtr> evaluateClass(StringAttr className,
+                                             ActualParameters actualParams,
+                                             Location loc);
   FailureOr<EvaluatorValuePtr>
   evaluateElaboratedObject(ElaboratedObjectOp op, ActualParameters actualParams,
                            Location loc);
@@ -379,10 +366,6 @@ private:
 
   FailureOr<evaluator::EvaluatorValuePtr> createUnknownValue(Type type,
                                                              Location loc);
-
-  FailureOr<ActualParameters>
-  createParametersFromOperands(ValueRange range, ActualParameters actualParams,
-                               Location loc);
 
   /// The symbol table for the IR module the Evaluator was constructed with.
   /// Used to look up class definitions.
