@@ -336,19 +336,6 @@ circt::om::getEvaluatorValuesFromAttributes(MLIRContext *context,
   return values;
 }
 
-LogicalResult circt::om::evaluator::EvaluatorValue::finalize() {
-  using namespace evaluator;
-  // Early return if already finalized.
-  if (finalized)
-    return success();
-  // Enable the flag to avoid infinite recursions.
-  finalized = true;
-  assert(isFullyEvaluated());
-  return llvm::TypeSwitch<EvaluatorValue *, LogicalResult>(this)
-      .Case<AttributeValue, ObjectValue, ListValue, BasePathValue, PathValue>(
-          [](auto v) { return v->finalizeImpl(); });
-}
-
 Type circt::om::evaluator::EvaluatorValue::getType() const {
   return llvm::TypeSwitch<const EvaluatorValue *, Type>(this)
       .Case<AttributeValue>([](auto *attr) -> Type { return attr->getType(); })
@@ -642,14 +629,8 @@ circt::om::Evaluator::instantiateImpl(
   if (failed(result))
     return failure();
 
-  auto &object = result.value();
-  // Finalize the value.
-  LLVM_DEBUG(dbgs() << "finalizing\n");
-  if (failed(object->finalize()))
-    return cls.emitError() << "failed to finalize evaluation. Probably the "
-                              "class contains a dataflow cycle";
-  LLVM_DEBUG(dbgs() << "result: " << object << "\n");
-  return object;
+  LLVM_DEBUG(dbgs() << "result: " << result.value() << "\n");
+  return result;
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
@@ -1029,26 +1010,6 @@ ArrayAttr circt::om::Object::getFieldNames() {
   return ArrayAttr::get(cls.getContext(), fieldNames);
 }
 
-LogicalResult circt::om::evaluator::ObjectValue::finalizeImpl() {
-  for (auto &&[e, value] : fields)
-    if (failed(finalizeEvaluatorValue(value)))
-      return failure();
-
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// ListValue
-//===----------------------------------------------------------------------===//
-
-LogicalResult circt::om::evaluator::ListValue::finalizeImpl() {
-  for (auto &value : elements) {
-    if (failed(finalizeEvaluatorValue(value)))
-      return failure();
-  }
-  return success();
-}
-
 //===----------------------------------------------------------------------===//
 // BasePathValue
 //===----------------------------------------------------------------------===//
@@ -1160,13 +1121,6 @@ LogicalResult circt::om::evaluator::AttributeValue::setAttr(Attribute attr) {
         "cannot set AttributeValue that has already been fully evaluated");
   this->attr = attr;
   markFullyEvaluated();
-  return success();
-}
-
-LogicalResult circt::om::evaluator::AttributeValue::finalizeImpl() {
-  if (!isFullyEvaluated())
-    return mlir::emitError(
-        getLoc(), "cannot finalize AttributeValue that is not fully evaluated");
   return success();
 }
 

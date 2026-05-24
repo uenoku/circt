@@ -82,9 +82,6 @@ public:
   // Return a MLIR type which the value represents.
   Type getType() const;
 
-  // Finalize the evaluator value.
-  LogicalResult finalize();
-
   // Return the Location associated with the Value.
   Location getLoc() const { return loc; }
   // Set the Location associated with the Value.
@@ -100,7 +97,6 @@ private:
   MLIRContext *ctx;
   Location loc;
   bool fullyEvaluated = false;
-  bool finalized = false;
   bool unknown = false;
 };
 
@@ -118,9 +114,6 @@ public:
 
   // Set Attribute for partially evaluated case.
   LogicalResult setAttr(Attribute attr);
-
-  // Finalize the value.
-  LogicalResult finalizeImpl();
 
   Type getType() const { return type; }
 
@@ -152,11 +145,6 @@ private:
   friend std::shared_ptr<EvaluatorValue> get(Type type, LocationAttr loc);
 };
 
-// This performs finalization to `value`.
-static inline LogicalResult finalizeEvaluatorValue(EvaluatorValuePtr &value) {
-  return value->finalize();
-}
-
 /// A List which contains variadic length of elements with the same type.
 class ListValue : public EvaluatorValue {
 public:
@@ -171,9 +159,6 @@ public:
     elements = std::move(newElements);
     markFullyEvaluated();
   }
-
-  // Finalize the value.
-  LogicalResult finalizeImpl();
 
   // Partially evaluated value.
   ListValue(om::ListType type, Location loc)
@@ -238,9 +223,6 @@ public:
   /// Get all the field names of the Object.
   ArrayAttr getFieldNames();
 
-  // Finalize the evaluator value.
-  LogicalResult finalizeImpl();
-
 private:
   om::ClassLike cls;
   llvm::SmallDenseMap<StringAttr, EvaluatorValuePtr> fields;
@@ -258,9 +240,6 @@ public:
 
   /// Set the basepath which this path is relative to.
   void setBasepath(const BasePathValue &basepath);
-
-  /// Finalize the evaluator value.
-  LogicalResult finalizeImpl() { return success(); }
 
   /// Implement LLVM RTTI.
   static bool classof(const EvaluatorValue *e) {
@@ -293,9 +272,6 @@ public:
   StringAttr getAsString() const;
 
   void setBasepath(const BasePathValue &basepath);
-
-  // Finalize the evaluator value.
-  LogicalResult finalizeImpl() { return success(); }
 
   /// Implement LLVM RTTI.
   static bool classof(const EvaluatorValue *e) {

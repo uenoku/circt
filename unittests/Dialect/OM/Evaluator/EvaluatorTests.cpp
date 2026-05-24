@@ -1678,7 +1678,6 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
     auto attr = mlir::IntegerAttr::get(i8Type, val);
     auto v = evaluator::AttributeValue::get(i8Type, unknownLoc);
     (void)cast<evaluator::AttributeValue>(v.get())->setAttr(attr);
-    (void)cast<evaluator::AttributeValue>(v.get())->finalize();
     return v;
   };
 
