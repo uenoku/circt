@@ -173,9 +173,8 @@ struct UnknownPropagationPattern : RewritePattern {
   }
 };
 
-// Check if an operation can be evaluated at compile time and is valid to
-// remain in the IR after elaboration.
-bool isFullyEvaluated(Operation *op) {
+// Check if an operation is valid to remain in the IR after elaboration.
+bool isLegalAfterElaboration(Operation *op) {
   return isa<
       // Structure.
       ClassOp, ClassFieldsOp, ElaboratedObjectOp, AnyCastOp,
@@ -215,13 +214,13 @@ LogicalResult verifyResult(ClassOp module, bool allowUnevaluated) {
       if (auto unknownOp = dyn_cast_or_null<UnknownValueOp>(defOp))
         return checkAssert(true);
 
-      // This means the condition was not fully evaluated.
+      // This means the condition was not folded.
       if (allowUnevaluated)
         return success();
       return emitError(op->getLoc(), "failed to evaluate assertion condition");
     }
 
-    if (!isFullyEvaluated(op)) {
+    if (!isLegalAfterElaboration(op)) {
       if (allowUnevaluated)
         return success();
       return emitError(op->getLoc()) << "failed to evaluate " << op->getName();
@@ -245,13 +244,21 @@ struct ElaborateObjectPass
     // Elaborate objects by inlining all ObjectOps and folding field accesses
     // using a greedy pattern rewriter. NOTE: The conversion framework is not
     // suitable here because inlining patterns need to be applied recursively to
-    // fully evaluate nested object instantiations.
+    // eliminate nested object instantiations.
     RewritePatternSet patterns(classOp.getContext());
     patterns.add<ObjectOpInliningPattern>(classOp.getContext(), symTable,
                                           !allowUnevaluated);
     patterns.add<EvaluateObjectField>(classOp.getContext(), symTable,
                                       fieldIndexes);
     patterns.add<UnknownPropagationPattern>(classOp.getContext());
+    ListCreateOp::getCanonicalizationPatterns(patterns, classOp.getContext());
+    ListConcatOp::getCanonicalizationPatterns(patterns, classOp.getContext());
+    FrozenBasePathCreateOp::getCanonicalizationPatterns(patterns,
+                                                        classOp.getContext());
+    FrozenPathCreateOp::getCanonicalizationPatterns(patterns,
+                                                    classOp.getContext());
+    FrozenEmptyPathOp::getCanonicalizationPatterns(patterns,
+                                                   classOp.getContext());
     GreedyRewriteConfig config;
     // Disable iteration limit to allow full recursive inlining.
     config.setMaxIterations(GreedyRewriteConfig::kNoLimit);

@@ -53,28 +53,13 @@ public:
   Kind getKind() const { return kind; }
   MLIRContext *getContext() const { return ctx; }
 
-  // Return true the value is fully evaluated.
-  // Unknown values are considered fully evaluated.
-  bool isFullyEvaluated() const { return fullyEvaluated; }
-  void markFullyEvaluated() {
-    assert(!fullyEvaluated && "should not mark twice");
-    fullyEvaluated = true;
-  }
-
   /// Return true if the value is unknown (has unknown in its fan-in).
   /// A value is unknown if it depends on an UnknownValueOp or if any of its
   /// inputs are unknown. Unknown values propagate through operations.
   bool isUnknown() const { return unknown; }
 
   /// Mark this value as unknown.
-  /// This also marks the value as fully evaluated if it isn't already, since
-  /// unknown values are considered fully evaluated. This maintains the
-  /// invariant that unknown implies fullyEvaluated.
-  void markUnknown() {
-    unknown = true;
-    if (!fullyEvaluated)
-      markFullyEvaluated();
-  }
+  void markUnknown() { unknown = true; }
 
   /// Return the associated MLIR context.
   MLIRContext *getContext() { return ctx; }
@@ -96,7 +81,6 @@ private:
   const Kind kind;
   MLIRContext *ctx;
   Location loc;
-  bool fullyEvaluated = false;
   bool unknown = false;
 };
 
@@ -112,9 +96,6 @@ public:
     return e->getKind() == Kind::Attr;
   }
 
-  // Set Attribute for partially evaluated case.
-  LogicalResult setAttr(Attribute attr);
-
   Type getType() const { return type; }
 
   // Factory methods that create AttributeValue objects
@@ -129,11 +110,9 @@ private:
   // Constructor that requires a PrivateTag
   AttributeValue(PrivateTag, Attribute attr, Location loc)
       : EvaluatorValue(attr.getContext(), Kind::Attr, loc), attr(attr),
-        type(cast<TypedAttr>(attr).getType()) {
-    markFullyEvaluated();
-  }
+        type(cast<TypedAttr>(attr).getType()) {}
 
-  // Constructor for partially evaluated AttributeValue
+  // Constructor for unknown AttributeValues whose payload is not materialized.
   AttributeValue(PrivateTag, Type type, Location loc)
       : EvaluatorValue(type.getContext(), Kind::Attr, loc), type(type) {}
 
@@ -151,20 +130,19 @@ public:
   ListValue(om::ListType type, SmallVector<EvaluatorValuePtr> elements,
             Location loc)
       : EvaluatorValue(type.getContext(), Kind::List, loc), type(type),
-        elements(std::move(elements)) {
-    markFullyEvaluated();
-  }
+        elements(std::move(elements)), elementsInitialized(true) {}
 
   void setElements(SmallVector<EvaluatorValuePtr> newElements) {
     elements = std::move(newElements);
-    markFullyEvaluated();
+    elementsInitialized = true;
   }
 
-  // Partially evaluated value.
+  // Placeholder value.
   ListValue(om::ListType type, Location loc)
       : EvaluatorValue(type.getContext(), Kind::List, loc), type(type) {}
 
   const auto &getElements() const { return elements; }
+  bool hasElements() const { return elementsInitialized; }
 
   /// Return the type of the value, which is a ListType.
   om::ListType getListType() const { return type; }
@@ -177,6 +155,7 @@ public:
 private:
   om::ListType type;
   SmallVector<EvaluatorValuePtr> elements;
+  bool elementsInitialized = false;
 };
 
 /// A composite Object, which has a type and fields.
@@ -184,20 +163,19 @@ class ObjectValue : public EvaluatorValue {
 public:
   ObjectValue(om::ClassLike cls, ObjectFields fields, Location loc)
       : EvaluatorValue(cls.getContext(), Kind::Object, loc), cls(cls),
-        fields(std::move(fields)) {
-    markFullyEvaluated();
-  }
+        fields(std::move(fields)), fieldsInitialized(true) {}
 
-  // Partially evaluated value.
+  // Placeholder value.
   ObjectValue(om::ClassLike cls, Location loc)
       : EvaluatorValue(cls.getContext(), Kind::Object, loc), cls(cls) {}
 
   om::ClassLike getClassOp() const { return cls; }
   const auto &getFields() const { return fields; }
+  bool hasFields() const { return fieldsInitialized; }
 
   void setFields(llvm::SmallDenseMap<StringAttr, EvaluatorValuePtr> newFields) {
     fields = std::move(newFields);
-    markFullyEvaluated();
+    fieldsInitialized = true;
   }
 
   /// Return the type of the value, which is a ClassType.
@@ -226,6 +204,7 @@ public:
 private:
   om::ClassLike cls;
   llvm::SmallDenseMap<StringAttr, EvaluatorValuePtr> fields;
+  bool fieldsInitialized = false;
 };
 
 /// A Basepath value.
@@ -234,9 +213,10 @@ public:
   BasePathValue(MLIRContext *context);
 
   /// Create a path value representing a basepath.
-  BasePathValue(om::PathAttr path, Location loc);
+  BasePathValue(om::PathAttr path, Location loc, bool hasBasepath = true);
 
   om::PathAttr getPath() const;
+  bool hasBasepath() const { return basepathResolved; }
 
   /// Set the basepath which this path is relative to.
   void setBasepath(const BasePathValue &basepath);
@@ -248,6 +228,7 @@ public:
 
 private:
   om::PathAttr path;
+  bool basepathResolved = false;
 };
 
 /// A Path value.
@@ -255,7 +236,8 @@ class PathValue : public EvaluatorValue {
 public:
   /// Create a path value representing a regular path.
   PathValue(om::TargetKindAttr targetKind, om::PathAttr path, StringAttr module,
-            StringAttr ref, StringAttr field, Location loc);
+            StringAttr ref, StringAttr field, Location loc,
+            bool hasBasepath = true);
 
   static PathValue getEmptyPath(Location loc);
 
@@ -271,6 +253,8 @@ public:
 
   StringAttr getAsString() const;
 
+  bool hasBasepath() const { return basepathResolved; }
+
   void setBasepath(const BasePathValue &basepath);
 
   /// Implement LLVM RTTI.
@@ -284,6 +268,7 @@ private:
   StringAttr module;
   StringAttr ref;
   StringAttr field;
+  bool basepathResolved = false;
 };
 
 } // namespace evaluator
@@ -309,8 +294,8 @@ public:
   /// Get the Module this Evaluator is built from.
   mlir::ModuleOp getModule();
 
-  FailureOr<evaluator::EvaluatorValuePtr>
-  getPartiallyEvaluatedValue(Type type, Location loc);
+  FailureOr<evaluator::EvaluatorValuePtr> getPlaceholderValue(Type type,
+                                                              Location loc);
 
   using ActualParameters =
       SmallVectorImpl<std::shared_ptr<evaluator::EvaluatorValue>> *;

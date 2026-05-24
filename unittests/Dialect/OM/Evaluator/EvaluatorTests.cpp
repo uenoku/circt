@@ -314,7 +314,7 @@ module {
   ASSERT_EQ(anyFieldValue->getClassOp().getSymNameAttr().getValue(), "Leaf");
 }
 
-TEST_F(EvaluatorTests, InstantiateWithPartiallyEvaluatedInputs) {
+TEST_F(EvaluatorTests, InstantiateWithUnsetInputs) {
   auto runFailure = [&](StringRef mod, StringRef className,
                         evaluator::EvaluatorValuePtr value,
                         StringRef expectedError) {
@@ -358,7 +358,7 @@ module {
              "Top",
              std::make_shared<evaluator::ListValue>(listType,
                                                     UnknownLoc::get(&context)),
-             "cannot import partially evaluated OM list value");
+             "cannot import OM list value before elements are set");
 }
 
 TEST_F(EvaluatorTests, InstantiateObjectWithConstantField) {
@@ -1676,9 +1676,7 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
   // Helper: make an i8 AttributeValue.
   auto makeI8 = [&](uint8_t val) -> evaluator::EvaluatorValuePtr {
     auto attr = mlir::IntegerAttr::get(i8Type, val);
-    auto v = evaluator::AttributeValue::get(i8Type, unknownLoc);
-    (void)cast<evaluator::AttributeValue>(v.get())->setAttr(attr);
-    return v;
+    return evaluator::AttributeValue::get(attr, unknownLoc);
   };
 
   auto getResult = [&](evaluator::EvaluatorValuePtr obj) -> uint64_t {

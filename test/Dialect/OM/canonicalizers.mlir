@@ -161,6 +161,40 @@ om.class @PropEqFold(%str: !om.string, %b: i1, %n: !om.integer) -> (out1: i1, ou
   om.class.fields %0, %1, %2, %3, %4, %5, %6, %7, %8 : i1, i1, i1, i1, i1, i1, i1, i1, i1
 }
 
+// CHECK-LABEL: @ListFold
+om.class @ListFold() -> (created: !om.list<i8>, concatenated: !om.list<i8>) {
+  %zero = om.constant 0 : i8
+  %one = om.constant 1 : i8
+
+  // CHECK-DAG: [[CREATED:%.+]] = om.constant #om.list<i8, [0 : i8, 1 : i8]> : !om.list<i8>
+  %created = om.list_create %zero, %one : i8
+
+  // CHECK-DAG: [[CONCATENATED:%.+]] = om.constant #om.list<i8, [0 : i8, 1 : i8, 0 : i8, 1 : i8]> : !om.list<i8>
+  %concatenated = om.list_concat %created, %created : !om.list<i8>
+
+  // CHECK: om.class.fields [[CREATED]], [[CONCATENATED]]
+  om.class.fields %created, %concatenated : !om.list<i8>, !om.list<i8>
+}
+
+// CHECK-LABEL: @FrozenPathFold
+om.class @FrozenPathFold() -> (base: !om.frozenbasepath,
+                               path: !om.frozenpath,
+                               empty: !om.frozenpath) {
+  %root = om.constant #om.frozenbasepath<#om<path[]>> : !om.frozenbasepath
+
+  // CHECK-DAG: [[BASE:%.+]] = om.constant #om.frozenbasepath<[Foo:bar]> : !om.frozenbasepath
+  %base = om.frozenbasepath_create %root "Foo/bar"
+
+  // CHECK-DAG: [[PATH:%.+]] = om.constant #om.frozenpath<4 : i32, [Foo:bar], "Bar", "w", ".a"> : !om.frozenpath
+  %path = om.frozenpath_create reference %root "Foo/bar:Bar>w.a"
+
+  // CHECK-DAG: [[EMPTY:%.+]] = om.constant #om.frozenpath_empty : !om.frozenpath
+  %empty = om.frozenpath_empty
+
+  // CHECK: om.class.fields [[BASE]], [[PATH]], [[EMPTY]]
+  om.class.fields %base, %path, %empty : !om.frozenbasepath, !om.frozenpath, !om.frozenpath
+}
+
 // CHECK-LABEL: @IntegerBitwiseFold
 om.class @IntegerBitwiseFold(%b: i8) -> (out1: i8, out2: i8, out3: i8,
                                           out4: i8, out5: i8, out6: i8,
