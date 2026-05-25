@@ -820,9 +820,6 @@ circt::om::Evaluator::evaluateBasePathCreate(FrozenBasePathCreateOp op,
     return result;
   auto &value = result.value();
 
-  if (value->isUnknown())
-    return op.emitError("unexpected unknown operand");
-
   path->setBasepath(*llvm::cast<evaluator::BasePathValue>(value.get()));
   return valueResult;
 }
@@ -841,9 +838,6 @@ circt::om::Evaluator::evaluatePathCreate(FrozenPathCreateOp op,
   if (failed(result))
     return result;
   auto &value = result.value();
-
-  if (value->isUnknown())
-    return op.emitError("unexpected unknown operand");
 
   path->setBasepath(*llvm::cast<evaluator::BasePathValue>(value.get()));
   return valueResult;
