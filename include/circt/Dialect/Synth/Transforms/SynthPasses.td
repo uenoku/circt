@@ -66,7 +66,11 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
 
     Supports both area and timing optimization strategies.
   }];
-  let options = baseOptions;
+  let options = baseOptions # [
+    Option<"builtinLibrary", "builtin-library", "std::string", /*default=*/"\"\"",
+           "Built-in technology library to append before mapping "
+           "(available: asap7, sky130)">
+  ];
   let dependentDialects = ["hw::HWDialect"];
 }
 

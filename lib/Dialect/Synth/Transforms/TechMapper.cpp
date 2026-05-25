@@ -21,6 +21,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
+#include "circt/Dialect/Synth/Transforms/TechLibraries.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Support/WalkResult.h"
@@ -186,6 +187,12 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
   void runOnOperation() override {
     auto module = getOperation();
+
+    if (!builtinLibrary.empty() &&
+        failed(appendBuiltinTechLibrary(module, builtinLibrary))) {
+      signalPassFailure();
+      return;
+    }
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 

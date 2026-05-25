@@ -328,6 +328,146 @@ expandInputPermutation(const std::array<uint8_t, 4> &permutation) {
   return result;
 }
 
+BinaryTruthTable extractCofactor(const BinaryTruthTable &tt, unsigned input,
+                                 bool value) {
+  assert(input < tt.numInputs && "input index out of range");
+  BinaryTruthTable cofactor(tt.numInputs - 1, tt.numOutputs);
+
+  unsigned inputMask = 1u << input;
+  unsigned lowMask = inputMask - 1;
+  for (unsigned row = 0, e = 1u << tt.numInputs; row != e; ++row) {
+    if (static_cast<bool>(row & inputMask) != value)
+      continue;
+
+    unsigned compressedRow = (row & lowMask) | ((row >> 1) & ~lowMask);
+    cofactor.setOutput(APInt(tt.numInputs - 1, compressedRow),
+                       tt.getOutput(APInt(tt.numInputs, row)));
+  }
+  return cofactor;
+}
+
+bool isLessThan(const BinaryTruthTable &lhs, const BinaryTruthTable &rhs) {
+  if (lhs.table != rhs.table)
+    return lhs.table.ult(rhs.table);
+  return false;
+}
+
+unsigned computeSemiCanonicalInputNegation(const BinaryTruthTable &tt) {
+  unsigned negation = 0;
+  BinaryTruthTable current = tt;
+
+  // Pick a stable input phase by preferring the lexicographically smaller
+  // positive cofactor for each variable. Iterate a few times because changing
+  // one input phase reorders the cofactor tables of the remaining inputs.
+  for (unsigned iteration = 0, e = std::max(1u, tt.numInputs); iteration != e;
+       ++iteration) {
+    unsigned extraNegation = 0;
+    for (unsigned input = 0; input != tt.numInputs; ++input) {
+      BinaryTruthTable negativeCofactor =
+          extractCofactor(current, input, /*value=*/false);
+      BinaryTruthTable positiveCofactor =
+          extractCofactor(current, input, /*value=*/true);
+      if (isLessThan(positiveCofactor, negativeCofactor))
+        extraNegation |= 1u << input;
+    }
+
+    if (!extraNegation)
+      break;
+
+    negation ^= extraNegation;
+    current = current.applyInputNegation(extraNegation);
+  }
+
+  return negation;
+}
+
+llvm::SmallVector<unsigned>
+computeSemiCanonicalPermutation(const BinaryTruthTable &tt) {
+  struct InputSignature {
+    unsigned input = 0;
+    unsigned negativeOnes = 0;
+    unsigned positiveOnes = 0;
+    BinaryTruthTable negativeCofactor;
+    BinaryTruthTable positiveCofactor;
+  };
+
+  llvm::SmallVector<InputSignature> signatures;
+  signatures.reserve(tt.numInputs);
+  for (unsigned input = 0; input != tt.numInputs; ++input) {
+    BinaryTruthTable negativeCofactor =
+        extractCofactor(tt, input, /*value=*/false);
+    BinaryTruthTable positiveCofactor =
+        extractCofactor(tt, input, /*value=*/true);
+    signatures.push_back({input, negativeCofactor.table.popcount(),
+                          positiveCofactor.table.popcount(),
+                          std::move(negativeCofactor),
+                          std::move(positiveCofactor)});
+  }
+
+  llvm::sort(
+      signatures, [](const InputSignature &lhs, const InputSignature &rhs) {
+        if (lhs.negativeOnes != rhs.negativeOnes)
+          return lhs.negativeOnes < rhs.negativeOnes;
+        if (lhs.positiveOnes != rhs.positiveOnes)
+          return lhs.positiveOnes < rhs.positiveOnes;
+        if (lhs.negativeCofactor.table != rhs.negativeCofactor.table)
+          return lhs.negativeCofactor.table.ult(rhs.negativeCofactor.table);
+        if (lhs.positiveCofactor.table != rhs.positiveCofactor.table)
+          return lhs.positiveCofactor.table.ult(rhs.positiveCofactor.table);
+        return lhs.input < rhs.input;
+      });
+
+  llvm::SmallVector<unsigned> permutation;
+  permutation.reserve(tt.numInputs);
+  for (const auto &signature : signatures)
+    permutation.push_back(signature.input);
+
+  BinaryTruthTable best = tt.applyPermutation(permutation);
+  bool changed = true;
+  for (unsigned iteration = 0; changed && iteration != tt.numInputs;
+       ++iteration) {
+    changed = false;
+    for (unsigned i = 0; i + 1 < permutation.size(); ++i) {
+      llvm::SmallVector<unsigned> candidatePermutation(permutation);
+      std::swap(candidatePermutation[i], candidatePermutation[i + 1]);
+      BinaryTruthTable candidate = tt.applyPermutation(candidatePermutation);
+      if (!candidate.isLexicographicallySmaller(best))
+        continue;
+
+      permutation = std::move(candidatePermutation);
+      best = std::move(candidate);
+      changed = true;
+    }
+  }
+
+  return permutation;
+}
+
+NPNClass computeNPNSemiCanonicalForm(const BinaryTruthTable &tt) {
+  NPNClass canonical(tt);
+  canonical.inputPermutation = identityPermutation(tt.numInputs);
+
+  for (unsigned outputNegMask = 0; outputNegMask < (1u << tt.numOutputs);
+       ++outputNegMask) {
+    BinaryTruthTable outputPhasedTT = tt.applyOutputNegation(outputNegMask);
+
+    unsigned negMask = computeSemiCanonicalInputNegation(outputPhasedTT);
+    BinaryTruthTable inputPhasedTT = outputPhasedTT.applyInputNegation(negMask);
+
+    llvm::SmallVector<unsigned> permutation =
+        computeSemiCanonicalPermutation(inputPhasedTT);
+    BinaryTruthTable permutedTT = inputPhasedTT.applyPermutation(permutation);
+
+    unsigned currentNegMask = permuteNegationMask(negMask, permutation);
+    NPNClass candidate(permutedTT, std::move(permutation), currentNegMask,
+                       outputNegMask);
+    if (candidate.isLexicographicallySmaller(canonical))
+      canonical = std::move(candidate);
+  }
+
+  return canonical;
+}
+
 struct NPNTransform4 {
   // Maps each output minterm in the transformed table back to the minterm to
   // read from the source table.
@@ -500,14 +640,20 @@ void NPNClass::getInputPermutation(
 }
 
 NPNClass NPNClass::computeNPNCanonicalForm(const BinaryTruthTable &tt) {
+  // Exact NPN canonicalization is factorial in the number of inputs. Keep the
+  // exact form for small functions where it is cheap and use the
+  // semi-canonical form for larger functions such as high-fan-in cells in
+  // technology libraries.
+  constexpr unsigned exactNPNInputLimit = 6;
+  if (tt.numInputs > exactNPNInputLimit)
+    return computeNPNSemiCanonicalForm(tt);
+
   NPNClass canonical(tt);
   // Initialize permutation with identity
   canonical.inputPermutation = identityPermutation(tt.numInputs);
-  assert(tt.numInputs <= 8 && "Inputs are too large");
   // Try all possible tables and pick the lexicographically smallest.
-  // FIXME: The time complexity is O(n! * 2^(n + m)) where n is the number
-  // of inputs and m is the number of outputs. This is not scalable so
-  // semi-canonical forms should be used instead.
+  // The time complexity is O(n! * 2^(n + m)) where n is the number of inputs
+  // and m is the number of outputs.
   for (uint32_t negMask = 0; negMask < (1u << tt.numInputs); ++negMask) {
     BinaryTruthTable negatedTT = tt.applyInputNegation(negMask);
 

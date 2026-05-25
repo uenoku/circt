@@ -223,6 +223,12 @@ static cl::opt<int>
                  cl::desc("Lower to generic a truth table op with K inputs"),
                  cl::init(0), cl::cat(mainCategory));
 
+static cl::opt<std::string>
+    techLibrary("tech-library",
+                cl::desc("Built-in technology library for tech mapping "
+                         "(available: asap7, sky130)"),
+                cl::init(""), cl::cat(mainCategory));
+
 // Opt-in to enable the parameterize constant ports pass.
 // NOTE: This is always beneficial for middle-end optimizations but currently
 // it's opt-in since it's necessary to run monomorphization (currently not
@@ -305,6 +311,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;
+    options.builtinLibrary = techLibrary;
     pm.addPass(synth::createTechMapper(options));
   }
 

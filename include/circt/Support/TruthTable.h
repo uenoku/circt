@@ -120,14 +120,10 @@ struct NPNClass {
       : truthTable(tt), inputPermutation(std::move(inputPerm)),
         inputNegation(inputNeg), outputNegation(outputNeg) {}
 
-  /// Compute the canonical NPN form for a given truth table.
+  /// Compute the NPN form for a given truth table.
   ///
-  /// This method exhaustively tries all possible input permutations and
-  /// negations to find the lexicographically smallest canonical form.
-  ///
-  /// FIXME: Currently we are using exact canonicalization which doesn't scale
-  /// well. For larger truth tables, semi-canonical forms should be used
-  /// instead.
+  /// This method uses exact canonicalization for small truth tables and a
+  /// scalable semi-canonical form for larger truth tables.
   static NPNClass computeNPNCanonicalForm(const BinaryTruthTable &tt);
 
   /// Get input permutation from this NPN class to another equivalent NPN class.
