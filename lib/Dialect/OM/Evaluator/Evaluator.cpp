@@ -502,26 +502,21 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
 #ifndef NDEBUG
   DebugNesting nestOne(debugNesting);
 #endif
+  SmallVector<ElaboratedObjectOp> objectOps;
   for (auto &op : cls.getOps()) {
-    if (!isa<ElaboratedObjectOp>(op))
+    auto objectOp = dyn_cast<ElaboratedObjectOp>(op);
+    if (!objectOp)
       continue;
+    objectOps.push_back(objectOp);
     for (auto result : op.getResults()) {
       if (failed(getOrCreateValue(result, UnknownLoc::get(context))))
         return failure();
     }
   }
 
-  for (auto &op : cls.getOps()) {
-    for (auto result : op.getResults()) {
-      FailureOr<evaluator::EvaluatorValuePtr> evaluated;
-      if (auto objectOp = dyn_cast<ElaboratedObjectOp>(result.getDefiningOp()))
-        evaluated = evaluateElaboratedObject(objectOp, op.getLoc());
-      else
-        evaluated = evaluateValue(result, op.getLoc());
-      if (failed(evaluated))
-        return failure();
-    }
-  }
+  for (auto objectOp : objectOps)
+    if (failed(evaluateElaboratedObject(objectOp, objectOp.getLoc())))
+      return failure();
 
   LLVM_DEBUG(dbgs() << "fields:\n");
   auto fieldNames = cls.getFieldNames();
