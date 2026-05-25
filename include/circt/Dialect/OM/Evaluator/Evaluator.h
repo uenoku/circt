@@ -177,7 +177,7 @@ public:
   const auto &getFields() const { return fields; }
   bool hasFields() const { return fieldsInitialized; }
 
-  void setFields(llvm::SmallDenseMap<StringAttr, EvaluatorValuePtr> newFields) {
+  void setFields(ObjectFields newFields) {
     fields = std::move(newFields);
     fieldsInitialized = true;
   }
@@ -287,9 +287,6 @@ public:
   /// Get the Module this Evaluator is built from.
   mlir::ModuleOp getModule();
 
-  FailureOr<evaluator::EvaluatorValuePtr> getPlaceholderValue(Type type,
-                                                              Location loc);
-
   using ActualParameters = ArrayRef<evaluator::EvaluatorValuePtr>;
 
 private:
@@ -297,15 +294,9 @@ private:
   instantiateImpl(StringAttr className,
                   ArrayRef<EvaluatorValuePtr> actualParams);
 
+  FailureOr<EvaluatorValuePtr> getPlaceholderValue(Type type, Location loc);
+
   FailureOr<EvaluatorValuePtr> getOrCreateValue(Value value, Location loc);
-
-  /// Evaluate a Value in a Class body according to the small expression grammar
-  /// described in the rationale document.
-  FailureOr<EvaluatorValuePtr> evaluateValue(Value value, Location loc);
-
-  /// Evaluator dispatch functions for the small expression grammar.
-  FailureOr<EvaluatorValuePtr> evaluateParameter(BlockArgument formalParam,
-                                                 Location loc);
 
   FailureOr<EvaluatorValuePtr> evaluateConstant(ConstantOp op, Location loc);
 

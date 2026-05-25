@@ -58,7 +58,7 @@ LogicalResult verifyActualParameters(ClassLike classLike,
 
   for (auto [actualParam, formalParamName, formalParamType] :
        llvm::zip(actualParams, formalParamNames, formalParamTypes)) {
-    if (!actualParam || !actualParam.get())
+    if (!actualParam)
       return classLike.emitError("actual parameter for ")
              << formalParamName << " is null";
 
@@ -73,7 +73,7 @@ LogicalResult verifyActualParameters(ClassLike classLike,
       auto error = classLike.emitError("actual parameter for ")
                    << formalParamName << " has invalid type";
       error.attachNote() << "actual parameter: " << *actualParam;
-      error.attachNote() << "format parameter type: " << formalParamType;
+      error.attachNote() << "formal parameter type: " << formalParamType;
       return failure();
     }
   }
@@ -86,7 +86,7 @@ LogicalResult verifyActualParameters(ClassLike classLike,
 class ScratchIRBuilder {
 public:
   struct InstantiationInfo {
-    StringAttr className;
+    StringAttr wrapperClassName;
     SmallVector<EvaluatorValuePtr> actualParams;
   };
 
@@ -364,7 +364,7 @@ ModuleOp circt::om::Evaluator::getModule() {
 }
 
 SmallVector<evaluator::EvaluatorValuePtr>
-circt::om::getEvaluatorValuesFromAttributes(MLIRContext *context,
+circt::om::getEvaluatorValuesFromAttributes(MLIRContext *,
                                             ArrayRef<Attribute> attributes) {
   SmallVector<evaluator::EvaluatorValuePtr> values;
   values.reserve(attributes.size());
@@ -381,9 +381,8 @@ Type circt::om::evaluator::EvaluatorValue::getType() const {
       .Case<ObjectValue>([](auto *object) { return object->getObjectType(); })
       .Case<ListValue>([](auto *list) { return list->getListType(); })
       .Case<BasePathValue>(
-          [this](auto *tuple) { return FrozenBasePathType::get(ctx); })
-      .Case<PathValue>(
-          [this](auto *tuple) { return FrozenPathType::get(ctx); });
+          [this](auto *) { return FrozenBasePathType::get(ctx); })
+      .Case<PathValue>([this](auto *) { return FrozenPathType::get(ctx); });
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
@@ -577,7 +576,7 @@ circt::om::Evaluator::instantiate(
   if (failed(transformedInstantiation))
     return failure();
 
-  auto wrapper = instantiateImpl(transformedInstantiation->className,
+  auto wrapper = instantiateImpl(transformedInstantiation->wrapperClassName,
                                  transformedInstantiation->actualParams);
   if (failed(wrapper))
     return failure();
@@ -614,55 +613,6 @@ circt::om::Evaluator::instantiateImpl(
 
   LLVM_DEBUG(dbgs() << "result: " << result.value() << "\n");
   return result;
-}
-
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateValue(Value value, Location loc) {
-  if (auto it = evaluatedValues.find(value); it != evaluatedValues.end()) {
-    it->second->setLocIfUnknown(loc);
-    return it->second;
-  }
-
-  LLVM_DEBUG(dbgs() << "- eval: " << value << "\n");
-
-  FailureOr<evaluator::EvaluatorValuePtr> result =
-      llvm::TypeSwitch<Value, FailureOr<evaluator::EvaluatorValuePtr>>(value)
-          .Case([&](BlockArgument arg) { return evaluateParameter(arg, loc); })
-          .Case([&](OpResult result) {
-            return TypeSwitch<Operation *,
-                              FailureOr<evaluator::EvaluatorValuePtr>>(
-                       result.getDefiningOp())
-                .Case([&](ConstantOp op) { return evaluateConstant(op, loc); })
-                .Case([&](ElaboratedObjectOp op) {
-                  return evaluateElaboratedObject(op, loc);
-                })
-                .Case([&](ListCreateOp op) {
-                  return evaluateListCreate(op, loc);
-                })
-                .Case([&](AnyCastOp op) {
-                  return evaluateValue(op.getInput(), loc);
-                })
-                .Case<UnknownValueOp>([&](UnknownValueOp op) {
-                  return evaluateUnknownValue(op, loc);
-                })
-                .Default([&](Operation *op) {
-                  auto error = op->emitError("unable to evaluate value");
-                  error.attachNote() << "value: " << value;
-                  return error;
-                });
-          });
-  if (failed(result))
-    return result;
-
-  evaluatedValues.try_emplace(value, result.value());
-  return result;
-}
-
-/// Evaluator dispatch function for parameters.
-FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateParameter(BlockArgument formalParam,
-                                        Location loc) {
-  return getOrCreateValue(formalParam, loc);
 }
 
 /// Evaluator dispatch function for constants.
@@ -717,7 +667,7 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op, Location loc) {
   SmallVector<evaluator::EvaluatorValuePtr> values;
   values.reserve(op.getOperands().size());
   for (auto operand : op.getOperands()) {
-    auto result = evaluateValue(operand, loc);
+    auto result = getOrCreateValue(operand, loc);
     if (failed(result))
       return result;
     values.push_back(result.value());
@@ -750,7 +700,7 @@ circt::om::evaluator::ObjectValue::getField(StringAttr name) {
   auto field = fields.find(name);
   if (field == fields.end())
     return cls.emitError("field ") << name << " does not exist";
-  return success(fields[name]);
+  return success(field->second);
 }
 
 /// Get an ArrayAttr with the names of the fields in the Object. Sort the fields
