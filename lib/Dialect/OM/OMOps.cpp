@@ -816,11 +816,29 @@ struct FoldListConcat : OpRewritePattern<ListConcatOp> {
     return success();
   }
 };
+
+struct FlattenListConcat : OpRewritePattern<ListConcatOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ListConcatOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> inputs;
+    for (auto subList : op.getSubLists()) {
+      auto createOp = subList.getDefiningOp<ListCreateOp>();
+      if (!createOp)
+        return failure();
+      llvm::append_range(inputs, createOp.getInputs());
+    }
+
+    rewriter.replaceOpWithNewOp<ListCreateOp>(op, op.getType(), inputs);
+    return success();
+  }
+};
 } // namespace
 
 void circt::om::ListConcatOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
-  results.add<FoldListConcat>(context);
+  results.add<FoldListConcat, FlattenListConcat>(context);
 }
 
 static PathAttr appendPath(PathAttr basePath, PathAttr path) {

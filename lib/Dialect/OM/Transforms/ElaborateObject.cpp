@@ -183,7 +183,7 @@ bool isLegalAfterElaboration(Operation *op) {
       // Path.
       FrozenBasePathCreateOp, FrozenPathCreateOp, FrozenEmptyPathOp,
       // List.
-      ListCreateOp, ListConcatOp>(op);
+      ListCreateOp>(op);
 }
 
 LogicalResult verifyResult(ClassOp module, bool allowUnevaluated) {

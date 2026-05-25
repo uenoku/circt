@@ -317,8 +317,6 @@ private:
                                                         Location loc);
   FailureOr<EvaluatorValuePtr> evaluateListCreate(ListCreateOp op,
                                                   Location loc);
-  FailureOr<EvaluatorValuePtr> evaluateListConcat(ListConcatOp op,
-                                                  Location loc);
   FailureOr<evaluator::EvaluatorValuePtr>
   evaluateUnknownValue(UnknownValueOp op, Location loc);
 
