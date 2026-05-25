@@ -386,33 +386,17 @@ Type circt::om::evaluator::EvaluatorValue::getType() const {
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::getPlaceholderValue(Type type, Location loc) {
+circt::om::Evaluator::getPlaceholderValue(ElaboratedObjectOp op, Location loc) {
   using namespace circt::om::evaluator;
 
-  auto result =
-      TypeSwitch<mlir::Type, FailureOr<evaluator::EvaluatorValuePtr>>(type)
-          .Case([&](circt::om::ClassType type)
-                    -> FailureOr<evaluator::EvaluatorValuePtr> {
-            auto classDef =
-                symbolTable.lookup<ClassLike>(type.getClassName().getValue());
-            if (!classDef)
-              return symbolTable.getOp()->emitError("unknown class name ")
-                     << type.getClassName();
+  auto type = cast<circt::om::ClassType>(op.getType());
+  auto classDef = symbolTable.lookup<ClassLike>(type.getClassName().getValue());
+  if (!classDef)
+    return symbolTable.getOp()->emitError("unknown class name ")
+           << type.getClassName();
 
-            // Create an ObjectValue for both ClassOp and ClassExternOp
-            evaluator::EvaluatorValuePtr result =
-                std::make_shared<evaluator::ObjectValue>(classDef, loc);
-
-            return success(result);
-          })
-          .Case([&](circt::om::StringType type) {
-            evaluator::EvaluatorValuePtr result =
-                evaluator::AttributeValue::get(type, loc);
-            return success(result);
-          })
-          .Default([&](auto type) { return failure(); });
-
-  return result;
+  return evaluator::EvaluatorValuePtr(
+      std::make_shared<evaluator::ObjectValue>(classDef, loc));
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
@@ -444,7 +428,7 @@ circt::om::Evaluator::getOrCreateValue(Value value, Location loc) {
                   return evaluateListCreate(op, loc);
                 })
                 .Case<ElaboratedObjectOp>([&](auto op) {
-                  return getPlaceholderValue(op.getType(), op.getLoc());
+                  return getPlaceholderValue(op, op.getLoc());
                 })
                 .Case<UnknownValueOp>(
                     [&](auto op) { return evaluateUnknownValue(op, loc); })
