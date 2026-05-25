@@ -493,12 +493,14 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
     evaluatedValues.try_emplace(arg, actual);
   }
 
-  // Allocate placeholders for all class-body results before evaluating any
-  // fields. A later field evaluation can then connect object-valued cycles by
-  // pointing at these placeholders, and the placeholders are filled below.
-  evaluator::ObjectFields fields;
+  evaluator::EvaluatorValuePtr result =
+      std::make_shared<evaluator::ObjectValue>(cls, loc);
+
+  // Allocate placeholders for all class-body objects before constructing any
+  // other values. Later values can then refer to stable object identities, and
+  // object fields are installed only after all value handles exist.
   auto *context = cls.getContext();
-  LLVM_DEBUG(dbgs() << "ops:\n");
+  LLVM_DEBUG(dbgs() << "objects:\n");
 #ifndef NDEBUG
   DebugNesting nestOne(debugNesting);
 #endif
@@ -508,17 +510,24 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
     if (!objectOp)
       continue;
     objectOps.push_back(objectOp);
-    for (auto result : op.getResults()) {
-      if (failed(getOrCreateValue(result, UnknownLoc::get(context))))
+    for (auto value : op.getResults())
+      if (failed(getOrCreateValue(value, UnknownLoc::get(context))))
         return failure();
-    }
   }
 
+  LLVM_DEBUG(dbgs() << "values:\n");
+  for (auto &op : cls.getOps())
+    for (auto value : op.getResults())
+      if (failed(getOrCreateValue(value, op.getLoc())))
+        return failure();
+
+  LLVM_DEBUG(dbgs() << "object fields:\n");
   for (auto objectOp : objectOps)
     if (failed(evaluateElaboratedObject(objectOp, objectOp.getLoc())))
       return failure();
 
-  LLVM_DEBUG(dbgs() << "fields:\n");
+  LLVM_DEBUG(dbgs() << "root fields:\n");
+  evaluator::ObjectFields fields;
   auto fieldNames = cls.getFieldNames();
   auto operands = cls.getFieldsOp()->getOperands();
   for (size_t i = 0; i < fieldNames.size(); ++i) {
@@ -531,7 +540,7 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
     DebugNesting nestOne(debugNesting);
 #endif
     FailureOr<evaluator::EvaluatorValuePtr> result =
-        evaluateValue(value, fieldLoc);
+        getOrCreateValue(value, fieldLoc);
     if (failed(result))
       return result;
 
@@ -539,8 +548,7 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
     fields[cast<StringAttr>(name)] = result.value();
   }
 
-  evaluator::EvaluatorValuePtr result =
-      std::make_shared<evaluator::ObjectValue>(cls, fields, loc);
+  cast<evaluator::ObjectValue>(result.get())->setFields(std::move(fields));
   return result;
 }
 
