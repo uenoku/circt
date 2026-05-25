@@ -386,20 +386,6 @@ Type circt::om::evaluator::EvaluatorValue::getType() const {
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::getPlaceholderValue(ElaboratedObjectOp op, Location loc) {
-  using namespace circt::om::evaluator;
-
-  auto type = cast<circt::om::ClassType>(op.getType());
-  auto classDef = symbolTable.lookup<ClassLike>(type.getClassName().getValue());
-  if (!classDef)
-    return symbolTable.getOp()->emitError("unknown class name ")
-           << type.getClassName();
-
-  return evaluator::EvaluatorValuePtr(
-      std::make_shared<evaluator::ObjectValue>(classDef, loc));
-}
-
-FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::getOrCreateValue(Value value, Location loc) {
   LLVM_DEBUG(dbgs() << "- get: " << value << "\n");
 
@@ -427,9 +413,20 @@ circt::om::Evaluator::getOrCreateValue(Value value, Location loc) {
                 .Case([&](ListCreateOp op) {
                   return evaluateListCreate(op, loc);
                 })
-                .Case<ElaboratedObjectOp>([&](auto op) {
-                  return getPlaceholderValue(op, op.getLoc());
-                })
+                .Case<ElaboratedObjectOp>(
+                    [&](auto op) -> FailureOr<evaluator::EvaluatorValuePtr> {
+                      auto type = cast<circt::om::ClassType>(op.getType());
+                      auto classDef = symbolTable.lookup<ClassLike>(
+                          type.getClassName().getValue());
+                      if (!classDef)
+                        return symbolTable.getOp()->emitError(
+                                   "unknown class name ")
+                               << type.getClassName();
+
+                      return evaluator::EvaluatorValuePtr(
+                          std::make_shared<evaluator::ObjectValue>(
+                              classDef, op.getLoc()));
+                    })
                 .Case<UnknownValueOp>(
                     [&](auto op) { return evaluateUnknownValue(op, loc); })
                 .Default([&](Operation *op) {

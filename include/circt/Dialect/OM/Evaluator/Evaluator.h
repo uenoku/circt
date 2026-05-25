@@ -294,9 +294,6 @@ private:
   instantiateImpl(StringAttr className,
                   ArrayRef<EvaluatorValuePtr> actualParams);
 
-  FailureOr<EvaluatorValuePtr> getPlaceholderValue(ElaboratedObjectOp op,
-                                                   Location loc);
-
   FailureOr<EvaluatorValuePtr> getOrCreateValue(Value value, Location loc);
 
   FailureOr<EvaluatorValuePtr> evaluateConstant(ConstantOp op, Location loc);
