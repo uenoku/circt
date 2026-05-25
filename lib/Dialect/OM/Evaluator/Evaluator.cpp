@@ -392,11 +392,6 @@ circt::om::Evaluator::getPlaceholderValue(Type type, Location loc) {
 
   auto result =
       TypeSwitch<mlir::Type, FailureOr<evaluator::EvaluatorValuePtr>>(type)
-          .Case([&](circt::om::ListType type) {
-            evaluator::EvaluatorValuePtr result =
-                std::make_shared<evaluator::ListValue>(type, loc);
-            return success(result);
-          })
           .Case([&](circt::om::ClassType type)
                     -> FailureOr<evaluator::EvaluatorValuePtr> {
             auto classDef =
@@ -425,11 +420,9 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
     Value value, ActualParameters actualParams, Location loc) {
   LLVM_DEBUG(dbgs() << "- get: " << value << "\n");
 
-  auto it = objects.find({value, actualParams});
-  if (it != objects.end()) {
-    auto evalVal = it->second;
-    evalVal->setLocIfUnknown(loc);
-    return evalVal;
+  if (auto it = evaluatedValues.find(value); it != evaluatedValues.end()) {
+    it->second->setLocIfUnknown(loc);
+    return it->second;
   }
 
   FailureOr<evaluator::EvaluatorValuePtr> result =
@@ -449,8 +442,11 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
                 .Case<AnyCastOp>([&](AnyCastOp op) {
                   return getOrCreateValue(op.getInput(), actualParams, loc);
                 })
-                .Case<ListCreateOp, ListConcatOp>([&](auto op) {
-                  return getPlaceholderValue(op.getType(), loc);
+                .Case([&](ListCreateOp op) {
+                  return evaluateListCreate(op, actualParams, loc);
+                })
+                .Case([&](ListConcatOp op) {
+                  return evaluateListConcat(op, actualParams, loc);
                 })
                 .Case<ElaboratedObjectOp>([&](auto op) {
                   return getPlaceholderValue(op.getType(), op.getLoc());
@@ -466,7 +462,7 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
   if (failed(result))
     return result;
 
-  objects[{value, actualParams}] = result.value();
+  evaluatedValues.try_emplace(value, result.value());
   return result;
 }
 
@@ -602,6 +598,7 @@ circt::om::Evaluator::instantiateImpl(
           actualParams);
 
   actualParametersBuffers.push_back(std::move(parameters));
+  evaluatedValues.clear();
 
   auto loc = cls.getLoc();
   LLVM_DEBUG(dbgs() << "evaluate object:\n");
@@ -723,15 +720,8 @@ FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
                                          ActualParameters actualParams,
                                          Location loc) {
-  // Evaluate the Object itself, in case it hasn't been evaluated yet.
   SmallVector<evaluator::EvaluatorValuePtr> values;
-  auto list = getOrCreateValue(op, actualParams, loc);
-  if (failed(list))
-    return failure();
-  auto *listValue = llvm::cast<evaluator::ListValue>(list.value().get());
-  if (listValue->hasElements())
-    return list;
-
+  values.reserve(op.getOperands().size());
   for (auto operand : op.getOperands()) {
     auto result = evaluateValue(operand, actualParams, loc);
     if (failed(result))
@@ -739,7 +729,8 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
     values.push_back(result.value());
   }
 
-  listValue->setElements(std::move(values));
+  evaluator::EvaluatorValuePtr list = std::make_shared<evaluator::ListValue>(
+      op.getType(), std::move(values), loc);
   return list;
 }
 
@@ -748,15 +739,7 @@ FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
                                          ActualParameters actualParams,
                                          Location loc) {
-  // Evaluate the List concat op itself, in case it hasn't been evaluated yet.
   SmallVector<evaluator::EvaluatorValuePtr> values;
-  auto list = getOrCreateValue(op, actualParams, loc);
-  if (failed(list))
-    return failure();
-  auto *listValue = llvm::cast<evaluator::ListValue>(list.value().get());
-  if (listValue->hasElements())
-    return list;
-
   for (auto operand : op.getOperands()) {
     auto result = evaluateValue(operand, actualParams, loc);
     if (failed(result))
@@ -766,13 +749,11 @@ circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
     if (!subList->hasElements())
       continue;
 
-    // Append each EvaluatorValue from the sublist.
-    for (const auto &subValue : subList->getElements())
-      values.push_back(subValue);
+    llvm::append_range(values, subList->getElements());
   }
 
-  // Return the concatenated list.
-  listValue->setElements(std::move(values));
+  evaluator::EvaluatorValuePtr list = std::make_shared<evaluator::ListValue>(
+      op.getType(), std::move(values), loc);
   return list;
 }
 

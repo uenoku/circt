@@ -141,11 +141,6 @@ public:
       : EvaluatorValue(type.getContext(), Kind::List, loc), type(type),
         elements(std::move(elements)), elementsInitialized(true) {}
 
-  void setElements(SmallVector<EvaluatorValuePtr> newElements) {
-    elements = std::move(newElements);
-    elementsInitialized = true;
-  }
-
   // Placeholder value.
   ListValue(om::ListType type, Location loc)
       : EvaluatorValue(type.getContext(), Kind::List, loc), type(type) {}
@@ -298,8 +293,6 @@ public:
   using ActualParameters =
       SmallVectorImpl<std::shared_ptr<evaluator::EvaluatorValue>> *;
 
-  using ObjectKey = std::pair<Value, ActualParameters>;
-
 private:
   FailureOr<evaluator::EvaluatorValuePtr>
   instantiateImpl(StringAttr className,
@@ -350,9 +343,8 @@ private:
       std::unique_ptr<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>>
       actualParametersBuffers;
 
-  /// Evaluator value storage. Return an evaluator value for the given
-  /// instantiation context (a pair of Value and parameters).
-  DenseMap<ObjectKey, std::shared_ptr<evaluator::EvaluatorValue>> objects;
+  /// Evaluator value storage for the current instantiation.
+  DenseMap<Value, EvaluatorValuePtr> evaluatedValues;
 
 #ifndef NDEBUG
   /// Current nesting depth for debug output indentation.
