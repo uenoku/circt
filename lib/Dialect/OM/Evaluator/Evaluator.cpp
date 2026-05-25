@@ -487,11 +487,11 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
   // Otherwise, it's a regular class, proceed normally
   ClassOp cls = cast<ClassOp>(classDef);
 
-  if (failed(verifyActualParameters(cls, *actualParams)))
+  if (failed(verifyActualParameters(cls, actualParams)))
     return failure();
 
   for (auto [arg, actual] :
-       llvm::zip(cls.getBodyBlock()->getArguments(), *actualParams)) {
+       llvm::zip(cls.getBodyBlock()->getArguments(), actualParams)) {
     actual->setLoc(arg.getLoc());
     evaluatedValues.try_emplace(arg, actual);
   }
@@ -603,17 +603,11 @@ circt::om::Evaluator::instantiateImpl(
   // Otherwise, it's a regular class, proceed normally
   ClassOp cls = cast<ClassOp>(classDef);
 
-  auto parameters =
-      std::make_unique<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>(
-          actualParams);
-
-  actualParametersBuffers.push_back(std::move(parameters));
   evaluatedValues.clear();
 
   auto loc = cls.getLoc();
   LLVM_DEBUG(dbgs() << "evaluate object:\n");
-  auto result =
-      evaluateClass(className, actualParametersBuffers.back().get(), loc);
+  auto result = evaluateClass(className, actualParams, loc);
 
   if (failed(result))
     return failure();

@@ -290,8 +290,7 @@ public:
   FailureOr<evaluator::EvaluatorValuePtr> getPlaceholderValue(Type type,
                                                               Location loc);
 
-  using ActualParameters =
-      SmallVectorImpl<std::shared_ptr<evaluator::EvaluatorValue>> *;
+  using ActualParameters = ArrayRef<evaluator::EvaluatorValuePtr>;
 
 private:
   FailureOr<evaluator::EvaluatorValuePtr>
@@ -329,11 +328,6 @@ private:
   /// The symbol table for the IR module the Evaluator was constructed with.
   /// Used to look up class definitions.
   SymbolTable symbolTable;
-
-  /// This uniquely stores vectors that represent parameters.
-  SmallVector<
-      std::unique_ptr<SmallVector<std::shared_ptr<evaluator::EvaluatorValue>>>>
-      actualParametersBuffers;
 
   /// Evaluator value storage for the current instantiation.
   DenseMap<Value, EvaluatorValuePtr> evaluatedValues;
