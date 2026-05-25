@@ -47,19 +47,14 @@ using ObjectFields = SmallDenseMap<StringAttr, EvaluatorValuePtr>;
 class EvaluatorValue : public std::enable_shared_from_this<EvaluatorValue> {
 public:
   // Implement LLVM RTTI.
-  enum class Kind { Attr, Object, List, BasePath, Path };
+  enum class Kind { Attr, Object, List, BasePath, Path, Unknown };
   EvaluatorValue(MLIRContext *ctx, Kind kind, Location loc)
       : kind(kind), ctx(ctx), loc(loc) {}
   Kind getKind() const { return kind; }
   MLIRContext *getContext() const { return ctx; }
 
-  /// Return true if the value is unknown (has unknown in its fan-in).
-  /// A value is unknown if it depends on an UnknownValueOp or if any of its
-  /// inputs are unknown. Unknown values propagate through operations.
-  bool isUnknown() const { return unknown; }
-
-  /// Mark this value as unknown.
-  void markUnknown() { unknown = true; }
+  /// Return true if this value represents an `om.unknown`.
+  bool isUnknown() const { return getKind() == Kind::Unknown; }
 
   /// Return the associated MLIR context.
   MLIRContext *getContext() { return ctx; }
@@ -81,7 +76,6 @@ private:
   const Kind kind;
   MLIRContext *ctx;
   Location loc;
-  bool unknown = false;
 };
 
 /// Values which can be directly representable by MLIR attributes.
@@ -122,6 +116,21 @@ private:
   // Friend declaration for the factory methods
   friend std::shared_ptr<EvaluatorValue> get(Attribute attr, LocationAttr loc);
   friend std::shared_ptr<EvaluatorValue> get(Type type, LocationAttr loc);
+};
+
+class UnknownValue : public EvaluatorValue {
+public:
+  UnknownValue(Type type, Location loc)
+      : EvaluatorValue(type.getContext(), Kind::Unknown, loc), type(type) {}
+
+  Type getType() const { return type; }
+
+  static bool classof(const EvaluatorValue *e) {
+    return e->getKind() == Kind::Unknown;
+  }
+
+private:
+  Type type;
 };
 
 /// A List which contains variadic length of elements with the same type.
@@ -401,12 +410,11 @@ operator<<(mlir::Diagnostic &diag,
     diag << "BasePath()";
   else if (llvm::isa<evaluator::PathValue>(&evaluatorValue))
     diag << "Path()";
+  else if (auto *unknown =
+               llvm::dyn_cast<evaluator::UnknownValue>(&evaluatorValue))
+    diag << "Unknown(" << unknown->getType() << ")";
   else
     assert(false && "unhandled evaluator value");
-
-  // Add unknown marker if the value is unknown
-  if (evaluatorValue.isUnknown())
-    diag << " [unknown]";
   return diag;
 }
 

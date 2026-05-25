@@ -305,10 +305,7 @@ bool omEvaluatorValueIsUnknown(OMEvaluatorValue evaluatorValue) {
 OMEvaluatorValue omEvaluatorUnknownGet(MlirContext context, MlirType type) {
   auto *ctx = unwrap(context);
   auto loc = UnknownLoc::get(ctx);
-  auto unknownValue =
-      evaluator::AttributeValue::get(unwrap(type), LocationAttr(loc));
-  unknownValue->markUnknown();
-  return wrap(unknownValue);
+  return wrap(std::make_shared<evaluator::UnknownValue>(unwrap(type), loc));
 }
 
 /// Get the type of an EvaluatorValue.

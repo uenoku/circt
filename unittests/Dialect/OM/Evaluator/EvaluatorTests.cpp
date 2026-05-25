@@ -1232,19 +1232,16 @@ om.class @Foo(
 
   auto unknownLoc = UnknownLoc::get(&context);
   // Create unknown values with the correct types
-  auto unknownInt = circt::om::evaluator::AttributeValue::get(
-      circt::om::OMIntegerType::get(&context), LocationAttr(unknownLoc));
-  unknownInt->markUnknown();
+  auto unknownInt = std::make_shared<circt::om::evaluator::UnknownValue>(
+      circt::om::OMIntegerType::get(&context), unknownLoc);
 
-  auto unknownBasePath = circt::om::evaluator::AttributeValue::get(
-      circt::om::FrozenBasePathType::get(&context), LocationAttr(unknownLoc));
-  unknownBasePath->markUnknown();
+  auto unknownBasePath = std::make_shared<circt::om::evaluator::UnknownValue>(
+      circt::om::FrozenBasePathType::get(&context), unknownLoc);
 
   auto barClassType = circt::om::ClassType::get(
       &context, mlir::FlatSymbolRefAttr::get(&context, "Bar"));
-  auto unknownClass = circt::om::evaluator::AttributeValue::get(
-      barClassType, LocationAttr(unknownLoc));
-  unknownClass->markUnknown();
+  auto unknownClass = std::make_shared<circt::om::evaluator::UnknownValue>(
+      barClassType, unknownLoc);
 
   auto result =
       evaluator.instantiate(StringAttr::get(&context, "Foo"),
@@ -1287,21 +1284,21 @@ om.class @Foo(
   checkFieldType("o", circt::om::FrozenBasePathType::get(&context));
   checkFieldType("p", circt::om::FrozenPathType::get(&context));
 
-  // Verify that the values have the correct runtime type
-  auto checkFieldValueType = [&](StringRef name, auto expectedKind) {
+  // Verify that unknown values have a uniform runtime representation.
+  auto checkFieldValueType = [&](StringRef name) {
     auto field = object->getField(name);
     ASSERT_TRUE(succeeded(field));
-    ASSERT_EQ(field->get()->getKind(), expectedKind);
+    ASSERT_EQ(field->get()->getKind(),
+              circt::om::evaluator::EvaluatorValue::Kind::Unknown);
   };
 
-  using Kind = circt::om::evaluator::EvaluatorValue::Kind;
-  checkFieldValueType("k", Kind::Attr);     // integer -> AttributeValue
-  checkFieldValueType("l", Kind::Attr);     // string -> AttributeValue
-  checkFieldValueType("m", Kind::List);     // list -> ListValue
-  checkFieldValueType("n", Kind::Object);   // class -> ObjectValue
-  checkFieldValueType("o", Kind::BasePath); // frozenbasepath -> BasePathValue
-  checkFieldValueType("p", Kind::Path);     // frozenpath -> PathValue
-  checkFieldValueType("q", Kind::Object);   // external class -> ObjectValue
+  checkFieldValueType("k");
+  checkFieldValueType("l");
+  checkFieldValueType("m");
+  checkFieldValueType("n");
+  checkFieldValueType("o");
+  checkFieldValueType("p");
+  checkFieldValueType("q");
 }
 
 TEST_F(EvaluatorTests, UnknownValuesNested) {
@@ -1339,9 +1336,8 @@ om.class @Foo(
 
   auto unknownLoc = UnknownLoc::get(&context);
   // Create unknown value with the correct type (!om.integer)
-  auto unknownValue = circt::om::evaluator::AttributeValue::get(
-      circt::om::OMIntegerType::get(&context), LocationAttr(unknownLoc));
-  unknownValue->markUnknown();
+  auto unknownValue = std::make_shared<circt::om::evaluator::UnknownValue>(
+      circt::om::OMIntegerType::get(&context), unknownLoc);
 
   auto result =
       evaluator.instantiate(StringAttr::get(&context, "Foo"), {unknownValue});
@@ -1618,7 +1614,7 @@ om.class @PropEqInteger(%n: !om.integer) -> (equal: i1, not_equal: i1, unknown: 
 
   Evaluator evaluator(owning.release());
 
-  auto unknownLoc = LocationAttr(UnknownLoc::get(&context));
+  auto unknownLoc = UnknownLoc::get(&context);
 
   auto getInt = [](evaluator::EvaluatorValuePtr obj, StringRef fieldName) {
     return getBuiltinInteger(getField(obj, fieldName));
@@ -1630,8 +1626,8 @@ om.class @PropEqInteger(%n: !om.integer) -> (equal: i1, not_equal: i1, unknown: 
       {"PropEqInteger", OMIntegerType::get(&context)},
   };
   for (auto [className, paramType] : cases) {
-    auto unknown = evaluator::AttributeValue::get(paramType, unknownLoc);
-    unknown->markUnknown();
+    auto unknown =
+        std::make_shared<evaluator::UnknownValue>(paramType, unknownLoc);
     auto result =
         evaluator.instantiate(StringAttr::get(&context, className), {unknown});
     ASSERT_TRUE(succeeded(result));
@@ -1670,13 +1666,14 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
 
   Evaluator evaluator(owning.release());
 
-  auto unknownLoc = LocationAttr(UnknownLoc::get(&context));
+  auto unknownLoc = UnknownLoc::get(&context);
+  auto unknownLocAttr = LocationAttr(unknownLoc);
   auto i8Type = mlir::IntegerType::get(&context, 8);
 
   // Helper: make an i8 AttributeValue.
   auto makeI8 = [&](uint8_t val) -> evaluator::EvaluatorValuePtr {
     auto attr = mlir::IntegerAttr::get(i8Type, val);
-    return evaluator::AttributeValue::get(attr, unknownLoc);
+    return evaluator::AttributeValue::get(attr, unknownLocAttr);
   };
 
   auto getResult = [&](evaluator::EvaluatorValuePtr obj) -> uint64_t {
@@ -1719,8 +1716,8 @@ om.class @IntegerBitwiseUnknown(%b: i8) -> (unknown: i8) {
   // Test unknown propagation: AND(0x00, unknown) = unknown.
   // Unknown is treated as poison rather than short-circuiting to zero.
   {
-    auto unknown = evaluator::AttributeValue::get(i8Type, unknownLoc);
-    unknown->markUnknown();
+    auto unknown =
+        std::make_shared<evaluator::UnknownValue>(i8Type, unknownLoc);
     auto r = evaluator.instantiate(
         StringAttr::get(&context, "IntegerBitwiseUnknown"), {unknown});
     ASSERT_TRUE(succeeded(r));
