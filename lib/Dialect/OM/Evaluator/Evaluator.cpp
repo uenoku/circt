@@ -416,8 +416,8 @@ circt::om::Evaluator::getPlaceholderValue(Type type, Location loc) {
   return result;
 }
 
-FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
-    Value value, ActualParameters actualParams, Location loc) {
+FailureOr<evaluator::EvaluatorValuePtr>
+circt::om::Evaluator::getOrCreateValue(Value value, Location loc) {
   LLVM_DEBUG(dbgs() << "- get: " << value << "\n");
 
   if (auto it = evaluatedValues.find(value); it != evaluatedValues.end()) {
@@ -428,25 +428,24 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::getOrCreateValue(
   FailureOr<evaluator::EvaluatorValuePtr> result =
       TypeSwitch<Value, FailureOr<evaluator::EvaluatorValuePtr>>(value)
           .Case([&](BlockArgument arg) {
-            auto val = (*actualParams)[arg.getArgNumber()];
-            val->setLoc(loc);
-            return val;
+            auto error = arg.getOwner()->getParentOp()->emitError(
+                "unable to evaluate unbound parameter");
+            error.attachNote() << "value: " << value;
+            return error;
           })
           .Case([&](OpResult result) {
             return TypeSwitch<Operation *,
                               FailureOr<evaluator::EvaluatorValuePtr>>(
                        result.getDefiningOp())
-                .Case([&](ConstantOp op) {
-                  return evaluateConstant(op, actualParams, loc);
-                })
+                .Case([&](ConstantOp op) { return evaluateConstant(op, loc); })
                 .Case<AnyCastOp>([&](AnyCastOp op) {
-                  return getOrCreateValue(op.getInput(), actualParams, loc);
+                  return getOrCreateValue(op.getInput(), loc);
                 })
                 .Case([&](ListCreateOp op) {
-                  return evaluateListCreate(op, actualParams, loc);
+                  return evaluateListCreate(op, loc);
                 })
                 .Case([&](ListConcatOp op) {
-                  return evaluateListConcat(op, actualParams, loc);
+                  return evaluateListConcat(op, loc);
                 })
                 .Case<ElaboratedObjectOp>([&](auto op) {
                   return getPlaceholderValue(op.getType(), op.getLoc());
@@ -491,6 +490,12 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
   if (failed(verifyActualParameters(cls, *actualParams)))
     return failure();
 
+  for (auto [arg, actual] :
+       llvm::zip(cls.getBodyBlock()->getArguments(), *actualParams)) {
+    actual->setLoc(arg.getLoc());
+    evaluatedValues.try_emplace(arg, actual);
+  }
+
   // Allocate placeholders for all class-body results before evaluating any
   // fields. A later field evaluation can then connect object-valued cycles by
   // pointing at these placeholders, and the placeholders are filled below.
@@ -501,16 +506,21 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
   DebugNesting nestOne(debugNesting);
 #endif
   for (auto &op : cls.getOps()) {
+    if (!isa<ElaboratedObjectOp>(op))
+      continue;
     for (auto result : op.getResults()) {
-      if (failed(
-              getOrCreateValue(result, actualParams, UnknownLoc::get(context))))
+      if (failed(getOrCreateValue(result, UnknownLoc::get(context))))
         return failure();
     }
   }
 
   for (auto &op : cls.getOps()) {
     for (auto result : op.getResults()) {
-      auto evaluated = evaluateValue(result, actualParams, op.getLoc());
+      FailureOr<evaluator::EvaluatorValuePtr> evaluated;
+      if (auto objectOp = dyn_cast<ElaboratedObjectOp>(result.getDefiningOp()))
+        evaluated = evaluateElaboratedObject(objectOp, op.getLoc());
+      else
+        evaluated = evaluateValue(result, op.getLoc());
       if (failed(evaluated))
         return failure();
     }
@@ -529,7 +539,7 @@ FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateClass(
     DebugNesting nestOne(debugNesting);
 #endif
     FailureOr<evaluator::EvaluatorValuePtr> result =
-        evaluateValue(value, actualParams, fieldLoc);
+        evaluateValue(value, fieldLoc);
     if (failed(result))
       return result;
 
@@ -613,69 +623,68 @@ circt::om::Evaluator::instantiateImpl(
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateValue(Value value, ActualParameters actualParams,
-                                    Location loc) {
-  auto evaluatorValue = getOrCreateValue(value, actualParams, loc);
-  if (failed(evaluatorValue))
-    return failure();
+circt::om::Evaluator::evaluateValue(Value value, Location loc) {
+  if (auto it = evaluatedValues.find(value); it != evaluatedValues.end()) {
+    it->second->setLocIfUnknown(loc);
+    return it->second;
+  }
 
   LLVM_DEBUG(dbgs() << "- eval: " << value << "\n");
 
-  return llvm::TypeSwitch<Value, FailureOr<evaluator::EvaluatorValuePtr>>(value)
-      .Case([&](BlockArgument arg) {
-        return evaluateParameter(arg, actualParams, loc);
-      })
-      .Case([&](OpResult result) {
-        return TypeSwitch<Operation *, FailureOr<evaluator::EvaluatorValuePtr>>(
-                   result.getDefiningOp())
-            .Case([&](ConstantOp op) {
-              return evaluateConstant(op, actualParams, loc);
-            })
-            .Case([&](ElaboratedObjectOp op) {
-              return evaluateElaboratedObject(op, actualParams, loc);
-            })
-            .Case([&](ListCreateOp op) {
-              return evaluateListCreate(op, actualParams, loc);
-            })
-            .Case([&](ListConcatOp op) {
-              return evaluateListConcat(op, actualParams, loc);
-            })
-            .Case([&](AnyCastOp op) {
-              return evaluateValue(op.getInput(), actualParams, loc);
-            })
-            .Case<UnknownValueOp>([&](UnknownValueOp op) {
-              return evaluateUnknownValue(op, loc);
-            })
-            .Default([&](Operation *op) {
-              auto error = op->emitError("unable to evaluate value");
-              error.attachNote() << "value: " << value;
-              return error;
-            });
-      });
+  FailureOr<evaluator::EvaluatorValuePtr> result =
+      llvm::TypeSwitch<Value, FailureOr<evaluator::EvaluatorValuePtr>>(value)
+          .Case([&](BlockArgument arg) { return evaluateParameter(arg, loc); })
+          .Case([&](OpResult result) {
+            return TypeSwitch<Operation *,
+                              FailureOr<evaluator::EvaluatorValuePtr>>(
+                       result.getDefiningOp())
+                .Case([&](ConstantOp op) { return evaluateConstant(op, loc); })
+                .Case([&](ElaboratedObjectOp op) {
+                  return evaluateElaboratedObject(op, loc);
+                })
+                .Case([&](ListCreateOp op) {
+                  return evaluateListCreate(op, loc);
+                })
+                .Case([&](ListConcatOp op) {
+                  return evaluateListConcat(op, loc);
+                })
+                .Case([&](AnyCastOp op) {
+                  return evaluateValue(op.getInput(), loc);
+                })
+                .Case<UnknownValueOp>([&](UnknownValueOp op) {
+                  return evaluateUnknownValue(op, loc);
+                })
+                .Default([&](Operation *op) {
+                  auto error = op->emitError("unable to evaluate value");
+                  error.attachNote() << "value: " << value;
+                  return error;
+                });
+          });
+  if (failed(result))
+    return result;
+
+  evaluatedValues.try_emplace(value, result.value());
+  return result;
 }
 
 /// Evaluator dispatch function for parameters.
-FailureOr<evaluator::EvaluatorValuePtr> circt::om::Evaluator::evaluateParameter(
-    BlockArgument formalParam, ActualParameters actualParams, Location loc) {
-  auto val = (*actualParams)[formalParam.getArgNumber()];
-  val->setLoc(loc);
-  return success(val);
+FailureOr<evaluator::EvaluatorValuePtr>
+circt::om::Evaluator::evaluateParameter(BlockArgument formalParam,
+                                        Location loc) {
+  return getOrCreateValue(formalParam, loc);
 }
 
 /// Evaluator dispatch function for constants.
 FailureOr<circt::om::evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateConstant(ConstantOp op,
-                                       ActualParameters actualParams,
-                                       Location loc) {
+circt::om::Evaluator::evaluateConstant(ConstantOp op, Location loc) {
   // For list constants, create ListValue.
   return success(om::evaluator::AttributeValue::get(op.getValue(), loc));
 }
 
 FailureOr<evaluator::EvaluatorValuePtr>
 circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
-                                               ActualParameters actualParams,
                                                Location loc) {
-  auto objectValue = getOrCreateValue(op, actualParams, loc);
+  auto objectValue = getOrCreateValue(op, loc);
   if (failed(objectValue))
     return failure();
   auto object = cast<evaluator::ObjectValue>(objectValue.value().get());
@@ -700,11 +709,7 @@ circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
        llvm::enumerate(llvm::zip(fieldNames, fieldValues))) {
     auto [fieldName, fieldValue] = fieldNameAndValue;
     auto fieldLoc = classOp ? classOp.getFieldLocByIndex(index) : loc;
-    auto fieldResult = getOrCreateValue(fieldValue, actualParams, fieldLoc);
-    if (failed(fieldResult))
-      return failure();
-    if (!isa<evaluator::ObjectValue>(fieldResult.value().get()))
-      fieldResult = evaluateValue(fieldValue, actualParams, fieldLoc);
+    auto fieldResult = getOrCreateValue(fieldValue, fieldLoc);
     if (failed(fieldResult))
       return failure();
 
@@ -717,13 +722,11 @@ circt::om::Evaluator::evaluateElaboratedObject(ElaboratedObjectOp op,
 
 /// Evaluator dispatch function for List creation.
 FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
-                                         ActualParameters actualParams,
-                                         Location loc) {
+circt::om::Evaluator::evaluateListCreate(ListCreateOp op, Location loc) {
   SmallVector<evaluator::EvaluatorValuePtr> values;
   values.reserve(op.getOperands().size());
   for (auto operand : op.getOperands()) {
-    auto result = evaluateValue(operand, actualParams, loc);
+    auto result = evaluateValue(operand, loc);
     if (failed(result))
       return result;
     values.push_back(result.value());
@@ -736,12 +739,10 @@ circt::om::Evaluator::evaluateListCreate(ListCreateOp op,
 
 /// Evaluator dispatch function for List concatenation.
 FailureOr<evaluator::EvaluatorValuePtr>
-circt::om::Evaluator::evaluateListConcat(ListConcatOp op,
-                                         ActualParameters actualParams,
-                                         Location loc) {
+circt::om::Evaluator::evaluateListConcat(ListConcatOp op, Location loc) {
   SmallVector<evaluator::EvaluatorValuePtr> values;
   for (auto operand : op.getOperands()) {
-    auto result = evaluateValue(operand, actualParams, loc);
+    auto result = evaluateValue(operand, loc);
     if (failed(result))
       return result;
 

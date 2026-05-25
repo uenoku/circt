@@ -298,35 +298,27 @@ private:
   instantiateImpl(StringAttr className,
                   ArrayRef<EvaluatorValuePtr> actualParams);
 
-  FailureOr<EvaluatorValuePtr>
-  getOrCreateValue(Value value, ActualParameters actualParams, Location loc);
+  FailureOr<EvaluatorValuePtr> getOrCreateValue(Value value, Location loc);
 
   /// Evaluate a Value in a Class body according to the small expression grammar
-  /// described in the rationale document. The actual parameters are the values
-  /// supplied at the current instantiation of the Class being evaluated.
-  FailureOr<EvaluatorValuePtr>
-  evaluateValue(Value value, ActualParameters actualParams, Location loc);
+  /// described in the rationale document.
+  FailureOr<EvaluatorValuePtr> evaluateValue(Value value, Location loc);
 
   /// Evaluator dispatch functions for the small expression grammar.
   FailureOr<EvaluatorValuePtr> evaluateParameter(BlockArgument formalParam,
-                                                 ActualParameters actualParams,
                                                  Location loc);
 
-  FailureOr<EvaluatorValuePtr>
-  evaluateConstant(ConstantOp op, ActualParameters actualParams, Location loc);
+  FailureOr<EvaluatorValuePtr> evaluateConstant(ConstantOp op, Location loc);
 
   /// Evaluate a class body with actual parameters.
   FailureOr<EvaluatorValuePtr> evaluateClass(StringAttr className,
                                              ActualParameters actualParams,
                                              Location loc);
-  FailureOr<EvaluatorValuePtr>
-  evaluateElaboratedObject(ElaboratedObjectOp op, ActualParameters actualParams,
-                           Location loc);
+  FailureOr<EvaluatorValuePtr> evaluateElaboratedObject(ElaboratedObjectOp op,
+                                                        Location loc);
   FailureOr<EvaluatorValuePtr> evaluateListCreate(ListCreateOp op,
-                                                  ActualParameters actualParams,
                                                   Location loc);
   FailureOr<EvaluatorValuePtr> evaluateListConcat(ListConcatOp op,
-                                                  ActualParameters actualParams,
                                                   Location loc);
   FailureOr<evaluator::EvaluatorValuePtr>
   evaluateUnknownValue(UnknownValueOp op, Location loc);
