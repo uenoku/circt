@@ -222,13 +222,9 @@ public:
   BasePathValue(MLIRContext *context);
 
   /// Create a path value representing a basepath.
-  BasePathValue(om::PathAttr path, Location loc, bool hasBasepath = true);
+  BasePathValue(om::PathAttr path, Location loc);
 
   om::PathAttr getPath() const;
-  bool hasBasepath() const { return basepathResolved; }
-
-  /// Set the basepath which this path is relative to.
-  void setBasepath(const BasePathValue &basepath);
 
   /// Implement LLVM RTTI.
   static bool classof(const EvaluatorValue *e) {
@@ -237,7 +233,6 @@ public:
 
 private:
   om::PathAttr path;
-  bool basepathResolved = false;
 };
 
 /// A Path value.
@@ -245,8 +240,7 @@ class PathValue : public EvaluatorValue {
 public:
   /// Create a path value representing a regular path.
   PathValue(om::TargetKindAttr targetKind, om::PathAttr path, StringAttr module,
-            StringAttr ref, StringAttr field, Location loc,
-            bool hasBasepath = true);
+            StringAttr ref, StringAttr field, Location loc);
 
   static PathValue getEmptyPath(Location loc);
 
@@ -262,10 +256,6 @@ public:
 
   StringAttr getAsString() const;
 
-  bool hasBasepath() const { return basepathResolved; }
-
-  void setBasepath(const BasePathValue &basepath);
-
   /// Implement LLVM RTTI.
   static bool classof(const EvaluatorValue *e) {
     return e->getKind() == Kind::Path;
@@ -277,7 +267,6 @@ private:
   StringAttr module;
   StringAttr ref;
   StringAttr field;
-  bool basepathResolved = false;
 };
 
 } // namespace evaluator
@@ -346,15 +335,6 @@ private:
   FailureOr<EvaluatorValuePtr> evaluateListConcat(ListConcatOp op,
                                                   ActualParameters actualParams,
                                                   Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluateBasePathCreate(FrozenBasePathCreateOp op,
-                         ActualParameters actualParams, Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluatePathCreate(FrozenPathCreateOp op, ActualParameters actualParams,
-                     Location loc);
-  FailureOr<evaluator::EvaluatorValuePtr>
-  evaluateEmptyPath(FrozenEmptyPathOp op, ActualParameters actualParams,
-                    Location loc);
   FailureOr<evaluator::EvaluatorValuePtr>
   evaluateUnknownValue(UnknownValueOp op, Location loc);
 
