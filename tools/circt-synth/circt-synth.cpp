@@ -318,6 +318,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     supergateOptions.externalLibraryFiles.assign(techLibraryFiles.begin(),
                                                  techLibraryFiles.end());
     pm.addPass(synth::createGenSupergates(supergateOptions));
+    pm.addPass(mlir::createSymbolDCEPass());
 
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;

@@ -17,11 +17,14 @@ hw.module @INV(in %a : i1, out Y : i1) attributes {synth.mapping_cost = #synth.m
 // CHECK: hw.module @INV
 
 // NOR2(NOR2(a,b), c) = (a|b) & ~c, a 3-input function not covered by NOR2/INV.
-// CHECK:      hw.module private @__supergate_{{[0-9]+}}(in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, out Y : i1)
+// CHECK:      hw.module @__supergate_{{[0-9]+}}(in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, out Y : i1)
 // CHECK-SAME: attributes {synth.mapping_cost = #synth.mapping_cost<area = 2.000000e+00 : f64
 // CHECK-SAME: synth.supergate = true
 // CHECK:      %[[INNER:.*]] = hw.instance "inner" @NOR2
 // CHECK:      %[[OUTER:.*]] = hw.instance "outer" @NOR2
+// CHECK:      %[[FLIP_INNER:.*]] = hw.instance "inner" @NOR2
+// CHECK:      %[[INNER_INV:.*]] = hw.instance "inner_inv" @INV(a: %[[FLIP_INNER]]: i1)
+// CHECK:      hw.instance "outer" @NOR2(a: %[[INNER_INV]]: i1
 
 // -----
 
@@ -42,7 +45,7 @@ hw.module @INV2(in %a : i1, out Y : i1) attributes {synth.mapping_cost = #synth.
 // With max-inputs=2, only 2-input supergates are allowed.
 // MAXIN: hw.module @AND2
 // MAXIN: hw.module @INV2
-// MAXIN: hw.module private @__supergate_
+// MAXIN: hw.module @__supergate_
 // MAXIN-SAME: in %{{.*}} : i1, in %{{.*}} : i1, out Y : i1
 
 // -----
@@ -55,7 +58,7 @@ hw.module @AND4_SRC(in %a : i1, in %b : i1, out Y : i1) attributes {synth.mappin
 }
 
 // FOURIN: hw.module @AND4_SRC
-// FOURIN: hw.module private @__supergate_
+// FOURIN: hw.module @__supergate_
 // FOURIN: in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, in %{{.*}} : i1, out Y : i1
 // FOURIN: synth.supergate = true
 
@@ -73,7 +76,7 @@ hw.module @NOR2_DUP_SRC(in %a : i1, in %b : i1, out Y : i1) attributes {synth.ma
 // NODUP-NOT: hw.instance "outer" @NOR2(a: %{{.*}}: i1, b: %in0: i1)
 
 // DUP: hw.module @NOR2_DUP_SRC
-// DUP: hw.module private @__supergate_
+// DUP: hw.module @__supergate_
 // DUP-SAME: in %in0 : i1, out Y : i1
 // DUP: %[[INNER:.*]] = hw.instance "inner" @INV(a: %in0: i1)
 // DUP: hw.instance "outer" @NOR2(a: %[[INNER]]: i1, b: %in0: i1)

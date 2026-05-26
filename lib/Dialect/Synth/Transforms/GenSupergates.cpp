@@ -14,6 +14,7 @@
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Dialect/Synth/Transforms/TechLibraries.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -21,6 +22,7 @@
 #include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <utility>
 
 namespace circt {
@@ -120,6 +122,22 @@ static LogicalResult collectBaseCells(ModuleOp topModule,
   return success();
 }
 
+static std::optional<CellInfo> findCheapestInverter(ArrayRef<CellInfo> cells) {
+  std::optional<CellInfo> best;
+  for (auto cell : cells) {
+    if (cell.module.getNumInputPorts() != 1 ||
+        cell.module.getNumOutputPorts() != 1)
+      continue;
+    auto tt = synth::getTruthTable(cell.module);
+    if (failed(tt) || tt->table != llvm::APInt(2, 1))
+      continue;
+    if (!best || cell.area < best->area ||
+        (cell.area == best->area && cell.maxDelay < best->maxDelay))
+      best = cell;
+  }
+  return best;
+}
+
 static FailureOr<NPNClass> computeNPN(hw::HWModuleOp module) {
   auto tt = synth::getTruthTable(module);
   if (failed(tt))
@@ -138,7 +156,8 @@ static NPNKey makeNPNKey(const NPNClass &npn) {
 static hw::HWModuleOp createSupergateModule(
     OpBuilder &builder, Location loc, StringAttr name, CellInfo &inner,
     CellInfo &outer, unsigned pin, ArrayRef<unsigned> innerToInput,
-    ArrayRef<unsigned> outerBypassToInput, unsigned totalInputs) {
+    ArrayRef<unsigned> outerBypassToInput, unsigned totalInputs,
+    const CellInfo *innerInverter = nullptr) {
   auto savedInsertion = builder.saveInsertionPoint();
   auto *ctx = builder.getContext();
   auto i1 = builder.getI1Type();
@@ -170,12 +189,20 @@ static hw::HWModuleOp createSupergateModule(
 
   auto innerInst = hw::InstanceOp::create(builder, loc, inner.module, "inner",
                                           innerOperands);
+  Value innerResult = innerInst.getResult(0);
+  if (innerInverter) {
+    SmallVector<Value, 1> invOperands{innerResult};
+    auto invInst =
+        hw::InstanceOp::create(builder, loc, innerInverter->module, "inner_inv",
+                               ArrayRef<Value>(invOperands));
+    innerResult = invInst.getResult(0);
+  }
 
   SmallVector<Value> outerOperands;
   unsigned bypassIdx = 0;
   for (unsigned i = 0, e = outer.module.getNumInputPorts(); i != e; ++i) {
     if (i == pin) {
-      outerOperands.push_back(innerInst.getResult(0));
+      outerOperands.push_back(innerResult);
       continue;
     }
     outerOperands.push_back(body->getArgument(outerBypassToInput[bypassIdx++]));
@@ -252,6 +279,7 @@ struct GenSupergatesPass
     }
     if (baseCells.empty())
       return;
+    std::optional<CellInfo> inverter = findCheapestInverter(baseCells);
 
     DenseMap<NPNKey, double> coveredNPN;
     for (auto &cell : baseCells) {
@@ -273,9 +301,19 @@ struct GenSupergatesPass
     DenseMap<NPNKey, SupergateCandidate> bestByNPN;
     unsigned supergateOrdinal = 0;
 
-    SmallVector<CellInfo> frontier = baseCells;
-    for (unsigned depth = 2; depth <= maxGates && !frontier.empty(); ++depth) {
-      std::sort(frontier.begin(), frontier.end(),
+    for (unsigned depth = 2; depth <= maxGates; ++depth) {
+      SmallVector<CellInfo> innerPool = baseCells;
+      for (auto &entry : bestByNPN) {
+        auto &candidate = entry.second;
+        if (candidate.numGates < depth)
+          innerPool.push_back({candidate.module, candidate.area,
+                               candidate.delays, candidate.maxDelay,
+                               candidate.numGates});
+      }
+      if (innerPool.empty())
+        break;
+
+      std::sort(innerPool.begin(), innerPool.end(),
                 [](const CellInfo &a, const CellInfo &b) {
                   if (a.maxDelay != b.maxDelay)
                     return a.maxDelay < b.maxDelay;
@@ -295,31 +333,41 @@ struct GenSupergatesPass
 
         for (unsigned pin = 0; pin < outerInputs; ++pin) {
           unsigned triedForRootPin = 0;
-          int64_t maxInnerDelayBudget =
-              maxDelay == 0 ? std::numeric_limits<int64_t>::max()
-                            : maxDelay - outer.delays[pin];
 
-          for (auto &inner : frontier) {
-            if (inner.maxDelay > maxInnerDelayBudget)
-              break;
+          for (auto &inner : innerPool) {
             if (maxCandidatesPerRoot > 0 &&
                 triedForRootPin >= maxCandidatesPerRoot)
               break;
 
             unsigned innerInputs = inner.module.getNumInputPorts();
-            double area = inner.area + outer.area;
-            if (maxArea > 0.0 && area > maxArea)
-              continue;
-
-            int64_t candidateMaxDelay = std::max(
-                inner.maxDelay + outer.delays[pin], outerMaxExcludingPin[pin]);
-            if (maxDelay > 0 && candidateMaxDelay > maxDelay)
-              continue;
 
             auto tryCandidate = [&](ArrayRef<unsigned> innerToInput,
                                     ArrayRef<unsigned> outerBypassToInput,
-                                    unsigned totalInputs) {
+                                    unsigned totalInputs, bool invertInner) {
               if (totalInputs > maxInputs)
+                return;
+              const CellInfo *innerInverter = nullptr;
+              unsigned candidateNumGates = inner.numGates + outer.numGates;
+              double area = inner.area + outer.area;
+              int64_t viaInner = outer.delays[pin];
+              if (invertInner) {
+                if (!inverter)
+                  return;
+                innerInverter = &*inverter;
+                candidateNumGates += inverter->numGates;
+                if (candidateNumGates > maxGates)
+                  return;
+                area += inverter->area;
+                viaInner += inverter->maxDelay;
+              }
+              if (candidateNumGates != depth)
+                return;
+              if (maxArea > 0.0 && area > maxArea)
+                return;
+
+              int64_t candidateMaxDelay = std::max(inner.maxDelay + viaInner,
+                                                   outerMaxExcludingPin[pin]);
+              if (maxDelay > 0 && candidateMaxDelay > maxDelay)
                 return;
 
               ++triedForRootPin;
@@ -328,7 +376,8 @@ struct GenSupergatesPass
               supergateName += std::to_string(supergateOrdinal++);
               auto sg = createSupergateModule(
                   builder, loc, StringAttr::get(ctx, supergateName), inner,
-                  outer, pin, innerToInput, outerBypassToInput, totalInputs);
+                  outer, pin, innerToInput, outerBypassToInput, totalInputs,
+                  innerInverter);
 
               auto npn = computeNPN(sg);
               if (failed(npn))
@@ -339,7 +388,6 @@ struct GenSupergatesPass
                 return;
 
               SmallVector<int64_t> delays(totalInputs, 0);
-              int64_t viaInner = outer.delays[pin];
               for (unsigned i = 0; i < innerInputs; ++i) {
                 unsigned inputIdx = innerToInput[i];
                 delays[inputIdx] =
@@ -357,7 +405,7 @@ struct GenSupergatesPass
               auto it = bestByNPN.find(key);
               if (it == bestByNPN.end() || area < it->second.area)
                 bestByNPN[key] = {sg, area, std::move(delays),
-                                  candidateMaxDelay, depth};
+                                  candidateMaxDelay, candidateNumGates};
             };
 
             unsigned baseTotalInputs = innerInputs + outerInputs - 1;
@@ -376,7 +424,9 @@ struct GenSupergatesPass
               baseOuterBypassToInput.push_back(nextInput++);
             }
             tryCandidate(baseInnerToInput, baseOuterBypassToInput,
-                         baseTotalInputs);
+                         baseTotalInputs, /*invertInner=*/false);
+            tryCandidate(baseInnerToInput, baseOuterBypassToInput,
+                         baseTotalInputs, /*invertInner=*/true);
 
             if (!this->allowDuplicateInputs || baseTotalInputs <= 1)
               continue;
@@ -401,7 +451,9 @@ struct GenSupergatesPass
                     --idx;
 
                 tryCandidate(dupInnerToInput, dupOuterBypassToInput,
-                             baseTotalInputs - 1);
+                             baseTotalInputs - 1, /*invertInner=*/false);
+                tryCandidate(dupInnerToInput, dupOuterBypassToInput,
+                             baseTotalInputs - 1, /*invertInner=*/true);
                 ++bypassPos;
               }
             }
@@ -412,17 +464,6 @@ struct GenSupergatesPass
           }
         }
       }
-
-      SmallVector<CellInfo> nextFrontier;
-      for (auto &entry : bestByNPN) {
-        auto &candidate = entry.second;
-        if (candidate.numGates != depth)
-          continue;
-        nextFrontier.push_back({candidate.module, candidate.area,
-                                candidate.delays, candidate.maxDelay,
-                                candidate.numGates});
-      }
-      frontier = std::move(nextFrontier);
     }
 
     for (auto &entry : bestByNPN) {
@@ -432,24 +473,11 @@ struct GenSupergatesPass
                                                      candidate.area,
                                                      candidate.delays));
       candidate.module->setAttr("synth.supergate", BoolAttr::get(ctx, true));
+      SymbolTable::setSymbolVisibility(candidate.module,
+                                       SymbolTable::Visibility::Public);
 
       LLVM_DEBUG(llvm::dbgs() << "Generated supergate: "
                               << candidate.module.getModuleName() << "\n");
-    }
-
-    llvm::SmallPtrSet<Operation *, 16> liveSupergates;
-    for (auto &entry : bestByNPN)
-      liveSupergates.insert(entry.second.module.getOperation());
-
-    llvm::SmallPtrSet<Operation *, 16> erasedModules;
-    for (auto module :
-         llvm::make_early_inc_range(topModule.getOps<hw::HWModuleOp>())) {
-      if (!module.getModuleName().starts_with("__supergate_"))
-        continue;
-      Operation *op = module.getOperation();
-      if (liveSupergates.contains(op) || !erasedModules.insert(op).second)
-        continue;
-      module.erase();
     }
 
     LLVM_DEBUG(llvm::dbgs()
