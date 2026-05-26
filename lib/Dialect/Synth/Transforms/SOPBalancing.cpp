@@ -215,7 +215,11 @@ struct SOPBalancingPattern : public CutRewritePattern {
   }
 
   FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
-                                 const Cut &cut) const override {
+                                 const Cut &cut,
+                                 const MatchedPattern &match) const override {
+    if (match.getResultPhase() == Phase::Negative)
+      return failure();
+
     const auto &network = enumerator.getLogicNetwork();
     const auto &tt = *cut.getTruthTable();
     const SOPForm &sop = sopCache.getOrCompute(tt.table, tt.numInputs);

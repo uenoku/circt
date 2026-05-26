@@ -60,9 +60,14 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
 /// Simple technology library encoded as a HWModuleOp.
 struct TechLibraryPattern : public CutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,
-                     SmallVector<DelayType> delay, NPNClass npnClass)
+                     SmallVector<DelayType> delay, NPNClass npnClass,
+                     hw::HWModuleOp inverterModule = {},
+                     double inverterArea = 0.0, DelayType inverterDelay = 0)
       : CutRewritePattern(module->getContext()), area(area),
-        delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
+        delay(std::move(delay)), module(module), npnClass(std::move(npnClass)),
+        inverterModule(inverterModule ? inverterModule.getOperation()
+                                      : nullptr),
+        inverterArea(inverterArea), inverterDelay(inverterDelay) {
 
     LLVM_DEBUG({
       llvm::dbgs() << "Created Tech Library Pattern for module: "
@@ -84,11 +89,40 @@ struct TechLibraryPattern : public CutRewritePattern {
   /// Match the cut set against this library primitive
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    if (!cut.getNPNClass(enumerator.getOptions().npnTable)
-             .equivalentOtherThanPermutation(npnClass))
+    const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
+    if (!(cutNPN.truthTable == npnClass.truthTable))
       return std::nullopt;
+    bool needsPhaseInverter = cutNPN.inputNegation != npnClass.inputNegation ||
+                              cutNPN.outputNegation != npnClass.outputNegation;
+    if (!inverterModule && needsPhaseInverter)
+      return std::nullopt;
+    if (!needsPhaseInverter)
+      return MatchResult(area, delay);
 
-    return MatchResult(area, delay);
+    MatchResult result;
+    result.area = area;
+    SmallVector<DelayType, 6> phasedDelays(delay.begin(), delay.end());
+
+    for (auto [patternInput, canonicalPos] :
+         llvm::enumerate(npnClass.inputPermutation)) {
+      bool invertInput = ((cutNPN.inputNegation >> canonicalPos) & 1) !=
+                         ((npnClass.inputNegation >> canonicalPos) & 1);
+      if (!invertInput)
+        continue;
+      result.area += inverterArea;
+      for (unsigned output = 0, e = getNumOutputs(); output != e; ++output)
+        phasedDelays[output * cut.getInputSize() + patternInput] +=
+            inverterDelay;
+    }
+
+    if (cutNPN.outputNegation != npnClass.outputNegation) {
+      result.area += inverterArea;
+      for (DelayType &delay : phasedDelays)
+        delay += inverterDelay;
+    }
+
+    result.setOwnedDelays(std::move(phasedDelays));
+    return result;
   }
 
   /// Enable truth table matching for this pattern
@@ -99,20 +133,33 @@ struct TechLibraryPattern : public CutRewritePattern {
   }
 
   /// Rewrite the cut set using this library primitive
-  llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
-                                       CutEnumerator &enumerator,
-                                       const Cut &cut) const override {
+  llvm::FailureOr<Operation *>
+  rewrite(mlir::OpBuilder &builder, CutEnumerator &enumerator, const Cut &cut,
+          const MatchedPattern &match) const override {
     const auto &network = enumerator.getLogicNetwork();
     // Create a new instance of the module
-    SmallVector<unsigned> permutedInputIndices;
-    cut.getPermutatedInputIndices(enumerator.getOptions().npnTable, npnClass,
-                                  permutedInputIndices);
+    ArrayRef<unsigned> permutedInputIndices = match.getInputMapping();
+    ArrayRef<Phase> inputPhases = match.getInputPhases();
 
     SmallVector<Value> inputs;
     inputs.reserve(permutedInputIndices.size());
     for (unsigned idx : permutedInputIndices) {
       assert(idx < cut.inputs.size() && "input permutation index out of range");
-      inputs.push_back(network.getValue(cut.inputs[idx]));
+      Value input = network.getValue(cut.inputs[idx]);
+      if (inputPhases[idx] == Phase::Negative) {
+        if (!inverterModule) {
+          mlir::emitError(input.getLoc(),
+                          "matched inverted input phase but no single-input "
+                          "inverter is available");
+          return failure();
+        }
+        SmallVector<Value, 1> invInputs{input};
+        auto inv =
+            hw::InstanceOp::create(builder, input.getLoc(), inverterModule,
+                                   "phase_inv", ArrayRef<Value>(invInputs));
+        input = inv.getResult(0);
+      }
+      inputs.push_back(input);
     }
 
     auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
@@ -121,6 +168,18 @@ struct TechLibraryPattern : public CutRewritePattern {
     // TODO: Give a better name to the instance
     auto instanceOp = hw::InstanceOp::create(builder, rootOp->getLoc(), module,
                                              "mapped", ArrayRef<Value>(inputs));
+    if (match.getResultPhase() == Phase::Negative) {
+      if (!inverterModule) {
+        rootOp->emitError("matched inverted output phase but no single-input "
+                          "inverter is available");
+        return failure();
+      }
+      SmallVector<Value, 1> invInputs{instanceOp.getResult(0)};
+      auto inv =
+          hw::InstanceOp::create(builder, rootOp->getLoc(), inverterModule,
+                                 "phase_inv", ArrayRef<Value>(invInputs));
+      return inv.getOperation();
+    }
     return instanceOp.getOperation();
   }
 
@@ -142,6 +201,9 @@ private:
   const SmallVector<DelayType> delay;
   hw::HWModuleOp module;
   NPNClass npnClass;
+  Operation *inverterModule = nullptr;
+  double inverterArea = 0.0;
+  DelayType inverterDelay = 0;
 };
 
 namespace {
@@ -170,6 +232,31 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     }
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
+    hw::HWModuleOp inverterModule;
+    double inverterArea = 0.0;
+    DelayType inverterDelay = 0;
+    for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
+      if (!hwModule->hasAttr("synth.mapping_cost"))
+        continue;
+      if (hwModule.getNumInputPorts() != 1 || hwModule.getNumOutputPorts() != 1)
+        continue;
+      auto truthTable = getTruthTable(hwModule);
+      if (failed(truthTable))
+        continue;
+      if (truthTable->table == APInt(2, 1)) {
+        inverterModule = hwModule;
+        break;
+      }
+    }
+    if (inverterModule) {
+      auto mappingCost =
+          inverterModule->getAttrOfType<MappingCostAttr>("synth.mapping_cost");
+      inverterArea = mappingCost.getArea().getValue().convertToDouble();
+      for (auto attr : mappingCost.getArcs())
+        inverterDelay = std::max(
+            inverterDelay, static_cast<DelayType>(
+                               cast<LinearTimingArcAttr>(attr).getIntrinsic()));
+    }
 
     unsigned maxInputSize = 0;
     // Consider modules with the "synth.mapping_cost" attribute as library
@@ -269,8 +356,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
       // Create a CutRewritePattern for the library module
       std::unique_ptr<TechLibraryPattern> pattern =
-          std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
-                                               std::move(*npnClass));
+          std::make_unique<TechLibraryPattern>(
+              hwModule, area, std::move(delay), std::move(*npnClass),
+              inverterModule, inverterArea, inverterDelay);
 
       // Update the maximum input size
       maxInputSize = std::max(maxInputSize, pattern->getNumInputs());

@@ -42,6 +42,17 @@ namespace synth {
 // femtoseconds, but not limited to it).
 using DelayType = int64_t;
 
+/// Polarity phase of a mapped value.
+enum class Phase : uint8_t { Positive = 0, Negative = 1 };
+
+inline unsigned getPhaseIndex(Phase phase) {
+  return phase == Phase::Negative ? 1 : 0;
+}
+
+inline Phase invertPhase(Phase phase) {
+  return phase == Phase::Positive ? Phase::Negative : Phase::Positive;
+}
+
 /// Maximum number of inputs supported for truth table generation.
 /// This limit prevents excessive memory usage as truth table size grows
 /// exponentially with the number of inputs (2^n entries).
@@ -368,6 +379,9 @@ private:
   SmallVector<DelayType, 1>
       arrivalTimes;  ///< Arrival times of outputs from this pattern
   double area = 0.0; ///< Area cost of this pattern
+  Phase resultPhase = Phase::Positive;
+  SmallVector<unsigned, 6> inputMapping;
+  SmallVector<Phase, 6> inputPhases;
 
 public:
   /// Default constructor creates an invalid matched pattern.
@@ -378,6 +392,14 @@ public:
                  SmallVector<DelayType, 1> arrivalTimes, double area)
       : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area) {}
 
+  MatchedPattern(const CutRewritePattern *pattern,
+                 SmallVector<DelayType, 1> arrivalTimes, double area,
+                 Phase resultPhase, SmallVector<unsigned, 6> inputMapping,
+                 SmallVector<Phase, 6> inputPhases)
+      : pattern(pattern), arrivalTimes(std::move(arrivalTimes)), area(area),
+        resultPhase(resultPhase), inputMapping(std::move(inputMapping)),
+        inputPhases(std::move(inputPhases)) {}
+
   /// Get the arrival time of signals through this pattern.
   DelayType getArrivalTime(unsigned outputIndex) const;
   ArrayRef<DelayType> getArrivalTimes() const;
@@ -387,6 +409,12 @@ public:
 
   /// Get the area cost of using this pattern.
   double getArea() const;
+
+  Phase getResultPhase() const { return resultPhase; }
+
+  ArrayRef<unsigned> getInputMapping() const { return inputMapping; }
+
+  ArrayRef<Phase> getInputPhases() const { return inputPhases; }
 };
 
 /// Represents a cut in the combinational logic network.
@@ -411,7 +439,7 @@ class Cut {
   /// Computed lazily from the truth table when first accessed.
   mutable std::optional<NPNClass> npnClass;
 
-  std::optional<MatchedPattern> matchedPattern;
+  std::optional<MatchedPattern> matchedPatterns[2];
 
   /// Root index in LogicNetwork (0 indicates no root for a trivial cut).
   /// The root node produces the output of the cut.
@@ -516,15 +544,23 @@ public:
   /// Returns failure if any input doesn't have a valid matched pattern.
   LogicalResult getInputArrivalTimes(CutEnumerator &enumerator,
                                      SmallVectorImpl<DelayType> &results) const;
+  LogicalResult getInputArrivalTimes(CutEnumerator &enumerator,
+                                     ArrayRef<Phase> phases,
+                                     SmallVectorImpl<DelayType> &results) const;
 
   /// Matched pattern for this cut.
   void setMatchedPattern(MatchedPattern pattern) {
-    matchedPattern = std::move(pattern);
+    matchedPatterns[getPhaseIndex(pattern.getResultPhase())] =
+        std::move(pattern);
   }
 
   /// Get the matched pattern for this cut.
   const std::optional<MatchedPattern> &getMatchedPattern() const {
-    return matchedPattern;
+    return getMatchedPattern(Phase::Positive);
+  }
+
+  const std::optional<MatchedPattern> &getMatchedPattern(Phase phase) const {
+    return matchedPatterns[getPhaseIndex(phase)];
   }
 };
 
@@ -542,22 +578,24 @@ public:
 class CutSet {
 private:
   llvm::SmallVector<Cut *, 12> cuts; ///< Collection of cuts for this node
-  Cut *bestCut = nullptr;
+  Cut *bestCuts[2] = {nullptr, nullptr};
   bool isFrozen = false; ///< Whether cut set is finalized
 
 public:
   /// Check if this cut set has a valid matched pattern.
-  bool isMatched() const { return bestCut; }
+  bool isMatched() const { return bestCuts[getPhaseIndex(Phase::Positive)]; }
 
   /// Get the cut associated with the best matched pattern.
   Cut *getBestMatchedCut() const;
+  Cut *getBestMatchedCut(Phase phase) const;
 
   /// Finalize the cut set by removing duplicates and selecting the best
   /// pattern.
-  void finalize(
-      const CutRewriterOptions &options,
-      llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
-      const LogicNetwork &logicNetwork);
+  void
+  finalize(const CutRewriterOptions &options,
+           llvm::function_ref<std::optional<MatchedPattern>(const Cut &, Phase)>
+               matchCut,
+           const LogicNetwork &logicNetwork);
 
   /// Get the number of cuts in this set.
   unsigned size() const;
@@ -652,8 +690,8 @@ public:
   /// for combinational logic operations.
   LogicalResult enumerateCuts(
       Operation *topOp,
-      llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut =
-          [](const Cut &) { return std::nullopt; });
+      llvm::function_ref<std::optional<MatchedPattern>(const Cut &, Phase)>
+          matchCut = [](const Cut &, Phase) { return std::nullopt; });
 
   /// Create a new cut set for an index.
   /// The index must not already have a cut set.
@@ -705,7 +743,8 @@ private:
 
   /// Function to match cuts against available patterns.
   /// Set during enumeration and used when finalizing cut sets.
-  llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut;
+  llvm::function_ref<std::optional<MatchedPattern>(const Cut &, Phase)>
+      matchCut;
 
   /// Flat logic network representation used during enumeration/rewrite.
   LogicNetwork logicNetwork;
@@ -772,7 +811,8 @@ struct CutRewritePattern {
   /// cut while preserving all other operations unchanged.
   virtual FailureOr<Operation *> rewrite(mlir::OpBuilder &builder,
                                          CutEnumerator &enumerator,
-                                         const Cut &cut) const = 0;
+                                         const Cut &cut,
+                                         const MatchedPattern &match) const = 0;
 
   /// Get the number of outputs this pattern produces.
   virtual unsigned getNumOutputs() const = 0;
@@ -885,7 +925,7 @@ private:
   getMatchingPatternsFromTruthTable(const Cut &cut) const;
 
   /// Match a cut against available patterns and compute arrival time.
-  std::optional<MatchedPattern> patternMatchCut(const Cut &cut);
+  std::optional<MatchedPattern> patternMatchCut(const Cut &cut, Phase phase);
 
   /// Perform the actual circuit rewriting using selected patterns.
   LogicalResult runBottomUpRewrite(Operation *topOp);

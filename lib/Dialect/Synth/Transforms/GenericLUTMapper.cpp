@@ -59,15 +59,17 @@ struct GenericLUT : public CutRewritePattern {
         1.0, ArrayRef<DelayType>(cachedDelays).take_front(cut.getInputSize()));
   }
 
-  llvm::FailureOr<Operation *> rewrite(mlir::OpBuilder &rewriter,
-                                       CutEnumerator &enumerator,
-                                       const Cut &cut) const override {
+  llvm::FailureOr<Operation *>
+  rewrite(mlir::OpBuilder &rewriter, CutEnumerator &enumerator, const Cut &cut,
+          const MatchedPattern &match) const override {
     const auto &network = enumerator.getLogicNetwork();
     // NOTE: Don't use NPN since it's unnecessary.
     const auto &truthTableOpt = cut.getTruthTable();
     if (!truthTableOpt)
       return failure();
     const auto &truthTable = *truthTableOpt;
+    if (match.getResultPhase() == Phase::Negative)
+      return failure();
     LLVM_DEBUG({
       llvm::dbgs() << "Rewriting cut with " << cut.getInputSize()
                    << " inputs and " << cut.getInputSize()

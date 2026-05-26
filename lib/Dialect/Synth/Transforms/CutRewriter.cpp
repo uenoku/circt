@@ -524,11 +524,19 @@ void Cut::getPermutatedInputIndices(
 LogicalResult
 Cut::getInputArrivalTimes(CutEnumerator &enumerator,
                           SmallVectorImpl<DelayType> &results) const {
+  SmallVector<Phase, 6> phases(getInputSize(), Phase::Positive);
+  return getInputArrivalTimes(enumerator, phases, results);
+}
+
+LogicalResult
+Cut::getInputArrivalTimes(CutEnumerator &enumerator, ArrayRef<Phase> phases,
+                          SmallVectorImpl<DelayType> &results) const {
+  assert(phases.size() == getInputSize() && "expected one phase per cut input");
   results.reserve(getInputSize());
   const auto &network = enumerator.getLogicNetwork();
 
   // Compute arrival times for each input.
-  for (auto inputIndex : inputs) {
+  for (auto [inputIndex, phase] : llvm::zip_equal(inputs, phases)) {
     if (isAlwaysCutInput(network, inputIndex)) {
       // If the input is a primary input, it has no delay.
       results.push_back(0);
@@ -539,11 +547,11 @@ Cut::getInputArrivalTimes(CutEnumerator &enumerator,
 
     // If there is no matching pattern, it means it's not possible to use the
     // input in the cut rewriting. Return empty vector to indicate failure.
-    auto *bestCut = cutSet->getBestMatchedCut();
+    auto *bestCut = cutSet->getBestMatchedCut(phase);
     if (!bestCut)
       return failure();
 
-    const auto &matchedPattern = *bestCut->getMatchedPattern();
+    const auto &matchedPattern = *bestCut->getMatchedPattern(phase);
 
     // Get the value for result number lookup
     mlir::Value inputValue = network.getValue(inputIndex);
@@ -836,7 +844,13 @@ double MatchedPattern::getArea() const {
 // CutSet
 //===----------------------------------------------------------------------===//
 
-Cut *CutSet::getBestMatchedCut() const { return bestCut; }
+Cut *CutSet::getBestMatchedCut() const {
+  return getBestMatchedCut(Phase::Positive);
+}
+
+Cut *CutSet::getBestMatchedCut(Phase phase) const {
+  return bestCuts[getPhaseIndex(phase)];
+}
 
 unsigned CutSet::size() const { return cuts.size(); }
 
@@ -918,7 +932,8 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
 
 void CutSet::finalize(
     const CutRewriterOptions &options,
-    llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
+    llvm::function_ref<std::optional<MatchedPattern>(const Cut &, Phase)>
+        matchCut,
     const LogicNetwork &logicNetwork) {
 
   // Remove duplicate/non-minimal cuts first so all follow-up work only runs on
@@ -933,8 +948,9 @@ void CutSet::finalize(
     assert(cut->getInputSize() <= options.maxCutInputSize &&
            "Cut input size exceeds maximum allowed size");
 
-    if (auto matched = matchCut(*cut))
-      cut->setMatchedPattern(std::move(*matched));
+    for (Phase phase : {Phase::Positive, Phase::Negative})
+      if (auto matched = matchCut(*cut, phase))
+        cut->setMatchedPattern(std::move(*matched));
   }
 
   // Sort cuts by priority to select the most promising ones.
@@ -954,8 +970,15 @@ void CutSet::finalize(
   auto isBetterCut = [&options](const Cut *a, const Cut *b) {
     assert(!a->isTrivialCut() && !b->isTrivialCut() &&
            "Trivial cuts should have been excluded");
-    const auto &aMatched = a->getMatchedPattern();
-    const auto &bMatched = b->getMatchedPattern();
+    auto getSortMatch =
+        [](const Cut *cut) -> const std::optional<MatchedPattern> & {
+      const auto &positive = cut->getMatchedPattern(Phase::Positive);
+      if (positive)
+        return positive;
+      return cut->getMatchedPattern(Phase::Negative);
+    };
+    const auto &aMatched = getSortMatch(a);
+    const auto &bMatched = getSortMatch(b);
 
     if (aMatched && bMatched)
       return compareDelayAndArea(
@@ -974,21 +997,25 @@ void CutSet::finalize(
     cuts.resize(options.maxCutSizePerRoot);
 
   // Select the best cut from the remaining candidates.
-  bestCut = nullptr;
-  for (Cut *cut : cuts) {
-    const auto &currentMatch = cut->getMatchedPattern();
-    if (!currentMatch)
-      continue;
-    bestCut = cut;
-    break;
+  for (Phase phase : {Phase::Positive, Phase::Negative}) {
+    bestCuts[getPhaseIndex(phase)] = nullptr;
+    for (Cut *cut : cuts) {
+      const auto &currentMatch = cut->getMatchedPattern(phase);
+      if (!currentMatch)
+        continue;
+      bestCuts[getPhaseIndex(phase)] = cut;
+      break;
+    }
   }
 
   LLVM_DEBUG({
     llvm::dbgs() << "Finalized cut set with " << cuts.size() << " cuts and "
-                 << (bestCut
-                         ? "matched pattern to " + bestCut->getMatchedPattern()
-                                                       ->getPattern()
-                                                       ->getPatternName()
+                 << (bestCuts[getPhaseIndex(Phase::Positive)]
+                         ? "matched pattern to " +
+                               bestCuts[getPhaseIndex(Phase::Positive)]
+                                   ->getMatchedPattern()
+                                   ->getPattern()
+                                   ->getPatternName()
                          : "no matched pattern")
                  << "\n";
   });
@@ -1273,7 +1300,8 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
 
 LogicalResult CutEnumerator::enumerateCuts(
     Operation *topOp,
-    llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut) {
+    llvm::function_ref<std::optional<MatchedPattern>(const Cut &, Phase)>
+        matchCut) {
   LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts for module: " << topOp->getName()
                           << "\n");
   // Topologically sort the logic network
@@ -1445,9 +1473,9 @@ LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
   LLVM_DEBUG(llvm::dbgs() << "Enumerating cuts...\n");
 
   return cutEnumerator.enumerateCuts(
-      topOp, [&](const Cut &cut) -> std::optional<MatchedPattern> {
+      topOp, [&](const Cut &cut, Phase phase) -> std::optional<MatchedPattern> {
         // Match the cut against the patterns
-        return patternMatchCut(cut);
+        return patternMatchCut(cut, phase);
       });
 }
 
@@ -1464,75 +1492,81 @@ CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
   return it->getSecond();
 }
 
-std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
+std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut,
+                                                           Phase phase) {
   if (cut.isTrivialCut())
     return {};
 
   const auto &network = cutEnumerator.getLogicNetwork();
   const CutRewritePattern *bestPattern = nullptr;
-  SmallVector<DelayType, 4> inputArrivalTimes;
   SmallVector<DelayType, 1> bestArrivalTimes;
+  SmallVector<unsigned, 6> bestInputMapping;
+  SmallVector<Phase, 6> bestInputPhases;
   double bestArea = 0.0;
-  inputArrivalTimes.reserve(cut.getInputSize());
   bestArrivalTimes.reserve(cut.getOutputSize(network));
 
-  // Compute arrival times for each input.
-  if (failed(cut.getInputArrivalTimes(cutEnumerator, inputArrivalTimes)))
-    return {};
+  auto computeArrivalTimeAndPickBest = [&](const CutRewritePattern *pattern,
+                                           const MatchResult &matchResult,
+                                           Phase resultPhase,
+                                           ArrayRef<unsigned> inputMapping,
+                                           ArrayRef<Phase> inputPhases) {
+    if (resultPhase != phase)
+      return;
 
-  auto computeArrivalTimeAndPickBest =
-      [&](const CutRewritePattern *pattern, const MatchResult &matchResult,
-          llvm::function_ref<unsigned(unsigned)> mapIndex) {
-        SmallVector<DelayType, 1> outputArrivalTimes;
-        // Compute the maximum delay for each output from inputs.
-        for (unsigned outputIndex = 0, outputSize = cut.getOutputSize(network);
-             outputIndex < outputSize; ++outputIndex) {
-          // Compute the arrival time for this output.
-          DelayType outputArrivalTime = 0;
-          auto delays = matchResult.getDelays();
-          for (unsigned inputIndex = 0, inputSize = cut.getInputSize();
-               inputIndex < inputSize; ++inputIndex) {
-            // Map pattern input i to cut input through NPN transformations
-            unsigned cutOriginalInput = mapIndex(inputIndex);
-            outputArrivalTime =
-                std::max(outputArrivalTime,
-                         delays[outputIndex * inputSize + inputIndex] +
-                             inputArrivalTimes[cutOriginalInput]);
-          }
+    SmallVector<DelayType, 4> phasedInputArrivalTimes;
+    if (failed(cut.getInputArrivalTimes(cutEnumerator, inputPhases,
+                                        phasedInputArrivalTimes)))
+      return;
 
-          outputArrivalTimes.push_back(outputArrivalTime);
+    SmallVector<DelayType, 1> outputArrivalTimes;
+    // Compute the maximum delay for each output from inputs.
+    for (unsigned outputIndex = 0, outputSize = cut.getOutputSize(network);
+         outputIndex < outputSize; ++outputIndex) {
+      // Compute the arrival time for this output.
+      DelayType outputArrivalTime = 0;
+      auto delays = matchResult.getDelays();
+      for (unsigned inputIndex = 0, inputSize = cut.getInputSize();
+           inputIndex < inputSize; ++inputIndex) {
+        // Map pattern input i to cut input through NPN transformations
+        unsigned cutOriginalInput = inputMapping[inputIndex];
+        outputArrivalTime = std::max(
+            outputArrivalTime, delays[outputIndex * inputSize + inputIndex] +
+                                   phasedInputArrivalTimes[cutOriginalInput]);
+      }
+
+      outputArrivalTimes.push_back(outputArrivalTime);
+    }
+
+    // Update the arrival time
+    if (!bestPattern ||
+        compareDelayAndArea(options.strategy, matchResult.area,
+                            outputArrivalTimes, bestArea, bestArrivalTimes)) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "== Matched Pattern ==============\n";
+        llvm::dbgs() << "Matching cut: \n";
+        cut.dump(llvm::dbgs(), network);
+        llvm::dbgs() << "Found better pattern: " << pattern->getPatternName();
+        llvm::dbgs() << " with area: " << matchResult.area;
+        llvm::dbgs() << " and input arrival times: ";
+        for (unsigned i = 0; i < phasedInputArrivalTimes.size(); ++i) {
+          llvm::dbgs() << " " << phasedInputArrivalTimes[i];
         }
+        llvm::dbgs() << " and arrival times: ";
 
-        // Update the arrival time
-        if (!bestPattern ||
-            compareDelayAndArea(options.strategy, matchResult.area,
-                                outputArrivalTimes, bestArea,
-                                bestArrivalTimes)) {
-          LLVM_DEBUG({
-            llvm::dbgs() << "== Matched Pattern ==============\n";
-            llvm::dbgs() << "Matching cut: \n";
-            cut.dump(llvm::dbgs(), network);
-            llvm::dbgs() << "Found better pattern: "
-                         << pattern->getPatternName();
-            llvm::dbgs() << " with area: " << matchResult.area;
-            llvm::dbgs() << " and input arrival times: ";
-            for (unsigned i = 0; i < inputArrivalTimes.size(); ++i) {
-              llvm::dbgs() << " " << inputArrivalTimes[i];
-            }
-            llvm::dbgs() << " and arrival times: ";
-
-            for (auto arrivalTime : outputArrivalTimes) {
-              llvm::dbgs() << " " << arrivalTime;
-            }
-            llvm::dbgs() << "\n";
-            llvm::dbgs() << "== Matched Pattern End ==============\n";
-          });
-
-          bestArrivalTimes = std::move(outputArrivalTimes);
-          bestArea = matchResult.area;
-          bestPattern = pattern;
+        for (auto arrivalTime : outputArrivalTimes) {
+          llvm::dbgs() << " " << arrivalTime;
         }
-      };
+        llvm::dbgs() << "\n";
+        llvm::dbgs() << "== Matched Pattern End ==============\n";
+      });
+
+      bestArrivalTimes = std::move(outputArrivalTimes);
+      bestArea = matchResult.area;
+      bestPattern = pattern;
+      bestInputMapping.assign(inputMapping.begin(), inputMapping.end());
+      bestInputPhases.assign(inputPhases.begin(), inputPhases.end());
+    }
+  };
 
   for (auto &[patternNPN, pattern] : getMatchingPatternsFromTruthTable(cut)) {
     assert(patternNPN.truthTable.numInputs == cut.getInputSize() &&
@@ -1543,22 +1577,47 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     auto &cutNPN = cut.getNPNClass(options.npnTable);
 
     // Get the input mapping from pattern's NPN class to cut's NPN class
-    SmallVector<unsigned> inputMapping;
-    cutNPN.getInputPermutation(patternNPN, inputMapping);
-    computeArrivalTimeAndPickBest(pattern, *matchResult,
-                                  [&](unsigned i) { return inputMapping[i]; });
+    SmallVector<unsigned, 6> inverseCutPermutation(
+        cutNPN.inputPermutation.size());
+    for (auto [input, canonicalPos] : llvm::enumerate(cutNPN.inputPermutation))
+      inverseCutPermutation[canonicalPos] = input;
+
+    SmallVector<unsigned, 6> inputMapping;
+    SmallVector<Phase, 6> inputPhases(cut.getInputSize(), Phase::Positive);
+    inputMapping.reserve(patternNPN.inputPermutation.size());
+    for (auto [patternInput, canonicalPos] :
+         llvm::enumerate(patternNPN.inputPermutation)) {
+      unsigned cutInput = inverseCutPermutation[canonicalPos];
+      inputMapping.push_back(cutInput);
+      bool invertInput = ((cutNPN.inputNegation >> canonicalPos) & 1) !=
+                         ((patternNPN.inputNegation >> canonicalPos) & 1);
+      inputPhases[cutInput] = invertInput ? Phase::Negative : Phase::Positive;
+    }
+
+    Phase resultPhase = (cutNPN.outputNegation ^ patternNPN.outputNegation)
+                            ? Phase::Negative
+                            : Phase::Positive;
+    computeArrivalTimeAndPickBest(pattern, *matchResult, resultPhase,
+                                  inputMapping, inputPhases);
   }
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
-    if (auto matchResult = pattern->match(cutEnumerator, cut))
-      computeArrivalTimeAndPickBest(pattern, *matchResult,
-                                    [&](unsigned i) { return i; });
+    if (auto matchResult = pattern->match(cutEnumerator, cut)) {
+      SmallVector<unsigned, 6> inputMapping;
+      SmallVector<Phase, 6> inputPhases(cut.getInputSize(), Phase::Positive);
+      for (unsigned i = 0, e = cut.getInputSize(); i != e; ++i)
+        inputMapping.push_back(i);
+      computeArrivalTimeAndPickBest(pattern, *matchResult, Phase::Positive,
+                                    inputMapping, inputPhases);
+    }
   }
 
   if (!bestPattern)
     return {}; // No matching pattern found
 
-  return MatchedPattern(bestPattern, std::move(bestArrivalTimes), bestArea);
+  return MatchedPattern(bestPattern, std::move(bestArrivalTimes), bestArea,
+                        phase, std::move(bestInputMapping),
+                        std::move(bestInputPhases));
 }
 
 LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
@@ -1605,8 +1664,8 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     auto *rootOp = network.getGate(bestCut->getRootIndex()).getOperation();
     rewriter.setInsertionPoint(rootOp);
     const auto &matchedPattern = bestCut->getMatchedPattern();
-    auto result = matchedPattern->getPattern()->rewrite(rewriter, cutEnumerator,
-                                                        *bestCut);
+    auto result = matchedPattern->getPattern()->rewrite(
+        rewriter, cutEnumerator, *bestCut, *matchedPattern);
     if (failed(result))
       return failure();
 
