@@ -18,8 +18,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
+#include "circt/Dialect/Synth/SynthDialect.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "circt/Dialect/Synth/Transforms/TechLibraries.h"
 #include "mlir/IR/Builders.h"
@@ -48,40 +50,7 @@ using namespace circt::synth;
 //===----------------------------------------------------------------------===//
 
 static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
-  // Get input and output ports
-  auto inputTypes = module.getInputTypes();
-  auto outputTypes = module.getOutputTypes();
-
-  unsigned numInputs = inputTypes.size();
-  unsigned numOutputs = outputTypes.size();
-  if (numOutputs != 1)
-    return module->emitError(
-        "Modules with multiple outputs are not supported yet");
-
-  // Verify all ports are single bit
-  for (auto type : inputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All input ports must be single bit");
-  }
-  for (auto type : outputTypes) {
-    if (!type.isInteger(1))
-      return module->emitError("All output ports must be single bit");
-  }
-
-  if (numInputs > maxTruthTableInputs)
-    return module->emitError("Too many inputs for truth table generation");
-
-  SmallVector<Value> results;
-  results.reserve(numOutputs);
-  // Get the body block of the module
-  auto *bodyBlock = module.getBodyBlock();
-  assert(bodyBlock && "Module must have a body block");
-  // Collect output values from the body block
-  for (auto result : bodyBlock->getTerminator()->getOperands())
-    results.push_back(result);
-
-  // Create a truth table for the module
-  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
+  FailureOr<BinaryTruthTable> truthTable = getTruthTable(module);
   if (failed(truthTable))
     return failure();
 
@@ -192,6 +161,12 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         failed(appendBuiltinTechLibrary(module, builtinLibrary))) {
       signalPassFailure();
       return;
+    }
+    for (const auto &filename : externalLibraryFiles) {
+      if (failed(appendTechLibraryFile(module, filename))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;

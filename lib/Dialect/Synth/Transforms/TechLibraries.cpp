@@ -16,7 +16,9 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Support/FileUtilities.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/SourceMgr.h"
 #include <optional>
 
 using namespace circt;
@@ -39,6 +41,22 @@ getBuiltinTechLibrarySource(llvm::StringRef libraryName) {
       .Default(std::nullopt);
 }
 
+static LogicalResult appendTechLibraryModule(ModuleOp module,
+                                             ModuleOp libraryModule,
+                                             llvm::Twine libraryName) {
+  SymbolTable symbolTable(module);
+  for (Operation &op : libraryModule.getBody()->getOperations()) {
+    auto name = SymbolTable::getSymbolName(&op);
+    if (name && symbolTable.lookup(name))
+      return module.emitError(libraryName)
+             << " conflicts with existing symbol '" << name << "'";
+  }
+
+  module.getBody()->getOperations().splice(
+      module.getBody()->end(), libraryModule.getBody()->getOperations());
+  return success();
+}
+
 LogicalResult
 circt::synth::appendBuiltinTechLibrary(ModuleOp module,
                                        llvm::StringRef libraryName) {
@@ -53,16 +71,28 @@ circt::synth::appendBuiltinTechLibrary(ModuleOp module,
     return module.emitError("failed to parse built-in tech library '")
            << libraryName << "'";
 
-  SymbolTable symbolTable(module);
-  for (Operation &op : libraryModule->getBody()->getOperations()) {
-    auto name = SymbolTable::getSymbolName(&op);
-    if (name && symbolTable.lookup(name))
-      return module.emitError("built-in tech library '")
-             << libraryName << "' conflicts with existing symbol '" << name
-             << "'";
-  }
+  return appendTechLibraryModule(module, *libraryModule,
+                                 llvm::Twine("built-in tech library '") +
+                                     libraryName + "'");
+}
 
-  module.getBody()->getOperations().splice(
-      module.getBody()->end(), libraryModule->getBody()->getOperations());
-  return success();
+LogicalResult circt::synth::appendTechLibraryFile(ModuleOp module,
+                                                  llvm::StringRef filename) {
+  std::string errorMessage;
+  std::unique_ptr<llvm::MemoryBuffer> input =
+      openInputFile(filename.str(), &errorMessage);
+  if (!input)
+    return module.emitError(errorMessage);
+
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
+  OwningOpRef<ModuleOp> libraryModule =
+      parseSourceFile<ModuleOp>(sourceMgr, module.getContext());
+  if (!libraryModule)
+    return module.emitError("failed to parse tech library file '")
+           << filename << "'";
+
+  return appendTechLibraryModule(module, *libraryModule,
+                                 llvm::Twine("tech library file '") + filename +
+                                     "'");
 }

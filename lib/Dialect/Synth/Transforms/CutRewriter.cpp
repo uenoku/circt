@@ -33,6 +33,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
@@ -301,8 +302,81 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
 }
 
 /// Get the truth table for operations within a block.
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
+static llvm::APInt composeTruthTable(const BinaryTruthTable &truthTable,
+                                     ArrayRef<llvm::APInt> operands,
+                                     unsigned outputWidth) {
+  assert(truthTable.numOutputs == 1 &&
+         "Only single-output truth tables are supported");
+  assert(truthTable.numInputs == operands.size() &&
+         "Operand count must match truth table inputs");
+
+  if (truthTable.table.isZero())
+    return llvm::APInt::getZero(outputWidth);
+  if (truthTable.table.isAllOnes())
+    return llvm::APInt::getAllOnes(outputWidth);
+
+  bool enumerateSetBits =
+      truthTable.table.popcount() <= truthTable.table.getBitWidth() / 2;
+  llvm::APInt result = enumerateSetBits ? llvm::APInt::getZero(outputWidth)
+                                        : llvm::APInt::getAllOnes(outputWidth);
+
+  for (unsigned row = 0, e = truthTable.table.getBitWidth(); row != e; ++row) {
+    if (truthTable.table[row] != enumerateSetBits)
+      continue;
+
+    llvm::APInt pattern = llvm::APInt::getAllOnes(outputWidth);
+    for (unsigned i = 0, e = operands.size(); i != e; ++i) {
+      bool bit = (row >> i) & 1U;
+      pattern &= bit ? operands[i] : ~operands[i];
+    }
+
+    if (enumerateSetBits)
+      result |= pattern;
+    else
+      result &= ~pattern;
+  }
+
+  return result;
+}
+
+static FailureOr<BinaryTruthTable>
+getTruthTableImpl(ValueRange values, Block *block,
+                  DenseMap<Operation *, BinaryTruthTable> &moduleCache);
+
+static FailureOr<BinaryTruthTable>
+getModuleTruthTableImpl(hw::HWModuleOp module,
+                        DenseMap<Operation *, BinaryTruthTable> &moduleCache) {
+  auto cached = moduleCache.find(module.getOperation());
+  if (cached != moduleCache.end())
+    return cached->second;
+
+  if (module.getNumOutputPorts() != 1)
+    return module.emitError(
+        "Modules with multiple outputs are not supported yet");
+  if (!module.getOutputTypes()[0].isInteger(1))
+    return module.emitError("All output ports must be single bit");
+  for (auto type : module.getInputTypes())
+    if (!type.isInteger(1))
+      return module.emitError("All input ports must be single bit");
+
+  auto *bodyBlock = module.getBodyBlock();
+  assert(bodyBlock && "Module must have a body block");
+  auto outputOp = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
+  if (!outputOp)
+    return module.emitError("expected hw.output terminator");
+
+  auto truthTable =
+      getTruthTableImpl(outputOp.getOutputs(), bodyBlock, moduleCache);
+  if (failed(truthTable))
+    return failure();
+
+  moduleCache.try_emplace(module.getOperation(), *truthTable);
+  return truthTable;
+}
+
+static FailureOr<BinaryTruthTable>
+getTruthTableImpl(ValueRange values, Block *block,
+                  DenseMap<Operation *, BinaryTruthTable> &moduleCache) {
   llvm::SmallSetVector<Value, 4> inputArgs;
   for (Value arg : block->getArguments())
     inputArgs.insert(arg);
@@ -365,12 +439,53 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       eval[constantOp.getResult()] = constantOp.getValue().isZero()
                                          ? llvm::APInt::getZero(tableSize)
                                          : llvm::APInt::getAllOnes(tableSize);
+    } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
+      if (instanceOp.getNumResults() != 1)
+        return instanceOp.emitError(
+            "Only single-output instances are supported for truth table "
+            "simulation");
+
+      Operation *referencedOp = SymbolTable::lookupNearestSymbolFrom(
+          instanceOp, instanceOp.getModuleNameAttr());
+      auto referencedModule = dyn_cast_or_null<hw::HWModuleOp>(referencedOp);
+      if (!referencedModule)
+        return instanceOp.emitError("Cannot find HW module definition '")
+               << instanceOp.getReferencedModuleName() << "'";
+
+      auto instanceTruthTable =
+          getModuleTruthTableImpl(referencedModule, moduleCache);
+      if (failed(instanceTruthTable))
+        return failure();
+
+      SmallVector<llvm::APInt> operands;
+      operands.reserve(instanceOp.getNumOperands());
+      for (auto value : instanceOp.getInputs()) {
+        auto it = eval.find(value);
+        if (it == eval.end())
+          return instanceOp.emitError(
+              "Input value not found in evaluation map");
+        operands.push_back(it->second);
+      }
+
+      eval[instanceOp.getResult(0)] =
+          composeTruthTable(*instanceTruthTable, operands, 1ULL << numInputs);
     } else {
       return op.emitError("Unsupported operation for truth table simulation");
     }
   }
 
   return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+}
+
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
+                                                        Block *block) {
+  DenseMap<Operation *, BinaryTruthTable> moduleCache;
+  return getTruthTableImpl(values, block, moduleCache);
+}
+
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(hw::HWModuleOp module) {
+  DenseMap<Operation *, BinaryTruthTable> moduleCache;
+  return getModuleTruthTableImpl(module, moduleCache);
 }
 
 //===----------------------------------------------------------------------===//

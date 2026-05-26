@@ -228,6 +228,11 @@ static cl::opt<std::string>
                 cl::desc("Built-in technology library for tech mapping "
                          "(available: asap7, sky130)"),
                 cl::init(""), cl::cat(mainCategory));
+static cl::list<std::string>
+    techLibraryFiles("tech-library-file",
+                     cl::desc("External MLIR technology library file for tech "
+                              "mapping"),
+                     cl::CommaSeparated, cl::cat(mainCategory));
 
 // Opt-in to enable the parameterize constant ports pass.
 // NOTE: This is always beneficial for middle-end optimizations but currently
@@ -308,10 +313,15 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
   if (!untilReached(UntilMapping)) {
+    synth::GenSupergatesOptions supergateOptions;
+    supergateOptions.builtinLibrary = techLibrary;
+    supergateOptions.externalLibraryFiles.assign(techLibraryFiles.begin(),
+                                                 techLibraryFiles.end());
+    pm.addPass(synth::createGenSupergates(supergateOptions));
+
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;
-    options.builtinLibrary = techLibrary;
     pm.addPass(synth::createTechMapper(options));
   }
 

@@ -641,10 +641,10 @@ void NPNClass::getInputPermutation(
 
 NPNClass NPNClass::computeNPNCanonicalForm(const BinaryTruthTable &tt) {
   // Exact NPN canonicalization is factorial in the number of inputs. Keep the
-  // exact form for small functions where it is cheap and use the
-  // semi-canonical form for larger functions such as high-fan-in cells in
-  // technology libraries.
-  constexpr unsigned exactNPNInputLimit = 6;
+  // exact form only up to the 4-input table-backed case; 5- and 6-input cut
+  // matching shows up heavily in end-to-end synthesis flows and is too
+  // expensive to canonicalize exactly.
+  constexpr unsigned exactNPNInputLimit = 4;
   if (tt.numInputs > exactNPNInputLimit)
     return computeNPNSemiCanonicalForm(tt);
 

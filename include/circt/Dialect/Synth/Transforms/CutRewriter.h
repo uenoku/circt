@@ -33,6 +33,9 @@
 #include <utility>
 
 namespace circt {
+namespace hw {
+class HWModuleOp;
+} // namespace hw
 namespace synth {
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (usually
@@ -52,6 +55,10 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 // Get the truth table for a specific operation within a block.
 // Block must be a SSACFG or topologically sorted.
 FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
+
+/// Get the truth table for a single-output HW module. The module body may
+/// contain instances of other single-output HW modules.
+FailureOr<BinaryTruthTable> getTruthTable(hw::HWModuleOp module);
 
 //===----------------------------------------------------------------------===//
 // Cut Data Structures

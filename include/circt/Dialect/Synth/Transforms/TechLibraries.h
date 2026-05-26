@@ -20,6 +20,10 @@ namespace synth {
 mlir::LogicalResult appendBuiltinTechLibrary(mlir::ModuleOp module,
                                              llvm::StringRef libraryName);
 
+/// Append HW modules from an MLIR technology library file to `module`.
+mlir::LogicalResult appendTechLibraryFile(mlir::ModuleOp module,
+                                          llvm::StringRef filename);
+
 } // namespace synth
 } // namespace circt
 

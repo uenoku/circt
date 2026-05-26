@@ -59,7 +59,9 @@ hw.module @and_inv_5(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, 
     hw.output %0 : i1
 }
 
-// Make sure truth value is computed correctly for @and_inv_5.
+// Exact NPN canonicalization is only used up to 4 inputs. The direct polarity
+// matches @and_inv_5, while the second 5-input form maps through smaller cells
+// under the semi-canonical form.
 // CHECK-LABEL: @and_inv_5_test
 hw.module @and_inv_5_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, out o1 : i1, out o2 : i1) {
     %0 = synth.aig.and_inv not %a, %b : i1
@@ -71,10 +73,13 @@ hw.module @and_inv_5_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e:
     %5 = synth.aig.and_inv not %b, %e : i1
     %6 = synth.aig.and_inv %5, %c : i1
     %7 = synth.aig.and_inv %6, %4 : i1
-    // CHECK-NEXT: %[[result_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %d: i1, b: %e: i1, c: %c: i1, d: %a: i1, e: %b: i1)
+    // CHECK-NEXT: %[[result_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_nn(a: %a: i1, b: %d: i1)
+    // CHECK-NEXT: %[[result_2:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %b: i1, b: %e: i1)
+    // CHECK-NEXT: %[[result_3:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %c: i1, b: %[[result_2]]: i1)
+    // CHECK-NEXT: %[[result_4:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %[[result_1]]: i1, b: %[[result_3]]: i1)
     
     hw.output %3, %7 : i1, i1
-    // CHECK-NEXT: hw.output %[[result_0]], %[[result_1]] : i1, i1
+    // CHECK-NEXT: hw.output %[[result_0]], %[[result_4]] : i1, i1
 }
 
 hw.module @area_flow(in %a : i1, in %b : i1, in %c: i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.5 : f64, arcs = [#synth.linear_timing_arc<"result", "a", 10, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "b", 10, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "c", 10, 0, #synth.polarity<positive>>], input_caps = {}>} {

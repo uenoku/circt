@@ -69,9 +69,46 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
   let options = baseOptions # [
     Option<"builtinLibrary", "builtin-library", "std::string", /*default=*/"\"\"",
            "Built-in technology library to append before mapping "
-           "(available: asap7, sky130)">
+           "(available: asap7, sky130)">,
+    ListOption<"externalLibraryFiles", "external-library-files", "std::string",
+               "External MLIR technology library files to append before mapping">
   ];
-  let dependentDialects = ["hw::HWDialect"];
+  let dependentDialects = ["hw::HWDialect", "circt::synth::SynthDialect",
+                           "circt::comb::CombDialect"];
+}
+
+def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
+  let summary = "Generate supergate library from primitive cells";
+  let description = [{
+    This pass generates supergates by composing primitive technology library
+    cells. Supergates are emitted as hw.modules with synth.mapping_cost so
+    TechMapper picks them up transparently.
+
+    Only the best-area supergate per NPN equivalence class is kept, and NPN
+    classes already covered by primitive cells are skipped.
+  }];
+  let options = [
+    Option<"builtinLibrary", "builtin-library", "std::string", /*default=*/"\"\"",
+           "Built-in technology library to append before generating supergates "
+           "(available: asap7, sky130)">,
+    ListOption<"externalLibraryFiles", "external-library-files", "std::string",
+               "External MLIR technology library files to append before "
+               "generating supergates">,
+    Option<"maxInputs", "max-inputs", "unsigned", "6",
+           "Maximum number of primary inputs per supergate">,
+    Option<"allowDuplicateInputs", "allow-duplicate-inputs", "bool", "false",
+           "Allow candidates that merge one inner input with one outer bypass input">,
+    Option<"maxGates", "max-gates", "unsigned", "2",
+           "Maximum number of primitive gates per supergate">,
+    Option<"maxDelay", "max-delay", "int64_t", "0",
+           "Maximum pin-to-pin delay per supergate (0 = unlimited)">,
+    Option<"maxCandidatesPerRoot", "max-candidates-per-root", "unsigned",
+           "256", "Maximum inner candidates tried per (root,pin)">,
+    Option<"maxArea", "max-area", "double", "0.0",
+           "Maximum area per supergate (0 = unlimited)">
+  ];
+  let dependentDialects = ["hw::HWDialect", "circt::synth::SynthDialect",
+                           "circt::comb::CombDialect"];
 }
 
 def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
