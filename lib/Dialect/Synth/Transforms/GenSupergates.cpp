@@ -177,6 +177,7 @@ static hw::HWModuleOp createSupergateModule(
 
   auto sg = hw::HWModuleOp::create(builder, loc, name, ports);
   sg.setPrivate();
+  sg->setAttr("synth.supergate_candidate", BoolAttr::get(ctx, true));
 
   auto *body = sg.getBodyBlock();
   if (body->mightHaveTerminator())

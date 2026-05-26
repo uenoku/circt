@@ -354,6 +354,8 @@ getModuleTruthTableImpl(hw::HWModuleOp module,
   if (module.getNumOutputPorts() != 1)
     return module.emitError(
         "Modules with multiple outputs are not supported yet");
+  if (module.getNumInputPorts() >= maxTruthTableInputs)
+    return module.emitError("Too many inputs for truth table generation");
   if (!module.getOutputTypes()[0].isInteger(1))
     return module.emitError("All output ports must be single bit");
   for (auto type : module.getInputTypes())
@@ -392,7 +394,7 @@ getTruthTableImpl(ValueRange values, Block *block,
       return BinaryTruthTable(numInputs, 0);
     if (numInputs >= maxTruthTableInputs)
       return mlir::emitError(values.front().getLoc(),
-                             "Truth table is too large");
+                             "Too many inputs for truth table generation");
     return mlir::emitError(values.front().getLoc(),
                            "Multiple outputs are not supported yet");
   }

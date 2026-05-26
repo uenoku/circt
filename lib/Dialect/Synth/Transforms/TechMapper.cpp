@@ -267,6 +267,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       auto mappingCost =
           hwModule->getAttrOfType<MappingCostAttr>("synth.mapping_cost");
       if (!mappingCost) {
+        if (hwModule->hasAttr("synth.supergate_candidate") ||
+            hwModule.getModuleName().starts_with("__supergate_"))
+          continue;
         nonLibraryModules.push_back(hwModule);
         continue;
       }

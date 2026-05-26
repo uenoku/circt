@@ -335,6 +335,20 @@ BinaryTruthTable extractCofactor(const BinaryTruthTable &tt, unsigned input,
 
   unsigned inputMask = 1u << input;
   unsigned lowMask = inputMask - 1;
+
+  if (tt.numOutputs == 1) {
+    for (unsigned row = 0, e = 1u << tt.numInputs; row != e; ++row) {
+      if (static_cast<bool>(row & inputMask) != value)
+        continue;
+      if (!tt.table[row])
+        continue;
+
+      unsigned compressedRow = (row & lowMask) | ((row >> 1) & ~lowMask);
+      cofactor.table.setBit(compressedRow);
+    }
+    return cofactor;
+  }
+
   for (unsigned row = 0, e = 1u << tt.numInputs; row != e; ++row) {
     if (static_cast<bool>(row & inputMask) != value)
       continue;
@@ -357,26 +371,19 @@ unsigned computeSemiCanonicalInputNegation(const BinaryTruthTable &tt) {
   BinaryTruthTable current = tt;
 
   // Pick a stable input phase by preferring the lexicographically smaller
-  // positive cofactor for each variable. Iterate a few times because changing
-  // one input phase reorders the cofactor tables of the remaining inputs.
-  for (unsigned iteration = 0, e = std::max(1u, tt.numInputs); iteration != e;
-       ++iteration) {
-    unsigned extraNegation = 0;
-    for (unsigned input = 0; input != tt.numInputs; ++input) {
-      BinaryTruthTable negativeCofactor =
-          extractCofactor(current, input, /*value=*/false);
-      BinaryTruthTable positiveCofactor =
-          extractCofactor(current, input, /*value=*/true);
-      if (isLessThan(positiveCofactor, negativeCofactor))
-        extraNegation |= 1u << input;
-    }
-
-    if (!extraNegation)
-      break;
-
-    negation ^= extraNegation;
-    current = current.applyInputNegation(extraNegation);
+  // positive cofactor for each variable. This intentionally uses a single pass:
+  // the semi-canonical path is used for larger cuts where repeated cofactor
+  // refinement dominates technology mapping runtime.
+  unsigned extraNegation = 0;
+  for (unsigned input = 0; input != tt.numInputs; ++input) {
+    BinaryTruthTable negativeCofactor =
+        extractCofactor(current, input, /*value=*/false);
+    BinaryTruthTable positiveCofactor =
+        extractCofactor(current, input, /*value=*/true);
+    if (isLessThan(positiveCofactor, negativeCofactor))
+      extraNegation |= 1u << input;
   }
+  negation ^= extraNegation;
 
   return negation;
 }
@@ -421,24 +428,6 @@ computeSemiCanonicalPermutation(const BinaryTruthTable &tt) {
   permutation.reserve(tt.numInputs);
   for (const auto &signature : signatures)
     permutation.push_back(signature.input);
-
-  BinaryTruthTable best = tt.applyPermutation(permutation);
-  bool changed = true;
-  for (unsigned iteration = 0; changed && iteration != tt.numInputs;
-       ++iteration) {
-    changed = false;
-    for (unsigned i = 0; i + 1 < permutation.size(); ++i) {
-      llvm::SmallVector<unsigned> candidatePermutation(permutation);
-      std::swap(candidatePermutation[i], candidatePermutation[i + 1]);
-      BinaryTruthTable candidate = tt.applyPermutation(candidatePermutation);
-      if (!candidate.isLexicographicallySmaller(best))
-        continue;
-
-      permutation = std::move(candidatePermutation);
-      best = std::move(candidate);
-      changed = true;
-    }
-  }
 
   return permutation;
 }
