@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <utility>
 
 using namespace circt;
 using llvm::APInt;
@@ -156,7 +157,27 @@ void BinaryTruthTable::setOutput(const llvm::APInt &input,
 BinaryTruthTable
 BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
   assert(permutation.size() == numInputs && "Permutation size mismatch");
+  bool isIdentity = true;
+  for (unsigned i = 0; i != numInputs; ++i)
+    isIdentity &= permutation[i] == i;
+  if (isIdentity)
+    return *this;
+
   BinaryTruthTable result(numInputs, numOutputs);
+
+  if (numOutputs == 1) {
+    for (unsigned row = 0, e = 1u << numInputs; row != e; ++row) {
+      if (!table[row])
+        continue;
+
+      unsigned permutedRow = 0;
+      for (unsigned input = 0; input != numInputs; ++input)
+        if ((row >> permutation[input]) & 1U)
+          permutedRow |= 1u << input;
+      result.table.setBit(permutedRow);
+    }
+    return result;
+  }
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -175,7 +196,17 @@ BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
 }
 
 BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
+  if (mask == 0)
+    return *this;
+
   BinaryTruthTable result(numInputs, numOutputs);
+
+  if (numOutputs == 1) {
+    for (unsigned row = 0, e = 1u << numInputs; row != e; ++row)
+      if (table[row])
+        result.table.setBit(row ^ mask);
+    return result;
+  }
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -191,7 +222,15 @@ BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
 
 BinaryTruthTable
 BinaryTruthTable::applyOutputNegation(unsigned negation) const {
+  if (negation == 0)
+    return *this;
+
   BinaryTruthTable result(numInputs, numOutputs);
+
+  if (numOutputs == 1) {
+    result.table = ~table;
+    return result;
+  }
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
     llvm::APInt input(numInputs, i);
@@ -328,36 +367,41 @@ expandInputPermutation(const std::array<uint8_t, 4> &permutation) {
   return result;
 }
 
-BinaryTruthTable extractCofactor(const BinaryTruthTable &tt, unsigned input,
-                                 bool value) {
+std::pair<BinaryTruthTable, BinaryTruthTable>
+extractCofactors(const BinaryTruthTable &tt, unsigned input) {
   assert(input < tt.numInputs && "input index out of range");
-  BinaryTruthTable cofactor(tt.numInputs - 1, tt.numOutputs);
+  BinaryTruthTable negativeCofactor(tt.numInputs - 1, tt.numOutputs);
+  BinaryTruthTable positiveCofactor(tt.numInputs - 1, tt.numOutputs);
 
   unsigned inputMask = 1u << input;
   unsigned lowMask = inputMask - 1;
+  unsigned cofactorRows = 1u << (tt.numInputs - 1);
 
   if (tt.numOutputs == 1) {
-    for (unsigned row = 0, e = 1u << tt.numInputs; row != e; ++row) {
-      if (static_cast<bool>(row & inputMask) != value)
-        continue;
-      if (!tt.table[row])
-        continue;
-
-      unsigned compressedRow = (row & lowMask) | ((row >> 1) & ~lowMask);
-      cofactor.table.setBit(compressedRow);
+    for (unsigned compressedRow = 0; compressedRow != cofactorRows;
+         ++compressedRow) {
+      unsigned negativeRow =
+          (compressedRow & lowMask) | ((compressedRow & ~lowMask) << 1);
+      if (tt.table[negativeRow])
+        negativeCofactor.table.setBit(compressedRow);
+      if (tt.table[negativeRow | inputMask])
+        positiveCofactor.table.setBit(compressedRow);
     }
-    return cofactor;
+    return {std::move(negativeCofactor), std::move(positiveCofactor)};
   }
 
-  for (unsigned row = 0, e = 1u << tt.numInputs; row != e; ++row) {
-    if (static_cast<bool>(row & inputMask) != value)
-      continue;
-
-    unsigned compressedRow = (row & lowMask) | ((row >> 1) & ~lowMask);
-    cofactor.setOutput(APInt(tt.numInputs - 1, compressedRow),
-                       tt.getOutput(APInt(tt.numInputs, row)));
+  for (unsigned compressedRow = 0; compressedRow != cofactorRows;
+       ++compressedRow) {
+    unsigned negativeRow =
+        (compressedRow & lowMask) | ((compressedRow & ~lowMask) << 1);
+    APInt compressedInput(tt.numInputs - 1, compressedRow);
+    negativeCofactor.setOutput(compressedInput,
+                               tt.getOutput(APInt(tt.numInputs, negativeRow)));
+    positiveCofactor.setOutput(
+        compressedInput,
+        tt.getOutput(APInt(tt.numInputs, negativeRow | inputMask)));
   }
-  return cofactor;
+  return {std::move(negativeCofactor), std::move(positiveCofactor)};
 }
 
 bool isLessThan(const BinaryTruthTable &lhs, const BinaryTruthTable &rhs) {
@@ -376,10 +420,8 @@ unsigned computeSemiCanonicalInputNegation(const BinaryTruthTable &tt) {
   // refinement dominates technology mapping runtime.
   unsigned extraNegation = 0;
   for (unsigned input = 0; input != tt.numInputs; ++input) {
-    BinaryTruthTable negativeCofactor =
-        extractCofactor(current, input, /*value=*/false);
-    BinaryTruthTable positiveCofactor =
-        extractCofactor(current, input, /*value=*/true);
+    auto [negativeCofactor, positiveCofactor] =
+        extractCofactors(current, input);
     if (isLessThan(positiveCofactor, negativeCofactor))
       extraNegation |= 1u << input;
   }
@@ -401,10 +443,7 @@ computeSemiCanonicalPermutation(const BinaryTruthTable &tt) {
   llvm::SmallVector<InputSignature> signatures;
   signatures.reserve(tt.numInputs);
   for (unsigned input = 0; input != tt.numInputs; ++input) {
-    BinaryTruthTable negativeCofactor =
-        extractCofactor(tt, input, /*value=*/false);
-    BinaryTruthTable positiveCofactor =
-        extractCofactor(tt, input, /*value=*/true);
+    auto [negativeCofactor, positiveCofactor] = extractCofactors(tt, input);
     signatures.push_back({input, negativeCofactor.table.popcount(),
                           positiveCofactor.table.popcount(),
                           std::move(negativeCofactor),
