@@ -1578,19 +1578,14 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut,
       continue;
     auto &cutNPN = cut.getNPNClass(options.npnTable);
 
-    // Get the input mapping from pattern's NPN class to cut's NPN class
-    SmallVector<unsigned, 6> inverseCutPermutation(
-        cutNPN.inputPermutation.size());
-    for (auto [input, canonicalPos] : llvm::enumerate(cutNPN.inputPermutation))
-      inverseCutPermutation[canonicalPos] = input;
-
     SmallVector<unsigned, 6> inputMapping;
     SmallVector<Phase, 6> inputPhases(cut.getInputSize(), Phase::Positive);
-    inputMapping.reserve(patternNPN.inputPermutation.size());
-    for (auto [patternInput, canonicalPos] :
-         llvm::enumerate(patternNPN.inputPermutation)) {
-      unsigned cutInput = inverseCutPermutation[canonicalPos];
-      inputMapping.push_back(cutInput);
+    inputMapping.resize(patternNPN.inputPermutation.size());
+    for (unsigned canonicalPos = 0, e = patternNPN.inputPermutation.size();
+         canonicalPos != e; ++canonicalPos) {
+      unsigned patternInput = patternNPN.inputPermutation[canonicalPos];
+      unsigned cutInput = cutNPN.inputPermutation[canonicalPos];
+      inputMapping[patternInput] = cutInput;
       bool invertInput = ((cutNPN.inputNegation >> canonicalPos) & 1) !=
                          ((patternNPN.inputNegation >> canonicalPos) & 1);
       inputPhases[cutInput] = invertInput ? Phase::Negative : Phase::Positive;

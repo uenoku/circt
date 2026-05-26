@@ -103,8 +103,9 @@ struct TechLibraryPattern : public CutRewritePattern {
     result.area = area;
     SmallVector<DelayType, 6> phasedDelays(delay.begin(), delay.end());
 
-    for (auto [patternInput, canonicalPos] :
-         llvm::enumerate(npnClass.inputPermutation)) {
+    for (unsigned canonicalPos = 0, e = npnClass.inputPermutation.size();
+         canonicalPos != e; ++canonicalPos) {
+      unsigned patternInput = npnClass.inputPermutation[canonicalPos];
       bool invertInput = ((cutNPN.inputNegation >> canonicalPos) & 1) !=
                          ((npnClass.inputNegation >> canonicalPos) & 1);
       if (!invertInput)

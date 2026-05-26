@@ -47,11 +47,28 @@ hw.module @permutation(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out result: i
 
 // CHECK-LABEL: hw.module @permutation_test(in %p : i1, in %q : i1, in %r : i1, in %s : i1, out result : i1) {
 hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
-    // CHECK-NEXT: %[[r0:.+]] = hw.instance "{{.+}}" @permutation(a: %r: i1, b: %p: i1, c: %s: i1, d: %q: i1) -> (result: i1) {test.arrival_times = [1]}
+    // CHECK-NEXT: %[[r0:.+]] = hw.instance "{{.+}}" @permutation(a: %s: i1, b: %p: i1, c: %q: i1, d: %r: i1) -> (result: i1) {test.arrival_times = [1]}
     %0 = synth.aig.and_inv %s, not %p : i1
     %1 = synth.aig.and_inv %q, not %r : i1
     %2 = synth.aig.and_inv %0, not %1 : i1
     hw.output %2 : i1
+}
+
+hw.module @aoi21_like(in %a: i1, in %b: i1, in %c: i1, out result: i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 0.5 : f64, arcs = [#synth.linear_timing_arc<"result", "a", 1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "b", 1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "c", 1, 0, #synth.polarity<positive>>], input_caps = {}>} {
+    %0 = synth.aig.and_inv not %a, not %c : i1
+    %1 = synth.aig.and_inv not %b, not %c : i1
+    %2 = synth.aig.and_inv not %0, not %1 : i1
+    %3 = synth.aig.and_inv not %2 : i1
+    hw.output %3 : i1
+}
+
+// CHECK-LABEL: hw.module @aoi21_permutation_test
+hw.module @aoi21_permutation_test(in %a: i1, in %b: i1, in %s: i1, out result: i1) {
+    // CHECK-NEXT: %[[r0:.+]] = hw.instance "{{.+}}" @aoi21_like(a: %{{a|b}}: i1, b: %{{a|b}}: i1, c: %s: i1) -> (result: i1) {test.arrival_times = [1]}
+    // CHECK-NEXT: hw.output %[[r0]] : i1
+    %0 = synth.aig.and_inv %a, %b : i1
+    %1 = synth.aig.and_inv not %s, not %0 : i1
+    hw.output %1 : i1
 }
 
 hw.module @and_inv_5(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<"result", "a", 1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "b", 2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "c", 2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "d", 2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<"result", "e", 1, 0, #synth.polarity<positive>>], input_caps = {}>} {
@@ -184,7 +201,7 @@ hw.module @dot_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attribut
 // CHECK-LABEL: @dot_test
 hw.module @dot_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
     // Permute inputs to test the truth table computation and input handling of the dot operation.
-    // CHECK-NEXT: %[[DOT:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @dot_lib(x: %z: i1, y: %y: i1, z: %x: i1) -> (result: i1) {test.arrival_times = [1]}
+    // CHECK-NEXT: %[[DOT:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @dot_lib(x: %y: i1, y: %x: i1, z: %z: i1) -> (result: i1) {test.arrival_times = [1]}
     // CHECK-NEXT: hw.output %[[DOT]] : i1
     %0 = synth.dot %x, not %y, not %z : i1
     hw.output %0 : i1
