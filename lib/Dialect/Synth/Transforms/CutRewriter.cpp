@@ -211,7 +211,8 @@ LogicalResult LogicNetwork::buildFromBlock(Block *block) {
                                                  LogicNetworkGate::OneHot3);
             })
             .Case<comb::XorOp>([&](comb::XorOp xorOp) {
-              if (xorOp->getNumOperands() != 2) {
+              if (xorOp->getNumOperands() != 2 ||
+                  !xorOp.getType().isInteger(1)) {
                 handleOtherResults(xorOp);
                 return success();
               }

@@ -59,6 +59,14 @@ hw.module @and_inv_5(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, 
     hw.output %0 : i1
 }
 
+// CHECK-LABEL: @wide_xor_test
+hw.module @wide_xor_test(in %a : i5, in %b : i5, out result : i5) {
+    // CHECK-NEXT: %[[result:.+]] = comb.xor %a, %b : i5
+    %0 = comb.xor %a, %b : i5
+    hw.output %0 : i5
+    // CHECK-NEXT: hw.output %[[result]] : i5
+}
+
 // Exact NPN canonicalization is only used up to 4 inputs. The direct polarity
 // matches @and_inv_5, while the second 5-input form maps through smaller cells
 // under the semi-canonical form.
