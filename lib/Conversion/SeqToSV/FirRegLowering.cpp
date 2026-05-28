@@ -247,7 +247,6 @@ FirRegLowering::FirRegLowering(TypeConverter &typeConverter,
 void FirRegLowering::lower() {
   lowerInBlock(module.getBodyBlock());
   createInitialBlock();
-  module->removeAttr("firrtl.random_init_width");
 }
 
 // NOLINTNEXTLINE(misc-no-recursion)
@@ -699,12 +698,6 @@ void FirRegLowering::lowerReg(FirRegOp reg) {
                      -1,      0};
   svReg.reg = sv::RegOp::create(builder, loc, regTy, reg.getNameAttr());
   svReg.width = hw::getBitWidth(regTy);
-
-  if (auto attr = reg->getAttrOfType<IntegerAttr>("firrtl.random_init_start"))
-    svReg.randStart = attr.getUInt();
-
-  // Don't move these over
-  reg->removeAttr("firrtl.random_init_start");
 
   // Move Attributes
   svReg.reg->setDialectAttrs(reg->getDialectAttrs());

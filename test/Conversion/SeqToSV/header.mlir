@@ -48,31 +48,13 @@
 // CHECK-NEXT:    }
 // CHECK-NEXT:    sv.verbatim ""
 // CHECK-NEXT:  }
-// CHECK-LABEL: emit.fragment @RANDOM_INIT_REG_FRAGMENT {
-// CHECK-NEXT:    sv.verbatim "\0A// Include register initializers in init blocks unless synthesis is set"
-// CHECK-NEXT:    sv.ifdef  @RANDOMIZE {
-// CHECK-NEXT:    } else {
-// CHECK-NEXT:      sv.ifdef  @RANDOMIZE_REG_INIT {
-// CHECK-NEXT:        sv.macro.def @RANDOMIZE ""
-// CHECK-NEXT:      }
-// CHECK-NEXT:    }
-// CHECK-NEXT:    sv.ifdef  @SYNTHESIS {
-// CHECK-NEXT:    } else {
-// CHECK-NEXT:      sv.ifdef  @ENABLE_INITIAL_REG_ {
-// CHECK-NEXT:      } else {
-// CHECK-NEXT:        sv.macro.def @ENABLE_INITIAL_REG_ ""
-// CHECK-NEXT:      }
-// CHECK-NEXT:    }
-// CHECK-NEXT:    sv.verbatim ""
-// CHECK-NEXT:  }
-
 emit.fragment @SomeFragment {}
 
 // CHECK-LABEL: hw.module.generated
-// CHECK-SAME:    emit.fragments = [@RANDOM_INIT_REG_FRAGMENT, @RANDOM_INIT_MEM_FRAGMENT, @RANDOM_INIT_FRAGMENT]
+// CHECK-SAME:    emit.fragments = [@RANDOM_INIT_MEM_FRAGMENT, @RANDOM_INIT_FRAGMENT]
 
 // CHECK-LABEL: hw.module @fragment_ref(in %clk : i1)
-// CHECK-SAME: emit.fragments = [@SomeFragment, @RANDOM_INIT_REG_FRAGMENT, @RANDOM_INIT_FRAGMENT]
+// CHECK-SAME: emit.fragments = [@SomeFragment]
 hw.module @fragment_ref(in %clk : !seq.clock) attributes {emit.fragments = [@SomeFragment]} {
   %cst0_i32 = hw.constant 0 : i32
   %rA = seq.firreg %cst0_i32 clock %clk sym @regA : i32

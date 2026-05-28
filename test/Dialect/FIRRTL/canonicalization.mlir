@@ -2728,13 +2728,13 @@ firrtl.module @PadMuxOperands(
 }
 
 // CHECK-LABEL: firrtl.module @regsyncreset
-firrtl.module @regsyncreset(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, in %foo : !firrtl.uint<2>, out %bar: !firrtl.uint<2>) attributes {firrtl.random_init_width = 2 : ui64} {
+firrtl.module @regsyncreset(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, in %foo : !firrtl.uint<2>, out %bar: !firrtl.uint<2>) {
   // CHECK: %[[const:.*]] = firrtl.constant 1
-  // CHECK-NEXT: firrtl.regreset %clock, %reset, %[[const]] {firrtl.random_init_end = 1 : ui64, firrtl.random_init_start = 0 : ui64}
+  // CHECK-NEXT: firrtl.regreset %clock, %reset, %[[const]]
   // CHECK-NEXT:  firrtl.matchingconnect %bar, %d : !firrtl.uint<2>
   // CHECK-NEXT:  firrtl.matchingconnect %d, %foo : !firrtl.uint<2>
   // CHECK-NEXT: }
-  %d = firrtl.reg %clock {firrtl.random_init_end = 1 : ui64, firrtl.random_init_start = 0 : ui64} : !firrtl.clock, !firrtl.uint<2>
+  %d = firrtl.reg %clock : !firrtl.clock, !firrtl.uint<2>
   firrtl.connect %bar, %d : !firrtl.uint<2>, !firrtl.uint<2>
   %c1_ui2 = firrtl.constant 1 : !firrtl.uint<2>
   %1 = firrtl.mux(%reset, %c1_ui2, %foo) : (!firrtl.uint<1>, !firrtl.uint<2>, !firrtl.uint<2>) -> !firrtl.uint<2>
@@ -2908,7 +2908,7 @@ firrtl.module @constReg8(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, o
 firrtl.module @constReg9(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, in %en_0: !firrtl.uint<1>, in %en_1: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
   // CHECK-NOT: firrtl.reg
   // CHECK: firrtl.matchingconnect %out, %c0_ui1
-  %r = firrtl.reg %clock {firrtl.random_init_start = 0 : ui64} : !firrtl.clock, !firrtl.uint<1>
+  %r = firrtl.reg %clock : !firrtl.clock, !firrtl.uint<1>
   %0 = firrtl.and %en_0, %en_1 : (!firrtl.uint<1>, !firrtl.uint<1>) -> !firrtl.uint<1>
   %c0_ui1 = firrtl.constant 0 : !firrtl.uint<1>
   %1 = firrtl.mux(%0, %c0_ui1, %r) : (!firrtl.uint<1>, !firrtl.uint<1>, !firrtl.uint<1>) -> !firrtl.uint<1>

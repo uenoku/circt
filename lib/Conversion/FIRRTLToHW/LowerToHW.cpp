@@ -3750,14 +3750,6 @@ LogicalResult FIRRTLLowering::visitDecl(RegOp op) {
   auto reg = seq::FirRegOp::create(builder, inputEdge, clockVal,
                                    op.getNameAttr(), innerSym);
 
-  // Pass along the start and end random initialization bits for this register.
-  if (auto randomRegister = op->getAttr("firrtl.random_init_register"))
-    reg->setAttr("firrtl.random_init_register", randomRegister);
-  if (auto randomStart = op->getAttr("firrtl.random_init_start"))
-    reg->setAttr("firrtl.random_init_start", randomStart);
-  if (auto randomEnd = op->getAttr("firrtl.random_init_end"))
-    reg->setAttr("firrtl.random_init_end", randomEnd);
-
   // Move SV attributes.
   if (auto svAttrs = sv::getSVAttributes(op))
     sv::setSVAttributes(reg, svAttrs);
@@ -3790,14 +3782,6 @@ LogicalResult FIRRTLLowering::visitDecl(RegResetOp op) {
   auto reg =
       seq::FirRegOp::create(builder, inputEdge, clockVal, op.getNameAttr(),
                             resetSignal, resetValue, innerSym, isAsync);
-
-  // Pass along the start and end random initialization bits for this register.
-  if (auto randomRegister = op->getAttr("firrtl.random_init_register"))
-    reg->setAttr("firrtl.random_init_register", randomRegister);
-  if (auto randomStart = op->getAttr("firrtl.random_init_start"))
-    reg->setAttr("firrtl.random_init_start", randomStart);
-  if (auto randomEnd = op->getAttr("firrtl.random_init_end"))
-    reg->setAttr("firrtl.random_init_end", randomEnd);
 
   // Move SV attributes.
   if (auto svAttrs = sv::getSVAttributes(op))

@@ -151,14 +151,6 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
   pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
       firrtl::createLayerMerge());
 
-  // Preset the random initialization parameters for each module. The current
-  // implementation assumes it can run at a time where every register is
-  // currently in the final module it will be emitted in, all registers have
-  // been created, and no registers have yet been removed.
-  if (opt.isRandomEnabled(FirtoolOptions::RandomKind::Reg))
-    pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
-        firrtl::createRandomizeRegisterInit());
-
   // If we parsed a FIRRTL file and have optimizations enabled, clean it up.
   if (!opt.shouldDisableOptimization())
     pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
