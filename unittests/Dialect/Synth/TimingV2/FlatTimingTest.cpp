@@ -181,6 +181,20 @@ module {
 }
 )MLIR";
 
+const char *structuralCombIR = R"MLIR(
+module {
+  hw.module @structural_comb(in %a : i4, in %b : i4, in %s : i4,
+                             out mul : i4, out shift : i4,
+                             out reverse : i4, out parity : i1) {
+    %mul = comb.mul %a, %b : i4
+    %shift = comb.shl %a, %s : i4
+    %reverse = comb.reverse %a : i4
+    %parity = comb.parity %a : i4
+    hw.output %mul, %shift, %reverse, %parity : i4, i4, i4, i1
+  }
+}
+)MLIR";
+
 TEST_F(FlatTimingTest, BuildsPreciseConcatBitArcs) {
   auto module = parse(datamoveIR);
   ASSERT_TRUE(module);
@@ -616,6 +630,72 @@ TEST_F(FlatTimingTest, DefaultSemanticsLowersUnknownOpsToDataArcs) {
                          arc->token == "op";
   }
   EXPECT_TRUE(sawGenericDataArc);
+}
+
+TEST_F(FlatTimingTest, DefaultSemanticsModelsStructuralCombOps) {
+  auto module = parse(structuralCombIR);
+  ASSERT_TRUE(module);
+  auto hwModule = getModule(*module, "structural_comb");
+  ASSERT_TRUE(hwModule);
+
+  TimingNetwork network;
+  ASSERT_TRUE(succeeded(network.build(hwModule)));
+
+  auto a = hwModule.getBodyBlock()->getArgument(0);
+  auto s = hwModule.getBodyBlock()->getArgument(2);
+  auto a0 = network.findValueBit(a, 0);
+  auto a3 = network.findValueBit(a, 3);
+  auto s3 = network.findValueBit(s, 3);
+  ASSERT_TRUE(a0.isValid());
+  ASSERT_TRUE(a3.isValid());
+  ASSERT_TRUE(s3.isValid());
+
+  auto mul = *hwModule.getOps<comb::MulOp>().begin();
+  auto mul3 = network.findValueBit(mul.getResult(), 3);
+  ASSERT_TRUE(mul3.isValid());
+  bool sawMulLowBitToHighBit = false;
+  for (auto arcIndex : network.getPoint(mul3)->fanin) {
+    auto *arc = network.getArc(arcIndex);
+    sawMulLowBitToHighBit |= arc && arc->from == a0 &&
+                             arc->kind == TimingArcKind::Synthetic &&
+                             arc->token == "mul_structural";
+  }
+  EXPECT_TRUE(sawMulLowBitToHighBit);
+
+  auto shift = *hwModule.getOps<comb::ShlOp>().begin();
+  auto shift0 = network.findValueBit(shift.getResult(), 0);
+  ASSERT_TRUE(shift0.isValid());
+  bool sawShiftAmountToResult = false;
+  for (auto arcIndex : network.getPoint(shift0)->fanin) {
+    auto *arc = network.getArc(arcIndex);
+    sawShiftAmountToResult |= arc && arc->from == s3 &&
+                              arc->kind == TimingArcKind::Synthetic &&
+                              arc->token == "shl";
+  }
+  EXPECT_TRUE(sawShiftAmountToResult);
+
+  auto reverse = *hwModule.getOps<comb::ReverseOp>().begin();
+  auto reverse0 = network.findValueBit(reverse.getResult(), 0);
+  ASSERT_TRUE(reverse0.isValid());
+  bool sawReverseHighToLow = false;
+  for (auto arcIndex : network.getPoint(reverse0)->fanin) {
+    auto *arc = network.getArc(arcIndex);
+    sawReverseHighToLow |=
+        arc && arc->from == a3 && arc->delay == 0 && arc->token == "reverse";
+  }
+  EXPECT_TRUE(sawReverseHighToLow);
+
+  auto parity = *hwModule.getOps<comb::ParityOp>().begin();
+  auto parity0 = network.findValueBit(parity.getResult(), 0);
+  ASSERT_TRUE(parity0.isValid());
+  bool sawParityHighBit = false;
+  for (auto arcIndex : network.getPoint(parity0)->fanin) {
+    auto *arc = network.getArc(arcIndex);
+    sawParityHighBit |= arc && arc->from == a3 &&
+                        arc->kind == TimingArcKind::Synthetic &&
+                        arc->token == "parity";
+  }
+  EXPECT_TRUE(sawParityHighBit);
 }
 
 TEST_F(FlatTimingTest, RepairSessionRecordsAndRepairsEdits) {

@@ -20,6 +20,7 @@
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
 
 using namespace circt;
@@ -111,9 +112,10 @@ static void addSameBitArcs(TimingSemantics &semantics, Operation *op,
   }
 }
 
-static void addCarryPrefixArcs(TimingSemantics &semantics, Operation *op,
-                               ValueRange inputs, Value result,
-                               StringRef token) {
+static void
+addCarryPrefixArcs(TimingSemantics &semantics, Operation *op, ValueRange inputs,
+                   Value result, StringRef token,
+                   std::optional<int64_t> fixedDelay = std::nullopt) {
   size_t resultWidth = getBitWidth(result);
   for (uint32_t bit = 0; bit < resultWidth; ++bit) {
     auto to = point(result, bit, TimingPointKind::ValueBit, {}, op);
@@ -125,9 +127,72 @@ static void addCarryPrefixArcs(TimingSemantics &semantics, Operation *op,
       for (uint32_t sourceBit = 0; sourceBit <= maxSourceBit; ++sourceBit)
         addArc(semantics, point(operand, sourceBit), to, op,
                static_cast<int32_t>(operandIndex), 0, TimingArcKind::Data,
-               token);
+               token, fixedDelay);
     }
   }
+}
+
+static int64_t getTreeDelay(size_t inputCount) {
+  if (inputCount <= 1)
+    return 0;
+  return llvm::Log2_64_Ceil(inputCount);
+}
+
+static void addAllBitArcs(TimingSemantics &semantics, Operation *op,
+                          ValueRange inputs, Value result, StringRef token,
+                          int64_t delay) {
+  for (uint32_t bit = 0, resultWidth = getBitWidth(result); bit < resultWidth;
+       ++bit) {
+    auto to = point(result, bit, TimingPointKind::ValueBit, {}, op);
+    for (auto [operandIndex, operand] : llvm::enumerate(inputs)) {
+      for (uint32_t sourceBit = 0, operandWidth = getBitWidth(operand);
+           sourceBit < operandWidth; ++sourceBit)
+        addArc(semantics, point(operand, sourceBit), to, op,
+               static_cast<int32_t>(operandIndex), 0, TimingArcKind::Synthetic,
+               token, delay);
+    }
+  }
+}
+
+static void addReductionArcs(TimingSemantics &semantics, Operation *op,
+                             ValueRange inputs, Value result, StringRef token,
+                             int64_t delay) {
+  auto to = point(result, 0, TimingPointKind::ValueBit, {}, op);
+  for (auto [operandIndex, operand] : llvm::enumerate(inputs)) {
+    for (uint32_t sourceBit = 0, operandWidth = getBitWidth(operand);
+         sourceBit < operandWidth; ++sourceBit)
+      addArc(semantics, point(operand, sourceBit), to, op,
+             static_cast<int32_t>(operandIndex), 0, TimingArcKind::Synthetic,
+             token, delay);
+  }
+}
+
+static void addMultiplyArcs(TimingSemantics &semantics, Operation *op,
+                            ValueRange inputs, Value result) {
+  for (uint32_t resultBit = 0, resultWidth = getBitWidth(result);
+       resultBit < resultWidth; ++resultBit) {
+    auto to = point(result, resultBit, TimingPointKind::ValueBit, {}, op);
+    int64_t delay = std::max<int64_t>(
+        1, getTreeDelay(resultBit + 1) +
+               getTreeDelay(std::max<size_t>(1, inputs.size())));
+    for (auto [operandIndex, operand] : llvm::enumerate(inputs)) {
+      uint32_t operandWidth = getBitWidth(operand);
+      if (operandWidth == 0)
+        continue;
+      uint32_t maxSourceBit = std::min<uint32_t>(resultBit, operandWidth - 1);
+      for (uint32_t sourceBit = 0; sourceBit <= maxSourceBit; ++sourceBit)
+        addArc(semantics, point(operand, sourceBit), to, op,
+               static_cast<int32_t>(operandIndex), 0, TimingArcKind::Synthetic,
+               "mul_structural", delay);
+    }
+  }
+}
+
+static void addShiftArcs(TimingSemantics &semantics, Operation *op,
+                         StringRef token) {
+  Value result = op->getResult(0);
+  int64_t delay = std::max<int64_t>(1, getTreeDelay(getBitWidth(result)) + 1);
+  addAllBitArcs(semantics, op, op->getOperands(), result, token, delay);
 }
 
 static void addRegisterCut(TimingSemantics &semantics, Operation *op,
@@ -243,6 +308,60 @@ DefaultTimingSemanticsProvider::describe(Operation *op) const {
 
   if (auto add = dyn_cast<comb::AddOp>(op)) {
     addCarryPrefixArcs(semantics, op, add.getInputs(), add.getResult(), "add");
+    return semantics;
+  }
+
+  if (auto sub = dyn_cast<comb::SubOp>(op)) {
+    addCarryPrefixArcs(semantics, op, op->getOperands(), sub.getResult(),
+                       "sub");
+    return semantics;
+  }
+
+  if (auto mul = dyn_cast<comb::MulOp>(op)) {
+    addMultiplyArcs(semantics, op, mul.getInputs(), mul.getResult());
+    return semantics;
+  }
+
+  if (isa<comb::DivSOp, comb::DivUOp, comb::ModSOp, comb::ModUOp>(op)) {
+    auto result = op->getResult(0);
+    addAllBitArcs(semantics, op, op->getOperands(), result,
+                  op->getName().stripDialect(),
+                  std::max<int64_t>(1, getBitWidth(result)));
+    return semantics;
+  }
+
+  if (isa<comb::ShlOp, comb::ShrSOp, comb::ShrUOp>(op)) {
+    addShiftArcs(semantics, op, op->getName().stripDialect());
+    return semantics;
+  }
+
+  if (auto icmp = dyn_cast<comb::ICmpOp>(op)) {
+    int64_t delay =
+        std::max<int64_t>(1, getTreeDelay(getBitWidth(icmp.getLhs())) + 1);
+    addReductionArcs(semantics, op, op->getOperands(), icmp.getResult(),
+                     "icmp_structural", delay);
+    return semantics;
+  }
+
+  if (auto parity = dyn_cast<comb::ParityOp>(op)) {
+    addReductionArcs(semantics, op, parity.getInput(), parity.getResult(),
+                     "parity", getTreeDelay(getBitWidth(parity.getInput())));
+    return semantics;
+  }
+
+  if (auto truthTable = dyn_cast<comb::TruthTableOp>(op)) {
+    addReductionArcs(semantics, op, truthTable.getInputs(),
+                     truthTable.getResult(), "truth_table",
+                     std::max<int64_t>(1, truthTable.getInputs().size()));
+    return semantics;
+  }
+
+  if (auto reverse = dyn_cast<comb::ReverseOp>(op)) {
+    uint32_t width = getBitWidth(reverse.getResult());
+    for (uint32_t bit = 0; bit < width; ++bit)
+      addArc(semantics, point(reverse.getInput(), width - 1 - bit),
+             point(reverse.getResult(), bit, TimingPointKind::ValueBit, {}, op),
+             op, 0, 0, TimingArcKind::Data, "reverse", /*fixedDelay=*/0);
     return semantics;
   }
 
