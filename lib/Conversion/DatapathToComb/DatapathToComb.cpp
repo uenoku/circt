@@ -10,7 +10,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Synth/Analysis/TimingV2/FlatTiming.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -19,6 +19,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include <algorithm>
+#include <optional>
 
 #define DEBUG_TYPE "datapath-to-comb"
 
@@ -29,6 +30,7 @@ namespace circt {
 
 using namespace circt;
 using namespace datapath;
+namespace timingv2 = circt::synth::timingv2;
 
 // A wrapper for comb::extractBits that returns a SmallVector<Value>.
 static SmallVector<Value> extractBits(OpBuilder &builder, Value val) {
@@ -95,8 +97,9 @@ struct DatapathCompressOpAddConversion : mlir::OpRewritePattern<CompressOp> {
 // Replace compressor by a wallace tree of full-adders
 struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
   DatapathCompressOpConversion(MLIRContext *context,
-                               synth::IncrementalLongestPathAnalysis *analysis)
-      : mlir::OpRewritePattern<CompressOp>(context), analysis(analysis) {}
+                               timingv2::TimingRepairSession *timingSession)
+      : mlir::OpRewritePattern<CompressOp>(context),
+        timingSession(timingSession) {}
 
   LogicalResult
   matchAndRewrite(CompressOp op,
@@ -115,10 +118,11 @@ struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
     auto targetAddends = op.getNumResults();
     datapath::CompressorTree comp(width, addends, loc, rewriter);
 
-    if (analysis) {
+    if (timingSession) {
       // Update delay information with arrival times
-      if (failed(comp.withInputDelays(
-              [&](Value v) { return analysis->getMaxDelay(v, 0); })))
+      if (failed(comp.withInputDelays([&](Value v) -> FailureOr<int64_t> {
+            return timingSession->getMaxArrival(v, 0);
+          })))
         return failure();
     }
 
@@ -127,7 +131,7 @@ struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
   }
 
 private:
-  synth::IncrementalLongestPathAnalysis *analysis = nullptr;
+  timingv2::TimingRepairSession *timingSession = nullptr;
 };
 
 struct DatapathPartialProductOpConversion : OpRewritePattern<PartialProductOp> {
@@ -617,7 +621,7 @@ struct ConvertDatapathToCombPass
 
 static LogicalResult applyPatternsGreedilyWithTimingInfo(
     Operation *op, RewritePatternSet &&patterns,
-    synth::IncrementalLongestPathAnalysis *analysis) {
+    timingv2::TimingRepairSession *timingSession) {
   // TODO: Topologically sort the operations in the module to ensure that all
   // dependencies are processed before their users.
   mlir::GreedyRewriteConfig config;
@@ -625,7 +629,9 @@ static LogicalResult applyPatternsGreedilyWithTimingInfo(
   // HACK: Setting max iterations to 2 to ensure that the patterns are
   // one-shot, making sure target operations are datapath operations are
   // replaced.
-  config.setMaxIterations(2).setListener(analysis).setUseTopDownTraversal(true);
+  config.setMaxIterations(2)
+      .setListener(timingSession)
+      .setUseTopDownTraversal(true);
 
   // Apply the patterns greedily
   if (failed(mlir::applyPatternsGreedily(op, std::move(patterns), config)))
@@ -640,19 +646,23 @@ void ConvertDatapathToCombPass::runOnOperation() {
   patterns.add<DatapathPartialProductOpConversion,
                DatapathPosPartialProductOpConversion>(patterns.getContext(),
                                                       forceBooth);
-  synth::IncrementalLongestPathAnalysis *analysis = nullptr;
-  if (timingAware)
-    analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
-
+  std::optional<timingv2::TimingRepairSession> timingSession;
+  if (timingAware) {
+    timingSession.emplace(getOperation());
+    if (failed(timingSession->initialize()))
+      return signalPassFailure();
+  }
   if (lowerCompressToAdd)
     // Lower compressors to simple add operations for downstream optimisations
     patterns.add<DatapathCompressOpAddConversion>(patterns.getContext());
   if (lowerCompress)
     // Lower compressors to a complete gate-level implementation
-    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), analysis);
+    patterns.add<DatapathCompressOpConversion>(
+        patterns.getContext(), timingSession ? &*timingSession : nullptr);
 
   if (failed(applyPatternsGreedilyWithTimingInfo(
-          getOperation(), std::move(patterns), analysis)))
+          getOperation(), std::move(patterns),
+          timingSession ? &*timingSession : nullptr)))
     return signalPassFailure();
 
   // Verify that all Datapath operations have been successfully converted.

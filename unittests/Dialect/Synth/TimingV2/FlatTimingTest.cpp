@@ -644,6 +644,25 @@ TEST_F(FlatTimingTest, RepairSessionRecordsAndRepairsEdits) {
   EXPECT_EQ(session.getNetwork()->getNumArcs(), initialArcCount);
 }
 
+TEST_F(FlatTimingTest, RepairSessionProvidesArrivalQueries) {
+  auto module = parse(propagationIR);
+  ASSERT_TRUE(module);
+  auto hwModule = getModule(*module, "prop");
+  ASSERT_TRUE(hwModule);
+
+  TimingRepairSession session(hwModule.getOperation());
+  ASSERT_TRUE(succeeded(session.initialize()));
+
+  auto xorOp = *hwModule.getOps<comb::XorOp>().begin();
+  auto arrival = session.getMaxArrival(xorOp.getResult());
+  ASSERT_TRUE(succeeded(arrival));
+  EXPECT_EQ(*arrival, 3);
+
+  auto bitArrival = session.getMaxArrival(xorOp.getResult(), 0);
+  ASSERT_TRUE(succeeded(bitArrival));
+  EXPECT_EQ(*bitArrival, 3);
+}
+
 TEST_F(FlatTimingTest, RepairSessionRepairsReplacementLocally) {
   auto module = parse(propagationIR);
   ASSERT_TRUE(module);

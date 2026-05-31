@@ -1162,6 +1162,43 @@ LogicalResult TimingRepairSession::repairLocalEdits() {
   return success();
 }
 
+FailureOr<TimingPropagationResult>
+TimingRepairSession::propagate(TimingPropagationOptions options) {
+  if (failed(repair()) || !network)
+    return failure();
+  return TimingPropagator::run(*network, std::move(options));
+}
+
+FailureOr<int64_t>
+TimingRepairSession::getMaxArrival(Value value, int64_t bit,
+                                   TimingPropagationOptions options) {
+  auto propagation = propagate(std::move(options));
+  if (failed(propagation) || !network)
+    return failure();
+
+  auto getBitArrival = [&](uint32_t bit) -> FailureOr<int64_t> {
+    auto point = network->findValueBit(value, bit);
+    if (!point.isValid())
+      return 0;
+    auto *state = propagation->getState(point);
+    if (!state || !state->hasArrival)
+      return 0;
+    return state->arrival;
+  };
+
+  if (bit >= 0)
+    return getBitArrival(bit);
+
+  int64_t maxArrival = 0;
+  for (uint32_t bit = 0, e = getBitWidth(value); bit < e; ++bit) {
+    auto arrival = getBitArrival(bit);
+    if (failed(arrival))
+      return failure();
+    maxArrival = std::max(maxArrival, *arrival);
+  }
+  return maxArrival;
+}
+
 void TimingRepairSession::recordInserted(Operation *op) {
   if (!op)
     return;

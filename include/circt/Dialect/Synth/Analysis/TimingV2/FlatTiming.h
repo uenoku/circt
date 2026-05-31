@@ -711,6 +711,15 @@ public:
   /// Return the current network, or null before successful initialization.
   const TimingNetwork *getNetwork() const { return network.get(); }
 
+  /// Repair pending edits, then run propagation on the current network.
+  mlir::FailureOr<TimingPropagationResult>
+  propagate(TimingPropagationOptions options = {});
+  /// Return the propagated arrival for `value`. If `bit` is negative, return
+  /// the maximum arrival across all bits. Values absent from the graph, such as
+  /// unused constants, are treated as arrival zero.
+  mlir::FailureOr<int64_t> getMaxArrival(mlir::Value value, int64_t bit = -1,
+                                         TimingPropagationOptions options = {});
+
   /// PatternRewriter::Listener hooks.
   void notifyOperationInserted(mlir::Operation *op,
                                mlir::OpBuilder::InsertPoint previous) override;

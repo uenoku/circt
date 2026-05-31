@@ -15,7 +15,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
-#include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Synth/Analysis/TimingV2/FlatTiming.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -30,6 +30,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 #include <iterator>
+#include <optional>
 #include <vector>
 
 #define DEBUG_TYPE "synth-lower-variadic"
@@ -43,6 +44,7 @@ namespace synth {
 
 using namespace circt;
 using namespace synth;
+namespace timingv2 = circt::synth::timingv2;
 
 //===----------------------------------------------------------------------===//
 // Lower Variadic pass
@@ -62,7 +64,7 @@ struct LowerVariadicPass : public impl::LowerVariadicBase<LowerVariadicPass> {
 /// the two values with the earliest arrival times, which minimizes the critical
 /// path delay.
 static LogicalResult replaceWithBalancedTree(
-    IncrementalLongestPathAnalysis *analysis, mlir::IRRewriter &rewriter,
+    timingv2::TimingRepairSession *timingSession, mlir::IRRewriter &rewriter,
     Operation *op, llvm::function_ref<bool(OpOperand &)> isInverted,
     llvm::function_ref<Value(ValueWithArrivalTime, ValueWithArrivalTime)>
         createBinaryOp) {
@@ -72,10 +74,10 @@ static LogicalResult replaceWithBalancedTree(
 
   for (size_t i = 0, e = op->getNumOperands(); i < e; ++i) {
     int64_t delay = 0;
-    // If analysis is available, use it to compute the delay.
+    // If timing is available, use it to compute the delay.
     // If not available, use zero delay and `valueNumber` will be used instead.
-    if (analysis) {
-      auto result = analysis->getMaxDelay(op->getOperand(i));
+    if (timingSession) {
+      auto result = timingSession->getMaxArrival(op->getOperand(i));
       if (failed(result))
         return failure();
       delay = *result;
@@ -92,8 +94,8 @@ static LogicalResult replaceWithBalancedTree(
       [&](const ValueWithArrivalTime &lhs, const ValueWithArrivalTime &rhs) {
         Value combined = createBinaryOp(lhs, rhs);
         int64_t newDelay = 0;
-        if (analysis) {
-          auto delayResult = analysis->getMaxDelay(combined);
+        if (timingSession) {
+          auto delayResult = timingSession->getMaxArrival(combined);
           if (succeeded(delayResult))
             newDelay = *delayResult;
         }
@@ -218,17 +220,12 @@ void LowerVariadicPass::runOnOperation() {
     return signalPassFailure();
   }
 
-  // Get longest path analysis if timing-aware lowering is enabled.
-  synth::IncrementalLongestPathAnalysis *analysis = nullptr;
+  // Get TimingV2 repair session if timing-aware lowering is enabled.
+  std::optional<timingv2::TimingRepairSession> timingSession;
   if (timingAware.getValue()) {
-    if (!dyn_cast<hw::HWModuleOp>(moduleOp)) {
-      moduleOp->emitWarning(
-          "Longest Path Analysis failed: expected 'hw.module', but found '")
-          << moduleOp->getName().getStringRef()
-          << "'. Only HWModuleOps are currently supported.";
-    } else {
-      analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
-    }
+    timingSession.emplace(moduleOp);
+    if (failed(timingSession->initialize()))
+      return signalPassFailure();
   }
 
   // Build set of operation names to lower if specified.
@@ -245,7 +242,7 @@ void LowerVariadicPass::runOnOperation() {
   };
 
   mlir::IRRewriter rewriter(&getContext());
-  rewriter.setListener(analysis);
+  rewriter.setListener(timingSession ? &*timingSession : nullptr);
 
   // Simplify exising andInverterOps by reusing operations.
   if (reuseSubsets) {
@@ -281,7 +278,7 @@ void LowerVariadicPass::runOnOperation() {
         mlir::TypeSwitch<Operation *, LogicalResult>(op)
             .Case<aig::AndInverterOp, XorInverterOp>([&](auto op) {
               return replaceWithBalancedTree(
-                  analysis, rewriter, op,
+                  timingSession ? &*timingSession : nullptr, rewriter, op,
                   // Check if each operand is inverted.
                   [&](OpOperand &operand) {
                     return op.isInverted(operand.getOperandNumber());
@@ -299,7 +296,7 @@ void LowerVariadicPass::runOnOperation() {
               if (isa_and_nonnull<comb::CombDialect>(op->getDialect()) &&
                   op->hasTrait<OpTrait::IsCommutative>())
                 return replaceWithBalancedTree(
-                    analysis, rewriter, op,
+                    timingSession ? &*timingSession : nullptr, rewriter, op,
                     // No inversion flags for standard commutative operations.
                     [](OpOperand &) { return false; },
                     // Create binary operation with the same operation type.
