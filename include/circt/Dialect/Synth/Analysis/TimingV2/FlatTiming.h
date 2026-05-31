@@ -359,6 +359,7 @@ private:
                      int32_t inputIndex, int32_t outputIndex,
                      TimingArcKind kind, llvm::StringRef token);
   void removeArcsOwnedBy(mlir::Operation *op);
+  void dropValuePointsOwnedBy(mlir::Operation *op);
   void clear();
   void computeTopologicalOrder();
   mlir::LogicalResult
@@ -711,7 +712,11 @@ public:
   const TimingNetwork *getNetwork() const { return network.get(); }
 
   /// PatternRewriter::Listener hooks.
+  void notifyOperationInserted(mlir::Operation *op,
+                               mlir::OpBuilder::InsertPoint previous) override;
   void notifyOperationModified(mlir::Operation *op) override;
+  void notifyOperationReplaced(mlir::Operation *op,
+                               mlir::Operation *replacement) override;
   void notifyOperationReplaced(mlir::Operation *op,
                                mlir::ValueRange replacement) override;
   void notifyOperationErased(mlir::Operation *op) override;
@@ -719,15 +724,18 @@ public:
 private:
   bool canRepairLocally(mlir::Operation *op) const;
   mlir::LogicalResult repairLocalEdits();
-  void recordEdit(mlir::Operation *op, mlir::ValueRange replacement,
-                  bool erasing);
+  void recordInserted(mlir::Operation *op);
+  void recordModified(mlir::Operation *op);
+  void recordReplacement(mlir::Operation *op, mlir::ValueRange replacement);
+  void recordErasure(mlir::Operation *op);
+  void recordAffectedUsers(mlir::Operation *op);
 
   mlir::Operation *root = nullptr;
   const DelayModel *delayModel = nullptr;
   const TimingSemanticsProvider *semanticsProvider = nullptr;
   std::unique_ptr<TimingNetwork> network;
   llvm::SmallVector<mlir::Operation *, 8> dirtyOps;
-  llvm::SmallVector<mlir::Value, 8> dirtyValues;
+  llvm::SmallVector<mlir::Operation *, 8> removedOps;
   bool initialized = false;
   bool pendingChanges = false;
   bool fullRebuildRequired = false;

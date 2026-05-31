@@ -271,6 +271,26 @@ void TimingNetwork::removeArcsOwnedBy(Operation *op) {
   }
 }
 
+void TimingNetwork::dropValuePointsOwnedBy(Operation *op) {
+  if (!op)
+    return;
+
+  for (auto result : op->getResults()) {
+    for (uint32_t bit = 0, e = getBitWidth(result); bit < e; ++bit) {
+      auto it = valueLookup.find({result, bit});
+      if (it == valueLookup.end())
+        continue;
+      auto *point = getPoint(it->second);
+      valueLookup.erase(it);
+      if (!point)
+        continue;
+      point->value = {};
+      point->owner = nullptr;
+      point->name = std::string("stale:") + point->name;
+    }
+  }
+}
+
 LogicalResult TimingNetwork::build(Operation *newRoot,
                                    const DelayModel *newDelayModel,
                                    const TimingSemanticsProvider
@@ -1049,7 +1069,7 @@ LogicalResult TimingRepairSession::initialize() {
   if (failed(network->build(root, delayModel, semanticsProvider)))
     return failure();
   dirtyOps.clear();
-  dirtyValues.clear();
+  removedOps.clear();
   pendingChanges = false;
   fullRebuildRequired = false;
   initialized = true;
@@ -1065,8 +1085,7 @@ LogicalResult TimingRepairSession::repair() {
   if (!fullRebuildRequired && succeeded(repairLocalEdits()))
     return success();
 
-  // Replacement, erase, and boundary/cut edits can change point identity or
-  // start/end sets. Keep those conservative until point splicing is implemented.
+  // If local repair cannot cover the edit set, rebuild conservatively.
   if (failed(initialize()))
     return failure();
   return success();
@@ -1085,18 +1104,25 @@ bool TimingRepairSession::canRepairLocally(Operation *op) const {
   if (failed(description))
     return false;
 
-  auto isLocalValuePoint = [](const TimingSemanticPoint &point) {
-    return point.kind == TimingPointKind::ValueBit;
+  auto isLocalPoint = [](const TimingSemanticPoint &point) {
+    switch (point.kind) {
+    case TimingPointKind::ValueBit:
+    case TimingPointKind::RootOutput:
+    case TimingPointKind::CutStart:
+    case TimingPointKind::CutEnd:
+    case TimingPointKind::Synthetic:
+      return true;
+    case TimingPointKind::RootInput:
+      return false;
+    }
+    llvm_unreachable("unknown timing point kind");
   };
   for (const auto &point : description->points)
-    if (!isLocalValuePoint(point))
+    if (!isLocalPoint(point))
       return false;
-  for (const auto &arc : description->arcs) {
-    if (arc.kind == TimingArcKind::Boundary || arc.kind == TimingArcKind::Cut)
+  for (const auto &arc : description->arcs)
+    if (!isLocalPoint(arc.from) || !isLocalPoint(arc.to))
       return false;
-    if (!isLocalValuePoint(arc.from) || !isLocalValuePoint(arc.to))
-      return false;
-  }
 
   return true;
 }
@@ -1110,9 +1136,16 @@ LogicalResult TimingRepairSession::repairLocalEdits() {
       semanticsProvider ? *semanticsProvider : defaultSemantics;
 
   TimingNetworkBuilder builder(*network, *network->delayModel);
+  DenseSet<Operation *> removed;
+  for (auto *op : removedOps) {
+    if (!op || !removed.insert(op).second)
+      continue;
+    network->removeArcsOwnedBy(op);
+  }
+
   DenseSet<Operation *> repairedOps;
   for (auto *op : dirtyOps) {
-    if (!op || !repairedOps.insert(op).second)
+    if (!op || removed.contains(op) || !repairedOps.insert(op).second)
       continue;
     if (!canRepairLocally(op))
       return failure();
@@ -1123,39 +1156,93 @@ LogicalResult TimingRepairSession::repairLocalEdits() {
 
   network->computeTopologicalOrder();
   dirtyOps.clear();
-  dirtyValues.clear();
+  removedOps.clear();
   pendingChanges = false;
   fullRebuildRequired = false;
   return success();
 }
 
-void TimingRepairSession::recordEdit(Operation *op, ValueRange replacement,
-                                     bool erasing) {
+void TimingRepairSession::recordInserted(Operation *op) {
   if (!op)
     return;
   pendingChanges = true;
-  if (erasing || !replacement.empty() || !canRepairLocally(op))
+  if (!canRepairLocally(op)) {
     fullRebuildRequired = true;
-  else
-    dirtyOps.push_back(op);
-  for (Value operand : op->getOperands())
-    dirtyValues.push_back(operand);
-  if (!erasing)
-    for (Value result : op->getResults())
-      dirtyValues.push_back(result);
+    return;
+  }
+  dirtyOps.push_back(op);
+}
+
+void TimingRepairSession::recordModified(Operation *op) {
+  if (!op)
+    return;
+  pendingChanges = true;
+  if (!canRepairLocally(op)) {
+    fullRebuildRequired = true;
+    return;
+  }
+  dirtyOps.push_back(op);
+}
+
+void TimingRepairSession::recordAffectedUsers(Operation *op) {
+  for (Value result : op->getResults()) {
+    for (Operation *user : llvm::make_early_inc_range(result.getUsers())) {
+      if (user == op)
+        continue;
+      dirtyOps.push_back(user);
+      if (!canRepairLocally(user))
+        fullRebuildRequired = true;
+    }
+  }
+}
+
+void TimingRepairSession::recordReplacement(Operation *op,
+                                            ValueRange replacement) {
+  if (!op)
+    return;
+  pendingChanges = true;
+  if (!canRepairLocally(op))
+    fullRebuildRequired = true;
+  recordAffectedUsers(op);
+  removedOps.push_back(op);
+  if (network)
+    network->dropValuePointsOwnedBy(op);
   for (Value value : replacement)
-    dirtyValues.push_back(value);
+    if (auto *def = value.getDefiningOp())
+      dirtyOps.push_back(def);
+}
+
+void TimingRepairSession::recordErasure(Operation *op) {
+  if (!op)
+    return;
+  pendingChanges = true;
+  if (!canRepairLocally(op))
+    fullRebuildRequired = true;
+  recordAffectedUsers(op);
+  removedOps.push_back(op);
+  if (network)
+    network->dropValuePointsOwnedBy(op);
+}
+
+void TimingRepairSession::notifyOperationInserted(
+    Operation *op, OpBuilder::InsertPoint previous) {
+  recordInserted(op);
 }
 
 void TimingRepairSession::notifyOperationModified(Operation *op) {
-  recordEdit(op, {}, /*erasing=*/false);
+  recordModified(op);
+}
+
+void TimingRepairSession::notifyOperationReplaced(Operation *op,
+                                                  Operation *replacement) {
+  recordReplacement(op, replacement ? replacement->getResults() : ValueRange());
 }
 
 void TimingRepairSession::notifyOperationReplaced(Operation *op,
                                                   ValueRange replacement) {
-  recordEdit(op, replacement, /*erasing=*/false);
+  recordReplacement(op, replacement);
 }
 
 void TimingRepairSession::notifyOperationErased(Operation *op) {
-  recordEdit(op, {}, /*erasing=*/true);
+  recordErasure(op);
 }

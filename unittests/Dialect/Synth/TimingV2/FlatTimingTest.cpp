@@ -644,7 +644,7 @@ TEST_F(FlatTimingTest, RepairSessionRecordsAndRepairsEdits) {
   EXPECT_EQ(session.getNetwork()->getNumArcs(), initialArcCount);
 }
 
-TEST_F(FlatTimingTest, RepairSessionFallsBackForBoundaryEdits) {
+TEST_F(FlatTimingTest, RepairSessionRepairsReplacementLocally) {
   auto module = parse(propagationIR);
   ASSERT_TRUE(module);
   auto hwModule = getModule(*module, "prop");
@@ -652,13 +652,107 @@ TEST_F(FlatTimingTest, RepairSessionFallsBackForBoundaryEdits) {
 
   TimingRepairSession session(hwModule.getOperation());
   ASSERT_TRUE(succeeded(session.initialize()));
+  auto *initialNetwork = session.getNetwork();
+  ASSERT_NE(initialNetwork, nullptr);
+
+  auto andOp = *hwModule.getOps<comb::AndOp>().begin();
+  auto user = *andOp->user_begin();
+  ASSERT_TRUE(isa<comb::XorOp>(user));
+
+  OpBuilder builder(andOp);
+  auto replacement =
+      comb::OrOp::create(builder, andOp.getLoc(),
+                         ValueRange{andOp->getOperand(0), andOp->getOperand(1)},
+                         /*twoState=*/true);
+  session.notifyOperationInserted(replacement.getOperation(), {});
+  session.notifyOperationReplaced(andOp.getOperation(),
+                                  ValueRange{replacement.getResult()});
+  andOp.getResult().replaceAllUsesWith(replacement.getResult());
+  session.notifyOperationErased(andOp.getOperation());
+  andOp->erase();
+
+  EXPECT_TRUE(session.hasPendingChanges());
+  EXPECT_FALSE(session.needsFullRebuild());
+  ASSERT_TRUE(succeeded(session.repair()));
+  EXPECT_EQ(session.getNetwork(), initialNetwork);
+  EXPECT_FALSE(session.hasPendingChanges());
+  EXPECT_FALSE(session.needsFullRebuild());
+
+  auto replacementPoint =
+      session.getNetwork()->findValueBit(replacement.getResult(), 0);
+  ASSERT_TRUE(replacementPoint.isValid());
+  auto xorOp = cast<comb::XorOp>(user);
+  auto xorPoint = session.getNetwork()->findValueBit(xorOp.getResult(), 0);
+  ASSERT_TRUE(xorPoint.isValid());
+
+  bool sawReplacementFanin = false;
+  for (auto arcIndex : session.getNetwork()->getPoint(xorPoint)->fanin) {
+    auto *arc = session.getNetwork()->getArc(arcIndex);
+    sawReplacementFanin |=
+        arc && arc->from == replacementPoint && arc->op == xorOp.getOperation();
+  }
+  EXPECT_TRUE(sawReplacementFanin);
+}
+
+TEST_F(FlatTimingTest, RepairSessionRepairsDatapathToCombStyleBatch) {
+  auto module = parse(partialProductIR);
+  ASSERT_TRUE(module);
+  auto hwModule = getModule(*module, "partial_product");
+  ASSERT_TRUE(hwModule);
+
+  TimingRepairSession session(hwModule.getOperation());
+  ASSERT_TRUE(succeeded(session.initialize()));
+  auto *initialNetwork = session.getNetwork();
+  ASSERT_NE(initialNetwork, nullptr);
+
+  auto pp = *hwModule.getOps<datapath::PartialProductOp>().begin();
+  OpBuilder builder(pp);
+  auto repl0 = comb::AndOp::create(builder, pp.getLoc(),
+                                   ValueRange{pp.getLhs(), pp.getRhs()},
+                                   /*twoState=*/true);
+  auto repl1 = comb::OrOp::create(builder, pp.getLoc(),
+                                  ValueRange{pp.getLhs(), pp.getRhs()},
+                                  /*twoState=*/true);
+
+  session.notifyOperationInserted(repl0.getOperation(), {});
+  session.notifyOperationInserted(repl1.getOperation(), {});
+  session.notifyOperationReplaced(
+      pp.getOperation(), ValueRange{repl0.getResult(), repl1.getResult()});
+  pp.getResult(0).replaceAllUsesWith(repl0.getResult());
+  pp.getResult(1).replaceAllUsesWith(repl1.getResult());
+  session.notifyOperationErased(pp.getOperation());
+  pp->erase();
+
+  EXPECT_TRUE(session.hasPendingChanges());
+  EXPECT_FALSE(session.needsFullRebuild());
+  ASSERT_TRUE(succeeded(session.repair()));
+  EXPECT_EQ(session.getNetwork(), initialNetwork);
+  EXPECT_FALSE(session.hasPendingChanges());
+  EXPECT_FALSE(session.needsFullRebuild());
+
+  auto path = reconstructCriticalPath(*session.getNetwork());
+  ASSERT_TRUE(succeeded(path));
+  EXPECT_GT(path->delay, 0);
+}
+
+TEST_F(FlatTimingTest, RepairSessionRepairsBoundaryEditsLocally) {
+  auto module = parse(propagationIR);
+  ASSERT_TRUE(module);
+  auto hwModule = getModule(*module, "prop");
+  ASSERT_TRUE(hwModule);
+
+  TimingRepairSession session(hwModule.getOperation());
+  ASSERT_TRUE(succeeded(session.initialize()));
+  auto *initialNetwork = session.getNetwork();
+  ASSERT_NE(initialNetwork, nullptr);
 
   auto output = *hwModule.getOps<hw::OutputOp>().begin();
   session.notifyOperationModified(output.getOperation());
   EXPECT_TRUE(session.hasPendingChanges());
-  EXPECT_TRUE(session.needsFullRebuild());
+  EXPECT_FALSE(session.needsFullRebuild());
 
   ASSERT_TRUE(succeeded(session.repair()));
+  EXPECT_EQ(session.getNetwork(), initialNetwork);
   EXPECT_FALSE(session.hasPendingChanges());
   EXPECT_FALSE(session.needsFullRebuild());
   ASSERT_NE(session.getNetwork(), nullptr);
