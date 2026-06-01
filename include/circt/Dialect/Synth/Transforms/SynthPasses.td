@@ -80,7 +80,13 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
   }];
   let options = baseOptions # [
     Option<"maxLutSize", "max-lut-size", "unsigned", /*default=*/"6",
-           "Maximum number of inputs per LUT">
+           "Maximum number of inputs per LUT">,
+    Option<"areaFlowRecoveryIterations", "area-flow-recovery-iterations",
+           "unsigned", /*default=*/"1",
+           "Number of area-flow recovery rounds">,
+    Option<"exactAreaRecoveryIterations", "exact-area-recovery-iterations",
+           "unsigned", /*default=*/"2",
+           "Number of exact-area recovery rounds">
   ];
   let dependentDialects = ["comb::CombDialect"];
 }

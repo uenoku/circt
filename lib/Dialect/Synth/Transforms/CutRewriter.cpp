@@ -972,10 +972,21 @@ void CutSet::finalize(
     const auto &aMatched = a->getMatchedPattern();
     const auto &bMatched = b->getMatchedPattern();
 
-    if (aMatched && bMatched)
+    if (aMatched && bMatched) {
+      if (seedStrategy == OptimizationStrategyTiming) {
+        ArrayRef<DelayType> aDelay = aMatched->getArrivalTimes();
+        ArrayRef<DelayType> bDelay = bMatched->getArrivalTimes();
+        if (aDelay != bDelay)
+          return aDelay < bDelay;
+        if (a->getInputSize() != b->getInputSize())
+          return a->getInputSize() < b->getInputSize();
+        return aMatched->getArea() < bMatched->getArea();
+      }
+
       return compareDelayAndArea(
           seedStrategy, aMatched->getArea(), aMatched->getArrivalTimes(),
           bMatched->getArea(), bMatched->getArrivalTimes());
+    }
 
     if (static_cast<bool>(aMatched) != static_cast<bool>(bMatched))
       return static_cast<bool>(aMatched);
@@ -984,9 +995,12 @@ void CutSet::finalize(
   };
   std::stable_sort(trivialCutsEnd, cuts.end(), isBetterCut);
 
-  // Keep only the top-K cuts to bound growth.
-  if (cuts.size() > options.maxCutSizePerRoot)
-    cuts.resize(options.maxCutSizePerRoot);
+  // Keep only the top-K non-trivial cuts to bound growth.  Trivial cuts are
+  // always retained and do not consume the cut budget.
+  size_t numTrivialCuts = trivialCutsEnd - cuts.begin();
+  size_t maxCutSetSize = numTrivialCuts + options.maxCutSizePerRoot;
+  if (cuts.size() > maxCutSetSize)
+    cuts.resize(maxCutSetSize);
 
   // Select the best cut from the remaining candidates.
   bestCut = nullptr;
@@ -1806,13 +1820,19 @@ LogicalResult CutRewriter::run(Operation *topOp) {
     return success();
   }
 
-  // Run area-flow based reselection.
+  // Run area recovery within the timing bound set by the initial mapping.
   // TODO: This selection must be controlled by the strategy option, but
   // currently it runs area recovery unconditionally since it improves area
   // regardless of the strategy.
-  cutEnumerator.computeRequiredTimes();
-  cutEnumerator.reselectCutsForAreaFlow();
-  cutEnumerator.reselectCutsForExactArea();
+  if (options.areaFlowRecoveryIterations ||
+      options.exactAreaRecoveryIterations) {
+    cutEnumerator.computeRequiredTimes();
+
+    for (unsigned i = 0; i != options.areaFlowRecoveryIterations; ++i)
+      cutEnumerator.reselectCutsForAreaFlow();
+    for (unsigned i = 0; i != options.exactAreaRecoveryIterations; ++i)
+      cutEnumerator.reselectCutsForExactArea();
+  }
 
   // Select best cuts and perform mapping
   if (failed(runBottomUpRewrite(topOp)))

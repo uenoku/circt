@@ -709,13 +709,20 @@ struct CutRewriterOptions {
   /// computational complexity exponentially.
   unsigned maxCutInputSize;
 
-  /// Maximum number of cuts to maintain per logic node.
-  /// The priority cuts algorithm keeps only the most promising cuts
-  /// to prevent exponential explosion.
+  /// Maximum number of non-trivial cuts to maintain per logic node.
+  /// The priority cuts algorithm keeps only the most promising cuts to prevent
+  /// exponential explosion. Trivial self-cuts are retained separately and do
+  /// not consume this budget.
   unsigned maxCutSizePerRoot;
 
   /// Fail if there is a root operation that has no matching pattern.
   bool allowNoMatch = false;
+
+  /// Number of area-flow recovery rounds to run after timing-oriented mapping.
+  unsigned areaFlowRecoveryIterations = 1;
+
+  /// Number of exact-area recovery rounds to run after area-flow recovery.
+  unsigned exactAreaRecoveryIterations = 1;
 
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;
