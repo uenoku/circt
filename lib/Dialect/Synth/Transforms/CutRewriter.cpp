@@ -330,6 +330,29 @@ static bool areEquivalent(double lhs, double rhs) {
   return std::abs(lhs - rhs) < kAreaComparisonEpsilon;
 }
 
+static bool isStrictlyLess(double lhs, double rhs) {
+  return lhs < rhs && !areEquivalent(lhs, rhs);
+}
+
+static bool areaFlowDominates(const Cut *a, const Cut *b) {
+  const auto &aMatched = a->getMatchedPattern();
+  const auto &bMatched = b->getMatchedPattern();
+  assert(aMatched && bMatched && "can only compare matched cuts");
+
+  DelayType aArrival = aMatched->getWorstOutputArrivalTime();
+  DelayType bArrival = bMatched->getWorstOutputArrivalTime();
+  double aFlow = a->getAreaFlow();
+  double bFlow = b->getAreaFlow();
+  unsigned aInputSize = a->getInputSize();
+  unsigned bInputSize = b->getInputSize();
+
+  bool noWorse = aArrival <= bArrival && aInputSize <= bInputSize &&
+                 (aFlow < bFlow || areEquivalent(aFlow, bFlow));
+  bool strictlyBetter = aArrival < bArrival || aInputSize < bInputSize ||
+                        isStrictlyLess(aFlow, bFlow);
+  return noWorse && strictlyBetter;
+}
+
 static SmallVector<DelayType, 1> computeOutputArrivalTimes(
     unsigned numOutputs, unsigned numInputs, ArrayRef<DelayType> delays,
     ArrayRef<DelayType> inputArrivalTimes, const MatchBinding &binding) {
@@ -991,7 +1014,7 @@ void CutSet::finalize(
   std::stable_sort(trivialCutsEnd, cuts.end(), isBetterCut);
 
   // Keep the top-K timing/strategy cuts to seed the mapping.  When requested,
-  // also keep a separate top-K area-flow set so later nodes and recovery
+  // also retain a small skyline of area-flow cuts so later nodes and recovery
   // passes can see cuts that are area-useful but not timing-priority.
   if (options.retainAreaFlowCuts) {
     SmallVector<Cut *, 24> retained(cuts.begin(), trivialCutsEnd);
@@ -1006,14 +1029,15 @@ void CutSet::finalize(
          i != e; ++i)
       appendCut(*(trivialCutsEnd + i));
 
-    SmallVector<Cut *, 16> areaCuts(trivialCutsEnd, cuts.end());
-    llvm::stable_sort(areaCuts, [](const Cut *a, const Cut *b) {
+    SmallVector<Cut *, 16> areaCandidates;
+    for (Cut *cut : ArrayRef<Cut *>(trivialCutsEnd, cuts.end())) {
+      if (cut->getMatchedPattern())
+        areaCandidates.push_back(cut);
+    }
+
+    llvm::stable_sort(areaCandidates, [](const Cut *a, const Cut *b) {
       const auto &aMatched = a->getMatchedPattern();
       const auto &bMatched = b->getMatchedPattern();
-      if (static_cast<bool>(aMatched) != static_cast<bool>(bMatched))
-        return static_cast<bool>(aMatched);
-      if (!aMatched)
-        return a->getInputSize() < b->getInputSize();
       if (!areEquivalent(a->getAreaFlow(), b->getAreaFlow()))
         return a->getAreaFlow() < b->getAreaFlow();
       if (a->getInputSize() != b->getInputSize())
@@ -1021,10 +1045,27 @@ void CutSet::finalize(
       return aMatched->getArrivalTimes() < bMatched->getArrivalTimes();
     });
 
-    size_t areaCutBudget = (options.maxCutSizePerRoot + 1) / 2;
-    for (size_t i = 0, e = std::min<size_t>(areaCutBudget, areaCuts.size());
-         i != e; ++i)
-      appendCut(areaCuts[i]);
+    size_t maxRetained = (trivialCutsEnd - cuts.begin()) +
+                         options.maxCutSizePerRoot +
+                         (options.maxCutSizePerRoot + 1) / 2;
+    for (Cut *cut : areaCandidates) {
+      if (retained.size() >= maxRetained)
+        break;
+      if (llvm::is_contained(retained, cut))
+        continue;
+
+      bool dominated = false;
+      for (Cut *retainedCut : retained) {
+        if (retainedCut->isTrivialCut() || !retainedCut->getMatchedPattern())
+          continue;
+        if (areaFlowDominates(retainedCut, cut)) {
+          dominated = true;
+          break;
+        }
+      }
+      if (!dominated)
+        appendCut(cut);
+    }
 
     cuts.assign(retained.begin(), retained.end());
   } else {
