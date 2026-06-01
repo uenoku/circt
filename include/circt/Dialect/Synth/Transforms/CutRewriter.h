@@ -636,10 +636,19 @@ public:
     matchedPattern = std::move(pattern);
   }
 
+  /// Set the area-flow estimate used for area-aware cut retention.
+  void setAreaFlow(double flow) { areaFlow = flow; }
+
+  /// Get the area-flow estimate used for area-aware cut retention.
+  double getAreaFlow() const { return areaFlow; }
+
   /// Get the matched pattern for this cut.
   const std::optional<MatchedPattern> &getMatchedPattern() const {
     return matchedPattern;
   }
+
+private:
+  double areaFlow = 0.0;
 };
 
 /// Manages a collection of cuts for a single logic node using priority cuts
@@ -680,6 +689,7 @@ public:
   void finalize(
       const CutRewriterOptions &options,
       llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
+      llvm::function_ref<double(const Cut &)> computeAreaFlow,
       const LogicNetwork &logicNetwork);
 
   /// Get the number of cuts in this set.
@@ -723,6 +733,12 @@ struct CutRewriterOptions {
 
   /// Number of exact-area recovery rounds to run after area-flow recovery.
   unsigned exactAreaRecoveryIterations = 1;
+
+  /// Retain an additional set of area-flow-priority cuts during enumeration.
+  bool retainAreaFlowCuts = false;
+
+  /// Use original structural fanout counts for area-flow recovery.
+  bool useStructuralAreaFlowRefs = false;
 
   /// Put arrival times to rewritten operations.
   bool attachDebugTiming = false;
@@ -831,6 +847,9 @@ private:
   /// like AND, OR, XOR, etc.
   LogicalResult visitLogicOp(uint32_t nodeIndex);
 
+  /// Estimate the area-flow cost of a candidate cut during enumeration.
+  double computeAreaFlowEstimate(const Cut &cut);
+
   /// Maps indices to their associated cut sets.
   /// CutSets are allocated from the bump allocator.
   llvm::DenseMap<uint32_t, CutSet *> cutSets;
@@ -851,6 +870,9 @@ private:
 
   /// Flat logic network representation used during enumeration/rewrite.
   LogicNetwork logicNetwork;
+
+  /// Original structural reference counts for area-flow estimates.
+  llvm::SmallVector<unsigned, 0> structuralRefCounts;
 
   /// Statistics for cut enumeration (number of cuts allocated, etc.).
   CutEnumeratorStats stats;

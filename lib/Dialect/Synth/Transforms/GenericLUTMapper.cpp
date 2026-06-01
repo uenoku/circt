@@ -127,6 +127,8 @@ struct GenericLUTMapperPass
     options.attachDebugTiming = test;
     options.areaFlowRecoveryIterations = areaFlowRecoveryIterations;
     options.exactAreaRecoveryIterations = exactAreaRecoveryIterations;
+    options.retainAreaFlowCuts = true;
+    options.useStructuralAreaFlowRefs = true;
 
     // Create the pattern for generic K-LUT
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;

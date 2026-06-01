@@ -933,6 +933,7 @@ static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {
 void CutSet::finalize(
     const CutRewriterOptions &options,
     llvm::function_ref<std::optional<MatchedPattern>(const Cut &)> matchCut,
+    llvm::function_ref<double(const Cut &)> computeAreaFlow,
     const LogicNetwork &logicNetwork) {
 
   // Remove duplicate/non-minimal cuts first so all follow-up work only runs on
@@ -947,18 +948,12 @@ void CutSet::finalize(
     assert(cut->getInputSize() <= options.maxCutInputSize &&
            "Cut input size exceeds maximum allowed size");
 
-    if (auto matched = matchCut(*cut))
+    if (auto matched = matchCut(*cut)) {
       cut->setMatchedPattern(std::move(*matched));
+      if (options.retainAreaFlowCuts)
+        cut->setAreaFlow(computeAreaFlow(*cut));
+    }
   }
-
-  // Sort cuts by priority to select the most promising ones.
-  // Priority is determined by the optimization strategy:
-  // - Trivial cuts (direct connections) have highest priority
-  // - Among matched cuts, compare by area/delay based on the strategy
-  // - Matched cuts are preferred over unmatched cuts
-  // See "Combinational and Sequential Mapping with Priority Cuts" by Mishchenko
-  // et al., ICCAD 2007 for more details.
-  // TODO: Use a priority queue instead of sorting for better performance.
 
   // Partition the cuts into trivial and non-trivial cuts.
   auto *trivialCutsEnd =
@@ -995,12 +990,50 @@ void CutSet::finalize(
   };
   std::stable_sort(trivialCutsEnd, cuts.end(), isBetterCut);
 
-  // Keep only the top-K non-trivial cuts to bound growth.  Trivial cuts are
-  // always retained and do not consume the cut budget.
-  size_t numTrivialCuts = trivialCutsEnd - cuts.begin();
-  size_t maxCutSetSize = numTrivialCuts + options.maxCutSizePerRoot;
-  if (cuts.size() > maxCutSetSize)
-    cuts.resize(maxCutSetSize);
+  // Keep the top-K timing/strategy cuts to seed the mapping.  When requested,
+  // also keep a separate top-K area-flow set so later nodes and recovery
+  // passes can see cuts that are area-useful but not timing-priority.
+  if (options.retainAreaFlowCuts) {
+    SmallVector<Cut *, 24> retained(cuts.begin(), trivialCutsEnd);
+    auto appendCut = [&](Cut *cut) {
+      if (!llvm::is_contained(retained, cut))
+        retained.push_back(cut);
+    };
+
+    size_t nonTrivialCount = cuts.end() - trivialCutsEnd;
+    for (size_t i = 0, e = std::min<size_t>(options.maxCutSizePerRoot,
+                                            nonTrivialCount);
+         i != e; ++i)
+      appendCut(*(trivialCutsEnd + i));
+
+    SmallVector<Cut *, 16> areaCuts(trivialCutsEnd, cuts.end());
+    llvm::stable_sort(areaCuts, [](const Cut *a, const Cut *b) {
+      const auto &aMatched = a->getMatchedPattern();
+      const auto &bMatched = b->getMatchedPattern();
+      if (static_cast<bool>(aMatched) != static_cast<bool>(bMatched))
+        return static_cast<bool>(aMatched);
+      if (!aMatched)
+        return a->getInputSize() < b->getInputSize();
+      if (!areEquivalent(a->getAreaFlow(), b->getAreaFlow()))
+        return a->getAreaFlow() < b->getAreaFlow();
+      if (a->getInputSize() != b->getInputSize())
+        return a->getInputSize() < b->getInputSize();
+      return aMatched->getArrivalTimes() < bMatched->getArrivalTimes();
+    });
+
+    size_t areaCutBudget = (options.maxCutSizePerRoot + 1) / 2;
+    for (size_t i = 0, e = std::min<size_t>(areaCutBudget, areaCuts.size());
+         i != e; ++i)
+      appendCut(areaCuts[i]);
+
+    cuts.assign(retained.begin(), retained.end());
+  } else {
+    // Trivial cuts are always retained and do not consume the cut budget.
+    size_t numTrivialCuts = trivialCutsEnd - cuts.begin();
+    size_t maxCutSetSize = numTrivialCuts + options.maxCutSizePerRoot;
+    if (cuts.size() > maxCutSetSize)
+      cuts.resize(maxCutSetSize);
+  }
 
   // Select the best cut from the remaining candidates.
   bestCut = nullptr;
@@ -1070,6 +1103,17 @@ CutEnumerator::CutEnumerator(const CutRewriterOptions &options)
     : cutAllocator(stats.numCutsCreated),
       cutSetAllocator(stats.numCutSetsCreated), options(options) {}
 
+static SmallVector<unsigned, 0>
+computeStructuralRefCounts(const LogicNetwork &logicNetwork) {
+  SmallVector<unsigned, 0> refCounts(logicNetwork.size(), 0);
+  for (auto [index, gate] : llvm::enumerate(logicNetwork.getGates())) {
+    refCounts[index] += gate.getExternalUseCount();
+    for (unsigned i = 0, e = gate.getNumFanins(); i != e; ++i)
+      ++refCounts[gate.edges[i].getIndex()];
+  }
+  return refCounts;
+}
+
 CutSet *CutEnumerator::createNewCutSet(uint32_t index) {
   CutSet *cutSet = cutSetAllocator.create();
   auto [cutSetPtr, inserted] = cutSets.try_emplace(index, cutSet);
@@ -1081,6 +1125,7 @@ void CutEnumerator::clear() {
   cutSets.clear();
   processingOrder.clear();
   logicNetwork.clear();
+  structuralRefCounts.clear();
   cutAllocator.DestroyAll();
   cutSetAllocator.DestroyAll();
 }
@@ -1116,7 +1161,10 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
     }
 
     // Finalize cut set: remove duplicates, limit size, and match patterns
-    resultCutSet->finalize(options, matchCut, logicNetwork);
+    resultCutSet->finalize(
+        options, matchCut,
+        [&](const Cut &cut) { return computeAreaFlowEstimate(cut); },
+        logicNetwork);
     return success();
   }
 
@@ -1297,9 +1345,30 @@ LogicalResult CutEnumerator::visitLogicOp(uint32_t nodeIndex) {
   enumerateCutCombinations(enumerateCutCombinations, 0, cutPtrs, 0ULL);
 
   // Finalize cut set: remove duplicates, limit size, and match patterns
-  resultCutSet->finalize(options, matchCut, logicNetwork);
+  resultCutSet->finalize(
+      options, matchCut,
+      [&](const Cut &cut) { return computeAreaFlowEstimate(cut); },
+      logicNetwork);
 
   return success();
+}
+
+double CutEnumerator::computeAreaFlowEstimate(const Cut &cut) {
+  const auto &matched = cut.getMatchedPattern();
+  if (!matched)
+    return 0.0;
+
+  double flow = matched->getArea();
+  for (uint32_t inputIndex : cut.inputs) {
+    auto *inputCutSet = getNonLeafCutSet(cutSets, logicNetwork, inputIndex);
+    if (!inputCutSet)
+      continue;
+
+    unsigned refCount = structuralRefCounts[inputIndex];
+    assert(refCount != 0 && "cut inputs must be structurally referenced");
+    flow += inputCutSet->areaFlow / refCount;
+  }
+  return flow;
 }
 
 LogicalResult CutEnumerator::enumerateCuts(
@@ -1318,6 +1387,7 @@ LogicalResult CutEnumerator::enumerateCuts(
   auto &block = topOp->getRegion(0).getBlocks().front();
   if (failed(logicNetwork.buildFromBlock(&block)))
     return failure();
+  structuralRefCounts = computeStructuralRefCounts(logicNetwork);
 
   for (const auto &[index, gate] : llvm::enumerate(logicNetwork.getGates())) {
     // Skip non-logic gates.
@@ -1568,6 +1638,7 @@ private:
   const LogicNetwork &logicNetwork;
   SmallVector<unsigned, 0> refCounts;
 };
+
 } // namespace
 
 // Pick cuts again using area-flow, while staying within the timing bound set
@@ -1638,10 +1709,15 @@ void CutEnumerator::reselectCutsForAreaFlow() {
         if (!inputCutSet)
           continue;
 
-        unsigned effectiveRefCount = selectedRefs.get(inputIndex);
-        if (!isActive || !currentBestCut ||
-            !llvm::is_contained(currentBestCut->inputs, inputIndex))
-          ++effectiveRefCount;
+        unsigned effectiveRefCount = 0;
+        if (options.useStructuralAreaFlowRefs) {
+          effectiveRefCount = structuralRefCounts[inputIndex];
+        } else {
+          effectiveRefCount = selectedRefs.get(inputIndex);
+          if (!isActive || !currentBestCut ||
+              !llvm::is_contained(currentBestCut->inputs, inputIndex))
+            ++effectiveRefCount;
+        }
         assert(effectiveRefCount != 0 && "cut inputs must be referenced");
         flow += inputCutSet->areaFlow / effectiveRefCount;
       }
