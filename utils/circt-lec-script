@@ -3,17 +3,11 @@ set -euo pipefail
 
 CIRCT_LEC="${CIRCT_LEC:-circt-lec}"
 
-# Filter out --shared-libs and its argument; check for --emit-smtlib.
+# Filter out --shared-libs and its argument.
 args=()
-emit_smtlib=false
 for arg in "$@"; do
-  [[ "$arg" == "--emit-smtlib" ]] && emit_smtlib=true
   [[ "$arg" == --shared-libs* ]] && continue
   args+=("$arg")
 done
-
-if $emit_smtlib; then
-  exec "$CIRCT_LEC" "${args[@]}"
-fi
 
 "$CIRCT_LEC" "${args[@]}" --emit-smtlib | z3 -in | grep -q "unsat"
