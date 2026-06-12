@@ -876,6 +876,7 @@ public:
   void recordOperationNode(Operation *op);
   void recordEdge(StringRef from, StringRef to, StringRef kind,
                   StringRef reason, bool conflict = false);
+  void recordAssociationAtFailure(Value value, RowTerm *row);
   void emitDomainCrossingError(Operation *op, Value lhs, Term *lhsTerm,
                                Value rhs, Term *rhsTerm);
   template <typename T>
@@ -1232,6 +1233,17 @@ void ModuleState::recordEdge(StringRef from, StringRef to, StringRef kind,
   debugTrace.addEdge(from, to, kind, reason, conflict);
 }
 
+void ModuleState::recordAssociationAtFailure(Value value, RowTerm *row) {
+  if (!debugTrace.isEnabled())
+    return;
+
+  recordValueNode(value);
+  recordTermNode(row);
+  recordEdge("value:" + renderLongToString(value),
+             "term:" + renderToString(row), "association",
+             "domain association at failing operation");
+}
+
 void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
                                 StringRef failureKind,
                                 StringRef failureSummary) {
@@ -1313,29 +1325,16 @@ LogicalResult ModuleState::unify(Term *lhs, Term *rhs) {
   if (lhs == rhs)
     return success();
 
-  std::string lhsID, rhsID;
-  if (debugTrace.isEnabled()) {
-    recordTermNode(lhs);
-    recordTermNode(rhs);
-    lhsID = "term:" + renderToString(lhs);
-    rhsID = "term:" + renderToString(rhs);
-  }
-
   LLVM_DEBUG(llvm::dbgs().indent(6)
              << "unify " << render(lhs) << " = " << render(rhs) << "\n");
 
-  LogicalResult result = failure();
   if (auto *lhsVar = dyn_cast<VariableTerm>(lhs))
-    result = unify(lhsVar, rhs);
-  else if (auto *lhsVal = dyn_cast<ValueTerm>(lhs))
-    result = unify(lhsVal, rhs);
-  else if (auto *lhsRow = dyn_cast<RowTerm>(lhs))
-    result = unify(lhsRow, rhs);
-
-  if (debugTrace.isEnabled())
-    recordEdge(lhsID, rhsID, "unify", "unification constraint", failed(result));
-
-  return result;
+    return unify(lhsVar, rhs);
+  if (auto *lhsVal = dyn_cast<ValueTerm>(lhs))
+    return unify(lhsVal, rhs);
+  if (auto *lhsRow = dyn_cast<RowTerm>(lhs))
+    return unify(lhsRow, rhs);
+  return failure();
 }
 
 void ModuleState::solve(Term *lhs, Term *rhs) {
@@ -1408,11 +1407,6 @@ void ModuleState::setTermForDomain(DomainValue value, Term *term) {
   assert(term);
   assert(!termTable.contains(value));
   termTable.insert({value, term});
-  recordDomainNode(value);
-  recordTermNode(term);
-  recordEdge("value:" + renderLongToString(value),
-             "term:" + renderToString(term), "domain-term",
-             "domain value assigned solver term");
   LLVM_DEBUG(llvm::dbgs().indent(6)
              << "set " << render(value) << " := " << render(term) << "\n");
 }
@@ -1436,11 +1430,6 @@ void ModuleState::setDomainAssociation(Value value, Term *term) {
   assert(term);
   term = find(term);
   associationTable.insert({value, term});
-  recordValueNode(value);
-  recordTermNode(term);
-  recordEdge("value:" + renderLongToString(value),
-             "term:" + renderToString(term), "association",
-             "hardware value associated with domain row");
   LLVM_DEBUG({
     llvm::dbgs().indent(6) << "set domains(" << render(value)
                            << ") := " << render(term) << "\n";
@@ -1653,6 +1642,17 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
     noteDomainSource(diag, rhsDomain);
   }
 
+  recordOperationNode(op);
+  recordAssociationAtFailure(lhs, lhsRow);
+  recordAssociationAtFailure(rhs, rhsRow);
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(lhs),
+             "operand", "failing operation operand");
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(rhs),
+             "operand", "failing operation operand");
+  recordEdge("value:" + renderLongToString(lhs),
+             "value:" + renderLongToString(rhs), "conflict",
+             "operation requires both values to share domains", true);
+
   std::string summary;
   llvm::raw_string_ostream os(summary);
   os << "illegal domain crossing between " << renderToString(lhs) << " and "
@@ -1756,14 +1756,6 @@ LogicalResult ModuleState::unifyAssociations(Operation *op, Value lhs,
   if (!isHardware(lhs) || !isHardware(rhs))
     return success();
 
-  recordOperationNode(op);
-  recordValueNode(lhs);
-  recordValueNode(rhs);
-  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(lhs),
-             "operand", "operation participates in domain unification");
-  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(rhs),
-             "operand", "operation participates in domain unification");
-
   LLVM_DEBUG({
     llvm::dbgs().indent(6) << "unify domains(" << render(lhs) << ") = domains("
                            << render(rhs) << ")\n";
@@ -1775,9 +1767,6 @@ LogicalResult ModuleState::unifyAssociations(Operation *op, Value lhs,
   if (lhsTerm) {
     if (rhsTerm) {
       if (failed(unify(lhsTerm, rhsTerm))) {
-        recordEdge("value:" + renderLongToString(lhs),
-                   "value:" + renderLongToString(rhs), "conflict",
-                   "operation requires both values to share domains", true);
         emitDomainCrossingError(op, lhs, lhsTerm, rhs, rhsTerm);
         return failure();
       }
@@ -1986,6 +1975,18 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
       << "defines a domain value that was inferred to be a different domain '";
   render(dstTerm, diag);
   diag << "'";
+  recordOperationNode(op);
+  recordDomainNode(src);
+  recordDomainNode(dst);
+  recordTermNode(srcTerm);
+  recordTermNode(dstTerm);
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(dst),
+             "operand", "domain.define destination");
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(src),
+             "operand", "domain.define source");
+  recordEdge("value:" + renderLongToString(dst),
+             "value:" + renderLongToString(src), "conflict",
+             "domain.define conflicts with inferred domain", true);
   noteDebugHTML(diag, op.getOperation(), "domain-define-conflict",
                 "domain.define conflicts with inferred domain");
 
@@ -2034,7 +2035,6 @@ LogicalResult ModuleState::processOp(RWProbeOp op) {
 
 LogicalResult ModuleState::processOp(Operation *op) {
   LLVM_DEBUG(llvm::dbgs().indent(4) << "process " << render(op) << "\n");
-  recordOperationNode(op);
   if (auto instance = dyn_cast<FInstanceLike>(op))
     return processOp(instance);
   if (auto wireOp = dyn_cast<WireOp>(op))
