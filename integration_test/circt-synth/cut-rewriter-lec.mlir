@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // Perform translation validaton of LUT mapping in order to verify the truth
 // table computation in the cut rewriter.

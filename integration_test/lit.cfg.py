@@ -216,6 +216,10 @@ if config.z3_library not in ("", "Z3_LIBRARIES-NOTFOUND"):
   tools.append(ToolSubst(f"%libz3", config.z3_library))
   config.available_features.add('libz3')
 
+if config.z3_path != "":
+  llvm_config.with_environment('PATH', config.z3_path, append_path=True)
+  config.available_features.add('z3')
+
 if config.llvm_with_z3 == "1":
   config.available_features.add('z3-integration')
 

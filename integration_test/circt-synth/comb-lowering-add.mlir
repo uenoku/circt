@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --convert-comb-to-synth -o %t.mlir
 // RUN: circt-lec-script %t.mlir %s -c1=add -c2=add

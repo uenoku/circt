@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --datapath-reduce-delay -o %t.mlir
 // RUN: circt-lec-script %t.mlir %s -c1=add_compare -c2=add_compare

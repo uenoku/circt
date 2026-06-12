@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --pass-pipeline='builtin.module(hw.module(synth-lower-variadic))' -o %t.after.mlir
 // RUN: circt-lec-script %s %t.after.mlir -c1=AndInverter -c2=AndInverter

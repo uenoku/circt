@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-synth %s -o %t1.mlir
 // RUN: circt-opt %t1.mlir --hw-flatten-modules=hw-inline-public -o %t1.inline.mlir

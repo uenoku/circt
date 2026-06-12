@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --convert-datapath-to-comb -o %t.mlir
 // RUN: circt-lec-script %t.mlir %s -c1=partial_product_5 -c2=partial_product_5

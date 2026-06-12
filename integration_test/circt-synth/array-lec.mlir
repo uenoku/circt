@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --hw-aggregate-to-comb --convert-comb-to-synth -o %t.mlir
 

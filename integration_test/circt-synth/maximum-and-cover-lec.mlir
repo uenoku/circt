@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s -o %t1.mlir
 // RUN: circt-opt %s --synth-maximum-and-cover -o %t2.mlir

@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-opt %s --pass-pipeline='builtin.module(synth-print-longest-path-analysis, hw.module(comb-balance-mux{mux-chain-threshold=4}))' -o %t.mlir
 // RUN: circt-opt %t.mlir --pass-pipeline='builtin.module(synth-print-longest-path-analysis)'

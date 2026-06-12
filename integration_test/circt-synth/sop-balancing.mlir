@@ -1,4 +1,4 @@
-// REQUIRES: z3-integration
+// REQUIRES: z3
 
 // RUN: circt-synth %s -o %t.before.mlir --analysis-output=-
 // RUN: circt-synth %s -enable-sop-balancing -o %t.after.mlir -convert-to-comb --analysis-output=-
