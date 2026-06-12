@@ -81,7 +81,7 @@ tool_dirs = [
 tools = [
     'arcilator', 'circt-opt', 'circt-translate', 'firtool', 'circt-rtl-sim.py',
     'equiv-rtl.sh', 'handshake-runner', 'hlstool', 'kanagawatool', 'circt-lec',
-    'circt-bmc', 'circt-test', 'circt-test-runner-sby.py',
+    'circt-lec-script', 'circt-bmc', 'circt-test', 'circt-test-runner-sby.py',
     'circt-test-runner-circt-bmc.py', 'circt-cocotb-driver.py'
 ]
 

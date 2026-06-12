@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# circt-lec-script
+# Drop-in replacement for `circt-lec` that uses standalone z3 instead of JIT+libz3.
+# Usage: same as `circt-lec` (e.g., circt-lec-script file1.mlir file2.mlir -c1=foo -c2=bar)
+# When called without --emit-smtlib, it internally emits SMT-LIB and runs z3.
+# When called with --emit-smtlib, it passes through to the real circt-lec.
+
+set -euo pipefail
+
+CIRCT_LEC="${CIRCT_LEC:-circt-lec}"
+Z3="${Z3:-z3}"
+
+# Collect arguments into arrays.
+files=()
+emit_smtlib=false
+c1=""
+c2=""
+output=""
+other_args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --emit-smtlib)
+      emit_smtlib=true
+      shift
+      ;;
+    -c1=*)
+      c1="${1#-c1=}"
+      shift
+      ;;
+    -c1)
+      c1="$2"
+      shift 2
+      ;;
+    -c2=*)
+      c2="${1#-c2=}"
+      shift
+      ;;
+    -c2)
+      c2="$2"
+      shift 2
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    --shared-libs=*)
+      # Ignore --shared-libs since we use standalone z3.
+      shift
+      ;;
+    --shared-libs)
+      # Ignore --shared-libs since we use standalone z3.
+      shift 2
+      ;;
+    -*)
+      other_args+=("$1")
+      shift
+      ;;
+    *)
+      files+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# If --emit-smtlib was requested, pass through to the real circt-lec.
+if $emit_smtlib; then
+  lec_args=("${files[@]}" -c1="$c1" -c2="$c2" --emit-smtlib)
+  if [[ -n "$output" ]]; then
+    lec_args+=(-o "$output")
+  fi
+  lec_args+=("${other_args[@]}")
+  exec "$CIRCT_LEC" "${lec_args[@]}"
+fi
+
+# Normal run: emit SMT-LIB to a temp file and run z3.
+tmp_smt=$(mktemp -t circt-lec-script-XXXXXX.smt2)
+trap 'rm -f "$tmp_smt"' EXIT
+
+lec_args=("${files[@]}" -c1="$c1" -c2="$c2" --emit-smtlib -o "$tmp_smt")
+lec_args+=("${other_args[@]}")
+"$CIRCT_LEC" "${lec_args[@]}"
+
+z3_result=$("$Z3" "$tmp_smt")
+
+# Determine equivalence from z3 output.
+# unsat => circuits are equivalent
+# sat   => not equivalent (counterexample exists)
+if echo "$z3_result" | grep -q "unsat"; then
+  msg="${c1} == ${c2}"
+  exit_code=0
+elif echo "$z3_result" | grep -q "sat"; then
+  msg="${c1} != ${c2}"
+  exit_code=1
+else
+  msg="${c1} != ${c2} (unknown)"
+  exit_code=1
+fi
+
+if [[ -n "$output" && "$output" != "-" ]]; then
+  printf '%s\n' "$msg" > "$output"
+else
+  printf '%s\n' "$msg"
+fi
+
+exit $exit_code
