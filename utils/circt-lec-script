@@ -1,54 +1,24 @@
 #!/usr/bin/env bash
-# circt-lec-script
-# Drop-in replacement for `circt-lec` that uses standalone z3 instead of JIT+libz3.
-# When called with --emit-smtlib, passes through to the real circt-lec.
-# Otherwise, emits SMT-LIB and runs z3. Returns 0 on unsat (equivalent),
-# 1 on sat or unknown (not equivalent).
-
 set -euo pipefail
 
 CIRCT_LEC="${CIRCT_LEC:-circt-lec}"
 Z3="${Z3:-z3}"
 
-# Collect arguments. The only ones we need to intercept are --emit-smtlib
-# and --shared-libs (ignored). Everything else is forwarded to circt-lec.
+# Filter out --shared-libs and its argument; check for --emit-smtlib.
+args=()
 emit_smtlib=false
-lec_args=()
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --emit-smtlib)
-      emit_smtlib=true
-      lec_args+=("$1")
-      shift
-      ;;
-    --shared-libs|--shared-libs=*)
-      # Ignore --shared-libs since we use standalone z3.
-      shift
-      ;;
-    *)
-      lec_args+=("$1")
-      shift
-      ;;
-  esac
+for arg in "$@"; do
+  [[ "$arg" == "--emit-smtlib" ]] && emit_smtlib=true
+  [[ "$arg" == --shared-libs* ]] && continue
+  args+=("$arg")
 done
 
 if $emit_smtlib; then
-  exec "$CIRCT_LEC" "${lec_args[@]}"
+  exec "$CIRCT_LEC" "${args[@]}"
 fi
 
-# Normal run: emit SMT-LIB to a temp file and run z3.
-tmp_smt=$(mktemp -t circt-lec-script-XXXXXX.smt2)
-trap 'rm -f "$tmp_smt"' EXIT
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
 
-"$CIRCT_LEC" "${lec_args[@]}" --emit-smtlib -o "$tmp_smt"
-
-z3_result=$("$Z3" "$tmp_smt")
-
-if echo "$z3_result" | grep -q "unsat"; then
-  exit 0
-elif echo "$z3_result" | grep -q "sat"; then
-  exit 1
-else
-  exit 1
-fi
+"$CIRCT_LEC" "${args[@]}" --emit-smtlib -o "$tmp"
+z3 "$tmp" | grep -q "unsat"

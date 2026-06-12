@@ -1,18 +1,13 @@
-// REQUIRES: libz3
-// REQUIRES: circt-lec-jit
+// REQUIRES: z3-integration
 
 // RUN: circt-synth %s -o %t1.mlir
-// RUN: cat %t1.mlir
-// RUN: circt-lec %t1.mlir %s -c1=mul -c2=mul --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_MUL_TECHMAP
-// COMB_MUL_TECHMAP: c1 == c2
-// RUN: circt-lec %t1.mlir %s -c1=dot_test -c2=dot_test --shared-libs=%libz3 | FileCheck %s --check-prefix=TECHMAP_PERMUTATION
-// TECHMAP_PERMUTATION: c1 == c2
+// RUN: circt-opt %t1.mlir --hw-flatten-modules=hw-inline-public -o %t1.inline.mlir
+// RUN: circt-lec-script %t1.inline.mlir %s -c1=mul -c2=mul
+// RUN: circt-lec-script %t1.inline.mlir %s -c1=dot_test -c2=dot_test
 
 // RUN: circt-synth %s -o %t.lut.mlir --top mul --lower-to-k-lut 6
-// RUN: cat %t.lut.mlir
 // RUN: circt-opt -lower-comb %t.lut.mlir -o %t2.mlir
-// RUN: circt-lec %t2.mlir %s -c1=mul -c2=mul --shared-libs=%libz3 | FileCheck %s --check-prefix=COMB_MUL_LUT
-// COMB_MUL_LUT: c1 == c2
+// RUN: circt-lec-script %t2.mlir %s -c1=mul -c2=mul
 
 
 // Set delay for binary and inv op to 5 so that others will be prioritized
