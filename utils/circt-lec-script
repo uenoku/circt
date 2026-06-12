@@ -2,7 +2,6 @@
 set -euo pipefail
 
 CIRCT_LEC="${CIRCT_LEC:-circt-lec}"
-Z3="${Z3:-z3}"
 
 # Filter out --shared-libs and its argument; check for --emit-smtlib.
 args=()
@@ -17,8 +16,4 @@ if $emit_smtlib; then
   exec "$CIRCT_LEC" "${args[@]}"
 fi
 
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-
-"$CIRCT_LEC" "${args[@]}" --emit-smtlib -o "$tmp"
-z3 "$tmp" | grep -q "unsat"
+"$CIRCT_LEC" "${args[@]}" --emit-smtlib | z3 -in | grep -q "unsat"
