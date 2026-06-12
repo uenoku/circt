@@ -23,13 +23,17 @@
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "circt/Support/Debug.h"
 #include "circt/Support/Namespace.h"
+#include "circt/Support/Path.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/IR/Threading.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TinyPtrVector.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/Path.h"
 
 #define DEBUG_TYPE "firrtl-infer-domains"
 
@@ -51,6 +55,7 @@ using mlir::InFlightDiagnostic;
 using mlir::ReverseIterator;
 
 namespace {
+class DomainDebugTrace;
 struct VariableTerm;
 } // namespace
 
@@ -137,9 +142,11 @@ struct ModuleUpdateInfo {
 namespace {
 struct CircuitState {
   CircuitState(CircuitOp circuit, InstanceGraph &instanceGraph,
-               InnerRefNamespace &innerRefNamespace, InferDomainsMode mode)
+               InnerRefNamespace &innerRefNamespace, InferDomainsMode mode,
+               StringRef debugDomainsHTML)
       : circuit(circuit), instanceGraph(instanceGraph),
-        innerRefNamespace(innerRefNamespace), mode(mode) {
+        innerRefNamespace(innerRefNamespace), mode(mode),
+        debugDomainsHTML(debugDomainsHTML.str()) {
     processCircuit(circuit);
   }
 
@@ -169,6 +176,8 @@ struct CircuitState {
   }
 
   InnerRefNamespace &getInnerRefNamespace() { return innerRefNamespace; }
+  StringRef getDebugDomainsHTML() const { return debugDomainsHTML; }
+  void populateDebugHierarchy(DomainDebugTrace &trace, FModuleOp focus);
 
   DenseSet<Value> inserted;
 
@@ -191,6 +200,7 @@ private:
   InstanceGraph &instanceGraph;
   InnerRefNamespace &innerRefNamespace;
   InferDomainsMode mode;
+  std::string debugDomainsHTML;
   SmallVector<DomainOp> domainTable;
   DenseMap<Type, DomainTypeID> typeIDTable;
   DenseMap<VariableTerm *, size_t> variableIDTable;
@@ -254,6 +264,502 @@ struct RowTerm : public TermBase<TermKind::Row> {
 };
 } // namespace
 
+namespace {
+struct DomainDebugNode {
+  std::string id;
+  std::string label;
+  std::string kind;
+  std::string detail;
+  std::string loc;
+};
+
+struct DomainDebugEdge {
+  std::string from;
+  std::string to;
+  std::string kind;
+  std::string reason;
+  bool conflict = false;
+};
+
+struct DomainDebugHierarchyEdge {
+  std::string parentModule;
+  std::string instanceName;
+  std::string targetModule;
+  std::string loc;
+};
+
+/// A lightweight recorder for domain inference constraints.  It intentionally
+/// stores rendered strings, not IR objects, so it remains valid after the pass
+/// mutates module interfaces.
+class DomainDebugTrace {
+public:
+  DomainDebugTrace() = default;
+  explicit DomainDebugTrace(StringRef outputPath)
+      : outputPath(outputPath.str()), enabled(!outputPath.empty()) {}
+
+  bool isEnabled() const { return enabled; }
+  bool hasEmitted() const { return emitted; }
+
+  void setFocusModule(StringRef moduleName) { focusModule = moduleName.str(); }
+
+  void addNode(StringRef id, StringRef label, StringRef kind, StringRef detail,
+               StringRef loc) {
+    if (!enabled || id.empty())
+      return;
+    auto [it, inserted] = nodeIDs.insert(id.str());
+    if (!inserted)
+      return;
+    nodes.push_back(
+        {id.str(), label.str(), kind.str(), detail.str(), loc.str()});
+  }
+
+  void addEdge(StringRef from, StringRef to, StringRef kind, StringRef reason,
+               bool conflict = false) {
+    if (!enabled || from.empty() || to.empty() || edges.size() >= maxEdges)
+      return;
+    edges.push_back({from.str(), to.str(), kind.str(), reason.str(), conflict});
+  }
+
+  void addHierarchyEdge(StringRef parentModule, StringRef instanceName,
+                        StringRef targetModule, StringRef loc) {
+    if (!enabled || hierarchyEdges.size() >= maxHierarchyEdges)
+      return;
+    hierarchyEdges.push_back({parentModule.str(), instanceName.str(),
+                              targetModule.str(), loc.str()});
+
+    auto parentID = ("module:" + parentModule).str();
+    auto instanceID = ("instance:" + parentModule + "/" + instanceName).str();
+    auto targetID = ("module:" + targetModule).str();
+    addNode(parentID, parentModule, "module", "module " + parentModule.str(),
+            "");
+    addNode(instanceID, instanceName, "instance",
+            ("instance " + instanceName + " in " + parentModule + " -> " +
+             targetModule)
+                .str(),
+            loc);
+    addNode(targetID, targetModule, "module", "module " + targetModule.str(),
+            "");
+    addEdge(parentID, instanceID, "hierarchy", "module contains instance");
+    addEdge(instanceID, targetID, "hierarchy", "instance references module");
+  }
+
+  void addInstancePath(StringRef path) {
+    if (!enabled || instancePaths.size() >= maxInstancePaths)
+      return;
+    instancePaths.push_back(path.str());
+  }
+
+  FailureOr<std::string> emitHTML(FModuleOp moduleOp, StringRef failureKind,
+                                  StringRef failureSummary) {
+    if (!enabled || emitted)
+      return failure();
+    emitted = true;
+
+    auto moduleName = moduleOp.getModuleName();
+    std::string filename = getOutputFilename(moduleName);
+    std::string dirname = getOutputDirectory();
+    auto file = createOutputFile(filename, dirname, [&] {
+      return moduleOp.emitError("cannot write domain debug HTML");
+    });
+    if (!file)
+      return failure();
+
+    std::string jsonBuffer;
+    llvm::raw_string_ostream jsonOS(jsonBuffer);
+    llvm::json::OStream json(jsonOS, 2);
+    json.object([&] {
+      json.attribute("module", moduleName);
+      json.attribute("focusModule", focusModule);
+      json.attribute("failureKind", failureKind);
+      json.attribute("failureSummary", failureSummary);
+      json.attributeArray("instancePaths", [&] {
+        for (auto &path : instancePaths)
+          json.value(path);
+      });
+      json.attributeArray("hierarchy", [&] {
+        for (auto &edge : hierarchyEdges) {
+          json.object([&] {
+            json.attribute("parentModule", edge.parentModule);
+            json.attribute("instanceName", edge.instanceName);
+            json.attribute("targetModule", edge.targetModule);
+            json.attribute("loc", edge.loc);
+          });
+        }
+      });
+      json.attributeArray("nodes", [&] {
+        for (auto &node : nodes) {
+          json.object([&] {
+            json.attribute("id", node.id);
+            json.attribute("label", node.label);
+            json.attribute("kind", node.kind);
+            json.attribute("detail", node.detail);
+            json.attribute("loc", node.loc);
+          });
+        }
+      });
+      json.attributeArray("edges", [&] {
+        for (auto &edge : edges) {
+          json.object([&] {
+            json.attribute("from", edge.from);
+            json.attribute("to", edge.to);
+            json.attribute("kind", edge.kind);
+            json.attribute("reason", edge.reason);
+            json.attribute("conflict", edge.conflict);
+          });
+        }
+      });
+    });
+    jsonOS.flush();
+
+    // Avoid prematurely ending the embedding script tag if an IR string happens
+    // to contain HTML-like text.
+    size_t pos = 0;
+    while ((pos = jsonBuffer.find("</", pos)) != std::string::npos) {
+      jsonBuffer.insert(pos + 1, "\\");
+      pos += 3;
+    }
+
+    auto &os = file->os();
+    emitHTMLHeader(os);
+    os << jsonBuffer;
+    emitHTMLFooter(os);
+    file->keep();
+
+    SmallString<128> path(dirname);
+    appendPossiblyAbsolutePath(path, filename);
+    return path.str().str();
+  }
+
+private:
+  std::string getOutputFilename(StringRef moduleName) const {
+    if (llvm::sys::path::extension(outputPath) == ".html")
+      return llvm::sys::path::filename(outputPath).str();
+
+    std::string sanitized;
+    for (char c : moduleName)
+      sanitized.push_back(llvm::isAlnum(c) || c == '_' || c == '-' ? c : '_');
+    return sanitized + ".domain.html";
+  }
+
+  std::string getOutputDirectory() const {
+    if (llvm::sys::path::extension(outputPath) == ".html") {
+      auto dir = llvm::sys::path::parent_path(outputPath);
+      return dir.empty() ? "." : dir.str();
+    }
+    return outputPath;
+  }
+
+  static void emitHTMLHeader(raw_ostream &os) {
+    os << R"HTML(<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FIRRTL Domain Inference Debugger</title>
+<style>
+body { margin: 0; font: 13px/1.4 system-ui, sans-serif; color: #17202a; background: #f7f8fa; }
+header { padding: 12px 16px; background: #1f2937; color: white; }
+header h1 { margin: 0; font-size: 16px; font-weight: 650; }
+header div { margin-top: 4px; color: #d1d5db; }
+main { display: grid; grid-template-columns: 280px 1fr 360px; height: calc(100vh - 58px); }
+aside, section { min-width: 0; overflow: auto; }
+#summary { border-right: 1px solid #d7dce2; background: white; padding: 12px; }
+#details { border-left: 1px solid #d7dce2; background: white; padding: 12px; }
+#graphWrap { position: relative; overflow: auto; background: #fbfcfd; }
+svg { min-width: 900px; min-height: 680px; }
+.node rect, .node circle { stroke: #465668; stroke-width: 1.2px; fill: white; }
+.node.domain circle { fill: #fff7d6; }
+.node.term rect { fill: #eef6ff; }
+.node.hardware rect { fill: #eefbf3; }
+.node.module rect { fill: #f4efff; }
+.node.instance rect { fill: #fff1e8; }
+.node.port rect { fill: #eaf7ff; }
+.node.instance-port rect { fill: #edf9f1; }
+.node.register rect { fill: #ffeef2; }
+.node.wire rect { fill: #f8f5e9; }
+.node.value rect { fill: #f5f6f8; }
+.node.class circle { fill: #ffffff; stroke-width: 2.2px; }
+.node.selected rect, .node.selected circle { stroke: #111827; stroke-width: 2.4px; }
+.edge { stroke: #7b8794; stroke-width: 1.3px; fill: none; marker-end: url(#arrow); }
+.edge.conflict { stroke: #d92d20; stroke-width: 3px; }
+.edge.association { stroke: #2563eb; }
+.edge.unify { stroke: #6b7280; stroke-dasharray: 5 4; }
+.edge.hierarchy { stroke: #9a5b13; }
+.edge.class-member { stroke: #2563eb; stroke-dasharray: 2 3; }
+.label { font-size: 12px; pointer-events: none; fill: #17202a; }
+.edgeLabel { font-size: 11px; fill: #4b5563; }
+.pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #e5e7eb; margin: 0 4px 4px 0; }
+.conflictText { color: #b42318; font-weight: 650; }
+pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 8px; border-radius: 6px; }
+button { border: 1px solid #c7ced6; background: white; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
+button:hover { background: #f3f4f6; }
+</style>
+</head>
+<body>
+<header><h1 id="title">FIRRTL Domain Inference Debugger</h1><div id="subtitle"></div></header>
+<main>
+<aside id="summary"></aside>
+<section id="graphWrap"><svg id="graph" width="1200" height="800"></svg></section>
+<aside id="details"></aside>
+</main>
+<script id="domain-debug-data" type="application/json">
+)HTML";
+  }
+
+  static void emitHTMLFooter(raw_ostream &os) {
+    os << R"HTML(
+</script>
+<script>
+const data = JSON.parse(document.getElementById('domain-debug-data').textContent);
+const byId = new Map(data.nodes.map(n => [n.id, n]));
+document.getElementById('title').textContent = `FIRRTL Domain Inference: ${data.module}`;
+document.getElementById('subtitle').textContent = `${data.failureKind}: ${data.failureSummary}`;
+
+const palette = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ca8a04', '#0891b2', '#ea580c', '#4f46e5', '#be123c', '#0f766e'];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function computeClasses() {
+  const parent = new Map();
+  const find = x => {
+    if (!parent.has(x)) parent.set(x, x);
+    const p = parent.get(x);
+    if (p === x) return x;
+    const r = find(p);
+    parent.set(x, r);
+    return r;
+  };
+  const unite = (a, b) => {
+    if (!a || !b) return;
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  for (const node of data.nodes) parent.set(node.id, node.id);
+  for (const edge of data.edges) {
+    if (['association', 'domain-term', 'resolve', 'unify', 'row-slot'].includes(edge.kind) && !edge.conflict)
+      unite(edge.from, edge.to);
+  }
+  const groups = new Map();
+  for (const node of data.nodes) {
+    if (node.kind === 'operation' || node.kind === 'module' || node.kind === 'instance') continue;
+    const root = find(node.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(node);
+  }
+  const classByNode = new Map();
+  const classes = [];
+  for (const [root, members] of groups) {
+    const visible = members.filter(n => n.kind !== 'term');
+    if (!visible.length) continue;
+    const classNode = {
+      id: `class:${classes.length}`,
+      label: `class ${classes.length + 1}`,
+      kind: 'class',
+      detail: visible.map(n => `${n.kind}: ${n.label}`).join('\n'),
+      loc: '',
+      color: palette[classes.length % palette.length]
+    };
+    classes.push(classNode);
+    for (const member of visible) classByNode.set(member.id, classNode);
+  }
+  return {classes, classByNode};
+}
+
+function renderSummary() {
+  const conflicts = data.edges.filter(e => e.conflict);
+  const kinds = [...new Set(data.nodes.map(n => n.kind))].sort();
+  const paths = data.instancePaths || [];
+  const hierarchy = data.hierarchy || [];
+  const {classes} = computeClasses();
+  document.getElementById('summary').innerHTML = `
+    <h2>Failure</h2>
+    <p class="conflictText">${esc(data.failureSummary)}</p>
+    <h2>Instance Context</h2>
+    <p><span class="pill">module: ${esc(data.focusModule || data.module)}</span></p>
+    ${paths.length ? `<h3>Absolute Paths</h3>${paths.map(p => `<pre>${esc(p)}</pre>`).join('')}` : '<p>No instance path recorded.</p>'}
+    <h3>Hierarchy</h3>
+    ${hierarchy.length ? hierarchy.map(e => `<pre>${esc(e.parentModule)} / ${esc(e.instanceName)} -> ${esc(e.targetModule)}</pre>`).join('') : '<p>No child instances recorded.</p>'}
+    <h2>Equivalence Classes</h2>
+    ${classes.map(c => `<p><span class="pill" style="border-left: 10px solid ${c.color}">${esc(c.label)}</span></p><pre>${esc(c.detail)}</pre>`).join('')}
+    <h2>Conflict Edges</h2>
+    ${conflicts.map(e => `<button data-edge="${esc(e.from)}|||${esc(e.to)}">${esc(e.reason || e.kind)}</button>`).join(' ')}
+    <h2>Nodes</h2>
+    <p>${kinds.map(k => `<span class="pill">${esc(k)}: ${data.nodes.filter(n => n.kind === k).length}</span>`).join('')}</p>
+    <h2>Edges</h2>
+    <p>${data.edges.length} recorded constraint edges</p>`;
+}
+
+function showDetails(item) {
+  const detail = document.getElementById('details');
+  if (!item) {
+    detail.innerHTML = '<h2>Details</h2><p>Select a node or edge.</p>';
+    return;
+  }
+  if (item.from) {
+    detail.innerHTML = `<h2>Edge</h2>
+      <p><span class="pill">${esc(item.kind)}</span>${item.conflict ? '<span class="pill conflictText">conflict</span>' : ''}</p>
+      <pre>${esc(item.from)}\n-> ${esc(item.to)}</pre>
+      <h3>Reason</h3><pre>${esc(item.reason)}</pre>`;
+    return;
+  }
+  detail.innerHTML = `<h2>${esc(item.label)}</h2>
+    <p><span class="pill">${esc(item.kind)}</span></p>
+    <h3>Location</h3><pre>${esc(item.loc)}</pre>
+    <h3>Detail</h3><pre>${esc(item.detail)}</pre>`;
+}
+
+function renderGraph() {
+  const svg = document.getElementById('graph');
+  svg.innerHTML = `<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L7,3 z" fill="#7b8794"></path></marker></defs>`;
+  const {classes, classByNode} = computeClasses();
+  const visibleNodes = data.nodes.filter(n => n.kind !== 'term').concat(classes);
+  const visibleIDs = new Set(visibleNodes.map(n => n.id));
+  const derivedEdges = [];
+  for (const [id, cls] of classByNode)
+    derivedEdges.push({from: id, to: cls.id, kind: 'class-member', reason: 'member of inferred domain equivalence class', conflict: false});
+  const visibleEdges = data.edges.filter(e => visibleIDs.has(e.from) && visibleIDs.has(e.to) && !['association', 'domain-term', 'resolve', 'unify', 'row-slot'].includes(e.kind)).concat(derivedEdges);
+  const cols = ['module', 'instance', 'port', 'instance-port', 'register', 'wire', 'value', 'domain', 'class', 'operation'];
+  const positions = new Map();
+  const buckets = new Map(cols.map(c => [c, []]));
+  for (const node of visibleNodes) (buckets.get(node.kind) || buckets.get('value')).push(node);
+  let maxY = 0;
+  for (const [ci, kind] of cols.entries()) {
+    const list = buckets.get(kind) || [];
+    list.forEach((node, ri) => {
+      const x = 120 + ci * 280;
+      const y = 70 + ri * 86;
+      positions.set(node.id, {x, y});
+      maxY = Math.max(maxY, y + 80);
+    });
+  }
+  svg.setAttribute('height', Math.max(800, maxY));
+
+  const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  svg.appendChild(edgeLayer);
+  for (const edge of visibleEdges) {
+    const a = positions.get(edge.from), b = positions.get(edge.to);
+    if (!a || !b) continue;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const mx = (a.x + b.x) / 2;
+    path.setAttribute('d', `M${a.x + 70},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x - 70},${b.y}`);
+    path.setAttribute('class', `edge ${esc(edge.kind)}${edge.conflict ? ' conflict' : ''}`);
+    path.addEventListener('click', () => showDetails(edge));
+    edgeLayer.appendChild(path);
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('class', 'edgeLabel');
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('x', String(mx));
+    text.setAttribute('y', String((a.y + b.y) / 2 - 6));
+    text.textContent = edge.conflict ? 'conflict' : edge.kind;
+    text.addEventListener('click', () => showDetails(edge));
+    edgeLayer.appendChild(text);
+  }
+
+  const nodeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  svg.appendChild(nodeLayer);
+  for (const node of visibleNodes) {
+    const p = positions.get(node.id);
+    if (!p) continue;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', `node ${esc(node.kind)}`);
+    g.setAttribute('transform', `translate(${p.x},${p.y})`);
+    g.addEventListener('click', () => {
+      document.querySelectorAll('.node.selected').forEach(n => n.classList.remove('selected'));
+      g.classList.add('selected');
+      showDetails(node);
+    });
+    const cls = node.kind === 'class' ? node : classByNode.get(node.id);
+    if (node.kind === 'domain' || node.kind === 'class') {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('r', '42');
+      if (cls) c.setAttribute('stroke', cls.color);
+      g.appendChild(c);
+    } else {
+      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      r.setAttribute('x', '-78'); r.setAttribute('y', '-26');
+      r.setAttribute('width', '156'); r.setAttribute('height', '52');
+      r.setAttribute('rx', '6');
+      if (cls) r.setAttribute('stroke', cls.color);
+      g.appendChild(r);
+    }
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    t.setAttribute('class', 'label');
+    t.setAttribute('text-anchor', 'middle');
+    t.textContent = node.label.length > 34 ? node.label.slice(0, 31) + '...' : node.label;
+    g.appendChild(t);
+    nodeLayer.appendChild(g);
+  }
+}
+
+renderSummary();
+renderGraph();
+showDetails(null);
+</script>
+</body>
+</html>
+)HTML";
+  }
+
+  std::string outputPath;
+  std::string focusModule;
+  bool enabled = false;
+  bool emitted = false;
+  llvm::StringSet<> nodeIDs;
+  SmallVector<DomainDebugNode> nodes;
+  SmallVector<DomainDebugEdge> edges;
+  SmallVector<DomainDebugHierarchyEdge> hierarchyEdges;
+  SmallVector<std::string> instancePaths;
+  static constexpr size_t maxEdges = 4000;
+  static constexpr size_t maxHierarchyEdges = 512;
+  static constexpr size_t maxInstancePaths = 64;
+};
+} // namespace
+
+void CircuitState::populateDebugHierarchy(DomainDebugTrace &trace,
+                                          FModuleOp focus) {
+  if (!trace.isEnabled())
+    return;
+
+  trace.setFocusModule(focus.getModuleName());
+
+  auto locToString = [](Location loc) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    loc.print(os);
+    return storage;
+  };
+
+  for (auto *node : instanceGraph) {
+    auto parentName = node->getModule().getModuleName();
+    for (auto *record : *node) {
+      auto inst = record->getInstance();
+      auto targetName = record->getTarget()->getModule().getModuleName();
+      trace.addHierarchyEdge(parentName, inst.getInstanceName(), targetName,
+                             locToString(inst->getLoc()));
+    }
+  }
+
+  InstancePathCache pathCache(instanceGraph);
+  auto paths = pathCache.getAbsolutePaths(focus);
+  if (paths.empty()) {
+    if (instanceGraph.lookup(focus) == instanceGraph.getTopLevelNode())
+      trace.addInstancePath(("$root:" + focus.getModuleName()).str());
+    return;
+  }
+
+  for (auto path : paths) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    if (path.empty())
+      os << "$root:" << focus.getModuleName();
+    else
+      path.print(os);
+    trace.addInstancePath(os.str());
+  }
+}
+
 //====--------------------------------------------------------------------------
 // Module processing: solve for the domain associations of hardware.
 //====--------------------------------------------------------------------------
@@ -284,7 +790,8 @@ using ExportTable = DenseMap<DomainValue, TinyPtrVector<DomainValue>>;
 namespace {
 class ModuleState {
 public:
-  explicit ModuleState(CircuitState &globals) : globals(globals) {}
+  explicit ModuleState(CircuitState &globals)
+      : globals(globals), debugTrace(globals.getDebugDomainsHTML()) {}
 
   ArrayRef<DomainOp> getDomains() { return globals.getDomains(); }
   size_t getNumDomains() { return globals.getNumDomains(); }
@@ -320,6 +827,13 @@ public:
   Render<T> render(T &&subject);
   struct RenderLong;
   RenderLong renderLong(Value value);
+  std::string renderToString(Operation *op);
+  std::string renderToString(Value value);
+  std::string renderToString(Term *term);
+  std::string renderLongToString(Value value);
+  std::string renderDebugLabel(Value value);
+  std::string renderDebugDetail(Value value);
+  std::string renderLocToString(Location loc);
 
   Term *find(Term *x);
   LogicalResult unify(Term *lhs, Term *rhs);
@@ -352,6 +866,16 @@ public:
   void noteDomain(InFlightDiagnostic &diag, DomainValue domain);
   void noteDomainSource(InFlightDiagnostic &diag, DomainValue domain);
   void noteDomainSource(InFlightDiagnostic &diag, Term *term);
+  void noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
+                     StringRef failureKind, StringRef failureSummary);
+  void noteDebugHTML(InFlightDiagnostic &diag, Operation *op,
+                     StringRef failureKind, StringRef failureSummary);
+  void recordValueNode(Value value);
+  void recordDomainNode(DomainValue value);
+  void recordTermNode(Term *term);
+  void recordOperationNode(Operation *op);
+  void recordEdge(StringRef from, StringRef to, StringRef kind,
+                  StringRef reason, bool conflict = false);
   void emitDomainCrossingError(Operation *op, Value lhs, Term *lhsTerm,
                                Value rhs, Term *rhsTerm);
   template <typename T>
@@ -445,6 +969,7 @@ public:
 
 private:
   CircuitState &globals;
+  DomainDebugTrace debugTrace;
   DenseMap<Value, Term *> termTable;
   DenseMap<Value, Term *> associationTable;
   llvm::BumpPtrAllocator allocator;
@@ -554,6 +1079,180 @@ static Diagnostic &operator<<(Diagnostic &diag, ModuleState::RenderLong r) {
   return diag;
 }
 
+std::string ModuleState::renderToString(Operation *op) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  render(op, os);
+  return storage;
+}
+
+std::string ModuleState::renderToString(Value value) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  render(value, os);
+  return storage;
+}
+
+std::string ModuleState::renderToString(Term *term) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  render(term, os);
+  return storage;
+}
+
+std::string ModuleState::renderLongToString(Value value) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  renderLong(value, os);
+  return storage;
+}
+
+std::string ModuleState::renderDebugLabel(Value value) {
+  auto localName = renderToString(value);
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (auto moduleOp = llvm::dyn_cast_if_present<FModuleLike>(
+            arg.getOwner()->getParentOp())) {
+      auto moduleName = moduleOp.getModuleName();
+      auto portName = moduleOp.getPortName(arg.getArgNumber());
+      return (moduleName + "." + portName).str();
+    }
+  }
+
+  if (auto result = dyn_cast<OpResult>(value)) {
+    auto *op = result.getOwner();
+    auto moduleOp = op->getParentOfType<FModuleLike>();
+    auto moduleName = moduleOp ? moduleOp.getModuleName() : StringRef("");
+
+    if (auto inst = dyn_cast<FInstanceLike>(op)) {
+      auto instName = inst.getInstanceName();
+      auto portName = inst.getPortName(result.getResultNumber());
+      return (moduleName + "." + instName + "." + portName).str();
+    }
+
+    if (auto reg = dyn_cast<RegOp>(op))
+      return (moduleName + "." + reg.getName()).str();
+    if (auto reg = dyn_cast<RegResetOp>(op))
+      return (moduleName + "." + reg.getName()).str();
+    if (auto wire = dyn_cast<WireOp>(op))
+      return (moduleName + "." + wire.getName()).str();
+
+    if (!moduleName.empty())
+      return (moduleName + "." + localName).str();
+  }
+
+  return localName;
+}
+
+std::string ModuleState::renderDebugDetail(Value value) {
+  std::string detail = renderLongToString(value);
+  detail += "\nlabel: " + renderDebugLabel(value);
+  detail += "\ntype: ";
+  llvm::raw_string_ostream os(detail);
+  value.getType().print(os);
+  return os.str();
+}
+
+std::string ModuleState::renderLocToString(Location loc) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  loc.print(os);
+  return storage;
+}
+
+void ModuleState::recordValueNode(Value value) {
+  if (!debugTrace.isEnabled() || !value)
+    return;
+  auto id = "value:" + renderLongToString(value);
+  auto label = renderDebugLabel(value);
+  StringRef kind = "value";
+  if (isa<DomainType>(value.getType()))
+    kind = "domain";
+  else if (isa<BlockArgument>(value))
+    kind = "port";
+  else if (auto result = dyn_cast<OpResult>(value)) {
+    auto *op = result.getOwner();
+    if (isa<FInstanceLike>(op))
+      kind = "instance-port";
+    else if (isa<RegOp, RegResetOp>(op))
+      kind = "register";
+    else if (isa<WireOp>(op))
+      kind = "wire";
+  }
+  debugTrace.addNode(id, label, kind, renderDebugDetail(value),
+                     renderLocToString(value.getLoc()));
+}
+
+void ModuleState::recordDomainNode(DomainValue value) {
+  recordValueNode(value);
+}
+
+void ModuleState::recordTermNode(Term *term) {
+  if (!debugTrace.isEnabled() || !term)
+    return;
+  term = find(term);
+  auto label = renderToString(term);
+  auto id = "term:" + label;
+  debugTrace.addNode(id, label, "term", label, "");
+  if (auto *valueTerm = dyn_cast<ValueTerm>(term)) {
+    recordDomainNode(valueTerm->value);
+    recordEdge(id, "value:" + renderLongToString(valueTerm->value), "resolve",
+               "term resolves to domain value");
+  } else if (auto *row = dyn_cast<RowTerm>(term)) {
+    for (auto *element : row->elements) {
+      auto *foundElement = find(element);
+      recordTermNode(foundElement);
+      recordEdge(id, "term:" + renderToString(foundElement), "row-slot",
+                 "domain row contains domain slot");
+    }
+  }
+}
+
+void ModuleState::recordOperationNode(Operation *op) {
+  if (!debugTrace.isEnabled() || !op)
+    return;
+  auto label = op->getName().getStringRef().str();
+  auto detail = renderToString(op);
+  auto kind = "operation";
+  if (auto instance = dyn_cast<FInstanceLike>(op)) {
+    label = instance.getInstanceName().str();
+    kind = "instance";
+    std::string targets;
+    llvm::raw_string_ostream os(targets);
+    llvm::interleaveComma(
+        instance.getReferencedModuleNamesAttr(), os,
+        [&](Attribute attr) { os << cast<StringAttr>(attr).getValue(); });
+    detail += "\nreferences: " + os.str();
+  }
+  debugTrace.addNode("op:" + detail, label, kind, detail,
+                     renderLocToString(op->getLoc()));
+}
+
+void ModuleState::recordEdge(StringRef from, StringRef to, StringRef kind,
+                             StringRef reason, bool conflict) {
+  debugTrace.addEdge(from, to, kind, reason, conflict);
+}
+
+void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
+                                StringRef failureKind,
+                                StringRef failureSummary) {
+  if (!debugTrace.isEnabled() || debugTrace.hasEmitted())
+    return;
+
+  globals.populateDebugHierarchy(debugTrace, moduleOp);
+  auto path = debugTrace.emitHTML(moduleOp, failureKind, failureSummary);
+  if (succeeded(path))
+    diag.attachNote() << "domain inference debugger written to " << *path;
+}
+
+void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, Operation *op,
+                                StringRef failureKind,
+                                StringRef failureSummary) {
+  while (op && !isa<FModuleOp>(op))
+    op = op->getParentOp();
+  if (auto moduleOp = llvm::dyn_cast_if_present<FModuleOp>(op))
+    noteDebugHTML(diag, moduleOp, failureKind, failureSummary);
+}
+
 // NOLINTNEXTLINE(misc-no-recursion)
 Term *ModuleState::find(Term *x) {
   if (!x)
@@ -614,16 +1313,29 @@ LogicalResult ModuleState::unify(Term *lhs, Term *rhs) {
   if (lhs == rhs)
     return success();
 
+  std::string lhsID, rhsID;
+  if (debugTrace.isEnabled()) {
+    recordTermNode(lhs);
+    recordTermNode(rhs);
+    lhsID = "term:" + renderToString(lhs);
+    rhsID = "term:" + renderToString(rhs);
+  }
+
   LLVM_DEBUG(llvm::dbgs().indent(6)
              << "unify " << render(lhs) << " = " << render(rhs) << "\n");
 
+  LogicalResult result = failure();
   if (auto *lhsVar = dyn_cast<VariableTerm>(lhs))
-    return unify(lhsVar, rhs);
-  if (auto *lhsVal = dyn_cast<ValueTerm>(lhs))
-    return unify(lhsVal, rhs);
-  if (auto *lhsRow = dyn_cast<RowTerm>(lhs))
-    return unify(lhsRow, rhs);
-  return failure();
+    result = unify(lhsVar, rhs);
+  else if (auto *lhsVal = dyn_cast<ValueTerm>(lhs))
+    result = unify(lhsVal, rhs);
+  else if (auto *lhsRow = dyn_cast<RowTerm>(lhs))
+    result = unify(lhsRow, rhs);
+
+  if (debugTrace.isEnabled())
+    recordEdge(lhsID, rhsID, "unify", "unification constraint", failed(result));
+
+  return result;
 }
 
 void ModuleState::solve(Term *lhs, Term *rhs) {
@@ -696,6 +1408,11 @@ void ModuleState::setTermForDomain(DomainValue value, Term *term) {
   assert(term);
   assert(!termTable.contains(value));
   termTable.insert({value, term});
+  recordDomainNode(value);
+  recordTermNode(term);
+  recordEdge("value:" + renderLongToString(value),
+             "term:" + renderToString(term), "domain-term",
+             "domain value assigned solver term");
   LLVM_DEBUG(llvm::dbgs().indent(6)
              << "set " << render(value) << " := " << render(term) << "\n");
 }
@@ -719,6 +1436,11 @@ void ModuleState::setDomainAssociation(Value value, Term *term) {
   assert(term);
   term = find(term);
   associationTable.insert({value, term});
+  recordValueNode(value);
+  recordTermNode(term);
+  recordEdge("value:" + renderLongToString(value),
+             "term:" + renderToString(term), "association",
+             "hardware value associated with domain row");
   LLVM_DEBUG({
     llvm::dbgs().indent(6) << "set domains(" << render(value)
                            << ") := " << render(term) << "\n";
@@ -930,6 +1652,12 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
     noteDomainSource(diag, lhsDomain);
     noteDomainSource(diag, rhsDomain);
   }
+
+  std::string summary;
+  llvm::raw_string_ostream os(summary);
+  os << "illegal domain crossing between " << renderToString(lhs) << " and "
+     << renderToString(rhs);
+  noteDebugHTML(diag, op, "illegal-domain-crossing", os.str());
 }
 
 template <typename T>
@@ -953,6 +1681,8 @@ void ModuleState::emitDuplicatePortDomainError(
   auto &note2 = diag.attachNote(domainPortLoc2);
   note2 << "associated with " << domainName << " port " << domainPortName2;
   noteLocation(diag, op);
+  noteDebugHTML(diag, op.getOperation(), "duplicate-domain-association",
+                "duplicate domain association on port");
 }
 
 /// Emit an error when we fail to infer the concrete domain to drive to a
@@ -976,6 +1706,8 @@ void ModuleState::emitDomainPortInferenceError(T op, size_t i) {
     }
   }
   noteLocation(diag, op);
+  noteDebugHTML(diag, op.getOperation(), "domain-port-inference-failed",
+                "unable to infer value for undriven domain port");
 }
 
 template <typename T>
@@ -995,6 +1727,8 @@ void ModuleState::emitAmbiguousPortDomainAssociation(
     diag.attachNote(loc) << "candidate association " << name;
   }
   noteLocation(diag, op);
+  noteDebugHTML(diag, op.getOperation(), "ambiguous-domain-association",
+                "ambiguous port domain association");
 }
 
 template <typename T>
@@ -1007,6 +1741,8 @@ void ModuleState::emitMissingPortDomainAssociationError(T op,
               << "missing " << domainName << " association for port "
               << portName;
   noteLocation(diag, op);
+  noteDebugHTML(diag, op.getOperation(), "missing-domain-association",
+                "missing port domain association");
 }
 
 LogicalResult ModuleState::unifyAssociations(Operation *op, Value lhs,
@@ -1020,6 +1756,14 @@ LogicalResult ModuleState::unifyAssociations(Operation *op, Value lhs,
   if (!isHardware(lhs) || !isHardware(rhs))
     return success();
 
+  recordOperationNode(op);
+  recordValueNode(lhs);
+  recordValueNode(rhs);
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(lhs),
+             "operand", "operation participates in domain unification");
+  recordEdge("op:" + renderToString(op), "value:" + renderLongToString(rhs),
+             "operand", "operation participates in domain unification");
+
   LLVM_DEBUG({
     llvm::dbgs().indent(6) << "unify domains(" << render(lhs) << ") = domains("
                            << render(rhs) << ")\n";
@@ -1031,6 +1775,9 @@ LogicalResult ModuleState::unifyAssociations(Operation *op, Value lhs,
   if (lhsTerm) {
     if (rhsTerm) {
       if (failed(unify(lhsTerm, rhsTerm))) {
+        recordEdge("value:" + renderLongToString(lhs),
+                   "value:" + renderLongToString(rhs), "conflict",
+                   "operation requires both values to share domains", true);
         emitDomainCrossingError(op, lhs, lhsTerm, rhs, rhsTerm);
         return failure();
       }
@@ -1239,6 +1986,8 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
       << "defines a domain value that was inferred to be a different domain '";
   render(dstTerm, diag);
   diag << "'";
+  noteDebugHTML(diag, op.getOperation(), "domain-define-conflict",
+                "domain.define conflicts with inferred domain");
 
   return failure();
 }
@@ -1285,6 +2034,7 @@ LogicalResult ModuleState::processOp(RWProbeOp op) {
 
 LogicalResult ModuleState::processOp(Operation *op) {
   LLVM_DEBUG(llvm::dbgs().indent(4) << "process " << render(op) << "\n");
+  recordOperationNode(op);
   if (auto instance = dyn_cast<FInstanceLike>(op))
     return processOp(instance);
   if (auto wireOp = dyn_cast<WireOp>(op))
@@ -1563,6 +2313,8 @@ LogicalResult ModuleState::updateModuleDomainInfo(
                                        << " association for port " << portName;
         diag.attachNote(domain.getLoc()) << "associated domain: " << domain;
         noteLocation(diag, moduleOp);
+        noteDebugHTML(diag, moduleOp, "private-domain-association",
+                      "private domain association for module port");
         return failure();
       }
 
@@ -1842,6 +2594,8 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
     auto diag = emitError(moduleOp.getPortLocation(i))
                 << "undriven domain port " << name;
     noteLocation(diag, moduleOp);
+    noteDebugHTML(diag, moduleOp, "undriven-domain-port",
+                  "undriven module output domain port");
     return failure();
   }
 
@@ -1861,6 +2615,8 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
     auto diag = emitError(op.getPortLocation(i))
                 << "undriven domain port " << name;
     noteLocation(diag, op);
+    noteDebugHTML(diag, op.getOperation(), "undriven-domain-port",
+                  "undriven instance input domain port");
     return failure();
   }
 
@@ -2059,7 +2815,8 @@ struct InferDomainsPass
         getAnalysis<InnerSymbolTableCollection>();
     circt::hw::InnerRefNamespace innerRefNamespace{symbolTable,
                                                    innerSymbolTableCollection};
-    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode);
+    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode,
+                       debugDomainsHTML);
     if (failed(state.run()))
       signalPassFailure();
   }

@@ -930,7 +930,10 @@ def InferDomains : Pass<"firrtl-infer-domains", "firrtl::CircuitOp"> {
                    clEnumValN(InferDomainsMode::InferAll, "infer-all",
                      "Check domains with inference for both public and private "
                      "modules"))
-      }]>];
+      }]>,
+      Option<"debugDomainsHTML", "debug-domains-html", "std::string", "",
+             "Write a self-contained HTML domain inference debugger to this "
+             "file or directory when inference fails">];
 }
 
 def LowerDomains : Pass<"firrtl-lower-domains", "firrtl::CircuitOp"> {
