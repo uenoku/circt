@@ -485,7 +485,8 @@ svg { min-width: 900px; min-height: 680px; }
 .edge.association { stroke: #2563eb; }
 .edge.unify { stroke: #6b7280; stroke-dasharray: 5 4; }
 .edge.hierarchy { stroke: #9a5b13; }
-.edge.class-member { stroke: #2563eb; stroke-dasharray: 2 3; }
+.edge.cluster-member { stroke: #2563eb; stroke-dasharray: 2 3; }
+.edge.cluster-conflict { stroke: #d92d20; stroke-width: 3px; }
 .label { font-size: 12px; pointer-events: none; fill: #17202a; }
 .edgeLabel { font-size: 11px; fill: #4b5563; }
 .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #e5e7eb; margin: 0 4px 4px 0; }
@@ -555,7 +556,7 @@ function computeClasses() {
     if (!visible.length) continue;
     const classNode = {
       id: `class:${classes.length}`,
-      label: `class ${classes.length + 1}`,
+      label: `cluster ${classes.length + 1}`,
       kind: 'class',
       detail: visible.map(n => `${n.kind}: ${n.label}`).join('\n'),
       loc: '',
@@ -567,28 +568,97 @@ function computeClasses() {
   return {classes, classByNode};
 }
 
+function computeConflictView() {
+  const {classes, classByNode} = computeClasses();
+  const memberKinds = new Set(['port', 'instance-port', 'register', 'wire', 'value', 'domain']);
+  const kindRank = new Map(['port', 'instance-port', 'register', 'wire', 'value', 'domain'].map((k, i) => [k, i]));
+  const membersByClass = new Map(classes.map(c => [c.id, []]));
+  for (const node of data.nodes) {
+    const cls = classByNode.get(node.id);
+    if (!cls || !memberKinds.has(node.kind)) continue;
+    membersByClass.get(cls.id).push(node);
+  }
+  for (const members of membersByClass.values()) {
+    members.sort((a, b) => (kindRank.get(a.kind) - kindRank.get(b.kind)) || a.label.localeCompare(b.label));
+  }
+
+  const operation = data.nodes.find(n => n.kind === 'operation');
+  const conflictClassIDs = new Set();
+  const clusterConflictEdges = [];
+  for (const edge of data.edges.filter(e => e.conflict)) {
+    const fromClass = classByNode.get(edge.from);
+    const toClass = classByNode.get(edge.to);
+    if (!fromClass || !toClass) continue;
+    conflictClassIDs.add(fromClass.id);
+    conflictClassIDs.add(toClass.id);
+    const reason = [edge.reason || 'conflicting domain association'];
+    if (operation)
+      reason.push(`operation: ${operation.label}${operation.loc ? '\n' + operation.loc : ''}`);
+    clusterConflictEdges.push({
+      from: fromClass.id,
+      to: toClass.id,
+      kind: 'cluster-conflict',
+      reason: reason.join('\n'),
+      conflict: true,
+      detail: `${edge.from}\n-> ${edge.to}`
+    });
+  }
+
+  if (!conflictClassIDs.size)
+    for (const cls of classes) conflictClassIDs.add(cls.id);
+
+  const classNodes = classes.filter(c => conflictClassIDs.has(c.id));
+  const visibleNodes = [];
+  const clusterMemberEdges = [];
+  for (const cls of classNodes) {
+    visibleNodes.push(cls);
+    for (const member of membersByClass.get(cls.id) || []) {
+      visibleNodes.push(member);
+      clusterMemberEdges.push({
+        from: member.id,
+        to: cls.id,
+        kind: 'cluster-member',
+        reason: 'member of conflicting domain cluster',
+        conflict: false
+      });
+    }
+  }
+
+  return {
+    classes,
+    classByNode,
+    classNodes,
+    membersByClass,
+    nodes: visibleNodes,
+    edges: clusterMemberEdges.concat(clusterConflictEdges),
+    conflictEdges: clusterConflictEdges
+  };
+}
+
 function renderSummary() {
-  const conflicts = data.edges.filter(e => e.conflict);
-  const kinds = [...new Set(data.nodes.map(n => n.kind))].sort();
+  const view = computeConflictView();
   const paths = data.instancePaths || [];
-  const hierarchy = data.hierarchy || [];
-  const {classes} = computeClasses();
   document.getElementById('summary').innerHTML = `
     <h2>Failure</h2>
     <p class="conflictText">${esc(data.failureSummary)}</p>
-    <h2>Instance Context</h2>
+    <h2>Context</h2>
     <p><span class="pill">module: ${esc(data.focusModule || data.module)}</span></p>
     ${paths.length ? `<h3>Absolute Paths</h3>${paths.map(p => `<pre>${esc(p)}</pre>`).join('')}` : '<p>No instance path recorded.</p>'}
-    <h3>Hierarchy</h3>
-    ${hierarchy.length ? hierarchy.map(e => `<pre>${esc(e.parentModule)} / ${esc(e.instanceName)} -> ${esc(e.targetModule)}</pre>`).join('') : '<p>No child instances recorded.</p>'}
-    <h2>Equivalence Classes</h2>
-    ${classes.map(c => `<p><span class="pill" style="border-left: 10px solid ${c.color}">${esc(c.label)}</span></p><pre>${esc(c.detail)}</pre>`).join('')}
-    <h2>Conflict Edges</h2>
-    ${conflicts.map(e => `<button data-edge="${esc(e.from)}|||${esc(e.to)}">${esc(e.reason || e.kind)}</button>`).join(' ')}
-    <h2>Nodes</h2>
-    <p>${kinds.map(k => `<span class="pill">${esc(k)}: ${data.nodes.filter(n => n.kind === k).length}</span>`).join('')}</p>
-    <h2>Edges</h2>
-    <p>${data.edges.length} recorded constraint edges</p>`;
+    <h2>Conflicting Clusters</h2>
+    ${view.classNodes.map(c => {
+      const members = view.membersByClass.get(c.id) || [];
+      const counts = [...new Set(members.map(m => m.kind))]
+        .map(k => `<span class="pill">${esc(k)}: ${members.filter(m => m.kind === k).length}</span>`)
+        .join('');
+      return `<p><span class="pill" style="border-left: 10px solid ${c.color}">${esc(c.label)}</span></p>${counts}<pre>${esc(members.map(n => `${n.kind}: ${n.label}`).join('\n'))}</pre>`;
+    }).join('')}
+    <h2>Conflicts</h2>
+    ${view.conflictEdges.map((e, i) => `<button data-conflict-index="${i}">${esc(e.reason.split('\n')[0])}</button>`).join(' ') || '<p>No conflict edge recorded.</p>'}
+    <h2>Trace Size</h2>
+    <p><span class="pill">clusters: ${view.classNodes.length}</span><span class="pill">shown nodes: ${view.nodes.length}</span><span class="pill">recorded edges: ${data.edges.length}</span></p>`;
+  document.querySelectorAll('[data-conflict-index]').forEach(button => {
+    button.addEventListener('click', () => showDetails(view.conflictEdges[Number(button.dataset.conflictIndex)]));
+  });
 }
 
 function showDetails(item) {
@@ -613,27 +683,25 @@ function showDetails(item) {
 function renderGraph() {
   const svg = document.getElementById('graph');
   svg.innerHTML = `<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L7,3 z" fill="#7b8794"></path></marker></defs>`;
-  const {classes, classByNode} = computeClasses();
-  const visibleNodes = data.nodes.filter(n => n.kind !== 'term').concat(classes);
-  const visibleIDs = new Set(visibleNodes.map(n => n.id));
-  const derivedEdges = [];
-  for (const [id, cls] of classByNode)
-    derivedEdges.push({from: id, to: cls.id, kind: 'class-member', reason: 'member of inferred domain equivalence class', conflict: false});
-  const visibleEdges = data.edges.filter(e => visibleIDs.has(e.from) && visibleIDs.has(e.to) && !['association', 'domain-term', 'resolve', 'unify', 'row-slot'].includes(e.kind)).concat(derivedEdges);
-  const cols = ['module', 'instance', 'port', 'instance-port', 'register', 'wire', 'value', 'domain', 'class', 'operation'];
+  const view = computeConflictView();
+  const visibleNodes = view.nodes;
+  const visibleEdges = view.edges;
+  const classByNode = view.classByNode;
+  const nodeByViewID = new Map(visibleNodes.map(n => [n.id, n]));
   const positions = new Map();
-  const buckets = new Map(cols.map(c => [c, []]));
-  for (const node of visibleNodes) (buckets.get(node.kind) || buckets.get('value')).push(node);
-  let maxY = 0;
-  for (const [ci, kind] of cols.entries()) {
-    const list = buckets.get(kind) || [];
-    list.forEach((node, ri) => {
-      const x = 120 + ci * 280;
-      const y = 70 + ri * 86;
+  let maxY = 0, maxX = 0;
+  view.classNodes.forEach((cls, ci) => {
+    const x = 180 + ci * 360;
+    positions.set(cls.id, {x, y: 90});
+    maxX = Math.max(maxX, x + 220);
+    const members = view.membersByClass.get(cls.id) || [];
+    members.forEach((node, ri) => {
+      const y = 210 + ri * 78;
       positions.set(node.id, {x, y});
-      maxY = Math.max(maxY, y + 80);
+      maxY = Math.max(maxY, y + 70);
     });
-  }
+  });
+  svg.setAttribute('width', Math.max(1200, maxX));
   svg.setAttribute('height', Math.max(800, maxY));
 
   const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
@@ -641,9 +709,23 @@ function renderGraph() {
   for (const edge of visibleEdges) {
     const a = positions.get(edge.from), b = positions.get(edge.to);
     if (!a || !b) continue;
+    const fromNode = nodeByViewID.get(edge.from);
+    const toNode = nodeByViewID.get(edge.to);
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const mx = (a.x + b.x) / 2;
-    path.setAttribute('d', `M${a.x + 70},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.x - 70},${b.y}`);
+    const horizontal = Math.abs(a.x - b.x) > Math.abs(a.y - b.y);
+    let sx = a.x, sy = a.y, ex = b.x, ey = b.y;
+    if (horizontal) {
+      const dir = b.x >= a.x ? 1 : -1;
+      sx += dir * (fromNode && fromNode.kind === 'class' ? 48 : 78);
+      ex -= dir * (toNode && toNode.kind === 'class' ? 48 : 78);
+    } else {
+      const dir = b.y >= a.y ? 1 : -1;
+      sy += dir * (fromNode && fromNode.kind === 'class' ? 48 : 28);
+      ey -= dir * (toNode && toNode.kind === 'class' ? 48 : 28);
+    }
+    const mx = (sx + ex) / 2;
+    const my = (sy + ey) / 2;
+    path.setAttribute('d', horizontal ? `M${sx},${sy} C${mx},${sy} ${mx},${ey} ${ex},${ey}` : `M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}`);
     path.setAttribute('class', `edge ${esc(edge.kind)}${edge.conflict ? ' conflict' : ''}`);
     path.addEventListener('click', () => showDetails(edge));
     edgeLayer.appendChild(path);
@@ -651,7 +733,7 @@ function renderGraph() {
     text.setAttribute('class', 'edgeLabel');
     text.setAttribute('text-anchor', 'middle');
     text.setAttribute('x', String(mx));
-    text.setAttribute('y', String((a.y + b.y) / 2 - 6));
+    text.setAttribute('y', String(my - 6));
     text.textContent = edge.conflict ? 'conflict' : edge.kind;
     text.addEventListener('click', () => showDetails(edge));
     edgeLayer.appendChild(text);

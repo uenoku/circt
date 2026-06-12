@@ -16,9 +16,11 @@
 // HTML: "label": "IllegalDomainCrossing.a"
 // HTML: "kind": "port"
 // HTML: "conflict": true
-// HTML: Equivalence Classes
 // HTML: computeClasses
-// HTML: class-member
+// HTML: computeConflictView
+// HTML: Conflicting Clusters
+// HTML: cluster-member
+// HTML: cluster-conflict
 // HTML: edgeLabel
 
 firrtl.circuit "Top" {
