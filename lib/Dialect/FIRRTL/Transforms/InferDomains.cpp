@@ -568,12 +568,16 @@ svg { min-width: 900px; min-height: 680px; }
 .lifetimeModule { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
 .lifetimeModule h3 { margin: 0 0 6px; font-size: 13px; }
 .lifetimeModule h4 { margin: 8px 0 4px; font-size: 12px; color: #374151; text-transform: uppercase; }
+.lifetimeModule h5 { margin: 7px 0 2px; font-size: 12px; color: #111827; }
 .lifetimeLegend { margin: 0 0 8px; color: #374151; }
 .lifetimeRow { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 6px; padding: 3px 0; align-items: baseline; }
 .lifetimeDir { color: #6b7280; }
 .lifetimeType { color: #6b7280; }
 .lifetimeAlias { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 650; color: #111827; }
 .lifetimeInferred { color: #047857; }
+.instanceBlock { margin: 4px 0 8px; padding-left: 8px; border-left: 2px solid #d1fae5; }
+.domainMismatch { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid #eef1f4; }
+.domainMismatch:last-child { border-bottom: 0; }
 .conflictText { color: #b42318; font-weight: 650; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 8px; border-radius: 6px; }
 button { border: 1px solid #c7ced6; background: white; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
@@ -719,9 +723,16 @@ function computeConflictView() {
   };
 }
 
+function annotationsForDisplay() {
+  const latest = new Map();
+  for (const annotation of data.annotations || [])
+    latest.set(`${annotation.module}\0${annotation.kind}\0${annotation.portName}`, annotation);
+  return [...latest.values()];
+}
+
 function renderLifetimeAnnotations() {
   const aliases = data.aliases || [];
-  const annotations = data.annotations || [];
+  const annotations = annotationsForDisplay();
   if (!annotations.length)
     return '<p>No module interface annotations recorded.</p>';
 
@@ -760,17 +771,128 @@ function renderLifetimeAnnotations() {
       ['register', 'Registers'],
       ['wire', 'Wires']
     ]);
+    const renderAnnotation = (annotation, name = annotation.portName) => {
+      const aliases = annotation.aliases && annotation.aliases.length ? annotation.aliases : ['?'];
+      const lifetimeParams = annotation.kind !== 'domain'
+        ? `&lt;${aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
+        : '';
+      return `<div class="lifetimeRow"><span class="lifetimeDir">${esc(annotation.direction)}</span><div><strong>${esc(name)}</strong>${lifetimeParams} <span class="lifetimeType">${esc(annotation.type)}</span></div></div>`;
+    };
     const rows = [...rowsByKind.entries()].map(([kind, rows]) => {
-      const rendered = rows.map(annotation => {
-        const lifetimeParams = annotation.aliases && annotation.aliases.length
-          ? `&lt;${annotation.aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
-          : '';
-        return `<div class="lifetimeRow"><span class="lifetimeDir">${esc(annotation.direction)}</span><div><strong>${esc(annotation.portName)}</strong>${lifetimeParams} <span class="lifetimeType">${esc(annotation.type)}</span></div></div>`;
-      }).join('');
+      let rendered;
+      if (kind === 'instance-port') {
+        const byInstance = new Map();
+        for (const annotation of rows) {
+          const dot = annotation.portName.indexOf('.');
+          const instance = dot < 0 ? annotation.portName : annotation.portName.slice(0, dot);
+          const port = dot < 0 ? annotation.portName : annotation.portName.slice(dot + 1);
+          if (!byInstance.has(instance)) byInstance.set(instance, []);
+          byInstance.get(instance).push({annotation, port});
+        }
+        rendered = [...byInstance.entries()].map(([instance, ports]) =>
+          `<div class="instanceBlock"><h5>instance ${esc(instance)}</h5>${ports.map(({annotation, port}) => renderAnnotation(annotation, port)).join('')}</div>`
+        ).join('');
+      } else {
+        rendered = rows.map(annotation => renderAnnotation(annotation)).join('');
+      }
       return `<h4>${esc(kindTitle.get(kind) || kind)}</h4>${rendered}`;
     }).join('');
     return `<div class="lifetimeModule"><h3>${esc(module)}</h3><div class="lifetimeLegend">${legend}</div>${rows}</div>`;
   }).join('');
+}
+
+function annotationForLabel(label) {
+  const dot = String(label || '').indexOf('.');
+  if (dot < 0) return null;
+  const module = label.slice(0, dot);
+  const portName = label.slice(dot + 1);
+  return annotationsForDisplay().find(a => a.module === module && a.portName === portName) || null;
+}
+
+function formatAnnotation(annotation, fallback) {
+  if (!annotation) return `<strong>${esc(fallback)}</strong>`;
+  const aliases = annotation.aliases && annotation.aliases.length ? annotation.aliases : ['?'];
+  const lifetimes = annotation.kind !== 'domain'
+    ? `&lt;${aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
+    : '';
+  return `<strong>${esc(annotation.module)}.${esc(annotation.portName)}</strong>${lifetimes} <span class="lifetimeType">${esc(annotation.type)}</span>`;
+}
+
+function associationRowForValue(valueID) {
+  for (const edge of data.edges || []) {
+    if (edge.kind !== 'association' || edge.from !== valueID) continue;
+    const row = byId.get(edge.to);
+    if (row && row.kind === 'term' && String(row.label || '').startsWith('['))
+      return row.label;
+  }
+  return '';
+}
+
+function parseDomainRow(row) {
+  const text = String(row || '');
+  if (!text.startsWith('[') || !text.endsWith(']')) return [];
+  const body = text.slice(1, -1).trim();
+  if (!body) return [];
+  return body.split(',').map(part => {
+    const pieces = part.trim().split(/\s+:\s+/);
+    return {value: pieces[0] || '', kind: pieces[1] || ''};
+  });
+}
+
+function displayDomainValue(value) {
+  const alias = (data.aliases || [])
+    .find(a => a.module === data.focusModule && a.portName === value);
+  return alias ? alias.alias : value;
+}
+
+function renderDomainRow(row) {
+  const entries = parseDomainRow(row);
+  if (!entries.length) return '<span class="lifetimeType">unknown</span>';
+  return entries.map(entry =>
+    `<span class="pill">${esc(entry.kind)}: <span class="lifetimeAlias">${esc(displayDomainValue(entry.value))}</span></span>`
+  ).join('');
+}
+
+function renderMismatches(rowA, rowB) {
+  const a = parseDomainRow(rowA);
+  const b = parseDomainRow(rowB);
+  const lines = [];
+  for (let i = 0; i < Math.max(a.length, b.length); ++i) {
+    const left = a[i] || {};
+    const right = b[i] || {};
+    const kind = left.kind || right.kind || `domain ${i + 1}`;
+    if (left.value === right.value) continue;
+    lines.push(`<div class="domainMismatch"><strong>${esc(kind)}</strong><span><span class="lifetimeAlias">${esc(displayDomainValue(left.value) || '?')}</span> vs <span class="lifetimeAlias">${esc(displayDomainValue(right.value) || '?')}</span></span></div>`);
+  }
+  return lines.length ? lines.join('') : '<p>No per-domain mismatch extracted.</p>';
+}
+
+function renderConflictValue(valueID, title) {
+  const node = byId.get(valueID);
+  const label = node ? node.label : valueID;
+  const annotation = annotationForLabel(label);
+  const row = associationRowForValue(valueID);
+  return `<div>
+    <h3>${esc(title)}</h3>
+    <p>${formatAnnotation(annotation, label)}</p>
+    <div>${renderDomainRow(row)}</div>
+    ${node && node.loc ? `<pre>${esc(node.loc)}</pre>` : ''}
+  </div>`;
+}
+
+function conflictValues(edge) {
+  if (!edge.detail) return [edge.from, edge.to];
+  const values = edge.detail.split('\n-> ');
+  return [values[0] || edge.from, values[1] || edge.to];
+}
+
+function conflictRoleTitles(edge) {
+  const reason = edge.reason || '';
+  if (reason.includes('firrtl.matchingconnect'))
+    return ['Destination', 'Source'];
+  if (reason.includes('firrtl.domain.define'))
+    return ['Defined domain', 'Conflicting source'];
+  return ['Operand A', 'Operand B'];
 }
 
 function renderReadableReport(view) {
@@ -778,12 +900,14 @@ function renderReadableReport(view) {
   const paths = data.instancePaths || [];
   const conflicts = view.conflictEdges.length ? view.conflictEdges : [];
   const conflictHTML = conflicts.length ? conflicts.map(edge => {
-    const fromMembers = (view.membersByClass.get(edge.from) || []).map(n => `${n.kind}: ${n.label}`);
-    const toMembers = (view.membersByClass.get(edge.to) || []).map(n => `${n.kind}: ${n.label}`);
+    const [firstValue, secondValue] = conflictValues(edge);
+    const [firstTitle, secondTitle] = conflictRoleTitles(edge);
+    const rowA = associationRowForValue(firstValue);
+    const rowB = associationRowForValue(secondValue);
     return `<div class="reportGrid">
-      <div><h3>Left inferred domain</h3><pre>${esc(fromMembers.join('\n') || edge.from)}</pre></div>
-      <div><h3>Right inferred domain</h3><pre>${esc(toMembers.join('\n') || edge.to)}</pre></div>
-      <div><h3>Reason</h3><pre>${esc(edge.reason)}</pre></div>
+      ${renderConflictValue(firstValue, firstTitle)}
+      ${renderConflictValue(secondValue, secondTitle)}
+      <div><h3>Mismatching Domains</h3>${renderMismatches(rowA, rowB)}<pre>${esc(edge.reason)}</pre></div>
     </div>`;
   }).join('') : '<p>No conflict edge recorded.</p>';
 
@@ -799,6 +923,7 @@ function renderReadableReport(view) {
     </div>
     <div class="reportBlock">
       <h2>Lifetime Annotations</h2>
+      <p>Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as the value's inferred domain parameters, ordered by domain kind.</p>
       ${renderLifetimeAnnotations()}
     </div>`;
 }
@@ -1130,6 +1255,13 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
                           locToString(value.getLoc()), domains);
     };
 
+    auto domainValuesToDisplay = [&](ValueRange values) {
+      SmallVector<std::string> domains;
+      for (auto value : values)
+        domains.push_back(domainValueToDisplay(value));
+      return domains;
+    };
+
     if (auto fmodule = dyn_cast<FModuleOp>(module.getOperation())) {
       fmodule.getBodyBlock()->walk([&](Operation *op) {
         if (auto instance = dyn_cast<FInstanceLike>(op)) {
@@ -1167,6 +1299,13 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
           SmallVector<std::string> domains;
           addAnnotationForValue(reg.getName(), "state", "register",
                                 reg.getResult(), domains);
+          return;
+        }
+
+        if (auto wire = dyn_cast<WireOp>(op)) {
+          auto domains = domainValuesToDisplay(wire.getDomains());
+          addAnnotationForValue(wire.getName(), "local", "wire",
+                                wire.getResult(), domains);
         }
       });
     }
@@ -1328,6 +1467,7 @@ public:
                      StringRef failureKind, StringRef failureSummary);
   void noteDebugHTML(InFlightDiagnostic &diag, Operation *op,
                      StringRef failureKind, StringRef failureSummary);
+  void populateDebugLocalAnnotations(FModuleOp moduleOp);
   void recordValueNode(Value value);
   void recordDomainNode(DomainValue value);
   void recordTermNode(Term *term);
@@ -1702,6 +1842,117 @@ void ModuleState::recordAssociationAtFailure(Value value, RowTerm *row) {
              "domain association at failing operation");
 }
 
+void ModuleState::populateDebugLocalAnnotations(FModuleOp moduleOp) {
+  if (!debugTrace.isEnabled())
+    return;
+
+  auto typeToString = [](Type type) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    type.print(os);
+    return storage;
+  };
+
+  auto directionToString = [](Direction direction) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    os << direction::toLongString(direction);
+    return storage;
+  };
+
+  DenseMap<Term *, std::string> aliasByTerm;
+  unsigned nextAlias = 1;
+
+  for (size_t i = 0, e = moduleOp.getNumPorts(); i < e; ++i) {
+    auto domainPort = dyn_cast<DomainValue>(moduleOp.getArgument(i));
+    if (!domainPort)
+      continue;
+    auto *term = getOptTermForDomain(domainPort);
+    if (!term)
+      continue;
+    aliasByTerm[find(term)] = ("'d" + Twine(nextAlias++)).str();
+  }
+
+  auto getAliasForTerm = [&](Term *term, size_t domainIndex) {
+    if (!term)
+      return std::string("?");
+    term = find(term);
+    auto it = aliasByTerm.find(term);
+    if (it != aliasByTerm.end())
+      return it->second;
+
+    auto alias = ("'d" + Twine(nextAlias++)).str();
+    aliasByTerm[term] = alias;
+
+    auto domainName =
+        getDomain(DomainTypeID{domainIndex}).getNameAttr().getValue();
+    debugTrace.addAlias(moduleOp.getModuleName(), alias, renderToString(term),
+                        "inferred", domainName, "", true);
+    return alias;
+  };
+
+  auto getAliasesForValue = [&](Value value) {
+    SmallVector<std::string> aliases;
+    auto *term = getOptDomainAssociation(value);
+    auto *row = term ? dyn_cast<RowTerm>(term) : nullptr;
+    if (!row)
+      return aliases;
+    for (auto [domainIndex, element] : llvm::enumerate(row->elements))
+      aliases.push_back(getAliasForTerm(element, domainIndex));
+    return aliases;
+  };
+
+  auto addAnnotationForValue = [&](StringRef name, StringRef direction,
+                                   StringRef kind, Value value) {
+    if (!isHardware(value))
+      return;
+    debugTrace.addAnnotation(moduleOp.getModuleName(), name, direction, kind,
+                             typeToString(value.getType()),
+                             renderLocToString(value.getLoc()),
+                             getAliasesForValue(value));
+  };
+
+  for (size_t i = 0, e = moduleOp.getNumPorts(); i < e; ++i) {
+    auto value = moduleOp.getArgument(i);
+    if (isa<DomainType>(value.getType()))
+      continue;
+    addAnnotationForValue(moduleOp.getPortName(i),
+                          directionToString(moduleOp.getPortDirection(i)),
+                          "hardware", value);
+  }
+
+  moduleOp.getBodyBlock()->walk([&](Operation *op) {
+    if (auto instance = dyn_cast<FInstanceLike>(op)) {
+      for (size_t i = 0, e = instance.getNumPorts(); i < e; ++i) {
+        auto value = instance->getResult(i);
+        if (isa<DomainType>(value.getType()))
+          continue;
+        auto name =
+            (instance.getInstanceName() + "." + instance.getPortName(i)).str();
+        addAnnotationForValue(name,
+                              directionToString(instance.getPortDirection(i)),
+                              "instance-port", value);
+      }
+      return;
+    }
+
+    if (auto reg = dyn_cast<RegOp>(op)) {
+      addAnnotationForValue(reg.getName(), "state", "register",
+                            reg.getResult());
+      return;
+    }
+
+    if (auto reg = dyn_cast<RegResetOp>(op)) {
+      addAnnotationForValue(reg.getName(), "state", "register",
+                            reg.getResult());
+      return;
+    }
+
+    if (auto wire = dyn_cast<WireOp>(op))
+      addAnnotationForValue(wire.getName(), "local", "wire", wire.getResult());
+  });
+}
+
 void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
                                 StringRef failureKind,
                                 StringRef failureSummary) {
@@ -1709,6 +1960,7 @@ void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
     return;
 
   globals.populateDebugAnnotations(debugTrace);
+  populateDebugLocalAnnotations(moduleOp);
   globals.populateDebugHierarchy(debugTrace, moduleOp);
   auto path = debugTrace.emitHTML(moduleOp, failureKind, failureSummary);
   if (succeeded(path))
