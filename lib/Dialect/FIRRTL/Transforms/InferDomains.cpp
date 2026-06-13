@@ -177,6 +177,7 @@ struct CircuitState {
 
   InnerRefNamespace &getInnerRefNamespace() { return innerRefNamespace; }
   StringRef getDebugDomainsHTML() const { return debugDomainsHTML; }
+  void populateDebugAnnotations(DomainDebugTrace &trace);
   void populateDebugHierarchy(DomainDebugTrace &trace, FModuleOp focus);
 
   DenseSet<Value> inserted;
@@ -288,6 +289,26 @@ struct DomainDebugHierarchyEdge {
   std::string loc;
 };
 
+struct DomainDebugAlias {
+  std::string module;
+  std::string alias;
+  std::string portName;
+  std::string direction;
+  std::string domainKind;
+  std::string loc;
+  bool inferred = false;
+};
+
+struct DomainDebugAnnotation {
+  std::string module;
+  std::string portName;
+  std::string direction;
+  std::string kind;
+  std::string type;
+  std::string loc;
+  SmallVector<std::string> aliases;
+};
+
 /// A lightweight recorder for domain inference constraints.  It intentionally
 /// stores rendered strings, not IR objects, so it remains valid after the pass
 /// mutates module interfaces.
@@ -349,6 +370,25 @@ public:
     instancePaths.push_back(path.str());
   }
 
+  void addAlias(StringRef module, StringRef alias, StringRef portName,
+                StringRef direction, StringRef domainKind, StringRef loc,
+                bool inferred) {
+    if (!enabled || aliases.size() >= maxAliases)
+      return;
+    aliases.push_back({module.str(), alias.str(), portName.str(),
+                       direction.str(), domainKind.str(), loc.str(), inferred});
+  }
+
+  void addAnnotation(StringRef module, StringRef portName, StringRef direction,
+                     StringRef kind, StringRef type, StringRef loc,
+                     ArrayRef<std::string> domainAliases) {
+    if (!enabled || annotations.size() >= maxAnnotations)
+      return;
+    annotations.push_back({module.str(), portName.str(), direction.str(),
+                           kind.str(), type.str(), loc.str(),
+                           SmallVector<std::string>(domainAliases)});
+  }
+
   FailureOr<std::string> emitHTML(FModuleOp moduleOp, StringRef failureKind,
                                   StringRef failureSummary) {
     if (!enabled || emitted)
@@ -383,6 +423,35 @@ public:
             json.attribute("instanceName", edge.instanceName);
             json.attribute("targetModule", edge.targetModule);
             json.attribute("loc", edge.loc);
+          });
+        }
+      });
+      json.attributeArray("aliases", [&] {
+        for (auto &alias : aliases) {
+          json.object([&] {
+            json.attribute("module", alias.module);
+            json.attribute("alias", alias.alias);
+            json.attribute("portName", alias.portName);
+            json.attribute("direction", alias.direction);
+            json.attribute("domainKind", alias.domainKind);
+            json.attribute("loc", alias.loc);
+            json.attribute("inferred", alias.inferred);
+          });
+        }
+      });
+      json.attributeArray("annotations", [&] {
+        for (auto &annotation : annotations) {
+          json.object([&] {
+            json.attribute("module", annotation.module);
+            json.attribute("portName", annotation.portName);
+            json.attribute("direction", annotation.direction);
+            json.attribute("kind", annotation.kind);
+            json.attribute("type", annotation.type);
+            json.attribute("loc", annotation.loc);
+            json.attributeArray("aliases", [&] {
+              for (auto &alias : annotation.aliases)
+                json.value(alias);
+            });
           });
         }
       });
@@ -461,11 +530,17 @@ body { margin: 0; font: 13px/1.4 system-ui, sans-serif; color: #17202a; backgrou
 header { padding: 12px 16px; background: #1f2937; color: white; }
 header h1 { margin: 0; font-size: 16px; font-weight: 650; }
 header div { margin-top: 4px; color: #d1d5db; }
-main { display: grid; grid-template-columns: 280px 1fr 360px; height: calc(100vh - 58px); }
+main { display: grid; grid-template-columns: 320px 1fr 360px; height: calc(100vh - 58px); }
 aside, section { min-width: 0; overflow: auto; }
 #summary { border-right: 1px solid #d7dce2; background: white; padding: 12px; }
 #details { border-left: 1px solid #d7dce2; background: white; padding: 12px; }
 #graphWrap { position: relative; overflow: auto; background: #fbfcfd; }
+#report { max-width: 980px; padding: 16px 20px 8px; }
+#report h2 { margin: 0 0 8px; font-size: 16px; }
+#report h3 { margin: 14px 0 6px; font-size: 13px; }
+.reportBlock { border: 1px solid #d7dce2; background: white; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+.reportGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.graphTitle { margin: 8px 20px; color: #4b5563; font-size: 13px; font-weight: 650; }
 svg { min-width: 900px; min-height: 680px; }
 .node rect, .node circle { stroke: #465668; stroke-width: 1.2px; fill: white; }
 .node.domain circle { fill: #fff7d6; }
@@ -490,6 +565,15 @@ svg { min-width: 900px; min-height: 680px; }
 .label { font-size: 12px; pointer-events: none; fill: #17202a; }
 .edgeLabel { font-size: 11px; fill: #4b5563; }
 .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #e5e7eb; margin: 0 4px 4px 0; }
+.lifetimeModule { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
+.lifetimeModule h3 { margin: 0 0 6px; font-size: 13px; }
+.lifetimeModule h4 { margin: 8px 0 4px; font-size: 12px; color: #374151; text-transform: uppercase; }
+.lifetimeLegend { margin: 0 0 8px; color: #374151; }
+.lifetimeRow { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 6px; padding: 3px 0; align-items: baseline; }
+.lifetimeDir { color: #6b7280; }
+.lifetimeType { color: #6b7280; }
+.lifetimeAlias { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 650; color: #111827; }
+.lifetimeInferred { color: #047857; }
 .conflictText { color: #b42318; font-weight: 650; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 8px; border-radius: 6px; }
 button { border: 1px solid #c7ced6; background: white; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
@@ -500,7 +584,7 @@ button:hover { background: #f3f4f6; }
 <header><h1 id="title">FIRRTL Domain Inference Debugger</h1><div id="subtitle"></div></header>
 <main>
 <aside id="summary"></aside>
-<section id="graphWrap"><svg id="graph" width="1200" height="800"></svg></section>
+<section id="graphWrap"><div id="report"></div><h2 class="graphTitle">Constraint Graph</h2><svg id="graph" width="1200" height="800"></svg></section>
 <aside id="details"></aside>
 </main>
 <script id="domain-debug-data" type="application/json">
@@ -633,6 +717,90 @@ function computeConflictView() {
     edges: clusterMemberEdges.concat(clusterConflictEdges),
     conflictEdges: clusterConflictEdges
   };
+}
+
+function renderLifetimeAnnotations() {
+  const aliases = data.aliases || [];
+  const annotations = data.annotations || [];
+  if (!annotations.length)
+    return '<p>No module interface annotations recorded.</p>';
+
+  const aliasesByModule = new Map();
+  for (const alias of aliases) {
+    if (!aliasesByModule.has(alias.module)) aliasesByModule.set(alias.module, []);
+    aliasesByModule.get(alias.module).push(alias);
+  }
+
+  const annotationsByModule = new Map();
+  for (const annotation of annotations) {
+    if (!annotationsByModule.has(annotation.module)) annotationsByModule.set(annotation.module, []);
+    annotationsByModule.get(annotation.module).push(annotation);
+  }
+
+  const modules = [...new Set([...annotationsByModule.keys(), ...aliasesByModule.keys()])]
+    .sort((a, b) => (a === data.focusModule ? -1 : b === data.focusModule ? 1 : a.localeCompare(b)));
+
+  return modules.map(module => {
+    const moduleAliases = (aliasesByModule.get(module) || [])
+      .sort((a, b) => a.alias.localeCompare(b.alias));
+    const moduleAnnotations = (annotationsByModule.get(module) || [])
+      .sort((a, b) => a.kind.localeCompare(b.kind) || a.portName.localeCompare(b.portName));
+    const legend = moduleAliases.length ? moduleAliases.map(alias =>
+      `<span class="pill"><span class="lifetimeAlias">${esc(alias.alias)}</span> = ${esc(alias.direction)} ${esc(alias.portName)} : ${esc(alias.domainKind)}${alias.inferred ? ' <span class="lifetimeInferred">inferred</span>' : ''}</span>`
+    ).join('') : '<span class="pill">no domain parameters</span>';
+    const rowsByKind = new Map();
+    for (const annotation of moduleAnnotations) {
+      if (!rowsByKind.has(annotation.kind)) rowsByKind.set(annotation.kind, []);
+      rowsByKind.get(annotation.kind).push(annotation);
+    }
+    const kindTitle = new Map([
+      ['domain', 'Domain Parameters'],
+      ['hardware', 'Module Ports'],
+      ['instance-port', 'Instances'],
+      ['register', 'Registers'],
+      ['wire', 'Wires']
+    ]);
+    const rows = [...rowsByKind.entries()].map(([kind, rows]) => {
+      const rendered = rows.map(annotation => {
+        const lifetimeParams = annotation.aliases && annotation.aliases.length
+          ? `&lt;${annotation.aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
+          : '';
+        return `<div class="lifetimeRow"><span class="lifetimeDir">${esc(annotation.direction)}</span><div><strong>${esc(annotation.portName)}</strong>${lifetimeParams} <span class="lifetimeType">${esc(annotation.type)}</span></div></div>`;
+      }).join('');
+      return `<h4>${esc(kindTitle.get(kind) || kind)}</h4>${rendered}`;
+    }).join('');
+    return `<div class="lifetimeModule"><h3>${esc(module)}</h3><div class="lifetimeLegend">${legend}</div>${rows}</div>`;
+  }).join('');
+}
+
+function renderReadableReport(view) {
+  const report = document.getElementById('report');
+  const paths = data.instancePaths || [];
+  const conflicts = view.conflictEdges.length ? view.conflictEdges : [];
+  const conflictHTML = conflicts.length ? conflicts.map(edge => {
+    const fromMembers = (view.membersByClass.get(edge.from) || []).map(n => `${n.kind}: ${n.label}`);
+    const toMembers = (view.membersByClass.get(edge.to) || []).map(n => `${n.kind}: ${n.label}`);
+    return `<div class="reportGrid">
+      <div><h3>Left inferred domain</h3><pre>${esc(fromMembers.join('\n') || edge.from)}</pre></div>
+      <div><h3>Right inferred domain</h3><pre>${esc(toMembers.join('\n') || edge.to)}</pre></div>
+      <div><h3>Reason</h3><pre>${esc(edge.reason)}</pre></div>
+    </div>`;
+  }).join('') : '<p>No conflict edge recorded.</p>';
+
+  report.innerHTML = `
+    <div class="reportBlock">
+      <h2>Why This Failed</h2>
+      <p class="conflictText">${esc(data.failureSummary)}</p>
+      ${conflictHTML}
+    </div>
+    <div class="reportBlock">
+      <h2>Instance Context</h2>
+      ${paths.length ? paths.map(p => `<pre>${esc(p)}</pre>`).join('') : '<p>No instance path recorded.</p>'}
+    </div>
+    <div class="reportBlock">
+      <h2>Lifetime Annotations</h2>
+      ${renderLifetimeAnnotations()}
+    </div>`;
 }
 
 function renderSummary() {
@@ -776,6 +944,7 @@ function renderGraph() {
 }
 
 renderSummary();
+renderReadableReport(computeConflictView());
 renderGraph();
 showDetails(null);
 </script>
@@ -792,18 +961,224 @@ showDetails(null);
   SmallVector<DomainDebugNode> nodes;
   SmallVector<DomainDebugEdge> edges;
   SmallVector<DomainDebugHierarchyEdge> hierarchyEdges;
+  SmallVector<DomainDebugAlias> aliases;
+  SmallVector<DomainDebugAnnotation> annotations;
   SmallVector<std::string> instancePaths;
   static constexpr size_t maxEdges = 4000;
   static constexpr size_t maxHierarchyEdges = 512;
   static constexpr size_t maxInstancePaths = 64;
+  static constexpr size_t maxAliases = 512;
+  static constexpr size_t maxAnnotations = 2048;
 };
 } // namespace
+
+void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
+  if (!trace.isEnabled())
+    return;
+
+  auto locToString = [](Location loc) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    loc.print(os);
+    return storage;
+  };
+
+  auto typeToString = [](Type type) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    type.print(os);
+    return storage;
+  };
+
+  auto directionToString = [](Direction direction) {
+    std::string storage;
+    llvm::raw_string_ostream os(storage);
+    os << direction::toLongString(direction);
+    return storage;
+  };
+
+  for (auto &op : *circuit.getBodyBlock()) {
+    auto module = dyn_cast<FModuleLike>(&op);
+    if (!module)
+      continue;
+
+    auto moduleName = module.getModuleName();
+    DenseMap<unsigned, std::string> aliasByPort;
+    unsigned nextAlias = 1;
+
+    for (size_t i = 0, e = module.getNumPorts(); i < e; ++i) {
+      auto domainType = dyn_cast<DomainType>(module.getPortType(i));
+      if (!domainType)
+        continue;
+
+      auto alias = ("'d" + Twine(nextAlias++)).str();
+      aliasByPort[i] = alias;
+
+      bool inferred = false;
+      if (auto fmodule = dyn_cast<FModuleOp>(module.getOperation()))
+        inferred = inserted.contains(fmodule.getArgument(i));
+
+      trace.addAlias(moduleName, alias, module.getPortName(i),
+                     directionToString(module.getPortDirection(i)),
+                     domainType.getName().getAttr().getValue(),
+                     locToString(module.getPortLocation(i)), inferred);
+    }
+
+    auto domainValueToLabel = [&](Value value) -> std::string {
+      if (auto arg = dyn_cast<BlockArgument>(value)) {
+        if (arg.getOwner()->getParentOp() == module.getOperation()) {
+          auto it = aliasByPort.find(arg.getArgNumber());
+          if (it != aliasByPort.end())
+            return it->second;
+        }
+      }
+
+      if (auto result = dyn_cast<OpResult>(value)) {
+        if (auto instance = dyn_cast<FInstanceLike>(result.getOwner()))
+          return (instance.getInstanceName() + "." +
+                  instance.getPortName(result.getResultNumber()))
+              .str();
+        if (auto wire = dyn_cast<WireOp>(result.getOwner()))
+          return wire.getName().str();
+        if (auto reg = dyn_cast<RegOp>(result.getOwner()))
+          return reg.getName().str();
+        if (auto reg = dyn_cast<RegResetOp>(result.getOwner()))
+          return reg.getName().str();
+      }
+
+      std::string storage;
+      llvm::raw_string_ostream os(storage);
+      value.printAsOperand(os, getAsmState());
+      return storage;
+    };
+
+    SmallVector<std::pair<std::string, std::string>> domainEquivalences;
+    if (auto fmodule = dyn_cast<FModuleOp>(module.getOperation())) {
+      fmodule.getBodyBlock()->walk([&](DomainDefineOp op) {
+        domainEquivalences.push_back({domainValueToLabel(op.getDest()),
+                                      domainValueToLabel(op.getSrc())});
+      });
+    }
+
+    auto domainValueToDisplay = [&](Value value) -> std::string {
+      auto label = domainValueToLabel(value);
+      llvm::StringSet<> seen;
+      SmallVector<std::string> worklist;
+      seen.insert(label);
+      worklist.push_back(label);
+
+      for (size_t i = 0; i < worklist.size(); ++i) {
+        auto current = worklist[i];
+        for (auto &edge : domainEquivalences) {
+          std::optional<std::string> next;
+          if (edge.first == current)
+            next = edge.second;
+          else if (edge.second == current)
+            next = edge.first;
+          if (!next || seen.contains(*next))
+            continue;
+          seen.insert(*next);
+          worklist.push_back(*next);
+        }
+      }
+
+      SmallVector<StringRef> aliases;
+      for (StringRef candidate : worklist)
+        if (candidate.starts_with("'d"))
+          aliases.push_back(candidate);
+
+      if (aliases.empty())
+        return label;
+
+      llvm::sort(aliases);
+      return aliases.front().str();
+    };
+
+    auto domainInfo = module.getDomainInfoAttr();
+    for (size_t i = 0, e = module.getNumPorts(); i < e; ++i) {
+      auto type = module.getPortType(i);
+      if (!isHardware(type))
+        continue;
+
+      SmallVector<std::string> aliases;
+      if (isa<DomainType>(type)) {
+        auto it = aliasByPort.find(i);
+        if (it != aliasByPort.end())
+          aliases.push_back(it->second);
+      } else {
+        for (auto domainPortIndex : getPortDomainAssociation(domainInfo, i)) {
+          auto it = aliasByPort.find(domainPortIndex.getUInt());
+          if (it != aliasByPort.end())
+            aliases.push_back(it->second);
+        }
+      }
+
+      trace.addAnnotation(moduleName, module.getPortName(i),
+                          directionToString(module.getPortDirection(i)),
+                          isa<DomainType>(type) ? "domain" : "hardware",
+                          typeToString(type),
+                          locToString(module.getPortLocation(i)), aliases);
+    }
+
+    auto addAnnotationForValue = [&](StringRef name, StringRef direction,
+                                     StringRef kind, Value value,
+                                     ArrayRef<std::string> domains) {
+      if (!isHardware(value))
+        return;
+      trace.addAnnotation(moduleName, name, direction, kind,
+                          typeToString(value.getType()),
+                          locToString(value.getLoc()), domains);
+    };
+
+    if (auto fmodule = dyn_cast<FModuleOp>(module.getOperation())) {
+      fmodule.getBodyBlock()->walk([&](Operation *op) {
+        if (auto instance = dyn_cast<FInstanceLike>(op)) {
+          for (size_t i = 0, e = instance.getNumPorts(); i < e; ++i) {
+            Value value = instance->getResult(i);
+            SmallVector<std::string> domains;
+            if (isa<DomainType>(value.getType())) {
+              domains.push_back(domainValueToDisplay(value));
+            } else {
+              for (auto domainPortIndex :
+                   getPortDomainAssociation(instance.getDomainInfoAttr(), i)) {
+                auto domainPort =
+                    instance->getResult(domainPortIndex.getUInt());
+                domains.push_back(domainValueToDisplay(domainPort));
+              }
+            }
+            auto name =
+                (instance.getInstanceName() + "." + instance.getPortName(i))
+                    .str();
+            addAnnotationForValue(
+                name, directionToString(instance.getPortDirection(i)),
+                "instance-port", value, domains);
+          }
+          return;
+        }
+
+        if (auto reg = dyn_cast<RegOp>(op)) {
+          SmallVector<std::string> domains;
+          addAnnotationForValue(reg.getName(), "state", "register",
+                                reg.getResult(), domains);
+          return;
+        }
+
+        if (auto reg = dyn_cast<RegResetOp>(op)) {
+          SmallVector<std::string> domains;
+          addAnnotationForValue(reg.getName(), "state", "register",
+                                reg.getResult(), domains);
+        }
+      });
+    }
+  }
+}
 
 void CircuitState::populateDebugHierarchy(DomainDebugTrace &trace,
                                           FModuleOp focus) {
   if (!trace.isEnabled())
     return;
 
+  InstanceGraph freshInstanceGraph(circuit);
   trace.setFocusModule(focus.getModuleName());
 
   auto locToString = [](Location loc) {
@@ -813,7 +1188,7 @@ void CircuitState::populateDebugHierarchy(DomainDebugTrace &trace,
     return storage;
   };
 
-  for (auto *node : instanceGraph) {
+  for (auto *node : freshInstanceGraph) {
     auto parentName = node->getModule().getModuleName();
     for (auto *record : *node) {
       auto inst = record->getInstance();
@@ -823,10 +1198,11 @@ void CircuitState::populateDebugHierarchy(DomainDebugTrace &trace,
     }
   }
 
-  InstancePathCache pathCache(instanceGraph);
+  InstancePathCache pathCache(freshInstanceGraph);
   auto paths = pathCache.getAbsolutePaths(focus);
   if (paths.empty()) {
-    if (instanceGraph.lookup(focus) == instanceGraph.getTopLevelNode())
+    if (freshInstanceGraph.lookup(focus) ==
+        freshInstanceGraph.getTopLevelNode())
       trace.addInstancePath(("$root:" + focus.getModuleName()).str());
     return;
   }
@@ -1332,6 +1708,7 @@ void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
   if (!debugTrace.isEnabled() || debugTrace.hasEmitted())
     return;
 
+  globals.populateDebugAnnotations(debugTrace);
   globals.populateDebugHierarchy(debugTrace, moduleOp);
   auto path = debugTrace.emitHTML(moduleOp, failureKind, failureSummary);
   if (succeeded(path))

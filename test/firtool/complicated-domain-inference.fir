@@ -1,4 +1,5 @@
-; RUN: not firtool %s -domain-mode=infer-all -o /dev/null 2>&1 | FileCheck %s
+; RUN: rm -rf %t && not firtool %s -domain-mode=infer-all --debug-domains-html=%t -o /dev/null 2>&1 | FileCheck %s
+; RUN: FileCheck %s --input-file=%t/ComplicatedDomainInference.domain.html --check-prefix=HTML
 
 ; This is a deliberately complicated domain inference example.  Most of the
 ; private modules have no domain annotations on their interfaces.  The inference
@@ -104,3 +105,9 @@ circuit ComplicatedDomainInference :
     ; CHECK: error: illegal domain crossing
     connect fastOut, fastPath.out
     connect slowOut, slowPath.out
+
+; HTML-DAG: FIRRTL Domain Inference Debugger
+; HTML-DAG: renderLifetimeAnnotations
+; HTML-DAG: Why This Failed
+; HTML-DAG: Lifetime Annotations
+; HTML-DAG: Constraint Graph

@@ -184,6 +184,7 @@ public:
   bool shouldInlineInputOnlyModules() const { return inlineInputOnlyModules; }
 
   DomainMode getDomainMode() const { return domainMode; }
+  StringRef getDebugDomainsHTML() const { return debugDomainsHTML; }
 
   // Setters, used by the CAPI
   FirtoolOptions &setOutputFilename(StringRef name) {
@@ -424,6 +425,11 @@ public:
     return *this;
   }
 
+  FirtoolOptions &setDebugDomainsHTML(StringRef value) {
+    debugDomainsHTML = value;
+    return *this;
+  }
+
 private:
   std::string outputFilename;
 
@@ -477,6 +483,7 @@ private:
   bool emitAllBindFiles;
   bool inlineInputOnlyModules;
   DomainMode domainMode;
+  std::string debugDomainsHTML;
 };
 
 void registerFirtoolCLOptions();

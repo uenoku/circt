@@ -134,7 +134,8 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
   // before ExpandWhens, then users can get errors if they rely on last-connect
   // semantics.
   if (auto mode = FirtoolOptions::toInferDomainsPassMode(opt.getDomainMode()))
-    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createInferDomains({*mode}));
+    pm.nest<firrtl::CircuitOp>().addPass(
+        firrtl::createInferDomains({*mode, opt.getDebugDomainsHTML().str()}));
 
   pm.addNestedPass<firrtl::CircuitOp>(firrtl::createCheckCombLoops());
 
@@ -809,6 +810,12 @@ public:
           clEnumValN(firtool::FirtoolOptions::DomainMode::Strip, "strip",
                      "Erase all domain information"))};
 
+  llvm::cl::opt<std::string> debugDomainsHTML{
+      "debug-domains-html",
+      llvm::cl::desc("Write a self-contained HTML domain inference debugger "
+                     "to this file or directory when inference fails"),
+      llvm::cl::init("")};
+
   //===----------------------------------------------------------------------===
   // Lint options
   //===----------------------------------------------------------------------===
@@ -860,7 +867,8 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
       symbolicValueLowering(verif::SymbolicValueLowering::ExtModule),
       disableWireElimination(false), lintStaticAsserts(true),
       lintXmrsInDesign(true), emitAllBindFiles(false),
-      inlineInputOnlyModules(false), domainMode(DomainMode::Disable) {
+      inlineInputOnlyModules(false), domainMode(DomainMode::Disable),
+      debugDomainsHTML("") {
   if (!clOptions.isConstructed())
     return;
   outputFilename = clOptions->outputFilename;
@@ -912,4 +920,5 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
   emitAllBindFiles = clOptions->emitAllBindFiles;
   inlineInputOnlyModules = clOptions->inlineInputOnlyModules;
   domainMode = clOptions->domainMode;
+  debugDomainsHTML = clOptions->debugDomainsHTML;
 }

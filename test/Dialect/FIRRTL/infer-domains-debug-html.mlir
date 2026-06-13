@@ -4,24 +4,16 @@
 // DIAG: error: illegal domain crossing
 // DIAG: note: domain inference debugger written to
 
-// HTML: FIRRTL Domain Inference Debugger
-// HTML: "module": "IllegalDomainCrossing"
-// HTML: "focusModule": "IllegalDomainCrossing"
-// HTML: "failureKind": "illegal-domain-crossing"
-// HTML: "$root/bad:IllegalDomainCrossing"
-// HTML: "parentModule": "Top"
-// HTML: "instanceName": "bad"
-// HTML: "targetModule": "IllegalDomainCrossing"
-// HTML: "label": "IllegalDomainCrossing.b"
-// HTML: "label": "IllegalDomainCrossing.a"
-// HTML: "kind": "port"
-// HTML: "conflict": true
-// HTML: computeClasses
-// HTML: computeConflictView
-// HTML: Conflicting Clusters
-// HTML: cluster-member
-// HTML: cluster-conflict
-// HTML: edgeLabel
+// HTML-DAG: FIRRTL Domain Inference Debugger
+// HTML-DAG: "module": "IllegalDomainCrossing"
+// HTML-DAG: "focusModule": "IllegalDomainCrossing"
+// HTML-DAG: "failureKind": "illegal-domain-crossing"
+// HTML-DAG: $root/bad:IllegalDomainCrossing
+// HTML-DAG: renderLifetimeAnnotations
+// HTML-DAG: Why This Failed
+// HTML-DAG: Lifetime Annotations
+// HTML-DAG: Constraint Graph
+// HTML-DAG: Conflicting Clusters
 
 firrtl.circuit "Top" {
   firrtl.domain @ClockDomain
