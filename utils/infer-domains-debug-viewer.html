@@ -86,6 +86,50 @@ aside {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
 }
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+.metric {
+  border: 1px solid #e1e6ed;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fbfcfd;
+}
+.metric strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1.1;
+}
+.tabBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.tabButton {
+  border-color: var(--line);
+  color: #1e2938;
+}
+.tabButton.active {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+}
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+input[type=search] {
+  width: min(520px, 100%);
+  border: 1px solid #b8c4d1;
+  border-radius: 5px;
+  padding: 7px 9px;
+  font: inherit;
+}
 .pill {
   display: inline-block;
   margin: 0 4px 4px 0;
@@ -107,6 +151,17 @@ aside {
   margin-top: 8px;
   padding: 10px;
   background: #fbfcfd;
+}
+.valueHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.splitList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
 }
 .domainPath {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -143,6 +198,13 @@ pre {
   word-break: break-word;
   overflow: auto;
 }
+.rawJson {
+  max-height: 70vh;
+}
+.sectionLead {
+  margin-top: 0;
+  color: var(--muted);
+}
 .muted { color: var(--muted); }
 .error { color: var(--bad); font-weight: 650; }
 .toolbar { display: flex; align-items: center; gap: 8px; }
@@ -174,6 +236,10 @@ pre {
 const input = document.getElementById('jsonInput');
 const summary = document.getElementById('summary');
 const content = document.getElementById('content');
+let currentData = null;
+let currentGroups = [];
+let activeTab = 'overview';
+let domainFilter = '';
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -383,11 +449,11 @@ function computeDomainGroups(data) {
 
 function renderSuggestions(data) {
   const suggestions = data.suggestions || [];
-  if (!suggestions.length) return '<p class="muted">No suggestions recorded.</p>';
-  return suggestions.map(s => `<div class="block">
+  if (!suggestions.length) return '<p class="muted">No actionable suggestions recorded.</p>';
+  return suggestions.map(s => `<div class="domainValue">
     <h3>${esc(s.kind || 'suggestion')}</h3>
     <p>${esc(s.description || '')}</p>
-    <p>${s.source ? `<span class="pill">source: ${esc(s.source)}</span>` : ''}${s.destination ? `<span class="pill">destination: ${esc(s.destination)}</span>` : ''}</p>
+    <p>${s.source ? `<span class="pill">Source: ${esc(s.source)}</span>` : ''}${s.destination ? `<span class="pill">Destination: ${esc(s.destination)}</span>` : ''}</p>
     ${s.location ? `<pre>${esc(s.location)}</pre>` : ''}
   </div>`).join('');
 }
@@ -464,29 +530,57 @@ function renderLifetimeAnnotations(data) {
   }).join('');
 }
 
-function renderDomainGroups(groups) {
+function matchesDomainFilter(group, value, query) {
+  if (!query) return true;
+  const haystack = [
+    group.domainKind,
+    value.valuePath,
+    ...value.associatedValues,
+    ...value.objects.flatMap(object => [object.path, object.kind, object.direction, object.type])
+  ].join('\n').toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+function renderDomainGroups(groups, query = '') {
   if (!groups.length) return '<p class="muted">No domain values recorded.</p>';
-  return groups.map(group => {
-    const values = group.values.map(value => {
+  let renderedCount = 0;
+  const renderedGroups = groups.map(group => {
+    const filteredValues = group.values.filter(value => matchesDomainFilter(group, value, query));
+    if (!filteredValues.length) return '';
+    renderedCount += filteredValues.length;
+    const values = filteredValues.map(value => {
       const associated = value.associatedValues
         .map(path => `<li><span class="domainPath">${esc(path)}</span></li>`)
         .join('');
       const objects = value.objects.length
         ? value.objects.map(object => `<li><strong>${esc(object.path)}</strong> <span class="muted">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`).join('')
-        : '<li class="muted">No hardware objects recorded.</li>';
+        : '<li class="muted">No associated ports, registers, or wires recorded.</li>';
       return `<div class="domainValue">
-        <div class="domainPath">${esc(value.valuePath)}</div>
-        <h4>Associated Domain Values</h4>
-        <ul>${associated}</ul>
-        <h4>Associated Objects</h4>
-        <ul>${objects}</ul>
+        <div class="valueHeader">
+          <div class="domainPath">${esc(value.valuePath)}</div>
+          <div>
+            <span class="pill">${value.associatedValues.length} domain value${value.associatedValues.length === 1 ? '' : 's'}</span>
+            <span class="pill">${value.objects.length} object${value.objects.length === 1 ? '' : 's'}</span>
+          </div>
+        </div>
+        <div class="splitList">
+          <div>
+            <h4>Equivalent Domain Values</h4>
+            <ul>${associated}</ul>
+          </div>
+          <div>
+            <h4>Objects Using This Domain</h4>
+            <ul>${objects}</ul>
+          </div>
+        </div>
       </div>`;
     }).join('');
     return `<div class="domainGroup">
-      <h3>${esc(group.domainKind)} <span class="pill">${group.values.length} value${group.values.length === 1 ? '' : 's'}</span></h3>
+      <h3>${esc(group.domainKind)} <span class="pill">${filteredValues.length} of ${group.values.length} value${group.values.length === 1 ? '' : 's'}</span></h3>
       ${values}
     </div>`;
   }).join('');
+  return renderedCount ? renderedGroups : '<p class="muted">No domain values match the filter.</p>';
 }
 
 function renderConflictTrace(data) {
@@ -494,18 +588,109 @@ function renderConflictTrace(data) {
   const conflicts = (data.edges || []).filter(edge => edge.conflict);
   return `<div class="grid">
     <div>
-      <h3>Source Operation</h3>
+      <h3>Operation at Error</h3>
       ${operation ? `<pre>${esc(operation.detail || operation.label)}</pre>` : '<p class="muted">No operation recorded.</p>'}
     </div>
     <div>
-      <h3>Conflicts</h3>
+      <h3>Conflicting Constraints</h3>
       ${conflicts.length ? conflicts.map(edge => `<pre>${esc(edge.reason || edge.kind)}\n${esc(edge.from)}\n${esc(edge.to)}</pre>`).join('') : '<p class="muted">No conflict edges recorded.</p>'}
     </div>
   </div>`;
 }
 
+function countObjects(groups) {
+  return groups.reduce((sum, group) =>
+    sum + group.values.reduce((valueSum, value) => valueSum + value.objects.length, 0), 0);
+}
+
+function renderTabs() {
+  const tabs = [
+    ['overview', 'Overview'],
+    ['domains', 'Domain Map'],
+    ['lifetimes', 'Lifetime Annotations'],
+    ['raw', 'Raw JSON']
+  ];
+  return `<div class="tabBar">${tabs.map(([id, label]) =>
+    `<button class="tabButton${activeTab === id ? ' active' : ''}" data-tab="${id}">${esc(label)}</button>`
+  ).join('')}</div>`;
+}
+
+function renderOverview(data, groups) {
+  return `
+    <div class="block">
+      <h2>Error Summary</h2>
+      <p class="error">${esc(data.failureSummary || data.failureKind || '')}</p>
+      <div class="metricGrid">
+        <div class="metric"><strong>${esc(groups.length)}</strong><span class="muted">Domain kinds</span></div>
+        <div class="metric"><strong>${esc(groups.reduce((sum, group) => sum + group.values.length, 0))}</strong><span class="muted">Domain values</span></div>
+        <div class="metric"><strong>${esc(countObjects(groups))}</strong><span class="muted">Associated objects</span></div>
+        <div class="metric"><strong>${esc((data.suggestions || []).length)}</strong><span class="muted">Suggestions</span></div>
+      </div>
+      ${renderConflictTrace(data)}
+    </div>
+    <div class="block">
+      <h2>Suggested Fixes</h2>
+      ${renderSuggestions(data)}
+    </div>`;
+}
+
+function renderDomainsTab(groups) {
+  return `<div class="block">
+    <h2>Domain Map</h2>
+    <p class="sectionLead">Domain values are grouped by domain kind. Each entry shows the hierarchical values that were unified and the ports, registers, or wires that use the domain.</p>
+    <div class="searchRow">
+      <input id="domainFilter" type="search" value="${esc(domainFilter)}" placeholder="Filter domain values or objects">
+      <span class="muted">${esc(groups.reduce((sum, group) => sum + group.values.length, 0))} values</span>
+    </div>
+    ${renderDomainGroups(groups, domainFilter)}
+  </div>`;
+}
+
+function renderLifetimesTab(data) {
+  return `<div class="block">
+    <h2>Lifetime Annotations</h2>
+    <p class="sectionLead">Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as inferred domain parameters ordered by domain kind.</p>
+    ${renderLifetimeAnnotations(data)}
+  </div>`;
+}
+
+function renderRawTab(data) {
+  return `<div class="block">
+    <h2>Raw JSON</h2>
+    <pre class="rawJson">${esc(JSON.stringify(data, null, 2))}</pre>
+  </div>`;
+}
+
+function renderActiveTab() {
+  if (!currentData) return;
+  const body = activeTab === 'overview' ? renderOverview(currentData, currentGroups)
+    : activeTab === 'domains' ? renderDomainsTab(currentGroups)
+    : activeTab === 'lifetimes' ? renderLifetimesTab(currentData)
+    : renderRawTab(currentData);
+  content.innerHTML = `${renderTabs()}${body}`;
+  document.querySelectorAll('[data-tab]').forEach(button => {
+    button.addEventListener('click', () => {
+      activeTab = button.dataset.tab;
+      renderActiveTab();
+    });
+  });
+  const filter = document.getElementById('domainFilter');
+  if (filter)
+    filter.addEventListener('input', event => {
+      domainFilter = event.target.value;
+      renderActiveTab();
+      const nextFilter = document.getElementById('domainFilter');
+      if (nextFilter)
+        nextFilter.focus();
+    });
+}
+
 function render(data, filename) {
-  const groups = computeDomainGroups(data);
+  currentData = data;
+  currentGroups = computeDomainGroups(data);
+  activeTab = 'overview';
+  domainFilter = '';
+  const groups = currentGroups;
   const totalValues = groups.reduce((sum, group) => sum + group.values.length, 0);
   summary.innerHTML = `
     <h2>${esc(data.module || filename)}</h2>
@@ -516,26 +701,7 @@ function render(data, filename) {
     <h3>Instance Paths</h3>
     ${(data.instancePaths || []).length ? (data.instancePaths || []).map(path => `<pre>${esc(path)}</pre>`).join('') : '<p class="muted">None recorded.</p>'}
   `;
-  content.innerHTML = `
-    <div class="block">
-      <h2>Failure</h2>
-      <p class="error">${esc(data.failureSummary || data.failureKind || '')}</p>
-      ${renderConflictTrace(data)}
-    </div>
-    <div class="block">
-      <h2>Suggestions</h2>
-      ${renderSuggestions(data)}
-    </div>
-    <div class="block">
-      <h2>Lifetime Annotations</h2>
-      <p class="muted">Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as the value's inferred domain parameters, ordered by domain kind.</p>
-      ${renderLifetimeAnnotations(data)}
-    </div>
-    <div class="block">
-      <h2>Domain Values</h2>
-      ${renderDomainGroups(groups)}
-    </div>
-  `;
+  renderActiveTab();
 }
 
 input.addEventListener('change', async event => {
