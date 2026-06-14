@@ -309,6 +309,14 @@ struct DomainDebugAnnotation {
   SmallVector<std::string> aliases;
 };
 
+struct DomainDebugSuggestion {
+  std::string kind;
+  std::string location;
+  std::string source;
+  std::string destination;
+  std::string description;
+};
+
 /// A lightweight recorder for domain inference constraints.  It intentionally
 /// stores rendered strings, not IR objects, so it remains valid after the pass
 /// mutates module interfaces.
@@ -387,6 +395,14 @@ public:
     annotations.push_back({module.str(), portName.str(), direction.str(),
                            kind.str(), type.str(), loc.str(),
                            SmallVector<std::string>(domainAliases)});
+  }
+
+  void addSuggestion(StringRef kind, StringRef location, StringRef source,
+                       StringRef destination, StringRef description) {
+    if (!enabled || suggestions.size() >= maxSuggestions)
+      return;
+    suggestions.push_back({kind.str(), location.str(), source.str(),
+                           destination.str(), description.str()});
   }
 
   FailureOr<std::string> emitHTML(FModuleOp moduleOp, StringRef failureKind,
@@ -474,6 +490,17 @@ public:
             json.attribute("kind", edge.kind);
             json.attribute("reason", edge.reason);
             json.attribute("conflict", edge.conflict);
+          });
+        }
+      });
+      json.attributeArray("suggestions", [&] {
+        for (auto &s : suggestions) {
+          json.object([&] {
+            json.attribute("kind", s.kind);
+            json.attribute("location", s.location);
+            json.attribute("source", s.source);
+            json.attribute("destination", s.destination);
+            json.attribute("description", s.description);
           });
         }
       });
@@ -895,6 +922,22 @@ function conflictRoleTitles(edge) {
   return ['Operand A', 'Operand B'];
 }
 
+function renderSuggestions() {
+  if (!data.suggestions || !data.suggestions.length)
+    return '<p>No specific insertion points identified.</p>';
+  return data.suggestions.map(s => {
+    const icon = s.kind === 'insert-cast' ? '🔀' : '⚠️';
+    const title = s.kind === 'insert-cast' ? 'Insert Domain Crossing Here' : 'Missing Domain Crossing';
+    return `<div class="reportBlock">
+      <h3>${icon} ${title}</h3>
+      <p><strong>Location:</strong> <pre>${esc(s.location)}</pre></p>
+      ${s.source ? `<p><strong>Source:</strong> ${esc(s.source)}</p>` : ''}
+      ${s.destination ? `<p><strong>Destination:</strong> ${esc(s.destination)}</p>` : ''}
+      <p>${esc(s.description)}</p>
+    </div>`;
+  }).join('');
+}
+
 function renderReadableReport(view) {
   const report = document.getElementById('report');
   const paths = data.instancePaths || [];
@@ -916,6 +959,10 @@ function renderReadableReport(view) {
       <h2>Why This Failed</h2>
       <p class="conflictText">${esc(data.failureSummary)}</p>
       ${conflictHTML}
+    </div>
+    <div class="reportBlock">
+      <h2>Suggested Insertion Points</h2>
+      ${renderSuggestions()}
     </div>
     <div class="reportBlock">
       <h2>Instance Context</h2>
@@ -1088,12 +1135,14 @@ showDetails(null);
   SmallVector<DomainDebugHierarchyEdge> hierarchyEdges;
   SmallVector<DomainDebugAlias> aliases;
   SmallVector<DomainDebugAnnotation> annotations;
+  SmallVector<DomainDebugSuggestion> suggestions;
   SmallVector<std::string> instancePaths;
   static constexpr size_t maxEdges = 4000;
   static constexpr size_t maxHierarchyEdges = 512;
   static constexpr size_t maxInstancePaths = 64;
   static constexpr size_t maxAliases = 512;
   static constexpr size_t maxAnnotations = 2048;
+  static constexpr size_t maxSuggestions = 64;
 };
 } // namespace
 
@@ -1475,6 +1524,8 @@ public:
   void recordEdge(StringRef from, StringRef to, StringRef kind,
                   StringRef reason, bool conflict = false);
   void recordAssociationAtFailure(Value value, RowTerm *row);
+  void recordCrossingSuggestion(Operation *op, Value lhs, Value rhs,
+                                StringRef description);
   void emitDomainCrossingError(Operation *op, Value lhs, Term *lhsTerm,
                                Value rhs, Term *rhsTerm);
   template <typename T>
@@ -1804,6 +1855,22 @@ void ModuleState::recordTermNode(Term *term) {
                  "domain row contains domain slot");
     }
   }
+}
+
+void ModuleState::recordCrossingSuggestion(Operation *op, Value lhs,
+                                             Value rhs, StringRef description) {
+  if (!debugTrace.isEnabled())
+    return;
+  std::string kind;
+  if (isa<FConnectLike>(op))
+    kind = "insert-cast";
+  else if (isa<DomainDefineOp>(op))
+    kind = "domain-define-conflict";
+  else
+    kind = "domain-crossing";
+  debugTrace.addSuggestion(kind, renderLocToString(op->getLoc()),
+                           renderDebugLabel(lhs), renderDebugLabel(rhs),
+                           description.str());
 }
 
 void ModuleState::recordOperationNode(Operation *op) {
@@ -2364,6 +2431,14 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
              "value:" + renderLongToString(rhs), "conflict",
              "operation requires both values to share domains", true);
 
+  if (isa<FConnectLike>(op)) {
+    recordCrossingSuggestion(op, lhs, rhs,
+                             "Insert a domain crossing on this connection");
+  } else {
+    recordCrossingSuggestion(op, lhs, rhs,
+                             "This operation mixes operands with different domains");
+  }
+
   std::string summary;
   llvm::raw_string_ostream os(summary);
   os << "illegal domain crossing between " << renderToString(lhs) << " and "
@@ -2698,6 +2773,9 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
   recordEdge("value:" + renderLongToString(dst),
              "value:" + renderLongToString(src), "conflict",
              "domain.define conflicts with inferred domain", true);
+  recordCrossingSuggestion(op, dst, src,
+                           "The defined domain conflicts with the inferred domain of the source");
+
   noteDebugHTML(diag, op.getOperation(), "domain-define-conflict",
                 "domain.define conflicts with inferred domain");
 
@@ -3305,6 +3383,13 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
     auto diag = emitError(moduleOp.getPortLocation(i))
                 << "undriven domain port " << name;
     noteLocation(diag, moduleOp);
+    if (debugTrace.isEnabled()) {
+      debugTrace.addSuggestion("missing-crossing",
+                               renderLocToString(moduleOp.getPortLocation(i)),
+                               "", renderDebugLabel(port),
+                               "This domain port is not driven. Add a domain "
+                               "crossing by driving it from a parent domain port.");
+    }
     noteDebugHTML(diag, moduleOp, "undriven-domain-port",
                   "undriven module output domain port");
     return failure();
@@ -3326,6 +3411,13 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
     auto diag = emitError(op.getPortLocation(i))
                 << "undriven domain port " << name;
     noteLocation(diag, op);
+    if (debugTrace.isEnabled()) {
+      debugTrace.addSuggestion("missing-crossing",
+                               renderLocToString(op.getPortLocation(i)),
+                               "", renderDebugLabel(port),
+                               "This instance domain port is not driven. Add a "
+                               "domain crossing by connecting it from a domain port.");
+    }
     noteDebugHTML(diag, op.getOperation(), "undriven-domain-port",
                   "undriven instance input domain port");
     return failure();

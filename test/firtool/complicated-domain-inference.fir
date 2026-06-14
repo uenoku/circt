@@ -109,5 +109,7 @@ circuit ComplicatedDomainInference :
 ; HTML-DAG: FIRRTL Domain Inference Debugger
 ; HTML-DAG: renderLifetimeAnnotations
 ; HTML-DAG: Why This Failed
+; HTML-DAG: Suggested Insertion Points
+; HTML-DAG: Insert Domain Crossing Here
 ; HTML-DAG: Lifetime Annotations
 ; HTML-DAG: Constraint Graph

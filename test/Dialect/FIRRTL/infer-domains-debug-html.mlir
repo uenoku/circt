@@ -11,6 +11,10 @@
 // HTML-DAG: $root/bad:IllegalDomainCrossing
 // HTML-DAG: renderLifetimeAnnotations
 // HTML-DAG: Why This Failed
+// HTML-DAG: Suggested Insertion Points
+// HTML-DAG: Insert Domain Crossing Here
+// HTML-DAG: IllegalDomainCrossing.b
+// HTML-DAG: IllegalDomainCrossing.a
 // HTML-DAG: Lifetime Annotations
 // HTML-DAG: Constraint Graph
 // HTML-DAG: Conflicting Clusters
