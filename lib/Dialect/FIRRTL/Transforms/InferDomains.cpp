@@ -398,7 +398,7 @@ public:
   }
 
   void addSuggestion(StringRef kind, StringRef location, StringRef source,
-                       StringRef destination, StringRef description) {
+                     StringRef destination, StringRef description) {
     if (!enabled || suggestions.size() >= maxSuggestions)
       return;
     suggestions.push_back({kind.str(), location.str(), source.str(),
@@ -561,36 +561,12 @@ main { display: grid; grid-template-columns: 320px 1fr 360px; height: calc(100vh
 aside, section { min-width: 0; overflow: auto; }
 #summary { border-right: 1px solid #d7dce2; background: white; padding: 12px; }
 #details { border-left: 1px solid #d7dce2; background: white; padding: 12px; }
-#graphWrap { position: relative; overflow: auto; background: #fbfcfd; }
-#report { max-width: 980px; padding: 16px 20px 8px; }
+#reportWrap { overflow: auto; background: #fbfcfd; }
+#report { max-width: 1120px; padding: 16px 20px 8px; }
 #report h2 { margin: 0 0 8px; font-size: 16px; }
 #report h3 { margin: 14px 0 6px; font-size: 13px; }
 .reportBlock { border: 1px solid #d7dce2; background: white; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
 .reportGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-.graphTitle { margin: 8px 20px; color: #4b5563; font-size: 13px; font-weight: 650; }
-svg { min-width: 900px; min-height: 680px; }
-.node rect, .node circle { stroke: #465668; stroke-width: 1.2px; fill: white; }
-.node.domain circle { fill: #fff7d6; }
-.node.term rect { fill: #eef6ff; }
-.node.hardware rect { fill: #eefbf3; }
-.node.module rect { fill: #f4efff; }
-.node.instance rect { fill: #fff1e8; }
-.node.port rect { fill: #eaf7ff; }
-.node.instance-port rect { fill: #edf9f1; }
-.node.register rect { fill: #ffeef2; }
-.node.wire rect { fill: #f8f5e9; }
-.node.value rect { fill: #f5f6f8; }
-.node.class circle { fill: #ffffff; stroke-width: 2.2px; }
-.node.selected rect, .node.selected circle { stroke: #111827; stroke-width: 2.4px; }
-.edge { stroke: #7b8794; stroke-width: 1.3px; fill: none; marker-end: url(#arrow); }
-.edge.conflict { stroke: #d92d20; stroke-width: 3px; }
-.edge.association { stroke: #2563eb; }
-.edge.unify { stroke: #6b7280; stroke-dasharray: 5 4; }
-.edge.hierarchy { stroke: #9a5b13; }
-.edge.cluster-member { stroke: #2563eb; stroke-dasharray: 2 3; }
-.edge.cluster-conflict { stroke: #d92d20; stroke-width: 3px; }
-.label { font-size: 12px; pointer-events: none; fill: #17202a; }
-.edgeLabel { font-size: 11px; fill: #4b5563; }
 .pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #e5e7eb; margin: 0 4px 4px 0; }
 .lifetimeModule { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
 .lifetimeModule h3 { margin: 0 0 6px; font-size: 13px; }
@@ -615,7 +591,7 @@ button:hover { background: #f3f4f6; }
 <header><h1 id="title">FIRRTL Domain Inference Debugger</h1><div id="subtitle"></div></header>
 <main>
 <aside id="summary"></aside>
-<section id="graphWrap"><div id="report"></div><h2 class="graphTitle">Constraint Graph</h2><svg id="graph" width="1200" height="800"></svg></section>
+<section id="reportWrap"><div id="report"></div></section>
 <aside id="details"></aside>
 </main>
 <script id="domain-debug-data" type="application/json">
@@ -907,6 +883,15 @@ function renderConflictValue(valueID, title) {
   </div>`;
 }
 
+function renderConflictSource() {
+  const operation = data.nodes.find(n => n.kind === 'operation');
+  if (!operation)
+    return '<p>No failing operation was recorded.</p>';
+  return `<p>The operation below is where the incompatible domain requirements meet.</p>
+    <pre>${esc(operation.detail || operation.label)}</pre>
+    ${operation.loc ? `<h3>Location</h3><pre>${esc(operation.loc)}</pre>` : ''}`;
+}
+
 function conflictValues(edge) {
   if (!edge.detail) return [edge.from, edge.to];
   const values = edge.detail.split('\n-> ');
@@ -922,18 +907,35 @@ function conflictRoleTitles(edge) {
   return ['Operand A', 'Operand B'];
 }
 
+function suggestionTitle(s) {
+  if (s.kind === 'insert-cast')
+    return 'Insert a Domain Crossing on the Source Path';
+  if (s.kind === 'domain-define-conflict')
+    return 'Fix the Conflicting Domain Definition';
+  if (s.kind === 'missing-crossing')
+    return 'Drive the Missing Domain Port';
+  return 'Resolve the Domain Crossing';
+}
+
+function suggestionRoles(s) {
+  if (s.kind === 'domain-define-conflict')
+    return {source: 'Conflicting source', destination: 'Defined domain'};
+  if (s.kind === 'insert-cast')
+    return {source: 'Driving value', destination: 'Receiving value'};
+  return {source: 'Source', destination: 'Destination'};
+}
+
 function renderSuggestions() {
   if (!data.suggestions || !data.suggestions.length)
     return '<p>No specific insertion points identified.</p>';
   return data.suggestions.map(s => {
-    const icon = s.kind === 'insert-cast' ? '🔀' : '⚠️';
-    const title = s.kind === 'insert-cast' ? 'Insert Domain Crossing Here' : 'Missing Domain Crossing';
+    const roles = suggestionRoles(s);
     return `<div class="reportBlock">
-      <h3>${icon} ${title}</h3>
-      <p><strong>Location:</strong> <pre>${esc(s.location)}</pre></p>
-      ${s.source ? `<p><strong>Source:</strong> ${esc(s.source)}</p>` : ''}
-      ${s.destination ? `<p><strong>Destination:</strong> ${esc(s.destination)}</p>` : ''}
-      <p>${esc(s.description)}</p>
+      <h3>${esc(suggestionTitle(s))}</h3>
+      <p><strong>Action:</strong> ${esc(s.description)}</p>
+      ${s.source ? `<p><strong>${roles.source}:</strong> ${esc(s.source)}</p>` : ''}
+      ${s.destination ? `<p><strong>${roles.destination}:</strong> ${esc(s.destination)}</p>` : ''}
+      ${s.location ? `<h3>Location</h3><pre>${esc(s.location)}</pre>` : ''}
     </div>`;
   }).join('');
 }
@@ -961,7 +963,11 @@ function renderReadableReport(view) {
       ${conflictHTML}
     </div>
     <div class="reportBlock">
-      <h2>Suggested Insertion Points</h2>
+      <h2>Conflict Source</h2>
+      ${renderConflictSource()}
+    </div>
+    <div class="reportBlock">
+      <h2>Actionable Suggestions</h2>
       ${renderSuggestions()}
     </div>
     <div class="reportBlock">
@@ -984,7 +990,7 @@ function renderSummary() {
     <h2>Context</h2>
     <p><span class="pill">module: ${esc(data.focusModule || data.module)}</span></p>
     ${paths.length ? `<h3>Absolute Paths</h3>${paths.map(p => `<pre>${esc(p)}</pre>`).join('')}` : '<p>No instance path recorded.</p>'}
-    <h2>Conflicting Clusters</h2>
+    <h2>Conflicting Domain Sets</h2>
     ${view.classNodes.map(c => {
       const members = view.membersByClass.get(c.id) || [];
       const counts = [...new Set(members.map(m => m.kind))]
@@ -995,7 +1001,7 @@ function renderSummary() {
     <h2>Conflicts</h2>
     ${view.conflictEdges.map((e, i) => `<button data-conflict-index="${i}">${esc(e.reason.split('\n')[0])}</button>`).join(' ') || '<p>No conflict edge recorded.</p>'}
     <h2>Trace Size</h2>
-    <p><span class="pill">clusters: ${view.classNodes.length}</span><span class="pill">shown nodes: ${view.nodes.length}</span><span class="pill">recorded edges: ${data.edges.length}</span></p>`;
+    <p><span class="pill">domain sets: ${view.classNodes.length}</span><span class="pill">recorded values: ${view.nodes.length}</span><span class="pill">recorded constraints: ${data.edges.length}</span></p>`;
   document.querySelectorAll('[data-conflict-index]').forEach(button => {
     button.addEventListener('click', () => showDetails(view.conflictEdges[Number(button.dataset.conflictIndex)]));
   });
@@ -1020,104 +1026,8 @@ function showDetails(item) {
     <h3>Detail</h3><pre>${esc(item.detail)}</pre>`;
 }
 
-function renderGraph() {
-  const svg = document.getElementById('graph');
-  svg.innerHTML = `<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L7,3 z" fill="#7b8794"></path></marker></defs>`;
-  const view = computeConflictView();
-  const visibleNodes = view.nodes;
-  const visibleEdges = view.edges;
-  const classByNode = view.classByNode;
-  const nodeByViewID = new Map(visibleNodes.map(n => [n.id, n]));
-  const positions = new Map();
-  let maxY = 0, maxX = 0;
-  view.classNodes.forEach((cls, ci) => {
-    const x = 180 + ci * 360;
-    positions.set(cls.id, {x, y: 90});
-    maxX = Math.max(maxX, x + 220);
-    const members = view.membersByClass.get(cls.id) || [];
-    members.forEach((node, ri) => {
-      const y = 210 + ri * 78;
-      positions.set(node.id, {x, y});
-      maxY = Math.max(maxY, y + 70);
-    });
-  });
-  svg.setAttribute('width', Math.max(1200, maxX));
-  svg.setAttribute('height', Math.max(800, maxY));
-
-  const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-  svg.appendChild(edgeLayer);
-  for (const edge of visibleEdges) {
-    const a = positions.get(edge.from), b = positions.get(edge.to);
-    if (!a || !b) continue;
-    const fromNode = nodeByViewID.get(edge.from);
-    const toNode = nodeByViewID.get(edge.to);
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const horizontal = Math.abs(a.x - b.x) > Math.abs(a.y - b.y);
-    let sx = a.x, sy = a.y, ex = b.x, ey = b.y;
-    if (horizontal) {
-      const dir = b.x >= a.x ? 1 : -1;
-      sx += dir * (fromNode && fromNode.kind === 'class' ? 48 : 78);
-      ex -= dir * (toNode && toNode.kind === 'class' ? 48 : 78);
-    } else {
-      const dir = b.y >= a.y ? 1 : -1;
-      sy += dir * (fromNode && fromNode.kind === 'class' ? 48 : 28);
-      ey -= dir * (toNode && toNode.kind === 'class' ? 48 : 28);
-    }
-    const mx = (sx + ex) / 2;
-    const my = (sy + ey) / 2;
-    path.setAttribute('d', horizontal ? `M${sx},${sy} C${mx},${sy} ${mx},${ey} ${ex},${ey}` : `M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}`);
-    path.setAttribute('class', `edge ${esc(edge.kind)}${edge.conflict ? ' conflict' : ''}`);
-    path.addEventListener('click', () => showDetails(edge));
-    edgeLayer.appendChild(path);
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('class', 'edgeLabel');
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('x', String(mx));
-    text.setAttribute('y', String(my - 6));
-    text.textContent = edge.conflict ? 'conflict' : edge.kind;
-    text.addEventListener('click', () => showDetails(edge));
-    edgeLayer.appendChild(text);
-  }
-
-  const nodeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-  svg.appendChild(nodeLayer);
-  for (const node of visibleNodes) {
-    const p = positions.get(node.id);
-    if (!p) continue;
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', `node ${esc(node.kind)}`);
-    g.setAttribute('transform', `translate(${p.x},${p.y})`);
-    g.addEventListener('click', () => {
-      document.querySelectorAll('.node.selected').forEach(n => n.classList.remove('selected'));
-      g.classList.add('selected');
-      showDetails(node);
-    });
-    const cls = node.kind === 'class' ? node : classByNode.get(node.id);
-    if (node.kind === 'domain' || node.kind === 'class') {
-      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('r', '42');
-      if (cls) c.setAttribute('stroke', cls.color);
-      g.appendChild(c);
-    } else {
-      const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      r.setAttribute('x', '-78'); r.setAttribute('y', '-26');
-      r.setAttribute('width', '156'); r.setAttribute('height', '52');
-      r.setAttribute('rx', '6');
-      if (cls) r.setAttribute('stroke', cls.color);
-      g.appendChild(r);
-    }
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    t.setAttribute('class', 'label');
-    t.setAttribute('text-anchor', 'middle');
-    t.textContent = node.label.length > 34 ? node.label.slice(0, 31) + '...' : node.label;
-    g.appendChild(t);
-    nodeLayer.appendChild(g);
-  }
-}
-
 renderSummary();
 renderReadableReport(computeConflictView());
-renderGraph();
 showDetails(null);
 </script>
 </body>
@@ -1857,20 +1767,39 @@ void ModuleState::recordTermNode(Term *term) {
   }
 }
 
-void ModuleState::recordCrossingSuggestion(Operation *op, Value lhs,
-                                             Value rhs, StringRef description) {
+void ModuleState::recordCrossingSuggestion(Operation *op, Value lhs, Value rhs,
+                                           StringRef description) {
   if (!debugTrace.isEnabled())
     return;
   std::string kind;
-  if (isa<FConnectLike>(op))
+  std::string source = renderDebugLabel(lhs);
+  std::string destination = renderDebugLabel(rhs);
+  std::string action = description.str();
+
+  if (isa<FConnectLike>(op)) {
     kind = "insert-cast";
-  else if (isa<DomainDefineOp>(op))
+    source = renderDebugLabel(rhs);
+    destination = renderDebugLabel(lhs);
+    if (action.empty())
+      action =
+          "Insert a domain crossing on the driving value before it reaches "
+          "the receiving value.";
+  } else if (isa<DomainDefineOp>(op)) {
     kind = "domain-define-conflict";
-  else
+    source = renderDebugLabel(rhs);
+    destination = renderDebugLabel(lhs);
+    if (action.empty())
+      action =
+          "Remove the conflicting domain.define or make the defined domain "
+          "match the source domain it aliases.";
+  } else {
     kind = "domain-crossing";
-  debugTrace.addSuggestion(kind, renderLocToString(op->getLoc()),
-                           renderDebugLabel(lhs), renderDebugLabel(rhs),
-                           description.str());
+    if (action.empty())
+      action = "Keep these operands in the same domain set, or insert a domain "
+               "crossing before this operation.";
+  }
+  debugTrace.addSuggestion(kind, renderLocToString(op->getLoc()), source,
+                           destination, action);
 }
 
 void ModuleState::recordOperationNode(Operation *op) {
@@ -2420,6 +2349,20 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
     noteDomainSource(diag, rhsDomain);
   }
 
+  if (isa<FConnectLike>(op)) {
+    auto &note = diag.attachNote(op->getLoc());
+    note << "conflict source: this connection drives ";
+    render(lhs, note);
+    note << " from ";
+    render(rhs, note);
+    note << "; insert a domain crossing on the source side if this crossing is "
+            "intentional";
+  } else {
+    diag.attachNote(op->getLoc())
+        << "conflict source: this operation requires all listed operands to "
+           "share one inferred domain set";
+  }
+
   recordOperationNode(op);
   recordAssociationAtFailure(lhs, lhsRow);
   recordAssociationAtFailure(rhs, rhsRow);
@@ -2432,11 +2375,17 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
              "operation requires both values to share domains", true);
 
   if (isa<FConnectLike>(op)) {
-    recordCrossingSuggestion(op, lhs, rhs,
-                             "Insert a domain crossing on this connection");
+    recordCrossingSuggestion(
+        op, lhs, rhs,
+        "Insert a domain crossing on the driving value before it reaches the "
+        "receiving value. The crossing output should use the receiving value's "
+        "domain set shown in the mismatch table.");
   } else {
-    recordCrossingSuggestion(op, lhs, rhs,
-                             "This operation mixes operands with different domains");
+    recordCrossingSuggestion(
+        op, lhs, rhs,
+        "This operation mixes operands with different domains. Keep the "
+        "operands in one domain set, or move the domain crossing before this "
+        "operation.");
   }
 
   std::string summary;
@@ -2761,6 +2710,12 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
       << "defines a domain value that was inferred to be a different domain '";
   render(dstTerm, diag);
   diag << "'";
+  auto &note = diag.attachNote(op.getLoc());
+  note << "conflict source: this domain.define aliases ";
+  render(dst, note);
+  note << " to ";
+  render(src, note);
+  note << ", but inference already required the defined domain to be different";
   recordOperationNode(op);
   recordDomainNode(src);
   recordDomainNode(dst);
@@ -2773,8 +2728,11 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
   recordEdge("value:" + renderLongToString(dst),
              "value:" + renderLongToString(src), "conflict",
              "domain.define conflicts with inferred domain", true);
-  recordCrossingSuggestion(op, dst, src,
-                           "The defined domain conflicts with the inferred domain of the source");
+  recordCrossingSuggestion(
+      op, dst, src,
+      "Remove this domain.define, or change the surrounding connections so the "
+      "defined domain and the source domain intentionally refer to the same "
+      "domain value.");
 
   noteDebugHTML(diag, op.getOperation(), "domain-define-conflict",
                 "domain.define conflicts with inferred domain");
@@ -3387,8 +3345,10 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
       debugTrace.addSuggestion("missing-crossing",
                                renderLocToString(moduleOp.getPortLocation(i)),
                                "", renderDebugLabel(port),
-                               "This domain port is not driven. Add a domain "
-                               "crossing by driving it from a parent domain port.");
+                               "Drive this output domain port from the domain "
+                               "value that leaves the module. If the output "
+                               "represents a crossing, export the crossed "
+                               "domain explicitly.");
     }
     noteDebugHTML(diag, moduleOp, "undriven-domain-port",
                   "undriven module output domain port");
@@ -3413,10 +3373,12 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
     noteLocation(diag, op);
     if (debugTrace.isEnabled()) {
       debugTrace.addSuggestion("missing-crossing",
-                               renderLocToString(op.getPortLocation(i)),
-                               "", renderDebugLabel(port),
-                               "This instance domain port is not driven. Add a "
-                               "domain crossing by connecting it from a domain port.");
+                               renderLocToString(op.getPortLocation(i)), "",
+                               renderDebugLabel(port),
+                               "Connect this instance input domain port to the "
+                               "domain value that should be visible inside the "
+                               "instance. If the instance boundary is the "
+                               "crossing, wire the post-crossing domain here.");
     }
     noteDebugHTML(diag, op.getOperation(), "undriven-domain-port",
                   "undriven instance input domain port");

@@ -2,6 +2,7 @@
 // RUN: FileCheck %s --input-file=%t/IllegalDomainCrossing.domain.html --check-prefix=HTML
 
 // DIAG: error: illegal domain crossing
+// DIAG: note: conflict source: this connection drives b from a
 // DIAG: note: domain inference debugger written to
 
 // HTML-DAG: FIRRTL Domain Inference Debugger
@@ -11,13 +12,15 @@
 // HTML-DAG: $root/bad:IllegalDomainCrossing
 // HTML-DAG: renderLifetimeAnnotations
 // HTML-DAG: Why This Failed
-// HTML-DAG: Suggested Insertion Points
-// HTML-DAG: Insert Domain Crossing Here
+// HTML-DAG: Conflict Source
+// HTML-DAG: Actionable Suggestions
+// HTML-DAG: Insert a Domain Crossing on the Source Path
+// HTML-DAG: Driving value
+// HTML-DAG: Receiving value
 // HTML-DAG: IllegalDomainCrossing.b
 // HTML-DAG: IllegalDomainCrossing.a
 // HTML-DAG: Lifetime Annotations
-// HTML-DAG: Constraint Graph
-// HTML-DAG: Conflicting Clusters
+// HTML-DAG: Conflicting Domain Sets
 
 firrtl.circuit "Top" {
   firrtl.domain @ClockDomain

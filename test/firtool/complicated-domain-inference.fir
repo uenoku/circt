@@ -103,13 +103,15 @@ circuit ComplicatedDomainInference :
     ; are intentional errors that make the inferred domains visible in the
     ; diagnostic path.
     ; CHECK: error: illegal domain crossing
+    ; CHECK: note: conflict source: this connection drives fastOut from fastPath.out
     connect fastOut, fastPath.out
     connect slowOut, slowPath.out
 
 ; HTML-DAG: FIRRTL Domain Inference Debugger
 ; HTML-DAG: renderLifetimeAnnotations
 ; HTML-DAG: Why This Failed
-; HTML-DAG: Suggested Insertion Points
-; HTML-DAG: Insert Domain Crossing Here
+; HTML-DAG: Conflict Source
+; HTML-DAG: Actionable Suggestions
+; HTML-DAG: Insert a Domain Crossing on the Source Path
 ; HTML-DAG: Lifetime Annotations
-; HTML-DAG: Constraint Graph
+; HTML-DAG: Conflicting Domain Sets
