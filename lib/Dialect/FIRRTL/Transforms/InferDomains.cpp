@@ -858,44 +858,92 @@ function moduleHierarchyPaths() {
 function renderHierarchicalDomainValues() {
   const modulePaths = moduleHierarchyPaths();
   const aliases = data.aliases || [];
-  const aliasByModule = new Map();
-  for (const alias of aliases)
-    aliasByModule.set(`${alias.module}\0${alias.alias}`, alias);
+  const aliasEntries = new Map();
+  for (const alias of aliases) {
+    const key = `${alias.module}\0${alias.alias}`;
+    if (!aliasEntries.has(key)) aliasEntries.set(key, []);
+    aliasEntries.get(key).push(alias);
+  }
 
-  const groups = new Map();
-  const addObject = (domainKind, valuePath, object) => {
-    domainKind = domainKind || 'unknown domain';
-    if (!groups.has(domainKind)) groups.set(domainKind, new Map());
-    const values = groups.get(domainKind);
-    if (!values.has(valuePath))
-      values.set(valuePath, {valuePath, objects: []});
-    const bucket = values.get(valuePath);
-    const key = `${object.path}\0${object.kind}`;
-    if (!bucket.objects.some(existing => `${existing.path}\0${existing.kind}` === key))
-      bucket.objects.push(object);
+  const parent = new Map();
+  const find = value => {
+    if (!parent.has(value)) parent.set(value, value);
+    const p = parent.get(value);
+    if (p === value) return value;
+    const r = find(p);
+    parent.set(value, r);
+    return r;
+  };
+  const unite = (a, b) => {
+    if (!a || !b) return;
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
   };
 
-  const resolveAlias = (module, modulePath, aliasName) => {
-    const alias = aliasByModule.get(`${module}\0${aliasName}`);
-    if (!alias)
-      return {domainKind: 'unknown domain', valuePath: `${modulePath}.${aliasName || '?'}`};
-    const valueName = alias.portName || alias.alias;
-    return {
+  const valueInfo = new Map();
+  const objectsByValue = new Map();
+  const addDomainValue = (domainKind, valuePath, object) => {
+    if (!valuePath) return;
+    domainKind = domainKind || 'unknown domain';
+    find(valuePath);
+    if (!valueInfo.has(valuePath))
+      valueInfo.set(valuePath, {domainKind, members: new Set()});
+    const info = valueInfo.get(valuePath);
+    info.members.add(valuePath);
+    if (info.domainKind === 'unknown domain' && domainKind !== 'unknown domain')
+      info.domainKind = domainKind;
+    if (!object) return;
+    if (!objectsByValue.has(valuePath)) objectsByValue.set(valuePath, []);
+    const objects = objectsByValue.get(valuePath);
+    const key = `${object.path}\0${object.kind}`;
+    if (!objects.some(existing => `${existing.path}\0${existing.kind}` === key))
+      objects.push(object);
+  };
+
+  const valuePathsForAlias = (module, modulePath, aliasName) => {
+    const entries = aliasEntries.get(`${module}\0${aliasName}`) || [];
+    if (!entries.length)
+      return [{domainKind: 'unknown domain', valuePath: `${modulePath}.${aliasName || '?'}`}];
+    return entries.map(alias => ({
       domainKind: alias.domainKind || 'unknown domain',
-      valuePath: `${modulePath}.${valueName}`,
+      valuePath: `${modulePath}.${alias.portName || alias.alias}`,
       alias
-    };
+    }));
   };
 
   for (const alias of aliases) {
     for (const modulePath of modulePaths.get(alias.module) || []) {
-      const resolved = resolveAlias(alias.module, modulePath, alias.alias);
-      addObject(resolved.domainKind, resolved.valuePath, {
-        path: resolved.valuePath,
-        kind: alias.inferred ? 'inferred domain value' : 'domain value',
-        direction: alias.direction,
-        type: alias.domainKind
-      });
+      const values = valuePathsForAlias(alias.module, modulePath, alias.alias);
+      for (const value of values) {
+        addDomainValue(value.domainKind, value.valuePath, {
+          path: value.valuePath,
+          kind: alias.inferred ? 'inferred domain value' : 'domain value',
+          direction: alias.direction,
+          type: alias.domainKind
+        });
+      }
+      for (let i = 1; i < values.length; ++i)
+        unite(values[0].valuePath, values[i].valuePath);
+    }
+  }
+
+  for (const edge of data.hierarchy || []) {
+    for (const parentPath of modulePaths.get(edge.parentModule) || []) {
+      const childPath = `${parentPath}/${edge.instanceName}:${edge.targetModule}`;
+      const childAliases = aliases.filter(alias =>
+        alias.module === edge.targetModule &&
+        alias.direction !== 'local' &&
+        alias.direction !== 'inferred');
+      for (const alias of childAliases) {
+        const parentValues =
+          valuePathsForAlias(edge.parentModule, parentPath,
+                             `${edge.instanceName}.${alias.portName}`);
+        const childValues =
+          valuePathsForAlias(edge.targetModule, childPath, alias.alias);
+        for (const parentValue of parentValues)
+          for (const childValue of childValues)
+            unite(parentValue.valuePath, childValue.valuePath);
+      }
     }
   }
 
@@ -914,10 +962,41 @@ function renderHierarchicalDomainValues() {
       for (const aliasName of annotation.aliases || []) {
         if (!aliasName || aliasName === '?')
           continue;
-        const resolved = resolveAlias(annotation.module, modulePath, aliasName);
-        addObject(resolved.domainKind, resolved.valuePath, object);
+        for (const resolved of valuePathsForAlias(annotation.module, modulePath, aliasName))
+          addDomainValue(resolved.domainKind, resolved.valuePath, object);
       }
     }
+  }
+
+  const groups = new Map();
+  for (const [valuePath, info] of valueInfo) {
+    const root = find(valuePath);
+    if (!valueInfo.has(root))
+      valueInfo.set(root, {domainKind: info.domainKind, members: new Set()});
+    const rootInfo = valueInfo.get(root);
+    if (rootInfo.domainKind === 'unknown domain' && info.domainKind !== 'unknown domain')
+      rootInfo.domainKind = info.domainKind;
+    for (const member of info.members)
+      rootInfo.members.add(member);
+    for (const object of objectsByValue.get(valuePath) || []) {
+      if (!objectsByValue.has(root)) objectsByValue.set(root, []);
+      const objects = objectsByValue.get(root);
+      const key = `${object.path}\0${object.kind}`;
+      if (!objects.some(existing => `${existing.path}\0${existing.kind}` === key))
+        objects.push(object);
+    }
+  }
+
+  for (const [valuePath, info] of valueInfo) {
+    if (find(valuePath) !== valuePath)
+      continue;
+    const domainKind = info.domainKind || 'unknown domain';
+    if (!groups.has(domainKind)) groups.set(domainKind, []);
+    groups.get(domainKind).push({
+      valuePath,
+      associatedValues: [...info.members].sort((a, b) => a.localeCompare(b)),
+      objects: objectsByValue.get(valuePath) || []
+    });
   }
 
   if (!groups.size)
@@ -926,15 +1005,21 @@ function renderHierarchicalDomainValues() {
   return [...groups.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([domainKind, values]) => {
-      const sortedValues = [...values.values()]
+      const sortedValues = values
         .sort((a, b) => a.valuePath.localeCompare(b.valuePath));
       const renderedValues = sortedValues.map(value => {
         const objects = value.objects
           .sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind))
           .map(object => `<li><strong>${esc(object.path)}</strong> <span class="lifetimeType">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`)
           .join('');
+        const associated = value.associatedValues
+          .map(path => `<li><span class="lifetimeAlias">${esc(path)}</span></li>`)
+          .join('');
         return `<div class="domainValueBlock">
           <div><span class="lifetimeAlias">${esc(value.valuePath)}</span></div>
+          <h4>Associated Domain Values</h4>
+          <ul class="objectList">${associated}</ul>
+          <h4>Associated Objects</h4>
           <ul class="objectList">${objects}</ul>
         </div>`;
       }).join('');
@@ -1398,9 +1483,15 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
         if (auto instance = dyn_cast<FInstanceLike>(op)) {
           for (size_t i = 0, e = instance.getNumPorts(); i < e; ++i) {
             Value value = instance->getResult(i);
+            auto name =
+                (instance.getInstanceName() + "." + instance.getPortName(i))
+                    .str();
+            auto direction = directionToString(instance.getPortDirection(i));
             SmallVector<std::string> domains;
             if (isa<DomainType>(value.getType())) {
-              domains.push_back(domainValueToDisplay(value));
+              addDomainAnnotationForValue(name, direction,
+                                          cast<DomainValue>(value));
+              continue;
             } else {
               for (auto domainPortIndex :
                    getPortDomainAssociation(instance.getDomainInfoAttr(), i)) {
@@ -1409,12 +1500,8 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
                 domains.push_back(domainValueToDisplay(domainPort));
               }
             }
-            auto name =
-                (instance.getInstanceName() + "." + instance.getPortName(i))
-                    .str();
-            addAnnotationForValue(
-                name, directionToString(instance.getPortDirection(i)),
-                "instance-port", value, domains);
+            addAnnotationForValue(name, direction, "instance-port", value,
+                                  domains);
           }
           return;
         }

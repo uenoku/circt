@@ -22,6 +22,8 @@
 // HTML-DAG: Lifetime Annotations
 // HTML-DAG: Hierarchical Domain Values
 // HTML-DAG: ClockDomain
+// HTML-DAG: Associated Domain Values
+// HTML-DAG: Associated Objects
 // HTML-DAG: distinct value
 // HTML-DAG: Conflicting Domain Sets
 
