@@ -114,6 +114,24 @@ aside {
   color: #102033;
   word-break: break-word;
 }
+.lifetimeModule {
+  border-top: 1px solid #eef1f4;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.lifetimeRow {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 0;
+  align-items: baseline;
+}
+.lifetimeAlias {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 650;
+  color: #102033;
+}
+.lifetimeInferred { color: var(--good); }
 ul { margin: 4px 0 0; padding-left: 18px; }
 li { margin: 2px 0; }
 pre {
@@ -374,6 +392,78 @@ function renderSuggestions(data) {
   </div>`).join('');
 }
 
+function renderLifetimeAnnotations(data) {
+  const aliases = data.aliases || [];
+  const annotations = annotationsForDisplay(data);
+  if (!aliases.length && !annotations.length)
+    return '<p class="muted">No lifetime annotations recorded.</p>';
+
+  const aliasesByModule = new Map();
+  for (const alias of aliases) {
+    if (!aliasesByModule.has(alias.module)) aliasesByModule.set(alias.module, []);
+    aliasesByModule.get(alias.module).push(alias);
+  }
+
+  const annotationsByModule = new Map();
+  for (const annotation of annotations) {
+    if (!annotationsByModule.has(annotation.module))
+      annotationsByModule.set(annotation.module, []);
+    annotationsByModule.get(annotation.module).push(annotation);
+  }
+
+  const modules = [...new Set([...aliasesByModule.keys(), ...annotationsByModule.keys()])]
+    .sort((a, b) => (a === data.focusModule ? -1 : b === data.focusModule ? 1 : a.localeCompare(b)));
+
+  const kindTitle = new Map([
+    ['domain', 'Domain Values'],
+    ['hardware', 'Module Ports'],
+    ['instance-port', 'Instance Ports'],
+    ['register', 'Registers'],
+    ['wire', 'Wires']
+  ]);
+
+  const renderAnnotation = annotation => {
+    const aliases = annotation.aliases && annotation.aliases.length ? annotation.aliases : ['?'];
+    const lifetimeParams = annotation.kind !== 'domain'
+      ? `&lt;${aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
+      : '';
+    return `<div class="lifetimeRow">
+      <span class="muted">${esc(annotation.direction)}</span>
+      <div><strong>${esc(annotation.portName)}</strong>${lifetimeParams} <span class="muted">${esc(annotation.type)}</span></div>
+    </div>`;
+  };
+
+  return modules.map(module => {
+    const moduleAliases = (aliasesByModule.get(module) || [])
+      .sort((a, b) => a.alias.localeCompare(b.alias));
+    const legend = moduleAliases.length
+      ? moduleAliases.map(alias =>
+        `<span class="pill"><span class="lifetimeAlias">${esc(alias.alias)}</span> = ${esc(alias.direction)} ${esc(alias.portName)} : ${esc(alias.domainKind)}${alias.inferred ? ' <span class="lifetimeInferred">inferred</span>' : ''}</span>`
+      ).join('')
+      : '<span class="pill">no domain values</span>';
+
+    const rowsByKind = new Map();
+    for (const annotation of annotationsByModule.get(module) || []) {
+      if (!rowsByKind.has(annotation.kind)) rowsByKind.set(annotation.kind, []);
+      rowsByKind.get(annotation.kind).push(annotation);
+    }
+
+    const rows = [...rowsByKind.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([kind, rows]) => `<h4>${esc(kindTitle.get(kind) || kind)}</h4>${rows
+        .sort((a, b) => a.portName.localeCompare(b.portName))
+        .map(renderAnnotation)
+        .join('')}`)
+      .join('');
+
+    return `<div class="lifetimeModule">
+      <h3>${esc(module)}</h3>
+      <div>${legend}</div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
 function renderDomainGroups(groups) {
   if (!groups.length) return '<p class="muted">No domain values recorded.</p>';
   return groups.map(group => {
@@ -435,6 +525,11 @@ function render(data, filename) {
     <div class="block">
       <h2>Suggestions</h2>
       ${renderSuggestions(data)}
+    </div>
+    <div class="block">
+      <h2>Lifetime Annotations</h2>
+      <p class="muted">Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as the value's inferred domain parameters, ordered by domain kind.</p>
+      ${renderLifetimeAnnotations(data)}
     </div>
     <div class="block">
       <h2>Domain Values</h2>
