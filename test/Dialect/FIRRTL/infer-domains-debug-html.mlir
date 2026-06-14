@@ -20,6 +20,9 @@
 // HTML-DAG: IllegalDomainCrossing.b
 // HTML-DAG: IllegalDomainCrossing.a
 // HTML-DAG: Lifetime Annotations
+// HTML-DAG: Hierarchical Domain Values
+// HTML-DAG: ClockDomain
+// HTML-DAG: distinct value
 // HTML-DAG: Conflicting Domain Sets
 
 firrtl.circuit "Top" {

@@ -581,6 +581,9 @@ aside, section { min-width: 0; overflow: auto; }
 .instanceBlock { margin: 4px 0 8px; padding-left: 8px; border-left: 2px solid #d1fae5; }
 .domainMismatch { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid #eef1f4; }
 .domainMismatch:last-child { border-bottom: 0; }
+.domainValueBlock { border-top: 1px solid #eef1f4; padding-top: 8px; margin-top: 8px; }
+.objectList { margin: 4px 0 0 0; padding-left: 18px; }
+.objectList li { margin: 2px 0; }
 .conflictText { color: #b42318; font-weight: 650; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 8px; border-radius: 6px; }
 button { border: 1px solid #c7ced6; background: white; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
@@ -804,6 +807,144 @@ function renderLifetimeAnnotations() {
   }).join('');
 }
 
+function moduleHierarchyPaths() {
+  const modules = new Set();
+  const targets = new Set();
+  const children = new Map();
+  for (const edge of data.hierarchy || []) {
+    modules.add(edge.parentModule);
+    modules.add(edge.targetModule);
+    targets.add(edge.targetModule);
+    if (!children.has(edge.parentModule)) children.set(edge.parentModule, []);
+    children.get(edge.parentModule).push(edge);
+  }
+  for (const annotation of data.annotations || [])
+    modules.add(annotation.module);
+  for (const alias of data.aliases || [])
+    modules.add(alias.module);
+
+  let roots = [...modules].filter(module => !targets.has(module));
+  if (!roots.length && data.focusModule)
+    roots = [data.focusModule];
+  roots.sort((a, b) => a.localeCompare(b));
+
+  const paths = new Map();
+  const addPath = (module, path) => {
+    if (!paths.has(module)) paths.set(module, []);
+    paths.get(module).push(path);
+  };
+  const visit = (module, path, stack) => {
+    addPath(module, path);
+    if (stack.has(module))
+      return;
+    const nextStack = new Set(stack);
+    nextStack.add(module);
+    const edges = (children.get(module) || [])
+      .slice()
+      .sort((a, b) => a.instanceName.localeCompare(b.instanceName) ||
+                      a.targetModule.localeCompare(b.targetModule));
+    for (const edge of edges)
+      visit(edge.targetModule, `${path}/${edge.instanceName}:${edge.targetModule}`, nextStack);
+  };
+
+  for (const root of roots)
+    visit(root, `$root:${root}`, new Set());
+  for (const module of modules)
+    if (!paths.has(module))
+      addPath(module, `$unreachable:${module}`);
+  return paths;
+}
+
+function renderHierarchicalDomainValues() {
+  const modulePaths = moduleHierarchyPaths();
+  const aliases = data.aliases || [];
+  const aliasByModule = new Map();
+  for (const alias of aliases)
+    aliasByModule.set(`${alias.module}\0${alias.alias}`, alias);
+
+  const groups = new Map();
+  const addObject = (domainKind, valuePath, object) => {
+    domainKind = domainKind || 'unknown domain';
+    if (!groups.has(domainKind)) groups.set(domainKind, new Map());
+    const values = groups.get(domainKind);
+    if (!values.has(valuePath))
+      values.set(valuePath, {valuePath, objects: []});
+    const bucket = values.get(valuePath);
+    const key = `${object.path}\0${object.kind}`;
+    if (!bucket.objects.some(existing => `${existing.path}\0${existing.kind}` === key))
+      bucket.objects.push(object);
+  };
+
+  const resolveAlias = (module, modulePath, aliasName) => {
+    const alias = aliasByModule.get(`${module}\0${aliasName}`);
+    if (!alias)
+      return {domainKind: 'unknown domain', valuePath: `${modulePath}.${aliasName || '?'}`};
+    const valueName = alias.portName || alias.alias;
+    return {
+      domainKind: alias.domainKind || 'unknown domain',
+      valuePath: `${modulePath}.${valueName}`,
+      alias
+    };
+  };
+
+  for (const alias of aliases) {
+    for (const modulePath of modulePaths.get(alias.module) || []) {
+      const resolved = resolveAlias(alias.module, modulePath, alias.alias);
+      addObject(resolved.domainKind, resolved.valuePath, {
+        path: resolved.valuePath,
+        kind: alias.inferred ? 'inferred domain value' : 'domain value',
+        direction: alias.direction,
+        type: alias.domainKind
+      });
+    }
+  }
+
+  const objectKinds = new Set(['hardware', 'register', 'wire', 'instance-port']);
+  for (const annotation of annotationsForDisplay()) {
+    if (!objectKinds.has(annotation.kind))
+      continue;
+    const paths = modulePaths.get(annotation.module) || [];
+    for (const modulePath of paths) {
+      const object = {
+        path: `${modulePath}.${annotation.portName}`,
+        kind: annotation.kind,
+        direction: annotation.direction,
+        type: annotation.type
+      };
+      for (const aliasName of annotation.aliases || []) {
+        if (!aliasName || aliasName === '?')
+          continue;
+        const resolved = resolveAlias(annotation.module, modulePath, aliasName);
+        addObject(resolved.domainKind, resolved.valuePath, object);
+      }
+    }
+  }
+
+  if (!groups.size)
+    return '<p>No hierarchical domain values recorded.</p>';
+
+  return [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([domainKind, values]) => {
+      const sortedValues = [...values.values()]
+        .sort((a, b) => a.valuePath.localeCompare(b.valuePath));
+      const renderedValues = sortedValues.map(value => {
+        const objects = value.objects
+          .sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind))
+          .map(object => `<li><strong>${esc(object.path)}</strong> <span class="lifetimeType">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`)
+          .join('');
+        return `<div class="domainValueBlock">
+          <div><span class="lifetimeAlias">${esc(value.valuePath)}</span></div>
+          <ul class="objectList">${objects}</ul>
+        </div>`;
+      }).join('');
+      return `<div class="lifetimeModule">
+        <h3>${esc(domainKind)} <span class="pill">${sortedValues.length} distinct value${sortedValues.length === 1 ? '' : 's'}</span></h3>
+        ${renderedValues}
+      </div>`;
+    }).join('');
+}
+
 function annotationForLabel(label) {
   const dot = String(label || '').indexOf('.');
   if (dot < 0) return null;
@@ -978,6 +1119,10 @@ function renderReadableReport(view) {
       <h2>Lifetime Annotations</h2>
       <p>Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as the value's inferred domain parameters, ordered by domain kind.</p>
       ${renderLifetimeAnnotations()}
+    </div>
+    <div class="reportBlock">
+      <h2>Hierarchical Domain Values</h2>
+      ${renderHierarchicalDomainValues()}
     </div>`;
 }
 
@@ -1122,6 +1267,10 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
           return (instance.getInstanceName() + "." +
                   instance.getPortName(result.getResultNumber()))
               .str();
+        if (auto domain = dyn_cast<DomainCreateOp>(result.getOwner()))
+          return domain.getName().str();
+        if (auto domain = dyn_cast<DomainCreateAnonOp>(result.getOwner()))
+          return domain.getName().str();
         if (auto wire = dyn_cast<WireOp>(result.getOwner()))
           return wire.getName().str();
         if (auto reg = dyn_cast<RegOp>(result.getOwner()))
@@ -1181,7 +1330,7 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
     auto domainInfo = module.getDomainInfoAttr();
     for (size_t i = 0, e = module.getNumPorts(); i < e; ++i) {
       auto type = module.getPortType(i);
-      if (!isHardware(type))
+      if (!isHardware(type) && !isa<DomainType>(type))
         continue;
 
       SmallVector<std::string> aliases;
@@ -1214,6 +1363,17 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
                           locToString(value.getLoc()), domains);
     };
 
+    auto addDomainAnnotationForValue = [&](StringRef name, StringRef direction,
+                                           DomainValue value) {
+      auto label = domainValueToDisplay(value);
+      auto domainName = value.getType().getName().getAttr().getValue();
+      trace.addAlias(moduleName, label, name, direction, domainName,
+                     locToString(value.getLoc()), false);
+      trace.addAnnotation(moduleName, name, direction, "domain",
+                          typeToString(value.getType()),
+                          locToString(value.getLoc()), {label});
+    };
+
     auto domainValuesToDisplay = [&](ValueRange values) {
       SmallVector<std::string> domains;
       for (auto value : values)
@@ -1223,6 +1383,18 @@ void CircuitState::populateDebugAnnotations(DomainDebugTrace &trace) {
 
     if (auto fmodule = dyn_cast<FModuleOp>(module.getOperation())) {
       fmodule.getBodyBlock()->walk([&](Operation *op) {
+        if (auto domain = dyn_cast<DomainCreateOp>(op)) {
+          addDomainAnnotationForValue(domain.getName(), "local",
+                                      domain.getResult());
+          return;
+        }
+
+        if (auto domain = dyn_cast<DomainCreateAnonOp>(op)) {
+          addDomainAnnotationForValue(domain.getName(), "local",
+                                      domain.getResult());
+          return;
+        }
+
         if (auto instance = dyn_cast<FInstanceLike>(op)) {
           for (size_t i = 0, e = instance.getNumPorts(); i < e; ++i) {
             Value value = instance->getResult(i);

@@ -114,4 +114,7 @@ circuit ComplicatedDomainInference :
 ; HTML-DAG: Actionable Suggestions
 ; HTML-DAG: Insert a Domain Crossing on the Source Path
 ; HTML-DAG: Lifetime Annotations
+; HTML-DAG: Hierarchical Domain Values
+; HTML-DAG: ClockDomain
+; HTML-DAG: distinct value
 ; HTML-DAG: Conflicting Domain Sets
