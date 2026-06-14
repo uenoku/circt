@@ -117,6 +117,18 @@ aside {
   color: #fff;
   background: var(--accent);
 }
+.viewBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.viewButton.active {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+}
 .searchRow {
   display: flex;
   align-items: center;
@@ -162,6 +174,55 @@ input[type=search] {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+}
+.hierarchyTree {
+  border-top: 1px solid #eef1f4;
+  padding-top: 8px;
+}
+.instanceNode {
+  margin: 8px 0 0;
+  padding-left: 14px;
+  border-left: 2px solid #dbe3ec;
+}
+.instanceNode > summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+.instanceHeader {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.instanceTitle {
+  font-weight: 650;
+}
+.clusterSet {
+  margin: 8px 0 0 8px;
+}
+.domainCluster {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid #e1e6ed;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+.clusterHeader {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.clusterItems {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+.objectList {
+  margin: 4px 0 0;
+  padding-left: 16px;
 }
 .domainPath {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -240,6 +301,7 @@ let currentData = null;
 let currentGroups = [];
 let activeTab = 'overview';
 let domainFilter = '';
+let domainMapMode = 'hierarchy';
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
@@ -583,6 +645,223 @@ function renderDomainGroups(groups, query = '') {
   return renderedCount ? renderedGroups : '<p class="muted">No domain values match the filter.</p>';
 }
 
+function hierarchyRoots(data) {
+  const modules = new Set();
+  const targets = new Set();
+  const children = new Map();
+  for (const edge of data.hierarchy || []) {
+    modules.add(edge.parentModule);
+    modules.add(edge.targetModule);
+    targets.add(edge.targetModule);
+    if (!children.has(edge.parentModule)) children.set(edge.parentModule, []);
+    children.get(edge.parentModule).push(edge);
+  }
+  for (const annotation of data.annotations || []) modules.add(annotation.module);
+  for (const alias of data.aliases || []) modules.add(alias.module);
+
+  let roots = [...modules].filter(module => !targets.has(module));
+  if (!roots.length && data.focusModule) roots = [data.focusModule];
+  roots.sort((a, b) => a.localeCompare(b));
+  return {roots, children};
+}
+
+function makeClusterNode(module, path, label, depth) {
+  return {
+    module,
+    path,
+    label,
+    depth,
+    children: [],
+    clusters: new Map()
+  };
+}
+
+function buildHierarchyForest(data) {
+  const {roots, children} = hierarchyRoots(data);
+  const pathToNode = new Map();
+
+  const visit = (module, path, label, depth, stack) => {
+    const node = makeClusterNode(module, path, label, depth);
+    pathToNode.set(path, node);
+    if (stack.has(module))
+      return node;
+
+    const nextStack = new Set(stack);
+    nextStack.add(module);
+    const edges = (children.get(module) || [])
+      .slice()
+      .sort((a, b) => a.instanceName.localeCompare(b.instanceName) ||
+                      a.targetModule.localeCompare(b.targetModule));
+    for (const edge of edges) {
+      const childPath = `${path}/${edge.instanceName}:${edge.targetModule}`;
+      node.children.push(visit(edge.targetModule, childPath,
+                               `${edge.instanceName} : ${edge.targetModule}`,
+                               depth + 1, nextStack));
+    }
+    return node;
+  };
+
+  const forest = roots.map(root => visit(root, `$root:${root}`, root, 0, new Set()));
+  return {forest, pathToNode};
+}
+
+function ownerNodeForPath(path, pathToNode) {
+  let best = null;
+  for (const [nodePath, node] of pathToNode) {
+    if (path === nodePath || path.startsWith(`${nodePath}.`) ||
+        path.startsWith(`${nodePath}/`)) {
+      if (!best || nodePath.length > best.path.length)
+        best = node;
+    }
+  }
+  return best;
+}
+
+function localPath(path, nodePath) {
+  if (path.startsWith(`${nodePath}.`))
+    return path.slice(nodePath.length + 1);
+  if (path.startsWith(`${nodePath}/`))
+    return path.slice(nodePath.length + 1);
+  return path;
+}
+
+function getCluster(node, group, value) {
+  if (!node.clusters.has(group.domainKind))
+    node.clusters.set(group.domainKind, new Map());
+  const values = node.clusters.get(group.domainKind);
+  if (!values.has(value.valuePath)) {
+    values.set(value.valuePath, {
+      domainKind: group.domainKind,
+      valuePath: value.valuePath,
+      handles: new Set(),
+      objects: []
+    });
+  }
+  return values.get(value.valuePath);
+}
+
+function computeHierarchyClusters(data, groups, query) {
+  const {forest, pathToNode} = buildHierarchyForest(data);
+  let clusterCount = 0;
+  let objectCount = 0;
+
+  for (const group of groups) {
+    for (const value of group.values) {
+      if (!matchesDomainFilter(group, value, query))
+        continue;
+
+      const touchedNodes = new Set();
+      for (const handle of value.associatedValues) {
+        const node = ownerNodeForPath(handle, pathToNode);
+        if (!node)
+          continue;
+        getCluster(node, group, value).handles.add(localPath(handle, node.path));
+        touchedNodes.add(node);
+      }
+
+      for (const object of value.objects) {
+        const node = ownerNodeForPath(object.path, pathToNode);
+        if (!node)
+          continue;
+        const cluster = getCluster(node, group, value);
+        cluster.objects.push({
+          path: localPath(object.path, node.path),
+          kind: object.kind,
+          direction: object.direction,
+          type: object.type
+        });
+        touchedNodes.add(node);
+        ++objectCount;
+      }
+
+      clusterCount += touchedNodes.size;
+    }
+  }
+
+  return {forest, clusterCount, objectCount};
+}
+
+function renderHierarchyCluster(kind, valueMap) {
+  const values = [...valueMap.values()]
+    .sort((a, b) => a.valuePath.localeCompare(b.valuePath));
+  return values.map(value => {
+    const handles = [...value.handles].sort((a, b) => a.localeCompare(b));
+    const objects = uniqueBy(value.objects, item => `${item.path}\0${item.kind}`)
+      .sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind));
+    const handleList = handles.length
+      ? handles.map(handle => `<li><span class="domainPath">${esc(handle)}</span></li>`).join('')
+      : '<li class="muted">No local domain handles recorded.</li>';
+    const objectList = objects.length
+      ? objects.map(object => `<li><strong>${esc(object.path)}</strong> <span class="muted">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`).join('')
+      : '<li class="muted">No local objects recorded.</li>';
+    return `<div class="domainCluster">
+      <div class="clusterHeader">
+        <div><strong>${esc(kind)}</strong> <span class="domainPath">${esc(value.valuePath)}</span></div>
+        <div>
+          <span class="pill">${handles.length} handle${handles.length === 1 ? '' : 's'}</span>
+          <span class="pill">${objects.length} object${objects.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+      <div class="clusterItems">
+        <div>
+          <h4>Domain Handles</h4>
+          <ul class="objectList">${handleList}</ul>
+        </div>
+        <div>
+          <h4>Objects</h4>
+          <ul class="objectList">${objectList}</ul>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function nodeHasVisibleContent(node) {
+  if (node.clusters.size)
+    return true;
+  return node.children.some(nodeHasVisibleContent);
+}
+
+function renderHierarchyNode(node, query) {
+  if (query && !nodeHasVisibleContent(node))
+    return '';
+  const clusterEntries = [...node.clusters.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const clusterCount = clusterEntries.reduce((sum, [, values]) => sum + values.size, 0);
+  const objectCount = clusterEntries.reduce((sum, [, values]) =>
+    sum + [...values.values()].reduce((valueSum, value) => valueSum + value.objects.length, 0), 0);
+  const clusters = clusterEntries.length
+    ? `<div class="clusterSet">${clusterEntries.map(([kind, values]) =>
+        renderHierarchyCluster(kind, values)).join('')}</div>`
+    : query ? '' : '<p class="muted">No local domain values recorded.</p>';
+  const children = node.children.map(child => renderHierarchyNode(child, query)).join('');
+  const open = node.depth < 2 || query ? ' open' : '';
+  return `<details class="instanceNode"${open}>
+    <summary>
+      <span class="instanceHeader">
+        <span class="instanceTitle">${esc(node.label)}</span>
+        <span class="muted">${esc(node.path)}</span>
+        <span class="pill">${clusterCount} domain value${clusterCount === 1 ? '' : 's'}</span>
+        <span class="pill">${objectCount} object${objectCount === 1 ? '' : 's'}</span>
+      </span>
+    </summary>
+    ${clusters}
+    ${children}
+  </details>`;
+}
+
+function renderDomainHierarchy(data, groups, query = '') {
+  const {forest, clusterCount, objectCount} = computeHierarchyClusters(data, groups, query);
+  if (!forest.length)
+    return '<p class="muted">No hierarchy recorded.</p>';
+  if (query && !clusterCount)
+    return '<p class="muted">No hierarchy clusters match the filter.</p>';
+  return `<div class="hierarchyTree">
+    <p class="muted">${esc(clusterCount)} domain value cluster${clusterCount === 1 ? '' : 's'}, ${esc(objectCount)} object${objectCount === 1 ? '' : 's'}</p>
+    ${forest.map(root => renderHierarchyNode(root, query)).join('')}
+  </div>`;
+}
+
 function renderConflictTrace(data) {
   const operation = (data.nodes || []).find(node => node.kind === 'operation');
   const conflicts = (data.edges || []).filter(edge => edge.conflict);
@@ -638,11 +917,18 @@ function renderDomainsTab(groups) {
   return `<div class="block">
     <h2>Domain Map</h2>
     <p class="sectionLead">Domain values are grouped by domain kind. Each entry shows the hierarchical values that were unified and the ports, registers, or wires that use the domain.</p>
+    <div class="viewBar">
+      <span class="muted">View</span>
+      <button class="viewButton${domainMapMode === 'hierarchy' ? ' active' : ''}" data-domain-view="hierarchy">Hierarchy Clusters</button>
+      <button class="viewButton${domainMapMode === 'list' ? ' active' : ''}" data-domain-view="list">Value List</button>
+    </div>
     <div class="searchRow">
       <input id="domainFilter" type="search" value="${esc(domainFilter)}" placeholder="Filter domain values or objects">
       <span class="muted">${esc(groups.reduce((sum, group) => sum + group.values.length, 0))} values</span>
     </div>
-    ${renderDomainGroups(groups, domainFilter)}
+    ${domainMapMode === 'hierarchy'
+      ? renderDomainHierarchy(currentData, groups, domainFilter)
+      : renderDomainGroups(groups, domainFilter)}
   </div>`;
 }
 
@@ -674,6 +960,12 @@ function renderActiveTab() {
       renderActiveTab();
     });
   });
+  document.querySelectorAll('[data-domain-view]').forEach(button => {
+    button.addEventListener('click', () => {
+      domainMapMode = button.dataset.domainView;
+      renderActiveTab();
+    });
+  });
   const filter = document.getElementById('domainFilter');
   if (filter)
     filter.addEventListener('input', event => {
@@ -690,6 +982,7 @@ function render(data, filename) {
   currentGroups = computeDomainGroups(data);
   activeTab = 'overview';
   domainFilter = '';
+  domainMapMode = 'hierarchy';
   const groups = currentGroups;
   const totalValues = groups.reduce((sum, group) => sum + group.values.length, 0);
   summary.innerHTML = `
