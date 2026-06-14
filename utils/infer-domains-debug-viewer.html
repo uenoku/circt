@@ -164,6 +164,21 @@ input[type=search] {
   padding: 10px;
   background: #fbfcfd;
 }
+.equivalenceBox {
+  border-color: var(--equiv-border, #e1e6ed);
+  border-left: 4px solid var(--equiv-color, var(--accent));
+  background:
+    linear-gradient(90deg, var(--equiv-bg, #fbfcfd) 0, #fbfcfd 42%);
+}
+.equivSwatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 1px solid var(--equiv-color, var(--accent));
+  border-radius: 2px;
+  background: var(--equiv-color, var(--accent));
+}
 .valueHeader {
   display: flex;
   align-items: start;
@@ -204,7 +219,7 @@ input[type=search] {
   margin: 8px 0;
   padding: 8px;
   border: 1px solid #e1e6ed;
-  border-left: 3px solid var(--accent);
+  border-left: 4px solid var(--equiv-color, var(--accent));
   border-radius: 6px;
   background: #fbfcfd;
 }
@@ -307,6 +322,24 @@ function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[char]));
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; ++i) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function equivalenceStyle(value) {
+  const hue = hashString(String(value)) % 360;
+  return [
+    `--equiv-color: hsl(${hue} 64% 38%)`,
+    `--equiv-border: hsl(${hue} 48% 72%)`,
+    `--equiv-bg: hsl(${hue} 78% 96%)`
+  ].join('; ');
 }
 
 function uniqueBy(items, keyFn) {
@@ -617,9 +650,9 @@ function renderDomainGroups(groups, query = '') {
       const objects = value.objects.length
         ? value.objects.map(object => `<li><strong>${esc(object.path)}</strong> <span class="muted">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`).join('')
         : '<li class="muted">No associated ports, registers, or wires recorded.</li>';
-      return `<div class="domainValue">
+      return `<div class="domainValue equivalenceBox" style="${esc(equivalenceStyle(value.valuePath))}">
         <div class="valueHeader">
-          <div class="domainPath">${esc(value.valuePath)}</div>
+          <div class="domainPath"><span class="equivSwatch"></span> ${esc(value.valuePath)}</div>
           <div>
             <span class="pill">${value.associatedValues.length} domain value${value.associatedValues.length === 1 ? '' : 's'}</span>
             <span class="pill">${value.objects.length} object${value.objects.length === 1 ? '' : 's'}</span>
@@ -794,9 +827,9 @@ function renderHierarchyCluster(kind, valueMap) {
     const objectList = objects.length
       ? objects.map(object => `<li><strong>${esc(object.path)}</strong> <span class="muted">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`).join('')
       : '<li class="muted">No local objects recorded.</li>';
-    return `<div class="domainCluster">
+    return `<div class="domainCluster equivalenceBox" style="${esc(equivalenceStyle(value.valuePath))}">
       <div class="clusterHeader">
-        <div><strong>${esc(kind)}</strong> <span class="domainPath">${esc(value.valuePath)}</span></div>
+        <div><span class="equivSwatch"></span> <strong>${esc(kind)}</strong> <span class="domainPath">${esc(value.valuePath)}</span></div>
         <div>
           <span class="pill">${handles.length} handle${handles.length === 1 ? '' : 's'}</span>
           <span class="pill">${objects.length} object${objects.length === 1 ? '' : 's'}</span>
