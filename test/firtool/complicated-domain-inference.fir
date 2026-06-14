@@ -1,5 +1,5 @@
-; RUN: rm -rf %t && not firtool %s -domain-mode=infer-all --debug-domains-html=%t -o /dev/null 2>&1 | FileCheck %s
-; RUN: FileCheck %s --input-file=%t/ComplicatedDomainInference.domain.html --check-prefix=HTML
+; RUN: rm -rf %t && not firtool %s -domain-mode=infer-all --debug-domains-json=%t -o /dev/null 2>&1 | FileCheck %s
+; RUN: FileCheck %s --input-file=%t/ComplicatedDomainInference.domain.json --check-prefix=JSON
 
 ; This is a deliberately complicated domain inference example.  Most of the
 ; private modules have no domain annotations on their interfaces.  The inference
@@ -107,16 +107,11 @@ circuit ComplicatedDomainInference :
     connect fastOut, fastPath.out
     connect slowOut, slowPath.out
 
-; HTML-DAG: FIRRTL Domain Inference Debugger
-; HTML-DAG: renderLifetimeAnnotations
-; HTML-DAG: Why This Failed
-; HTML-DAG: Conflict Source
-; HTML-DAG: Actionable Suggestions
-; HTML-DAG: Insert a Domain Crossing on the Source Path
-; HTML-DAG: Lifetime Annotations
-; HTML-DAG: Hierarchical Domain Values
-; HTML-DAG: ClockDomain
-; HTML-DAG: Associated Domain Values
-; HTML-DAG: Associated Objects
-; HTML-DAG: distinct value
-; HTML-DAG: Conflicting Domain Sets
+; JSON-DAG: "module": "ComplicatedDomainInference"
+; JSON-DAG: "failureKind": "illegal-domain-crossing"
+; JSON-DAG: "hierarchy"
+; JSON-DAG: "aliases"
+; JSON-DAG: "annotations"
+; JSON-DAG: "suggestions"
+; JSON-DAG: ClockDomain
+; JSON-DAG: fastPath.ClockDomain_0

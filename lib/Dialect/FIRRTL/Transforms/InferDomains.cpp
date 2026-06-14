@@ -143,10 +143,10 @@ namespace {
 struct CircuitState {
   CircuitState(CircuitOp circuit, InstanceGraph &instanceGraph,
                InnerRefNamespace &innerRefNamespace, InferDomainsMode mode,
-               StringRef debugDomainsHTML)
+               StringRef debugDomainsJSON)
       : circuit(circuit), instanceGraph(instanceGraph),
         innerRefNamespace(innerRefNamespace), mode(mode),
-        debugDomainsHTML(debugDomainsHTML.str()) {
+        debugDomainsJSON(debugDomainsJSON.str()) {
     processCircuit(circuit);
   }
 
@@ -176,7 +176,7 @@ struct CircuitState {
   }
 
   InnerRefNamespace &getInnerRefNamespace() { return innerRefNamespace; }
-  StringRef getDebugDomainsHTML() const { return debugDomainsHTML; }
+  StringRef getDebugDomainsJSON() const { return debugDomainsJSON; }
   void populateDebugAnnotations(DomainDebugTrace &trace);
   void populateDebugHierarchy(DomainDebugTrace &trace, FModuleOp focus);
 
@@ -201,7 +201,7 @@ private:
   InstanceGraph &instanceGraph;
   InnerRefNamespace &innerRefNamespace;
   InferDomainsMode mode;
-  std::string debugDomainsHTML;
+  std::string debugDomainsJSON;
   SmallVector<DomainOp> domainTable;
   DenseMap<Type, DomainTypeID> typeIDTable;
   DenseMap<VariableTerm *, size_t> variableIDTable;
@@ -405,7 +405,7 @@ public:
                            destination.str(), description.str()});
   }
 
-  FailureOr<std::string> emitHTML(FModuleOp moduleOp, StringRef failureKind,
+  FailureOr<std::string> emitJSON(FModuleOp moduleOp, StringRef failureKind,
                                   StringRef failureSummary) {
     if (!enabled || emitted)
       return failure();
@@ -415,14 +415,12 @@ public:
     std::string filename = getOutputFilename(moduleName);
     std::string dirname = getOutputDirectory();
     auto file = createOutputFile(filename, dirname, [&] {
-      return moduleOp.emitError("cannot write domain debug HTML");
+      return moduleOp.emitError("cannot write domain debug JSON");
     });
     if (!file)
       return failure();
 
-    std::string jsonBuffer;
-    llvm::raw_string_ostream jsonOS(jsonBuffer);
-    llvm::json::OStream json(jsonOS, 2);
+    llvm::json::OStream json(file->os(), 2);
     json.object([&] {
       json.attribute("module", moduleName);
       json.attribute("focusModule", focusModule);
@@ -505,20 +503,6 @@ public:
         }
       });
     });
-    jsonOS.flush();
-
-    // Avoid prematurely ending the embedding script tag if an IR string happens
-    // to contain HTML-like text.
-    size_t pos = 0;
-    while ((pos = jsonBuffer.find("</", pos)) != std::string::npos) {
-      jsonBuffer.insert(pos + 1, "\\");
-      pos += 3;
-    }
-
-    auto &os = file->os();
-    emitHTMLHeader(os);
-    os << jsonBuffer;
-    emitHTMLFooter(os);
     file->keep();
 
     SmallString<128> path(dirname);
@@ -528,741 +512,21 @@ public:
 
 private:
   std::string getOutputFilename(StringRef moduleName) const {
-    if (llvm::sys::path::extension(outputPath) == ".html")
+    if (llvm::sys::path::extension(outputPath) == ".json")
       return llvm::sys::path::filename(outputPath).str();
 
     std::string sanitized;
     for (char c : moduleName)
       sanitized.push_back(llvm::isAlnum(c) || c == '_' || c == '-' ? c : '_');
-    return sanitized + ".domain.html";
+    return sanitized + ".domain.json";
   }
 
   std::string getOutputDirectory() const {
-    if (llvm::sys::path::extension(outputPath) == ".html") {
+    if (llvm::sys::path::extension(outputPath) == ".json") {
       auto dir = llvm::sys::path::parent_path(outputPath);
       return dir.empty() ? "." : dir.str();
     }
     return outputPath;
-  }
-
-  static void emitHTMLHeader(raw_ostream &os) {
-    os << R"HTML(<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FIRRTL Domain Inference Debugger</title>
-<style>
-body { margin: 0; font: 13px/1.4 system-ui, sans-serif; color: #17202a; background: #f7f8fa; }
-header { padding: 12px 16px; background: #1f2937; color: white; }
-header h1 { margin: 0; font-size: 16px; font-weight: 650; }
-header div { margin-top: 4px; color: #d1d5db; }
-main { display: grid; grid-template-columns: 320px 1fr 360px; height: calc(100vh - 58px); }
-aside, section { min-width: 0; overflow: auto; }
-#summary { border-right: 1px solid #d7dce2; background: white; padding: 12px; }
-#details { border-left: 1px solid #d7dce2; background: white; padding: 12px; }
-#reportWrap { overflow: auto; background: #fbfcfd; }
-#report { max-width: 1120px; padding: 16px 20px 8px; }
-#report h2 { margin: 0 0 8px; font-size: 16px; }
-#report h3 { margin: 14px 0 6px; font-size: 13px; }
-.reportBlock { border: 1px solid #d7dce2; background: white; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
-.reportGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-.pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #e5e7eb; margin: 0 4px 4px 0; }
-.lifetimeModule { border-top: 1px solid #e5e7eb; margin-top: 10px; padding-top: 8px; }
-.lifetimeModule h3 { margin: 0 0 6px; font-size: 13px; }
-.lifetimeModule h4 { margin: 8px 0 4px; font-size: 12px; color: #374151; text-transform: uppercase; }
-.lifetimeModule h5 { margin: 7px 0 2px; font-size: 12px; color: #111827; }
-.lifetimeLegend { margin: 0 0 8px; color: #374151; }
-.lifetimeRow { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 6px; padding: 3px 0; align-items: baseline; }
-.lifetimeDir { color: #6b7280; }
-.lifetimeType { color: #6b7280; }
-.lifetimeAlias { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 650; color: #111827; }
-.lifetimeInferred { color: #047857; }
-.instanceBlock { margin: 4px 0 8px; padding-left: 8px; border-left: 2px solid #d1fae5; }
-.domainMismatch { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid #eef1f4; }
-.domainMismatch:last-child { border-bottom: 0; }
-.domainValueBlock { border-top: 1px solid #eef1f4; padding-top: 8px; margin-top: 8px; }
-.objectList { margin: 4px 0 0 0; padding-left: 18px; }
-.objectList li { margin: 2px 0; }
-.conflictText { color: #b42318; font-weight: 650; }
-pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 8px; border-radius: 6px; }
-button { border: 1px solid #c7ced6; background: white; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
-button:hover { background: #f3f4f6; }
-</style>
-</head>
-<body>
-<header><h1 id="title">FIRRTL Domain Inference Debugger</h1><div id="subtitle"></div></header>
-<main>
-<aside id="summary"></aside>
-<section id="reportWrap"><div id="report"></div></section>
-<aside id="details"></aside>
-</main>
-<script id="domain-debug-data" type="application/json">
-)HTML";
-  }
-
-  static void emitHTMLFooter(raw_ostream &os) {
-    os << R"HTML(
-</script>
-<script>
-const data = JSON.parse(document.getElementById('domain-debug-data').textContent);
-const byId = new Map(data.nodes.map(n => [n.id, n]));
-document.getElementById('title').textContent = `FIRRTL Domain Inference: ${data.module}`;
-document.getElementById('subtitle').textContent = `${data.failureKind}: ${data.failureSummary}`;
-
-const palette = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ca8a04', '#0891b2', '#ea580c', '#4f46e5', '#be123c', '#0f766e'];
-
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-function computeClasses() {
-  const parent = new Map();
-  const find = x => {
-    if (!parent.has(x)) parent.set(x, x);
-    const p = parent.get(x);
-    if (p === x) return x;
-    const r = find(p);
-    parent.set(x, r);
-    return r;
-  };
-  const unite = (a, b) => {
-    if (!a || !b) return;
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent.set(rb, ra);
-  };
-  for (const node of data.nodes) parent.set(node.id, node.id);
-  for (const edge of data.edges) {
-    if (['association', 'domain-term', 'resolve', 'unify', 'row-slot'].includes(edge.kind) && !edge.conflict)
-      unite(edge.from, edge.to);
-  }
-  const groups = new Map();
-  for (const node of data.nodes) {
-    if (node.kind === 'operation' || node.kind === 'module' || node.kind === 'instance') continue;
-    const root = find(node.id);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(node);
-  }
-  const classByNode = new Map();
-  const classes = [];
-  for (const [root, members] of groups) {
-    const visible = members.filter(n => n.kind !== 'term');
-    if (!visible.length) continue;
-    const classNode = {
-      id: `class:${classes.length}`,
-      label: `cluster ${classes.length + 1}`,
-      kind: 'class',
-      detail: visible.map(n => `${n.kind}: ${n.label}`).join('\n'),
-      loc: '',
-      color: palette[classes.length % palette.length]
-    };
-    classes.push(classNode);
-    for (const member of visible) classByNode.set(member.id, classNode);
-  }
-  return {classes, classByNode};
-}
-
-function computeConflictView() {
-  const {classes, classByNode} = computeClasses();
-  const memberKinds = new Set(['port', 'instance-port', 'register', 'wire', 'value', 'domain']);
-  const kindRank = new Map(['port', 'instance-port', 'register', 'wire', 'value', 'domain'].map((k, i) => [k, i]));
-  const membersByClass = new Map(classes.map(c => [c.id, []]));
-  for (const node of data.nodes) {
-    const cls = classByNode.get(node.id);
-    if (!cls || !memberKinds.has(node.kind)) continue;
-    membersByClass.get(cls.id).push(node);
-  }
-  for (const members of membersByClass.values()) {
-    members.sort((a, b) => (kindRank.get(a.kind) - kindRank.get(b.kind)) || a.label.localeCompare(b.label));
-  }
-
-  const operation = data.nodes.find(n => n.kind === 'operation');
-  const conflictClassIDs = new Set();
-  const clusterConflictEdges = [];
-  for (const edge of data.edges.filter(e => e.conflict)) {
-    const fromClass = classByNode.get(edge.from);
-    const toClass = classByNode.get(edge.to);
-    if (!fromClass || !toClass) continue;
-    conflictClassIDs.add(fromClass.id);
-    conflictClassIDs.add(toClass.id);
-    const reason = [edge.reason || 'conflicting domain association'];
-    if (operation)
-      reason.push(`operation: ${operation.label}${operation.loc ? '\n' + operation.loc : ''}`);
-    clusterConflictEdges.push({
-      from: fromClass.id,
-      to: toClass.id,
-      kind: 'cluster-conflict',
-      reason: reason.join('\n'),
-      conflict: true,
-      detail: `${edge.from}\n-> ${edge.to}`
-    });
-  }
-
-  if (!conflictClassIDs.size)
-    for (const cls of classes) conflictClassIDs.add(cls.id);
-
-  const classNodes = classes.filter(c => conflictClassIDs.has(c.id));
-  const visibleNodes = [];
-  const clusterMemberEdges = [];
-  for (const cls of classNodes) {
-    visibleNodes.push(cls);
-    for (const member of membersByClass.get(cls.id) || []) {
-      visibleNodes.push(member);
-      clusterMemberEdges.push({
-        from: member.id,
-        to: cls.id,
-        kind: 'cluster-member',
-        reason: 'member of conflicting domain cluster',
-        conflict: false
-      });
-    }
-  }
-
-  return {
-    classes,
-    classByNode,
-    classNodes,
-    membersByClass,
-    nodes: visibleNodes,
-    edges: clusterMemberEdges.concat(clusterConflictEdges),
-    conflictEdges: clusterConflictEdges
-  };
-}
-
-function annotationsForDisplay() {
-  const latest = new Map();
-  for (const annotation of data.annotations || [])
-    latest.set(`${annotation.module}\0${annotation.kind}\0${annotation.portName}`, annotation);
-  return [...latest.values()];
-}
-
-function renderLifetimeAnnotations() {
-  const aliases = data.aliases || [];
-  const annotations = annotationsForDisplay();
-  if (!annotations.length)
-    return '<p>No module interface annotations recorded.</p>';
-
-  const aliasesByModule = new Map();
-  for (const alias of aliases) {
-    if (!aliasesByModule.has(alias.module)) aliasesByModule.set(alias.module, []);
-    aliasesByModule.get(alias.module).push(alias);
-  }
-
-  const annotationsByModule = new Map();
-  for (const annotation of annotations) {
-    if (!annotationsByModule.has(annotation.module)) annotationsByModule.set(annotation.module, []);
-    annotationsByModule.get(annotation.module).push(annotation);
-  }
-
-  const modules = [...new Set([...annotationsByModule.keys(), ...aliasesByModule.keys()])]
-    .sort((a, b) => (a === data.focusModule ? -1 : b === data.focusModule ? 1 : a.localeCompare(b)));
-
-  return modules.map(module => {
-    const moduleAliases = (aliasesByModule.get(module) || [])
-      .sort((a, b) => a.alias.localeCompare(b.alias));
-    const moduleAnnotations = (annotationsByModule.get(module) || [])
-      .sort((a, b) => a.kind.localeCompare(b.kind) || a.portName.localeCompare(b.portName));
-    const legend = moduleAliases.length ? moduleAliases.map(alias =>
-      `<span class="pill"><span class="lifetimeAlias">${esc(alias.alias)}</span> = ${esc(alias.direction)} ${esc(alias.portName)} : ${esc(alias.domainKind)}${alias.inferred ? ' <span class="lifetimeInferred">inferred</span>' : ''}</span>`
-    ).join('') : '<span class="pill">no domain parameters</span>';
-    const rowsByKind = new Map();
-    for (const annotation of moduleAnnotations) {
-      if (!rowsByKind.has(annotation.kind)) rowsByKind.set(annotation.kind, []);
-      rowsByKind.get(annotation.kind).push(annotation);
-    }
-    const kindTitle = new Map([
-      ['domain', 'Domain Parameters'],
-      ['hardware', 'Module Ports'],
-      ['instance-port', 'Instances'],
-      ['register', 'Registers'],
-      ['wire', 'Wires']
-    ]);
-    const renderAnnotation = (annotation, name = annotation.portName) => {
-      const aliases = annotation.aliases && annotation.aliases.length ? annotation.aliases : ['?'];
-      const lifetimeParams = annotation.kind !== 'domain'
-        ? `&lt;${aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
-        : '';
-      return `<div class="lifetimeRow"><span class="lifetimeDir">${esc(annotation.direction)}</span><div><strong>${esc(name)}</strong>${lifetimeParams} <span class="lifetimeType">${esc(annotation.type)}</span></div></div>`;
-    };
-    const rows = [...rowsByKind.entries()].map(([kind, rows]) => {
-      let rendered;
-      if (kind === 'instance-port') {
-        const byInstance = new Map();
-        for (const annotation of rows) {
-          const dot = annotation.portName.indexOf('.');
-          const instance = dot < 0 ? annotation.portName : annotation.portName.slice(0, dot);
-          const port = dot < 0 ? annotation.portName : annotation.portName.slice(dot + 1);
-          if (!byInstance.has(instance)) byInstance.set(instance, []);
-          byInstance.get(instance).push({annotation, port});
-        }
-        rendered = [...byInstance.entries()].map(([instance, ports]) =>
-          `<div class="instanceBlock"><h5>instance ${esc(instance)}</h5>${ports.map(({annotation, port}) => renderAnnotation(annotation, port)).join('')}</div>`
-        ).join('');
-      } else {
-        rendered = rows.map(annotation => renderAnnotation(annotation)).join('');
-      }
-      return `<h4>${esc(kindTitle.get(kind) || kind)}</h4>${rendered}`;
-    }).join('');
-    return `<div class="lifetimeModule"><h3>${esc(module)}</h3><div class="lifetimeLegend">${legend}</div>${rows}</div>`;
-  }).join('');
-}
-
-function moduleHierarchyPaths() {
-  const modules = new Set();
-  const targets = new Set();
-  const children = new Map();
-  for (const edge of data.hierarchy || []) {
-    modules.add(edge.parentModule);
-    modules.add(edge.targetModule);
-    targets.add(edge.targetModule);
-    if (!children.has(edge.parentModule)) children.set(edge.parentModule, []);
-    children.get(edge.parentModule).push(edge);
-  }
-  for (const annotation of data.annotations || [])
-    modules.add(annotation.module);
-  for (const alias of data.aliases || [])
-    modules.add(alias.module);
-
-  let roots = [...modules].filter(module => !targets.has(module));
-  if (!roots.length && data.focusModule)
-    roots = [data.focusModule];
-  roots.sort((a, b) => a.localeCompare(b));
-
-  const paths = new Map();
-  const addPath = (module, path) => {
-    if (!paths.has(module)) paths.set(module, []);
-    paths.get(module).push(path);
-  };
-  const visit = (module, path, stack) => {
-    addPath(module, path);
-    if (stack.has(module))
-      return;
-    const nextStack = new Set(stack);
-    nextStack.add(module);
-    const edges = (children.get(module) || [])
-      .slice()
-      .sort((a, b) => a.instanceName.localeCompare(b.instanceName) ||
-                      a.targetModule.localeCompare(b.targetModule));
-    for (const edge of edges)
-      visit(edge.targetModule, `${path}/${edge.instanceName}:${edge.targetModule}`, nextStack);
-  };
-
-  for (const root of roots)
-    visit(root, `$root:${root}`, new Set());
-  for (const module of modules)
-    if (!paths.has(module))
-      addPath(module, `$unreachable:${module}`);
-  return paths;
-}
-
-function renderHierarchicalDomainValues() {
-  const modulePaths = moduleHierarchyPaths();
-  const aliases = data.aliases || [];
-  const aliasEntries = new Map();
-  for (const alias of aliases) {
-    const key = `${alias.module}\0${alias.alias}`;
-    if (!aliasEntries.has(key)) aliasEntries.set(key, []);
-    aliasEntries.get(key).push(alias);
-  }
-
-  const parent = new Map();
-  const find = value => {
-    if (!parent.has(value)) parent.set(value, value);
-    const p = parent.get(value);
-    if (p === value) return value;
-    const r = find(p);
-    parent.set(value, r);
-    return r;
-  };
-  const unite = (a, b) => {
-    if (!a || !b) return;
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent.set(rb, ra);
-  };
-
-  const valueInfo = new Map();
-  const objectsByValue = new Map();
-  const addDomainValue = (domainKind, valuePath, object) => {
-    if (!valuePath) return;
-    domainKind = domainKind || 'unknown domain';
-    find(valuePath);
-    if (!valueInfo.has(valuePath))
-      valueInfo.set(valuePath, {domainKind, members: new Set()});
-    const info = valueInfo.get(valuePath);
-    info.members.add(valuePath);
-    if (info.domainKind === 'unknown domain' && domainKind !== 'unknown domain')
-      info.domainKind = domainKind;
-    if (!object) return;
-    if (!objectsByValue.has(valuePath)) objectsByValue.set(valuePath, []);
-    const objects = objectsByValue.get(valuePath);
-    const key = `${object.path}\0${object.kind}`;
-    if (!objects.some(existing => `${existing.path}\0${existing.kind}` === key))
-      objects.push(object);
-  };
-
-  const valuePathsForAlias = (module, modulePath, aliasName) => {
-    const entries = aliasEntries.get(`${module}\0${aliasName}`) || [];
-    if (!entries.length)
-      return [{domainKind: 'unknown domain', valuePath: `${modulePath}.${aliasName || '?'}`}];
-    return entries.map(alias => ({
-      domainKind: alias.domainKind || 'unknown domain',
-      valuePath: `${modulePath}.${alias.portName || alias.alias}`,
-      alias
-    }));
-  };
-
-  for (const alias of aliases) {
-    for (const modulePath of modulePaths.get(alias.module) || []) {
-      const values = valuePathsForAlias(alias.module, modulePath, alias.alias);
-      for (const value of values) {
-        addDomainValue(value.domainKind, value.valuePath, {
-          path: value.valuePath,
-          kind: alias.inferred ? 'inferred domain value' : 'domain value',
-          direction: alias.direction,
-          type: alias.domainKind
-        });
-      }
-      for (let i = 1; i < values.length; ++i)
-        unite(values[0].valuePath, values[i].valuePath);
-    }
-  }
-
-  for (const edge of data.hierarchy || []) {
-    for (const parentPath of modulePaths.get(edge.parentModule) || []) {
-      const childPath = `${parentPath}/${edge.instanceName}:${edge.targetModule}`;
-      const childAliases = aliases.filter(alias =>
-        alias.module === edge.targetModule &&
-        alias.direction !== 'local' &&
-        alias.direction !== 'inferred');
-      for (const alias of childAliases) {
-        const parentValues =
-          valuePathsForAlias(edge.parentModule, parentPath,
-                             `${edge.instanceName}.${alias.portName}`);
-        const childValues =
-          valuePathsForAlias(edge.targetModule, childPath, alias.alias);
-        for (const parentValue of parentValues)
-          for (const childValue of childValues)
-            unite(parentValue.valuePath, childValue.valuePath);
-      }
-    }
-  }
-
-  const objectKinds = new Set(['hardware', 'register', 'wire', 'instance-port']);
-  for (const annotation of annotationsForDisplay()) {
-    if (!objectKinds.has(annotation.kind))
-      continue;
-    const paths = modulePaths.get(annotation.module) || [];
-    for (const modulePath of paths) {
-      const object = {
-        path: `${modulePath}.${annotation.portName}`,
-        kind: annotation.kind,
-        direction: annotation.direction,
-        type: annotation.type
-      };
-      for (const aliasName of annotation.aliases || []) {
-        if (!aliasName || aliasName === '?')
-          continue;
-        for (const resolved of valuePathsForAlias(annotation.module, modulePath, aliasName))
-          addDomainValue(resolved.domainKind, resolved.valuePath, object);
-      }
-    }
-  }
-
-  const groups = new Map();
-  for (const [valuePath, info] of valueInfo) {
-    const root = find(valuePath);
-    if (!valueInfo.has(root))
-      valueInfo.set(root, {domainKind: info.domainKind, members: new Set()});
-    const rootInfo = valueInfo.get(root);
-    if (rootInfo.domainKind === 'unknown domain' && info.domainKind !== 'unknown domain')
-      rootInfo.domainKind = info.domainKind;
-    for (const member of info.members)
-      rootInfo.members.add(member);
-    for (const object of objectsByValue.get(valuePath) || []) {
-      if (!objectsByValue.has(root)) objectsByValue.set(root, []);
-      const objects = objectsByValue.get(root);
-      const key = `${object.path}\0${object.kind}`;
-      if (!objects.some(existing => `${existing.path}\0${existing.kind}` === key))
-        objects.push(object);
-    }
-  }
-
-  for (const [valuePath, info] of valueInfo) {
-    if (find(valuePath) !== valuePath)
-      continue;
-    const domainKind = info.domainKind || 'unknown domain';
-    if (!groups.has(domainKind)) groups.set(domainKind, []);
-    groups.get(domainKind).push({
-      valuePath,
-      associatedValues: [...info.members].sort((a, b) => a.localeCompare(b)),
-      objects: objectsByValue.get(valuePath) || []
-    });
-  }
-
-  if (!groups.size)
-    return '<p>No hierarchical domain values recorded.</p>';
-
-  return [...groups.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([domainKind, values]) => {
-      const sortedValues = values
-        .sort((a, b) => a.valuePath.localeCompare(b.valuePath));
-      const renderedValues = sortedValues.map(value => {
-        const objects = value.objects
-          .sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind))
-          .map(object => `<li><strong>${esc(object.path)}</strong> <span class="lifetimeType">${esc(object.kind)}${object.direction ? `, ${esc(object.direction)}` : ''}${object.type ? `, ${esc(object.type)}` : ''}</span></li>`)
-          .join('');
-        const associated = value.associatedValues
-          .map(path => `<li><span class="lifetimeAlias">${esc(path)}</span></li>`)
-          .join('');
-        return `<div class="domainValueBlock">
-          <div><span class="lifetimeAlias">${esc(value.valuePath)}</span></div>
-          <h4>Associated Domain Values</h4>
-          <ul class="objectList">${associated}</ul>
-          <h4>Associated Objects</h4>
-          <ul class="objectList">${objects}</ul>
-        </div>`;
-      }).join('');
-      return `<div class="lifetimeModule">
-        <h3>${esc(domainKind)} <span class="pill">${sortedValues.length} distinct value${sortedValues.length === 1 ? '' : 's'}</span></h3>
-        ${renderedValues}
-      </div>`;
-    }).join('');
-}
-
-function annotationForLabel(label) {
-  const dot = String(label || '').indexOf('.');
-  if (dot < 0) return null;
-  const module = label.slice(0, dot);
-  const portName = label.slice(dot + 1);
-  return annotationsForDisplay().find(a => a.module === module && a.portName === portName) || null;
-}
-
-function formatAnnotation(annotation, fallback) {
-  if (!annotation) return `<strong>${esc(fallback)}</strong>`;
-  const aliases = annotation.aliases && annotation.aliases.length ? annotation.aliases : ['?'];
-  const lifetimes = annotation.kind !== 'domain'
-    ? `&lt;${aliases.map(alias => `<span class="lifetimeAlias">${esc(alias)}</span>`).join(', ')}&gt;`
-    : '';
-  return `<strong>${esc(annotation.module)}.${esc(annotation.portName)}</strong>${lifetimes} <span class="lifetimeType">${esc(annotation.type)}</span>`;
-}
-
-function associationRowForValue(valueID) {
-  for (const edge of data.edges || []) {
-    if (edge.kind !== 'association' || edge.from !== valueID) continue;
-    const row = byId.get(edge.to);
-    if (row && row.kind === 'term' && String(row.label || '').startsWith('['))
-      return row.label;
-  }
-  return '';
-}
-
-function parseDomainRow(row) {
-  const text = String(row || '');
-  if (!text.startsWith('[') || !text.endsWith(']')) return [];
-  const body = text.slice(1, -1).trim();
-  if (!body) return [];
-  return body.split(',').map(part => {
-    const pieces = part.trim().split(/\s+:\s+/);
-    return {value: pieces[0] || '', kind: pieces[1] || ''};
-  });
-}
-
-function displayDomainValue(value) {
-  const alias = (data.aliases || [])
-    .find(a => a.module === data.focusModule && a.portName === value);
-  return alias ? alias.alias : value;
-}
-
-function renderDomainRow(row) {
-  const entries = parseDomainRow(row);
-  if (!entries.length) return '<span class="lifetimeType">unknown</span>';
-  return entries.map(entry =>
-    `<span class="pill">${esc(entry.kind)}: <span class="lifetimeAlias">${esc(displayDomainValue(entry.value))}</span></span>`
-  ).join('');
-}
-
-function renderMismatches(rowA, rowB) {
-  const a = parseDomainRow(rowA);
-  const b = parseDomainRow(rowB);
-  const lines = [];
-  for (let i = 0; i < Math.max(a.length, b.length); ++i) {
-    const left = a[i] || {};
-    const right = b[i] || {};
-    const kind = left.kind || right.kind || `domain ${i + 1}`;
-    if (left.value === right.value) continue;
-    lines.push(`<div class="domainMismatch"><strong>${esc(kind)}</strong><span><span class="lifetimeAlias">${esc(displayDomainValue(left.value) || '?')}</span> vs <span class="lifetimeAlias">${esc(displayDomainValue(right.value) || '?')}</span></span></div>`);
-  }
-  return lines.length ? lines.join('') : '<p>No per-domain mismatch extracted.</p>';
-}
-
-function renderConflictValue(valueID, title) {
-  const node = byId.get(valueID);
-  const label = node ? node.label : valueID;
-  const annotation = annotationForLabel(label);
-  const row = associationRowForValue(valueID);
-  return `<div>
-    <h3>${esc(title)}</h3>
-    <p>${formatAnnotation(annotation, label)}</p>
-    <div>${renderDomainRow(row)}</div>
-    ${node && node.loc ? `<pre>${esc(node.loc)}</pre>` : ''}
-  </div>`;
-}
-
-function renderConflictSource() {
-  const operation = data.nodes.find(n => n.kind === 'operation');
-  if (!operation)
-    return '<p>No failing operation was recorded.</p>';
-  return `<p>The operation below is where the incompatible domain requirements meet.</p>
-    <pre>${esc(operation.detail || operation.label)}</pre>
-    ${operation.loc ? `<h3>Location</h3><pre>${esc(operation.loc)}</pre>` : ''}`;
-}
-
-function conflictValues(edge) {
-  if (!edge.detail) return [edge.from, edge.to];
-  const values = edge.detail.split('\n-> ');
-  return [values[0] || edge.from, values[1] || edge.to];
-}
-
-function conflictRoleTitles(edge) {
-  const reason = edge.reason || '';
-  if (reason.includes('firrtl.matchingconnect'))
-    return ['Destination', 'Source'];
-  if (reason.includes('firrtl.domain.define'))
-    return ['Defined domain', 'Conflicting source'];
-  return ['Operand A', 'Operand B'];
-}
-
-function suggestionTitle(s) {
-  if (s.kind === 'insert-cast')
-    return 'Insert a Domain Crossing on the Source Path';
-  if (s.kind === 'domain-define-conflict')
-    return 'Fix the Conflicting Domain Definition';
-  if (s.kind === 'missing-crossing')
-    return 'Drive the Missing Domain Port';
-  return 'Resolve the Domain Crossing';
-}
-
-function suggestionRoles(s) {
-  if (s.kind === 'domain-define-conflict')
-    return {source: 'Conflicting source', destination: 'Defined domain'};
-  if (s.kind === 'insert-cast')
-    return {source: 'Driving value', destination: 'Receiving value'};
-  return {source: 'Source', destination: 'Destination'};
-}
-
-function renderSuggestions() {
-  if (!data.suggestions || !data.suggestions.length)
-    return '<p>No specific insertion points identified.</p>';
-  return data.suggestions.map(s => {
-    const roles = suggestionRoles(s);
-    return `<div class="reportBlock">
-      <h3>${esc(suggestionTitle(s))}</h3>
-      <p><strong>Action:</strong> ${esc(s.description)}</p>
-      ${s.source ? `<p><strong>${roles.source}:</strong> ${esc(s.source)}</p>` : ''}
-      ${s.destination ? `<p><strong>${roles.destination}:</strong> ${esc(s.destination)}</p>` : ''}
-      ${s.location ? `<h3>Location</h3><pre>${esc(s.location)}</pre>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function renderReadableReport(view) {
-  const report = document.getElementById('report');
-  const paths = data.instancePaths || [];
-  const conflicts = view.conflictEdges.length ? view.conflictEdges : [];
-  const conflictHTML = conflicts.length ? conflicts.map(edge => {
-    const [firstValue, secondValue] = conflictValues(edge);
-    const [firstTitle, secondTitle] = conflictRoleTitles(edge);
-    const rowA = associationRowForValue(firstValue);
-    const rowB = associationRowForValue(secondValue);
-    return `<div class="reportGrid">
-      ${renderConflictValue(firstValue, firstTitle)}
-      ${renderConflictValue(secondValue, secondTitle)}
-      <div><h3>Mismatching Domains</h3>${renderMismatches(rowA, rowB)}<pre>${esc(edge.reason)}</pre></div>
-    </div>`;
-  }).join('') : '<p>No conflict edge recorded.</p>';
-
-  report.innerHTML = `
-    <div class="reportBlock">
-      <h2>Why This Failed</h2>
-      <p class="conflictText">${esc(data.failureSummary)}</p>
-      ${conflictHTML}
-    </div>
-    <div class="reportBlock">
-      <h2>Conflict Source</h2>
-      ${renderConflictSource()}
-    </div>
-    <div class="reportBlock">
-      <h2>Actionable Suggestions</h2>
-      ${renderSuggestions()}
-    </div>
-    <div class="reportBlock">
-      <h2>Instance Context</h2>
-      ${paths.length ? paths.map(p => `<pre>${esc(p)}</pre>`).join('') : '<p>No instance path recorded.</p>'}
-    </div>
-    <div class="reportBlock">
-      <h2>Lifetime Annotations</h2>
-      <p>Read <span class="lifetimeAlias">value&lt;'d1, 'd2&gt;</span> as the value's inferred domain parameters, ordered by domain kind.</p>
-      ${renderLifetimeAnnotations()}
-    </div>
-    <div class="reportBlock">
-      <h2>Hierarchical Domain Values</h2>
-      ${renderHierarchicalDomainValues()}
-    </div>`;
-}
-
-function renderSummary() {
-  const view = computeConflictView();
-  const paths = data.instancePaths || [];
-  document.getElementById('summary').innerHTML = `
-    <h2>Failure</h2>
-    <p class="conflictText">${esc(data.failureSummary)}</p>
-    <h2>Context</h2>
-    <p><span class="pill">module: ${esc(data.focusModule || data.module)}</span></p>
-    ${paths.length ? `<h3>Absolute Paths</h3>${paths.map(p => `<pre>${esc(p)}</pre>`).join('')}` : '<p>No instance path recorded.</p>'}
-    <h2>Conflicting Domain Sets</h2>
-    ${view.classNodes.map(c => {
-      const members = view.membersByClass.get(c.id) || [];
-      const counts = [...new Set(members.map(m => m.kind))]
-        .map(k => `<span class="pill">${esc(k)}: ${members.filter(m => m.kind === k).length}</span>`)
-        .join('');
-      return `<p><span class="pill" style="border-left: 10px solid ${c.color}">${esc(c.label)}</span></p>${counts}<pre>${esc(members.map(n => `${n.kind}: ${n.label}`).join('\n'))}</pre>`;
-    }).join('')}
-    <h2>Conflicts</h2>
-    ${view.conflictEdges.map((e, i) => `<button data-conflict-index="${i}">${esc(e.reason.split('\n')[0])}</button>`).join(' ') || '<p>No conflict edge recorded.</p>'}
-    <h2>Trace Size</h2>
-    <p><span class="pill">domain sets: ${view.classNodes.length}</span><span class="pill">recorded values: ${view.nodes.length}</span><span class="pill">recorded constraints: ${data.edges.length}</span></p>`;
-  document.querySelectorAll('[data-conflict-index]').forEach(button => {
-    button.addEventListener('click', () => showDetails(view.conflictEdges[Number(button.dataset.conflictIndex)]));
-  });
-}
-
-function showDetails(item) {
-  const detail = document.getElementById('details');
-  if (!item) {
-    detail.innerHTML = '<h2>Details</h2><p>Select a node or edge.</p>';
-    return;
-  }
-  if (item.from) {
-    detail.innerHTML = `<h2>Edge</h2>
-      <p><span class="pill">${esc(item.kind)}</span>${item.conflict ? '<span class="pill conflictText">conflict</span>' : ''}</p>
-      <pre>${esc(item.from)}\n-> ${esc(item.to)}</pre>
-      <h3>Reason</h3><pre>${esc(item.reason)}</pre>`;
-    return;
-  }
-  detail.innerHTML = `<h2>${esc(item.label)}</h2>
-    <p><span class="pill">${esc(item.kind)}</span></p>
-    <h3>Location</h3><pre>${esc(item.loc)}</pre>
-    <h3>Detail</h3><pre>${esc(item.detail)}</pre>`;
-}
-
-renderSummary();
-renderReadableReport(computeConflictView());
-showDetails(null);
-</script>
-</body>
-</html>
-)HTML";
   }
 
   std::string outputPath;
@@ -1606,7 +870,7 @@ namespace {
 class ModuleState {
 public:
   explicit ModuleState(CircuitState &globals)
-      : globals(globals), debugTrace(globals.getDebugDomainsHTML()) {}
+      : globals(globals), debugTrace(globals.getDebugDomainsJSON()) {}
 
   ArrayRef<DomainOp> getDomains() { return globals.getDomains(); }
   size_t getNumDomains() { return globals.getNumDomains(); }
@@ -1681,9 +945,9 @@ public:
   void noteDomain(InFlightDiagnostic &diag, DomainValue domain);
   void noteDomainSource(InFlightDiagnostic &diag, DomainValue domain);
   void noteDomainSource(InFlightDiagnostic &diag, Term *term);
-  void noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
+  void noteDebugJSON(InFlightDiagnostic &diag, FModuleOp moduleOp,
                      StringRef failureKind, StringRef failureSummary);
-  void noteDebugHTML(InFlightDiagnostic &diag, Operation *op,
+  void noteDebugJSON(InFlightDiagnostic &diag, Operation *op,
                      StringRef failureKind, StringRef failureSummary);
   void populateDebugLocalAnnotations(FModuleOp moduleOp);
   void recordValueNode(Value value);
@@ -2208,7 +1472,7 @@ void ModuleState::populateDebugLocalAnnotations(FModuleOp moduleOp) {
   });
 }
 
-void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
+void ModuleState::noteDebugJSON(InFlightDiagnostic &diag, FModuleOp moduleOp,
                                 StringRef failureKind,
                                 StringRef failureSummary) {
   if (!debugTrace.isEnabled() || debugTrace.hasEmitted())
@@ -2217,18 +1481,18 @@ void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, FModuleOp moduleOp,
   globals.populateDebugAnnotations(debugTrace);
   populateDebugLocalAnnotations(moduleOp);
   globals.populateDebugHierarchy(debugTrace, moduleOp);
-  auto path = debugTrace.emitHTML(moduleOp, failureKind, failureSummary);
+  auto path = debugTrace.emitJSON(moduleOp, failureKind, failureSummary);
   if (succeeded(path))
-    diag.attachNote() << "domain inference debugger written to " << *path;
+    diag.attachNote() << "domain inference debug JSON written to " << *path;
 }
 
-void ModuleState::noteDebugHTML(InFlightDiagnostic &diag, Operation *op,
+void ModuleState::noteDebugJSON(InFlightDiagnostic &diag, Operation *op,
                                 StringRef failureKind,
                                 StringRef failureSummary) {
   while (op && !isa<FModuleOp>(op))
     op = op->getParentOp();
   if (auto moduleOp = llvm::dyn_cast_if_present<FModuleOp>(op))
-    noteDebugHTML(diag, moduleOp, failureKind, failureSummary);
+    noteDebugJSON(diag, moduleOp, failureKind, failureSummary);
 }
 
 // NOLINTNEXTLINE(misc-no-recursion)
@@ -2651,7 +1915,7 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
   llvm::raw_string_ostream os(summary);
   os << "illegal domain crossing between " << renderToString(lhs) << " and "
      << renderToString(rhs);
-  noteDebugHTML(diag, op, "illegal-domain-crossing", os.str());
+  noteDebugJSON(diag, op, "illegal-domain-crossing", os.str());
 }
 
 template <typename T>
@@ -2675,7 +1939,7 @@ void ModuleState::emitDuplicatePortDomainError(
   auto &note2 = diag.attachNote(domainPortLoc2);
   note2 << "associated with " << domainName << " port " << domainPortName2;
   noteLocation(diag, op);
-  noteDebugHTML(diag, op.getOperation(), "duplicate-domain-association",
+  noteDebugJSON(diag, op.getOperation(), "duplicate-domain-association",
                 "duplicate domain association on port");
 }
 
@@ -2700,7 +1964,7 @@ void ModuleState::emitDomainPortInferenceError(T op, size_t i) {
     }
   }
   noteLocation(diag, op);
-  noteDebugHTML(diag, op.getOperation(), "domain-port-inference-failed",
+  noteDebugJSON(diag, op.getOperation(), "domain-port-inference-failed",
                 "unable to infer value for undriven domain port");
 }
 
@@ -2721,7 +1985,7 @@ void ModuleState::emitAmbiguousPortDomainAssociation(
     diag.attachNote(loc) << "candidate association " << name;
   }
   noteLocation(diag, op);
-  noteDebugHTML(diag, op.getOperation(), "ambiguous-domain-association",
+  noteDebugJSON(diag, op.getOperation(), "ambiguous-domain-association",
                 "ambiguous port domain association");
 }
 
@@ -2735,7 +1999,7 @@ void ModuleState::emitMissingPortDomainAssociationError(T op,
               << "missing " << domainName << " association for port "
               << portName;
   noteLocation(diag, op);
-  noteDebugHTML(diag, op.getOperation(), "missing-domain-association",
+  noteDebugJSON(diag, op.getOperation(), "missing-domain-association",
                 "missing port domain association");
 }
 
@@ -2993,7 +2257,7 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
       "defined domain and the source domain intentionally refer to the same "
       "domain value.");
 
-  noteDebugHTML(diag, op.getOperation(), "domain-define-conflict",
+  noteDebugJSON(diag, op.getOperation(), "domain-define-conflict",
                 "domain.define conflicts with inferred domain");
 
   return failure();
@@ -3319,7 +2583,7 @@ LogicalResult ModuleState::updateModuleDomainInfo(
                                        << " association for port " << portName;
         diag.attachNote(domain.getLoc()) << "associated domain: " << domain;
         noteLocation(diag, moduleOp);
-        noteDebugHTML(diag, moduleOp, "private-domain-association",
+        noteDebugJSON(diag, moduleOp, "private-domain-association",
                       "private domain association for module port");
         return failure();
       }
@@ -3609,7 +2873,7 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
                                "represents a crossing, export the crossed "
                                "domain explicitly.");
     }
-    noteDebugHTML(diag, moduleOp, "undriven-domain-port",
+    noteDebugJSON(diag, moduleOp, "undriven-domain-port",
                   "undriven module output domain port");
     return failure();
   }
@@ -3639,7 +2903,7 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
                                "instance. If the instance boundary is the "
                                "crossing, wire the post-crossing domain here.");
     }
-    noteDebugHTML(diag, op.getOperation(), "undriven-domain-port",
+    noteDebugJSON(diag, op.getOperation(), "undriven-domain-port",
                   "undriven instance input domain port");
     return failure();
   }
@@ -3840,7 +3104,7 @@ struct InferDomainsPass
     circt::hw::InnerRefNamespace innerRefNamespace{symbolTable,
                                                    innerSymbolTableCollection};
     CircuitState state(circuit, instanceGraph, innerRefNamespace, mode,
-                       debugDomainsHTML);
+                       debugDomainsJSON);
     if (failed(state.run()))
       signalPassFailure();
   }

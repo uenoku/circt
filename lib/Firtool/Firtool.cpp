@@ -135,7 +135,7 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
   // semantics.
   if (auto mode = FirtoolOptions::toInferDomainsPassMode(opt.getDomainMode()))
     pm.nest<firrtl::CircuitOp>().addPass(
-        firrtl::createInferDomains({*mode, opt.getDebugDomainsHTML().str()}));
+        firrtl::createInferDomains({*mode, opt.getDebugDomainsJSON().str()}));
 
   pm.addNestedPass<firrtl::CircuitOp>(firrtl::createCheckCombLoops());
 
@@ -810,10 +810,10 @@ public:
           clEnumValN(firtool::FirtoolOptions::DomainMode::Strip, "strip",
                      "Erase all domain information"))};
 
-  llvm::cl::opt<std::string> debugDomainsHTML{
-      "debug-domains-html",
-      llvm::cl::desc("Write a self-contained HTML domain inference debugger "
-                     "to this file or directory when inference fails"),
+  llvm::cl::opt<std::string> debugDomainsJSON{
+      "debug-domains-json",
+      llvm::cl::desc("Write a JSON domain inference debug artifact to this "
+                     "file or directory when inference fails"),
       llvm::cl::init("")};
 
   //===----------------------------------------------------------------------===
@@ -868,7 +868,7 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
       disableWireElimination(false), lintStaticAsserts(true),
       lintXmrsInDesign(true), emitAllBindFiles(false),
       inlineInputOnlyModules(false), domainMode(DomainMode::Disable),
-      debugDomainsHTML("") {
+      debugDomainsJSON("") {
   if (!clOptions.isConstructed())
     return;
   outputFilename = clOptions->outputFilename;
@@ -920,5 +920,5 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
   emitAllBindFiles = clOptions->emitAllBindFiles;
   inlineInputOnlyModules = clOptions->inlineInputOnlyModules;
   domainMode = clOptions->domainMode;
-  debugDomainsHTML = clOptions->debugDomainsHTML;
+  debugDomainsJSON = clOptions->debugDomainsJSON;
 }

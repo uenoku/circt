@@ -931,9 +931,9 @@ def InferDomains : Pass<"firrtl-infer-domains", "firrtl::CircuitOp"> {
                      "Check domains with inference for both public and private "
                      "modules"))
       }]>,
-      Option<"debugDomainsHTML", "debug-domains-html", "std::string", "",
-             "Write a self-contained HTML domain inference debugger to this "
-             "file or directory when inference fails">];
+      Option<"debugDomainsJSON", "debug-domains-json", "std::string", "",
+             "Write a JSON domain inference debug artifact to this file or "
+             "directory when inference fails">];
 }
 
 def LowerDomains : Pass<"firrtl-lower-domains", "firrtl::CircuitOp"> {
