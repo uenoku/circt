@@ -1,6 +1,7 @@
 ; RUN: firtool %s -output-final-mlir - -o /dev/null                    | FileCheck %s -implicit-check-not om.frozenpath_create -implicit-check-not Domain
 ; RUN: firtool %s -output-final-mlir - -domain-mode=check -o /dev/null | FileCheck %s -check-prefixes=CHECK,DOMAIN
 ; RUN: firtool %s -output-final-mlir - -domain-mode=strip -o /dev/null | FileCheck %s -implicit-check-not om.frozenpath_create -implicit-check-not Domain
+; RUN: firtool %s -output-final-mlir - -domain-mode=check --disable-domain=PowerDomain -o /dev/null | FileCheck %s -check-prefixes=CHECK,DOMAIN
 
 FIRRTL version 7.0.0
 circuit Foo :
