@@ -930,7 +930,12 @@ def InferDomains : Pass<"firrtl-infer-domains", "firrtl::CircuitOp"> {
                    clEnumValN(InferDomainsMode::InferAll, "infer-all",
                      "Check domains with inference for both public and private "
                      "modules"))
-      }]>];
+      }]>,
+                 ListOption<"disabledDomains", "disable-domain", "std::string",
+                   "Names of domains (e.g. \"ClockDomain\") to exclude from "
+                   "domain checking. Errors involving only these domains are "
+                   "suppressed, allowing development of individual domains "
+                   "without other domains' errors interfering.">];
 }
 
 def LowerDomains : Pass<"firrtl-lower-domains", "firrtl::CircuitOp"> {
