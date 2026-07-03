@@ -4,6 +4,7 @@ get_property(mlir_dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 add_circt_tool(domaintool
   domaintool.cpp
   ClockSpecJSONHandler.cpp
+  PowerDomainJSONHandler.cpp
 )
 
 target_link_libraries(domaintool

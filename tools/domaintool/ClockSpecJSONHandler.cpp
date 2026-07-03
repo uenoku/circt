@@ -193,6 +193,11 @@ public:
   }
 
   LogicalResult emit(raw_ostream &os) override {
+    // Only emit if we have clock domains to report
+    if (clocks.empty() && asyncPorts.empty() && staticPorts.empty() &&
+        syncPorts.empty())
+      return success();
+
     json::OStream json(os, /*indentSize=*/2);
     json.object([&] {
       json.attributeArray("clocks", [&] {
