@@ -2053,13 +2053,11 @@ stripModuleImpl(FModuleLike moduleOp,
 }
 
 /// Unified implementation to strip domains from a circuit based on a predicate.
-/// The predicate determines which domain types should be stripped.
-/// shouldEraseDomainOp determines which DomainOp declarations to erase.
-static LogicalResult
-stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
-                        llvm::function_ref<bool(Type)> shouldStripDomain,
-                        llvm::function_ref<bool(StringRef)> shouldEraseDomainOp,
-                        bool errorOnUnstrippable = false) {
+/// The predicate determines which domain names should be stripped.
+static LogicalResult stripDomainsFromCircuit(
+    MLIRContext *context, CircuitOp circuit,
+    llvm::function_ref<bool(StringRef)> shouldStripDomainName,
+    bool errorOnUnstrippable = false) {
 
   // Collect modules and erase matching DomainOp declarations
   llvm::SmallVector<FModuleLike> modules;
@@ -2067,10 +2065,17 @@ stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
     TypeSwitch<Operation *, void>(&op)
         .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
         .Case<DomainOp>([&](DomainOp op) {
-          if (shouldEraseDomainOp(op.getName()))
+          if (shouldStripDomainName(op.getName()))
             op.erase();
         });
   }
+
+  // Type predicate: strip domain types whose name matches
+  auto shouldStripDomain = [&](Type type) {
+    if (auto domainType = dyn_cast<DomainType>(type))
+      return shouldStripDomainName(domainType.getName().getValue());
+    return false;
+  };
 
   // Strip domains from all modules in parallel
   return failableParallelForEach(context, modules, [&](FModuleLike module) {
@@ -2080,10 +2085,9 @@ stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
 
 /// Strip all domains from the circuit (convenience wrapper).
 static LogicalResult stripCircuit(MLIRContext *context, CircuitOp circuit) {
-  auto shouldStripDomain = [](Type type) { return isa<DomainType>(type); };
-  auto shouldEraseDomainOp = [](StringRef name) { return true; };
-  return stripDomainsFromCircuit(context, circuit, shouldStripDomain,
-                                 shouldEraseDomainOp,
+  // Predicate that matches all domain names
+  auto shouldStripDomainName = [](StringRef name) { return true; };
+  return stripDomainsFromCircuit(context, circuit, shouldStripDomainName,
                                  /*errorOnUnstrippable=*/true);
 }
 
@@ -2146,17 +2150,12 @@ struct InferDomainsPass
       for (const auto &name : disabledDomains)
         disabledNames.insert(name);
 
-      auto shouldStripDomain = [&](Type type) {
-        if (auto domainType = dyn_cast<DomainType>(type))
-          return disabledNames.contains(domainType.getName().getValue());
-        return false;
-      };
-      auto shouldEraseDomainOp = [&](StringRef name) {
+      auto shouldStripDomainName = [&](StringRef name) {
         return disabledNames.contains(name);
       };
 
       if (failed(stripDomainsFromCircuit(&getContext(), circuit,
-                                         shouldStripDomain, shouldEraseDomainOp,
+                                         shouldStripDomainName,
                                          /*errorOnUnstrippable=*/false))) {
         signalPassFailure();
         return;
