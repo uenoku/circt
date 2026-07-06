@@ -1934,33 +1934,30 @@ stripModuleImpl(FModuleLike moduleOp,
           [&](Operation *op) -> WalkResult {
             return TypeSwitch<Operation *, WalkResult>(op)
                 .Case<FModuleLike>([&](FModuleLike op) {
-                  auto n = op.getNumPorts();
-                  BitVector erasures(n);
-                  for (size_t i = 0; i < n; ++i)
+                  BitVector erasures(op.getNumPorts());
+                  for (size_t i = 0, e = op.getNumPorts(); i < e; ++i)
                     if (shouldStripDomain(op.getPortType(i)))
                       erasures.set(i);
-                  op.erasePorts(erasures);
+                  if (erasures.any())
+                    op.erasePorts(erasures);
                   return WalkResult::advance();
                 })
-                .Case<DomainDefineOp, DomainCreateAnonOp, DomainCreateOp>(
-                    [&](Operation *op) {
-                      // Check if we should erase based on the domain types
-                      bool shouldErase = false;
-                      if (auto defineOp = dyn_cast<DomainDefineOp>(op)) {
-                        shouldErase =
-                            shouldStripDomain(defineOp.getDest().getType()) ||
-                            shouldStripDomain(defineOp.getSrc().getType());
-                      } else if (auto createOp = dyn_cast<DomainCreateOp>(op)) {
-                        shouldErase = shouldStripDomain(createOp.getType());
-                      } else if (auto anonOp =
-                                     dyn_cast<DomainCreateAnonOp>(op)) {
-                        shouldErase = shouldStripDomain(anonOp.getType());
-                      }
-
-                      if (shouldErase)
-                        op->erase();
-                      return WalkResult::advance();
-                    })
+                .Case<DomainDefineOp>([&](DomainDefineOp op) {
+                  if (shouldStripDomain(op.getDest().getType()) ||
+                      shouldStripDomain(op.getSrc().getType()))
+                    op.erase();
+                  return WalkResult::advance();
+                })
+                .Case<DomainCreateOp>([&](DomainCreateOp op) {
+                  if (shouldStripDomain(op.getType()))
+                    op.erase();
+                  return WalkResult::advance();
+                })
+                .Case<DomainCreateAnonOp>([&](DomainCreateAnonOp op) {
+                  if (shouldStripDomain(op.getType()))
+                    op.erase();
+                  return WalkResult::advance();
+                })
                 .Case<DomainSubfieldOp>([&](DomainSubfieldOp op) {
                   // The subfield's result is a property value; decide whether
                   // to strip based on the domain it reads from.
@@ -1979,14 +1976,9 @@ stripModuleImpl(FModuleLike moduleOp,
                 .Case<UnsafeDomainCastOp>([&](UnsafeDomainCastOp op) {
                   // Strip cast if any of the domains being cast should be
                   // stripped
-                  bool stripCast = false;
-                  for (auto domain : op.getDomains()) {
-                    if (shouldStripDomain(domain.getType())) {
-                      stripCast = true;
-                      break;
-                    }
-                  }
-                  if (stripCast) {
+                  if (llvm::any_of(op.getDomains(), [&](Value domain) {
+                        return shouldStripDomain(domain.getType());
+                      })) {
                     op.replaceAllUsesWith(op.getInput());
                     op.erase();
                   }
@@ -1998,16 +1990,11 @@ stripModuleImpl(FModuleLike moduleOp,
                     op->erase();
                     return WalkResult::advance();
                   }
-                  // Erase domain operands from regular wires
-                  if (!op.getDomains().empty()) {
-                    SmallVector<unsigned> toErase;
-                    for (auto [i, domain] : llvm::enumerate(op.getDomains()))
-                      if (shouldStripDomain(domain.getType()))
-                        toErase.push_back(i);
-                    // Erase in reverse order to maintain indices
-                    for (auto i : llvm::reverse(toErase))
+                  // Erase domain operands from regular wires (reverse order to
+                  // maintain indices)
+                  for (int i = op.getDomains().size() - 1; i >= 0; --i)
+                    if (shouldStripDomain(op.getDomains()[i].getType()))
                       op->eraseOperand(i);
-                  }
                   return WalkResult::advance();
                 })
                 .Case<FInstanceLike>([&](auto op) {
@@ -2040,29 +2027,22 @@ stripModuleImpl(FModuleLike moduleOp,
   return failure(result.wasInterrupted());
 }
 
-/// Unified implementation to strip domains from a circuit based on a predicate.
-/// The predicate determines which domain names should be stripped.
-static LogicalResult stripDomainsFromCircuit(
-    MLIRContext *context, CircuitOp circuit,
-    llvm::function_ref<bool(StringRef)> shouldStripDomainName) {
-
+/// Unified implementation to strip domains from a circuit based on a type
+/// predicate.
+static LogicalResult
+stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
+                        llvm::function_ref<bool(Type)> shouldStripDomain) {
   // Collect modules and erase matching DomainOp declarations
   llvm::SmallVector<FModuleLike> modules;
   for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
     TypeSwitch<Operation *, void>(&op)
         .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
         .Case<DomainOp>([&](DomainOp op) {
-          if (shouldStripDomainName(op.getName()))
+          // Erase domain declaration if its type should be stripped
+          if (shouldStripDomain(DomainType::getFromDomainOp(op)))
             op.erase();
         });
   }
-
-  // Type predicate: strip domain types whose name matches
-  auto shouldStripDomain = [&](Type type) {
-    if (auto domainType = dyn_cast<DomainType>(type))
-      return shouldStripDomainName(domainType.getName().getValue());
-    return false;
-  };
 
   // Strip domains from all modules in parallel
   return failableParallelForEach(context, modules, [&](FModuleLike module) {
@@ -2070,11 +2050,11 @@ static LogicalResult stripDomainsFromCircuit(
   });
 }
 
-/// Strip all domains from the circuit (convenience wrapper).
+/// Strip all domains from the circuit.
 static LogicalResult stripCircuit(MLIRContext *context, CircuitOp circuit) {
-  // Predicate that matches all domain names
-  auto shouldStripDomainName = [](StringRef name) { return true; };
-  return stripDomainsFromCircuit(context, circuit, shouldStripDomainName);
+  // Predicate that matches all domain types
+  return stripDomainsFromCircuit(
+      context, circuit, [](Type type) { return isa<DomainType>(type); });
 }
 
 //===---------------------------------------------------------------------------
@@ -2133,15 +2113,16 @@ struct InferDomainsPass
     // Strip disabled domains in a prepass before checking/inference
     if (!disabledDomains.empty()) {
       llvm::StringSet<> disabledNames;
-      for (const auto &name : disabledDomains)
-        disabledNames.insert(name);
+      disabledNames.insert(disabledDomains.begin(), disabledDomains.end());
 
-      auto shouldStripDomainName = [&](StringRef name) {
-        return disabledNames.contains(name);
+      auto shouldStripDomain = [&](Type type) {
+        if (auto domainType = dyn_cast<DomainType>(type))
+          return disabledNames.contains(domainType.getName().getValue());
+        return false;
       };
 
       if (failed(stripDomainsFromCircuit(&getContext(), circuit,
-                                         shouldStripDomainName))) {
+                                         shouldStripDomain))) {
         signalPassFailure();
         return;
       }
