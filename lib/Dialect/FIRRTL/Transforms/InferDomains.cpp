@@ -143,7 +143,7 @@ struct CircuitState {
                ArrayRef<std::string> disabledDomains)
       : circuit(circuit), instanceGraph(instanceGraph),
         innerRefNamespace(innerRefNamespace), mode(mode) {
-    processCircuit(circuit, disabledDomains);
+    processCircuit(circuit);
   }
 
   LogicalResult run();
@@ -152,13 +152,6 @@ struct CircuitState {
   size_t getNumDomains() const { return domainTable.size(); }
   DomainOp getDomain(DomainTypeID id) const { return domainTable[id.index]; }
   DomainTypeID getDomainTypeID(Type type) { return typeIDTable[type]; }
-
-  /// True if the domain identified by `id` has been excluded from checking via
-  /// the `disabled-domains` option. Errors involving only disabled domains are
-  /// suppressed.
-  bool isDomainDisabled(DomainTypeID id) const {
-    return disabledDomainIDs.contains(id.index);
-  }
 
   void dirty() { asmState = nullptr; }
   AsmState &getAsmState() {
@@ -192,18 +185,9 @@ private:
     typeIDTable.insert({domainType, {index}});
   }
 
-  void processCircuit(CircuitOp circuit,
-                      ArrayRef<std::string> disabledDomains) {
+  void processCircuit(CircuitOp circuit) {
     for (auto decl : circuit.getOps<DomainOp>())
       processDomain(decl);
-
-    // Resolve the disabled-domain names to type-ids.
-    llvm::StringSet<> disabledNames;
-    for (const auto &name : disabledDomains)
-      disabledNames.insert(name);
-    for (auto [index, decl] : llvm::enumerate(domainTable))
-      if (disabledNames.contains(decl.getName()))
-        disabledDomainIDs.insert(index);
   }
 
   CircuitOp circuit;
@@ -211,7 +195,6 @@ private:
   InnerRefNamespace &innerRefNamespace;
   InferDomainsMode mode;
   SmallVector<DomainOp> domainTable;
-  DenseSet<size_t> disabledDomainIDs;
   DenseMap<Type, DomainTypeID> typeIDTable;
   DenseMap<VariableTerm *, size_t> variableIDTable;
   std::unique_ptr<AsmState> asmState;
@@ -320,9 +303,6 @@ public:
   }
   DomainTypeID getDomainTypeID(DomainValue value) const {
     return globals.getDomainTypeID(value.getType());
-  }
-  bool isDomainDisabled(DomainTypeID id) const {
-    return globals.isDomainDisabled(id);
   }
   auto &getModuleUpdateTable() { return globals.getModuleUpdateTable(); }
 
@@ -620,16 +600,9 @@ LogicalResult ModuleState::unify(RowTerm *lhsRow, Term *rhs) {
     return success();
   }
   if (auto *rhsRow = dyn_cast<RowTerm>(rhs)) {
-    for (auto [i, elements] :
-         llvm::enumerate(llvm::zip_equal(lhsRow->elements, rhsRow->elements))) {
-      // Disabled domains are excluded from checking: skip their row slot so a
-      // mismatch there never produces a domain-crossing error.
-      if (isDomainDisabled(DomainTypeID{i}))
-        continue;
-      auto [x, y] = elements;
+    for (auto [x, y] : llvm::zip_equal(lhsRow->elements, rhsRow->elements))
       if (failed(unify(x, y)))
         return failure();
-    }
     return success();
   }
   return failure();
@@ -952,8 +925,6 @@ void ModuleState::emitDomainCrossingError(Operation *op, Value lhs,
   render(rhsRow, note2);
 
   for (size_t i = 0, e = getNumDomains(); i < e; ++i) {
-    if (isDomainDisabled(DomainTypeID{i}))
-      continue;
     auto *lhsDomain = find(lhsRow->elements[i]);
     auto *rhsDomain = find(rhsRow->elements[i]);
     if (lhsDomain == rhsDomain)
@@ -1134,7 +1105,7 @@ LogicalResult ModuleState::processModulePorts(FModuleOp moduleOp) {
     for (auto domainPortIndex : getPortDomainAssociation(domainInfo, i)) {
       auto domainTypeID = domainTypeIDTable.at(domainPortIndex.getUInt());
       auto prevDomainPortIndex = associations[domainTypeID.index];
-      if (prevDomainPortIndex && !isDomainDisabled(domainTypeID)) {
+      if (prevDomainPortIndex) {
         emitDuplicatePortDomainError(moduleOp, i, domainTypeID,
                                      prevDomainPortIndex, domainPortIndex);
         return failure();
@@ -1187,7 +1158,7 @@ LogicalResult ModuleState::processInstancePorts(T op) {
     for (auto domainPortIndex : getPortDomainAssociation(domainInfo, i)) {
       auto domainTypeID = domainTypeIDTable.at(domainPortIndex.getUInt());
       auto prevDomainPortIndex = associations[domainTypeID.index];
-      if (prevDomainPortIndex && !isDomainDisabled(domainTypeID)) {
+      if (prevDomainPortIndex) {
         emitDuplicatePortDomainError(op, i, domainTypeID, prevDomainPortIndex,
                                      domainPortIndex);
         return failure();
@@ -1264,10 +1235,6 @@ LogicalResult ModuleState::processOp(DomainDefineOp op) {
   auto *srcTerm = getTermForDomain(src);
   auto *dstTerm = getTermForDomain(dst);
   if (succeeded(unify(dstTerm, srcTerm)))
-    return success();
-
-  // Disabled domains are excluded from checking.
-  if (isDomainDisabled(getDomainTypeID(cast<DomainValue>(dst))))
     return success();
 
   auto diag =
@@ -1846,7 +1813,7 @@ LogicalResult ModuleState::checkModulePorts(FModuleLike moduleOp) {
     for (auto domainPortIndex : getPortDomainAssociation(domainInfo, i)) {
       auto domainTypeID = domainTypeIDTable.at(domainPortIndex.getUInt());
       auto prevDomainPortIndex = associations[domainTypeID.index];
-      if (prevDomainPortIndex && !isDomainDisabled(domainTypeID)) {
+      if (prevDomainPortIndex) {
         emitDuplicatePortDomainError(moduleOp, i, domainTypeID,
                                      prevDomainPortIndex, domainPortIndex);
         return failure();
@@ -1857,8 +1824,6 @@ LogicalResult ModuleState::checkModulePorts(FModuleLike moduleOp) {
     // Check the associations for completeness.
     for (size_t domainIndex = 0; domainIndex < numDomains; ++domainIndex) {
       auto typeID = DomainTypeID{domainIndex};
-      if (isDomainDisabled(typeID))
-        continue;
       if (!associations[domainIndex]) {
         emitMissingPortDomainAssociationError(moduleOp, typeID, i);
         return failure();
@@ -1874,9 +1839,6 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
     auto port = dyn_cast<DomainValue>(moduleOp.getArgument(i));
     if (!port || moduleOp.getPortDirection(i) != Direction::Out ||
         isDriven(port))
-      continue;
-
-    if (isDomainDisabled(getDomainTypeID(moduleOp, i)))
       continue;
 
     auto name = moduleOp.getPortNameAttr(i);
@@ -1896,9 +1858,6 @@ LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
     auto type = port.getType();
     if (!isa<DomainType>(type) || op.getPortDirection(i) != Direction::In ||
         isDriven(port))
-      continue;
-
-    if (isDomainDisabled(getDomainTypeID(op, i)))
       continue;
 
     auto name = op.getPortNameAttr(i);
@@ -2044,6 +2003,126 @@ static LogicalResult stripCircuit(MLIRContext *context, CircuitOp circuit) {
   return failableParallelForEach(context, modules, stripModule);
 }
 
+/// Strip only specific domains identified by the `disabledDomains` set.
+static LogicalResult
+stripSpecificDomainsFromModule(FModuleLike op,
+                               const llvm::StringSet<> &disabledDomains) {
+  auto shouldStripDomain = [&](Type type) {
+    if (auto domainType = dyn_cast<DomainType>(type))
+      return disabledDomains.contains(domainType.getName().getValue());
+    return false;
+  };
+
+  WalkResult result = op->walk<mlir::WalkOrder::PostOrder, ReverseIterator>(
+      [&](Operation *op) -> WalkResult {
+        return TypeSwitch<Operation *, WalkResult>(op)
+            .Case<FModuleLike>([&](FModuleLike op) {
+              auto n = op.getNumPorts();
+              BitVector erasures(n);
+              for (size_t i = 0; i < n; ++i)
+                if (shouldStripDomain(op.getPortType(i)))
+                  erasures.set(i);
+              op.erasePorts(erasures);
+              return WalkResult::advance();
+            })
+            .Case<DomainDefineOp, DomainCreateAnonOp, DomainCreateOp>(
+                [&](Operation *op) {
+                  // Only strip if the domain is disabled
+                  Type domainType;
+                  if (auto defineOp = dyn_cast<DomainDefineOp>(op))
+                    domainType = defineOp.getDest().getType();
+                  else if (auto createOp = dyn_cast<DomainCreateOp>(op))
+                    domainType = createOp.getType();
+                  else if (auto anonOp = dyn_cast<DomainCreateAnonOp>(op))
+                    domainType = anonOp.getType();
+
+                  if (domainType && shouldStripDomain(domainType))
+                    op->erase();
+                  return WalkResult::advance();
+                })
+            .Case<DomainSubfieldOp>([&](DomainSubfieldOp op) {
+              if (shouldStripDomain(op.getType())) {
+                if (!op->use_empty()) {
+                  OpBuilder builder(op);
+                  op.replaceAllUsesWith(
+                      UnknownValueOp::create(builder, op.getLoc(), op.getType())
+                          .getResult());
+                }
+                op.erase();
+              }
+              return WalkResult::advance();
+            })
+            .Case<UnsafeDomainCastOp>([&](UnsafeDomainCastOp op) {
+              // Strip cast if any of the domains being cast are disabled
+              bool stripCast = false;
+              for (auto domain : op.getDomains()) {
+                if (shouldStripDomain(domain.getType())) {
+                  stripCast = true;
+                  break;
+                }
+              }
+              if (stripCast) {
+                op.replaceAllUsesWith(op.getInput());
+                op.erase();
+              }
+              return WalkResult::advance();
+            })
+            .Case<WireOp>([&](WireOp op) {
+              // Erase wires of disabled DomainType
+              if (shouldStripDomain(op.getType(0))) {
+                op->erase();
+                return WalkResult::advance();
+              }
+              // Erase disabled domain operands from regular wires
+              if (!op.getDomains().empty()) {
+                SmallVector<unsigned> toErase;
+                for (auto [i, domain] : llvm::enumerate(op.getDomains()))
+                  if (shouldStripDomain(domain.getType()))
+                    toErase.push_back(i);
+                // Erase in reverse order to maintain indices
+                for (auto i : llvm::reverse(toErase))
+                  op->eraseOperand(i);
+              }
+              return WalkResult::advance();
+            })
+            .Case<FInstanceLike>([&](auto op) {
+              auto n = op.getNumPorts();
+              BitVector erasures(n);
+              for (size_t i = 0; i < n; ++i)
+                if (shouldStripDomain(op->getResult(i).getType()))
+                  erasures.set(i);
+              if (erasures.any()) {
+                op.cloneWithErasedPortsAndReplaceUses(erasures);
+                op.erase();
+              }
+              return WalkResult::advance();
+            })
+            .Default([](Operation *op) { return WalkResult::advance(); });
+      });
+  return failure(result.wasInterrupted());
+}
+
+static LogicalResult
+stripSpecificDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
+                                ArrayRef<std::string> disabledDomains) {
+  llvm::StringSet<> disabledNames;
+  for (const auto &name : disabledDomains)
+    disabledNames.insert(name);
+
+  llvm::SmallVector<FModuleLike> modules;
+  for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
+    TypeSwitch<Operation *, void>(&op)
+        .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
+        .Case<DomainOp>([&](DomainOp op) {
+          if (disabledNames.contains(op.getName()))
+            op.erase();
+        });
+  }
+  return failableParallelForEach(context, modules, [&](FModuleLike module) {
+    return stripSpecificDomainsFromModule(module, disabledNames);
+  });
+}
+
 //===---------------------------------------------------------------------------
 // InferDomainsPass: Top-level pass implementation.
 //===---------------------------------------------------------------------------
@@ -2097,14 +2176,24 @@ struct InferDomainsPass
       return;
     }
 
+    // Strip disabled domains in a prepass before checking/inference
+    if (!disabledDomains.empty()) {
+      if (failed(stripSpecificDomainsFromCircuit(&getContext(), circuit,
+                                                 disabledDomains))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     auto &instanceGraph = getAnalysis<InstanceGraph>();
     auto &symbolTable = getAnalysis<SymbolTable>();
     auto &innerSymbolTableCollection =
         getAnalysis<InnerSymbolTableCollection>();
     circt::hw::InnerRefNamespace innerRefNamespace{symbolTable,
                                                    innerSymbolTableCollection};
-    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode,
-                       disabledDomains);
+    // No longer pass disabledDomains to CircuitState since they're already
+    // stripped
+    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode, {});
     if (failed(state.run()))
       signalPassFailure();
   }
