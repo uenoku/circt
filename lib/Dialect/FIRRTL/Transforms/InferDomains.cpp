@@ -30,7 +30,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TinyPtrVector.h"
 
 #define DEBUG_TYPE "firrtl-infer-domains"
@@ -2050,13 +2049,6 @@ stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
   });
 }
 
-/// Strip all domains from the circuit.
-static LogicalResult stripCircuit(MLIRContext *context, CircuitOp circuit) {
-  // Predicate that matches all domain types
-  return stripDomainsFromCircuit(
-      context, circuit, [](Type type) { return isa<DomainType>(type); });
-}
-
 //===---------------------------------------------------------------------------
 // InferDomainsPass: Top-level pass implementation.
 //===---------------------------------------------------------------------------
@@ -2105,24 +2097,29 @@ struct InferDomainsPass
     auto circuit = getOperation();
 
     if (mode == InferDomainsMode::Strip) {
-      if (failed(stripCircuit(&getContext(), circuit)))
+      // Strip all domain types
+      if (failed(stripDomainsFromCircuit(&getContext(), circuit, [](Type type) {
+            return isa<DomainType>(type);
+          })))
         signalPassFailure();
       return;
     }
 
     // Strip disabled domains in a prepass before checking/inference
     if (!disabledDomains.empty()) {
-      llvm::StringSet<> disabledNames;
-      disabledNames.insert(disabledDomains.begin(), disabledDomains.end());
+      DenseSet<StringAttr> disabledNames;
+      auto *context = &getContext();
+      for (const auto &name : disabledDomains)
+        disabledNames.insert(StringAttr::get(context, name));
 
       auto shouldStripDomain = [&](Type type) {
         if (auto domainType = dyn_cast<DomainType>(type))
-          return disabledNames.contains(domainType.getName().getValue());
+          return disabledNames.contains(domainType.getName().getAttr());
         return false;
       };
 
-      if (failed(stripDomainsFromCircuit(&getContext(), circuit,
-                                         shouldStripDomain))) {
+      if (failed(
+              stripDomainsFromCircuit(context, circuit, shouldStripDomain))) {
         signalPassFailure();
         return;
       }
