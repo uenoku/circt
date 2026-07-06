@@ -2052,62 +2052,39 @@ stripModuleImpl(FModuleLike moduleOp,
   return failure(result.wasInterrupted());
 }
 
-/// Unified implementation to strip domains from a circuit.
-/// If disabledDomains is empty, strips all domains.
-/// Otherwise, strips only the named domains.
+/// Unified implementation to strip domains from a circuit based on a predicate.
+/// The predicate determines which domain types should be stripped.
+/// shouldEraseDomainOp determines which DomainOp declarations to erase.
 static LogicalResult
 stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
-                        ArrayRef<std::string> disabledDomains = {}) {
-  bool stripAll = disabledDomains.empty();
+                        llvm::function_ref<bool(Type)> shouldStripDomain,
+                        llvm::function_ref<bool(StringRef)> shouldEraseDomainOp,
+                        bool errorOnUnstrippable = false) {
 
+  // Collect modules and erase matching DomainOp declarations
   llvm::SmallVector<FModuleLike> modules;
-
-  if (stripAll) {
-    // Full strip mode: erase all DomainOps and use simple predicate
-    for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
-      TypeSwitch<Operation *, void>(&op)
-          .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
-          .Case<DomainOp>([](DomainOp op) { op.erase(); });
-    }
-
-    // Predicate: strip all domain types
-    auto shouldStripDomain = [](Type type) { return isa<DomainType>(type); };
-    return failableParallelForEach(context, modules, [&](FModuleLike module) {
-      return stripModuleImpl(module, shouldStripDomain,
-                             /*errorOnUnstrippable=*/true);
-    });
-  } else {
-    // Selective strip mode: build set of disabled domain names
-    llvm::StringSet<> disabledNames;
-    for (const auto &name : disabledDomains)
-      disabledNames.insert(name);
-
-    // Erase only matching DomainOps
-    for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
-      TypeSwitch<Operation *, void>(&op)
-          .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
-          .Case<DomainOp>([&](DomainOp op) {
-            if (disabledNames.contains(op.getName()))
-              op.erase();
-          });
-    }
-
-    // Predicate: strip only disabled domain types
-    auto shouldStripDomain = [&](Type type) {
-      if (auto domainType = dyn_cast<DomainType>(type))
-        return disabledNames.contains(domainType.getName().getValue());
-      return false;
-    };
-    return failableParallelForEach(context, modules, [&](FModuleLike module) {
-      return stripModuleImpl(module, shouldStripDomain,
-                             /*errorOnUnstrippable=*/false);
-    });
+  for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
+    TypeSwitch<Operation *, void>(&op)
+        .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
+        .Case<DomainOp>([&](DomainOp op) {
+          if (shouldEraseDomainOp(op.getName()))
+            op.erase();
+        });
   }
+
+  // Strip domains from all modules in parallel
+  return failableParallelForEach(context, modules, [&](FModuleLike module) {
+    return stripModuleImpl(module, shouldStripDomain, errorOnUnstrippable);
+  });
 }
 
 /// Strip all domains from the circuit (convenience wrapper).
 static LogicalResult stripCircuit(MLIRContext *context, CircuitOp circuit) {
-  return stripDomainsFromCircuit(context, circuit);
+  auto shouldStripDomain = [](Type type) { return isa<DomainType>(type); };
+  auto shouldEraseDomainOp = [](StringRef name) { return true; };
+  return stripDomainsFromCircuit(context, circuit, shouldStripDomain,
+                                 shouldEraseDomainOp,
+                                 /*errorOnUnstrippable=*/true);
 }
 
 //===---------------------------------------------------------------------------
@@ -2165,8 +2142,22 @@ struct InferDomainsPass
 
     // Strip disabled domains in a prepass before checking/inference
     if (!disabledDomains.empty()) {
+      llvm::StringSet<> disabledNames;
+      for (const auto &name : disabledDomains)
+        disabledNames.insert(name);
+
+      auto shouldStripDomain = [&](Type type) {
+        if (auto domainType = dyn_cast<DomainType>(type))
+          return disabledNames.contains(domainType.getName().getValue());
+        return false;
+      };
+      auto shouldEraseDomainOp = [&](StringRef name) {
+        return disabledNames.contains(name);
+      };
+
       if (failed(stripDomainsFromCircuit(&getContext(), circuit,
-                                         disabledDomains))) {
+                                         shouldStripDomain, shouldEraseDomainOp,
+                                         /*errorOnUnstrippable=*/false))) {
         signalPassFailure();
         return;
       }
