@@ -2060,36 +2060,49 @@ stripDomainsFromCircuit(MLIRContext *context, CircuitOp circuit,
                         ArrayRef<std::string> disabledDomains = {}) {
   bool stripAll = disabledDomains.empty();
 
-  // Build set of disabled domain names for selective stripping
-  llvm::StringSet<> disabledNames;
-  if (!stripAll) {
+  llvm::SmallVector<FModuleLike> modules;
+
+  if (stripAll) {
+    // Full strip mode: erase all DomainOps and use simple predicate
+    for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
+      TypeSwitch<Operation *, void>(&op)
+          .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
+          .Case<DomainOp>([](DomainOp op) { op.erase(); });
+    }
+
+    // Predicate: strip all domain types
+    auto shouldStripDomain = [](Type type) { return isa<DomainType>(type); };
+    return failableParallelForEach(context, modules, [&](FModuleLike module) {
+      return stripModuleImpl(module, shouldStripDomain,
+                             /*errorOnUnstrippable=*/true);
+    });
+  } else {
+    // Selective strip mode: build set of disabled domain names
+    llvm::StringSet<> disabledNames;
     for (const auto &name : disabledDomains)
       disabledNames.insert(name);
-  }
 
-  // Predicate: strip all domains, or only disabled ones
-  auto shouldStripDomain = [&](Type type) {
-    auto domainType = dyn_cast<DomainType>(type);
-    if (!domainType)
+    // Erase only matching DomainOps
+    for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
+      TypeSwitch<Operation *, void>(&op)
+          .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
+          .Case<DomainOp>([&](DomainOp op) {
+            if (disabledNames.contains(op.getName()))
+              op.erase();
+          });
+    }
+
+    // Predicate: strip only disabled domain types
+    auto shouldStripDomain = [&](Type type) {
+      if (auto domainType = dyn_cast<DomainType>(type))
+        return disabledNames.contains(domainType.getName().getValue());
       return false;
-    return stripAll || disabledNames.contains(domainType.getName().getValue());
-  };
-
-  // Collect modules and erase matching DomainOp declarations
-  llvm::SmallVector<FModuleLike> modules;
-  for (Operation &op : make_early_inc_range(*circuit.getBodyBlock())) {
-    TypeSwitch<Operation *, void>(&op)
-        .Case<FModuleLike>([&](FModuleLike op) { modules.push_back(op); })
-        .Case<DomainOp>([&](DomainOp op) {
-          if (stripAll || disabledNames.contains(op.getName()))
-            op.erase();
-        });
+    };
+    return failableParallelForEach(context, modules, [&](FModuleLike module) {
+      return stripModuleImpl(module, shouldStripDomain,
+                             /*errorOnUnstrippable=*/false);
+    });
   }
-
-  // Strip domains from all modules in parallel
-  return failableParallelForEach(context, modules, [&](FModuleLike module) {
-    return stripModuleImpl(module, shouldStripDomain, stripAll);
-  });
 }
 
 /// Strip all domains from the circuit (convenience wrapper).
