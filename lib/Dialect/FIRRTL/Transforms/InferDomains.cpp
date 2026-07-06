@@ -139,8 +139,7 @@ struct ModuleUpdateInfo {
 namespace {
 struct CircuitState {
   CircuitState(CircuitOp circuit, InstanceGraph &instanceGraph,
-               InnerRefNamespace &innerRefNamespace, InferDomainsMode mode,
-               ArrayRef<std::string> disabledDomains)
+               InnerRefNamespace &innerRefNamespace, InferDomainsMode mode)
       : circuit(circuit), instanceGraph(instanceGraph),
         innerRefNamespace(innerRefNamespace), mode(mode) {
     processCircuit(circuit);
@@ -2170,7 +2169,7 @@ struct InferDomainsPass
                                                    innerSymbolTableCollection};
     // No longer pass disabledDomains to CircuitState since they're already
     // stripped
-    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode, {});
+    CircuitState state(circuit, instanceGraph, innerRefNamespace, mode);
     if (failed(state.run()))
       signalPassFailure();
   }
