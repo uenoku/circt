@@ -16,6 +16,7 @@
 #include "circt/InitAllDialects.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/Version.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Parser/Parser.h"
@@ -113,8 +114,10 @@ public:
       if (!part.getAsInteger(10, intParam)) {
         parameters.push_back(
             om::evaluator::AttributeValue::get(om::IntegerAttr::get(
-                &context, mlir::IntegerAttr::get(IntegerType::get(&context, 64),
-                                                 intParam))));
+                &context,
+                mlir::IntegerAttr::get(
+                    IntegerType::get(&context, 64, mlir::IntegerType::Signed),
+                    intParam))));
         continue;
       }
 
