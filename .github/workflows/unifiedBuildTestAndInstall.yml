@@ -195,6 +195,17 @@ jobs:
           docker-images: true
           large-packages: false
           tool-cache: true
+      - name: Check Initial Disk and Memory Usage
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Disk Usage by Directory (/) ==="
+          du -sh /* 2>/dev/null | sort -h || echo "du command failed"
       - name: Clone llvm/circt
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -381,6 +392,32 @@ jobs:
           echo llvm_lit_args="$LLVM_LIT_ARGS" >> $GITHUB_OUTPUT
           echo cmake_c_compiler="$CMAKE_C_COMPILER" >> $GITHUB_OUTPUT
           echo cmake_cxx_compiler="$CMAKE_CXX_COMPILER" >> $GITHUB_OUTPUT
+      - name: Start Background Resource Monitor
+        shell: bash
+        run: |
+          # Create a background monitoring script
+          cat > monitor.sh << 'EOF'
+          #!/bin/bash
+          LOG_FILE="resource_monitor.log"
+          echo "=== Starting Resource Monitor ===" > "$LOG_FILE"
+          while true; do
+            echo "=== $(date) ===" >> "$LOG_FILE"
+            echo "--- Disk Usage ---" >> "$LOG_FILE"
+            df -h >> "$LOG_FILE" 2>&1
+            echo "" >> "$LOG_FILE"
+            echo "--- Memory Usage ---" >> "$LOG_FILE"
+            free -h >> "$LOG_FILE" 2>&1 || vm_stat >> "$LOG_FILE" 2>&1 || echo "Memory info not available" >> "$LOG_FILE"
+            echo "" >> "$LOG_FILE"
+            echo "--- Top Processes by Memory ---" >> "$LOG_FILE"
+            ps aux --sort=-%mem 2>/dev/null | head -n 10 >> "$LOG_FILE" 2>&1 || ps aux 2>/dev/null | sort -k 4 -r | head -n 10 >> "$LOG_FILE" 2>&1 || echo "ps not available" >> "$LOG_FILE"
+            echo "" >> "$LOG_FILE"
+            sleep 30
+          done
+          EOF
+          chmod +x monitor.sh
+          nohup ./monitor.sh &
+          echo $! > monitor.pid
+          echo "Started resource monitor with PID $(cat monitor.pid)"
       - name: Configure CIRCT
         run: |
           ${{ steps.setup-windows.outputs.setup }}
@@ -390,23 +427,81 @@ jobs:
           # Run cmake.  Use one long line for `cmake` so that this works on
           # Linux/macOS AND Windows.
           cmake -G Ninja -S "$(pwd)/../llvm/llvm" -DCMAKE_BUILD_TYPE=${{ inputs.cmake_build_type }} -DBUILD_SHARED_LIBS=${{ inputs.build_shared_libs }} -DLLVM_BUILD_TOOLS=ON -DLLVM_BUILD_EXAMPLES=OFF -DLLVM_ENABLE_ASSERTIONS=${{ inputs.llvm_enable_assertions }} -DLLVM_ENABLE_PROJECTS=mlir -DLLVM_EXTERNAL_PROJECTS=circt -DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=".." -DLLVM_STATIC_LINK_CXX_STDLIB=ON -DLLVM_PARALLEL_LINK_JOBS=1 -DLLVM_TARGETS_TO_BUILD="host" -DLLVM_FORCE_ENABLE_STATS=ON -DLLVM_ENABLE_ZSTD=OFF -DCIRCT_RELEASE_TAG_ENABLED=ON -DCIRCT_RELEASE_TAG=firtool -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF -DCMAKE_C_COMPILER=${{ steps.set-cmake-options.outputs.cmake_c_compiler }} -DCMAKE_CXX_COMPILER=${{ steps.set-cmake-options.outputs.cmake_cxx_compiler }} ${{ steps.configure-sccache.outputs.enable_sccache }} -DCMAKE_INSTALL_PREFIX="$(pwd)/../install" -DLLVM_INSTALL_UTILS=ON -DCIRCT_SLANG_FRONTEND_ENABLED=ON -DCIRCT_INCLUDE_EXAMPLES=ON -DLLVM_LIT_ARGS="${{ steps.set-cmake-options.outputs.llvm_lit_args }}" ${{ steps.setup-linux.outputs.cmake }} ${{ steps.setup-macos.outputs.cmake }} ${{ steps.setup-macos-integration.outputs.cmake }} ${{ steps.setup-windows.outputs.cmake }} ${{ steps.integration-test-setup-generic.outputs.cmake }} ${{ inputs.extra_cmake_args }}
+      - name: Check Disk and Memory After Configure
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Build Directory Size ==="
+          du -sh build 2>/dev/null || echo "Build directory size check failed"
 # Optionally test
+      - name: Check Disk and Memory Before Build/Test
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Build Directory Size ==="
+          du -sh build 2>/dev/null || echo "Build directory size check failed"
+          echo ""
+          echo "=== Workspace Directory Size ==="
+          du -sh . 2>/dev/null || echo "Workspace size check failed"
       - name: Test CIRCT
         if: inputs.run_tests
         run: |
           ${{ steps.setup-windows.outputs.setup }}
           ninja -C build check-circt check-circt-unit
+      - name: Check Disk and Memory After Test
+        if: inputs.run_tests
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Build Directory Size ==="
+          du -sh build 2>/dev/null || echo "Build directory size check failed"
       - name: Integration Test CIRCT
         if: inputs.run_integration_tests
         run: |
           ${{ steps.setup-windows.outputs.setup }}
           ninja -C build check-circt-capi check-circt-integration
+      - name: Check Disk and Memory After Integration Test
+        if: inputs.run_integration_tests
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Build Directory Size ==="
+          du -sh build 2>/dev/null || echo "Build directory size check failed"
       - name: Check CIRCT Standalone Example
         if: inputs.run_tests
         run: |
           ${{ steps.setup-windows.outputs.setup }}
           cmake -G Ninja -S "$(pwd)/examples/circt-standalone" -B "$(pwd)/build-circt-standalone" -DCMAKE_BUILD_TYPE=${{ inputs.cmake_build_type }} -DCMAKE_C_COMPILER=${{ steps.set-cmake-options.outputs.cmake_c_compiler }} -DCMAKE_CXX_COMPILER=${{ steps.set-cmake-options.outputs.cmake_cxx_compiler }} -DCIRCT_DIR="$(pwd)/build/lib/cmake/circt" -DMLIR_DIR="$(pwd)/build/lib/cmake/mlir"
           cmake --build "$(pwd)/build-circt-standalone" --target check-circt-standalone
+      - name: Check Disk and Memory After Standalone Example
+        if: inputs.run_tests
+        shell: bash
+        run: |
+          echo "=== Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
       - name: Install
         if: inputs.install_target
         run: |
@@ -414,6 +509,18 @@ jobs:
           ninja -C build ${{ inputs.install_target }}
           file install/*
           file install/bin/*
+      - name: Check Disk and Memory After Install
+        if: inputs.install_target
+        shell: bash
+        run: |
+          echo "=== Final Disk Usage ==="
+          df -h
+          echo ""
+          echo "=== Final Memory Usage ==="
+          free -h || (echo "free command not available" && vm_stat) || echo "Memory info not available"
+          echo ""
+          echo "=== Install Directory Size ==="
+          du -sh install 2>/dev/null || echo "Install directory size check failed"
       - name: Name Install Directory
         id: name_dir
         if: inputs.install_target
@@ -501,3 +608,28 @@ jobs:
           files: ${{ steps.name_archive.outputs.name }}*
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           release-tag: ${{ github.ref_name }} # Upload to release tag when manually run.
+
+      - name: Stop Resource Monitor and Display Logs
+        if: always()
+        shell: bash
+        run: |
+          if [ -f monitor.pid ]; then
+            PID=$(cat monitor.pid)
+            echo "Stopping resource monitor (PID $PID)"
+            kill $PID 2>/dev/null || true
+            sleep 2
+          fi
+          if [ -f resource_monitor.log ]; then
+            echo "=== Resource Monitor Log ==="
+            cat resource_monitor.log
+          else
+            echo "No resource monitor log found"
+          fi
+      - name: Upload Resource Monitor Log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: resource-monitor-${{ inputs.runner }}-${{ inputs.cmake_build_type }}
+          path: resource_monitor.log
+          retention-days: 7
+          if-no-files-found: ignore
