@@ -353,6 +353,13 @@ LogicalResult DomainTool::processSourceMgr(llvm::SourceMgr &sourceMgr) {
     if (!associationsList)
       continue;
 
+    // Skip domains that have no associated ports/wires.  LowerDomains can
+    // still materialize output domain objects with an empty associations list,
+    // but downstream handlers generally only care about domains that actually
+    // annotate something in the design.
+    if (associationsList->getElements().empty())
+      continue;
+
     // Update the `byType` map.
     byType[domainInfoObject->getType()][domainInfoObject].append(
         associationsList->getElements());
