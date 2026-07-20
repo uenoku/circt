@@ -842,6 +842,11 @@ createCutRewritePattern(CutRewritePatternOp patternOp,
                         const NPNTable *npnTable = nullptr,
                         mlir::SymbolTable *symbolTable = nullptr);
 
+/// Clone all direct SymbolOpInterface children of `sourceSymbolTableOp` into
+/// `destination`. `sourceSymbolTableOp` must have the SymbolTable trait.
+void cloneSymbolOpsInto(mlir::Operation *sourceSymbolTableOp,
+                        mlir::SymbolTable &destination);
+
 /// Main cut-based rewriting algorithm for combinational logic optimization.
 ///
 /// The CutRewriter implements a cut-based rewriting algorithm that:

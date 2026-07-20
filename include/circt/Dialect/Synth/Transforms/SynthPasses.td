@@ -72,14 +72,14 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
                            "circt::synth::SynthDialect"];
 }
 
-def CutRewrite : CutRewriterPassBase<"synth-cut-rewrite",
-                                     "mlir::ModuleOp"> {
+def CutRewrite : CutRewriterPassBase<"synth-cut-rewrite", ""> {
   let summary = "Cut rewriting using declarative patterns from MLIR files";
   let description = [{
     This pass loads `synth.cut_rewrite_pattern` operations from external MLIR
     or MLIR bytecode files and uses them as a cut-rewrite database. Database
-    files are loaded once during pass initialization and reused for every
-    hardware module handled by the pass.
+    files are loaded once during pass initialization and applied to the
+    operation on which the pass is scheduled. Databases containing symbol
+    operations are rejected; symbol-backed mapping should use TechMapper.
   }];
   let options = baseOptions # [
     ListOption<"dbFiles", "db-files", "std::string",

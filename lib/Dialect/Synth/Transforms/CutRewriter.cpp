@@ -36,7 +36,6 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/IR/Threading.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
@@ -46,7 +45,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -59,7 +57,6 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
 #include <algorithm>
-#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -1678,6 +1675,16 @@ circt::synth::createCutRewritePattern(CutRewritePatternOp patternOp,
   return pattern;
 }
 
+void circt::synth::cloneSymbolOpsInto(Operation *sourceSymbolTableOp,
+                                      mlir::SymbolTable &destination) {
+  assert(sourceSymbolTableOp->hasTrait<mlir::OpTrait::SymbolTable>() &&
+         "expected a symbol table operation");
+  for (auto symbolOp : sourceSymbolTableOp->getRegion(0)
+                           .front()
+                           .getOps<mlir::SymbolOpInterface>())
+    destination.insert(symbolOp->clone());
+}
+
 //===----------------------------------------------------------------------===//
 // File-backed cut rewrite pass
 //===----------------------------------------------------------------------===//
@@ -1713,6 +1720,15 @@ struct CutRewritePass
       if (!database)
         return failure();
 
+      WalkResult symbolCheck = database->walk(
+          [&](mlir::SymbolOpInterface) { return WalkResult::interrupt(); });
+      if (symbolCheck.wasInterrupted()) {
+        emitError(UnknownLoc::get(context))
+            << "cut-rewrite database '" << filename
+            << "' cannot contain symbol operations";
+        return failure();
+      }
+
       for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
         maxInputSize =
             std::max(maxInputSize, patternOp.getFunctionType().getNumInputs());
@@ -1729,24 +1745,13 @@ struct CutRewritePass
   }
 
   void runOnOperation() override {
-    auto module = getOperation();
-    auto &symbolTable = getAnalysis<mlir::SymbolTable>();
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
-    DenseSet<Operation *> implementationOps;
     for (auto &database : *databaseModules) {
-      mlir::SymbolTable databaseSymbolTable(*database);
       for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
-        auto pattern = createCutRewritePattern(patternOp, npnTable.get(),
-                                               &databaseSymbolTable);
+        auto pattern = createCutRewritePattern(patternOp, npnTable.get());
         if (failed(pattern))
           return signalPassFailure();
         patterns.push_back(std::move(*pattern));
-      }
-
-      for (auto symbolOp : database->getOps<mlir::SymbolOpInterface>()) {
-        Operation *clone = symbolOp->clone();
-        symbolTable.insert(clone);
-        implementationOps.insert(clone);
       }
     }
 
@@ -1759,32 +1764,14 @@ struct CutRewritePass
     options.npnTable = npnTable.get();
 
     CutRewritePatternSet patternSet(std::move(patterns));
-    SmallVector<hw::HWModuleOp> modules;
-    for (auto hwModule : module.getOps<hw::HWModuleOp>())
-      if (!implementationOps.contains(hwModule))
-        modules.push_back(hwModule);
-
-    std::atomic<uint64_t> numCutsCreatedCount = 0;
-    std::atomic<uint64_t> numCutSetsCreatedCount = 0;
-    std::atomic<uint64_t> numCutsRewrittenCount = 0;
-    if (failed(mlir::failableParallelForEach(
-            module.getContext(), modules, [&](hw::HWModuleOp hwModule) {
-              CutRewriter rewriter(options, patternSet);
-              if (failed(rewriter.run(hwModule)))
-                return failure();
-              const auto &stats = rewriter.getStats();
-              numCutsCreatedCount.fetch_add(stats.numCutsCreated,
-                                            std::memory_order_relaxed);
-              numCutSetsCreatedCount.fetch_add(stats.numCutSetsCreated,
-                                               std::memory_order_relaxed);
-              numCutsRewrittenCount.fetch_add(stats.numCutsRewritten,
-                                              std::memory_order_relaxed);
-              return success();
-            })))
+    CutRewriter rewriter(options, patternSet);
+    if (failed(rewriter.run(getOperation())))
       return signalPassFailure();
-    numCutsCreated += numCutsCreatedCount;
-    numCutSetsCreated += numCutSetsCreatedCount;
-    numCutsRewritten += numCutsRewrittenCount;
+
+    const auto &stats = rewriter.getStats();
+    numCutsCreated += stats.numCutsCreated;
+    numCutSetsCreated += stats.numCutSetsCreated;
+    numCutsRewritten += stats.numCutsRewritten;
   }
 
 private:
