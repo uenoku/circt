@@ -317,18 +317,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
   return success();
 }
 
-/// Get the truth table for operations within a block.
-FailureOr<BinaryTruthTable>
-circt::synth::getTruthTable(ValueRange values, Block *block,
-                            mlir::SymbolTable *symbolTable) {
-  llvm::SmallSetVector<Value, 4> inputArgs;
-  for (Value arg : block->getArguments())
-    inputArgs.insert(arg);
-
-  if (inputArgs.empty())
-    return BinaryTruthTable();
-
-  const int64_t numInputs = inputArgs.size();
+static FailureOr<BinaryTruthTable>
+getTruthTableImpl(ValueRange values, Block *block, unsigned numInputs,
+                  DenseMap<Value, APInt> eval, mlir::SymbolTable *symbolTable) {
   const int64_t numOutputs = values.size();
   if (LLVM_UNLIKELY(numOutputs != 1 || numInputs >= maxTruthTableInputs)) {
     if (numOutputs == 0)
@@ -339,11 +330,6 @@ circt::synth::getTruthTable(ValueRange values, Block *block,
     return mlir::emitError(values.front().getLoc(),
                            "Multiple outputs are not supported yet");
   }
-
-  // Create a map to evaluate the operation
-  DenseMap<Value, APInt> eval;
-  for (uint32_t i = 0; i < numInputs; ++i)
-    eval[inputArgs[i]] = circt::createVarMask(numInputs, i, true);
 
   // Simulate the operations in the block
   for (Operation &op : block->without_terminator()) {
@@ -399,35 +385,43 @@ circt::synth::getTruthTable(ValueRange values, Block *block,
         return instanceOp.emitError(
             "instance inputs do not match referenced module inputs");
 
-      SmallVector<Value> moduleOutputs(
-          referencedModule.getBodyBlock()->getTerminator()->getOperands());
-      auto moduleTruthTable = getTruthTable(
-          moduleOutputs, referencedModule.getBodyBlock(), symbolTable);
+      auto *moduleBody = referencedModule.getBodyBlock();
+      DenseMap<Value, APInt> moduleInputs;
+      for (auto [inputIndex, input] : llvm::enumerate(instanceOp.getInputs())) {
+        auto inputIt = eval.find(input);
+        if (inputIt == eval.end())
+          return instanceOp.emitError(
+              "Input value not found in evaluation map");
+        moduleInputs[moduleBody->getArgument(inputIndex)] = inputIt->second;
+      }
+
+      auto moduleTruthTable = getTruthTableImpl(
+          moduleBody->getTerminator()->getOperands(), moduleBody, numInputs,
+          std::move(moduleInputs), symbolTable);
       if (failed(moduleTruthTable))
         return failure();
-
-      APInt result = APInt::getZero(1ULL << numInputs);
-      for (uint64_t assignment = 0; assignment != (1ULL << numInputs);
-           ++assignment) {
-        uint64_t moduleAssignment = 0;
-        for (auto [inputIndex, input] :
-             llvm::enumerate(instanceOp.getInputs())) {
-          auto inputIt = eval.find(input);
-          if (inputIt == eval.end())
-            return instanceOp.emitError(
-                "Input value not found in evaluation map");
-          if (inputIt->second[assignment])
-            moduleAssignment |= 1ULL << inputIndex;
-        }
-        result.setBitVal(assignment, moduleTruthTable->table[moduleAssignment]);
-      }
-      eval[instanceOp.getResult(0)] = std::move(result);
+      eval[instanceOp.getResult(0)] = std::move(moduleTruthTable->table);
     } else {
       return op.emitError("Unsupported operation for truth table simulation");
     }
   }
 
   return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+}
+
+/// Get the truth table for operations within a block.
+FailureOr<BinaryTruthTable>
+circt::synth::getTruthTable(ValueRange values, Block *block,
+                            mlir::SymbolTable *symbolTable) {
+  if (block->getArguments().empty())
+    return BinaryTruthTable();
+
+  DenseMap<Value, APInt> inputs;
+  for (auto [index, argument] : llvm::enumerate(block->getArguments()))
+    inputs[argument] = circt::createVarMask(block->getNumArguments(), index,
+                                            /*positive=*/true);
+  return getTruthTableImpl(values, block, block->getNumArguments(),
+                           std::move(inputs), symbolTable);
 }
 
 //===----------------------------------------------------------------------===//
