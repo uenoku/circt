@@ -1,5 +1,6 @@
 module {
   synth.cut_rewrite_pattern (%i0: i1, %i1: i1, %i2: i1) -> i1 attributes {
+    allow_negation = true,
     cost = #synth.mapping_cost<area = 3.0 : f64, arcs = [
       #synth.linear_timing_arc<3, 0, #synth.polarity<positive>>,
       #synth.linear_timing_arc<2, 0, #synth.polarity<positive>>,

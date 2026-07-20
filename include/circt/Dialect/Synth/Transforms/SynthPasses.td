@@ -73,7 +73,7 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
 }
 
 def CutRewrite : CutRewriterPassBase<"synth-cut-rewrite",
-                                     "circt::hw::HWModuleOp"> {
+                                     "mlir::ModuleOp"> {
   let summary = "Cut rewriting using declarative patterns from MLIR files";
   let description = [{
     This pass loads `synth.cut_rewrite_pattern` operations from external MLIR

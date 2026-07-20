@@ -36,6 +36,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
@@ -45,6 +46,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -57,6 +59,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -1560,14 +1563,18 @@ class DeclarativeCutRewritePattern final : public CutRewritePattern {
 public:
   DeclarativeCutRewritePattern(CutRewritePatternOp patternOp, NPNClass npnClass,
                                double area, SmallVector<DelayType> delays)
-      : CutRewritePattern(patternOp.getContext()), patternOp(patternOp),
-        npnClass(std::move(npnClass)), area(area), delays(std::move(delays)) {}
+      : CutRewritePattern(patternOp.getContext(), patternOp.getAllowNegation()),
+        patternOp(patternOp), npnClass(std::move(npnClass)), area(area),
+        delays(std::move(delays)) {}
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
-    assert(cut.getNPNClass(enumerator.getOptions().npnTable).truthTable ==
-               npnClass.truthTable &&
+    const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
+    assert(cutNPN.truthTable == npnClass.truthTable &&
            "truth-table matcher returned a different NPN class");
+    if (!allowsNegation() && (cutNPN.inputNegation != npnClass.inputNegation ||
+                              cutNPN.outputNegation != npnClass.outputNegation))
+      return std::nullopt;
     return MatchResult(area, delays);
   }
 
@@ -1722,15 +1729,24 @@ struct CutRewritePass
   }
 
   void runOnOperation() override {
+    auto module = getOperation();
+    auto &symbolTable = getAnalysis<mlir::SymbolTable>();
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
+    DenseSet<Operation *> implementationOps;
     for (auto &database : *databaseModules) {
-      mlir::SymbolTable symbolTable(*database);
+      mlir::SymbolTable databaseSymbolTable(*database);
       for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
-        auto pattern =
-            createCutRewritePattern(patternOp, npnTable.get(), &symbolTable);
+        auto pattern = createCutRewritePattern(patternOp, npnTable.get(),
+                                               &databaseSymbolTable);
         if (failed(pattern))
           return signalPassFailure();
         patterns.push_back(std::move(*pattern));
+      }
+
+      for (auto symbolOp : database->getOps<mlir::SymbolOpInterface>()) {
+        Operation *clone = symbolOp->clone();
+        symbolTable.insert(clone);
+        implementationOps.insert(clone);
       }
     }
 
@@ -1743,14 +1759,32 @@ struct CutRewritePass
     options.npnTable = npnTable.get();
 
     CutRewritePatternSet patternSet(std::move(patterns));
-    CutRewriter rewriter(options, patternSet);
-    if (failed(rewriter.run(getOperation())))
-      return signalPassFailure();
+    SmallVector<hw::HWModuleOp> modules;
+    for (auto hwModule : module.getOps<hw::HWModuleOp>())
+      if (!implementationOps.contains(hwModule))
+        modules.push_back(hwModule);
 
-    const auto &stats = rewriter.getStats();
-    numCutsCreated += stats.numCutsCreated;
-    numCutSetsCreated += stats.numCutSetsCreated;
-    numCutsRewritten += stats.numCutsRewritten;
+    std::atomic<uint64_t> numCutsCreatedCount = 0;
+    std::atomic<uint64_t> numCutSetsCreatedCount = 0;
+    std::atomic<uint64_t> numCutsRewrittenCount = 0;
+    if (failed(mlir::failableParallelForEach(
+            module.getContext(), modules, [&](hw::HWModuleOp hwModule) {
+              CutRewriter rewriter(options, patternSet);
+              if (failed(rewriter.run(hwModule)))
+                return failure();
+              const auto &stats = rewriter.getStats();
+              numCutsCreatedCount.fetch_add(stats.numCutsCreated,
+                                            std::memory_order_relaxed);
+              numCutSetsCreatedCount.fetch_add(stats.numCutSetsCreated,
+                                               std::memory_order_relaxed);
+              numCutsRewrittenCount.fetch_add(stats.numCutsRewritten,
+                                              std::memory_order_relaxed);
+              return success();
+            })))
+      return signalPassFailure();
+    numCutsCreated += numCutsCreatedCount;
+    numCutSetsCreated += numCutSetsCreatedCount;
+    numCutsRewritten += numCutsRewrittenCount;
   }
 
 private:

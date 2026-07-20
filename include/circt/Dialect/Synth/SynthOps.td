@@ -313,7 +313,8 @@ def CutRewritePatternOp : SynthOp<"cut_rewrite_pattern", [
 
   let arguments = (ins
     TypeAttrOf<FunctionType>:$function_type,
-    MappingCostAttr:$cost
+    MappingCostAttr:$cost,
+    DefaultValuedAttr<BoolAttr, "false">:$allow_negation
   );
 
   let regions = (region SizedRegion<1>:$body);

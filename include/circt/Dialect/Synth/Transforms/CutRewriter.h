@@ -737,7 +737,8 @@ public:
 /// Patterns can use truth table matching for efficient recognition or
 /// implement custom matching logic for more complex cases.
 struct CutRewritePattern {
-  CutRewritePattern(mlir::MLIRContext *context) : context(context) {}
+  CutRewritePattern(mlir::MLIRContext *context, bool allowNegation = true)
+      : context(context), allowNegation(allowNegation) {}
   /// Virtual destructor for base class.
   virtual ~CutRewritePattern() = default;
 
@@ -786,8 +787,12 @@ struct CutRewritePattern {
 
   mlir::MLIRContext *getContext() const { return context; }
 
+  /// Whether input and output negations may be added when rewriting a cut.
+  bool allowsNegation() const { return allowNegation; }
+
 private:
   mlir::MLIRContext *context;
+  bool allowNegation;
 };
 
 /// Manages a collection of rewriting patterns for combinational logic

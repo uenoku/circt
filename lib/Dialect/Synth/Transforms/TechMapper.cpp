@@ -51,7 +51,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
   void runOnOperation() override {
     auto module = getOperation();
-    mlir::SymbolTable symbolTable(module);
+    auto &symbolTable = getAnalysis<mlir::SymbolTable>();
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
     DenseSet<StringAttr> implementationModules;

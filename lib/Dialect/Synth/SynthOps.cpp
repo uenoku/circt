@@ -669,8 +669,10 @@ void CutRewritePatternOp::print(OpAsmPrinter &p) {
       functionType.getResults(), /*resultAttrs=*/{}, &getBody(),
       /*printEmptyResult=*/false);
 
-  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(),
-                                     {getFunctionTypeAttrName()});
+  SmallVector<StringRef> elidedAttrs = {getFunctionTypeAttrName()};
+  if (!getAllowNegation())
+    elidedAttrs.push_back(getAllowNegationAttrName());
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), elidedAttrs);
 
   p << ' ';
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
