@@ -1560,17 +1560,17 @@ class DeclarativeCutRewritePattern final : public CutRewritePattern {
 public:
   DeclarativeCutRewritePattern(CutRewritePatternOp patternOp, NPNClass npnClass,
                                double area, SmallVector<DelayType> delays)
-      : CutRewritePattern(patternOp.getContext(), patternOp.getAllowNegation()),
-        patternOp(patternOp), npnClass(std::move(npnClass)), area(area),
-        delays(std::move(delays)) {}
+      : CutRewritePattern(patternOp.getContext()), patternOp(patternOp),
+        npnClass(std::move(npnClass)), area(area), delays(std::move(delays)),
+        allowsNegation(patternOp.getAllowNegation()) {}
 
   std::optional<MatchResult> match(CutEnumerator &enumerator,
                                    const Cut &cut) const override {
     const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
     assert(cutNPN.truthTable == npnClass.truthTable &&
            "truth-table matcher returned a different NPN class");
-    if (!allowsNegation() && (cutNPN.inputNegation != npnClass.inputNegation ||
-                              cutNPN.outputNegation != npnClass.outputNegation))
+    if (!allowsNegation && (cutNPN.inputNegation != npnClass.inputNegation ||
+                            cutNPN.outputNegation != npnClass.outputNegation))
       return std::nullopt;
     return MatchResult(area, delays);
   }
@@ -1643,6 +1643,7 @@ private:
   NPNClass npnClass;
   double area;
   SmallVector<DelayType> delays;
+  bool allowsNegation;
 };
 
 } // namespace
