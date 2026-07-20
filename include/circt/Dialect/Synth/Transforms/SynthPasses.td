@@ -67,7 +67,27 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
     Supports both area and timing optimization strategies.
   }];
   let options = baseOptions;
-  let dependentDialects = ["hw::HWDialect"];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
+}
+
+def CutRewrite : CutRewriterPassBase<"synth-cut-rewrite",
+                                     "circt::hw::HWModuleOp"> {
+  let summary = "Cut rewriting using declarative patterns from MLIR files";
+  let description = [{
+    This pass loads `synth.cut_rewrite_pattern` operations from external MLIR
+    or MLIR bytecode files and uses them as a cut-rewrite database. Database
+    files are loaded once during pass initialization and reused for every
+    hardware module handled by the pass.
+  }];
+  let options = baseOptions # [
+    ListOption<"dbFiles", "db-files", "std::string",
+               "External cut-rewrite pattern files in MLIR or MLIR bytecode">
+  ];
+  let dependentDialects = ["circt::comb::CombDialect",
+                           "circt::hw::HWDialect",
+                           "circt::synth::SynthDialect"];
 }
 
 def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",

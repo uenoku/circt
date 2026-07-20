@@ -18,8 +18,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
+#include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
@@ -190,6 +192,20 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
     unsigned maxInputSize = 0;
+    // Declarative patterns use the same adapter as the file-backed cut
+    // rewriter. Keep accepting mapping-cost annotated HW modules below for
+    // compatibility with existing technology libraries.
+    for (auto patternOp : module.getOps<CutRewritePatternOp>()) {
+      auto pattern = createCutRewritePattern(patternOp, npnTable.get());
+      if (failed(pattern)) {
+        signalPassFailure();
+        return;
+      }
+      maxInputSize =
+          std::max(maxInputSize, patternOp.getFunctionType().getNumInputs());
+      libraryPatterns.push_back(std::move(*pattern));
+    }
+
     // Consider modules with the "synth.mapping_cost" attribute as library
     // modules.
     SmallVector<hw::HWModuleOp> nonLibraryModules;

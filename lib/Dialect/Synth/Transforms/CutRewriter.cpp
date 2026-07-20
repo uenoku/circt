@@ -26,16 +26,20 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOpInterfaces.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "circt/Support/LLVM.h"
 #include "circt/Support/TruthTable.h"
 #include "circt/Support/UnusedOpPruner.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Bitset.h"
@@ -50,6 +54,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/Support/SourceMgr.h"
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -60,6 +65,13 @@
 
 using namespace circt;
 using namespace circt::synth;
+
+namespace circt {
+namespace synth {
+#define GEN_PASS_DEF_CUTREWRITE
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h.inc"
+} // namespace synth
+} // namespace circt
 
 //===----------------------------------------------------------------------===//
 // LogicNetwork
@@ -1258,8 +1270,8 @@ void CutEnumerator::dump() const {
         llvm::outs() << getTestVariableName(inputVal, opCounter);
       });
       auto &pattern = cut->getMatchedPattern();
-      llvm::outs() << "}"
-                   << "@t" << cut->getTruthTable()->table.getZExtValue() << "d";
+      llvm::outs() << "}" << "@t" << cut->getTruthTable()->table.getZExtValue()
+                   << "d";
       if (pattern) {
         llvm::outs() << *std::max_element(pattern->getArrivalTimes().begin(),
                                           pattern->getArrivalTimes().end());
@@ -1502,3 +1514,211 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
   cutEnumerator.clear();
   return success();
 }
+
+//===----------------------------------------------------------------------===//
+// Declarative cut rewrite patterns
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+class DeclarativeCutRewritePattern final : public CutRewritePattern {
+public:
+  DeclarativeCutRewritePattern(CutRewritePatternOp patternOp, NPNClass npnClass,
+                               double area, SmallVector<DelayType> delays)
+      : CutRewritePattern(patternOp.getContext()), patternOp(patternOp),
+        npnClass(std::move(npnClass)), area(area), delays(std::move(delays)) {}
+
+  std::optional<MatchResult> match(CutEnumerator &enumerator,
+                                   const Cut &cut) const override {
+    assert(cut.getNPNClass(enumerator.getOptions().npnTable).truthTable ==
+               npnClass.truthTable &&
+           "truth-table matcher returned a different NPN class");
+    return MatchResult(area, delays);
+  }
+
+  bool useTruthTableMatcher(
+      SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
+    matchingNPNClasses.push_back(npnClass);
+    return true;
+  }
+
+  FailureOr<Operation *> rewrite(OpBuilder &builder, CutEnumerator &enumerator,
+                                 const Cut &cut) const override {
+    const auto &network = enumerator.getLogicNetwork();
+    SmallVector<unsigned> inputIndices;
+    cut.getPermutatedInputIndices(enumerator.getOptions().npnTable, npnClass,
+                                  inputIndices);
+    const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
+    unsigned inputNegation = cutNPN.inputNegation ^ npnClass.inputNegation;
+    bool outputNegated = static_cast<bool>(
+        (cutNPN.outputNegation ^ npnClass.outputNegation) & 1);
+
+    auto mutablePatternOp = patternOp;
+    auto &body = mutablePatternOp.getBody().front();
+    IRMapping mapping;
+    for (auto [patternInput, argument] : llvm::enumerate(body.getArguments())) {
+      unsigned inputIndex = inputIndices[patternInput];
+      assert(inputIndex < cut.inputs.size() &&
+             "input permutation index out of range");
+      Value input = network.getValue(cut.inputs[inputIndex]);
+      if ((inputNegation >> patternInput) & 1)
+        input = aig::AndInverterOp::create(builder, mutablePatternOp.getLoc(),
+                                           input, true);
+      mapping.map(argument, input);
+    }
+
+    for (Operation &op : body.without_terminator())
+      builder.clone(op, mapping);
+
+    auto yield = cast<YieldOp>(body.getTerminator());
+    Value result = mapping.lookupOrDefault(yield.getOperands().front());
+    if (outputNegated)
+      result = aig::AndInverterOp::create(builder, mutablePatternOp.getLoc(),
+                                          result, true);
+    if (Operation *resultOp = result.getDefiningOp();
+        resultOp && resultOp->getNumResults() == 1)
+      return resultOp;
+
+    // CutRewritePattern's current interface returns an operation rather than a
+    // value. Materialize a one-result operation for patterns which yield a
+    // block argument or one result of a multi-result operation.
+    return hw::WireOp::create(builder, mutablePatternOp.getLoc(), result)
+        .getOperation();
+  }
+
+  unsigned getNumOutputs() const override { return 1; }
+
+  StringRef getPatternName() const override {
+    if (auto name = patternOp->getAttrOfType<StringAttr>("sym_name"))
+      return name.getValue();
+    return "<declarative>";
+  }
+
+  LocationAttr getLoc() const override {
+    auto mutablePatternOp = patternOp;
+    return mutablePatternOp.getLoc();
+  }
+
+private:
+  CutRewritePatternOp patternOp;
+  NPNClass npnClass;
+  double area;
+  SmallVector<DelayType> delays;
+};
+
+} // namespace
+
+FailureOr<std::unique_ptr<CutRewritePattern>>
+circt::synth::createCutRewritePattern(CutRewritePatternOp patternOp,
+                                      const NPNTable *npnTable) {
+  auto &body = patternOp.getBody().front();
+  auto yield = cast<YieldOp>(body.getTerminator());
+  auto truthTable = getTruthTable(yield.getOperands(), &body);
+  if (failed(truthTable))
+    return failure();
+
+  NPNClass npnClass;
+  if (!npnTable || !npnTable->lookup(*truthTable, npnClass))
+    npnClass = NPNClass::computeNPNCanonicalForm(*truthTable);
+
+  SmallVector<DelayType> delays;
+  for (Attribute arcAttr : patternOp.getCost().getArcs()) {
+    auto arc = cast<LinearTimingArcAttr>(arcAttr);
+    delays.push_back(static_cast<DelayType>(arc.getIntrinsic()));
+  }
+
+  std::unique_ptr<CutRewritePattern> pattern =
+      std::make_unique<DeclarativeCutRewritePattern>(
+          patternOp, std::move(npnClass),
+          patternOp.getCost().getArea().getValue().convertToDouble(),
+          std::move(delays));
+  return pattern;
+}
+
+//===----------------------------------------------------------------------===//
+// File-backed cut rewrite pass
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct CutRewritePass
+    : public circt::synth::impl::CutRewriteBase<CutRewritePass> {
+  using circt::synth::impl::CutRewriteBase<CutRewritePass>::CutRewriteBase;
+
+  LogicalResult initialize(MLIRContext *context) override {
+    databaseModules =
+        std::make_shared<SmallVector<OwningOpRef<mlir::ModuleOp>>>();
+    maxInputSize = 0;
+    npnTable = std::make_shared<const NPNTable>();
+
+    if (dbFiles.empty())
+      return emitError(UnknownLoc::get(context))
+             << "synth-cut-rewrite requires at least one 'db-files' entry";
+
+    unsigned numPatterns = 0;
+    for (const std::string &filename : dbFiles) {
+      std::string errorMessage;
+      auto input = mlir::openInputFile(filename, &errorMessage);
+      if (!input) {
+        emitError(UnknownLoc::get(context)) << errorMessage;
+        return failure();
+      }
+
+      llvm::SourceMgr sourceMgr;
+      sourceMgr.AddNewSourceBuffer(std::move(input), llvm::SMLoc());
+      auto database = mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, context);
+      if (!database)
+        return failure();
+
+      for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
+        maxInputSize =
+            std::max(maxInputSize, patternOp.getFunctionType().getNumInputs());
+        ++numPatterns;
+      }
+      databaseModules->push_back(std::move(database));
+    }
+
+    if (numPatterns == 0)
+      return emitError(UnknownLoc::get(context))
+             << "cut-rewrite database did not contain any "
+                "synth.cut_rewrite_pattern operations";
+    return success();
+  }
+
+  void runOnOperation() override {
+    SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
+    for (auto &database : *databaseModules) {
+      for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
+        auto pattern = createCutRewritePattern(patternOp, npnTable.get());
+        if (failed(pattern))
+          return signalPassFailure();
+        patterns.push_back(std::move(*pattern));
+      }
+    }
+
+    CutRewriterOptions options;
+    options.strategy = strategy;
+    options.maxCutInputSize = maxInputSize;
+    options.maxCutSizePerRoot = maxCutsPerRoot;
+    options.allowNoMatch = true;
+    options.attachDebugTiming = test;
+    options.npnTable = npnTable.get();
+
+    CutRewritePatternSet patternSet(std::move(patterns));
+    CutRewriter rewriter(options, patternSet);
+    if (failed(rewriter.run(getOperation())))
+      return signalPassFailure();
+
+    const auto &stats = rewriter.getStats();
+    numCutsCreated += stats.numCutsCreated;
+    numCutSetsCreated += stats.numCutSetsCreated;
+    numCutsRewritten += stats.numCutsRewritten;
+  }
+
+private:
+  std::shared_ptr<SmallVector<OwningOpRef<mlir::ModuleOp>>> databaseModules;
+  std::shared_ptr<const NPNTable> npnTable;
+  unsigned maxInputSize = 0;
+};
+
+} // namespace

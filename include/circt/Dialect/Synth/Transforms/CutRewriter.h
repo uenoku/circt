@@ -34,6 +34,8 @@
 
 namespace circt {
 namespace synth {
+
+class CutRewritePatternOp;
 // Type for representing delays in the circuit. It's user's responsibility to
 // use consistent units, i.e., all delays should be in the same unit (usually
 // femtoseconds, but not limited to it).
@@ -820,6 +822,13 @@ private:
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
 };
+
+/// Create a cut-rewriter pattern backed by a declarative
+/// `synth.cut_rewrite_pattern` operation. The operation must outlive the
+/// returned pattern.
+FailureOr<std::unique_ptr<CutRewritePattern>>
+createCutRewritePattern(CutRewritePatternOp patternOp,
+                        const NPNTable *npnTable = nullptr);
 
 /// Main cut-based rewriting algorithm for combinational logic optimization.
 ///
