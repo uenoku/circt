@@ -32,6 +32,10 @@
 #include <optional>
 #include <utility>
 
+namespace mlir {
+class SymbolTable;
+}
+
 namespace circt {
 namespace synth {
 
@@ -53,7 +57,9 @@ LogicalResult topologicallySortLogicNetwork(mlir::Operation *op);
 
 // Get the truth table for a specific operation within a block.
 // Block must be a SSACFG or topologically sorted.
-FailureOr<BinaryTruthTable> getTruthTable(ValueRange values, Block *block);
+FailureOr<BinaryTruthTable>
+getTruthTable(ValueRange values, Block *block,
+              mlir::SymbolTable *symbolTable = nullptr);
 
 //===----------------------------------------------------------------------===//
 // Cut Data Structures
@@ -828,7 +834,8 @@ private:
 /// returned pattern.
 FailureOr<std::unique_ptr<CutRewritePattern>>
 createCutRewritePattern(CutRewritePatternOp patternOp,
-                        const NPNTable *npnTable = nullptr);
+                        const NPNTable *npnTable = nullptr,
+                        mlir::SymbolTable *symbolTable = nullptr);
 
 /// Main cut-based rewriting algorithm for combinational logic optimization.
 ///

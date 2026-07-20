@@ -1,231 +1,87 @@
-// RUN: circt-opt --pass-pipeline='builtin.module(synth-tech-mapper{strategy=area test=true max-cuts-per-root=8})' %s | FileCheck %s --check-prefixes CHECK,AREA
-// RUN: circt-opt --pass-pipeline='builtin.module(synth-tech-mapper{strategy=timing test=true max-cuts-per-root=8})' %s | FileCheck %s --check-prefixes CHECK,TIMING
+// RUN: circt-opt --synth-tech-mapper='strategy=area test=true' %s | FileCheck %s --check-prefixes=CHECK,AREA
+// RUN: circt-opt --synth-tech-mapper='strategy=timing test=true' %s | FileCheck %s --check-prefixes=CHECK,TIMING
 
-hw.module @and_inv(in %a : i1, in %b : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %false = hw.constant false
-    %true = hw.constant true
-    %0 = synth.aig.and_inv %a, %b, not %false, %true : i1
-    hw.output %0 : i1
-}
-
-hw.module @and_inv_n(in %a : i1, in %b : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv not %a, %b : i1
-    hw.output %0 : i1
-}
-
-hw.module @and_inv_nn(in %a : i1, in %b : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv not %a, not %b : i1
-    hw.output %0 : i1
-}
-
-// Delay is shorter than @and_inv + @and_inv_n_n. Area is (significantly) larger than @and_inv_n + @and_inv_n_n.
-// Check that we use @and_inv_3 if strategy = timing, and @and_inv_n + @and_inv_n_n if strategy = area.
-hw.module @and_inv_3(in %a : i1, in %b : i1, in %c : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 10.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv %a, %b : i1
-    %1 = synth.aig.and_inv not %0, %c : i1
-    hw.output %1 : i1
-}
-
-// CHECK-LABEL: @test_strategy
-hw.module @test_strategy(in %a : i1, in %b : i1, in %c : i1, out result : i1) {
-    // AREA-NEXT: %[[area_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-    // AREA-NEXT: %[[area_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %[[area_0]]: i1, b: %c: i1) -> (result: i1) {test.arrival_times = [2]}
-    // AREA-NEXT: hw.output %[[area_1]] : i1
-    // TIMING-NEXT: %[[timing:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_3(a: %a: i1, b: %b: i1, c: %c: i1) -> (result: i1) {test.arrival_times = [1]}
-    // TIMING-NEXT: hw.output %[[timing]] : i1
-    %0 = synth.aig.and_inv %a, %b : i1
-    %1 = synth.aig.and_inv %c, not %0 : i1
-    hw.output %1 : i1
-}
-
-hw.module @permutation(in %a: i1, in %b: i1, in %c: i1, in %d: i1, out result: i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv %a, not %b : i1
-    %1 = synth.aig.and_inv %c, not %d : i1
-    %2 = synth.aig.and_inv %0, not %1 : i1
-    hw.output %2 : i1
-}
-
-// CHECK-LABEL: hw.module @permutation_test(in %p : i1, in %q : i1, in %r : i1, in %s : i1, out result : i1) {
-hw.module @permutation_test(in %p: i1, in %q: i1, in %r: i1, in %s: i1, out result: i1) {
-    // CHECK-NEXT: %[[r0:.+]] = hw.instance "{{.+}}" @permutation(a: %s: i1, b: %p: i1, c: %q: i1, d: %r: i1) -> (result: i1) {test.arrival_times = [1]}
-    %0 = synth.aig.and_inv %s, not %p : i1
-    %1 = synth.aig.and_inv %q, not %r : i1
-    %2 = synth.aig.and_inv %0, not %1 : i1
-    hw.output %2 : i1
-}
-
-hw.module @and_inv_5(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<2, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv not %a, %b, not %c, %d, not %e : i1
-    hw.output %0 : i1
-}
-
-// Make sure truth value is computed correctly for @and_inv_5.
-// CHECK-LABEL: @and_inv_5_test
-hw.module @and_inv_5_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e: i1, out o1 : i1, out o2 : i1) {
-    %0 = synth.aig.and_inv not %a, %b : i1
-    %1 = synth.aig.and_inv not %c, %d : i1
-    %2 = synth.aig.and_inv %0, %1 : i1
-    %3 = synth.aig.and_inv %2, not %e : i1
-    // CHECK-NEXT: %[[result_0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %a: i1, b: %b: i1, c: %c: i1, d: %d: i1, e: %e: i1)
-    %4 = synth.aig.and_inv not %a, not %d : i1
-    %5 = synth.aig.and_inv not %b, %e : i1
-    %6 = synth.aig.and_inv %5, %c : i1
-    %7 = synth.aig.and_inv %6, %4 : i1
-    // CHECK-NEXT: %[[result_1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_5(a: %a: i1, b: %c: i1, c: %b: i1, d: %e: i1, e: %d: i1)
-    
-    hw.output %3, %7 : i1, i1
-    // CHECK-NEXT: hw.output %[[result_0]], %[[result_1]] : i1, i1
-}
-
-hw.module @area_flow(in %a : i1, in %b : i1, in %c: i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.5 : f64, arcs = [#synth.linear_timing_arc<10, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<10, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<10, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.aig.and_inv not %a, not %b : i1
-    %1 = synth.aig.and_inv not %c, %0 : i1
-    hw.output %1 : i1
-}
-
-// This is a test that needs area-flow to get an optimal result.
-// Area-flow is an optimization technique that considers the area impact
-// of a gate choice on its end point, not just the gate itself.
-// It produces sub-optimal mappings since currently area-flow is not implemented.
-// See "Heuristics for Area Minimization in LUT-Based FPGA Technology Mapping" for more details. 
-// CHECK-LABEL: @area_flow_test
-hw.module @area_flow_test(in %a : i1, in %b : i1, in %c: i1, out result : i1) {
-    // FIXME: If area-flow is implemented, this should be mapped to @area_flow with area strategy.
-    // CHECK:       hw.instance {{.*}} @and_inv_nn(
-    // CHECK-NEXT:  hw.instance {{.*}} @and_inv_n(
-    %0 = synth.aig.and_inv not %a, not %b : i1
-    %1 = synth.aig.and_inv not %c, %0 : i1
-    hw.output %1 : i1
-}
-
-// Test primary inputs handling
-// CHECK-LABEL: @primary_inputs_test
-hw.module @primary_inputs_test(in %a : i1, in %b : i1, out result : i1) {
-    // Simple direct mapping - should use @and_inv
-    // CHECK-NEXT: %[[primary:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: hw.output %[[primary]] : i1
-    %0 = synth.aig.and_inv %a, %b : i1
-    hw.output %0 : i1
-}
-
-// Test chain of operations for timing analysis
-// CHECK-LABEL: @timing_chain_test
-hw.module @timing_chain_test(in %a : i1, in %b : i1, in %c : i1, in %d : i1, out result : i1) {
-    // Test that timing is accumulated correctly through the chain
-    // CHECK: hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK: hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %c: i1, b: %d: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK: hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %{{.+}}: i1, b: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [2]}
-    %0 = synth.aig.and_inv %a, %b : i1
-    %1 = synth.aig.and_inv %c, %d : i1
-    %2 = synth.aig.and_inv %0, %1 : i1
-    hw.output %2 : i1
-}
-
-// Test comb.extract and comb.concat handling
-// CHECK-LABEL: @extract_concat_test
-hw.module @extract_concat_test(in %data : i4, in %ctrl : i2, out result : i3) {
-    // Extract individual bits from multi-bit inputs
-    %bit0 = comb.extract %data from 0 : (i4) -> i1
-    %bit1 = comb.extract %data from 1 : (i4) -> i1
-    %bit2 = comb.extract %data from 2 : (i4) -> i1
-    %bit3 = comb.extract %data from 3 : (i4) -> i1
-    
-    %ctrl0 = comb.extract %ctrl from 0 : (i2) -> i1
-    %ctrl1 = comb.extract %ctrl from 1 : (i2) -> i1
-    
-    // Apply some logic using AIG operations
-    %and0 = synth.aig.and_inv %bit0, %bit1 : i1
-    %and1 = synth.aig.and_inv %bit2, not %ctrl0 : i1
-    %and2 = synth.aig.and_inv %bit3, %ctrl1 : i1
-    
-    // Further logic operations
-    %out0 = synth.aig.and_inv %and0, %ctrl0 : i1
-    %out1 = synth.aig.and_inv %and1, not %and0 : i1
-    %out2 = synth.aig.and_inv %and2, %ctrl1 : i1
-    
-    // Concatenate results into multi-bit output
-    %result_concat = comb.concat %out2, %out1, %out0 : i1, i1, i1
-    
-    // CHECK:      %[[bit0:.+]] = comb.extract %data from 0
-    // CHECK-NEXT: %[[bit1:.+]] = comb.extract %data from 1
-    // CHECK-NEXT: %[[bit2:.+]] = comb.extract %data from 2
-    // CHECK-NEXT: %[[bit3:.+]] = comb.extract %data from 3
-    // CHECK-NEXT: %[[ctrl0:.+]] = comb.extract %ctrl from 0
-    // CHECK-NEXT: %[[ctrl1:.+]] = comb.extract %ctrl from 1
-    // CHECK-NEXT: %[[and0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %[[bit0]]: i1, b: %[[bit1]]: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: %[[and1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %[[ctrl0]]: i1, b: %[[bit2]]: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: %[[out0:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %[[ctrl0]]: i1, b: %[[and0]]: i1) -> (result: i1) {test.arrival_times = [2]}
-    // CHECK-NEXT: %[[out1:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv_n(a: %[[and0]]: i1, b: %[[and1]]: i1) -> (result: i1) {test.arrival_times = [2]}
-    // CHECK-NEXT: %[[out2:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @and_inv(a: %[[bit3]]: i1, b: %[[ctrl1]]: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: %[[result:.+]] = comb.concat %[[out2]], %[[out1]], %[[out0]] : i1, i1, i1
-    // CHECK-NEXT: hw.output %[[result]] : i3
-    
-    hw.output %result_concat : i3
-}
-
-hw.module @dot_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.dot %z, not %x, %y : i1
-    hw.output %0 : i1
-}
-
-// CHECK-LABEL: @dot_test
-hw.module @dot_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
-    // Permute inputs to test the truth table computation and input handling of the dot operation.
-    // CHECK-NEXT: %[[DOT:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @dot_lib(x: %y: i1, y: %z: i1, z: %x: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: hw.output %[[DOT]] : i1
-    %0 = synth.dot %x, not %y, %z : i1
-    hw.output %0 : i1
-}
-
-hw.module @majority_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.majority %x, not %y, not %z : i1
-    hw.output %0 : i1
-}
-
-// CHECK-LABEL: @majority_test
-hw.module @majority_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
-    // Permute inputs to test the truth table computation and input handling of the majority operation.
-    // CHECK-NEXT: %[[MAJ:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @majority_lib(x: %{{.+}}: i1, y: %{{.+}}: i1, z: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: hw.output %[[MAJ]] : i1
-    %0 = synth.majority not %y, %x, not %z : i1
-    hw.output %0 : i1
-}
-
-hw.module @onehot_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.onehot %x, not %y, not %z : i1
-    hw.output %0 : i1
-}
-
-// CHECK-LABEL: @onehot_test
-hw.module @onehot_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
-    // Permute inputs to test the truth table computation and input handling of the onehot operation.
-    // CHECK-NEXT: %[[ONEHOT:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @onehot_lib(x: %{{.+}}: i1, y: %{{.+}}: i1, z: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: hw.output %[[ONEHOT]] : i1
-    %0 = synth.onehot not %z, %x, not %y : i1
-    hw.output %0 : i1
-}
-
-hw.module @mux_inv_lib(in %c : i1, in %a : i1, in %b : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-  %0 = synth.mux_inv %c, %a, %b : i1
+hw.module @xor_cell(in %a : i1, in %b : i1, out y : i1) {
+  %0 = synth.dot not %b, %b, not %a : i1
   hw.output %0 : i1
 }
 
-// CHECK-LABEL: @mux_inv_test
-hw.module @mux_inv_test(in %c : i1, in %a : i1, in %b : i1, out result : i1) {
-  // CHECK-NEXT: %[[MUX:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @mux_inv_lib(c: %c: i1, a: %a: i1, b: %b: i1) -> (result: i1) {test.arrival_times = [1]}
-  %0 = synth.mux_inv %c, %a, %b : i1
+hw.module @and_cell(in %a : i1, in %b : i1, out y : i1) {
+  %0 = synth.aig.and_inv %a, %b : i1
   hw.output %0 : i1
 }
 
-hw.module @gamble_lib(in %x : i1, in %y : i1, in %z : i1, out result : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>], input_caps = {}>} {
-    %0 = synth.gamble %x, not %y, not %z : i1
-    hw.output %0 : i1
+hw.module @fast3_cell(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
+  %0 = synth.aig.and_inv %a, %b : i1
+  %1 = synth.aig.and_inv %c, not %0 : i1
+  hw.output %1 : i1
 }
-// CHECK-LABEL: @gamble_test
-hw.module @gamble_test(in %x : i1, in %y : i1, in %z : i1, out result : i1) {
-    // Permute inputs to test the truth table computation and permutation invariance of the gamble operation.
-    // CHECK-NEXT: %[[GAMBLE:.+]] = hw.instance "{{[a-zA-Z0-9_]+}}" @gamble_lib(x: %{{.+}}: i1, y: %{{.+}}: i1, z: %{{.+}}: i1) -> (result: i1) {test.arrival_times = [1]}
-    // CHECK-NEXT: hw.output %[[GAMBLE]] : i1
-    %0 = synth.gamble not %z, %x, not %y : i1
-    hw.output %0 : i1
+
+synth.cut_rewrite_pattern (%a: i1, %b: i1) -> i1 attributes {
+  cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>,
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>
+  ]>
+} {
+  %0 = hw.instance "mapped" @xor_cell(a: %a: i1, b: %b: i1) -> (y: i1)
+  synth.yield %0 : i1
+}
+
+synth.cut_rewrite_pattern (%a: i1, %b: i1) -> i1 attributes {
+  cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>,
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>
+  ]>
+} {
+  %0 = hw.instance "mapped" @and_cell(a: %a: i1, b: %b: i1) -> (y: i1)
+  synth.yield %0 : i1
+}
+
+synth.cut_rewrite_pattern (%a: i1, %b: i1, %c: i1) -> i1 attributes {
+  cost = #synth.mapping_cost<area = 10.0 : f64, arcs = [
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>,
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>,
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>
+  ]>
+} {
+  %0 = hw.instance "mapped" @fast3_cell(a: %a: i1, b: %b: i1, c: %c: i1) -> (y: i1)
+  synth.yield %0 : i1
+}
+
+// CHECK-LABEL: hw.module @xor_cell
+// CHECK: synth.dot
+
+// CHECK-LABEL: hw.module @rewrite_xor
+// CHECK-NEXT: %[[CELL:.+]] = hw.instance "mapped" @xor_cell(a: %a: i1, b: %b: i1) -> (y: i1) {test.arrival_times = [1]}
+// CHECK-NEXT: hw.output %[[CELL]] : i1
+hw.module @rewrite_xor(in %a : i1, in %b : i1, out y : i1) {
+  %0 = synth.xor_inv %a, %b : i1
+  hw.output %0 : i1
+}
+
+// CHECK-LABEL: hw.module @test_strategy
+// AREA: hw.instance "mapped" @and_cell
+// AREA: hw.instance "mapped" @and_cell
+// AREA-NOT: hw.instance "mapped" @fast3_cell
+// AREA: hw.output
+// TIMING: hw.instance "mapped" @fast3_cell
+// TIMING-NOT: hw.instance "mapped" @and_cell
+// TIMING: hw.output
+hw.module @test_strategy(in %a : i1, in %b : i1, in %c : i1, out y : i1) {
+  %0 = synth.aig.and_inv %a, %b : i1
+  %1 = synth.aig.and_inv %c, not %0 : i1
+  hw.output %1 : i1
+}
+
+// CHECK-LABEL: hw.module @timing_chain
+// CHECK: hw.instance "mapped" @and_cell
+// CHECK: hw.instance "mapped" @and_cell
+// CHECK: hw.instance "mapped" @and_cell
+// CHECK: test.arrival_times = [2]
+hw.module @timing_chain(in %a : i1, in %b : i1, in %c : i1, in %d : i1,
+                        out y : i1) {
+  %0 = synth.aig.and_inv %a, %b : i1
+  %1 = synth.aig.and_inv %c, %d : i1
+  %2 = synth.aig.and_inv %0, %1 : i1
+  hw.output %2 : i1
 }

@@ -35,6 +35,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
@@ -317,8 +318,9 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
 }
 
 /// Get the truth table for operations within a block.
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
+FailureOr<BinaryTruthTable>
+circt::synth::getTruthTable(ValueRange values, Block *block,
+                            mlir::SymbolTable *symbolTable) {
   llvm::SmallSetVector<Value, 4> inputArgs;
   for (Value arg : block->getArguments())
     inputArgs.insert(arg);
@@ -381,6 +383,45 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       eval[constantOp.getResult()] = constantOp.getValue().isZero()
                                          ? llvm::APInt::getZero(tableSize)
                                          : llvm::APInt::getAllOnes(tableSize);
+    } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
+      if (!symbolTable)
+        return instanceOp.emitError(
+            "truth table simulation of an instance requires a symbol table");
+      auto referencedModule = symbolTable->lookup<hw::HWModuleOp>(
+          instanceOp.getReferencedModuleNameAttr());
+      if (!referencedModule)
+        return instanceOp.emitError("referenced module was not found");
+      if (instanceOp.getNumResults() != 1 ||
+          referencedModule.getNumOutputPorts() != 1)
+        return instanceOp.emitError(
+            "truth table simulation only supports single-output instances");
+      if (instanceOp.getInputs().size() != referencedModule.getNumInputPorts())
+        return instanceOp.emitError(
+            "instance inputs do not match referenced module inputs");
+
+      SmallVector<Value> moduleOutputs(
+          referencedModule.getBodyBlock()->getTerminator()->getOperands());
+      auto moduleTruthTable = getTruthTable(
+          moduleOutputs, referencedModule.getBodyBlock(), symbolTable);
+      if (failed(moduleTruthTable))
+        return failure();
+
+      APInt result = APInt::getZero(1ULL << numInputs);
+      for (uint64_t assignment = 0; assignment != (1ULL << numInputs);
+           ++assignment) {
+        uint64_t moduleAssignment = 0;
+        for (auto [inputIndex, input] :
+             llvm::enumerate(instanceOp.getInputs())) {
+          auto inputIt = eval.find(input);
+          if (inputIt == eval.end())
+            return instanceOp.emitError(
+                "Input value not found in evaluation map");
+          if (inputIt->second[assignment])
+            moduleAssignment |= 1ULL << inputIndex;
+        }
+        result.setBitVal(assignment, moduleTruthTable->table[moduleAssignment]);
+      }
+      eval[instanceOp.getResult(0)] = std::move(result);
     } else {
       return op.emitError("Unsupported operation for truth table simulation");
     }
@@ -1610,10 +1651,11 @@ private:
 
 FailureOr<std::unique_ptr<CutRewritePattern>>
 circt::synth::createCutRewritePattern(CutRewritePatternOp patternOp,
-                                      const NPNTable *npnTable) {
+                                      const NPNTable *npnTable,
+                                      mlir::SymbolTable *symbolTable) {
   auto &body = patternOp.getBody().front();
   auto yield = cast<YieldOp>(body.getTerminator());
-  auto truthTable = getTruthTable(yield.getOperands(), &body);
+  auto truthTable = getTruthTable(yield.getOperands(), &body, symbolTable);
   if (failed(truthTable))
     return failure();
 
@@ -1688,8 +1730,10 @@ struct CutRewritePass
   void runOnOperation() override {
     SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
     for (auto &database : *databaseModules) {
+      mlir::SymbolTable symbolTable(*database);
       for (auto patternOp : database->getOps<CutRewritePatternOp>()) {
-        auto pattern = createCutRewritePattern(patternOp, npnTable.get());
+        auto pattern =
+            createCutRewritePattern(patternOp, npnTable.get(), &symbolTable);
         if (failed(pattern))
           return signalPassFailure();
         patterns.push_back(std::move(*pattern));

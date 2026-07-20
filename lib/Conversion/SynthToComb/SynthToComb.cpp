@@ -55,6 +55,17 @@ struct SynthChoiceOpConversion : OpConversionPattern<synth::ChoiceOp> {
   }
 };
 
+struct CutRewritePatternOpConversion
+    : OpConversionPattern<synth::CutRewritePatternOp> {
+  using OpConversionPattern<synth::CutRewritePatternOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(synth::CutRewritePatternOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 template <typename SynthOp>
 struct SynthInverterOpConversion : OpConversionPattern<SynthOp> {
   using OpConversionPattern<SynthOp>::OpConversionPattern;
@@ -219,11 +230,11 @@ struct ConvertSynthToCombPass
 } // namespace
 
 static void populateSynthToCombConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<SynthChoiceOpConversion, SynthAndInverterOpConversion,
-               SynthXorInverterOpConversion, SynthMuxInverterOpConversion,
-               SynthDotOpConversion, SynthMajorityOpConversion,
-               SynthOneHotOpConversion, SynthGambleOpConversion>(
-      patterns.getContext());
+  patterns.add<CutRewritePatternOpConversion, SynthChoiceOpConversion,
+               SynthAndInverterOpConversion, SynthXorInverterOpConversion,
+               SynthMuxInverterOpConversion, SynthDotOpConversion,
+               SynthMajorityOpConversion, SynthOneHotOpConversion,
+               SynthGambleOpConversion>(patterns.getContext());
 }
 
 void ConvertSynthToCombPass::runOnOperation() {

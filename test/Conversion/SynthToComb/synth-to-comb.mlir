@@ -1,5 +1,14 @@
 // RUN: circt-opt %s --convert-synth-to-comb | FileCheck %s
 
+// CHECK-NOT: synth.cut_rewrite_pattern
+synth.cut_rewrite_pattern (%a: i1) -> i1 attributes {
+  cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [
+    #synth.linear_timing_arc<1, 0, #synth.polarity<positive>>
+  ]>
+} {
+  synth.yield %a : i1
+}
+
 // CHECK-LABEL: @test
 hw.module @test(in %a: i32, in %b: i32, in %c: i32, in %d: i32, out out0: i32) {
   // CHECK: %c-1_i32 = hw.constant -1 : i32
