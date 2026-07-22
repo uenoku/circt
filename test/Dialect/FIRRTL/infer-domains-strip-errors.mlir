@@ -2,7 +2,7 @@
 
 firrtl.circuit "StripDomainErrors" {
   firrtl.module @StripDomainErrors() {
-    // expected-error @below {{'builtin.unrealized_conversion_cast' op cannot be stripped}}
+    // expected-error @below {{'builtin.unrealized_conversion_cast' op has domain type but is not handled by domain stripping}}
     %0 = builtin.unrealized_conversion_cast to !firrtl.domain<@ClockDomain()>
   }
 }
