@@ -2018,10 +2018,7 @@ LogicalResult ModuleState::checkModuleDomainPortDrivers(FModuleOp moduleOp) {
 LogicalResult ModuleState::checkInstanceDomainPortDrivers(FInstanceLike op) {
   for (size_t i = 0, e = op->getNumResults(); i < e; ++i) {
     auto port = dyn_cast<DomainValue>(op->getResult(i));
-
-    auto type = port.getType();
-    if (!isa<DomainType>(type) || op.getPortDirection(i) != Direction::In ||
-        isDriven(port))
+    if (!port || op.getPortDirection(i) != Direction::In || isDriven(port))
       continue;
 
     auto name = op.getPortNameAttr(i);
@@ -2183,8 +2180,8 @@ stripModuleImpl(FModuleLike moduleOp,
           for (auto type :
                concat<Type>(op->getOperandTypes(), op->getResultTypes())) {
             if (isa<DomainType>(type)) {
-              op->emitOpError("has domain type but is not handled by "
-                              "domain stripping");
+              op->emitOpError(
+                  "cannot be stripped");
               return WalkResult::interrupt();
             }
           }
