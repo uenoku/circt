@@ -85,6 +85,27 @@ def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
   let dependentDialects = ["comb::CombDialect"];
 }
 
+def CutRewrite : CutRewriterPassBase<"synth-cut-rewrite", "hw::HWModuleOp"> {
+  let summary = "Rewrite logic using external cut databases";
+  let description = [{
+    This pass loads canonical NPN implementations from external MLIR database
+    files and uses them as cut-rewrite patterns. Each database entry is an
+    `hw.module` with single-bit inputs and one single-bit output. Its body may
+    contain constants and operations implementing
+    `BooleanLogicOpInterface`.
+
+    The pass derives area and per-input logic depth from the interface,
+    matches entries modulo input permutation and input/output negation, and
+    inlines selected implementations into the module being rewritten.
+  }];
+  let options = baseOptions # [
+    ListOption<"dbFiles", "db-files", "std::string",
+               "External cut-rewrite databases in MLIR or MLIR bytecode">
+  ];
+  let dependentDialects = ["comb::CombDialect", "hw::HWDialect",
+                           "synth::SynthDialect"];
+}
+
 def LowerVariadic : Pass<"synth-lower-variadic"> {
   let summary = "Lower variadic operations to binary operations";
   let description = [{

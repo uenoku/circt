@@ -8,6 +8,7 @@
 
 add_circt_dialect_library(CIRCTSynthTransforms
   AIGERRunner.cpp
+  CutRewriteDB.cpp
   CutRewriter.cpp
   ExactSynthesis.cpp
   FunctionalReduction.cpp

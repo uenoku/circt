@@ -225,6 +225,16 @@ TEST(NPNClassTest, InputMapping) {
   EXPECT_EQ(permutation, SmallVector<unsigned>({1, 2, 0}));
 }
 
+TEST(NPNClassTest, InputMappingIgnoresPhase) {
+  BinaryTruthTable canonicalTT(3, 1, APInt(8, 0x1B));
+  NPNClass lhs(canonicalTT, {2, 0, 1}, 0b101, 1);
+  NPNClass rhs(canonicalTT, {1, 2, 0}, 0b010, 0);
+
+  SmallVector<unsigned> permutation;
+  lhs.getInputPermutation(rhs, permutation);
+  EXPECT_EQ(permutation, SmallVector<unsigned>({1, 2, 0}));
+}
+
 TEST(NPNClassTest, LexicographicalOrdering) {
   BinaryTruthTable tt1(2, 1, APInt(4, 0x5)); // 0101
   BinaryTruthTable tt2(2, 1, APInt(4, 0x6)); // 0110
