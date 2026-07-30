@@ -347,24 +347,21 @@ def InferWidths : Pass<"firrtl-infer-widths", "firrtl::CircuitOp"> {
 }
 
 def InferResets : Pass<"firrtl-infer-resets", "firrtl::CircuitOp"> {
-  let summary = "Infer reset synchronicity and add implicit resets";
+  let summary = "Infer the concrete type of abstract resets";
   let description = [{
-    This pass infers whether resets are synchronous or asynchronous, and extends
-    reset-less registers with a reset based on the following
-    annotations:
-
-    - `circt.FullResetAnnotation`
-    - `circt.ExcludeFromFullResetAnnotation`
-    - `sifive.enterprise.firrtl.FullAsyncResetAnnotation` (deprecated)
-    - `sifive.enterprise.firrtl.IgnoreFullAsyncResetAnnotation` (deprecated)
+    This pass traces abstract `reset` networks throughout a circuit, infers
+    whether each network is synchronous (`uint<1>`) or asynchronous
+    (`asyncreset`), and rewrites types accordingly. It also diagnoses ports
+    that remain abstract after inference.
   }];
 }
 
 def FullReset : Pass<"firrtl-full-reset", "firrtl::CircuitOp"> {
-  let summary = "Run full reset transform";
+  let summary = "Implement FullResetAnnotation domains";
   let description = [{
     Consumes `circt.FullResetAnnotation` / `circt.ExcludeFromFullResetAnnotation`
-    Builds reset domains and implements full reset on registers.
+    and implements full reset. Also converts combinational memories in
+    asynchronous full-reset domains that are in the effective design.
   }];
 }
 
@@ -532,22 +529,6 @@ def ExtractInstances : Pass<"firrtl-extract-instances", "firrtl::CircuitOp"> {
     "emit::EmitDialect",
     "circt::hw::HWDialect",
     "sv::SVDialect",
-  ];
-}
-
-def MemToRegOfVec : Pass<"firrtl-mem-to-reg-of-vec", "firrtl::CircuitOp"> {
-  let summary = "Convert combinational memories to a vector of registers";
-  let description = [{
-    This pass generates the logic to implement a memory using Registers.
-  }];
-  let options = [
-    Option<"ignoreReadEnable", "ignore-read-enable-mem", "bool",
-                "false",
-    "ignore the read enable signal, instead of assigning X on read disable">
-   ];
-  let statistics = [
-    Statistic<"numConvertedMems", "num-converted-mems",
-      "Number of memories converted to registers">,
   ];
 }
 

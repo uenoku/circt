@@ -1,7 +1,7 @@
-// RUN: circt-opt -pass-pipeline='builtin.module(firrtl.circuit(firrtl-mem-to-reg-of-vec))' %s | FileCheck  %s
+// RUN: circt-opt -pass-pipeline='builtin.module(firrtl.circuit(firrtl-full-reset))' --split-input-file %s | FileCheck %s
 
-firrtl.circuit "Mem" attributes {annotations = [{class = "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"}]}{
-  firrtl.module public @Mem(out %d : !firrtl.probe<vector<uint<8>, 8>>, out %d2 : !firrtl.probe<vector<uint<8>, 8>>) attributes {annotations = [
+firrtl.circuit "Mem" {
+  firrtl.module public @Mem(out %d : !firrtl.probe<vector<uint<8>, 8>>, out %d2 : !firrtl.probe<vector<uint<8>, 8>>, in %reset: !firrtl.asyncreset) attributes {portAnnotations = [[], [], [{class = "circt.FullResetAnnotation", resetType = "async"}]], annotations = [
     {class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}
   ]} {
     %dbg, %mem_read, %mem_write, %debug = firrtl.mem Undefined {
@@ -23,7 +23,7 @@ firrtl.circuit "Mem" attributes {annotations = [{class = "sifive.enterprise.firr
     // CHECK:           %[[v1:.+]] = firrtl.subfield %mem_read[en]
     // CHECK:           %[[v2:.+]] = firrtl.subfield %mem_read[clk]
     // CHECK:           %[[v3:.+]] = firrtl.subfield %mem_read[data]
-    // CHECK:           %mem = firrtl.reg %[[v6:.+]]  : !firrtl.clock, !firrtl.vector<uint<8>, 8>
+    // CHECK:           %mem = firrtl.regreset %[[v6:.+]], %reset, %{{.+}}  : !firrtl.clock, !firrtl.asyncreset, !firrtl.const.vector<uint<8>, 8>, !firrtl.vector<uint<8>, 8>
     // CHECK:           %[[v23:.+]] = firrtl.subaccess %mem[%[[v4:.+]]]
     // CHECK:           %invalid_ui8 = firrtl.invalidvalue : !firrtl.uint<8>
     // CHECK:           firrtl.matchingconnect %[[v3]], %invalid_ui8 : !firrtl.uint<8>
@@ -42,14 +42,16 @@ firrtl.circuit "Mem" attributes {annotations = [{class = "sifive.enterprise.firr
     // CHECK:               firrtl.matchingconnect %[[v10]], %[[v8]] : !firrtl.uint<8>
     // CHECK:             }
     // CHECK:           }
-    // CHECK:           %11 = firrtl.ref.send %mem : !firrtl.vector<uint<8>, 8>
-    // CHECK:           %12 = firrtl.ref.send %mem : !firrtl.vector<uint<8>, 8>
-    // CHECK:           firrtl.ref.define %d, %12 : !firrtl.probe<vector<uint<8>, 8>>
-    // CHECK:           firrtl.ref.define %d2, %11 : !firrtl.probe<vector<uint<8>, 8>>
+    // CHECK:           firrtl.ref.send %mem : !firrtl.vector<uint<8>, 8>
+    // CHECK:           firrtl.ref.send %mem : !firrtl.vector<uint<8>, 8>
+    // CHECK:           firrtl.ref.define %d, %{{.+}} : !firrtl.probe<vector<uint<8>, 8>>
+    // CHECK:           firrtl.ref.define %d2, %{{.+}} : !firrtl.probe<vector<uint<8>, 8>>
 
 
 }
 
+
+// -----
 firrtl.circuit "Mem_Ignore" {
   firrtl.module public @Mem_Ignore() attributes {annotations = [
     {class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}
@@ -69,10 +71,10 @@ firrtl.circuit "Mem_Ignore" {
   }
 }
 
-firrtl.circuit  "GCTModule" attributes {annotations = [
-  {class = "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"}
-]} {
-  firrtl.module public @GCTModule() attributes {annotations = [
+
+// -----
+firrtl.circuit "GCTModule" {
+  firrtl.module public @GCTModule(in %reset: !firrtl.asyncreset) attributes {portAnnotations = [[{class = "circt.FullResetAnnotation", resetType = "async"}]], annotations = [
     {class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}
   ]} {
     %rf_read, %rf_write = firrtl.mem Undefined {
@@ -118,8 +120,8 @@ firrtl.circuit  "GCTModule" attributes {annotations = [
       writeLatency = 1 : i32
     } : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: uint<8>>,
         !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: uint<8>, mask: uint<1>>
-      // CHECK-LABEL: firrtl.module public @GCTModule()
-      // CHECK:         %rf = firrtl.reg %2
+      // CHECK-LABEL: firrtl.module public @GCTModule(
+      // CHECK:         %rf = firrtl.regreset
       // CHECK-SAME:      {circt.fieldID = 1 : i64, class = "sifive.enterprise.grandcentral.ReferenceDataTapKey", id = 0 : i64, portID = 1 : i64, type = "source"},
       // CHECK-SAME:      {circt.fieldID = 1 : i64, class = "firrtl.transforms.DontTouchAnnotation"},
       // CHECK-SAME:      {circt.fieldID = 2 : i64, class = "sifive.enterprise.grandcentral.ReferenceDataTapKey", id = 0 : i64, portID = 2 : i64, type = "source"},
@@ -151,14 +153,14 @@ firrtl.circuit  "GCTModule" attributes {annotations = [
       // CHECK-SAME:      {circt.fieldID = 5 : i64, class = "firrtl.transforms.DontTouchAnnotation"},
       // CHECK-SAME:      {circt.fieldID = 6 : i64, class = "firrtl.transforms.DontTouchAnnotation"},
       // CHECK-SAME:      {circt.fieldID = 7 : i64, class = "firrtl.transforms.DontTouchAnnotation"},
-      // CHECK-SAME:      {circt.fieldID = 8 : i64, class = "firrtl.transforms.DontTouchAnnotation"}]} : !firrtl.clock, !firrtl.vector<uint<8>, 8>
+      // CHECK-SAME:      {circt.fieldID = 8 : i64, class = "firrtl.transforms.DontTouchAnnotation"}]}
   }
 }
 
-firrtl.circuit "WriteMask" attributes {annotations = [
-  {class = "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"}
-]} {
-  firrtl.module public @WriteMask() attributes {annotations = [
+
+// -----
+firrtl.circuit "WriteMask" {
+  firrtl.module public @WriteMask(in %reset: !firrtl.asyncreset) attributes {portAnnotations = [[{class = "circt.FullResetAnnotation", resetType = "async"}]], annotations = [
     {class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}
   ]} {
     %mem_read, %mem_write = firrtl.mem Undefined {
@@ -169,27 +171,21 @@ firrtl.circuit "WriteMask" attributes {annotations = [
       writeLatency = 1 : i32
     } : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data flip: vector<uint<8>, 2>>,
         !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: vector<uint<8>, 2>, mask: vector<uint<1>, 2>>
-    // CHECK-LABEL: firrtl.module public @WriteMask()
-    // CHECK:         %mem = firrtl.reg %2  : !firrtl.clock, !firrtl.vector<vector<uint<8>, 2>, 8>
+    // CHECK-LABEL: firrtl.module public @WriteMask(
+    // CHECK:         %mem = firrtl.regreset %{{.+}}, %reset, %{{.+}}  : !firrtl.clock, !firrtl.asyncreset, !firrtl.const.vector<vector<uint<8>, 2>, 8>, !firrtl.vector<vector<uint<8>, 2>, 8>
     // CHECK:         %mem_write = firrtl.wire  : !firrtl.bundle<addr: uint<3>, en: uint<1>, clk: clock, data: vector<uint<8>, 2>, mask: vector<uint<1>, 2>>
-    // CHECK:         %[[v5:.+]] = firrtl.subfield %mem_write[addr]
+    // CHECK:         firrtl.subfield %mem_write[addr]
     // CHECK:         %[[v6:.+]] = firrtl.subfield %mem_write[en]
-    // CHECK:         %[[v7:.+]] = firrtl.subfield %mem_write[clk]
-    // CHECK:         %[[v8:.+]] = firrtl.subfield %mem_write[data]
-    // CHECK:         %[[v9:.+]] = firrtl.subfield %mem_write[mask]
-    // CHECK:         %[[v10:.+]] = firrtl.subaccess %mem[%5] : !firrtl.vector<vector<uint<8>, 2>, 8>, !firrtl.uint<3>
-    // CHECK:         %[[v11:.+]] = firrtl.subindex
-    // CHECK:         %[[v12:.+]] = firrtl.subindex
-    // CHECK:         %[[v13:.+]] = firrtl.subindex
-    // CHECK:         %[[v14:.+]] = firrtl.subindex
-    // CHECK:         %[[v15:.+]] = firrtl.subindex
-    // CHECK:         %[[v16:.+]] = firrtl.subindex
+    // CHECK:         firrtl.subfield %mem_write[clk]
+    // CHECK:         firrtl.subfield %mem_write[data]
+    // CHECK:         firrtl.subfield %mem_write[mask]
+    // CHECK:         firrtl.subaccess %mem[%{{.+}}] : !firrtl.vector<vector<uint<8>, 2>, 8>, !firrtl.uint<3>
     // CHECK:         firrtl.when %[[v6]] : !firrtl.uint<1> {
-    // CHECK:           firrtl.when %[[v13]] : !firrtl.uint<1> {
-    // CHECK:             firrtl.matchingconnect %[[v11]], %[[v12]] : !firrtl.uint<8>
+    // CHECK:           firrtl.when %{{.+}} : !firrtl.uint<1> {
+    // CHECK:             firrtl.matchingconnect %{{.+}}, %{{.+}} : !firrtl.uint<8>
     // CHECK:           }
-    // CHECK:           firrtl.when %[[v16]] : !firrtl.uint<1> {
-    // CHECK:             firrtl.matchingconnect %[[v14]], %[[v15]] : !firrtl.uint<8>
+    // CHECK:           firrtl.when %{{.+}} : !firrtl.uint<1> {
+    // CHECK:             firrtl.matchingconnect %{{.+}}, %{{.+}} : !firrtl.uint<8>
     // CHECK:           }
   }
 }
@@ -198,16 +194,16 @@ firrtl.circuit "WriteMask" attributes {annotations = [
 // format work correctly.
 //
 // CHECK-LABEL: "NLA"
-firrtl.circuit "NLA" attributes {annotations = [
-  {class = "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"}
-]} {
+
+// -----
+firrtl.circuit "NLA" {
   // The hierachical paths are unchanged.
   // CHECK:      hw.hierpath private @path_old [@NLA::@foo, @Foo::@old]
   // CHECK-NEXT: hw.hierpath private @path_new [@NLA::@foo, @Foo]
   hw.hierpath private @path_old [@NLA::@foo, @Foo::@old]
   hw.hierpath private @path_new [@NLA::@foo, @Foo]
   firrtl.module private @Foo() {
-    // CHECK:      %old = firrtl.reg sym @old
+    // CHECK:      %old = firrtl.regreset sym @old
     // CHECK-SAME:   {circt.nonlocal = @path, class = "oldNLA"}
     %old_r = firrtl.mem sym @old Undefined {
       annotations = [
@@ -219,7 +215,7 @@ firrtl.circuit "NLA" attributes {annotations = [
       readLatency = 0 : i32,
       writeLatency = 1 : i32
     } : !firrtl.bundle<addr: uint<2>, en: uint<1>, clk: clock, data flip: uint<32>>
-    // CHECK:      %new = firrtl.reg
+    // CHECK:      %new = firrtl.regreset
     // CHECK-NOT:    sym
     // CHECK-SAME:   {circt.nonlocal = @path, class = "newNLA"}
     %new_r = firrtl.mem Undefined {
@@ -233,25 +229,23 @@ firrtl.circuit "NLA" attributes {annotations = [
       writeLatency = 1 : i32
     } : !firrtl.bundle<addr: uint<2>, en: uint<1>, clk: clock, data flip: uint<32>>
   }
-  firrtl.module public @NLA() attributes {annotations = [
+  firrtl.module public @NLA(in %reset: !firrtl.asyncreset) attributes {portAnnotations = [[{class = "circt.FullResetAnnotation", resetType = "async"}]], annotations = [
     {class = "sifive.enterprise.firrtl.MarkDUTAnnotation"}
   ]} {
     firrtl.instance foo sym @foo @Foo()
-	}
+  }
 }
 
 // Test that certain memories which are intended to be implemented with SRAMs
 // are not lowered.
 //
 // CHECK-LABEL: "SkipMemoryMacros"
-firrtl.circuit "SkipMemoryMacros" attributes {
-  annotations = [
-    {
-      class = "sifive.enterprise.firrtl.ConvertMemToRegOfVecAnnotation$"
-    }
-  ]
-} {
-  firrtl.module @SkipMemoryMacros() {
+
+// -----
+firrtl.circuit "SkipMemoryMacros" {
+  firrtl.module @SkipMemoryMacros(in %reset: !firrtl.asyncreset) attributes {
+    portAnnotations = [[{class = "circt.FullResetAnnotation", resetType = "async"}]]
+  } {
     // None of the following memories should be replaced.
     // CHECK-COUNT-4: firrtl.mem
     %latency_1r1w = firrtl.mem Undefined {
