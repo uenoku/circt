@@ -1,4 +1,4 @@
-// RUN: circt-opt --pass-pipeline='builtin.module(firrtl.circuit(firrtl-infer-resets,firrtl-full-reset))' --split-input-file %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(firrtl.circuit(firrtl-full-reset))' --split-input-file %s | FileCheck %s
 
 // Basic async full-reset: reset-less register becomes regreset.
 // CHECK-LABEL: firrtl.module @AsyncFullReset
@@ -8,10 +8,6 @@ firrtl.circuit "AsyncFullReset" {
       in %reset: !firrtl.asyncreset
           [{class = "circt.FullResetAnnotation", resetType = "async"}],
       in %in: !firrtl.uint<8>) {
-    %resetNetwork = firrtl.wire : !firrtl.reset
-    %resetCast = firrtl.resetCast %reset : (!firrtl.asyncreset) -> !firrtl.reset
-    firrtl.matchingconnect %resetNetwork, %resetCast : !firrtl.reset
-    // CHECK: %resetNetwork = firrtl.wire : !firrtl.asyncreset
     // CHECK: %reg = firrtl.regreset %clock, %reset, %c0_ui8
     %reg = firrtl.reg %clock : !firrtl.clock, !firrtl.uint<8>
     firrtl.matchingconnect %reg, %in : !firrtl.uint<8>
