@@ -2407,7 +2407,7 @@ circuit DomainRegistry:
     ; CHECK: %[[PATH:.+]] = firrtl.unresolved_path "OMReferenceTarget:~DomainRegistry|Bar>clockGate"
     ; CHECK: %[[REG:.+]] = firrtl.domain.subfield %A[clockGates] : !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
     ; CHECK: firrtl.domain.register %[[REG]], %[[PATH]] : !firrtl.registry<path>, !firrtl.path
-    register A[clockGates], clockGate
+    register A[clockGates], path("OMReferenceTarget:~DomainRegistry|Bar>clockGate")
 
   ; CHECK-LABEL: firrtl.module @DomainRegistry
   public module DomainRegistry:

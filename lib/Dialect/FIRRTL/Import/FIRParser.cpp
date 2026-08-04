@@ -2126,7 +2126,6 @@ private:
   ParseResult parseMatch(unsigned matchIndent);
   ParseResult parseDomainInstantiation();
   ParseResult parseDomainDefine();
-  ParseResult parseDomainRegisterTarget(Value &result);
   ParseResult parseDomainRegister();
   ParseResult parseRefDefine();
   ParseResult parseRefForce();
@@ -4272,63 +4271,12 @@ ParseResult FIRStmtParser::parseDomainDefine() {
   return success();
 }
 
-/// Parse the target operand of a domain register statement.
-///
-/// Targets may be either an existing Path-typed expression or a local
-/// declaration name (for example an instance) which is converted into an
-/// `OMReferenceTarget` unresolved path.
-ParseResult FIRStmtParser::parseDomainRegisterTarget(Value &result) {
-  auto loc = getToken().getLoc();
-  locationProcessor.setLoc(loc);
-
-  // Explicit path("...") expressions.
-  if (getToken().is(FIRToken::lp_path))
-    return parsePathExp(result);
-
-  // Otherwise expect a local name. Instance names are stored as unbundled
-  // symbol entries, so resolve them specially into OMReferenceTarget paths.
-  StringRef id;
-  SymbolValueEntry entry;
-  if (parseId(id, "expected path target") ||
-      moduleContext.lookupSymbolEntry(entry, id, loc))
-    return failure();
-
-  // Normal SSA values (ports, wires, path properties, etc.).
-  Value value;
-  if (!moduleContext.resolveSymbolEntry(value, entry, loc, /*fatal=*/false)) {
-    if (parseOptionalExpPostscript(value, /*allowDynamic=*/false))
-      return failure();
-    result = value;
-    return success();
-  }
-
-  // Unbundled names are instances. Build a module-local OMReferenceTarget.
-  auto *parentOp = builder.getBlock()->getParentOp();
-  FModuleLike moduleOp = parentOp ? dyn_cast<FModuleLike>(parentOp) : nullptr;
-  if (!moduleOp && parentOp)
-    moduleOp = parentOp->getParentOfType<FModuleLike>();
-  auto circuitOp =
-      parentOp ? parentOp->getParentOfType<CircuitOp>() : CircuitOp{};
-  if (!moduleOp || !circuitOp)
-    return emitError(loc, "unable to determine owning module for path target");
-
-  SmallString<64> target;
-  target += "OMReferenceTarget:~";
-  target += circuitOp.getName();
-  target += "|";
-  target += moduleOp.getModuleName();
-  target += ">";
-  target += id;
-
-  result = UnresolvedPathOp::create(
-      builder, StringAttr::get(getContext(), target));
-  return success();
-}
-
-/// register ::= 'register' domain_exp '[' id ']' ',' path_target info?
+/// register ::= 'register' domain_exp '[' id ']' ',' path_exp info?
 ///
 /// Unlike ordinary domain expressions, the registry field is written with
 /// square brackets (`A[clockGates]`) rather than a property subfield.
+/// Targets are existing path expressions such as
+/// `path("OMReferenceTarget:~Circuit|Module>name")`.
 ParseResult FIRStmtParser::parseDomainRegister() {
   auto startTok = consumeToken(FIRToken::kw_register);
   auto startLoc = startTok.getLoc();
@@ -4374,7 +4322,7 @@ ParseResult FIRStmtParser::parseDomainRegister() {
       parseToken(FIRToken::r_square,
                  "expected ']' after registry field name") ||
       parseToken(FIRToken::comma, "expected ',' after registry field") ||
-      parseDomainRegisterTarget(target) || parseOptionalInfo())
+      parsePathExp(target) || parseOptionalInfo())
     return failure();
 
   auto domainType = type_cast<DomainType>(domain.getType());
