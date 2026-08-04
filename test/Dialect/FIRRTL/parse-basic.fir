@@ -2400,14 +2400,28 @@ circuit DomainRegistry:
   ; CHECK-SAME:    in %A: !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
   public module Bar:
     input A: Domain of ClockDomain
+    wire cg: UInt<1>
 
     ; CHECK: firrtl.instance clockGate interesting_name @ClockGate()
     inst clockGate of ClockGate
 
-    ; CHECK: %[[PATH:.+]] = firrtl.unresolved_path "OMReferenceTarget:~DomainRegistry|Bar>clockGate"
-    ; CHECK: %[[REG:.+]] = firrtl.domain.subfield %A[clockGates] : !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
-    ; CHECK: firrtl.domain.register %[[REG]], %[[PATH]] : !firrtl.registry<path>, !firrtl.path
+    ; Explicit path(...) still accepted.
+    ; CHECK: %[[PATH0:.+]] = firrtl.unresolved_path "OMReferenceTarget:~DomainRegistry|Bar>clockGate"
+    ; CHECK: %[[REG0:.+]] = firrtl.domain.subfield %A[clockGates] : !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
+    ; CHECK: firrtl.domain.register %[[REG0]], %[[PATH0]] : !firrtl.registry<path>, !firrtl.path
     register A[clockGates], path("OMReferenceTarget:~DomainRegistry|Bar>clockGate")
+
+    ; ref(localName) sugar -> OMReferenceTarget:~Circuit|Module>name
+    ; CHECK: %[[PATH1:.+]] = firrtl.unresolved_path "OMReferenceTarget:~DomainRegistry|Bar>cg"
+    ; CHECK: %[[REG1:.+]] = firrtl.domain.subfield %A[clockGates]
+    ; CHECK: firrtl.domain.register %[[REG1]], %[[PATH1]]
+    register A[clockGates], ref(cg)
+
+    ; ref_instance(inst) sugar -> OMInstanceTarget:~Circuit|Module/inst:Child
+    ; CHECK: %[[PATH2:.+]] = firrtl.unresolved_path "OMInstanceTarget:~DomainRegistry|Bar/clockGate:ClockGate"
+    ; CHECK: %[[REG2:.+]] = firrtl.domain.subfield %A[clockGates]
+    ; CHECK: firrtl.domain.register %[[REG2]], %[[PATH2]]
+    register A[clockGates], ref_instance(clockGate)
 
   ; CHECK-LABEL: firrtl.module @DomainRegistry
   public module DomainRegistry:

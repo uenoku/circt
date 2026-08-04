@@ -1217,7 +1217,7 @@ circuit LeadingList:
 FIRRTL version 4.0.0
 circuit LeadingPath:
   public module LeadingPath:
-    ; expected-error @below {{unexpected path() as start of statement}}
+    ; expected-error @below {{unexpected path expression as start of statement}}
     path("")
 
 ;// -----
@@ -2002,3 +2002,28 @@ circuit RegistryNotField:
     input A: Domain of ClockDomain
     ; expected-error @below {{domain field 'name' is not a Registry type}}
     register A[name], path("OMReferenceTarget:~RegistryNotField|RegistryNotField>x")
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit RefOnInstance:
+  domain ClockDomain:
+    clockGates: Registry<Path>
+  extmodule ClockGate:
+  public module RefOnInstance:
+    input A: Domain of ClockDomain
+    inst clockGate of ClockGate
+    ; expected-error @below {{ref target 'clockGate' is an instance; use ref_instance(clockGate)}}
+    register A[clockGates], ref(clockGate)
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit RefInstanceOnWire:
+  domain ClockDomain:
+    clockGates: Registry<Path>
+  public module RefInstanceOnWire:
+    input A: Domain of ClockDomain
+    wire cg: UInt<1>
+    ; expected-error @below {{ref_instance target 'cg' is not an instance}}
+    register A[clockGates], ref_instance(cg)

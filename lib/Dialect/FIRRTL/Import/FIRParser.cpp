@@ -2007,6 +2007,9 @@ private:
   }
   ParseResult parseEnumExp(Value &result);
   ParseResult parsePathExp(Value &result);
+  /// Parse path("..."), ref(name), or ref_instance(name) into a path value.
+  ParseResult parsePathLikeExp(Value &result);
+  ParseResult parseRefPathExp(Value &result, bool isInstance);
   ParseResult parseDomainExp(Value &result);
   ParseResult parseRefExp(Value &result, const Twine &message);
   ParseResult parseStaticRefExp(Value &result, const Twine &message);
@@ -2419,9 +2422,11 @@ ParseResult FIRStmtParser::parseExpImpl(Value &result, const Twine &message,
   }
 
   case FIRToken::lp_path:
+  case FIRToken::lp_ref:
+  case FIRToken::lp_ref_instance:
     if (isLeadingStmt)
-      return emitError("unexpected path() as start of statement");
-    if (requireFeature({6, 0, 0}, "Paths") || parsePathExp(result))
+      return emitError("unexpected path expression as start of statement");
+    if (parsePathLikeExp(result))
       return failure();
     break;
 
@@ -4199,6 +4204,129 @@ ParseResult FIRStmtParser::parsePathExp(Value &result) {
   return success();
 }
 
+/// path_like ::= path_exp | ref_exp | ref_instance_exp
+ParseResult FIRStmtParser::parsePathLikeExp(Value &result) {
+  switch (getToken().getKind()) {
+  case FIRToken::lp_path:
+    if (requireFeature({6, 0, 0}, "Paths") || parsePathExp(result))
+      return failure();
+    return success();
+  case FIRToken::lp_ref:
+    return parseRefPathExp(result, /*isInstance=*/false);
+  case FIRToken::lp_ref_instance:
+    return parseRefPathExp(result, /*isInstance=*/true);
+  default:
+    return emitError("expected path, ref, or ref_instance expression");
+  }
+}
+
+/// ref ::= 'ref(' id ')'
+/// ref_instance ::= 'ref_instance(' id ')'
+///
+/// Sugar for a module-local OM path targeting a named declaration:
+///   ref(x)          -> OMReferenceTarget:~Circuit|Module>x
+///   ref_instance(i) -> OMInstanceTarget:~Circuit|Module/i:Child
+ParseResult FIRStmtParser::parseRefPathExp(Value &result, bool isInstance) {
+  auto startTok =
+      consumeToken(isInstance ? FIRToken::lp_ref_instance : FIRToken::lp_ref);
+  auto startLoc = startTok.getLoc();
+  locationProcessor.setLoc(startLoc);
+
+  if (requireFeature({6, 0, 0}, "Paths"))
+    return failure();
+
+  StringRef id;
+  if (parseId(id, isInstance ? "expected instance name in ref_instance"
+                             : "expected local name in ref") ||
+      parseToken(FIRToken::r_paren, isInstance
+                                        ? "expected ')' in ref_instance"
+                                        : "expected ')' in ref"))
+    return failure();
+
+  // The named declaration must already exist in the module.
+  SymbolValueEntry entry;
+  if (moduleContext.lookupSymbolEntry(entry, id, startLoc))
+    return failure();
+
+  auto *parentOp = builder.getBlock()->getParentOp();
+  FModuleLike moduleOp = parentOp ? dyn_cast<FModuleLike>(parentOp) : nullptr;
+  if (!moduleOp && parentOp)
+    moduleOp = parentOp->getParentOfType<FModuleLike>();
+  auto circuitOp =
+      parentOp ? parentOp->getParentOfType<CircuitOp>() : CircuitOp{};
+  if (!moduleOp || !circuitOp)
+    return emitError(startLoc, "unable to determine owning module for path target");
+
+  SmallString<64> target;
+  if (isInstance) {
+    // Instances are stored as unbundled symbol entries.  Recover the
+    // InstanceOp / InstanceChoiceOp either from a port result or, for empty
+    // port lists, by scanning the current block for the named instance.
+    if (isa<Value>(entry))
+      return emitError(startLoc)
+             << "ref_instance target '" << id << "' is not an instance";
+
+    Operation *instOp = nullptr;
+    if (auto unbundledId = dyn_cast<UnbundledID>(entry)) {
+      auto &ubEntry = moduleContext.getUnbundledEntry(unbundledId - 1);
+      if (!ubEntry.empty())
+        instOp = ubEntry.front().second.getDefiningOp();
+    }
+    if (!instOp) {
+      for (Operation &op : llvm::reverse(*builder.getBlock())) {
+        if (auto inst = dyn_cast<InstanceOp>(&op)) {
+          if (inst.getName() == id) {
+            instOp = &op;
+            break;
+          }
+        } else if (auto choice = dyn_cast<InstanceChoiceOp>(&op)) {
+          if (choice.getName() == id) {
+            instOp = &op;
+            break;
+          }
+        }
+      }
+    }
+
+    StringRef childModule;
+    if (auto inst = dyn_cast_or_null<InstanceOp>(instOp))
+      childModule = inst.getModuleName();
+    else if (auto choice = dyn_cast_or_null<InstanceChoiceOp>(instOp))
+      childModule = choice.getDefaultTargetAttr().getValue();
+    else
+      return emitError(startLoc)
+             << "ref_instance target '" << id << "' is not an instance";
+
+    // OMInstanceTarget:~Circuit|Parent/inst:Child
+    target += "OMInstanceTarget:~";
+    target += circuitOp.getName();
+    target += "|";
+    target += moduleOp.getModuleName();
+    target += "/";
+    target += id;
+    target += ":";
+    target += childModule;
+  } else {
+    // Wires/nodes/ports/etc. are normal SSA symbol entries.  Reject instances.
+    if (!isa<Value>(entry))
+      return emitError(startLoc)
+             << "ref target '" << id
+             << "' is an instance; use ref_instance(" << id << ")";
+
+    // OMReferenceTarget:~Circuit|Module>name
+    target += "OMReferenceTarget:~";
+    target += circuitOp.getName();
+    target += "|";
+    target += moduleOp.getModuleName();
+    target += ">";
+    target += id;
+  }
+
+  result = UnresolvedPathOp::create(
+      builder, StringAttr::get(getContext(), target));
+  return success();
+}
+
 /// domain_instantiation ::= 'domain' id 'of' id ('(' exp (',' exp)* ')')? info?
 ParseResult FIRStmtParser::parseDomainInstantiation() {
   auto startTok = consumeToken(FIRToken::kw_domain);
@@ -4271,12 +4399,14 @@ ParseResult FIRStmtParser::parseDomainDefine() {
   return success();
 }
 
-/// register ::= 'register' domain_exp '[' id ']' ',' path_exp info?
+/// register ::= 'register' domain_exp '[' id ']' ',' path_like info?
 ///
 /// Unlike ordinary domain expressions, the registry field is written with
 /// square brackets (`A[clockGates]`) rather than a property subfield.
-/// Targets are existing path expressions such as
-/// `path("OMReferenceTarget:~Circuit|Module>name")`.
+/// Targets are path-like expressions:
+///   path("OMReferenceTarget:~Circuit|Module>name")
+///   ref(localName)
+///   ref_instance(instName)
 ParseResult FIRStmtParser::parseDomainRegister() {
   auto startTok = consumeToken(FIRToken::kw_register);
   auto startLoc = startTok.getLoc();
@@ -4322,7 +4452,7 @@ ParseResult FIRStmtParser::parseDomainRegister() {
       parseToken(FIRToken::r_square,
                  "expected ']' after registry field name") ||
       parseToken(FIRToken::comma, "expected ',' after registry field") ||
-      parsePathExp(target) || parseOptionalInfo())
+      parsePathLikeExp(target) || parseOptionalInfo())
     return failure();
 
   auto domainType = type_cast<DomainType>(domain.getType());

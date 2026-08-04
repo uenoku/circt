@@ -24,7 +24,7 @@ circuit Foo:
     input d: UInt<1> domains [A]
 
     inst clockGate of ClockGate
-    register A[clockGates], path("OMReferenceTarget:~Foo|Bar>clockGate")
+    register A[clockGates], ref_instance(clockGate)
 
   ; Parent fans the same domain into two children; registries concatenate.
   public module Foo:
