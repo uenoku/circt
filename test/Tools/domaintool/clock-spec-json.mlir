@@ -63,33 +63,38 @@ om.class @Foo_Class(
 // DEFAULT-NEXT:     {
 // DEFAULT-NEXT:       "name_pattern": "A",
 // DEFAULT-NEXT:       "define_period": "A_PERIOD",
-// DEFAULT-NEXT:       "clock_relationships": []
+// DEFAULT-NEXT:       "clock_relationships": [],
+// DEFAULT-NEXT:       "clock_gates": []
 // DEFAULT-NEXT:     },
 // DEFAULT-NEXT:     {
 // DEFAULT-NEXT:       "name_pattern": "B",
 // DEFAULT-NEXT:       "define_period": "B_PERIOD",
-// DEFAULT-NEXT:       "clock_relationships": []
+// DEFAULT-NEXT:       "clock_relationships": [],
+// DEFAULT-NEXT:       "clock_gates": []
 // DEFAULT-NEXT:     }
 // DEFAULT-NEXT:   ],
 // ASYNC-NEXT:     "clocks": [
 // ASYNC-NEXT:       {
 // ASYNC-NEXT:         "name_pattern": "B",
 // ASYNC-NEXT:         "define_period": "B_PERIOD",
-// ASYNC-NEXT:         "clock_relationships": []
+// ASYNC-NEXT:         "clock_relationships": [],
+// ASYNC-NEXT:         "clock_gates": []
 // ASYNC-NEXT:       }
 // ASYNC-NEXT:     ],
 // STATIC-NEXT:    "clocks": [
 // STATIC-NEXT:      {
 // STATIC-NEXT:        "name_pattern": "B",
 // STATIC-NEXT:        "define_period": "B_PERIOD",
-// STATIC-NEXT:        "clock_relationships": []
+// STATIC-NEXT:        "clock_relationships": [],
+// STATIC-NEXT:        "clock_gates": []
 // STATIC-NEXT:      }
 // STATIC-NEXT:    ],
 // SYNC-NEXT:      "clocks": [
 // SYNC-NEXT:        {
 // SYNC-NEXT:          "name_pattern": "A",
 // SYNC-NEXT:          "define_period": "A_PERIOD",
-// SYNC-NEXT:          "clock_relationships": []
+// SYNC-NEXT:          "clock_relationships": [],
+// SYNC-NEXT:          "clock_gates": []
 // SYNC-NEXT:        },
 // SYNC-NEXT:        {
 // SYNC-NEXT:          "name_pattern": "B",
@@ -99,14 +104,16 @@ om.class @Foo_Class(
 // SYNC-NEXT:              "name_pattern": "A",
 // SYNC-NEXT:              "relationship": "sync"
 // SYNC-NEXT:            }
-// SYNC-NEXT:          ]
+// SYNC-NEXT:          ],
+// SYNC-NEXT:          "clock_gates": []
 // SYNC-NEXT:        }
 // SYNC-NEXT:      ],
 // RATIONAL-NEXT:  "clocks": [
 // RATIONAL-NEXT:    {
 // RATIONAL-NEXT:      "name_pattern": "A",
 // RATIONAL-NEXT:      "define_period": "A_PERIOD",
-// RATIONAL-NEXT:      "clock_relationships": []
+// RATIONAL-NEXT:      "clock_relationships": [],
+// RATIONAL-NEXT:      "clock_gates": []
 // RATIONAL-NEXT:    },
 // RATIONAL-NEXT:    {
 // RATIONAL-NEXT:      "name_pattern": "B",
@@ -116,7 +123,8 @@ om.class @Foo_Class(
 // RATIONAL-NEXT:          "name_pattern": "A",
 // RATIONAL-NEXT:          "relationship": "sync"
 // RATIONAL-NEXT:        }
-// RATIONAL-NEXT:      ]
+// RATIONAL-NEXT:      ],
+// RATIONAL-NEXT:      "clock_gates": []
 // RATIONAL-NEXT:    }
 // RATIONAL-NEXT:  ],
 //
@@ -155,7 +163,7 @@ om.class @Foo_Class(
 // DEFAULT-NEXT:       ],
 // DEFAULT-NEXT:       "comment": null
 // DEFAULT-NEXT:     }
-// DEFAULT-NEXT:   ]
+// DEFAULT-NEXT:   ],
 // ASYNC-NEXT:     "synchronous_ports": [
 // ASYNC-NEXT:       {
 // ASYNC-NEXT:         "name_pattern": "B",
@@ -165,7 +173,7 @@ om.class @Foo_Class(
 // ASYNC-NEXT:         ],
 // ASYNC-NEXT:         "comment": null
 // ASYNC-NEXT:       }
-// ASYNC-NEXT:     ]
+// ASYNC-NEXT:     ],
 // STATIC-NEXT:    "synchronous_ports": [
 // STATIC-NEXT:      {
 // STATIC-NEXT:        "name_pattern": "B",
@@ -175,7 +183,7 @@ om.class @Foo_Class(
 // STATIC-NEXT:        ],
 // STATIC-NEXT:        "comment": null
 // STATIC-NEXT:      }
-// STATIC-NEXT:    ]
+// STATIC-NEXT:    ],
 // SYNC-NEXT:      "synchronous_ports": [
 // SYNC-NEXT:        {
 // SYNC-NEXT:          "name_pattern": "A",
@@ -193,7 +201,7 @@ om.class @Foo_Class(
 // SYNC-NEXT:          ],
 // SYNC-NEXT:          "comment": null
 // SYNC-NEXT:        }
-// SYNC-NEXT:      ]
+// SYNC-NEXT:      ],
 // RATIONAL-NEXT:  "synchronous_ports": [
 // RATIONAL-NEXT:    {
 // RATIONAL-NEXT:      "name_pattern": "A",
@@ -211,6 +219,7 @@ om.class @Foo_Class(
 // RATIONAL-NEXT:      ],
 // RATIONAL-NEXT:      "comment": null
 // RATIONAL-NEXT:    }
-// RATIONAL-NEXT:  ]
+// RATIONAL-NEXT:  ],
 //
+// CHECK-NEXT:     "clock_gates": []
 // CHECK-NEXT:   }

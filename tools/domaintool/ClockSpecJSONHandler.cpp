@@ -64,6 +64,8 @@ struct Relationship {
 struct Clock {
   StringAttr namePattern;
   SmallVector<Relationship> relationships;
+  /// Paths to clock-gate cells accumulated in the domain's clockGates registry.
+  SmallVector<StringAttr> clockGates;
 };
 
 struct SynchronousData {
@@ -86,11 +88,29 @@ public:
     return classType && classType.getClassName().getValue() == "ClockDomain";
   }
 
+  /// Extract path refs from an evaluator path list, reporting type errors.
+  static LogicalResult
+  collectPathRefs(ArrayRef<om::evaluator::EvaluatorValuePtr> values,
+                  SmallVectorImpl<StringAttr> &out, bool &failed) {
+    for (auto &value : values) {
+      if (auto *p = dyn_cast<om::evaluator::PathValue>(value.get())) {
+        // TODO: Add checks that path is empty.
+        out.push_back(p->getRef());
+        continue;
+      }
+      emitError(value->getLoc())
+          << "expected path, but got " << value->getType();
+      failed = true;
+    }
+    return success(failed == false);
+  }
+
   LogicalResult handle(const ObjectMap &objectMap) override {
     // For a variety of reasons, this could fail.  Track failure, reporting all
     // errors before finally exiting.
     bool failed = false;
-    for (auto &[objectValue, associations] : objectMap) {
+    for (auto &[objectValue, lists] : objectMap) {
+      auto &associations = lists.associations;
       auto name = cast<StringAttr>(cast<om::evaluator::AttributeValue>(
                                        objectValue->getField("name_out")->get())
                                        ->getAttr());
@@ -124,23 +144,27 @@ public:
         domainRelationships[name] = {source, kind};
       }
 
+      // Collect optional clockGates registry paths for this domain.
+      SmallVector<StringAttr> clockGatePaths;
+      if (auto it = lists.registries.find(
+              StringAttr::get(name.getContext(), "clockGates"));
+          it != lists.registries.end()) {
+        bool pathFailed = false;
+        (void)collectPathRefs(it->second, clockGatePaths, pathFailed);
+        failed |= pathFailed;
+      }
+
       // Add to async ports if the name matches a provided option.
       bool isAsync =
           llvm::any_of(options::sifiveClockDomainAsync, [&](auto asyncName) {
             return asyncName == name.getValue();
           });
       if (isAsync) {
-        for (auto &association : associations) {
-          if (auto *p = dyn_cast<om::evaluator::PathValue>(association.get())) {
-            // TODO: Add checks that path is empty.
-            asyncPorts.push_back(p->getRef());
-            continue;
-          }
-          emitError(association->getLoc())
-              << "expected associations to be a path, but got "
-              << association->getType();
-          failed = true;
-        }
+        bool pathFailed = false;
+        (void)collectPathRefs(associations, asyncPorts, pathFailed);
+        failed |= pathFailed;
+        // Still record clock gates for async domains at top-level.
+        allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
         continue;
       }
 
@@ -150,24 +174,19 @@ public:
             return staticName == name.getValue();
           });
       if (isStatic) {
-        for (auto &association : associations) {
-          if (auto *p = dyn_cast<om::evaluator::PathValue>(association.get())) {
-            // TODO: Add checks that path is empty.
-            staticPorts.push_back(p->getRef());
-            continue;
-          }
-          emitError(association->getLoc())
-              << "expected associations to be a path, but got "
-              << association->getType();
-          failed = true;
-        }
+        bool pathFailed = false;
+        (void)collectPathRefs(associations, staticPorts, pathFailed);
+        failed |= pathFailed;
+        allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
         continue;
       }
 
       // Otherwise, this is a normal clock association.  Add the clock and
-      // populate the associations.
+      // populate the associations and clock gates.
+      allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
       clocks.push_back({/*namePattern=*/name,
-                        /*relationships=*/{}});
+                        /*relationships=*/{},
+                        /*clockGates=*/std::move(clockGatePaths)});
 
       for (auto &association : associations) {
         if (auto *p = dyn_cast<om::evaluator::PathValue>(association.get())) {
@@ -213,6 +232,10 @@ public:
                 });
               }
             });
+            json.attributeArray("clock_gates", [&] {
+              for (auto gate : clock.clockGates)
+                json.value(gate.getValue());
+            });
           });
         }
       });
@@ -239,6 +262,12 @@ public:
           });
         }
       });
+      // Global unordered collection of all clock-gate assets discovered across
+      // clock domains.  Prefer per-clock "clock_gates" when available.
+      json.attributeArray("clock_gates", [&] {
+        for (auto gate : allClockGates)
+          json.value(gate.getValue());
+      });
     });
 
     return success();
@@ -249,6 +278,7 @@ public:
     asyncPorts.clear();
     staticPorts.clear();
     syncPorts.clear();
+    allClockGates.clear();
     domainRelationships.clear();
     syncEquivalenceClasses = EquivalenceClasses<StringAttr>();
   };
@@ -285,6 +315,9 @@ private:
   SmallVector<StringAttr> asyncPorts;
   SmallVector<StringAttr> staticPorts;
   MapVector<StringAttr, SynchronousData> syncPorts;
+
+  /// All clock-gate paths accumulated from ClockDomain.clockGates registries.
+  SmallVector<StringAttr> allClockGates;
 
   /// Map from a domain name to its recorded source relationship (source name +
   /// kind).  Populated during handle() when a domain declares a non-empty

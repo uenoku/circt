@@ -21,7 +21,7 @@
 // Intuitively, (1) is the information that a user must specify about a domain
 // and (2) is associations plus accumulated Registry assets.  Registry fields
 // are Lists on (2); local domain.register paths are concatenated with child
-// instance A_out.<registry>_out contributions and driven into A_object.
+// instance A_out.<registry>_registry_out contributions and driven into A_object.
 //
 // This pass needs to run after InferDomains and before LowerClasses.  This pass
 // assumes that all domain information is available.  It is not written in such
@@ -119,13 +119,13 @@ struct Classes {
   /// is (field name, list element type).
   SmallVector<std::pair<StringAttr, PropertyType>> registryFields;
 
-  /// Port index of `<name>_in` on the output class for registry slot.
+  /// Port index of `<name>_registry_in` on the output class for registry slot.
   unsigned getRegistryInPort(unsigned registrySlot) const {
     // domainInfo_in/out at 0/1, associations_in/out at 2/3, then registry pairs.
     return 4 + registrySlot * 2;
   }
 
-  /// Port index of `<name>_out` on the output class for registry slot.
+  /// Port index of `<name>_registry_out` on the output class for registry slot.
   unsigned getRegistryOutPort(unsigned registrySlot) const {
     return getRegistryInPort(registrySlot) + 1;
   }
@@ -896,7 +896,7 @@ LogicalResult LowerModule::lowerModule() {
       return failure();
 
     // Wire registry lists on each domain port object:
-    //   registry_in = list_concat(localRegisters..., child.A_out.registry_out...)
+    //   registry_in = list_concat(local..., child.A_out.<reg>_registry_out...)
     for (auto &[_, info] : indexToDomain) {
       if (!info.op || !info.classes || info.classes->registryFields.empty())
         continue;
@@ -1057,10 +1057,10 @@ LogicalResult LowerCircuit::lowerDomain(DomainOp op) {
       auto listType = ListType::get(context, registryType.getElementType());
       classOutPorts.append(
           {{/*name=*/builder.getStringAttr(Twine(field.getName().getValue()) +
-                                           "_in"),
+                                           "_registry_in"),
             /*type=*/listType, /*dir=*/Direction::In},
            {/*name=*/builder.getStringAttr(Twine(field.getName().getValue()) +
-                                           "_out"),
+                                           "_registry_out"),
             /*type=*/listType, /*dir=*/Direction::Out}});
       fieldLowerings.push_back(
           {DomainFieldLowering::Kind::OutputRegistry, registrySlot++});
