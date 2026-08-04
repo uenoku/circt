@@ -828,3 +828,28 @@ firrtl.circuit "HierRegistry" {
     // CHECK: firrtl.propassign %[[clockGates_in]], %[[all]]
   }
 }
+
+// -----
+
+// Multiple register ops into the same registry field (shared domain.subfield).
+firrtl.circuit "MultiRegisterSameField" {
+  firrtl.domain @ClockDomain [
+    #firrtl.domain.field<"clockGates", !firrtl.registry<path>>
+  ]
+
+  // CHECK-LABEL: firrtl.module @MultiRegisterSameField(
+  firrtl.module @MultiRegisterSameField(
+    in %A: !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
+  ) {
+    // CHECK-DAG: %[[p0:.+]] = firrtl.unresolved_path "OMInstanceTarget:~MultiRegisterSameField|MultiRegisterSameField/g0:G"
+    // CHECK-DAG: %[[p1:.+]] = firrtl.unresolved_path "OMInstanceTarget:~MultiRegisterSameField|MultiRegisterSameField/g1:G"
+    // CHECK: %[[list:.+]] = firrtl.list.create %[[p0]], %[[p1]] : !firrtl.list<path>
+    // CHECK: %[[clockGates_in:.+]] = firrtl.object.subfield %A_object[clockGates_registry_in]
+    // CHECK: firrtl.propassign %[[clockGates_in]], %[[list]]
+    %p0 = firrtl.unresolved_path "OMInstanceTarget:~MultiRegisterSameField|MultiRegisterSameField/g0:G"
+    %p1 = firrtl.unresolved_path "OMInstanceTarget:~MultiRegisterSameField|MultiRegisterSameField/g1:G"
+    %reg = firrtl.domain.subfield %A[clockGates] : !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<path>)>
+    firrtl.domain.register %reg, %p0 : !firrtl.registry<path>, !firrtl.path
+    firrtl.domain.register %reg, %p1 : !firrtl.registry<path>, !firrtl.path
+  }
+}

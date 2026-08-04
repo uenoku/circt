@@ -695,14 +695,17 @@ LogicalResult LowerModule::lowerModule() {
 
         localRegistryPaths[portIt->second][fieldLowering.slot].push_back(
             registerOp.getSrc());
-        // Drop the register and its exclusive registry subfield immediately so
-        // later conversion cleanup cannot destroy still-used ops.
+        // Drop the register immediately.  Multiple register ops may share the
+        // same domain.subfield destination, so only erase the subfield once it
+        // has no remaining users.
         Value domainInput = subfieldOp.getInput();
         registerOp.erase();
-        subfieldOp.erase();
-        if (auto *inputOp = domainInput.getDefiningOp())
-          if (inputOp->use_empty())
-            conversionsToErase.insert(inputOp);
+        if (subfieldOp->use_empty()) {
+          subfieldOp.erase();
+          if (auto *inputOp = domainInput.getDefiningOp())
+            if (inputOp->use_empty())
+              conversionsToErase.insert(inputOp);
+        }
         return WalkResult::advance();
       }
 
