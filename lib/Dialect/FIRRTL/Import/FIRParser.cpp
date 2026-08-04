@@ -1621,6 +1621,19 @@ struct FIRModuleContext : public FIRParser {
     return unbundledValues[index];
   }
 
+  /// Record the module name referenced by a local instance declaration.  Used
+  /// by ref_instance(name) sugar, including empty-port instances that have no
+  /// unbundled port values to hang off of.
+  void addInstanceModule(StringRef instanceName, StringRef moduleName) {
+    instanceModules[instanceName] = moduleName;
+  }
+
+  /// Lookup a previously recorded instance module name, or null if unknown.
+  StringRef lookupInstanceModule(StringRef instanceName) const {
+    auto it = instanceModules.find(instanceName);
+    return it == instanceModules.end() ? StringRef() : it->second;
+  }
+
   /// This contains one entry for each value in FIRRTL that is represented as a
   /// bundle type in the FIRRTL spec but for which we represent as an exploded
   /// set of elements in the FIRRTL dialect.
@@ -1675,6 +1688,10 @@ private:
   /// This symbol table holds the names of ports, wires, and other local decls.
   /// This is scoped because conditional statements introduce subscopes.
   ModuleSymbolTable symbolTable;
+
+  /// Instance name -> referenced module name.  Populated by inst/inst_choice
+  /// and consulted by ref_instance() sugar.
+  llvm::StringMap<StringRef> instanceModules;
 
   /// This is a cache of subindex and subfield operations so we don't constantly
   /// recreate large chains of them.  This maps a bundle value + index to the
@@ -4259,41 +4276,14 @@ ParseResult FIRStmtParser::parseRefPathExp(Value &result, bool isInstance) {
 
   SmallString<64> target;
   if (isInstance) {
-    // Instances are stored as unbundled symbol entries.  Recover the
-    // InstanceOp / InstanceChoiceOp either from a port result or, for empty
-    // port lists, by scanning the current block for the named instance.
+    // Instances are unbundled symbol entries.  The referenced module name is
+    // recorded when the instance is declared.
     if (isa<Value>(entry))
       return emitError(startLoc)
              << "ref_instance target '" << id << "' is not an instance";
 
-    Operation *instOp = nullptr;
-    if (auto unbundledId = dyn_cast<UnbundledID>(entry)) {
-      auto &ubEntry = moduleContext.getUnbundledEntry(unbundledId - 1);
-      if (!ubEntry.empty())
-        instOp = ubEntry.front().second.getDefiningOp();
-    }
-    if (!instOp) {
-      for (Operation &op : llvm::reverse(*builder.getBlock())) {
-        if (auto inst = dyn_cast<InstanceOp>(&op)) {
-          if (inst.getName() == id) {
-            instOp = &op;
-            break;
-          }
-        } else if (auto choice = dyn_cast<InstanceChoiceOp>(&op)) {
-          if (choice.getName() == id) {
-            instOp = &op;
-            break;
-          }
-        }
-      }
-    }
-
-    StringRef childModule;
-    if (auto inst = dyn_cast_or_null<InstanceOp>(instOp))
-      childModule = inst.getModuleName();
-    else if (auto choice = dyn_cast_or_null<InstanceChoiceOp>(instOp))
-      childModule = choice.getDefaultTargetAttr().getValue();
-    else
+    StringRef childModule = moduleContext.lookupInstanceModule(id);
+    if (childModule.empty())
       return emitError(startLoc)
              << "ref_instance target '" << id << "' is not an instance";
 
@@ -5070,6 +5060,7 @@ ParseResult FIRStmtParser::parseInstance() {
   // it.
   moduleContext.unbundledValues.push_back(std::move(unbundledValueEntry));
   auto entryId = UnbundledID(moduleContext.unbundledValues.size());
+  moduleContext.addInstanceModule(id, moduleName);
   return moduleContext.addSymbolEntry(id, entryId, startTok.getLoc());
 }
 
@@ -5166,6 +5157,7 @@ ParseResult FIRStmtParser::parseInstanceChoice() {
 
   moduleContext.unbundledValues.push_back(std::move(unbundledValueEntry));
   auto entryId = UnbundledID(moduleContext.unbundledValues.size());
+  moduleContext.addInstanceModule(id, defaultModuleName);
   return moduleContext.addSymbolEntry(id, entryId, startTok.getLoc());
 }
 

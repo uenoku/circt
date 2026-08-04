@@ -167,8 +167,6 @@ public:
         bool pathFailed = false;
         (void)collectPathRefs(associations, asyncPorts, pathFailed);
         failed |= pathFailed;
-        // Still record clock gates for async domains at top-level.
-        allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
         continue;
       }
 
@@ -181,13 +179,11 @@ public:
         bool pathFailed = false;
         (void)collectPathRefs(associations, staticPorts, pathFailed);
         failed |= pathFailed;
-        allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
         continue;
       }
 
       // Otherwise, this is a normal clock association.  Add the clock and
       // populate the associations and clock gates.
-      allClockGates.append(clockGatePaths.begin(), clockGatePaths.end());
       clocks.push_back({/*namePattern=*/name,
                         /*relationships=*/{},
                         /*clockGates=*/std::move(clockGatePaths)});
@@ -266,12 +262,6 @@ public:
           });
         }
       });
-      // Global unordered collection of all clock-gate assets discovered across
-      // clock domains.  Prefer per-clock "clock_gates" when available.
-      json.attributeArray("clock_gates", [&] {
-        for (auto gate : allClockGates)
-          json.value(gate.getValue());
-      });
     });
 
     return success();
@@ -282,7 +272,6 @@ public:
     asyncPorts.clear();
     staticPorts.clear();
     syncPorts.clear();
-    allClockGates.clear();
     domainRelationships.clear();
     syncEquivalenceClasses = EquivalenceClasses<StringAttr>();
   };
@@ -319,9 +308,6 @@ private:
   SmallVector<StringAttr> asyncPorts;
   SmallVector<StringAttr> staticPorts;
   MapVector<StringAttr, SynchronousData> syncPorts;
-
-  /// All clock-gate paths accumulated from ClockDomain.clockGates registries.
-  SmallVector<StringAttr> allClockGates;
 
   /// Map from a domain name to its recorded source relationship (source name +
   /// kind).  Populated during handle() when a domain declares a non-empty

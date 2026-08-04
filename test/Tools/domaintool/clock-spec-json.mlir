@@ -163,7 +163,7 @@ om.class @Foo_Class(
 // DEFAULT-NEXT:       ],
 // DEFAULT-NEXT:       "comment": null
 // DEFAULT-NEXT:     }
-// DEFAULT-NEXT:   ],
+// DEFAULT-NEXT:   ]
 // ASYNC-NEXT:     "synchronous_ports": [
 // ASYNC-NEXT:       {
 // ASYNC-NEXT:         "name_pattern": "B",
@@ -173,7 +173,7 @@ om.class @Foo_Class(
 // ASYNC-NEXT:         ],
 // ASYNC-NEXT:         "comment": null
 // ASYNC-NEXT:       }
-// ASYNC-NEXT:     ],
+// ASYNC-NEXT:     ]
 // STATIC-NEXT:    "synchronous_ports": [
 // STATIC-NEXT:      {
 // STATIC-NEXT:        "name_pattern": "B",
@@ -183,7 +183,7 @@ om.class @Foo_Class(
 // STATIC-NEXT:        ],
 // STATIC-NEXT:        "comment": null
 // STATIC-NEXT:      }
-// STATIC-NEXT:    ],
+// STATIC-NEXT:    ]
 // SYNC-NEXT:      "synchronous_ports": [
 // SYNC-NEXT:        {
 // SYNC-NEXT:          "name_pattern": "A",
@@ -201,7 +201,7 @@ om.class @Foo_Class(
 // SYNC-NEXT:          ],
 // SYNC-NEXT:          "comment": null
 // SYNC-NEXT:        }
-// SYNC-NEXT:      ],
+// SYNC-NEXT:      ]
 // RATIONAL-NEXT:  "synchronous_ports": [
 // RATIONAL-NEXT:    {
 // RATIONAL-NEXT:      "name_pattern": "A",
@@ -219,7 +219,5 @@ om.class @Foo_Class(
 // RATIONAL-NEXT:      ],
 // RATIONAL-NEXT:      "comment": null
 // RATIONAL-NEXT:    }
-// RATIONAL-NEXT:  ],
-//
-// CHECK-NEXT:     "clock_gates": []
+// RATIONAL-NEXT:  ]
 // CHECK-NEXT:   }

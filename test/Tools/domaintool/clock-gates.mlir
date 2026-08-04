@@ -51,7 +51,3 @@ om.class @Foo_Class(
 // CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar1:Bar>clockGate",
 // CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar2:Bar>clockGate"
 // CHECK-NEXT: ]
-// CHECK:      "clock_gates": [
-// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar1:Bar>clockGate",
-// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar2:Bar>clockGate"
-// CHECK-NEXT: ]
