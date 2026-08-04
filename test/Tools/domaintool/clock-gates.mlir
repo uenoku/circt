@@ -48,10 +48,10 @@ om.class @Foo_Class(
 
 // CHECK:      "name_pattern": "A"
 // CHECK:      "clock_gates": [
-// CHECK-NEXT:   "clockGate",
-// CHECK-NEXT:   "clockGate"
+// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar1:Bar>clockGate",
+// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar2:Bar>clockGate"
 // CHECK-NEXT: ]
 // CHECK:      "clock_gates": [
-// CHECK-NEXT:   "clockGate",
-// CHECK-NEXT:   "clockGate"
+// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar1:Bar>clockGate",
+// CHECK-NEXT:   "OMReferenceTarget:~Foo|Foo/bar2:Bar>clockGate"
 // CHECK-NEXT: ]

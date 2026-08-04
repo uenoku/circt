@@ -89,13 +89,15 @@ public:
   }
 
   /// Extract path refs from an evaluator path list, reporting type errors.
+  /// Associations use getRef() (leaf names).  Registry assets use
+  /// getAsString() so hierarchical basepaths are preserved.
   static LogicalResult
   collectPathRefs(ArrayRef<om::evaluator::EvaluatorValuePtr> values,
-                  SmallVectorImpl<StringAttr> &out, bool &failed) {
+                  SmallVectorImpl<StringAttr> &out, bool &failed,
+                  bool hierarchical = false) {
     for (auto &value : values) {
       if (auto *p = dyn_cast<om::evaluator::PathValue>(value.get())) {
-        // TODO: Add checks that path is empty.
-        out.push_back(p->getRef());
+        out.push_back(hierarchical ? p->getAsString() : p->getRef());
         continue;
       }
       emitError(value->getLoc())
@@ -145,12 +147,14 @@ public:
       }
 
       // Collect optional clockGates registry paths for this domain.
+      // Use hierarchical stringification so instance prefixes are retained.
       SmallVector<StringAttr> clockGatePaths;
       if (auto it = lists.registries.find(
               StringAttr::get(name.getContext(), "clockGates"));
           it != lists.registries.end()) {
         bool pathFailed = false;
-        (void)collectPathRefs(it->second, clockGatePaths, pathFailed);
+        (void)collectPathRefs(it->second, clockGatePaths, pathFailed,
+                              /*hierarchical=*/true);
         failed |= pathFailed;
       }
 
