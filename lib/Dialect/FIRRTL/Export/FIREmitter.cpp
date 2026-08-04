@@ -110,6 +110,7 @@ struct Emitter {
   void emitStatement(MemoryDebugPortOp op);
   void emitStatement(MemoryPortAccessOp op);
   void emitStatement(DomainDefineOp op);
+  void emitStatement(DomainRegisterOp op);
   void emitStatement(RefDefineOp op);
   void emitStatement(RefForceOp op);
   void emitStatement(RefForceInitialOp op);
@@ -835,10 +836,11 @@ void Emitter::emitStatementsInBlock(Block &block) {
               ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
               InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
               SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
-              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
-              RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
-              LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
-              DomainCreateOp>([&](auto op) { emitStatement(op); })
+              MemoryPortAccessOp, DomainDefineOp, DomainRegisterOp,
+              RefDefineOp, RefForceOp, RefForceInitialOp, RefReleaseOp,
+              RefReleaseInitialOp, LayerBlockOp, GenericIntrinsicOp,
+              DomainCreateAnonOp, DomainCreateOp>(
+            [&](auto op) { emitStatement(op); })
         .Default([&](auto op) {
           startStatement();
           ps << "// operation " << PPExtString(op->getName().getStringRef());
@@ -1414,6 +1416,27 @@ void Emitter::emitStatement(DomainDefineOp op) {
   emitLocationAndNewLine(op);
 }
 
+void Emitter::emitStatement(DomainRegisterOp op) {
+  if (failed(requireVersion(missingSpecFIRVersion, op, "domain registries")))
+    return;
+
+  auto subfield = dyn_cast_or_null<DomainSubfieldOp>(op.getDest().getDefiningOp());
+  if (!subfield) {
+    emitOpError(op, "destination must be a domain registry field");
+    return;
+  }
+
+  startStatement();
+  ps.scopedBox(PP::ibox2, [&]() {
+    ps << "register" << PP::space;
+    emitExpression(subfield.getInput());
+    ps << "[" << PPExtString(subfield.getFieldName().getValue()) << "],"
+       << PP::space;
+    emitExpression(op.getSrc());
+  });
+  emitLocationAndNewLine(op);
+}
+
 void Emitter::emitStatement(RefDefineOp op) {
   startStatement();
   emitAssignLike([&]() { emitExpression(op.getDest()); },
@@ -1963,6 +1986,11 @@ void Emitter::emitType(Type type, bool includeConst) {
       .Case<PathType>([&](PathType type) { ps << "Path"; })
       .Case<ListType>([&](ListType type) {
         ps << "List<";
+        emitType(type.getElementType());
+        ps << ">";
+      })
+      .Case<RegistryType>([&](RegistryType type) {
+        ps << "Registry<";
         emitType(type.getElementType());
         ps << ">";
       })

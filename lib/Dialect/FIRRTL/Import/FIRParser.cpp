@@ -284,6 +284,7 @@ struct FIRParser {
                               const Twine &message);
   ParseResult parseEnumType(FIRRTLType &result);
   ParseResult parseListType(FIRRTLType &result);
+  ParseResult parseRegistryType(FIRRTLType &result);
   ParseResult parseType(FIRRTLType &result, const Twine &message);
   // Parse a property type specifically.
   ParseResult parsePropertyType(PropertyType &result, const Twine &message);
@@ -924,6 +925,20 @@ ParseResult FIRParser::parseListType(FIRRTLType &result) {
   return success();
 }
 
+/// registry-type ::= 'Registry' '<' type '>'
+ParseResult FIRParser::parseRegistryType(FIRRTLType &result) {
+  consumeToken(FIRToken::kw_Registry);
+
+  PropertyType elementType;
+  if (parseToken(FIRToken::less, "expected '<' in Registry type") ||
+      parsePropertyType(elementType, "expected Registry element type") ||
+      parseToken(FIRToken::greater, "expected '>' in Registry type"))
+    return failure();
+
+  result = RegistryType::get(getContext(), elementType);
+  return success();
+}
+
 /// type ::= 'Clock'
 ///      ::= 'Reset'
 ///      ::= 'AsyncReset'
@@ -938,6 +953,7 @@ ParseResult FIRParser::parseListType(FIRRTLType &result) {
 ///      ::= 'const' type
 ///      ::= 'String'
 ///      ::= list-type
+///      ::= registry-type
 ///      ::= id
 ///
 /// field: 'flip'? fieldId ':' type
@@ -1251,6 +1267,28 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
       return failure();
 
     result = ListType::get(getContext(), elementType);
+    break;
+  }
+
+  case FIRToken::kw_Registry:
+    if (requireFeature(missingSpecFIRVersion, "Registries") ||
+        parseRegistryType(result))
+      return failure();
+    break;
+
+  case FIRToken::langle_Registry: {
+    // The '<' has already been consumed by the lexer, so we need to parse
+    // the element type and the trailing '>'.
+    if (requireFeature(missingSpecFIRVersion, "Registries"))
+      return failure();
+    consumeToken();
+
+    PropertyType elementType;
+    if (parsePropertyType(elementType, "expected Registry element type") ||
+        parseToken(FIRToken::greater, "expected '>' in Registry type"))
+      return failure();
+
+    result = RegistryType::get(getContext(), elementType);
     break;
   }
   }
@@ -2088,6 +2126,8 @@ private:
   ParseResult parseMatch(unsigned matchIndent);
   ParseResult parseDomainInstantiation();
   ParseResult parseDomainDefine();
+  ParseResult parseDomainRegisterTarget(Value &result);
+  ParseResult parseDomainRegister();
   ParseResult parseRefDefine();
   ParseResult parseRefForce();
   ParseResult parseRefForceInitial();
@@ -3131,6 +3171,8 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parseDomainInstantiation();
   case FIRToken::kw_domain_define:
     return parseDomainDefine();
+  case FIRToken::kw_register:
+    return parseDomainRegister();
   case FIRToken::kw_define:
     return parseRefDefine();
   case FIRToken::lp_force:
@@ -4230,6 +4272,138 @@ ParseResult FIRStmtParser::parseDomainDefine() {
   return success();
 }
 
+/// Parse the target operand of a domain register statement.
+///
+/// Targets may be either an existing Path-typed expression or a local
+/// declaration name (for example an instance) which is converted into an
+/// `OMReferenceTarget` unresolved path.
+ParseResult FIRStmtParser::parseDomainRegisterTarget(Value &result) {
+  auto loc = getToken().getLoc();
+  locationProcessor.setLoc(loc);
+
+  // Explicit path("...") expressions.
+  if (getToken().is(FIRToken::lp_path))
+    return parsePathExp(result);
+
+  // Otherwise expect a local name. Instance names are stored as unbundled
+  // symbol entries, so resolve them specially into OMReferenceTarget paths.
+  StringRef id;
+  SymbolValueEntry entry;
+  if (parseId(id, "expected path target") ||
+      moduleContext.lookupSymbolEntry(entry, id, loc))
+    return failure();
+
+  // Normal SSA values (ports, wires, path properties, etc.).
+  Value value;
+  if (!moduleContext.resolveSymbolEntry(value, entry, loc, /*fatal=*/false)) {
+    if (parseOptionalExpPostscript(value, /*allowDynamic=*/false))
+      return failure();
+    result = value;
+    return success();
+  }
+
+  // Unbundled names are instances. Build a module-local OMReferenceTarget.
+  auto *parentOp = builder.getBlock()->getParentOp();
+  FModuleLike moduleOp = parentOp ? dyn_cast<FModuleLike>(parentOp) : nullptr;
+  if (!moduleOp && parentOp)
+    moduleOp = parentOp->getParentOfType<FModuleLike>();
+  auto circuitOp =
+      parentOp ? parentOp->getParentOfType<CircuitOp>() : CircuitOp{};
+  if (!moduleOp || !circuitOp)
+    return emitError(loc, "unable to determine owning module for path target");
+
+  SmallString<64> target;
+  target += "OMReferenceTarget:~";
+  target += circuitOp.getName();
+  target += "|";
+  target += moduleOp.getModuleName();
+  target += ">";
+  target += id;
+
+  result = UnresolvedPathOp::create(
+      builder, StringAttr::get(getContext(), target));
+  return success();
+}
+
+/// register ::= 'register' domain_exp '[' id ']' ',' path_target info?
+///
+/// Unlike ordinary domain expressions, the registry field is written with
+/// square brackets (`A[clockGates]`) rather than a property subfield.
+ParseResult FIRStmtParser::parseDomainRegister() {
+  auto startTok = consumeToken(FIRToken::kw_register);
+  auto startLoc = startTok.getLoc();
+  locationProcessor.setLoc(startLoc);
+
+  if (requireFeature(missingSpecFIRVersion, "domain registries", startLoc))
+    return failure();
+
+  // Parse the domain-typed base expression without consuming `[field]`.
+  Value domain;
+  auto domainLoc = getToken().getLoc();
+  SymbolValueEntry entry;
+  StringRef id;
+  if (parseId(id, "expected domain expression") ||
+      moduleContext.lookupSymbolEntry(entry, id, domainLoc))
+    return failure();
+
+  if (moduleContext.resolveSymbolEntry(domain, entry, domainLoc, false)) {
+    StringRef field;
+    if (parseToken(FIRToken::period, "expected '.' in field reference") ||
+        parseFieldId(field, "expected field name") ||
+        moduleContext.resolveSymbolEntry(domain, entry, field, domainLoc))
+      return failure();
+  }
+
+  // Allow static bundle/instance/field chaining, but stop before '[' so the
+  // registry field brackets remain part of this statement's syntax.
+  while (consumeIf(FIRToken::period)) {
+    if (parsePostFixFieldId(domain))
+      return failure();
+  }
+
+  if (!type_isa<DomainType>(domain.getType()))
+    return emitError(domainLoc)
+           << "expected domain-type expression, got " << domain.getType();
+
+  StringRef fieldName;
+  auto fieldLoc = getToken().getLoc();
+  Value target;
+  if (parseToken(FIRToken::l_square,
+                 "expected '[' after domain in 'register'") ||
+      parseFieldId(fieldName, "expected registry field name") ||
+      parseToken(FIRToken::r_square,
+                 "expected ']' after registry field name") ||
+      parseToken(FIRToken::comma, "expected ',' after registry field") ||
+      parseDomainRegisterTarget(target) || parseOptionalInfo())
+    return failure();
+
+  auto domainType = type_cast<DomainType>(domain.getType());
+  auto fieldIndex = domainType.getFieldIndex(fieldName);
+  if (!fieldIndex)
+    return emitError(fieldLoc)
+           << "unknown field '" << fieldName << "' in domain type "
+           << domainType;
+
+  auto fieldType = domainType.getField(*fieldIndex).getType();
+  auto registryType = dyn_cast<RegistryType>(fieldType);
+  if (!registryType)
+    return emitError(fieldLoc)
+           << "domain field '" << fieldName << "' is not a Registry type, got "
+           << fieldType;
+
+  if (target.getType() != registryType.getElementType())
+    return emitError(startLoc)
+           << "path target type " << target.getType()
+           << " does not match registry element type "
+           << registryType.getElementType();
+
+  locationProcessor.setLoc(startLoc);
+  auto registry =
+      DomainSubfieldOp::create(builder, registryType, domain, *fieldIndex);
+  DomainRegisterOp::create(builder, registry, target);
+  return success();
+}
+
 /// define ::= 'define' static_reference '=' ref_expr info?
 ParseResult FIRStmtParser::parseRefDefine() {
   auto startTok = consumeToken(FIRToken::kw_define);
@@ -4611,6 +4785,9 @@ ParseResult FIRStmtParser::parsePropAssign() {
   auto rhsType = type_dyn_cast<PropertyType>(rhs.getType());
   if (!lhsType || !rhsType)
     return emitError(loc, "can only propassign property types");
+  if (isa<RegistryType>(lhsType) || isa<RegistryType>(rhsType))
+    return emitError(loc,
+                     "cannot assign registry types; use 'register' instead");
   locationProcessor.setLoc(loc);
   if (lhsType != rhsType) {
     // If the lhs is anyref, and the rhs is a ClassType, insert a cast.
@@ -5239,9 +5416,13 @@ ParseResult FIRStmtParser::parseWire() {
   StringRef id;
   FIRRTLType type;
   if (parseId(id, "expected wire name") ||
-      parseToken(FIRToken::colon, "expected ':' in wire") ||
-      parseType(type, "expected wire type"))
+      parseToken(FIRToken::colon, "expected ':' in wire"))
     return failure();
+  auto typeLoc = getToken().getLoc();
+  if (parseType(type, "expected wire type"))
+    return failure();
+  if (type_isa<RegistryType>(type))
+    return emitError(typeLoc, "Registry types are only valid as domain fields");
 
   // Parse optional domain associations
   SmallVector<Value> domains;
@@ -5795,9 +5976,14 @@ FIRCircuitParser::parsePortList(SmallVectorImpl<PortInfo> &resultPorts,
     FIRRTLType type;
     LocWithInfo info(getToken().getLoc(), this);
     if (parseId(name, "expected port name") ||
-        parseToken(FIRToken::colon, "expected ':' in port definition") ||
-        parseType(type, "expected a type in port declaration"))
+        parseToken(FIRToken::colon, "expected ':' in port definition"))
       return failure();
+    auto typeLoc = getToken().getLoc();
+    if (parseType(type, "expected a type in port declaration"))
+      return failure();
+    if (type_isa<RegistryType>(type))
+      return emitError(typeLoc,
+                       "Registry types are only valid as domain fields");
     Attribute domainInfoElement = {};
     size_t portIdx = resultPorts.size();
     if (auto domainType = dyn_cast<DomainType>(type)) {
