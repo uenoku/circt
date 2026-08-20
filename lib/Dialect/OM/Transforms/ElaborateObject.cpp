@@ -85,15 +85,19 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     // with the value's existing location.
     if (auto classOp = dyn_cast<ClassOp>(classLike.getOperation()))
       for (auto [i, v] : llvm::enumerate(fieldValues)) {
-        // A field can be a block argument when it refers to a class
-        // parameter. In that case there is no defining operation to update;
-        // importantly, the value may belong to the caller and must not be
-        // modified here.
-        if (auto *fieldOp = v.getDefiningOp())
-          rewriter.modifyOpInPlace(fieldOp, [&] {
-            fieldOp->setLoc(rewriter.getFusedLoc(
-                {classOp.getFieldLocByIndex(i), v.getLoc()}));
-          });
+        Location fieldLoc =
+            rewriter.getFusedLoc({classOp.getFieldLocByIndex(i), v.getLoc()});
+        if (auto *fieldOp = v.getDefiningOp()) {
+          rewriter.modifyOpInPlace(fieldOp,
+                                   [&] { fieldOp->setLoc(fieldLoc); });
+        } else if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+          // Block arguments do not have a defining operation. Updating one is
+          // an in-place modification of its owning operation, and must be
+          // reported to the pattern rewriter through that operation.
+          if (Operation *parentOp = blockArg.getOwner()->getParentOp())
+            rewriter.modifyOpInPlace(parentOp,
+                                     [&] { blockArg.setLoc(fieldLoc); });
+        }
       }
 
     // Erase the terminator and inline the body at the object instantiation.
