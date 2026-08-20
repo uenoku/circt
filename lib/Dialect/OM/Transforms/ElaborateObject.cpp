@@ -84,9 +84,17 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
     // Propagate the class's per-field locations onto each field value, fused
     // with the value's existing location.
     if (auto classOp = dyn_cast<ClassOp>(classLike.getOperation()))
-      for (auto [i, v] : llvm::enumerate(fieldValues))
-        v.setLoc(
-            rewriter.getFusedLoc({classOp.getFieldLocByIndex(i), v.getLoc()}));
+      for (auto [i, v] : llvm::enumerate(fieldValues)) {
+        // A field can be a block argument when it refers to a class
+        // parameter. In that case there is no defining operation to update;
+        // importantly, the value may belong to the caller and must not be
+        // modified here.
+        if (auto *fieldOp = v.getDefiningOp())
+          rewriter.modifyOpInPlace(fieldOp, [&] {
+            fieldOp->setLoc(rewriter.getFusedLoc(
+                {classOp.getFieldLocByIndex(i), v.getLoc()}));
+          });
+      }
 
     // Erase the terminator and inline the body at the object instantiation.
     rewriter.eraseOp(clonedFields);
