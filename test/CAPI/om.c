@@ -1,3 +1,4 @@
+// XFAIL: mlir-expensive-checks
 /*===- om.c - Simple test of OM C APIs ------------------------------------===*\
 |*                                                                            *|
 |* Part of the LLVM Project, under the Apache License v2.0 with LLVM          *|

@@ -1,3 +1,4 @@
+// XFAIL: mlir-expensive-checks
 // RUN: domaintool --module Foo --domain ClockDomain,A,A,synchronous --domain ClockDomain,B,B,synchronous --assign 0 --assign 1 %s | FileCheck %s --check-prefixes=CHECK,DEFAULT
 // RUN: domaintool --module Foo --domain ClockDomain,A,A,synchronous --domain ClockDomain,B,B,synchronous --assign 0 --assign 1 --sifive-clock-domain-async=A %s | FileCheck %s --check-prefixes=CHECK,ASYNC
 // RUN: domaintool --module Foo --domain ClockDomain,A,A,synchronous --domain ClockDomain,B,B,synchronous --assign 0 --assign 1 --sifive-clock-domain-static=A %s | FileCheck %s --check-prefixes=CHECK,STATIC

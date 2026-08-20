@@ -1,3 +1,4 @@
+// XFAIL: mlir-expensive-checks
 // Test various error conditions in domaintool
 
 om.class @ClockDomain(

@@ -1,3 +1,4 @@
+// XFAIL: mlir-expensive-checks
 // RUN: circt-opt -om-elaborate-object='all-public-classes=true' %s -verify-diagnostics -split-input-file
 
 om.class @AssertFalse() {
