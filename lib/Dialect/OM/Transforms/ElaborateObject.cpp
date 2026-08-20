@@ -91,8 +91,8 @@ struct ObjectOpInliningPattern : public OpRewritePattern<ObjectOp> {
           rewriter.modifyOpInPlace(fieldOp,
                                    [&] { fieldOp->setLoc(fieldLoc); });
          else
-            rewriter.modifyOpInPlace(cast<BlockArgument>(v).getOwner()->getParentOp(,
-                                     [&] { blockArg.setLoc(fieldLoc); });
+            rewriter.modifyOpInPlace(cast<BlockArgument>(v).getOwner()->getParentOp(),
+                                     [&] { v.setLoc(fieldLoc); });
       }
 
     // Erase the terminator and inline the body at the object instantiation.
