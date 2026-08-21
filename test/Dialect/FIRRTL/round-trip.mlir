@@ -198,6 +198,11 @@ firrtl.module @PropertyListOps() {
   %concat = firrtl.list.concat %l0, %l1 : !firrtl.list<integer>
 }
 
+// CHECK: firrtl.domain @RegistryDomain
+firrtl.domain @RegistryDomain [
+  #firrtl.domain.field<"registry", !firrtl.registry<path>>
+]
+
 firrtl.class @UnknownValueChild() {}
 // CHECK-LABEL: firrtl.module @UnknownValueOp
 firrtl.module @UnknownValueOp() {
