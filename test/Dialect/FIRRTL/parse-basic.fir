@@ -2399,6 +2399,19 @@ circuit DomainCreateWithFields:
 
 ;// -----
 FIRRTL version 7.0.0
+circuit DomainInsert:
+  domain ClockDomain:
+    clockGates: Registry<String>
+
+  ; CHECK-LABEL: firrtl.module @DomainInsert
+  ; CHECK-SAME: in %A: !firrtl.domain<@ClockDomain(clockGates: !firrtl.registry<string>)>
+  ; CHECK: firrtl.domain.insert %A[clockGates], %{{.*}} : !firrtl.registry<string>, !firrtl.string
+  public module DomainInsert:
+    input A: Domain of ClockDomain
+    insert A[clockGates], String("asset")
+
+;// -----
+FIRRTL version 7.0.0
 circuit UnknownProperties:
   class Foo:
     skip

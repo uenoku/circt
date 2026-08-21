@@ -2127,6 +2127,7 @@ private:
   ParseResult parseMatch(unsigned matchIndent);
   ParseResult parseDomainInstantiation();
   ParseResult parseDomainDefine();
+  ParseResult parseDomainInsert();
   ParseResult parseRefDefine();
   ParseResult parseRefForce();
   ParseResult parseRefForceInitial();
@@ -3171,6 +3172,8 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parseDomainInstantiation();
   case FIRToken::kw_domain_define:
     return parseDomainDefine();
+  case FIRToken::kw_insert:
+    return parseDomainInsert();
   case FIRToken::kw_define:
     return parseRefDefine();
   case FIRToken::lp_force:
@@ -4269,6 +4272,74 @@ ParseResult FIRStmtParser::parseDomainDefine() {
     return failure();
 
   emitConnect(builder, dest, src, getConstants().options.warnOnTruncation);
+  return success();
+}
+
+/// insert ::= 'insert' domain_exp '[' id ']' ',' exp info?
+ParseResult FIRStmtParser::parseDomainInsert() {
+  auto startTok = consumeToken(FIRToken::kw_insert);
+  auto startLoc = startTok.getLoc();
+  locationProcessor.setLoc(startLoc);
+
+  if (requireFeature(missingSpecFIRVersion, "domain registries", startLoc))
+    return failure();
+
+  // Parse the domain expression up to the registry field. The registry field
+  // is bracketed here to distinguish it from ordinary subfield access.
+  Value domain;
+  auto domainLoc = getToken().getLoc();
+  SymbolValueEntry entry;
+  StringRef id;
+  if (parseId(id, "expected domain expression") ||
+      moduleContext.lookupSymbolEntry(entry, id, domainLoc))
+    return failure();
+
+  if (moduleContext.resolveSymbolEntry(domain, entry, domainLoc, false)) {
+    StringRef field;
+    if (parseToken(FIRToken::period, "expected '.' in field reference") ||
+        parseFieldId(field, "expected field name") ||
+        moduleContext.resolveSymbolEntry(domain, entry, field, domainLoc))
+      return failure();
+  }
+
+  while (consumeIf(FIRToken::period)) {
+    if (parsePostFixFieldId(domain))
+      return failure();
+  }
+
+  StringRef fieldName;
+  auto fieldLoc = getToken().getLoc();
+  Value path;
+  if (parseToken(FIRToken::l_square,
+                 "expected '[' after domain in 'insert'") ||
+      parseFieldId(fieldName, "expected registry field name") ||
+      parseToken(FIRToken::r_square,
+                 "expected ']' after registry field name") ||
+      parseToken(FIRToken::comma, "expected ',' after registry field") ||
+      parseExp(path, "expected property value expression") ||
+      parseOptionalInfo())
+    return failure();
+
+  auto domainType = dyn_cast<DomainType>(domain.getType());
+  if (!domainType)
+    return emitError(startLoc) << "expected domain-type expression, got "
+                               << domain.getType();
+
+  auto fieldIndex = domainType.getFieldIndex(fieldName);
+  if (!fieldIndex)
+    return emitError(fieldLoc) << "unknown field '" << fieldName
+                               << "' in domain type " << domainType;
+
+  auto fieldType = domainType.getField(*fieldIndex).getType();
+  auto registryType = dyn_cast<RegistryType>(fieldType);
+  if (!registryType)
+    return emitError(fieldLoc) << "domain field '" << fieldName
+                               << "' is not a Registry type, got " << fieldType;
+
+  locationProcessor.setLoc(startLoc);
+  auto registry = DomainSubfieldOp::create(builder, registryType, domain,
+                                           *fieldIndex);
+  DomainInsertOp::create(builder, registry, path);
   return success();
 }
 

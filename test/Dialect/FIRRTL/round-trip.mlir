@@ -200,8 +200,16 @@ firrtl.module @PropertyListOps() {
 
 // CHECK: firrtl.domain @RegistryDomain
 firrtl.domain @RegistryDomain [
-  #firrtl.domain.field<"registry", !firrtl.registry<path>>
+  #firrtl.domain.field<"registry", !firrtl.registry<string>>
 ]
+
+// CHECK-LABEL: firrtl.module @DomainInsert
+firrtl.module @DomainInsert(
+    in %domain: !firrtl.domain<@RegistryDomain(registry: !firrtl.registry<string>)>) {
+  %value = firrtl.string "asset"
+  %registry = firrtl.domain.subfield %domain[registry] : !firrtl.domain<@RegistryDomain(registry: !firrtl.registry<string>)>
+  firrtl.domain.insert %registry, %value : !firrtl.registry<string>, !firrtl.string
+}
 
 firrtl.class @UnknownValueChild() {}
 // CHECK-LABEL: firrtl.module @UnknownValueOp

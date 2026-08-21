@@ -105,6 +105,7 @@ struct Emitter {
   void emitStatement(MemoryDebugPortOp op);
   void emitStatement(MemoryPortAccessOp op);
   void emitStatement(DomainDefineOp op);
+  void emitStatement(DomainInsertOp op);
   void emitStatement(RefDefineOp op);
   void emitStatement(RefForceOp op);
   void emitStatement(RefForceInitialOp op);
@@ -830,7 +831,8 @@ void Emitter::emitStatementsInBlock(Block &block) {
               ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
               InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
               SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
-              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
+               MemoryPortAccessOp, DomainDefineOp, DomainInsertOp, RefDefineOp,
+               RefForceOp,
               RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
               LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
               DomainCreateOp>([&](auto op) { emitStatement(op); })
@@ -1422,6 +1424,26 @@ void Emitter::emitStatement(DomainDefineOp op) {
   emitAssignLike([&]() { emitExpression(op.getDest()); },
                  [&]() { emitExpression(op.getSrc()); }, PPExtString("="),
                  PPExtString("domain_define"));
+  emitLocationAndNewLine(op);
+}
+
+void Emitter::emitStatement(DomainInsertOp op) {
+  if (failed(requireVersion(missingSpecFIRVersion, op, "domain registries")))
+    return;
+
+  auto subfield =
+      dyn_cast_or_null<DomainSubfieldOp>(op.getDest().getDefiningOp());
+  if (!subfield) {
+    emitOpError(op, "destination must be a domain registry field");
+    return;
+  }
+
+  startStatement();
+  ps << "insert" << PP::space;
+  emitExpression(subfield.getInput());
+  ps << "[" << PPExtString(subfield.getFieldName().getValue()) << "],"
+     << PP::space;
+  emitExpression(op.getSrc());
   emitLocationAndNewLine(op);
 }
 

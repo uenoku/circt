@@ -4443,6 +4443,26 @@ LogicalResult PropAssignOp::verify() {
   return success();
 }
 
+LogicalResult DomainInsertOp::verify() {
+  auto registryType = dyn_cast<RegistryType>(getDest().getType());
+  if (!registryType)
+    return emitOpError("destination must be a registry type");
+
+  auto srcType = getSrc().getType();
+  if (registryType.getElementType() != srcType)
+    return emitOpError() << "source type " << srcType
+                         << " does not match registry element type "
+                         << registryType.getElementType();
+
+  auto *defOp = getDest().getDefiningOp();
+  if (!defOp || !isa<DomainSubfieldOp>(defOp))
+    return emitOpError(
+        "destination must be a domain registry field accessed via "
+        "firrtl.domain.subfield");
+
+  return success();
+}
+
 LogicalResult PropertyAssertOp::verify() {
   // Static evaluation: if the condition is a known constant false, the
   // assertion is trivially violated and we can report an error immediately.

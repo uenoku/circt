@@ -135,6 +135,34 @@ def DomainDefineOp
   }];
 }
 
+def DomainInsertOp
+    : FIRRTLOp<"domain.insert", [
+        ParentOneOf<["firrtl::FModuleOp", "firrtl::LayerBlockOp",
+                     "firrtl::WhenOp", "firrtl::MatchOp",
+                     "firrtl::ContractOp"]>
+      ]> {
+  let summary = "Insert a property value into a domain registry field.";
+  let description = [{
+    Insert a value into a domain registry field.
+
+    Example:
+    ```mlir
+    %value = firrtl.string "asset"
+    firrtl.domain.insert %registry, %value : !firrtl.registry<string>, !firrtl.string
+    ```
+
+    The destination must be a `!firrtl.registry<T>` value obtained from a
+    domain field. Registry fields are unordered and may only be mutated through
+    this operation; direct property assignment is illegal.
+  }];
+  let arguments = (ins RegistryType:$dest, PropertyType:$src);
+  let results = (outs);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $dest `,` $src attr-dict `:` type($dest) `,` type($src)
+  }];
+}
+
 def PrintFOp : FIRRTLOp<"printf"> {
   let summary = "Formatted Print Statement";
 
