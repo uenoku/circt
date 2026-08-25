@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from ._om_ops_gen import *
-from .._mlir_libs._circt._om import AnyType, Evaluator as BaseEvaluator, Object as BaseObject, List as BaseList, BasePath as BaseBasePath, BasePathType, Path, PathType, ClassType, ReferenceAttr, ListAttr, ListType, OMIntegerAttr, Unknown
+from .._mlir_libs._circt._om import AnyType, Evaluator as BaseEvaluator, Object as BaseObject, List as BaseList, BasePathType, PathType, ClassType, ReferenceAttr, ListAttr, ListType, OMIntegerAttr, Unknown
 
 from ..ir import Attribute, Diagnostic, DiagnosticSeverity, Module, StringAttr, IntegerAttr, IntegerType
 from ..support import attribute_to_var, var_to_attribute
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # Wrap a base mlir object with high-level object.
 def wrap_mlir_object(value):
   # For primitives, return the Python value directly.
-  if isinstance(value, (int, float, str, bool, tuple, list, dict)):
+  if isinstance(value, (int, float, str, bool, tuple, list, dict, Attribute)):
     return value
 
   if isinstance(value, Unknown):
@@ -30,12 +30,6 @@ def wrap_mlir_object(value):
 
   if isinstance(value, BaseList):
     return List(value)
-
-  if isinstance(value, BaseBasePath):
-    return BasePath(value)
-
-  if isinstance(value, Path):
-    return value
 
   # For objects, return an Object, wrapping the base implementation.
   assert isinstance(value, BaseObject)
@@ -52,12 +46,6 @@ def unwrap_python_object(value):
   # Check if the value is any of our container or custom types.
   if isinstance(value, List):
     return BaseList(value)
-
-  if isinstance(value, BasePath):
-    return BaseBasePath(value)
-
-  if isinstance(value, Path):
-    return value
 
   if isinstance(value, Object):
     return BaseObject(value)
@@ -79,13 +67,6 @@ class List(BaseList):
   def __iter__(self):
     for i in range(0, self.__len__()):
       yield self.__getitem__(i)
-
-
-class BasePath(BaseBasePath):
-
-  @staticmethod
-  def get_empty(context=None) -> "BasePath":
-    return BasePath(BaseBasePath.get_empty(context))
 
 
 # Define the Object class by inheriting from the base implementation in C++.

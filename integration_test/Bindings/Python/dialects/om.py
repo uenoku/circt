@@ -3,7 +3,7 @@
 
 import circt
 from circt.dialects import om
-from circt.ir import Context, InsertionPoint, Location, Module, IntegerAttr, IntegerType, Type
+from circt.ir import Attribute, Context, InsertionPoint, Location, Module, IntegerAttr, IntegerType, Type
 from circt.support import var_to_attribute
 
 from dataclasses import dataclass
@@ -184,13 +184,16 @@ obj = evaluator.instantiate("Test", 41)
 # CHECK: 41
 print(obj.field)
 
-path = om.BasePath.get_empty(evaluator.module.context)
+path = Attribute.parse("#om.frozenbasepath<#om<path[]>>",
+                       context=evaluator.module.context)
 obj = evaluator.instantiate("Paths", path)
+assert isinstance(obj.path, Attribute)
 print(obj.path)
-# CHECK: OMReferenceTarget:~Foo|Foo/bar:Bar/baz:Baz>w
+# CHECK: #om.frozenpath<4 : i32, [Foo:bar, Bar:baz], "Baz", "w", ""> : !om.frozenpath
 
+assert isinstance(obj.deleted, Attribute)
 print(obj.deleted)
-# CHECK: OMDeleted
+# CHECK: #om.frozenpath_empty : !om.frozenpath
 
 paths_class = [
     cls for cls in module.body

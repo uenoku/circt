@@ -27,8 +27,6 @@ namespace {
 
 struct List;
 struct Object;
-struct BasePath;
-struct Path;
 
 /// Represents a value that is not known because it is an unsupplied input, or
 /// derived from unsupplied inputs.
@@ -42,8 +40,9 @@ private:
 
 /// These are the Python types that are represented by the different primitive
 /// OMEvaluatorValues as Attributes.
-using PythonPrimitive = std::variant<nb::int_, nb::float_, nb::str, nb::bool_,
-                                     nb::tuple, nb::list, nb::dict>;
+using PythonPrimitive =
+    std::variant<nb::int_, nb::float_, nb::str, nb::bool_, nb::tuple, nb::list,
+                 nb::dict, MlirAttribute>;
 
 /// None is used to by nanobind when default initializing a PythonValue. The
 /// order of types in the variant matters here, and we want nanobind to try
@@ -51,8 +50,7 @@ using PythonPrimitive = std::variant<nb::int_, nb::float_, nb::str, nb::bool_,
 /// MlirAttribute and the upstream MLIR type casters.  If the MlirAttribute
 /// is tried first, then we can hit an assert inside the MLIR codebase.
 struct None {};
-using PythonValue =
-    std::variant<None, Object, List, BasePath, Path, Unknown, PythonPrimitive>;
+using PythonValue = std::variant<None, Object, List, Unknown, PythonPrimitive>;
 
 /// Map an opaque OMEvaluatorValue into a python value.
 PythonValue omEvaluatorValueToPythonValue(OMEvaluatorValue result);
@@ -75,38 +73,6 @@ struct List {
 
 private:
   // The underlying CAPI value.
-  OMEvaluatorValue value;
-};
-
-/// Provides a BasePath class by simply wrapping the OMObject CAPI.
-struct BasePath {
-  BasePath(OMEvaluatorValue value) : value(value) {}
-
-  static BasePath getEmpty(MlirContext context) {
-    return BasePath(omEvaluatorBasePathGetEmpty(context));
-  }
-
-  MlirContext getContext() const { return omEvaluatorValueGetContext(value); }
-  OMEvaluatorValue getValue() const { return value; }
-
-private:
-  OMEvaluatorValue value;
-};
-
-/// Provides a Path class by simply wrapping the OMObject CAPI.
-struct Path {
-  Path(OMEvaluatorValue value) : value(value) {}
-
-  MlirContext getContext() const { return omEvaluatorValueGetContext(value); }
-  OMEvaluatorValue getValue() const { return value; }
-
-  std::string dunderStr() {
-    auto attr = omEvaluatorValueGetPrimitive(getValue());
-    auto ref = mlirStringAttrGetValue(omFrozenPathAttrGetAsString(attr));
-    return std::string(ref.data, ref.length);
-  }
-
-private:
   OMEvaluatorValue value;
 };
 
@@ -286,8 +252,7 @@ static PythonPrimitive omPrimitiveToPythonValue(MlirAttribute attr) {
     return results;
   }
 
-  mlirAttributeDump(attr);
-  throw nb::type_error("Unexpected OM primitive attribute");
+  return attr;
 }
 
 // Convert a primitive PythonValue to a generic MLIR Attribute. This is
@@ -316,6 +281,9 @@ static MlirAttribute omPythonValueToPrimitive(PythonPrimitive value,
   if (auto *attr = std::get_if<nb::bool_>(&value)) {
     return mlirBoolAttrGet(ctx, nb::cast<bool>(*attr));
   }
+
+  if (auto *attr = std::get_if<MlirAttribute>(&value))
+    return *attr;
 
   // For a python list try constructing OM list attribute. The element
   // type must be uniform.
@@ -357,12 +325,6 @@ PythonValue omEvaluatorValueToPythonValue(OMEvaluatorValue result) {
   if (omEvaluatorValueIsAList(result))
     return List(result);
 
-  if (omEvaluatorValueIsABasePath(result))
-    return BasePath(result);
-
-  if (omEvaluatorValueIsAPath(result))
-    return Path(result);
-
   if (omEvaluatorValueIsUnknown(result))
     return Unknown(omEvaluatorValueGetType(result));
 
@@ -375,12 +337,6 @@ OMEvaluatorValue pythonValueToOMEvaluatorValue(PythonValue result,
                                                MlirContext ctx) {
   if (auto *list = std::get_if<List>(&result))
     return list->getValue();
-
-  if (auto *basePath = std::get_if<BasePath>(&result))
-    return basePath->getValue();
-
-  if (auto *path = std::get_if<Path>(&result))
-    return path->getValue();
 
   if (auto *object = std::get_if<Object>(&result))
     return object->getValue();
@@ -412,15 +368,6 @@ void circt::python::populateDialectOMSubmodule(nb::module_ &m) {
       .def(nb::init<List>(), nb::arg("list"))
       .def("__getitem__", &List::getElement)
       .def("__len__", &List::getNumElements);
-
-  nb::class_<BasePath>(m, "BasePath")
-      .def(nb::init<BasePath>(), nb::arg("basepath"))
-      .def_static("get_empty", &BasePath::getEmpty,
-                  nb::arg("context") = nb::none());
-
-  nb::class_<Path>(m, "Path")
-      .def(nb::init<Path>(), nb::arg("path"))
-      .def("__str__", &Path::dunderStr);
 
   // Add the Unknown sentinel class definition.
   nb::class_<Unknown>(m, "Unknown")

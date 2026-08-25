@@ -299,8 +299,6 @@ def ListCreateOp : OMOp<"list_create", [Pure, SameTypeOperands]> {
   );
 
   let hasCustomAssemblyFormat = 1;
-  let hasFolder = 1;
-  let hasCanonicalizer = 1;
 }
 
 def ListConcatOp : OMOp<"list_concat", [Pure, SameOperandsAndResultType]> {
@@ -318,8 +316,6 @@ def ListConcatOp : OMOp<"list_concat", [Pure, SameOperandsAndResultType]> {
   let results = (outs ListType:$result);
 
   let assemblyFormat = "$subLists attr-dict `:` type($result)";
-  let hasFolder = 1;
-  let hasCanonicalizer = 1;
 }
 
 def BasePathCreateOp : OMOp<"basepath_create", [Pure,

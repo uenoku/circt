@@ -247,14 +247,6 @@ MLIR_CAPI_EXPORTED MlirAttribute omListAttrGet(MlirType elementType,
                                                intptr_t numElements,
                                                const MlirAttribute *elements);
 
-//===----------------------------------------------------------------------===//
-// FrozenPathAttr API
-//===----------------------------------------------------------------------===//
-
-/// Get a string representation of a frozen path attribute.
-MLIR_CAPI_EXPORTED MlirAttribute
-omFrozenPathAttrGetAsString(MlirAttribute attr);
-
 #ifdef __cplusplus
 }
 #endif
