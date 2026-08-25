@@ -341,6 +341,19 @@ MlirStringRef omIntegerAttrToString(MlirAttribute attr) {
 }
 
 //===----------------------------------------------------------------------===//
+// FrozenPathAttr API.
+//===----------------------------------------------------------------------===//
+
+MlirStringRef omFrozenPathAttrToString(MlirAttribute attr) {
+  auto unwrappedAttr = unwrap(attr);
+  if (auto path = dyn_cast<FrozenPathAttr>(unwrappedAttr))
+    return wrap(path.getAsString().getValue());
+  assert(isa<FrozenEmptyPathAttr>(unwrappedAttr));
+  return wrap(
+      StringAttr::get(unwrappedAttr.getContext(), "OMDeleted:").getValue());
+}
+
+//===----------------------------------------------------------------------===//
 // ListAttr API.
 //===----------------------------------------------------------------------===//
 

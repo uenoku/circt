@@ -38,11 +38,29 @@ private:
   MlirType type;
 };
 
+/// Provides a Python Path backed directly by a frozen path attribute.
+struct Path {
+  Path(MlirAttribute attr) : attr(attr) {
+    if (!omTypeIsAFrozenPathType(mlirAttributeGetType(attr)))
+      throw nb::type_error("expected an OM frozen path attribute");
+  }
+
+  MlirAttribute getAttr() const { return attr; }
+
+  std::string dunderStr() const {
+    auto ref = omFrozenPathAttrToString(attr);
+    return std::string(ref.data, ref.length);
+  }
+
+private:
+  MlirAttribute attr;
+};
+
 /// These are the Python types that are represented by the different primitive
 /// OMEvaluatorValues as Attributes.
 using PythonPrimitive =
     std::variant<nb::int_, nb::float_, nb::str, nb::bool_, nb::tuple, nb::list,
-                 nb::dict, MlirAttribute>;
+                 nb::dict, Path, MlirAttribute>;
 
 /// None is used to by nanobind when default initializing a PythonValue. The
 /// order of types in the variant matters here, and we want nanobind to try
@@ -252,7 +270,14 @@ static PythonPrimitive omPrimitiveToPythonValue(MlirAttribute attr) {
     return results;
   }
 
-  return attr;
+  auto type = mlirAttributeGetType(attr);
+  if (omTypeIsAFrozenPathType(type))
+    return Path(attr);
+  if (omTypeIsAFrozenBasePathType(type))
+    return attr;
+
+  mlirAttributeDump(attr);
+  throw nb::type_error("Unexpected OM primitive attribute");
 }
 
 // Convert a primitive PythonValue to a generic MLIR Attribute. This is
@@ -281,6 +306,9 @@ static MlirAttribute omPythonValueToPrimitive(PythonPrimitive value,
   if (auto *attr = std::get_if<nb::bool_>(&value)) {
     return mlirBoolAttrGet(ctx, nb::cast<bool>(*attr));
   }
+
+  if (auto *path = std::get_if<Path>(&value))
+    return path->getAttr();
 
   if (auto *attr = std::get_if<MlirAttribute>(&value))
     return *attr;
@@ -368,6 +396,12 @@ void circt::python::populateDialectOMSubmodule(nb::module_ &m) {
       .def(nb::init<List>(), nb::arg("list"))
       .def("__getitem__", &List::getElement)
       .def("__len__", &List::getNumElements);
+
+  // Add the Path class definition.
+  nb::class_<Path>(m, "Path")
+      .def(nb::init<MlirAttribute>(), nb::arg("path"))
+      .def_prop_ro("attribute", &Path::getAttr)
+      .def("__str__", &Path::dunderStr);
 
   // Add the Unknown sentinel class definition.
   nb::class_<Unknown>(m, "Unknown")

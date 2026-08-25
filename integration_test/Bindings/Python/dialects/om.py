@@ -187,13 +187,14 @@ print(obj.field)
 path = Attribute.parse("#om.frozenbasepath<#om<path[]>>",
                        context=evaluator.module.context)
 obj = evaluator.instantiate("Paths", path)
-assert isinstance(obj.path, Attribute)
+assert isinstance(obj.path, om.Path)
+assert isinstance(obj.path.attribute, Attribute)
 print(obj.path)
-# CHECK: #om.frozenpath<4 : i32, [Foo:bar, Bar:baz], "Baz", "w", ""> : !om.frozenpath
+# CHECK: OMReferenceTarget:~Foo|Foo/bar:Bar/baz:Baz>w
 
-assert isinstance(obj.deleted, Attribute)
+assert isinstance(obj.deleted, om.Path)
 print(obj.deleted)
-# CHECK: #om.frozenpath_empty : !om.frozenpath
+# CHECK: OMDeleted:
 
 paths_class = [
     cls for cls in module.body

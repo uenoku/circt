@@ -217,6 +217,13 @@ MLIR_CAPI_EXPORTED MlirAttribute omIntegerAttrGet(MlirAttribute attr);
 MLIR_CAPI_EXPORTED MlirStringRef omIntegerAttrToString(MlirAttribute attr);
 
 //===----------------------------------------------------------------------===//
+// FrozenPathAttr API
+//===----------------------------------------------------------------------===//
+
+/// Get a string representation of a frozen path attribute.
+MLIR_CAPI_EXPORTED MlirStringRef omFrozenPathAttrToString(MlirAttribute attr);
+
+//===----------------------------------------------------------------------===//
 // ListAttr API
 //===----------------------------------------------------------------------===//
 

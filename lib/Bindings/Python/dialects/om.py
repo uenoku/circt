@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from ._om_ops_gen import *
-from .._mlir_libs._circt._om import AnyType, Evaluator as BaseEvaluator, Object as BaseObject, List as BaseList, BasePathType, PathType, ClassType, ReferenceAttr, ListAttr, ListType, OMIntegerAttr, Unknown
+from .._mlir_libs._circt._om import AnyType, Evaluator as BaseEvaluator, Object as BaseObject, List as BaseList, BasePathType, Path, PathType, ClassType, ReferenceAttr, ListAttr, ListType, OMIntegerAttr, Unknown
 
 from ..ir import Attribute, Diagnostic, DiagnosticSeverity, Module, StringAttr, IntegerAttr, IntegerType
 from ..support import attribute_to_var, var_to_attribute
@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 # Wrap a base mlir object with high-level object.
 def wrap_mlir_object(value):
   # For primitives, return the Python value directly.
-  if isinstance(value, (int, float, str, bool, tuple, list, dict, Attribute)):
+  if isinstance(value,
+                (int, float, str, bool, tuple, list, dict, Attribute, Path)):
     return value
 
   if isinstance(value, Unknown):
@@ -46,6 +47,9 @@ def unwrap_python_object(value):
   # Check if the value is any of our container or custom types.
   if isinstance(value, List):
     return BaseList(value)
+
+  if isinstance(value, Path):
+    return value
 
   if isinstance(value, Object):
     return BaseObject(value)
