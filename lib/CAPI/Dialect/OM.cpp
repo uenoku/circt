@@ -279,33 +279,6 @@ OMEvaluatorValue omEvaluatorListGetElement(OMEvaluatorValue evaluatorValue,
                   ->getElements()[pos]);
 }
 
-bool omEvaluatorValueIsABasePath(OMEvaluatorValue evaluatorValue) {
-  auto *value =
-      dyn_cast<evaluator::AttributeValue>(unwrap(evaluatorValue).get());
-  return value && isa<FrozenBasePathAttr>(value->getAttr());
-}
-
-OMEvaluatorValue omEvaluatorBasePathGetEmpty(MlirContext context) {
-  auto *cppContext = unwrap(context);
-  return wrap(evaluator::AttributeValue::get(
-      FrozenBasePathAttr::get(cppContext, PathAttr::get(cppContext, {}))));
-}
-
-bool omEvaluatorValueIsAPath(OMEvaluatorValue evaluatorValue) {
-  auto *value =
-      dyn_cast<evaluator::AttributeValue>(unwrap(evaluatorValue).get());
-  return value && isa<FrozenPathAttr, FrozenEmptyPathAttr>(value->getAttr());
-}
-
-MlirAttribute omEvaluatorPathGetAsString(OMEvaluatorValue evaluatorValue) {
-  auto *value = cast<evaluator::AttributeValue>(unwrap(evaluatorValue).get());
-  auto path = dyn_cast<FrozenPathAttr>(value->getAttr());
-  if (!path)
-    return wrap((Attribute)StringAttr::get(value->getAttr().getContext(),
-                                           "OMDeleted:"));
-  return wrap((Attribute)path.getAsString());
-}
-
 /// Query if the EvaluatorValue is an Unknown value.
 bool omEvaluatorValueIsUnknown(OMEvaluatorValue evaluatorValue) {
   return unwrap(evaluatorValue)->isUnknown();
