@@ -1,10 +1,17 @@
 # REQUIRES: bindings_tcl
-# RUN: tclsh %s -- %TCL_PATH% %CIRCT_SOURCE% | FileCheck %s
+# RUN: tclsh %s -- %TCL_PATH% %CIRCT_SOURCE% %t.mlir | FileCheck %s
+# RUN: circt-opt %t.mlir -o /dev/null
 load [lindex $argv 1]libcirct-tcl[info sharedlibextension]
 
 set circuit [circt load MLIR [lindex $argv 2]/integration_test/Bindings/Tcl/Inputs/simple.mlir]
+circt::save_mlir $circuit [lindex $argv 3]
+if {![catch {circt::save_mlir "not a module" [lindex $argv 3]} message]} {
+  error "expected a non-module value to be rejected"
+}
+puts "invalid: $message"
 puts $circuit
 
+# CHECK: invalid: expected a CIRCT owned module value
 # CHECK: module  {
 # CHECK:   hw.module.extern @ichi(in %a : i2, in %b : i3, out c : i4, out d : i5)
 # CHECK:   hw.module @owo(out owo_result : i32) {

@@ -51,6 +51,14 @@ using namespace circt;
 namespace cl = llvm::cl;
 using llvm::WithColor;
 
+// Slang is compiled with exceptions disabled as part of CIRCT. Its vendored
+// boost headers then declare boost::throw_exception as "user defined" and
+// expect the embedder to provide a definition.
+namespace boost {
+[[noreturn]] void throw_exception(std::exception const &e) {
+}
+} // namespace boost
+
 //===----------------------------------------------------------------------===//
 // Command Line Options
 //===----------------------------------------------------------------------===//

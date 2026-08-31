@@ -3,10 +3,10 @@
 ##===----------------------------------------------------------------------===//
 
 add_subdirectory(Analysis)
-add_subdirectory(Bindings)
 add_subdirectory(CAPI)
 add_subdirectory(Conversion)
 add_subdirectory(Dialect)
+add_subdirectory(Bindings)
 add_subdirectory(Firtool)
 add_subdirectory(Reduce)
 add_subdirectory(Scheduling)
