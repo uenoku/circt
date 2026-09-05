@@ -994,6 +994,108 @@ static bool canonicalizeIdempotentInputs(Op op, PatternRewriter &rewriter) {
   return false;
 }
 
+/// Detect or(icmp pred1(X,C), icmp pred2(X,C)) covering all X -> true,
+/// and the dual and(...) -> false. Handles the ELAU AddV overflow idiom
+/// or(sgt(Sext,-1), slt(Sext,0)) (constant-true after 32-bit int wraparound
+/// of MAX/MIN) and any same-lhs/same-constant complementary pair:
+/// {sge,slt}, {sgt,sle}, {uge,ult}, {ugt,ule}, {eq,ne}.
+/// Consistent with the 2-state folding style used throughout this file.
+template <bool IsOr>
+static bool foldComplementaryICmpPair(Operation *op,
+                                      PatternRewriter &rewriter) {
+  // Collect single-use icmps normalized to (kind, lhs, threshold):
+  // sge/slt share threshold T (sgt(X,K)->sge(X,K+1), sle->slt(K+1));
+  // uge/ult likewise; eq/ne keep their constant. Complementary pairs
+  // ({sge,slt}, {uge,ult}, {eq,ne} on equal thresholds) cover all X.
+  struct Norm {
+    int kind; // 0=signed-range, 1=unsigned-range, 2=equality
+    Value lhs;
+    APInt thr;
+    ICmpPredicate pred;
+  };
+  SmallVector<Norm> norms;
+  for (Value v : op->getOperands()) {
+    auto icmp = v.getDefiningOp<ICmpOp>();
+    if (!icmp || !icmp->hasOneUse())
+      continue;
+    APInt c;
+    if (!matchPattern(icmp.getRhs(), m_ConstantInt(&c)))
+      continue;
+    ICmpPredicate p = icmp.getPredicate();
+    int kind = -1;
+    APInt thr = c;
+    switch (p) {
+    case ICmpPredicate::sge:
+      kind = 0;
+      break;
+    case ICmpPredicate::sgt:
+      if (c.isMaxSignedValue())
+        continue; // sgt(X,max) is already false via other folds.
+      kind = 0;
+      thr = c + 1;
+      break;
+    case ICmpPredicate::slt:
+      kind = 0;
+      break;
+    case ICmpPredicate::sle:
+      if (c.isMaxSignedValue())
+        continue;
+      kind = 0;
+      thr = c + 1;
+      break;
+    case ICmpPredicate::uge:
+      kind = 1;
+      break;
+    case ICmpPredicate::ugt:
+      if (c.isAllOnes())
+        continue;
+      kind = 1;
+      thr = c + 1;
+      break;
+    case ICmpPredicate::ult:
+      kind = 1;
+      break;
+    case ICmpPredicate::ule:
+      if (c.isAllOnes())
+        continue;
+      kind = 1;
+      thr = c + 1;
+      break;
+    case ICmpPredicate::eq:
+    case ICmpPredicate::ne:
+      kind = 2;
+      break;
+    default:
+      continue;
+    }
+    norms.push_back({kind, icmp.getLhs(), thr, p});
+  }
+  auto isGe = [](ICmpPredicate p) {
+    return p == ICmpPredicate::sge || p == ICmpPredicate::sgt ||
+           p == ICmpPredicate::uge || p == ICmpPredicate::ugt;
+  };
+  auto isEq = [](ICmpPredicate p) { return p == ICmpPredicate::eq; };
+  for (size_t i = 0; i < norms.size(); ++i)
+    for (size_t j = i + 1; j < norms.size(); ++j) {
+      if (norms[i].kind != norms[j].kind || norms[i].lhs != norms[j].lhs ||
+          norms[i].thr != norms[j].thr)
+        continue;
+      bool complementary = (isGe(norms[i].pred) != isGe(norms[j].pred)) ||
+                           (isEq(norms[i].pred) != isEq(norms[j].pred));
+      // eq/ne pair: one eq + one ne. Range pairs: one ge-side + one lt-side.
+      // (isGe differs) covers sge/slt etc.; (isEq differs) covers eq/ne.
+      // Guard against same-predicate duplicates (both differ == false).
+      if (!complementary)
+        continue;
+      // For kind 2 require exactly eq+ne (isGe false for both, isEq differs).
+      // For kinds 0/1 require one ge-side and one lt-side.
+      replaceOpWithNewOpAndCopyNamehint<hw::ConstantOp>(rewriter, op,
+                                                        APInt(1, IsOr ? 1 : 0));
+      return true;
+    }
+  return false;
+}
+
 LogicalResult AndOp::canonicalize(AndOp op, PatternRewriter &rewriter) {
   if (isOpTriviallyRecursive(op))
     return failure();
@@ -1160,6 +1262,9 @@ LogicalResult AndOp::canonicalize(AndOp op, PatternRewriter &rewriter) {
   }
 
   /// TODO: and(..., x, not(x)) -> and(..., 0) -- complement
+  // and(icmp p1(X,C), icmp p2(X,C)) with complementary p1/p2 -> false.
+  if (foldComplementaryICmpPair<false>(op, rewriter))
+    return success();
   return failure();
 }
 
@@ -1305,6 +1410,9 @@ LogicalResult OrOp::canonicalize(OrOp op, PatternRewriter &rewriter) {
   }
 
   /// TODO: or(..., x, not(x)) -> or(..., '1) -- complement
+  // or(icmp p1(X,C), icmp p2(X,C)) with complementary p1/p2 -> true.
+  if (foldComplementaryICmpPair<true>(op, rewriter))
+    return success();
   return failure();
 }
 
@@ -3365,6 +3473,127 @@ LogicalResult ICmpOp::canonicalize(ICmpOp op, PatternRewriter &rewriter) {
 
   // Canonicalize with RHS constant
   if (matchPattern(op.getRhs(), m_ConstantInt(&rhs))) {
+    // Narrow sext/zext-extended compares against constants:
+    //   icmp pred(sext(X:w), C:W) -> icmp pred(X, trunc(C)) when C fits in
+    //   signed(w); out-of-range folds to true/false by range analysis.
+    //   Same for zext + unsigned predicates. Matches verilog-emitted
+    //   concat(replicate(sign),X) / concat(0,X) shapes (e.g. AddV's 32-bit
+    //   sgt/slt against 127/-128 become 10-bit; AbsVal slt(sext,0) narrows
+    //   32->8 and then folds to the sign bit via existing folds).
+    // Only fires when lhs is strictly wider (extension), keeping the
+    // transform size-reducing.
+    auto tryNarrowExtCompare = [&]() -> LogicalResult {
+      Value narrow;
+      unsigned narrowW = 0;
+      bool isSext = false;
+      auto lhsW = op.getLhs().getType().getIntOrFloatBitWidth();
+      if (auto concat = op.getLhs().getDefiningOp<ConcatOp>()) {
+        auto ops = concat.getOperands();
+        if (ops.size() == 2) {
+          // sext: concat(replicate(extract(X,w-1)), X)
+          if (auto repl = ops[0].getDefiningOp<ReplicateOp>()) {
+            Value bit = repl.getOperand();
+            if (auto ext = bit.getDefiningOp<ExtractOp>()) {
+              unsigned w = ops[1].getType().getIntOrFloatBitWidth();
+              if (ext.getInput() == ops[1] && ext.getLowBit() + 1 == w &&
+                  ext.getType().getIntOrFloatBitWidth() == 1 && lhsW > w) {
+                isSext = true;
+                narrow = ops[1];
+                narrowW = w;
+              }
+            }
+          }
+          // zext: concat(hw.constant 0, X)
+          if (!narrow) {
+            if (auto cst = ops[0].getDefiningOp<hw::ConstantOp>()) {
+              unsigned w = ops[1].getType().getIntOrFloatBitWidth();
+              if (cst.getValue().isZero() && lhsW > w) {
+                isSext = false;
+                narrow = ops[1];
+                narrowW = w;
+              }
+            }
+          }
+        }
+      }
+      if (!narrow)
+        return failure();
+      bool signedPred = ICmpOp::isPredicateSigned(op.getPredicate());
+      // eq/ne are sign-agnostic; others require matching extension.
+      bool isEq = op.getPredicate() == ICmpPredicate::eq ||
+                  op.getPredicate() == ICmpPredicate::ne;
+      if (!isEq && (signedPred != isSext))
+        return failure();
+      APInt trunc = rhs.trunc(narrowW);
+      bool fits =
+          isSext ? (trunc.sext(lhsW) == rhs) : (trunc.zext(lhsW) == rhs);
+      auto getConstant = [&](APInt c) -> Value {
+        return hw::ConstantOp::create(rewriter, op.getLoc(), std::move(c));
+      };
+      if (fits) {
+        // Preserve ceq/cne/weq/wne and twoState as-is; only shrink widths.
+        replaceOpWithNewOpAndCopyNamehint<ICmpOp>(
+            rewriter, op, op.getPredicate(), narrow, getConstant(trunc),
+            op.getTwoState());
+        return success();
+      }
+      // Out of range: X can never equal C (eq->false, ne->true); ordered
+      // predicates fold by interval ([min,max] of narrow signed/unsigned).
+      APInt min, max;
+      if (isSext) {
+        min = APInt::getSignedMinValue(narrowW).sext(lhsW);
+        max = APInt::getSignedMaxValue(narrowW).sext(lhsW);
+      } else {
+        min = APInt::getZero(lhsW);
+        max = APInt::getAllOnes(narrowW).zext(lhsW);
+      }
+      auto replaceConst = [&](bool v) -> LogicalResult {
+        replaceOpWithNewOpAndCopyNamehint<hw::ConstantOp>(rewriter, op,
+                                                          APInt(1, v));
+        return success();
+      };
+      switch (op.getPredicate()) {
+      case ICmpPredicate::eq:
+        return replaceConst(false);
+      case ICmpPredicate::ne:
+        return replaceConst(true);
+      case ICmpPredicate::slt:
+      case ICmpPredicate::ult:
+        // X < C: C<=min -> false; C>max -> true (extension signedness).
+        if (isSext ? rhs.sle(min) : rhs.ule(min))
+          return replaceConst(false);
+        if (isSext ? rhs.sgt(max) : rhs.ugt(max))
+          return replaceConst(true);
+        break;
+      case ICmpPredicate::sle:
+      case ICmpPredicate::ule:
+        if (isSext ? rhs.slt(min) : rhs.ult(min))
+          return replaceConst(false);
+        if (isSext ? rhs.sge(max) : rhs.uge(max))
+          return replaceConst(true);
+        break;
+      case ICmpPredicate::sgt:
+      case ICmpPredicate::ugt:
+        if (isSext ? rhs.sge(max) : rhs.uge(max))
+          return replaceConst(false);
+        if (isSext ? rhs.slt(min) : rhs.ult(min))
+          return replaceConst(true);
+        break;
+      case ICmpPredicate::sge:
+      case ICmpPredicate::uge:
+        if (isSext ? rhs.sgt(max) : rhs.ugt(max))
+          return replaceConst(false);
+        if (isSext ? rhs.sle(min) : rhs.ule(min))
+          return replaceConst(true);
+        break;
+      default:
+        break;
+      }
+      return failure();
+    };
+    if (succeeded(tryNarrowExtCompare()))
+      return success();
+
     auto getConstant = [&](APInt constant) -> Value {
       return hw::ConstantOp::create(rewriter, op.getLoc(), std::move(constant));
     };

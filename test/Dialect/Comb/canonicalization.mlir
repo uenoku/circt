@@ -2193,3 +2193,35 @@ hw.module @MuxAddSubFusion(in %a: i8, in %b: i8, in %s: i1, out o: i8) {
   %2 = comb.mux %s, %0, %1 : i8
   hw.output %2 : i8
 }
+
+// CHECK-LABEL: hw.module @SextNarrowSgt
+// CHECK: comb.icmp sgt %a, %c127_i10 : i10
+hw.module @SextNarrowSgt(in %a: i10, out o: i1) {
+  %0 = comb.extract %a from 9 : (i10) -> i1
+  %1 = comb.replicate %0 : (i1) -> i22
+  %2 = comb.concat %1, %a : i22, i10
+  %c127 = hw.constant 127 : i32
+  %3 = comb.icmp sgt %2, %c127 : i32
+  hw.output %3 : i1
+}
+
+// CHECK-LABEL: hw.module @ComplOr
+// CHECK: hw.constant true
+hw.module @ComplOr(in %x: i50, out o: i1) {
+  %cm1 = hw.constant -1 : i50
+  %c0 = hw.constant 0 : i50
+  %0 = comb.icmp sgt %x, %cm1 : i50
+  %1 = comb.icmp slt %x, %c0 : i50
+  %2 = comb.or %0, %1 : i1
+  hw.output %2 : i1
+}
+
+// CHECK-LABEL: hw.module @ComplAnd
+// CHECK: hw.constant false
+hw.module @ComplAnd(in %x: i8, out o: i1) {
+  %c0 = hw.constant 0 : i8
+  %0 = comb.icmp sge %x, %c0 : i8
+  %1 = comb.icmp slt %x, %c0 : i8
+  %2 = comb.and %0, %1 : i1
+  hw.output %2 : i1
+}
