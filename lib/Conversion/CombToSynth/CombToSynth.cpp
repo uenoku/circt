@@ -845,6 +845,55 @@ struct CombAddOpConversion : OpConversionPattern<AddOp> {
       return success();
     }
 
+    // Specialize A+1 / A-1 to an AND-prefix incrementer/decrementer.
+    // A full prefix adder cannot prune the all-ones (-1) case (Dec 745g
+    // vs Inc 341g at 48b with plain OrFold). Both cases reduce to one
+    // AND-prefix: carry[i] = AND(a[0..i]) for +1, borrow[i] = AND(~a[0..i])
+    // for -1 (ELAU PrefixAnd shape), S[0] = ~a[0], S[i] = a[i] ^ carry[i-1].
+    // Sklansky shape keeps log depth, symmetric for inc/dec.
+    for (int i = 0; i < 2; ++i) {
+      if (auto constOp = dyn_cast_or_null<hw::ConstantOp>(
+              op.getOperand(i).getDefiningOp())) {
+        APInt c = constOp.getValue();
+        if (c.isOne() || c.isAllOnes()) {
+          Value a = inputs[1 - i];
+          bool isInc = c.isOne();
+          auto aBits = extractBits(rewriter, a);
+          Value one =
+              hw::ConstantOp::create(rewriter, op.getLoc(), APInt(1, 1));
+          // Propagate bits: a[i] for inc, ~a[i] for dec.
+          SmallVector<Value> prop;
+          prop.reserve(width);
+          for (auto b : aBits)
+            prop.push_back(isInc ? b
+                                 : rewriter.createOrFold<comb::XorOp>(
+                                       op.getLoc(), b, one));
+          // Sklansky AND-prefix: stride doubling, in-place.
+          SmallVector<Value> pref = prop;
+          for (int64_t stride = 1; stride < width; stride *= 2) {
+            SmallVector<Value> next = pref;
+            for (int64_t j = stride; j < width; j += 2 * stride)
+              for (int64_t k = 0; k < stride && j + k < width; ++k) {
+                int64_t idx = j + k, dep = j - 1;
+                next[idx] = rewriter.createOrFold<comb::AndOp>(
+                    op.getLoc(), pref[idx], pref[dep]);
+              }
+            pref.swap(next);
+          }
+          SmallVector<Value> sumBits;
+          sumBits.reserve(width);
+          sumBits.push_back(
+              rewriter.createOrFold<comb::XorOp>(op.getLoc(), aBits[0], one));
+          for (int64_t b = 1; b < width; ++b)
+            sumBits.push_back(rewriter.createOrFold<comb::XorOp>(
+                op.getLoc(), aBits[b], pref[b - 1]));
+          SmallVector<Value> rev(sumBits.rbegin(), sumBits.rend());
+          replaceOpWithNewOpAndCopyNamehint<comb::ConcatOp>(rewriter, op, rev);
+          return success();
+        }
+      }
+    }
+
     return lowerAdder(op, inputs, Value(), rewriter);
   }
 
@@ -919,17 +968,19 @@ struct CombAddOpConversion : OpConversionPattern<AddOp> {
     g.reserve(width);
 
     for (auto [aBit, bBit] : llvm::zip(aBits, bBits)) {
-      // p_i = a_i XOR b_i
-      p.push_back(comb::XorOp::create(rewriter, op.getLoc(), aBit, bBit));
+      // p_i = a_i XOR b_i (OrFold so constant operands prune: xor(a,0)->a,
+      // and(a,0)->0). Incrementers (A+1/A-1) then skip most of the prefix.
+      p.push_back(rewriter.createOrFold<comb::XorOp>(op.getLoc(), aBit, bBit));
       // g_i = a_i AND b_i
-      g.push_back(comb::AndOp::create(rewriter, op.getLoc(), aBit, bBit));
+      g.push_back(rewriter.createOrFold<comb::AndOp>(op.getLoc(), aBit, bBit));
     }
 
     // With carry_in, adjust g[0]: g[0] = (a[0] AND b[0]) OR (p[0] AND carry_in)
     // This bakes the carry_in into the prefix tree, avoiding a separate adder.
     if (carryIn) {
-      Value pAndC = comb::AndOp::create(rewriter, op.getLoc(), p[0], carryIn);
-      g[0] = comb::OrOp::create(rewriter, op.getLoc(), g[0], pAndC);
+      Value pAndC =
+          rewriter.createOrFold<comb::AndOp>(op.getLoc(), p[0], carryIn);
+      g[0] = rewriter.createOrFold<comb::OrOp>(op.getLoc(), g[0], pAndC);
     }
 
     LLVM_DEBUG({

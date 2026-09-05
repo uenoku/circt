@@ -668,3 +668,29 @@ hw.module @const_divmod_mods_neg1_i3(in %lhs: i3, out out: i3) {
   %0 = comb.mods %lhs, %c_neg1_i3 : i3
   hw.output %0 : i3
 }
+
+// CHECK-LABEL: @inc_prefix
+// CHECK-NOT: comb.or
+// CHECK: comb.xor
+// CHECK: comb.and
+// CHECK: comb.concat
+// ALLOW_ADD-LABEL: @inc_prefix
+// ALLOW_ADD: comb.add
+hw.module @inc_prefix(in %a: i4, out o: i4) {
+  %c1 = hw.constant 1 : i4
+  %0 = comb.add %a, %c1 : i4
+  hw.output %0 : i4
+}
+
+// CHECK-LABEL: @dec_prefix
+// CHECK-NOT: comb.or
+// CHECK: comb.xor
+// CHECK: comb.and
+// CHECK: comb.concat
+// ALLOW_ADD-LABEL: @dec_prefix
+// ALLOW_ADD: comb.add
+hw.module @dec_prefix(in %a: i4, out o: i4) {
+  %cm1 = hw.constant -1 : i4
+  %0 = comb.add %a, %cm1 : i4
+  hw.output %0 : i4
+}
