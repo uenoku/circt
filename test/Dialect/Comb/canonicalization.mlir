@@ -2171,3 +2171,25 @@ hw.module @paritySingleBit(in %a: i1, out o: i1) {
   %0 = comb.parity %a : i1
   hw.output %0 : i1
 }
+
+// CHECK-LABEL: hw.module @MuxAddFusion
+// CHECK: comb.mux %s
+// CHECK: comb.add %a
+hw.module @MuxAddFusion(in %a: i8, in %s: i1, out o: i8) {
+  %c1 = hw.constant 1 : i8
+  %cm1 = hw.constant -1 : i8
+  %0 = comb.add %a, %cm1 : i8
+  %1 = comb.add %a, %c1 : i8
+  %2 = comb.mux %s, %0, %1 : i8
+  hw.output %2 : i8
+}
+
+// CHECK-LABEL: hw.module @MuxAddSubFusion
+// CHECK: comb.xor %{{.*}}, %b : i8
+// CHECK: comb.add %a, %{{.*}}, %{{.*}} : i8
+hw.module @MuxAddSubFusion(in %a: i8, in %b: i8, in %s: i1, out o: i8) {
+  %0 = comb.sub %a, %b : i8
+  %1 = comb.add %a, %b : i8
+  %2 = comb.mux %s, %0, %1 : i8
+  hw.output %2 : i8
+}

@@ -2392,9 +2392,120 @@ static bool foldCommonMuxValue(MuxOp op, bool isTrueOperand,
 /// have the same opcode.  Check to see if we can strength reduce the mux by
 /// applying it to less data by applying this transformation:
 ///   `mux(cond, op(a, b), op(a, c))` -> `op(a, mux(cond, b, c))`
-static bool foldCommonMuxOperation(MuxOp mux, Operation *trueOp,
-                                   Operation *falseOp,
-                                   PatternRewriter &rewriter) {
+///
+/// Handles commutative binary ops (add/and/or/xor/mul) with one shared
+/// operand, and sub with shared lhs. Collapses mux-of-two-adders
+/// (e.g. IncDec/AddSub family) into a single adder. Only fires on binary
+/// ops to keep the transform strictly size-reducing.
+static bool foldCommonArithMuxOperation(MuxOp mux, Operation *trueOp,
+                                        Operation *falseOp,
+                                        PatternRewriter &rewriter) {
+  // Mixed add/sub with shared lhs:
+  //   mux(s, sub(a,b), add(a,c)) -> add(a, mux(s, ~b, c), mux(s, 1, 0))
+  //   mux(s, add(a,c), sub(a,b)) -> add(a, mux(s, c, ~b), mux(s, 0, 1))
+  // Matches the ELAU hand-optimized AddSub (BI = B^{w{SUB}}).
+  if ((isa<SubOp>(trueOp) && isa<AddOp>(falseOp)) ||
+      (isa<AddOp>(trueOp) && isa<SubOp>(falseOp))) {
+    auto *subOp = isa<SubOp>(trueOp) ? trueOp : falseOp;
+    auto *addOp = isa<AddOp>(trueOp) ? trueOp : falseOp;
+    bool subIsTrue = isa<SubOp>(trueOp);
+    if (subOp->getNumOperands() != 2 || addOp->getNumOperands() != 2 ||
+        subOp->getNumResults() != 1 || addOp->getNumResults() != 1)
+      return false;
+    if (subOp->getResultTypes() != addOp->getResultTypes())
+      return false;
+    Value aSub = subOp->getOperand(0), bSub = subOp->getOperand(1);
+    Value aAdd = addOp->getOperand(0), cAdd = addOp->getOperand(1);
+    // Shared minuend/addend (allow either operand position for add since
+    // add is commutative, but sub lhs must match one add operand).
+    Value shared = nullptr, cVal = nullptr;
+    if (aSub == aAdd)
+      shared = aSub, cVal = cAdd;
+    else if (aSub == cAdd)
+      shared = aSub, cVal = aAdd;
+    else
+      return false;
+    auto width = cast<IntegerType>(subOp->getResult(0).getType()).getWidth();
+    Location loc = mux.getLoc();
+    Value notB = createOrFoldNot(rewriter, loc, bSub, mux.getTwoState());
+    Value rhsMux, carryMux;
+    Value one = hw::ConstantOp::create(rewriter, loc, APInt(width, 1));
+    Value zero = hw::ConstantOp::create(rewriter, loc, APInt(width, 0));
+    if (subIsTrue) {
+      rhsMux = rewriter.createOrFold<MuxOp>(loc, mux.getCond(), notB, cVal,
+                                            mux.getTwoState());
+      carryMux = rewriter.createOrFold<MuxOp>(loc, mux.getCond(), one, zero,
+                                              mux.getTwoState());
+    } else {
+      rhsMux = rewriter.createOrFold<MuxOp>(loc, mux.getCond(), cVal, notB,
+                                            mux.getTwoState());
+      carryMux = rewriter.createOrFold<MuxOp>(loc, mux.getCond(), zero, one,
+                                              mux.getTwoState());
+    }
+    replaceOpWithNewOpAndCopyNamehint<AddOp>(
+        rewriter, mux, ValueRange{shared, rhsMux, carryMux}, mux.getTwoState());
+    return true;
+  }
+  // Only binary integer ops with a single result.
+  if (trueOp->getNumOperands() != 2 || falseOp->getNumOperands() != 2 ||
+      trueOp->getNumResults() != 1 || falseOp->getNumResults() != 1)
+    return false;
+  if (trueOp->getResultTypes() != falseOp->getResultTypes())
+    return false;
+  Value t0 = trueOp->getOperand(0), t1 = trueOp->getOperand(1);
+  Value f0 = falseOp->getOperand(0), f1 = falseOp->getOperand(1);
+  bool isCommutative = isa<AddOp, AndOp, OrOp, XorOp, MulOp>(trueOp);
+  // sub is only valid when the lhs (minuend) is shared.
+  if (isa<SubOp>(trueOp)) {
+    if (t0 != f0)
+      return false;
+    Value newRhs = rewriter.createOrFold<MuxOp>(mux.getLoc(), mux.getCond(), t1,
+                                                f1, mux.getTwoState());
+    replaceOpWithNewOpAndCopyNamehint<SubOp>(rewriter, mux, t0, newRhs);
+    return true;
+  }
+  if (!isCommutative)
+    return false;
+  // Find the shared operand (position-insensitive for commutative ops).
+  Value shared = nullptr, tDiff = nullptr, fDiff = nullptr;
+  if (t0 == f0) {
+    shared = t0;
+    tDiff = t1;
+    fDiff = f1;
+  } else if (t1 == f1) {
+    shared = t1;
+    tDiff = t0;
+    fDiff = f0;
+  } else if (t0 == f1 && t1 == f0) {
+    // Same set, swapped: mux(s, op(a,b), op(b,a)) == op(a,b). Just pick one.
+    replaceOpAndCopyNamehint(rewriter, mux, trueOp->getResult(0));
+    return true;
+  } else {
+    return false;
+  }
+  if (tDiff == fDiff)
+    return false;
+  Value newMux = rewriter.createOrFold<MuxOp>(mux.getLoc(), mux.getCond(),
+                                              tDiff, fDiff, mux.getTwoState());
+  // Rebuild op(shared, newMux) preserving operand order of trueOp.
+  SmallVector<Value> newOperands;
+  if (t0 == shared && f0 == shared)
+    newOperands = {shared, newMux};
+  else if (t1 == shared && f1 == shared)
+    newOperands = {newMux, shared};
+  else
+    return false;
+  OperationState state(mux.getLoc(), trueOp->getName());
+  state.addOperands(newOperands);
+  state.addTypes(trueOp->getResultTypes());
+  Operation *newOp = rewriter.create(state);
+  replaceOpAndCopyNamehint(rewriter, mux, newOp->getResult(0));
+  return true;
+}
+
+static bool foldCommonConcatMuxOperation(MuxOp mux, Operation *trueOp,
+                                         Operation *falseOp,
+                                         PatternRewriter &rewriter) {
   // Right now we only apply to concat.
   // TODO: Generalize this to and, or, xor, icmp(!), which all occur in practice
   if (!isa<ConcatOp>(trueOp))
@@ -2482,6 +2593,16 @@ static bool foldCommonMuxOperation(MuxOp mux, Operation *trueOp,
     return true;
   }
 
+  return false;
+}
+
+static bool foldCommonMuxOperation(MuxOp mux, Operation *trueOp,
+                                   Operation *falseOp,
+                                   PatternRewriter &rewriter) {
+  if (isa<ConcatOp>(trueOp))
+    return foldCommonConcatMuxOperation(mux, trueOp, falseOp, rewriter);
+  if (isa<AddOp, SubOp, AndOp, OrOp, XorOp, MulOp>(trueOp))
+    return foldCommonArithMuxOperation(mux, trueOp, falseOp, rewriter);
   return false;
 }
 
@@ -2787,11 +2908,16 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
     return success();
 
   // `mux(cond, op(a, b), op(a, c))` -> `op(a, mux(cond, b, c))`
+  // Also handles mixed add/sub (see foldCommonArithMuxOperation).
   if (Operation *trueOp = op.getTrueValue().getDefiningOp())
-    if (Operation *falseOp = op.getFalseValue().getDefiningOp())
-      if (trueOp->getName() == falseOp->getName())
+    if (Operation *falseOp = op.getFalseValue().getDefiningOp()) {
+      bool sameOp = trueOp->getName() == falseOp->getName();
+      bool addSubMix = (isa<AddOp>(trueOp) && isa<SubOp>(falseOp)) ||
+                       (isa<SubOp>(trueOp) && isa<AddOp>(falseOp));
+      if (sameOp || addSubMix)
         if (foldCommonMuxOperation(op, trueOp, falseOp, rewriter))
           return success();
+    }
 
   // extracts only of mux(...) -> mux(extract()...)
   if (narrowOperationWidth(op, true, rewriter))
