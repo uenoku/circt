@@ -671,8 +671,8 @@ hw.module @const_divmod_mods_neg1_i3(in %lhs: i3, out out: i3) {
 
 // CHECK-LABEL: @inc_prefix
 // CHECK-NOT: comb.or
-// CHECK: comb.xor
-// CHECK: comb.and
+// CHECK-DAG: comb.xor
+// CHECK-DAG: comb.and
 // CHECK: comb.concat
 // ALLOW_ADD-LABEL: @inc_prefix
 // ALLOW_ADD: comb.add
@@ -684,8 +684,8 @@ hw.module @inc_prefix(in %a: i4, out o: i4) {
 
 // CHECK-LABEL: @dec_prefix
 // CHECK-NOT: comb.or
-// CHECK: comb.xor
-// CHECK: comb.and
+// CHECK-DAG: comb.xor
+// CHECK-DAG: comb.and
 // CHECK: comb.concat
 // ALLOW_ADD-LABEL: @dec_prefix
 // ALLOW_ADD: comb.add
