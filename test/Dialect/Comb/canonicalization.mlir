@@ -2225,3 +2225,21 @@ hw.module @ComplAnd(in %x: i8, out o: i1) {
   %2 = comb.and %0, %1 : i1
   hw.output %2 : i1
 }
+
+// CHECK-LABEL: hw.module @UltPow2BitTest
+// CHECK: comb.extract %x from 8 : (i9) -> i1
+// CHECK: comb.xor
+hw.module @UltPow2BitTest(in %x: i9, out o: i1) {
+  %c256 = hw.constant 256 : i9
+  %0 = comb.icmp ult %x, %c256 : i9
+  hw.output %0 : i1
+}
+
+// CHECK-LABEL: hw.module @UgtPow2BitTest
+// CHECK: comb.extract %x from 3
+// CHECK: comb.icmp ne
+hw.module @UgtPow2BitTest(in %x: i8, out o: i1) {
+  %c7 = hw.constant 7 : i8
+  %0 = comb.icmp ugt %x, %c7 : i8
+  hw.output %0 : i1
+}
