@@ -98,25 +98,6 @@ private:
 // Template utilities
 //===----------------------------------------------------------------------===//
 
-/// Return true if a value is module-scoped driven by a value of a specific
-/// type.
-template <typename A, typename... B>
-static bool isModuleScopedDrivenBy(Value val, bool lookThroughWires,
-                                   bool lookThroughNodes,
-                                   bool lookThroughCasts) {
-  val = getModuleScopedDriver(val, lookThroughWires, lookThroughNodes,
-                              lookThroughCasts);
-
-  if (!val)
-    return false;
-
-  auto *op = val.getDefiningOp();
-  if (!op)
-    return false;
-
-  return isa<A, B...>(op);
-}
-
 /// Walk all the drivers of a value, passing in the connect operations drive the
 /// value. If the value is an aggregate it will find connects to subfields. If
 /// the callback returns false, this function will stop walking.  Returns false
