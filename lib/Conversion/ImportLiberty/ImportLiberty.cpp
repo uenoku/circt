@@ -157,7 +157,7 @@ private:
 ///   OrExpr    -> XorExpr { ('+'|'|') XorExpr }
 ///   XorExpr   -> AndExpr { '^' AndExpr }
 ///   AndExpr   -> UnaryExpr { ('*'|'&') UnaryExpr }
-///   UnaryExpr -> '!' UnaryExpr | '(' OrExpr ')' ['\''] | ID ['\']
+///   UnaryExpr -> '!' UnaryExpr | '(' OrExpr ')' ['\''] | ID ['\'] | 0 | 1
 class ExpressionParser {
 public:
   ExpressionParser(LibertyLexer &lexer, OpBuilder &builder, StringRef expr,
@@ -198,6 +198,7 @@ private:
   Token peek() const;
   Token consume();
   Value createNot(Value val, SMLoc loc);
+  Value createConstant(bool value, SMLoc loc);
 
   ParseResult parseOrExpr(Value &result);
   ParseResult parseXorExpr(Value &result);
@@ -289,10 +290,14 @@ ExpressionParser::Token ExpressionParser::consume() { return tokens[pos++]; }
 
 Value ExpressionParser::createNot(Value val, SMLoc loc) {
   if (!trueVal)
-    trueVal = hw::ConstantOp::create(builder, lexer.translateLocation(loc),
-                                     builder.getI1Type(), 1);
+    trueVal = createConstant(true, loc);
   return comb::XorOp::create(builder, lexer.translateLocation(loc), val,
                              trueVal);
+}
+
+Value ExpressionParser::createConstant(bool value, SMLoc loc) {
+  return hw::ConstantOp::create(builder, lexer.translateLocation(loc),
+                                builder.getI1Type(), value ? 1 : 0);
 }
 
 /// Parse OR expressions with lowest precedence.
@@ -391,6 +396,15 @@ ParseResult ExpressionParser::parseUnaryExpr(Value &result) {
   if (peek().kind == TokenKind::ID) {
     auto tok = consume();
     StringRef name = tok.spelling;
+    if (name == "0" || name == "1") {
+      Value val = createConstant(name == "1", tok.loc);
+      if (peek().kind == TokenKind::POSTFIX_NOT) {
+        auto loc = consume().loc;
+        val = createNot(val, loc);
+      }
+      result = val;
+      return success();
+    }
     auto it = values.find(name);
     if (it == values.end())
       return emitError(tok.loc, "variable not found");
@@ -606,7 +620,8 @@ void LibertyLexer::skipWhitespaceAndComments() {
 LibertyToken LibertyLexer::lexIdentifier() {
   const char *start = curPtr;
   while (curPtr < curBuffer.end() &&
-         (isalnum(*curPtr) || *curPtr == '_' || *curPtr == '.'))
+         (isalnum(*curPtr) || *curPtr == '_' || *curPtr == '.' ||
+          *curPtr == '[' || *curPtr == ']'))
     ++curPtr;
   return makeToken(LibertyTokenKind::Identifier, start);
 }
@@ -878,20 +893,33 @@ ParseResult LibertyParser::parseNLDMTable(
       parseList(group, "index_2", index2) || parseList(group, "values", values))
     return failure();
 
+  bool isScalar = false;
   if (!group.args.empty()) {
     auto templateName = dyn_cast<StringAttr>(group.args[0]);
     if (!templateName)
       return emitError(group.loc, "NLDM table template name must be a string");
 
-    auto it = tableTemplates.find(templateName.getValue());
-    if (it == tableTemplates.end())
-      return emitError(group.loc, "unknown NLDM table template '")
-             << templateName.getValue() << "'";
+    isScalar = templateName.getValue() == "scalar";
+    if (!isScalar) {
+      auto it = tableTemplates.find(templateName.getValue());
+      if (it == tableTemplates.end())
+        return emitError(group.loc, "unknown NLDM table template '")
+               << templateName.getValue() << "'";
 
-    if (index1.empty() && parseList(*it->second, "index_1", index1))
-      return failure();
-    if (index2.empty() && parseList(*it->second, "index_2", index2))
-      return failure();
+      if (index1.empty() && parseList(*it->second, "index_1", index1))
+        return failure();
+      if (index2.empty() && parseList(*it->second, "index_2", index2))
+        return failure();
+    }
+  }
+
+  // Liberty's scalar template represents a constant value rather than a
+  // lookup table.  NLDMTableAttr is uniformly 2D, so model it as a 1x1 table.
+  if (isScalar) {
+    if (index1.empty())
+      index1.push_back(0.0);
+    if (index2.empty())
+      index2.push_back(0.0);
   }
 
   if (index1.empty())
@@ -931,13 +959,45 @@ LogicalResult LibertyParser::buildTimingArcs(
     if (child->name != "timing")
       continue;
 
+    // Constraint, recovery/removal, and min-pulse-width timing groups do not
+    // describe an NLDM delay arc.  They are still valid Liberty, but are not
+    // represented by the importer's current timing attribute.
+    bool hasNLDMTable = llvm::any_of(child->subGroups, [](const auto &table) {
+      return isNLDMTableGroup(table->name);
+    });
+    if (!hasNLDMTable)
+      continue;
+
+    // Sequential constraint arcs can contain only the transition direction
+    // that applies to the constraint (for example, cell_fall and
+    // fall_transition for a clear arc).  NLDMTimingArcAttr currently models a
+    // complete delay arc, so leave these typed partial arcs in the generic
+    // Liberty representation instead of rejecting an otherwise valid file.
+    bool hasAllNLDMTables = llvm::all_of(
+        ArrayRef<StringRef>{"cell_rise", "cell_fall", "rise_transition",
+                            "fall_transition"},
+        [&](StringRef name) {
+          return llvm::any_of(child->subGroups, [&](const auto &table) {
+            return table->name == name;
+          });
+        });
+    if (!hasAllNLDMTables && child->getAttribute("timing_type").first)
+      continue;
+
     auto relatedPin =
         dyn_cast_or_null<StringAttr>(child->getAttribute("related_pin").first);
-    auto timingSense =
-        dyn_cast_or_null<StringAttr>(child->getAttribute("timing_sense").first);
-    if (!relatedPin || !timingSense)
-      return emitError(child->loc,
-                       "timing related_pin and timing_sense must be strings");
+    if (!relatedPin)
+      return emitError(child->loc, "timing related_pin must be a string");
+
+    // timing_sense is optional for combinational arcs.  Liberty defaults it to
+    // non-unate when it is omitted.
+    auto [timingSenseAttr, timingSenseLoc] =
+        child->getAttribute("timing_sense");
+    StringAttr timingSense = dyn_cast_or_null<StringAttr>(timingSenseAttr);
+    if (!timingSenseAttr)
+      timingSense = builder.getStringAttr("non_unate");
+    else if (!timingSense)
+      return emitError(timingSenseLoc, "timing_sense must be a string");
 
     synth::NLDMTableAttr cellRise, cellFall, riseTransition, fallTransition;
     for (const auto &table : child->subGroups) {
@@ -984,7 +1044,6 @@ LogicalResult LibertyParser::collectPorts(
     if (sub->name != "pin")
       continue;
 
-    pinGroups.push_back(sub.get());
     if (sub->args.empty())
       return emitError(sub->loc, "pin missing name");
 
@@ -994,6 +1053,7 @@ LogicalResult LibertyParser::collectPorts(
                        "redefinition of pin '" + pinName.getValue() + "'");
 
     std::optional<hw::ModulePort::Direction> dir;
+    bool internalPin = false;
     SmallVector<NamedAttribute> pinAttrs;
     bool functionExist = false;
 
@@ -1009,6 +1069,8 @@ LogicalResult LibertyParser::collectPorts(
           dir = hw::ModulePort::Direction::Output;
         else if (val.getValue() == "inout")
           dir = hw::ModulePort::Direction::InOut;
+        else if (val.getValue() == "internal")
+          internalPin = true;
         else
           return emitError(sub->loc,
                            "pin direction must be input, output, or inout");
@@ -1019,8 +1081,15 @@ LogicalResult LibertyParser::collectPorts(
       pinAttrs.push_back(builder.getNamedAttr(attr.name, attr.value));
     }
 
+    // Liberty uses internal pins to describe implementation nodes, which are
+    // not part of the cell interface and therefore cannot be HW module ports.
+    if (internalPin)
+      continue;
+
     if (!dir)
       return emitError(sub->loc, "pin direction must be specified");
+
+    pinGroups.push_back(sub.get());
 
     if (dir == hw::ModulePort::Direction::Output && !functionExist)
       ++numOutputPinMissingFunction;
@@ -1125,21 +1194,42 @@ ParseResult LibertyParser::lowerCell(
       p.argNum = 0;
 
   auto loc = lexer.translateLocation(group.loc);
-  auto numOutput = ports.size() - inputIdx;
+  size_t numOutput =
+      static_cast<size_t>(llvm::count_if(ports, [](const hw::PortInfo &port) {
+        return port.dir == hw::ModulePort::Direction::Output;
+      }));
+
+  // Sequential cells describe their outputs in terms of internal state
+  // variables (for example, a Sky130 flop uses `IQ` and `IQ_N`).  These
+  // variables are not module ports, so their functions cannot be lowered to
+  // combinational logic by the current importer.  Preserve the cell as an
+  // extern instead; the sequential Liberty description remains available in
+  // the generic library attribute.
+  bool hasSequentialModel = llvm::any_of(group.subGroups, [](const auto &sub) {
+    return sub->name == "ff" || sub->name == "latch" ||
+           sub->name == "statetable";
+  });
+  bool hasInOutPort = llvm::any_of(ports, [](const hw::PortInfo &port) {
+    return port.dir == hw::ModulePort::Direction::InOut;
+  });
 
   // Decide whether to create hw.module (with logic) or hw.module.extern (black
   // box) based on whether output pins have "function" attributes.
   // All outputs must either have "function" or all must lack it.
 
   // Mixed case: some outputs have "function", others don't - error.
-  if (numOutputPinMissingFunction != 0 &&
+  if (!hasSequentialModel && !hasInOutPort &&
+      numOutputPinMissingFunction != 0 &&
       numOutputPinMissingFunction != numOutput)
     return emitError(group.loc, "cell '")
            << cellNameAttr.getValue()
            << "' has mixed output pins with and without 'function' attribute";
 
-  // All outputs lack "function": emit as hw.module.extern (black box).
-  if (numOutputPinMissingFunction == numOutput) {
+  // All outputs lack "function", or the cell has a sequential model: emit as
+  // hw.module.extern (black box).
+  if (hasSequentialModel ||
+      (hasInOutPort && numOutputPinMissingFunction != 0) ||
+      numOutputPinMissingFunction == numOutput) {
     auto externOp =
         hw::HWModuleExternOp::create(builder, loc, cellNameAttr, ports);
     if (!timingArcs.empty())

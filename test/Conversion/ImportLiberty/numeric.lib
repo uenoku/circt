@@ -24,4 +24,99 @@ library(test) {
       function: "A";
     }
   }
+
+  // Constant functions are used by Sky130 tie cells.
+  // CHECK-LABEL: hw.module @constant(
+  // CHECK: %[[TRUE:.*]] = hw.constant true
+  // CHECK: %[[FALSE:.*]] = hw.constant false
+  // CHECK: hw.output %[[TRUE]], %[[FALSE]] : i1, i1
+  cell (constant) {
+    pin (HI) {
+      direction: output;
+      function: "1";
+    }
+    pin (LO) {
+      direction: output;
+      function: "0";
+    }
+  }
+
+  // Sequential output functions refer to the state variables from an ff
+  // group, rather than to input ports.  Keep such cells as externs.
+  // CHECK-LABEL: hw.module.extern @flop(
+  cell (flop) {
+    ff ("IQ", "IQ_N") {
+      clocked_on: "CLK";
+      next_state: "D";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+
+  lu_table_template (one_by_one) {
+    index_1 ("0");
+    index_2 ("0");
+  }
+
+  // Scalar tables are used for constant transition values.
+  // CHECK-LABEL: hw.module @scalar_timing(
+  cell (scalar_timing) {
+    pin (A) {
+      direction: input;
+    }
+    pin (Z) {
+      direction: output;
+      function: "A";
+      timing () {
+        related_pin: "A";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (one_by_one) {
+          values ("1");
+        }
+        cell_fall (one_by_one) {
+          values ("1");
+        }
+        rise_transition (scalar) {
+          values ("2");
+        }
+        fall_transition (scalar) {
+          values ("2");
+        }
+      }
+    }
+  }
+
+  // Internal pins and bus-indexed pin names are valid Liberty constructs but
+  // are not additional combinational module inputs in this importer.
+  // CHECK-LABEL: hw.module @internal_pin(
+  cell (internal_pin) {
+    pin (A) {
+      direction: input;
+    }
+    pin (M0) {
+      direction: internal;
+    }
+    pin (Z) {
+      direction: output;
+      function: "A";
+    }
+  }
+  // CHECK-LABEL: hw.module.extern @bus_pin(
+  cell (bus_pin) {
+    pin (DATA[0]) {
+      direction: input;
+    }
+    pin (Z) {
+      direction: output;
+    }
+  }
 }
