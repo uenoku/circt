@@ -484,7 +484,7 @@ private:
   OpBuilder builder;
 
   // Specific group parsers
-  ParseResult parseLibrary();
+  ParseResult lowerLibrary(LibertyGroup &libertyLib);
   ParseResult parseGroupBody(LibertyGroup &group);
   ParseResult parseStatement(LibertyGroup &parent);
 
@@ -520,6 +520,21 @@ private:
                            ArrayRef<hw::PortInfo> ports,
                            ArrayRef<const LibertyGroup *> pinGroups,
                            const LibertyGroup &seqGroup, bool isLatch);
+
+  LogicalResult
+  buildClockGateCellLogic(hw::HWModuleOp moduleOp, ArrayRef<hw::PortInfo> ports,
+                          ArrayRef<const LibertyGroup *> pinGroups,
+                          const LibertyGroup &cellGroup);
+
+  // A Liberty signal reference for clocks and asynchronous controls must be
+  // a bare pin or an inverted pin (`[!]name`). Returns the value and whether
+  // it was inverted.
+  FailureOr<std::pair<Value, bool>>
+  resolvePinRef(StringRef expr, SMLoc loc,
+                const llvm::StringMap<Value> &values);
+
+  // Normalize to active-high: inverted references become a `comb` inversion.
+  Value activeHigh(Value val, bool inverted, Location loc);
 
   LogicalResult parseLibertyFloatList(StringRef value, SMLoc loc,
                                       SmallVectorImpl<double> &result) const;
@@ -767,24 +782,55 @@ LibertyToken LibertyLexer::peekToken() {
 //===----------------------------------------------------------------------===//
 
 ParseResult LibertyParser::parse() {
+  // Parse all top-level groups first. Shipped PDKs contain file-splice
+  // artifacts (seen in asap7sc6t SIMPLE: a `cell` after the library's
+  // closing brace plus a stray `}`); adopt orphan cells into the preceding
+  // library and skip stray braces with a warning instead of failing the
+  // whole import. Anything else unexpected stays a hard error.
+  SmallVector<std::unique_ptr<LibertyGroup>> libraries;
   while (lexer.peekToken().kind != LibertyTokenKind::EndOfFile) {
     auto token = lexer.peekToken();
-    // Skip any stray tokens that aren't valid group starts
-    if (token.kind != LibertyTokenKind::Identifier ||
-        token.spelling != "library") {
-      return emitError(token.location, "expected `library` keyword");
+    if (token.kind == LibertyTokenKind::RBrace) {
+      emitWarning(token.location, "stray '}' at top level; skipping");
+      lexer.nextToken();
+      continue;
     }
-    lexer.nextToken();
-    if (parseLibrary())
-      return failure();
+    if (token.kind != LibertyTokenKind::Identifier)
+      return emitError(token.location, "expected `library` keyword");
+    if (token.spelling == "library") {
+      lexer.nextToken();
+      auto lib = std::make_unique<LibertyGroup>();
+      lib->name = "library";
+      lib->loc = token.location;
+      if (parseGroupBody(*lib))
+        return failure();
+      libraries.push_back(std::move(lib));
+      continue;
+    }
+    if (token.spelling == "cell") {
+      if (libraries.empty())
+        return emitError(token.location, "expected `library` keyword");
+      emitWarning(token.location, "top-level `cell` outside any `library` "
+                                  "group; adopting into the preceding "
+                                  "library");
+      lexer.nextToken();
+      auto orphan = std::make_unique<LibertyGroup>();
+      orphan->name = "cell";
+      orphan->loc = token.location;
+      if (parseGroupBody(*orphan))
+        return failure();
+      libraries.back()->subGroups.push_back(std::move(orphan));
+      continue;
+    }
+    return emitError(token.location, "expected `library` keyword");
   }
+  for (auto &lib : libraries)
+    if (lowerLibrary(*lib))
+      return failure();
   return success();
 }
 
-ParseResult LibertyParser::parseLibrary() {
-  LibertyGroup libertyLib;
-  if (parseGroupBody(libertyLib))
-    return failure();
+ParseResult LibertyParser::lowerLibrary(LibertyGroup &libertyLib) {
 
   // First Pass: collect lu_table_template groups by name so they can be
   // referenced during NLDM table parsing in lowerCell. Liberty tables
@@ -1129,6 +1175,34 @@ LogicalResult LibertyParser::collectPorts(
   return success();
 }
 
+FailureOr<std::pair<Value, bool>>
+LibertyParser::resolvePinRef(StringRef expr, SMLoc loc,
+                             const llvm::StringMap<Value> &values) {
+  StringRef name = expr.trim();
+  bool inverted = false;
+  if (name.starts_with("!")) {
+    inverted = true;
+    name = name.drop_front().trim();
+  }
+  if (name.empty() || llvm::any_of(name, [](char c) {
+        return !isalnum(c) && c != '_' && c != '[' && c != ']' && c != '.';
+      }))
+    return emitError(loc, "unsupported sequential signal expression '")
+           << expr << "': expected a pin name";
+  auto it = values.find(name);
+  if (it == values.end())
+    return emitError(loc, "unknown pin referenced by sequential cell: '")
+           << name << "'";
+  return std::make_pair(it->second, inverted);
+}
+
+Value LibertyParser::activeHigh(Value val, bool inverted, Location loc) {
+  if (!inverted)
+    return val;
+  auto trueVal = hw::ConstantOp::create(builder, loc, builder.getI1Type(), 1);
+  return comb::XorOp::create(builder, loc, val, trueVal);
+}
+
 LogicalResult LibertyParser::buildSequentialCellLogic(
     hw::HWModuleOp moduleOp, ArrayRef<hw::PortInfo> ports,
     ArrayRef<const LibertyGroup *> pinGroups, const LibertyGroup &seqGroup,
@@ -1142,39 +1216,6 @@ LogicalResult LibertyParser::buildSequentialCellLogic(
     if (port.dir == hw::ModulePort::Direction::Input)
       portValues[port.name.getValue()] =
           moduleOp.getBodyBlock()->getArgument(port.argNum);
-
-  // Clocks and asynchronous controls must be a bare pin or an inverted pin
-  // (`[!]name`). Anything else (for example a clock expression over
-  // multiple pins) has no representation in the state-element ops.
-  auto resolvePinRef = [&](StringRef expr,
-                           SMLoc exprLoc) -> FailureOr<std::pair<Value, bool>> {
-    StringRef name = expr.trim();
-    bool inverted = false;
-    if (name.starts_with("!")) {
-      inverted = true;
-      name = name.drop_front().trim();
-    }
-    if (name.empty() || llvm::any_of(name, [](char c) {
-          return !isalnum(c) && c != '_' && c != '[' && c != ']' && c != '.';
-        }))
-      return emitError(exprLoc, "unsupported sequential signal expression '")
-             << expr << "': expected a pin name";
-    auto it = portValues.find(name);
-    if (it == portValues.end())
-      return emitError(exprLoc, "unknown pin referenced by sequential cell: '")
-             << name << "'";
-    return std::make_pair(it->second, inverted);
-  };
-
-  // The state-element ops take active-high controls, so an active-low
-  // Liberty reference becomes a `comb` inversion: combinational logic stays
-  // `comb`.
-  auto activeHigh = [&](Value val, bool inverted) -> Value {
-    if (!inverted)
-      return val;
-    auto trueVal = hw::ConstantOp::create(builder, loc, builder.getI1Type(), 1);
-    return comb::XorOp::create(builder, loc, val, trueVal);
-  };
 
   auto getStringField = [&](StringRef field, bool required, StringAttr &result,
                             SMLoc &resultLoc) -> LogicalResult {
@@ -1217,10 +1258,10 @@ LogicalResult LibertyParser::buildSequentialCellLogic(
       out = Value();
       return success();
     }
-    auto ref = resolvePinRef(attr.getValue(), attrLoc);
+    auto ref = resolvePinRef(attr.getValue(), attrLoc, portValues);
     if (failed(ref))
       return failure();
-    out = activeHigh(ref->first, ref->second);
+    out = activeHigh(ref->first, ref->second, loc);
     return success();
   };
   if (failed(bindAsync(clearAttr, clearLoc, clearVal)) ||
@@ -1240,7 +1281,8 @@ LogicalResult LibertyParser::buildSequentialCellLogic(
       return emitError(seqGroup.loc,
                        "unsupported 'clocked_on_also' in sequential cell");
 
-    auto clockRef = resolvePinRef(clockedOn.getValue(), clockedOnLoc);
+    auto clockRef =
+        resolvePinRef(clockedOn.getValue(), clockedOnLoc, portValues);
     if (failed(clockRef))
       return failure();
     auto edge =
@@ -1414,17 +1456,17 @@ LogicalResult LibertyParser::buildSequentialCellLogic(
                     if (stripped != candidate)
                       continue;
                     Value dataOp =
-                        activeHigh(portValues.lookup(dataCand), dInv);
+                        activeHigh(portValues.lookup(dataCand), dInv, loc);
                     if (!siCand.empty())
                       dataOp = buildScanMux(
-                          activeHigh(portValues.lookup(seCand), seInv),
-                          activeHigh(portValues.lookup(siCand),
-                                     siInv != flipSI),
+                          activeHigh(portValues.lookup(seCand), seInv, loc),
+                          activeHigh(portValues.lookup(siCand), siInv != flipSI,
+                                     loc),
                           dataOp);
                     Value enOp =
                         enCand.empty()
                             ? Value()
-                            : activeHigh(portValues.lookup(enCand), eInv);
+                            : activeHigh(portValues.lookup(enCand), eInv, loc);
                     if (failed(setMatch(dataOp, enOp)))
                       return failure();
                   }
@@ -1452,13 +1494,13 @@ LogicalResult LibertyParser::buildSequentialCellLogic(
         failed(getStringField("data_in", /*required=*/true, dataInAttr,
                               dataInLoc)))
       return failure();
-    auto enRef = resolvePinRef(enableAttr.getValue(), enableLoc);
-    auto dataRef = resolvePinRef(dataInAttr.getValue(), dataInLoc);
+    auto enRef = resolvePinRef(enableAttr.getValue(), enableLoc, portValues);
+    auto dataRef = resolvePinRef(dataInAttr.getValue(), dataInLoc, portValues);
     if (failed(enRef) || failed(dataRef))
       return failure();
     auto latchOp = synth::LatchOp::create(
-        builder, loc, activeHigh(dataRef->first, dataRef->second),
-        activeHigh(enRef->first, enRef->second), clearVal, presetVal);
+        builder, loc, activeHigh(dataRef->first, dataRef->second, loc),
+        activeHigh(enRef->first, enRef->second, loc), clearVal, presetVal);
     stateQ = latchOp.getQ();
     stateQN = latchOp.getQn();
   }
@@ -1538,6 +1580,371 @@ LibertyParser::buildCellLogic(hw::HWModuleOp moduleOp,
   return success();
 }
 
+LogicalResult LibertyParser::buildClockGateCellLogic(
+    hw::HWModuleOp moduleOp, ArrayRef<hw::PortInfo> ports,
+    ArrayRef<const LibertyGroup *> pinGroups, const LibertyGroup &cellGroup) {
+  // An integrated clock gate is a transparent latch plus an AND gate. Only
+  // the latch itself is a new op (`synth.latch`); the AND, the test muxing,
+  // and any inversions are plain `comb` operations.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(moduleOp.getBodyBlock());
+  auto loc = lexer.translateLocation(cellGroup.loc);
+
+  llvm::StringMap<Value> portValues;
+  for (const auto &port : ports)
+    if (port.dir == hw::ModulePort::Direction::Input)
+      portValues[port.name.getValue()] =
+          moduleOp.getBodyBlock()->getArgument(port.argNum);
+
+  auto isSet = [&](const LibertyGroup &pinGroup, StringRef attr) {
+    auto str = dyn_cast_or_null<StringAttr>(pinGroup.getAttribute(attr).first);
+    return str && str.getValue() == "true";
+  };
+
+  // Discover roles from clock_gate_* pin attributes. The internal state node
+  // is not a port; it is identified by name only.
+  StringRef clockPin, enablePin, testPin, outPin, nodeName;
+  const LibertyGroup *outPinGroup = nullptr;
+  for (const auto &sub : cellGroup.subGroups) {
+    if (sub->name != "pin" || sub->args.empty())
+      continue;
+    auto pinName = dyn_cast<StringAttr>(sub->args[0]);
+    if (!pinName)
+      return emitError(sub->loc, "pin missing name");
+    auto takeRole = [&](StringRef attr, StringRef &role) -> LogicalResult {
+      if (!isSet(*sub, attr))
+        return success();
+      if (!role.empty())
+        return emitError(sub->loc, "multiple pins with '") << attr << "'";
+      role = pinName.getValue();
+      return success();
+    };
+    if (failed(takeRole("clock_gate_clock_pin", clockPin)) ||
+        failed(takeRole("clock_gate_enable_pin", enablePin)) ||
+        failed(takeRole("clock_gate_test_pin", testPin)) ||
+        failed(takeRole("clock_gate_out_pin", outPin)))
+      return failure();
+    if (pinName.getValue() == outPin)
+      outPinGroup = sub.get();
+    auto [dirAttr, _dirLoc] = sub->getAttribute("direction");
+    auto dirStr = dyn_cast_or_null<StringAttr>(dirAttr);
+    if (dirStr && dirStr.getValue() == "internal") {
+      auto [nodeAttr, nodeLoc] = sub->getAttribute("internal_node");
+      auto nodeStr = dyn_cast_or_null<StringAttr>(nodeAttr);
+      if (!nodeStr)
+        return emitError(sub->loc, "internal pin misses 'internal_node'");
+      if (!nodeName.empty() && nodeName != nodeStr.getValue())
+        return emitError(sub->loc, "multiple internal nodes");
+      nodeName = nodeStr.getValue();
+    }
+  }
+  if (clockPin.empty() || enablePin.empty() || outPin.empty())
+    return emitError(cellGroup.loc, "integrated clock gate misses clock, "
+                                    "enable, or output pin roles");
+  if (!portValues.count(clockPin) || !portValues.count(enablePin) ||
+      (!testPin.empty() && !portValues.count(testPin)))
+    return emitError(cellGroup.loc, "clock-gate control pin is not a module "
+                                    "input");
+  size_t numOutput = llvm::count_if(
+      ports, [](const hw::PortInfo &port) { return port.isOutput(); });
+  if (numOutput != 1 || !outPinGroup)
+    return emitError(cellGroup.loc,
+                     "integrated clock gate requires a single output pin");
+  Value clkVal = portValues.lookup(clockPin);
+
+  // Latch data and transparency, from the statetable or from the
+  // clock_gating_integrated_cell architecture.
+  const LibertyGroup *tableGroup = nullptr;
+  for (const auto &sub : cellGroup.subGroups)
+    if (sub->name == "statetable") {
+      if (tableGroup)
+        return emitError(sub->loc, "multiple statetable groups");
+      tableGroup = sub.get();
+    }
+  auto [archAttr, archLoc] =
+      cellGroup.getAttribute("clock_gating_integrated_cell");
+
+  Value latchData, latchEnable;
+  if (tableGroup) {
+    // When both descriptions are present, the table is authoritative and
+    // the architecture cross-checks it. Observed values are all
+    // latch-posedge family (quoted or bare).
+    if (archAttr) {
+      auto archStr = dyn_cast_or_null<StringAttr>(archAttr);
+      if (!archStr || (archStr.getValue() != "latch_posedge" &&
+                       archStr.getValue() != "latch_posedge_precontrol"))
+        return emitError(archLoc, "unsupported clock-gating architecture");
+    }
+    // Header: ("<inputs...>", "<statevar>") with space-separated inputs.
+    if (tableGroup->args.size() != 2 || !isa<StringAttr>(tableGroup->args[0]) ||
+        !isa<StringAttr>(tableGroup->args[1]))
+      return emitError(tableGroup->loc, "statetable requires (inputs, "
+                                        "statevar) string arguments");
+    SmallVector<StringRef> tableInputs;
+    cast<StringAttr>(tableGroup->args[0])
+        .getValue()
+        .split(tableInputs, ' ', -1, false);
+    StringRef stateVar = cast<StringAttr>(tableGroup->args[1]).getValue();
+    if (tableInputs.empty())
+      return emitError(tableGroup->loc, "statetable misses input pins");
+    if (!nodeName.empty() && nodeName != stateVar)
+      return emitError(tableGroup->loc, "internal node disagrees with "
+                                        "statetable variable");
+    nodeName = stateVar;
+    auto [tableAttr, tableLoc] = tableGroup->getAttribute("table");
+    auto tableStr = dyn_cast_or_null<StringAttr>(tableAttr);
+    if (!tableStr)
+      return emitError(tableGroup->loc, "statetable misses 'table' string");
+
+    // Rows look like `L H : - : H`. Only steady H/L/- inputs and H/L/N
+    // next states are supported; anything else is not a simple latch.
+    struct TableRow {
+      std::string inputs;
+      char next;
+    };
+    SmallVector<TableRow> rows;
+    std::string text = tableStr.getValue().str();
+    std::string flat;
+    for (size_t i = 0; i < text.size();) {
+      if (text[i] == '\\' && i + 1 < text.size() && text[i + 1] == '\n') {
+        i += 2;
+        continue;
+      }
+      flat.push_back(text[i++]);
+    }
+    SmallVector<StringRef> chunks;
+    StringRef(flat).split(chunks, ',', -1, false);
+    for (StringRef chunk : chunks) {
+      SmallVector<StringRef> toks;
+      chunk.split(toks, ' ', -1, false);
+      if (toks.size() != tableInputs.size() + 4 ||
+          toks[tableInputs.size()] != ":" ||
+          toks[tableInputs.size() + 1] != "-" ||
+          toks[tableInputs.size() + 2] != ":")
+        return emitError(tableLoc, "unsupported statetable row '")
+               << chunk.trim() << "'";
+      std::string inputs;
+      for (size_t k = 0; k < tableInputs.size(); ++k) {
+        if (toks[k] != "H" && toks[k] != "L" && toks[k] != "-" &&
+            toks[k] != "?")
+          return emitError(tableLoc, "unsupported statetable input '")
+                 << toks[k] << "'";
+        inputs.push_back(toks[k][0]);
+      }
+      char next = toks.back()[0];
+      if ((toks.back().size() != 1) ||
+          (next != 'H' && next != 'L' && next != 'N'))
+        return emitError(tableLoc, "unsupported statetable next state '")
+               << toks.back() << "'";
+      rows.push_back({inputs, next});
+    }
+
+    // Expand don't-cares; Liberty evaluates rows top-down, first match wins.
+    llvm::StringMap<char> nextOf;
+    for (const auto &row : rows) {
+      SmallVector<std::string> assigns = {""};
+      for (char v : row.inputs) {
+        if (v == 'H' || v == 'L') {
+          for (auto &a : assigns)
+            a.push_back(v == 'H' ? '1' : '0');
+        } else {
+          SmallVector<std::string> grown;
+          for (auto &a : assigns) {
+            grown.push_back(a + "0");
+            grown.push_back(a + "1");
+          }
+          assigns = std::move(grown);
+        }
+        if (assigns.size() > 1024)
+          return emitError(tableLoc, "statetable too large to expand");
+      }
+      for (auto &a : assigns)
+        if (!nextOf.count(a))
+          nextOf[a] = row.next;
+    }
+
+    // The clock is the unique input held (N) at one level and assigned at
+    // the other; the latch is transparent at the assigned level.
+    StringRef latchClock;
+    char transparentLevel = 0;
+    for (size_t c = 0; c < tableInputs.size(); ++c) {
+      for (char t : {'L', 'H'}) {
+        bool ok = true, hasTransparent = false;
+        for (const auto &[assign, next] : nextOf) {
+          bool atLevel = assign[c] == (t == 'H' ? '1' : '0');
+          if (atLevel) {
+            if (next == 'N') {
+              ok = false;
+              break;
+            }
+            hasTransparent = true;
+          } else if (next != 'N') {
+            ok = false;
+            break;
+          }
+        }
+        if (ok && hasTransparent) {
+          if (!latchClock.empty())
+            return emitError(tableLoc, "statetable is not a simple latch");
+          latchClock = tableInputs[c];
+          transparentLevel = t;
+        }
+      }
+    }
+    if (latchClock.empty())
+      return emitError(tableLoc, "statetable is not a simple latch");
+    if (latchClock != clockPin)
+      return emitError(tableLoc, "statetable clock disagrees with clock-gate "
+                                 "clock pin");
+    if (archAttr && transparentLevel != 'L')
+      return emitError(tableLoc, "statetable disagrees with "
+                                 "latch_posedge_precontrol architecture");
+
+    // Data function over the remaining inputs as a mux tree.
+    SmallVector<StringRef> dataInputs;
+    SmallVector<size_t> dataPos;
+    for (size_t k = 0; k < tableInputs.size(); ++k)
+      if (tableInputs[k] != latchClock) {
+        if (!portValues.count(tableInputs[k]))
+          return emitError(tableLoc, "statetable references unknown pin '")
+                 << tableInputs[k] << "'";
+        dataInputs.push_back(tableInputs[k]);
+        dataPos.push_back(k);
+      }
+    size_t clockPos = latchClock == tableInputs[0] ? 0 : tableInputs.size();
+    for (size_t k = 0; k < tableInputs.size(); ++k)
+      if (tableInputs[k] == latchClock)
+        clockPos = k;
+    bool incomplete = false;
+    std::function<Value(size_t, std::string)> buildData =
+        [&](size_t k, std::string prefix) -> Value {
+      if (k == dataInputs.size()) {
+        std::string full(tableInputs.size(), '0');
+        full[clockPos] = (transparentLevel == 'H' ? '1' : '0');
+        for (size_t j = 0; j < dataPos.size(); ++j)
+          full[dataPos[j]] = prefix[j];
+        auto it = nextOf.find(full);
+        if (it == nextOf.end()) {
+          incomplete = true;
+          return Value();
+        }
+        return hw::ConstantOp::create(builder, loc, builder.getI1Type(),
+                                      it->second == 'H' ? 1 : 0);
+      }
+      Value t = buildData(k + 1, prefix + "1");
+      if (!t || incomplete)
+        return Value();
+      Value f = buildData(k + 1, prefix + "0");
+      if (!f || incomplete)
+        return Value();
+      return comb::MuxOp::create(builder, loc, portValues.lookup(dataInputs[k]),
+                                 t, f);
+    };
+    latchData = buildData(0, "");
+    if (incomplete || !latchData)
+      return emitError(tableLoc, "statetable data function is incomplete");
+    latchEnable = activeHigh(clkVal, /*inverted=*/transparentLevel == 'L', loc);
+  } else {
+    // Without a table, only precontrol (test ORed into latch data) is
+    // supported.
+    auto archStr = dyn_cast_or_null<StringAttr>(archAttr);
+    if (!archStr || archStr.getValue() != "latch_posedge_precontrol")
+      return emitError(archLoc, "unsupported clock-gating architecture");
+    // Precontrol: the test pin is ORed into the latch data; the latch is
+    // transparent while the clock is low.
+    latchData = portValues.lookup(enablePin);
+    if (!testPin.empty())
+      latchData = comb::OrOp::create(builder, loc, latchData,
+                                     portValues.lookup(testPin));
+    latchEnable = activeHigh(clkVal, /*inverted=*/true, loc);
+  }
+
+  auto latchOp = synth::LatchOp::create(builder, loc, latchData, latchEnable,
+                                        /*clear=*/Value(), /*preset=*/Value());
+
+  // Output: AND(clock, state). An explicit function/state_function must have
+  // that shape; when absent it is assumed (the clock-gate contract).
+  auto [funcAttr, funcLoc] = outPinGroup->getAttribute("function");
+  if (!funcAttr)
+    std::tie(funcAttr, funcLoc) = outPinGroup->getAttribute("state_function");
+  Value gated;
+  if (!funcAttr) {
+    gated = comb::AndOp::create(builder, loc, clkVal, latchOp.getQ());
+  } else {
+    auto funcStr = dyn_cast<StringAttr>(funcAttr);
+    if (!funcStr)
+      return emitError(funcLoc, "clock-gate output function must be a string");
+    std::string stripped;
+    for (char c : funcStr.getValue()) {
+      if (isspace(c))
+        continue;
+      stripped.push_back(c == '*' ? '&' : c);
+    }
+    // A single pair of redundant parentheses, as in "(CLK*M0)".
+    while (stripped.size() >= 2 && stripped.front() == '(' &&
+           stripped.back() == ')') {
+      int depth = 0;
+      bool balanced = true;
+      for (size_t i = 0; i + 1 < stripped.size(); ++i) {
+        if (stripped[i] == '(')
+          ++depth;
+        else if (stripped[i] == ')') {
+          if (--depth == 0) {
+            balanced = false;
+            break;
+          }
+        }
+      }
+      if (!balanced)
+        break;
+      stripped = stripped.substr(1, stripped.size() - 2);
+    }
+    SmallVector<StringRef> parts;
+    StringRef(stripped).split(parts, '&', -1, false);
+    if (parts.size() != 2)
+      return emitError(funcLoc, "unsupported clock-gate output function '")
+             << funcStr.getValue() << "': expected AND(clock, state)";
+    bool seenClock = false, seenState = false;
+    Value andLhs, andRhs;
+    for (StringRef part : parts) {
+      StringRef name = part.trim();
+      bool inverted = false;
+      if (name.starts_with("!")) {
+        inverted = true;
+        name = name.drop_front();
+      }
+      if (name == nodeName) {
+        if (seenState)
+          return emitError(funcLoc, "unsupported clock-gate output function '")
+                 << funcStr.getValue() << "'";
+        seenState = true;
+        Value stateVal = inverted ? latchOp.getQn() : latchOp.getQ();
+        (seenClock ? andRhs : andLhs) = stateVal;
+      } else {
+        auto ref = resolvePinRef(part, funcLoc, portValues);
+        if (failed(ref))
+          return failure();
+        if (ref->first != clkVal)
+          return emitError(funcLoc, "unsupported clock-gate output function '")
+                 << funcStr.getValue() << "': expected AND(clock, state)";
+        if (seenClock)
+          return emitError(funcLoc, "unsupported clock-gate output function '")
+                 << funcStr.getValue() << "'";
+        seenClock = true;
+        Value clockVal = inverted ? activeHigh(clkVal, true, loc) : clkVal;
+        (seenState ? andRhs : andLhs) = clockVal;
+      }
+    }
+    if (!seenClock || !seenState)
+      return emitError(funcLoc, "unsupported clock-gate output function '")
+             << funcStr.getValue() << "': expected AND(clock, state)";
+    gated = comb::AndOp::create(builder, loc, andLhs, andRhs);
+  }
+
+  moduleOp.getBodyBlock()->getTerminator()->setOperands({gated});
+  return success();
+}
+
 ParseResult LibertyParser::lowerCell(
     const LibertyGroup &group, StringAttr &cellNameAttr,
     const llvm::StringMap<const LibertyGroup *> &tableTemplates) {
@@ -1576,8 +1983,9 @@ ParseResult LibertyParser::lowerCell(
   // `synth.ff`/`synth.latch` state element in an `hw.module`
   // body. Combinational parts (scan muxes, active-low inversions, output
   // selection) are plain `comb`/`hw` operations; only the state element
-  // itself is a new op. Cells with `statetable` groups, multiple state
-  // groups, `inout` ports, or missing output functions stay black boxes.
+  // itself is a new op. Cells with `statetable` groups that do not decode
+  // to a clock gate, multiple state groups, `inout` ports, or missing
+  // output functions stay black boxes.
   const LibertyGroup *ffGroup = nullptr;
   const LibertyGroup *latchGroup = nullptr;
   int numFF = 0, numLatch = 0;
@@ -1597,6 +2005,37 @@ ParseResult LibertyParser::lowerCell(
   bool hasInOutPort = llvm::any_of(ports, [](const hw::PortInfo &port) {
     return port.dir == hw::ModulePort::Direction::InOut;
   });
+  // Integrated clock gates are claimed by pin/cell attributes (not by
+  // output functions, which a clock-gate output may not even have). The
+  // body builder validates the architecture strictly.
+  bool hasClockGate = false;
+  for (const auto &sub : group.subGroups) {
+    if (sub->name != "pin" || sub->args.empty())
+      continue;
+    auto [outAttr, _] = sub->getAttribute("clock_gate_out_pin");
+    auto outStr = dyn_cast_or_null<StringAttr>(outAttr);
+    if (outStr && outStr.getValue() == "true")
+      hasClockGate = true;
+  }
+  if (static_cast<bool>(
+          group.getAttribute("clock_gating_integrated_cell").first))
+    hasClockGate = true;
+
+  // Cell-level scalar attributes the importer does not otherwise consume
+  // (area, dont_use, clock-gating architecture, ...) are preserved as a
+  // generic dictionary for inspection and future cost models. Behavioral
+  // lowering consumes bodies and timing arcs instead.
+  DictionaryAttr cellDict;
+  if (!group.attrs.empty()) {
+    SmallVector<NamedAttribute> cellAttrList;
+    for (const auto &attr : group.attrs)
+      cellAttrList.push_back(builder.getNamedAttr(attr.name, attr.value));
+    cellDict = builder.getDictionaryAttr(cellAttrList);
+  }
+  auto attachCellDict = [&](Operation *op) {
+    if (cellDict)
+      op->setAttr("synth.liberty.cell", cellDict);
+  };
 
   // Decide whether to create hw.module (with logic) or hw.module.extern (black
   // box) based on whether output pins have "function" attributes.
@@ -1610,12 +2049,26 @@ ParseResult LibertyParser::lowerCell(
            << cellNameAttr.getValue()
            << "' has mixed output pins with and without 'function' attribute";
 
+  // Integrated clock gates get a latch-plus-AND body. Anything the body
+  // builder rejects is a hard error, so unseen clock-gate architectures
+  // surface instead of silently degrading.
+  if (hasClockGate) {
+    auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
+    if (failed(buildClockGateCellLogic(moduleOp, ports, pinGroups, group)))
+      return failure();
+    if (!timingArcs.empty())
+      moduleOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+    attachCellDict(moduleOp);
+    return success();
+  }
+
   // Single `ff`/`latch` cells with fully-specified output functions get an
   // executable body. Anything the body builder rejects (for example an
   // exotic `next_state` shape) is a hard error, so new Liberty shapes
   // surface instead of silently degrading.
-  if (!hasInOutPort && !hasStatetable && numFF + numLatch == 1 &&
-      numOutputPinMissingFunction == 0 && numOutput > 0) {
+  if (!hasInOutPort && !hasStatetable && !hasClockGate &&
+      numFF + numLatch == 1 && numOutputPinMissingFunction == 0 &&
+      numOutput > 0) {
     auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
     const LibertyGroup &seqGroup = numFF ? *ffGroup : *latchGroup;
     if (failed(buildSequentialCellLogic(moduleOp, ports, pinGroups, seqGroup,
@@ -1623,14 +2076,16 @@ ParseResult LibertyParser::lowerCell(
       return failure();
     if (!timingArcs.empty())
       moduleOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+    attachCellDict(moduleOp);
     return success();
   }
 
   // All outputs lack "function", or the cell is sequential but not covered
-  // by the body builder above (`statetable`, multiple state groups, or
-  // missing output functions): emit as hw.module.extern (black box). The
-  // sequential groups are preserved as a generic attribute for inspection;
-  // sequential mapping consumes the executable bodies instead.
+  // by the body builders above (`statetable` without clock-gate structure,
+  // multiple state groups, or missing output functions): emit as
+  // hw.module.extern (black box). The sequential groups are preserved as a
+  // generic attribute for inspection; sequential mapping consumes the
+  // executable bodies instead.
   if (hasSequentialModel ||
       (hasInOutPort && numOutputPinMissingFunction != 0) ||
       numOutputPinMissingFunction == numOutput) {
@@ -1638,6 +2093,7 @@ ParseResult LibertyParser::lowerCell(
         hw::HWModuleExternOp::create(builder, loc, cellNameAttr, ports);
     if (!timingArcs.empty())
       externOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+    attachCellDict(externOp);
     // Preserve the sequential model (`ff`, `latch`, `statetable`) groups so
     // that a sequential mapping pass can match register/latch cells.  The
     // groups are stored keyed by group name, following the convention used
@@ -1666,6 +2122,7 @@ ParseResult LibertyParser::lowerCell(
 
   if (!timingArcs.empty())
     moduleOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+  attachCellDict(moduleOp);
 
   return success();
 }
@@ -1722,6 +2179,21 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
     if (parseAttribute(val))
       return failure();
     parent.attrs.emplace_back(name, val, loc);
+    if (lexer.peekToken().kind == LibertyTokenKind::Semi) {
+      lexer.nextToken();
+      return success();
+    }
+    // Shipped PDKs systematically omit the ';' after some attributes
+    // (ASAP7 r28 cell `area`). After a complete attribute value only ';'
+    // may validly follow, so an identifier (next statement) or '}' (end of
+    // group) unambiguously means the terminator was omitted. Recover with
+    // a warning; anything else stays a hard error.
+    if (lexer.peekToken().kind == LibertyTokenKind::Identifier ||
+        lexer.peekToken().kind == LibertyTokenKind::RBrace) {
+      emitWarning(lexer.peekToken().location, "missing ';' after attribute '")
+          << name << "'; assuming terminator";
+      return success();
+    }
     return consume(LibertyTokenKind::Semi, "expected ';'");
   }
 

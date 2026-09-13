@@ -1,0 +1,33 @@
+// RUN: circt-translate --import-liberty %s -o %t.mlir
+// RUN: FileCheck %s < %t.mlir
+// Shipped PDKs contain file-splice artifacts (seen in asap7sc6t SIMPLE):
+// a cell after the library's closing brace plus a stray '}'. Orphan cells
+// are adopted into the preceding library with a warning (stderr, not
+// checked here); both cells below must be imported.
+
+library(test) {
+  // CHECK-LABEL: hw.module @inside(
+  cell (inside) {
+    pin (A) {
+      direction: input;
+    }
+    pin (Z) {
+      direction: output;
+      function: "A";
+    }
+  }
+}
+
+// CHECK-LABEL: hw.module @orphan(
+// CHECK-SAME: synth.liberty.cell = {area = 1.500000e+00 : f64}
+cell (orphan) {
+  area : 1.5;
+  pin (A) {
+    direction: input;
+  }
+  pin (Z) {
+    direction: output;
+    function: "A";
+  }
+}
+}
