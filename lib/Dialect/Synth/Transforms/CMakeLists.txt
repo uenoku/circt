@@ -16,6 +16,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   LowerWordToBits.cpp
   MaximumAndCover.cpp
   SOPBalancing.cpp
+  SeqMemMapper.cpp
   SeqTechMapper.cpp
   StructuralHash.cpp
   SynthesisPipeline.cpp

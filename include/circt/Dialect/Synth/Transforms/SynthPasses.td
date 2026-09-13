@@ -97,6 +97,34 @@ def SeqTechMapper : Pass<"synth-seq-tech-mapper", "mlir::ModuleOp"> {
                              "seq::SeqDialect", "synth::SynthDialect"];
 }
 
+def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
+  let summary = "Technology mapping for SRAMs";
+  let description = [{
+    This pass maps `seq.firmem` memories to instances of SRAM macro cells,
+    the Yosys `memory_map` equivalent for the macro-mapping part. SRAM
+    macros are `hw.module.extern` ops carrying a `synth.sram.macro`
+    descriptor (geometry plus dedicated read/write ports).
+
+    Only exact matches map today: equal width and depth, equal read/write
+    port counts in order, a single shared clock, equal read and write
+    latencies, undefined read/write-under-write behavior, no power-on init,
+    and no read-write ports. Write masks require a matching macro mask
+    width; unmasked writes tie macro masks to all-ones. Design enables
+    require macro enable pins and are tied active otherwise. Unmappable
+    memories (geometry mismatch, missing features, or no compatible macro)
+    are left untouched. Single-port strobe macros needing read/write
+    arbitration are future work.
+  }];
+  let statistics = [
+    Statistic<"numMemsMapped", "mems-mapped",
+              "Number of memories mapped to SRAM macros">,
+    Statistic<"numMemsSkipped", "mems-skipped",
+              "Number of memories left unmapped">
+  ];
+  let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
+                             "seq::SeqDialect", "synth::SynthDialect"];
+}
+
 def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
                                            "hw::HWModuleOp"> {
   let summary = "LUT mapping using generic K-input LUTs";

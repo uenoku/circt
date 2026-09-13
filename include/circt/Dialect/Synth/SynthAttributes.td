@@ -84,4 +84,36 @@ def MappingCostAttr : AttrDef<Synth_Dialect, "MappingCost"> {
     "(`,` `input_caps` `=` $inputCaps^)? `>`";
 }
 
+// A single SRAM macro port with dedicated read or write behavior. Pin names
+// refer to ports of the extern module; an empty enable or mask means the
+// port has none. Widths are in bits; latency is in cycles.
+def SRAMPortAttr : AttrDef<Synth_Dialect, "SRAMPort"> {
+  let mnemonic = "sram_port";
+  let summary = "A single SRAM macro port";
+  let parameters = (ins
+    "SRAMPortKind":$kind,
+    "::mlir::StringAttr":$clock,
+    "::mlir::StringAttr":$enable,
+    "::mlir::StringAttr":$address, "int64_t":$addrWidth,
+    "::mlir::StringAttr":$data, "int64_t":$dataWidth,
+    "::mlir::StringAttr":$mask, "int64_t":$maskWidth,
+    "int64_t":$latency
+  );
+  let assemblyFormat =
+    "`<` $kind `,` $clock `,` $enable `,` $address `,` $addrWidth `,` "
+    "$data `,` $dataWidth `,` $mask `,` $maskWidth `,` $latency `>`";
+}
+
+// An SRAM macro descriptor for memory mapping: geometry plus port list.
+def SRAMMacroAttr : AttrDef<Synth_Dialect, "SRAMMacro"> {
+  let mnemonic = "sram_macro";
+  let summary = "SRAM macro descriptor for memory mapping";
+  let parameters = (ins
+    "int64_t":$width,
+    "int64_t":$depth,
+    "::mlir::ArrayAttr":$ports
+  );
+  let assemblyFormat = "`<` $width `x` $depth `,` $ports `>`";
+}
+
 #endif // CIRCT_DIALECT_SYNTH_SYNTHATTRIBUTES_TD

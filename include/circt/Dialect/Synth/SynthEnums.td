@@ -36,6 +36,12 @@ def ClockGateLevelAttr : I32EnumAttr<"ClockGateLevel",
   "Clock-gate latch transparency level", [ClockGateLevel_Low,
                                              ClockGateLevel_High]>;
 
+def SRAMPort_Read : I32EnumAttrCase<"Read", 0, "read">;
+def SRAMPort_Write : I32EnumAttrCase<"Write", 1, "write">;
+
+def SRAMPortKindAttr : I32EnumAttr<"SRAMPortKind", "SRAM macro port kind",
+  [SRAMPort_Read, SRAMPort_Write]>;
+
 }
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHENUMS_TD
