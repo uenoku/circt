@@ -509,7 +509,8 @@ private:
                SmallVector<hw::PortInfo> &ports,
                SmallVector<const LibertyGroup *> &pinGroups,
                SmallVector<Attribute> &timingArcs,
-               size_t &numOutputPinMissingFunction);
+               size_t &numOutputPinMissingFunction,
+               bool &hasThreeStateOutput);
 
   LogicalResult buildCellLogic(hw::HWModuleOp moduleOp,
                                ArrayRef<hw::PortInfo> ports,
@@ -1088,7 +1089,8 @@ LogicalResult LibertyParser::collectPorts(
     const llvm::StringMap<const LibertyGroup *> &tableTemplates,
     SmallVector<hw::PortInfo> &ports,
     SmallVector<const LibertyGroup *> &pinGroups,
-    SmallVector<Attribute> &timingArcs, size_t &numOutputPinMissingFunction) {
+    SmallVector<Attribute> &timingArcs, size_t &numOutputPinMissingFunction,
+               bool &hasThreeStateOutput) {
 
   llvm::DenseSet<StringAttr> seenPins;
 
@@ -1109,6 +1111,7 @@ LogicalResult LibertyParser::collectPorts(
     bool internalPin = false;
     SmallVector<NamedAttribute> pinAttrs;
     bool functionExist = false;
+    bool threeStateExist = false;
 
     // Track if this pin has a "function" attribute (only relevant for outputs).
     for (const auto &attr : sub->attrs) {
@@ -1131,6 +1134,8 @@ LogicalResult LibertyParser::collectPorts(
       }
       if (attr.name == "function")
         functionExist = true;
+      if (attr.name == "three_state")
+        threeStateExist = true;
       pinAttrs.push_back(builder.getNamedAttr(attr.name, attr.value));
     }
 
@@ -1146,6 +1151,10 @@ LogicalResult LibertyParser::collectPorts(
 
     if (dir == hw::ModulePort::Direction::Output && !functionExist)
       ++numOutputPinMissingFunction;
+    // A three-state output is not driven unconditionally, so the cell cannot
+    // lower to pure combinational logic even when it has a `function`.
+    if (dir == hw::ModulePort::Direction::Output && threeStateExist)
+      hasThreeStateOutput = true;
 
     // Build timing arcs for this pin's timing subgroups.
     if (failed(buildTimingArcs(*sub, tableTemplates, timingArcs)))
@@ -1915,9 +1924,10 @@ ParseResult LibertyParser::lowerCell(
   SmallVector<const LibertyGroup *> pinGroups;
   SmallVector<Attribute> timingArcs;
   size_t numOutputPinMissingFunction = 0;
+  bool hasThreeStateOutput = false;
 
   if (failed(collectPorts(group, tableTemplates, ports, pinGroups, timingArcs,
-                          numOutputPinMissingFunction)))
+                          numOutputPinMissingFunction, hasThreeStateOutput)))
     return failure();
 
   // Fix up argNum for inputs
@@ -2008,7 +2018,7 @@ ParseResult LibertyParser::lowerCell(
   // Integrated clock gates get a latch-plus-AND body. Anything the body
   // builder rejects is a hard error, so unseen clock-gate architectures
   // surface instead of silently degrading.
-  if (hasClockGate) {
+  if (hasClockGate && !hasThreeStateOutput) {
     auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
     if (failed(buildClockGateCellLogic(moduleOp, ports, pinGroups, group)))
       return failure();
@@ -2023,8 +2033,8 @@ ParseResult LibertyParser::lowerCell(
   // exotic `next_state` shape) is a hard error, so new Liberty shapes
   // surface instead of silently degrading.
   if (!hasInOutPort && !hasStatetable && !hasClockGate &&
-      numFF + numLatch == 1 && numOutputPinMissingFunction == 0 &&
-      numOutput > 0) {
+      !hasThreeStateOutput && numFF + numLatch == 1 &&
+      numOutputPinMissingFunction == 0 && numOutput > 0) {
     auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
     const LibertyGroup &seqGroup = numFF ? *ffGroup : *latchGroup;
     if (failed(buildSequentialCellLogic(moduleOp, ports, pinGroups, seqGroup,
@@ -2036,13 +2046,10 @@ ParseResult LibertyParser::lowerCell(
     return success();
   }
 
-  // All outputs lack "function", or the cell is sequential but not covered
-  // by the body builders above (`statetable` without clock-gate structure,
-  // multiple state groups, or missing output functions): emit as
-  // hw.module.extern (black box). The sequential groups are preserved as a
-  // generic attribute for inspection; sequential mapping consumes the
-  // executable bodies instead.
-  if (hasSequentialModel ||
+  // All outputs lack "function", the cell is sequential but not covered by
+  // the body builders above, or an output is three-state: emit as
+  // hw.module.extern (black box).
+  if (hasSequentialModel || hasThreeStateOutput ||
       (hasInOutPort && numOutputPinMissingFunction != 0) ||
       numOutputPinMissingFunction == numOutput) {
     auto externOp =

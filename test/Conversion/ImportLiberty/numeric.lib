@@ -274,8 +274,26 @@ library(test) {
     }
   }
 
-  // `statetable` cells (clock gates) have no state-element op yet and stay
-  // black boxes with the group preserved generically.
+  // Three-state outputs are not driven unconditionally: even with a
+  // `function`, the cell stays a black box instead of lowering to pure
+  // combinational logic (which would drop the high-impedance behavior).
+  // CHECK-LABEL: hw.module.extern @tbuf(
+  cell (tbuf) {
+    pin (A) {
+      direction: input;
+    }
+    pin (EN) {
+      direction: input;
+    }
+    pin (Z) {
+      direction: output;
+      function: "A";
+      three_state: "!EN";
+    }
+  }
+
+  // A `statetable` without clock-gate structure stays a black box with
+  // the group preserved generically.
   // CHECK-LABEL: hw.module.extern @clk_gate(
   // CHECK-SAME: synth.liberty.sequential
   cell (clk_gate) {

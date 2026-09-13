@@ -418,4 +418,35 @@ def ExactSynthesis : Pass<"synth-exact-synthesis"> {
   let dependentDialects = ["hw::HWDialect", "synth::SynthDialect"];
 }
 
+def DeriveMappingCost : Pass<"synth-derive-mapping-cost", "mlir::ModuleOp"> {
+  let summary = "Derive TechMapper costs from Liberty NLDM data";
+  let description = [{
+    This pass derives `synth.mapping_cost` attributes for imported Liberty
+    combinational cells from their `synth.timing.nldm` arcs and cell `area`,
+    so that `synth-tech-mapper` can use them as technology patterns.
+
+    Per input pin, the integer delay is a typical-delay estimate: the mean
+    over the pin's cell-rise and cell-fall NLDM values in nanoseconds,
+    scaled to picoseconds. Polarity follows `timing_sense` (`non_unate`
+    and mixed senses map to positive; the mapper's cost model currently
+    ignores polarity). Sensitivity is zero (carried for future load-aware
+    mapping). Input capacitances come from the Liberty pin `capacitance`
+    in native units. Only single-output, all-`i1` modules with complete
+    arc coverage get costs; sequential, multi-output, and arc-less modules
+    are skipped. Cells named by `--dont-use` are marked `synth.dont_use`
+    and skipped.
+  }];
+  let options = [
+    ListOption<"dontUse", "dont-use", "std::string",
+               "Cell names excluded from mapping (marked synth.dont_use)">
+  ];
+  let statistics = [
+    Statistic<"numCostsDerived", "costs-derived",
+              "Number of modules given mapping costs">,
+    Statistic<"numCostsSkipped", "costs-skipped",
+              "Number of modules skipped">
+  ];
+  let dependentDialects = ["hw::HWDialect", "synth::SynthDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

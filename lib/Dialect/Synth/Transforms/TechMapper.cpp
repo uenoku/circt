@@ -196,6 +196,14 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     SmallVector<hw::HWModuleOp> nonLibraryModules;
     for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
 
+      // Imported library leftovers (marked, without derived costs) and
+      // dont_use cells are neither patterns nor design logic. Design
+      // modules never carry these importer markers.
+      if (!hwModule->getAttrOfType<MappingCostAttr>("synth.mapping_cost") &&
+          (hwModule->hasAttr("synth.liberty.cell") ||
+           hwModule->hasAttr("synth.dont_use")))
+        continue;
+
       // Sequential library cells imported from Liberty have executable
       // bodies built from synth.ff/synth.latch/synth.clock_gate. They hold
       // state, so they are neither combinational patterns nor mappable
