@@ -16,6 +16,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   LowerWordToBits.cpp
   MaximumAndCover.cpp
   SOPBalancing.cpp
+  SeqTechMapper.cpp
   StructuralHash.cpp
   SynthesisPipeline.cpp
   TechMapper.cpp
@@ -34,6 +35,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   CIRCTHW
   CIRCTComb
   CIRCTSV
+  CIRCTSeq
   CIRCTSynthAnalysis
   CIRCTCombToSynth
   CIRCTCombToDatapath

@@ -70,6 +70,33 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def SeqTechMapper : Pass<"synth-seq-tech-mapper", "mlir::ModuleOp"> {
+  let summary = "Technology mapping for sequential elements";
+  let description = [{
+    This pass maps sequential operations (`seq.firreg`, `seq.compreg`,
+    `seq.compreg.ce`) to instances of library cells, the Yosys `dfflibmap`
+    equivalent. Library cells are `hw.module`s in the same `ModuleOp` whose
+    bodies contain a `synth.ff` state element (as produced by the Liberty
+    importer); design flops are single-bit `seq` operations.
+
+    Only rising-edge flops map today, matching the `seq` positive-edge
+    convention. Synchronous resets and enables are emulated with external
+    `comb.mux` logic when the chosen cell lacks the pin; asynchronous
+    resets require a matching cell pin. Cells with extra inputs (such as
+    scan pins) have them tied to zero. Among compatible cells, the one
+    with the smallest Liberty `area` wins. Unmappable flops (wide,
+    initialized, or without a compatible cell) are left untouched.
+  }];
+  let statistics = [
+    Statistic<"numFlopsMapped", "flops-mapped",
+              "Number of sequential ops mapped to library cells">,
+    Statistic<"numFlopsSkipped", "flops-skipped",
+              "Number of sequential ops left unmapped">
+  ];
+  let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
+                             "seq::SeqDialect", "synth::SynthDialect"];
+}
+
 def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",
                                            "hw::HWModuleOp"> {
   let summary = "LUT mapping using generic K-input LUTs";
