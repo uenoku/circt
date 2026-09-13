@@ -42,8 +42,11 @@ library(test) {
   }
 
   // Sequential output functions refer to the state variables from an ff
-  // group, rather than to input ports.  Keep such cells as externs.
-  // CHECK-LABEL: hw.module.extern @flop(
+  // group, rather than to input ports. Single-ff cells become modules with
+  // a `synth.ff` state element in the body.
+  // CHECK-LABEL: hw.module @flop(
+  // CHECK: %[[Q:.*]], %[[QN:.*]] = synth.ff %D clock %CLK edge rise : i1, i1
+  // CHECK: hw.output %[[Q]] : i1
   cell (flop) {
     ff ("IQ", "IQ_N") {
       clocked_on: "CLK";
@@ -58,6 +61,177 @@ library(test) {
     pin (Q) {
       direction: output;
       function: "IQ";
+    }
+  }
+
+  // Async controls keep their polarity via `comb` inversions; the op itself
+  // takes active-high controls. A complementary output selects `IQ_N`.
+  // CHECK-LABEL: hw.module @dff_async(
+  // CHECK: %[[RST:.*]] = comb.xor %RESET_B, %true : i1
+  // CHECK: %[[Q:.*]], %[[QN:.*]] = synth.ff %D clock %CLK_N edge fall clear %[[RST]] : i1, i1
+  // CHECK: hw.output %[[Q]], %[[QN]] : i1, i1
+  cell (dff_async) {
+    ff ("IQ", "IQ_N") {
+      clear: "!RESET_B";
+      clocked_on: "!CLK_N";
+      next_state: "D";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK_N) {
+      direction: input;
+    }
+    pin (RESET_B) {
+      direction: input;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+    pin (Q_N) {
+      direction: output;
+      function: "IQ_N";
+    }
+  }
+
+  // Scan muxes are feedback-free and lower to `comb.mux` feeding `data`.
+  // CHECK-LABEL: hw.module @sdf(
+  // CHECK: %[[NEXT:.*]] = comb.mux %SCE, %SCD, %D : i1
+  // CHECK: synth.ff %[[NEXT]] clock %CLK edge rise : i1, i1
+  cell (sdf) {
+    ff ("IQ", "IQ_N") {
+      clocked_on: "CLK";
+      next_state: "(D&!SCE) | (SCD&SCE)";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (SCD) {
+      direction: input;
+      nextstate_type: scan_in;
+    }
+    pin (SCE) {
+      direction: input;
+      nextstate_type: scan_enable;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+
+  // Enable feedback (`IQ` in `next_state`) becomes the `enable` operand,
+  // like `seq.compreg.ce`; combined with scan it wraps the scan mux.
+  // CHECK-LABEL: hw.module @edf(
+  // CHECK: %[[NEXT:.*]] = comb.mux %SCE, %SCD, %D : i1
+  // CHECK: synth.ff %[[NEXT]] clock %CLK edge rise enable %DE : i1, i1
+  cell (edf) {
+    ff ("IQ", "IQ_N") {
+      clocked_on: "CLK";
+      next_state: "(D&DE&!SCE) | (IQ&!DE&!SCE) | (SCD&SCE)";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (DE) {
+      direction: input;
+    }
+    pin (SCD) {
+      direction: input;
+      nextstate_type: scan_in;
+    }
+    pin (SCE) {
+      direction: input;
+      nextstate_type: scan_enable;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+
+  // Latch cells carry the same kind of state-variable model, with
+  // `enable`/`data_in` fields instead of `clocked_on`/`next_state`.
+  // CHECK-LABEL: hw.module @dlatch(
+  // CHECK: %[[RST:.*]] = comb.xor %CLR, %true : i1
+  // CHECK: %[[Q:.*]], %[[QN:.*]] = synth.latch %D enable %CLK clear %[[RST]] : i1, i1
+  // CHECK: hw.output %[[Q]] : i1
+  cell (dlatch) {
+    latch ("IQ", "IQ_N") {
+      clear: "!CLR";
+      data_in: "D";
+      enable: "CLK";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (CLR) {
+      direction: input;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+
+  // Scan written as a sum of products (`*`/`+` operators) means the same
+  // mux: (!D&!SE)|(!D&!SI)|(SE&!SI) is mux(SE, !SI, !D). Both values are
+  // inverted, so both get `comb` negations. No `nextstate_type` here, so
+  // the scan pair is discovered structurally.
+  // CHECK-LABEL: hw.module @sdf_sop(
+  // CHECK: %[[DNOT:.*]] = comb.xor %D,
+  // CHECK: %[[SINOT:.*]] = comb.xor %SI,
+  // CHECK: %[[NEXT:.*]] = comb.mux %SE, %[[SINOT]], %[[DNOT]] : i1
+  // CHECK: synth.ff %[[NEXT]] clock %CLK edge rise : i1, i1
+  cell (sdf_sop) {
+    ff ("IQ", "IQ_N") {
+      clocked_on: "CLK";
+      next_state: "(!D * !SE) + (!D * !SI) + (SE * !SI)";
+    }
+    pin (D) {
+      direction: input;
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (SI) {
+      direction: input;
+    }
+    pin (SE) {
+      direction: input;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+
+  // `statetable` cells (clock gates) have no state-element op yet and stay
+  // black boxes with the group preserved generically.
+  // CHECK-LABEL: hw.module.extern @clk_gate(
+  // CHECK-SAME: synth.liberty.sequential
+  cell (clk_gate) {
+    statetable ("CLK GATE", "M0") {
+      table: "L L : - : L";
+    }
+    pin (CLK) {
+      direction: input;
+    }
+    pin (GATE) {
+      direction: input;
+    }
+    pin (GCLK) {
+      direction: output;
     }
   }
 

@@ -23,6 +23,12 @@ def Polarity_Negative : I32EnumAttrCase<"Negative", 1, "negative">;
 def PolarityKindAttr : I32EnumAttr<"PolarityKind", "timing arc polarity",
   [Polarity_Positive, Polarity_Negative]>;
 
+def Edge_Rise : I32EnumAttrCase<"Rise", 0, "rise">;
+def Edge_Fall : I32EnumAttrCase<"Fall", 1, "fall">;
+
+def EdgeKindAttr : I32EnumAttr<"EdgeKind",
+  "Liberty sequential clock edge", [Edge_Rise, Edge_Fall]>;
+
 }
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHENUMS_TD

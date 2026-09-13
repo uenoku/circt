@@ -16,6 +16,7 @@
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/SynthDialect.h"
+#include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -513,6 +514,12 @@ private:
   LogicalResult buildCellLogic(hw::HWModuleOp moduleOp,
                                ArrayRef<hw::PortInfo> ports,
                                ArrayRef<const LibertyGroup *> pinGroups);
+
+  LogicalResult
+  buildSequentialCellLogic(hw::HWModuleOp moduleOp,
+                           ArrayRef<hw::PortInfo> ports,
+                           ArrayRef<const LibertyGroup *> pinGroups,
+                           const LibertyGroup &seqGroup, bool isLatch);
 
   LogicalResult parseLibertyFloatList(StringRef value, SMLoc loc,
                                       SmallVectorImpl<double> &result) const;
@@ -1122,6 +1129,371 @@ LogicalResult LibertyParser::collectPorts(
   return success();
 }
 
+LogicalResult LibertyParser::buildSequentialCellLogic(
+    hw::HWModuleOp moduleOp, ArrayRef<hw::PortInfo> ports,
+    ArrayRef<const LibertyGroup *> pinGroups, const LibertyGroup &seqGroup,
+    bool isLatch) {
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(moduleOp.getBodyBlock());
+  auto loc = lexer.translateLocation(seqGroup.loc);
+
+  llvm::StringMap<Value> portValues;
+  for (const auto &port : ports)
+    if (port.dir == hw::ModulePort::Direction::Input)
+      portValues[port.name.getValue()] =
+          moduleOp.getBodyBlock()->getArgument(port.argNum);
+
+  // Clocks and asynchronous controls must be a bare pin or an inverted pin
+  // (`[!]name`). Anything else (for example a clock expression over
+  // multiple pins) has no representation in the state-element ops.
+  auto resolvePinRef = [&](StringRef expr,
+                           SMLoc exprLoc) -> FailureOr<std::pair<Value, bool>> {
+    StringRef name = expr.trim();
+    bool inverted = false;
+    if (name.starts_with("!")) {
+      inverted = true;
+      name = name.drop_front().trim();
+    }
+    if (name.empty() || llvm::any_of(name, [](char c) {
+          return !isalnum(c) && c != '_' && c != '[' && c != ']' && c != '.';
+        }))
+      return emitError(exprLoc, "unsupported sequential signal expression '")
+             << expr << "': expected a pin name";
+    auto it = portValues.find(name);
+    if (it == portValues.end())
+      return emitError(exprLoc, "unknown pin referenced by sequential cell: '")
+             << name << "'";
+    return std::make_pair(it->second, inverted);
+  };
+
+  // The state-element ops take active-high controls, so an active-low
+  // Liberty reference becomes a `comb` inversion: combinational logic stays
+  // `comb`.
+  auto activeHigh = [&](Value val, bool inverted) -> Value {
+    if (!inverted)
+      return val;
+    auto trueVal = hw::ConstantOp::create(builder, loc, builder.getI1Type(), 1);
+    return comb::XorOp::create(builder, loc, val, trueVal);
+  };
+
+  auto getStringField = [&](StringRef field, bool required, StringAttr &result,
+                            SMLoc &resultLoc) -> LogicalResult {
+    auto [attr, attrLoc] = seqGroup.getAttribute(field);
+    if (!attr) {
+      if (required)
+        return emitError(seqGroup.loc, "sequential cell missing '")
+               << field << "'";
+      return success();
+    }
+    auto str = dyn_cast<StringAttr>(attr);
+    if (!str)
+      return emitError(attrLoc, "sequential cell '")
+             << field << "' must be a string";
+    result = str;
+    resultLoc = attrLoc;
+    return success();
+  };
+
+  if (seqGroup.args.size() != 2 || !isa<StringAttr>(seqGroup.args[0]) ||
+      !isa<StringAttr>(seqGroup.args[1]))
+    return emitError(seqGroup.loc, "sequential group requires two string "
+                                   "(var1, var2) arguments");
+  StringRef var1 = cast<StringAttr>(seqGroup.args[0]).getValue();
+  StringRef var2 = cast<StringAttr>(seqGroup.args[1]).getValue();
+
+  // Optional asynchronous controls shared by `ff` and `latch`. Simultaneous
+  // assertion of both is undefined in the state-element ops, matching the
+  // assumption that sane designs never co-assert them.
+  StringAttr clearAttr, presetAttr;
+  SMLoc clearLoc, presetLoc;
+  if (failed(
+          getStringField("clear", /*required=*/false, clearAttr, clearLoc)) ||
+      failed(
+          getStringField("preset", /*required=*/false, presetAttr, presetLoc)))
+    return failure();
+  Value clearVal, presetVal;
+  auto bindAsync = [&](StringAttr attr, SMLoc attrLoc, Value &out) {
+    if (!attr) {
+      out = Value();
+      return success();
+    }
+    auto ref = resolvePinRef(attr.getValue(), attrLoc);
+    if (failed(ref))
+      return failure();
+    out = activeHigh(ref->first, ref->second);
+    return success();
+  };
+  if (failed(bindAsync(clearAttr, clearLoc, clearVal)) ||
+      failed(bindAsync(presetAttr, presetLoc, presetVal)))
+    return failure();
+
+  Value stateQ, stateQN;
+  if (!isLatch) {
+    StringAttr clockedOn, nextState;
+    SMLoc clockedOnLoc, nextStateLoc;
+    if (failed(getStringField("clocked_on", /*required=*/true, clockedOn,
+                              clockedOnLoc)) ||
+        failed(getStringField("next_state", /*required=*/true, nextState,
+                              nextStateLoc)))
+      return failure();
+    if (seqGroup.getAttribute("clocked_on_also").first)
+      return emitError(seqGroup.loc,
+                       "unsupported 'clocked_on_also' in sequential cell");
+
+    auto clockRef = resolvePinRef(clockedOn.getValue(), clockedOnLoc);
+    if (failed(clockRef))
+      return failure();
+    auto edge =
+        clockRef->second ? synth::EdgeKind::Fall : synth::EdgeKind::Rise;
+
+    // Decompose `next_state` into data/enable/scan roles by matching mux
+    // topologies. With Rd the data reference, Re the enable, Rsi/Rse the
+    // scan pair (each a pin, optionally inverted with `!`), and IQ the
+    // state variable, the supported shapes are:
+    //   Rd | (Rd&!Rse)|(Rsi&Rse) | (Rd&!Rse)|(Rd&!Rsi)|(Rse&!Rsi) |
+    //   (Rd&Re)|(IQ&!Re) | (Rd&Re&!Rse)|(IQ&!Re&!Rse)|(Rsi&Rse)
+    // The middle scan form is the same mux written as a sum of products
+    // (used by ASAP7); operators are normalized (`*`->`&`, `+`->`|`).
+    // The scan mux (if any) is feedback-free and becomes a `comb.mux`; the
+    // enable feedback becomes the `enable` operand, like `seq.compreg.ce`;
+    // remaining inversions become `comb` negations. New topologies are a
+    // hard error so that unseen Liberty shapes surface.
+    std::string stripped;
+    for (char c : nextState.getValue()) {
+      if (isspace(c))
+        continue;
+      if (c == '*')
+        stripped.push_back('&');
+      else if (c == '+')
+        stripped.push_back('|');
+      else
+        stripped.push_back(c);
+    }
+
+    // Scan pair discovery via `nextstate_type` pin attributes.
+    StringRef scanIn, scanEn;
+    for (const auto *pg : pinGroups) {
+      auto [typeAttr, typeLoc] = pg->getAttribute("nextstate_type");
+      if (!typeAttr)
+        continue;
+      auto typeStr = dyn_cast<StringAttr>(typeAttr);
+      if (!typeStr)
+        return emitError(typeLoc, "nextstate_type must be a string");
+      StringRef pinName = cast<StringAttr>(pg->args[0]).getValue();
+      if (typeStr.getValue() == "scan_in") {
+        if (!scanIn.empty())
+          return emitError(typeLoc, "multiple scan_in pins");
+        scanIn = pinName;
+      } else if (typeStr.getValue() == "scan_enable") {
+        if (!scanEn.empty())
+          return emitError(typeLoc, "multiple scan_enable pins");
+        scanEn = pinName;
+      }
+    }
+    if (scanIn.empty() != scanEn.empty())
+      return emitError(seqGroup.loc, "scan_in without scan_enable (or vice "
+                                     "versa)");
+
+    // Candidate pins referenced by the expression, minus the state vars.
+    // Every remaining reference must be an input pin.
+    SmallVector<StringRef> refs;
+    StringRef rest(stripped);
+    while (!rest.empty()) {
+      size_t len = 0;
+      while (len < rest.size() &&
+             (isalnum(rest[len]) || rest[len] == '_' || rest[len] == '[' ||
+              rest[len] == ']' || rest[len] == '.'))
+        ++len;
+      if (len == 0) {
+        rest = rest.drop_front();
+        continue;
+      }
+      StringRef tok = rest.take_front(len);
+      rest = rest.drop_front(len);
+      if (tok != var1 && tok != var2 && !llvm::is_contained(refs, tok))
+        refs.push_back(tok);
+    }
+    for (StringRef ref : refs)
+      if (!portValues.count(ref))
+        return emitError(nextStateLoc, "unsupported next_state expression '")
+               << nextState.getValue() << "': unknown pin '" << ref << "'";
+
+    Value dataVal, enableVal;
+    bool matched = false;
+    auto setMatch = [&](Value data, Value enable) -> LogicalResult {
+      if (matched)
+        return emitError(nextStateLoc, "ambiguous next_state expression '")
+               << nextState.getValue() << "'";
+      matched = true;
+      dataVal = data;
+      enableVal = enable;
+      return success();
+    };
+    // Scan pair candidates: the `nextstate_type` pins when present (not all
+    // scan cells carry them), otherwise every ordered pin pair. Trying the
+    // no-scan option covers cells whose scan inputs exist but are unused by
+    // `next_state`.
+    SmallVector<std::pair<StringRef, StringRef>> scanOptions;
+    scanOptions.emplace_back(StringRef(), StringRef());
+    if (!scanIn.empty()) {
+      scanOptions.emplace_back(scanIn, scanEn);
+    } else {
+      for (StringRef a : refs)
+        for (StringRef b : refs)
+          if (a != b)
+            scanOptions.emplace_back(a, b);
+    }
+    auto buildScanMux = [&](Value seVal, Value siVal, Value base) {
+      return comb::MuxOp::create(builder, loc, seVal, siVal, base);
+    };
+    // A role reference with polarity, e.g. (D,false) or (SCE,true) for !SCE.
+    auto refStr = [&](StringRef pin, bool inv) -> std::string {
+      return (inv ? "!" : "") + pin.str();
+    };
+    auto negate = [&](const std::string &r) -> std::string {
+      if (!r.empty() && r[0] == '!')
+        return r.substr(1);
+      return "!" + r;
+    };
+    for (StringRef dataCand : refs) {
+      if (dataCand == scanIn || dataCand == scanEn)
+        continue;
+      // Candidate enable pins: remaining referenced pins.
+      SmallVector<StringRef> enOptions;
+      enOptions.push_back(StringRef());
+      for (StringRef enCand : refs)
+        if (enCand != dataCand && enCand != scanIn && enCand != scanEn)
+          enOptions.push_back(enCand);
+      for (StringRef enCand : enOptions) {
+        for (auto [siCand, seCand] : scanOptions) {
+          if (!siCand.empty() && (siCand == dataCand || siCand == enCand ||
+                                  seCand == dataCand || seCand == enCand))
+            continue;
+          // Polarity trials for every role.
+          for (bool dInv : {false, true}) {
+            for (bool eInv : {false, true}) {
+              if (enCand.empty() && eInv)
+                continue;
+              for (bool siInv : {false, true}) {
+                for (bool seInv : {false, true}) {
+                  if (siCand.empty() && (siInv || seInv))
+                    continue;
+                  std::string rd = refStr(dataCand, dInv);
+                  std::string re = refStr(enCand, eInv);
+                  std::string rsi = refStr(siCand, siInv);
+                  std::string rse = refStr(seCand, seInv);
+                  // Each candidate pairs an expected string with whether
+                  // the scan value is negated relative to its reference.
+                  // That is the case only for the sum-of-products scan
+                  // form: (Rd&!Rse)|(Rd&!Rsi)|(Rse&!Rsi) is mux(Rse, !Rsi,
+                  // Rd) (the third term is the consensus term).
+                  SmallVector<std::pair<std::string, bool>> expected;
+                  if (enCand.empty() && siCand.empty()) {
+                    expected.emplace_back(rd, false);
+                  } else if (enCand.empty()) {
+                    expected.emplace_back("(" + rd + "&" + negate(rse) + ")|(" +
+                                              rsi + "&" + rse + ")",
+                                          false);
+                    expected.emplace_back("(" + rd + "&" + negate(rse) + ")|(" +
+                                              rd + "&" + negate(rsi) + ")|(" +
+                                              rse + "&" + negate(rsi) + ")",
+                                          true);
+                  } else if (siCand.empty()) {
+                    expected.emplace_back("(" + rd + "&" + re + ")|(" +
+                                              var1.str() + "&" + negate(re) +
+                                              ")",
+                                          false);
+                  } else {
+                    expected.emplace_back(
+                        "(" + rd + "&" + re + "&" + negate(rse) + ")|(" +
+                            var1.str() + "&" + negate(re) + "&" + negate(rse) +
+                            ")|(" + rsi + "&" + rse + ")",
+                        false);
+                  }
+                  for (const auto &[candidate, flipSI] : expected) {
+                    if (stripped != candidate)
+                      continue;
+                    Value dataOp =
+                        activeHigh(portValues.lookup(dataCand), dInv);
+                    if (!siCand.empty())
+                      dataOp = buildScanMux(
+                          activeHigh(portValues.lookup(seCand), seInv),
+                          activeHigh(portValues.lookup(siCand),
+                                     siInv != flipSI),
+                          dataOp);
+                    Value enOp =
+                        enCand.empty()
+                            ? Value()
+                            : activeHigh(portValues.lookup(enCand), eInv);
+                    if (failed(setMatch(dataOp, enOp)))
+                      return failure();
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!matched)
+      return emitError(nextStateLoc, "unsupported next_state expression '")
+             << nextState.getValue() << "'";
+
+    auto edgeAttr = synth::EdgeKindAttr::get(builder.getContext(), edge);
+    auto ffOp = synth::FFOp::create(builder, loc, dataVal, clockRef->first,
+                                    enableVal, clearVal, presetVal, edgeAttr);
+    stateQ = ffOp.getQ();
+    stateQN = ffOp.getQn();
+  } else {
+    StringAttr enableAttr, dataInAttr;
+    SMLoc enableLoc, dataInLoc;
+    if (failed(getStringField("enable", /*required=*/true, enableAttr,
+                              enableLoc)) ||
+        failed(getStringField("data_in", /*required=*/true, dataInAttr,
+                              dataInLoc)))
+      return failure();
+    auto enRef = resolvePinRef(enableAttr.getValue(), enableLoc);
+    auto dataRef = resolvePinRef(dataInAttr.getValue(), dataInLoc);
+    if (failed(enRef) || failed(dataRef))
+      return failure();
+    auto latchOp = synth::LatchOp::create(
+        builder, loc, activeHigh(dataRef->first, dataRef->second),
+        activeHigh(enRef->first, enRef->second), clearVal, presetVal);
+    stateQ = latchOp.getQ();
+    stateQN = latchOp.getQn();
+  }
+
+  // Output pins select the state variable recorded in `function`.
+  SmallVector<Value> outputs;
+  for (const auto &port : ports) {
+    if (port.dir != hw::ModulePort::Direction::Output)
+      continue;
+    auto *it = llvm::find_if(pinGroups, [&](const LibertyGroup *g) {
+      assert(g->name == "pin" && "expected pin group");
+      return cast<StringAttr>(g->args[0]) == port.name;
+    });
+    if (!it)
+      continue;
+    const LibertyGroup *pg = *it;
+    auto [funcAttr, funcLoc] = pg->getAttribute("function");
+    assert(funcAttr && "output pin missing function attribute");
+    auto funcStr = dyn_cast<StringAttr>(funcAttr);
+    if (!funcStr)
+      return emitError(funcLoc, "sequential output function must be a string");
+    if (funcStr.getValue() == var1)
+      outputs.push_back(stateQ);
+    else if (funcStr.getValue() == var2)
+      outputs.push_back(stateQN);
+    else
+      return emitError(funcLoc, "unsupported sequential output function '")
+             << funcStr.getValue() << "': expected '" << var1 << "' or '"
+             << var2 << "'";
+  }
+
+  moduleOp.getBodyBlock()->getTerminator()->setOperands(outputs);
+  return success();
+}
+
 LogicalResult
 LibertyParser::buildCellLogic(hw::HWModuleOp moduleOp,
                               ArrayRef<hw::PortInfo> ports,
@@ -1199,16 +1571,29 @@ ParseResult LibertyParser::lowerCell(
         return port.dir == hw::ModulePort::Direction::Output;
       }));
 
-  // Sequential cells describe their outputs in terms of internal state
-  // variables (for example, a Sky130 flop uses `IQ` and `IQ_N`).  These
-  // variables are not module ports, so their functions cannot be lowered to
-  // combinational logic by the current importer.  Preserve the cell as an
-  // extern instead; the sequential Liberty description remains available in
-  // the generic library attribute.
-  bool hasSequentialModel = llvm::any_of(group.subGroups, [](const auto &sub) {
-    return sub->name == "ff" || sub->name == "latch" ||
-           sub->name == "statetable";
-  });
+  // A cell with a single `ff` or `latch` group models its state variables
+  // (for example, a Sky130 flop uses `IQ` and `IQ_N`) with a
+  // `synth.ff`/`synth.latch` state element in an `hw.module`
+  // body. Combinational parts (scan muxes, active-low inversions, output
+  // selection) are plain `comb`/`hw` operations; only the state element
+  // itself is a new op. Cells with `statetable` groups, multiple state
+  // groups, `inout` ports, or missing output functions stay black boxes.
+  const LibertyGroup *ffGroup = nullptr;
+  const LibertyGroup *latchGroup = nullptr;
+  int numFF = 0, numLatch = 0;
+  bool hasStatetable = false;
+  for (const auto &sub : group.subGroups) {
+    if (sub->name == "ff") {
+      ffGroup = sub.get();
+      ++numFF;
+    } else if (sub->name == "latch") {
+      latchGroup = sub.get();
+      ++numLatch;
+    } else if (sub->name == "statetable") {
+      hasStatetable = true;
+    }
+  }
+  bool hasSequentialModel = numFF + numLatch > 0 || hasStatetable;
   bool hasInOutPort = llvm::any_of(ports, [](const hw::PortInfo &port) {
     return port.dir == hw::ModulePort::Direction::InOut;
   });
@@ -1225,8 +1610,27 @@ ParseResult LibertyParser::lowerCell(
            << cellNameAttr.getValue()
            << "' has mixed output pins with and without 'function' attribute";
 
-  // All outputs lack "function", or the cell has a sequential model: emit as
-  // hw.module.extern (black box).
+  // Single `ff`/`latch` cells with fully-specified output functions get an
+  // executable body. Anything the body builder rejects (for example an
+  // exotic `next_state` shape) is a hard error, so new Liberty shapes
+  // surface instead of silently degrading.
+  if (!hasInOutPort && !hasStatetable && numFF + numLatch == 1 &&
+      numOutputPinMissingFunction == 0 && numOutput > 0) {
+    auto moduleOp = hw::HWModuleOp::create(builder, loc, cellNameAttr, ports);
+    const LibertyGroup &seqGroup = numFF ? *ffGroup : *latchGroup;
+    if (failed(buildSequentialCellLogic(moduleOp, ports, pinGroups, seqGroup,
+                                        /*isLatch=*/numLatch == 1)))
+      return failure();
+    if (!timingArcs.empty())
+      moduleOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+    return success();
+  }
+
+  // All outputs lack "function", or the cell is sequential but not covered
+  // by the body builder above (`statetable`, multiple state groups, or
+  // missing output functions): emit as hw.module.extern (black box). The
+  // sequential groups are preserved as a generic attribute for inspection;
+  // sequential mapping consumes the executable bodies instead.
   if (hasSequentialModel ||
       (hasInOutPort && numOutputPinMissingFunction != 0) ||
       numOutputPinMissingFunction == numOutput) {
@@ -1234,6 +1638,23 @@ ParseResult LibertyParser::lowerCell(
         hw::HWModuleExternOp::create(builder, loc, cellNameAttr, ports);
     if (!timingArcs.empty())
       externOp->setAttr("synth.timing.nldm", builder.getArrayAttr(timingArcs));
+    // Preserve the sequential model (`ff`, `latch`, `statetable`) groups so
+    // that a sequential mapping pass can match register/latch cells.  The
+    // groups are stored keyed by group name, following the convention used
+    // for the generic Liberty attributes.
+    llvm::StringMap<SmallVector<Attribute>> seqGroups;
+    for (const auto &sub : group.subGroups)
+      if (sub->name == "ff" || sub->name == "latch" ||
+          sub->name == "statetable")
+        seqGroups[sub->name].push_back(convertGroupToAttr(*sub));
+    if (!seqGroups.empty()) {
+      SmallVector<NamedAttribute> seqAttrs;
+      for (auto &it : seqGroups)
+        seqAttrs.push_back(builder.getNamedAttr(
+            it.getKey(), builder.getArrayAttr(it.getValue())));
+      externOp->setAttr("synth.liberty.sequential",
+                        builder.getDictionaryAttr(seqAttrs));
+    }
     return success();
   }
 

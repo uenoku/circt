@@ -70,6 +70,20 @@ synth.cut_rewrite_pattern (%a: i1, %b: i1, %c: i1) -> i1 attributes {
   synth.yield %0 : i1
 }
 
+// CHECK-LABEL: @ff
+// CHECK-NEXT: %[[Q:.+]], %[[QN:.+]] = synth.ff %d clock %clk edge rise enable %en clear %rst : i1, i1
+// CHECK-NEXT: %[[Q2:.+]], %[[QN2:.+]] = synth.ff %d clock %clk edge fall preset %set : i1, i1
+hw.module @ff(in %d: i1, in %clk: i1, in %en: i1, in %rst: i1, in %set: i1) {
+  %q, %qn = synth.ff %d clock %clk edge rise enable %en clear %rst : i1, i1
+  %q2, %qn2 = synth.ff %d clock %clk edge fall preset %set : i1, i1
+}
+
+// CHECK-LABEL: @latch
+// CHECK-NEXT: %[[Q:.+]], %[[QN:.+]] = synth.latch %d enable %en clear %rst preset %set : i1, i1
+hw.module @latch(in %d: i1, in %en: i1, in %rst: i1, in %set: i1) {
+  %q, %qn = synth.latch %d enable %en clear %rst preset %set : i1, i1
+}
+
 // CHECK-LABEL: synth.cut_rewrite_pattern
 // CHECK-SAME: (%{{.*}}: i1, %{{.*}}: i1) -> i1 attributes {cost = #synth.mapping_cost<area =
 // CHECK-SAME: arcs =

@@ -329,5 +329,83 @@ def YieldOp : SynthOp<"yield",
   let assemblyFormat = "$operands attr-dict `:` type($operands)";
 }
 
+//===----------------------------------------------------------------------===//
+// Liberty sequential state elements
+//===----------------------------------------------------------------------===//
+
+def FFOp : SynthOp<"ff", [MemoryEffects<[MemRead, MemWrite]>,
+                                             AttrSizedOperandSegments]> {
+  let summary = "Liberty edge-triggered flip-flop state element";
+  let description = [{
+    The `synth.ff` operation is a single-bit edge-triggered state
+    element directly modelling a Liberty `ff` group. It carries the state
+    that Liberty names `IQ`/`IQN` as its `q`/`qn` results, which always hold
+    complementary values.
+
+    All control operands are active-high single-bit values. Any inversion
+    required by the Liberty source (for example an active-low `!RESET_B`
+    clear) is expressed with `comb` operations outside this op, as are
+    scan data muxes. A synchronous enable is an explicit operand (like
+    `seq.compreg.ce`); when it is absent the flop always samples.
+
+    - The power-up value is unknown.
+    - If `clear` is present and 1, the state becomes 0 regardless of the
+      clock. Otherwise, if `preset` is present and 1, the state becomes 1.
+      Asserting both at once is undefined.
+    - Otherwise the state holds, unless there is no `enable` or `enable`
+      is 1, in which case a rising (`edge rise`: 0 to 1) or falling
+      (`edge fall`: 1 to 0) edge on `clk` samples `data`.
+    - Setup/hold and other timing checks are not modelled here; they live
+      in the Liberty timing arcs (`synth.timing.nldm`).
+
+    Example:
+    ```mlir
+      %q, %qn = synth.ff %next clock %clk edge rise clear %rst : i1, i1
+    ```
+  }];
+
+  let arguments = (ins I1:$data, I1:$clk, Optional<I1>:$enable,
+                       Optional<I1>:$clear, Optional<I1>:$preset,
+                       EdgeKindAttr:$edge);
+  let results = (outs I1:$q, I1:$qn);
+  let assemblyFormat = [{
+    $data `clock` $clk `edge` $edge (`enable` $enable^)? (`clear` $clear^)?
+    (`preset` $preset^)? attr-dict `:` type($q) `,` type($qn)
+  }];
+}
+
+def LatchOp : SynthOp<"latch", [MemoryEffects<[MemRead, MemWrite]>,
+                                                    AttrSizedOperandSegments]> {
+  let summary = "Liberty level-sensitive latch state element";
+  let description = [{
+    The `synth.latch` operation is a single-bit level-sensitive
+    latch directly modelling a Liberty `latch` group, with `q`/`qn` results
+    always holding complementary values.
+
+    As with `synth.ff`, all control operands are active-high;
+    inversions from the Liberty source are `comb` operations outside this op.
+
+    - The power-up value is unknown.
+    - If `clear` is present and 1, the state becomes 0 regardless of
+      `enable`. Otherwise, if `preset` is present and 1, the state becomes
+      1. Asserting both at once is undefined.
+    - Otherwise, while `enable` is 1 the state follows `data`; while it is
+      0 the state holds.
+
+    Example:
+    ```mlir
+      %q, %qn = synth.latch %d enable %en clear %rst : i1, i1
+    ```
+  }];
+
+  let arguments = (ins I1:$data, I1:$enable, Optional<I1>:$clear,
+                       Optional<I1>:$preset);
+  let results = (outs I1:$q, I1:$qn);
+  let assemblyFormat = [{
+    $data `enable` $enable (`clear` $clear^)? (`preset` $preset^)?
+    attr-dict `:` type($q) `,` type($qn)
+  }];
+}
+
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHOPS_TD

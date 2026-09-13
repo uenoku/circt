@@ -20,6 +20,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
+#include "circt/Dialect/Synth/SynthOps.h"
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Threading.h"
@@ -194,6 +195,20 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     // modules.
     SmallVector<hw::HWModuleOp> nonLibraryModules;
     for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
+
+      // Sequential library cells imported from Liberty have executable
+      // bodies built from synth.ff/synth.latch. They hold
+      // state, so they are neither combinational patterns nor mappable
+      // design logic for cut rewriting; leave them alone.
+      bool hasStateElement = hwModule.getBodyBlock()
+                                 ->walk([](Operation *op) {
+                                   if (isa<FFOp, LatchOp>(op))
+                                     return WalkResult::interrupt();
+                                   return WalkResult::advance();
+                                 })
+                                 .wasInterrupted();
+      if (hasStateElement)
+        continue;
 
       auto mappingCost =
           hwModule->getAttrOfType<MappingCostAttr>("synth.mapping_cost");
