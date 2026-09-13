@@ -1,0 +1,27 @@
+// RUN: circt-translate --import-liberty %s -o %t.mlir
+// RUN: FileCheck %s < %t.mlir
+
+library(test) {
+  // Liberty declarations use this group form for user-defined attributes.
+  define(cell, dont_use, boolean);
+
+  // Exercise signs, scientific notation, and a unit suffix.
+  signed_value: -1.25e+02;
+  positive_value: +3.5E-02;
+  time_value: 1.0ns;
+
+  // CHECK: synth.liberty.library = {
+  // CHECK-DAG: define = [{args = ["cell", "dont_use", "boolean"]}]
+  // CHECK-DAG: positive_value = 3.500000e-02
+  // CHECK-DAG: signed_value = -1.250000e+02
+  // CHECK-DAG: time_value = 1.000000e+00
+  cell (buffer) {
+    pin (A) {
+      direction: input;
+    }
+    pin (Z) {
+      direction: output;
+      function: "A";
+    }
+  }
+}

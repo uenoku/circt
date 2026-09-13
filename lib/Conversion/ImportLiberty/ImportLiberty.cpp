@@ -140,6 +140,7 @@ private:
   LibertyToken lexIdentifier();
   LibertyToken lexString();
   LibertyToken lexNumber();
+  bool isNumberStart() const;
   LibertyToken makeToken(LibertyTokenKind kind, const char *start);
 };
 
@@ -625,23 +626,66 @@ LibertyToken LibertyLexer::lexString() {
 
 LibertyToken LibertyLexer::lexNumber() {
   const char *start = curPtr;
-  bool seenDot = false;
-  while (curPtr < curBuffer.end()) {
-    if (isdigit(*curPtr)) {
+  if (curPtr < curBuffer.end() && (*curPtr == '+' || *curPtr == '-'))
+    ++curPtr;
+
+  while (curPtr < curBuffer.end() && isdigit(*curPtr))
+    ++curPtr;
+
+  if (curPtr < curBuffer.end() && *curPtr == '.') {
+    ++curPtr;
+    while (curPtr < curBuffer.end() && isdigit(*curPtr))
       ++curPtr;
-    } else if (*curPtr == '.') {
-      if (seenDot) {
-        mlir::emitError(translateLocation(SMLoc::getFromPointer(curPtr)),
-                        "multiple decimal points in number");
-        return makeToken(LibertyTokenKind::Error, start);
-      }
-      seenDot = true;
-      ++curPtr;
-    } else {
-      break;
+    if (curPtr < curBuffer.end() && *curPtr == '.') {
+      mlir::emitError(translateLocation(SMLoc::getFromPointer(curPtr)),
+                      "multiple decimal points in number");
+      return makeToken(LibertyTokenKind::Error, start);
     }
   }
+
+  // Liberty files commonly use scientific notation for capacitance and
+  // timing values (for example, 1.42e-05).  Consume the exponent as part of
+  // the number so that the sign in the exponent is not treated as a separate
+  // token.
+  if (curPtr < curBuffer.end() && (*curPtr == 'e' || *curPtr == 'E')) {
+    const char *exponent = curPtr++;
+    if (curPtr < curBuffer.end() && (*curPtr == '+' || *curPtr == '-'))
+      ++curPtr;
+    const char *exponentDigits = curPtr;
+    while (curPtr < curBuffer.end() && isdigit(*curPtr))
+      ++curPtr;
+    if (curPtr == exponentDigits) {
+      mlir::emitError(translateLocation(SMLoc::getFromPointer(exponent)),
+                      "expected digits in number exponent");
+      return makeToken(LibertyTokenKind::Error, start);
+    }
+  }
+
+  // Some Liberty producers attach a unit suffix to numeric values (for
+  // example, 1.0ns).  The importer stores numeric attributes in the library's
+  // native units, so retain the numeric value and consume the suffix here to
+  // keep it from being parsed as a second statement token.
+  while (curPtr < curBuffer.end() && (isalpha(*curPtr) || *curPtr == '_'))
+    ++curPtr;
+
   return makeToken(LibertyTokenKind::Number, start);
+}
+
+bool LibertyLexer::isNumberStart() const {
+  if (curPtr >= curBuffer.end())
+    return false;
+
+  if (isdigit(*curPtr))
+    return true;
+  if (*curPtr == '.' && curPtr + 1 < curBuffer.end() && isdigit(*(curPtr + 1)))
+    return true;
+  if (*curPtr != '+' && *curPtr != '-')
+    return false;
+
+  const char *next = curPtr + 1;
+  return next < curBuffer.end() &&
+         (isdigit(*next) ||
+          (*next == '.' && next + 1 < curBuffer.end() && isdigit(*(next + 1))));
 }
 
 LibertyToken LibertyLexer::makeToken(LibertyTokenKind kind, const char *start) {
@@ -661,8 +705,7 @@ LibertyToken LibertyLexer::nextToken() {
   if (isalpha(c) || c == '_')
     return lexIdentifier();
 
-  if (isdigit(c) ||
-      (c == '.' && curPtr + 1 < curBuffer.end() && isdigit(*(curPtr + 1))))
+  if (isNumberStart())
     return lexNumber();
 
   if (c == '"')
@@ -1157,6 +1200,9 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
     return emitError(nameTok.location, "expected identifier");
   StringRef name = nameTok.spelling;
 
+  if (name == "define" && lexer.peekToken().kind != LibertyTokenKind::LParen)
+    return emitError(nameTok.location, "expected '(' after `define`");
+
   // Attribute statement.
   if (lexer.peekToken().kind == LibertyTokenKind::Colon) {
     lexer.nextToken(); // :
@@ -1170,6 +1216,10 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
 
   // Group statement.
   if (lexer.peekToken().kind == LibertyTokenKind::LParen) {
+    // `define` declarations are semicolon-terminated groups rather than
+    // ordinary attributes.  They are not needed to lower cells, but keeping
+    // them as generic groups lets clients inspect the declarations after
+    // import.
     auto subGroup = std::make_unique<LibertyGroup>();
     subGroup->name = name;
     subGroup->loc = nameTok.location;
@@ -1178,8 +1228,6 @@ ParseResult LibertyParser::parseStatement(LibertyGroup &parent) {
     parent.subGroups.push_back(std::move(subGroup));
     return success();
   }
-
-  // TODO: Support define.
 
   return emitError(nameTok.location, "expected ':' or '('");
 }
@@ -1194,8 +1242,34 @@ ParseResult LibertyParser::parseAttribute(Attribute &result) {
   if (token.is(LibertyTokenKind::Number)) {
     lexer.nextToken();
     StringRef numStr = token.spelling;
+
+    // lexNumber also consumes an optional unit suffix.  Parse only the
+    // numeric prefix here; Liberty's values are interpreted in the units
+    // declared by the containing library.
+    size_t numericEnd = 0;
+    if (numericEnd < numStr.size() &&
+        (numStr[numericEnd] == '+' || numStr[numericEnd] == '-'))
+      ++numericEnd;
+    while (numericEnd < numStr.size() && isdigit(numStr[numericEnd]))
+      ++numericEnd;
+    if (numericEnd < numStr.size() && numStr[numericEnd] == '.') {
+      ++numericEnd;
+      while (numericEnd < numStr.size() && isdigit(numStr[numericEnd]))
+        ++numericEnd;
+    }
+    if (numericEnd < numStr.size() &&
+        (numStr[numericEnd] == 'e' || numStr[numericEnd] == 'E')) {
+      ++numericEnd;
+      if (numericEnd < numStr.size() &&
+          (numStr[numericEnd] == '+' || numStr[numericEnd] == '-'))
+        ++numericEnd;
+      while (numericEnd < numStr.size() && isdigit(numStr[numericEnd]))
+        ++numericEnd;
+    }
+
+    StringRef numeric = numStr.take_front(numericEnd);
     double val;
-    if (!numStr.getAsDouble(val)) {
+    if (!numeric.getAsDouble(val)) {
       result = builder.getF64FloatAttr(val);
       return success();
     }
