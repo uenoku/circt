@@ -84,6 +84,14 @@ hw.module @latch(in %d: i1, in %en: i1, in %rst: i1, in %set: i1) {
   %q, %qn = synth.latch %d enable %en clear %rst preset %set : i1, i1
 }
 
+// CHECK-LABEL: @clock_gate
+// CHECK-NEXT: %[[G:.+]] = synth.clock_gate %clk enable %en test %se level low : i1
+// CHECK-NEXT: %[[G2:.+]] = synth.clock_gate %clk enable %en level high : i1
+hw.module @clock_gate(in %clk: i1, in %en: i1, in %se: i1) {
+  %g = synth.clock_gate %clk enable %en test %se level low : i1
+  %g2 = synth.clock_gate %clk enable %en level high : i1
+}
+
 // CHECK-LABEL: synth.cut_rewrite_pattern
 // CHECK-SAME: (%{{.*}}: i1, %{{.*}}: i1) -> i1 attributes {cost = #synth.mapping_cost<area =
 // CHECK-SAME: arcs =

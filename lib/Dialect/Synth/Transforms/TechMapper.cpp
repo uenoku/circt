@@ -197,12 +197,12 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
 
       // Sequential library cells imported from Liberty have executable
-      // bodies built from synth.ff/synth.latch. They hold
+      // bodies built from synth.ff/synth.latch/synth.clock_gate. They hold
       // state, so they are neither combinational patterns nor mappable
       // design logic for cut rewriting; leave them alone.
       bool hasStateElement = hwModule.getBodyBlock()
                                  ->walk([](Operation *op) {
-                                   if (isa<FFOp, LatchOp>(op))
+                                   if (isa<FFOp, LatchOp, ClockGateOp>(op))
                                      return WalkResult::interrupt();
                                    return WalkResult::advance();
                                  })

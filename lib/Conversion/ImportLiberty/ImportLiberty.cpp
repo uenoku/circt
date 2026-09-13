@@ -1664,7 +1664,7 @@ LogicalResult LibertyParser::buildClockGateCellLogic(
   auto [archAttr, archLoc] =
       cellGroup.getAttribute("clock_gating_integrated_cell");
 
-  Value latchData, latchEnable;
+  synth::ClockGateOp gateOp;
   if (tableGroup) {
     // When both descriptions are present, the table is authoritative and
     // the architecture cross-checks it. Observed values are all
@@ -1800,77 +1800,66 @@ LogicalResult LibertyParser::buildClockGateCellLogic(
       return emitError(tableLoc, "statetable disagrees with "
                                  "latch_posedge_precontrol architecture");
 
-    // Data function over the remaining inputs as a mux tree.
-    SmallVector<StringRef> dataInputs;
-    SmallVector<size_t> dataPos;
+    // Data must be OR(enable[, test]) over exactly those pins; anything
+    // else is not a clock gate this op can express.
+    llvm::DenseSet<StringRef> dataSet;
     for (size_t k = 0; k < tableInputs.size(); ++k)
       if (tableInputs[k] != latchClock) {
         if (!portValues.count(tableInputs[k]))
           return emitError(tableLoc, "statetable references unknown pin '")
                  << tableInputs[k] << "'";
-        dataInputs.push_back(tableInputs[k]);
-        dataPos.push_back(k);
+        dataSet.insert(tableInputs[k]);
       }
-    size_t clockPos = latchClock == tableInputs[0] ? 0 : tableInputs.size();
-    for (size_t k = 0; k < tableInputs.size(); ++k)
+    size_t wantRoles = testPin.empty() ? 1 : 2;
+    if (dataSet.size() != wantRoles || !dataSet.count(enablePin) ||
+        (!testPin.empty() && !dataSet.count(testPin)))
+      return emitError(tableLoc, "clock-gate data is not OR(enable[, test])");
+    size_t clockPos = tableInputs.size(), enPos = tableInputs.size(),
+           tePos = tableInputs.size();
+    for (size_t k = 0; k < tableInputs.size(); ++k) {
       if (tableInputs[k] == latchClock)
         clockPos = k;
-    bool incomplete = false;
-    std::function<Value(size_t, std::string)> buildData =
-        [&](size_t k, std::string prefix) -> Value {
-      if (k == dataInputs.size()) {
-        std::string full(tableInputs.size(), '0');
-        full[clockPos] = (transparentLevel == 'H' ? '1' : '0');
-        for (size_t j = 0; j < dataPos.size(); ++j)
-          full[dataPos[j]] = prefix[j];
-        auto it = nextOf.find(full);
-        if (it == nextOf.end()) {
-          incomplete = true;
-          return Value();
-        }
-        return hw::ConstantOp::create(builder, loc, builder.getI1Type(),
-                                      it->second == 'H' ? 1 : 0);
-      }
-      Value t = buildData(k + 1, prefix + "1");
-      if (!t || incomplete)
-        return Value();
-      Value f = buildData(k + 1, prefix + "0");
-      if (!f || incomplete)
-        return Value();
-      return comb::MuxOp::create(builder, loc, portValues.lookup(dataInputs[k]),
-                                 t, f);
-    };
-    latchData = buildData(0, "");
-    if (incomplete || !latchData)
-      return emitError(tableLoc, "statetable data function is incomplete");
-    latchEnable = activeHigh(clkVal, /*inverted=*/transparentLevel == 'L', loc);
+      if (tableInputs[k] == enablePin)
+        enPos = k;
+      if (!testPin.empty() && tableInputs[k] == testPin)
+        tePos = k;
+    }
+    char transparentBit = (transparentLevel == 'H' ? '1' : '0');
+    for (const auto &[assign, next] : nextOf) {
+      if (assign[clockPos] != transparentBit)
+        continue; // hold rows (established by the detector)
+      bool wantHigh =
+          assign[enPos] == '1' || (!testPin.empty() && assign[tePos] == '1');
+      if ((next == 'H') != wantHigh)
+        return emitError(tableLoc, "clock-gate data is not OR(enable[, test])");
+    }
+    auto tableLevel = transparentLevel == 'L' ? synth::ClockGateLevel::Low
+                                              : synth::ClockGateLevel::High;
+    gateOp = synth::ClockGateOp::create(
+        builder, loc, clkVal, portValues.lookup(enablePin),
+        testPin.empty() ? Value() : portValues.lookup(testPin),
+        synth::ClockGateLevelAttr::get(builder.getContext(), tableLevel));
   } else {
-    // Without a table, only precontrol (test ORed into latch data) is
-    // supported.
+    // Without a table, only precontrol (test ORed into latch data,
+    // transparent while low) is supported.
     auto archStr = dyn_cast_or_null<StringAttr>(archAttr);
     if (!archStr || archStr.getValue() != "latch_posedge_precontrol")
       return emitError(archLoc, "unsupported clock-gating architecture");
-    // Precontrol: the test pin is ORed into the latch data; the latch is
-    // transparent while the clock is low.
-    latchData = portValues.lookup(enablePin);
-    if (!testPin.empty())
-      latchData = comb::OrOp::create(builder, loc, latchData,
-                                     portValues.lookup(testPin));
-    latchEnable = activeHigh(clkVal, /*inverted=*/true, loc);
+    gateOp = synth::ClockGateOp::create(
+        builder, loc, clkVal, portValues.lookup(enablePin),
+        testPin.empty() ? Value() : portValues.lookup(testPin),
+        synth::ClockGateLevelAttr::get(builder.getContext(),
+                                       synth::ClockGateLevel::Low));
   }
+  if (nodeName.empty())
+    return emitError(cellGroup.loc, "cannot identify clock-gate state node");
 
-  auto latchOp = synth::LatchOp::create(builder, loc, latchData, latchEnable,
-                                        /*clear=*/Value(), /*preset=*/Value());
-
-  // Output: AND(clock, state). An explicit function/state_function must have
-  // that shape; when absent it is assumed (the clock-gate contract).
+  // Output: the op result. An explicit function/state_function must be
+  // the plain AND(clock, state); anything else contradicts the op semantics.
   auto [funcAttr, funcLoc] = outPinGroup->getAttribute("function");
   if (!funcAttr)
     std::tie(funcAttr, funcLoc) = outPinGroup->getAttribute("state_function");
-  Value gated;
-  if (!funcAttr) {
-    gated = comb::AndOp::create(builder, loc, clkVal, latchOp.getQ());
-  } else {
+  if (funcAttr) {
     auto funcStr = dyn_cast<StringAttr>(funcAttr);
     if (!funcStr)
       return emitError(funcLoc, "clock-gate output function must be a string");
@@ -1901,47 +1890,14 @@ LogicalResult LibertyParser::buildClockGateCellLogic(
     }
     SmallVector<StringRef> parts;
     StringRef(stripped).split(parts, '&', -1, false);
-    if (parts.size() != 2)
+    llvm::DenseSet<StringRef> operands(parts.begin(), parts.end());
+    if (parts.size() != 2 || operands.size() != 2 ||
+        !operands.count(clockPin) || !operands.count(nodeName))
       return emitError(funcLoc, "unsupported clock-gate output function '")
              << funcStr.getValue() << "': expected AND(clock, state)";
-    bool seenClock = false, seenState = false;
-    Value andLhs, andRhs;
-    for (StringRef part : parts) {
-      StringRef name = part.trim();
-      bool inverted = false;
-      if (name.starts_with("!")) {
-        inverted = true;
-        name = name.drop_front();
-      }
-      if (name == nodeName) {
-        if (seenState)
-          return emitError(funcLoc, "unsupported clock-gate output function '")
-                 << funcStr.getValue() << "'";
-        seenState = true;
-        Value stateVal = inverted ? latchOp.getQn() : latchOp.getQ();
-        (seenClock ? andRhs : andLhs) = stateVal;
-      } else {
-        auto ref = resolvePinRef(part, funcLoc, portValues);
-        if (failed(ref))
-          return failure();
-        if (ref->first != clkVal)
-          return emitError(funcLoc, "unsupported clock-gate output function '")
-                 << funcStr.getValue() << "': expected AND(clock, state)";
-        if (seenClock)
-          return emitError(funcLoc, "unsupported clock-gate output function '")
-                 << funcStr.getValue() << "'";
-        seenClock = true;
-        Value clockVal = inverted ? activeHigh(clkVal, true, loc) : clkVal;
-        (seenState ? andRhs : andLhs) = clockVal;
-      }
-    }
-    if (!seenClock || !seenState)
-      return emitError(funcLoc, "unsupported clock-gate output function '")
-             << funcStr.getValue() << "': expected AND(clock, state)";
-    gated = comb::AndOp::create(builder, loc, andLhs, andRhs);
   }
 
-  moduleOp.getBodyBlock()->getTerminator()->setOperands({gated});
+  moduleOp.getBodyBlock()->getTerminator()->setOperands({gateOp.getGclk()});
   return success();
 }
 

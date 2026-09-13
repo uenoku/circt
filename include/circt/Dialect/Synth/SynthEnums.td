@@ -29,6 +29,13 @@ def Edge_Fall : I32EnumAttrCase<"Fall", 1, "fall">;
 def EdgeKindAttr : I32EnumAttr<"EdgeKind",
   "Liberty sequential clock edge", [Edge_Rise, Edge_Fall]>;
 
+def ClockGateLevel_Low : I32EnumAttrCase<"Low", 0, "low">;
+def ClockGateLevel_High : I32EnumAttrCase<"High", 1, "high">;
+
+def ClockGateLevelAttr : I32EnumAttr<"ClockGateLevel",
+  "Clock-gate latch transparency level", [ClockGateLevel_Low,
+                                             ClockGateLevel_High]>;
+
 }
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHENUMS_TD

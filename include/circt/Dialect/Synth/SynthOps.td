@@ -407,5 +407,49 @@ def LatchOp : SynthOp<"latch", [MemoryEffects<[MemRead, MemWrite]>,
   }];
 }
 
+def ClockGateOp : SynthOp<"clock_gate", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Integrated clock-gate cell";
+  let description = [{
+    The `synth.clock_gate` operation models an integrated clock-gating
+    cell: a transparent latch plus an AND gate. It is defined by the
+    following decomposition, so `comb` stays `comb` and only the state
+    element construct is new (compare `synth.latch`, whose test muxing
+    would otherwise have to live inside the op):
+    ```mlir
+    // test absent: %t = %enable
+    %t = comb.or %enable, %test : i1
+    // level low: %le = comb.xor %clk, %true; level high: %le = %clk
+    %le = <latch enable for transparency while clk == level>
+    %l, %ln = synth.latch %t enable %le : i1, i1
+    %gclk = comb.and %clk, %l : i1
+    ```
+
+    All control operands are active-high single-bit values. The test
+    input implements precontrol: it is ORed into the latch data, so the
+    gate opens through the latch's normal transparent phase (it is not an
+    asynchronous override). The power-up value is unknown. Clock-tree
+    timing is not modelled here; it lives in the Liberty timing arcs
+    (`synth.timing.nldm`).
+
+    This is the `i1` meeting point for clock gating: unlike
+    `seq.clock_gate`, it can live in Liberty library bodies whose pins are
+    `i1` wires, and design-side `seq.clock_gate` can normalize to it once
+    clocks are treated as values for mapping.
+
+    Example:
+    ```mlir
+      %gclk = synth.clock_gate %clk enable %ena test %se level low : i1
+    ```
+  }];
+
+  let arguments = (ins I1:$clk, I1:$enable, Optional<I1>:$testEnable,
+                       ClockGateLevelAttr:$level);
+  let results = (outs I1:$gclk);
+  let assemblyFormat = [{
+    $clk `enable` $enable (`test` $testEnable^)? `level` $level attr-dict
+    `:` type($gclk)
+  }];
+}
+
 
 #endif // CIRCT_DIALECT_SYNTH_SYNTHOPS_TD
