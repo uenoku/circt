@@ -18,6 +18,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   SOPBalancing.cpp
   DeriveMappingCost.cpp
   SeqMemMapper.cpp
+  StripLibToExtern.cpp
   SeqTechMapper.cpp
   StructuralHash.cpp
   SynthesisPipeline.cpp

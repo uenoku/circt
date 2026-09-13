@@ -449,4 +449,21 @@ def DeriveMappingCost : Pass<"synth-derive-mapping-cost", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect", "synth::SynthDialect"];
 }
 
+def StripLibToExtern : Pass<"synth-strip-lib-to-extern", "mlir::ModuleOp"> {
+  let summary = "Replace library modules with extern declarations";
+  let description = [{
+    This pass replaces imported library `hw.module`s (marked
+    `synth.liberty.cell` or `synth.dont_use`) with `hw.module.extern`
+    declarations carrying the same name and ports. Mapping passes need
+    the executable bodies; Verilog emission needs only declarations
+    (definitions are never emitted, but instances must resolve). Design
+    modules are untouched.
+  }];
+  let statistics = [
+    Statistic<"numStripped", "stripped",
+              "Number of library modules replaced by externs">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD
