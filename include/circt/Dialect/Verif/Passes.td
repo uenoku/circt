@@ -175,4 +175,15 @@ def StripContractsPass : Pass<"strip-contracts"> {
   }];
 }
 
+def StripAssertLikePass : Pass<"strip-assert-like"> {
+  let summary = "Remove assert-like ops from the IR";
+  let description = [{
+    Erases all `verif.assert`, `verif.assume` and `verif.cover` ops (including
+    their clocked variants) from the IR. These ops model verification
+    intent only and carry no synthesizable behavior; removing them unblocks
+    lowering of processes that contain assertions (e.g. Chisel monitors)
+    to core dialects for synthesis flows, mirroring Yosys `chformal -remove`.
+  }];
+}
+
 #endif // CIRCT_DIALECT_VERIF_PASSES_TD

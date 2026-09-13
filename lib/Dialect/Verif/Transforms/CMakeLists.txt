@@ -6,6 +6,7 @@ add_circt_dialect_library(CIRCTVerifTransforms
   LowerTests.cpp
   PrepareForFormal.cpp
   SimplifyAssumeEq.cpp
+  StripAssertLike.cpp
   StripContracts.cpp
   VerifyClockedAssertLike.cpp
 
