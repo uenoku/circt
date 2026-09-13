@@ -13,10 +13,19 @@
 #ifndef CIRCT_CONVERSION_IMPORTLIBERTY_H
 #define CIRCT_CONVERSION_IMPORTLIBERTY_H
 
+#include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/LogicalResult.h"
+
 namespace circt::liberty {
 
 /// Register the Liberty importer in the translation registry.
 void registerImportLibertyTranslation();
+
+/// Parse the Liberty file at `filename` and append its modules to `module`.
+/// Returns failure on parse errors (diagnostics are emitted).
+mlir::LogicalResult importLibertyFile(mlir::ModuleOp module,
+                                       llvm::StringRef filename);
 
 } // namespace circt::liberty
 

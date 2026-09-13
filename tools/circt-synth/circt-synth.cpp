@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Conversion/ImportAIGER.h"
+#include "circt/Conversion/ImportLiberty.h"
 #include "circt/Conversion/SynthToComb.h"
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/Comb/CombOps.h"
@@ -172,6 +173,19 @@ static cl::list<std::string> abcCommands("abc-commands",
                                          cl::desc("ABC passes to run"),
                                          cl::CommaSeparated,
                                          cl::cat(mainCategory));
+static cl::list<std::string>
+    libertyFiles("liberty",
+                 cl::desc("Liberty files to import as technology libraries"),
+                 cl::CommaSeparated, cl::cat(mainCategory));
+static cl::list<std::string>
+    dontUseCells("dont-use",
+                 cl::desc("Cell names excluded from technology mapping"),
+                 cl::CommaSeparated, cl::cat(mainCategory));
+static cl::opt<bool> stripLibToExtern(
+    "strip-lib-to-extern",
+    cl::desc("Replace imported library modules with extern declarations "
+             "in the output"),
+    cl::init(false), cl::cat(mainCategory));
 static cl::opt<std::string> abcPath("abc-path", cl::desc("Path to ABC"),
                                     cl::value_desc("path"), cl::init("abc"),
                                     cl::cat(mainCategory));
@@ -299,6 +313,18 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     }
   };
 
+  if (!untilReached(UntilMapping)) {
+    // Derive TechMapper costs from the imported Liberty timing data, and
+    // map sequential elements while the IR is still hw/comb/seq:
+    // combinational lowering below rewrites library bodies to AIG, which
+    // sequential role tracing does not understand.
+    synth::DeriveMappingCostOptions mappingCostOptions;
+    mappingCostOptions.dontUse.assign(dontUseCells.begin(), dontUseCells.end());
+    pm.addPass(synth::createDeriveMappingCost(mappingCostOptions));
+    pm.addPass(synth::createSeqTechMapper());
+    pm.addPass(synth::createSeqMemMapper());
+  }
+
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
   if (!untilReached(UntilMapping)) {
@@ -306,6 +332,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;
     pm.addPass(synth::createTechMapper(options));
+    if (stripLibToExtern)
+      pm.addPass(synth::createStripLibToExtern());
   }
 
   // Run analysis if analysis output is specified.
@@ -441,6 +469,13 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
   }
   if (!module)
     return failure();
+
+  // Merge Liberty technology libraries into the module.
+  for (const auto &libertyFile : libertyFiles) {
+    if (failed(circt::liberty::importLibertyFile(module.get(), libertyFile)))
+      return failure();
+  }
+
   // Create the output directory or output file depending on our mode.
   std::optional<std::unique_ptr<llvm::ToolOutputFile>> outputFile;
   std::string errorMessage;

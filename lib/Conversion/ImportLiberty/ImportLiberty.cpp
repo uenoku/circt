@@ -509,8 +509,7 @@ private:
                SmallVector<hw::PortInfo> &ports,
                SmallVector<const LibertyGroup *> &pinGroups,
                SmallVector<Attribute> &timingArcs,
-               size_t &numOutputPinMissingFunction,
-               bool &hasThreeStateOutput);
+               size_t &numOutputPinMissingFunction, bool &hasThreeStateOutput);
 
   LogicalResult buildCellLogic(hw::HWModuleOp moduleOp,
                                ArrayRef<hw::PortInfo> ports,
@@ -1090,7 +1089,7 @@ LogicalResult LibertyParser::collectPorts(
     SmallVector<hw::PortInfo> &ports,
     SmallVector<const LibertyGroup *> &pinGroups,
     SmallVector<Attribute> &timingArcs, size_t &numOutputPinMissingFunction,
-               bool &hasThreeStateOutput) {
+    bool &hasThreeStateOutput) {
 
   llvm::DenseSet<StringAttr> seenPins;
 
@@ -2250,6 +2249,21 @@ ParseResult LibertyParser::parseExpression(Value &result, StringRef expr,
 } // namespace
 
 namespace circt::liberty {
+LogicalResult importLibertyFile(ModuleOp module, StringRef filename) {
+  std::string errorMessage;
+  auto file = openInputFile(filename, &errorMessage);
+  if (!file)
+    return emitError(UnknownLoc::get(module.getContext())) << errorMessage;
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(file), SMLoc());
+  MLIRContext *context = module.getContext();
+  context->loadDialect<hw::HWDialect>();
+  context->loadDialect<comb::CombDialect>();
+  context->loadDialect<synth::SynthDialect>();
+  LibertyParser parser(sourceMgr, context, module);
+  return parser.parse();
+}
+
 void registerImportLibertyTranslation() {
   TranslateToMLIRRegistration reg(
       "import-liberty", "Import Liberty file",
