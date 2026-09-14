@@ -376,6 +376,97 @@ firrtl.circuit "DomainInfoIndexUpdate" {
 
 // -----
 
+// Test that domain operations can use fields extracted from open aggregates.
+// CHECK-LABEL: circuit "DomainOperations"
+firrtl.circuit "DomainOperations" {
+  firrtl.domain @ClockDomain
+  firrtl.domain @PowerDomain [
+    #firrtl.domain.field<"name", !firrtl.string>
+  ]
+
+  firrtl.module @DomainOperations() {}
+
+  // CHECK-LABEL: firrtl.module @DomainDefine(
+  // CHECK-SAME: in %src_a: !firrtl.domain<@ClockDomain()>,
+  // CHECK-SAME: out %dst_a: !firrtl.domain<@ClockDomain()>) {
+  // CHECK-NEXT: firrtl.domain.define %dst_a, %src_a : !firrtl.domain<@ClockDomain()>
+  firrtl.module @DomainDefine(
+      in %src: !firrtl.openbundle<a: domain<@ClockDomain()>>,
+      out %dst: !firrtl.openbundle<a: domain<@ClockDomain()>>) {
+    %src_a = firrtl.opensubfield %src[a] : !firrtl.openbundle<a: domain<@ClockDomain()>>
+    %dst_a = firrtl.opensubfield %dst[a] : !firrtl.openbundle<a: domain<@ClockDomain()>>
+    firrtl.domain.define %dst_a, %src_a : !firrtl.domain<@ClockDomain()>
+  }
+
+  // A normal connection operates on the hardware projection of an open
+  // aggregate; the domain field is split out alongside it.
+  // CHECK-LABEL: firrtl.module @DomainConnection(
+  // CHECK-SAME: in %src: !firrtl.bundle<b: uint<1>>,
+  // CHECK-SAME: in %src_a: !firrtl.domain<@ClockDomain()>,
+  // CHECK-SAME: out %dst: !firrtl.bundle<b: uint<1>>,
+  // CHECK-SAME: out %dst_a: !firrtl.domain<@ClockDomain()>) {
+  // CHECK: firrtl.connect {{%.*}}, {{%.*}} : !firrtl.uint<1>
+  firrtl.module @DomainConnection(
+      in %src: !firrtl.openbundle<a: domain<@ClockDomain()>, b: uint<1>>,
+      out %dst: !firrtl.openbundle<a: domain<@ClockDomain()>, b: uint<1>>) {
+    %src_b = firrtl.opensubfield %src[b] : !firrtl.openbundle<a: domain<@ClockDomain()>, b: uint<1>>
+    %dst_b = firrtl.opensubfield %dst[b] : !firrtl.openbundle<a: domain<@ClockDomain()>, b: uint<1>>
+    firrtl.connect %dst_b, %src_b : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+
+  // CHECK-LABEL: firrtl.module @DomainCreate(
+  // CHECK-SAME: out %dst_a: !firrtl.domain<@ClockDomain()>) {
+  // CHECK-NEXT: %created = firrtl.domain.create : !firrtl.domain<@ClockDomain()>
+  // CHECK-NEXT: firrtl.domain.define %dst_a, %created : !firrtl.domain<@ClockDomain()>
+  firrtl.module @DomainCreate(
+      out %dst: !firrtl.openbundle<a: domain<@ClockDomain()>>) {
+    %created = firrtl.domain.create : !firrtl.domain<@ClockDomain()>
+    %dst_a = firrtl.opensubfield %dst[a] : !firrtl.openbundle<a: domain<@ClockDomain()>>
+    firrtl.domain.define %dst_a, %created : !firrtl.domain<@ClockDomain()>
+  }
+
+  // CHECK-LABEL: firrtl.module @DomainAnon(
+  // CHECK-SAME: out %dst_a: !firrtl.domain<@ClockDomain()>) {
+  // CHECK-NEXT: %anonymous = firrtl.domain.anon : !firrtl.domain<@ClockDomain()>
+  // CHECK-NEXT: firrtl.domain.define %dst_a, %anonymous : !firrtl.domain<@ClockDomain()>
+  firrtl.module @DomainAnon(
+      out %dst: !firrtl.openbundle<a: domain<@ClockDomain()>>) {
+    %anonymous = firrtl.domain.anon : !firrtl.domain<@ClockDomain()>
+    %dst_a = firrtl.opensubfield %dst[a] : !firrtl.openbundle<a: domain<@ClockDomain()>>
+    firrtl.domain.define %dst_a, %anonymous : !firrtl.domain<@ClockDomain()>
+  }
+
+  // CHECK-LABEL: firrtl.module @DomainSubfield(
+  // CHECK-SAME: in %domains_a: !firrtl.domain<@PowerDomain(name: !firrtl.string)>,
+  // CHECK-SAME: out %name: !firrtl.string) {
+  // CHECK-NEXT: %[[EXTRACTED:.+]] = firrtl.domain.subfield %domains_a[name]
+  // CHECK-NEXT: firrtl.propassign %name, %[[EXTRACTED]] : !firrtl.string
+  firrtl.module @DomainSubfield(
+      in %domains: !firrtl.openbundle<a: domain<@PowerDomain(name: !firrtl.string)>>,
+      out %name: !firrtl.string) {
+    %domains_a = firrtl.opensubfield %domains[a] : !firrtl.openbundle<a: domain<@PowerDomain(name: !firrtl.string)>>
+    %extracted = firrtl.domain.subfield %domains_a[name] : !firrtl.domain<@PowerDomain(name: !firrtl.string)>
+    firrtl.propassign %name, %extracted : !firrtl.string
+  }
+
+  // CHECK-LABEL: firrtl.module @UnsafeDomainCast(
+  // CHECK-SAME: in %domains_a: !firrtl.domain<@ClockDomain()>,
+  // CHECK-SAME: in %value: !firrtl.uint<1>,
+  // CHECK-SAME: out %result: !firrtl.uint<1>) {
+  // CHECK-NEXT: %[[CAST:.+]] = firrtl.unsafe_domain_cast %value domains[%domains_a]
+  // CHECK-NEXT: firrtl.matchingconnect %result, %[[CAST]] : !firrtl.uint<1>
+  firrtl.module @UnsafeDomainCast(
+      in %domains: !firrtl.openbundle<a: domain<@ClockDomain()>>,
+      in %value: !firrtl.uint<1>,
+      out %result: !firrtl.uint<1>) {
+    %domains_a = firrtl.opensubfield %domains[a] : !firrtl.openbundle<a: domain<@ClockDomain()>>
+    %cast = firrtl.unsafe_domain_cast %value domains[%domains_a] : !firrtl.uint<1> domains[!firrtl.domain<@ClockDomain()>]
+    firrtl.matchingconnect %result, %cast : !firrtl.uint<1>
+  }
+}
+
+// -----
+
 // Test that inner symbols within nested base aggregates are propagated.
 // CHECK-LABEL: circuit "NestedBaseInnerSym"
 firrtl.circuit "NestedBaseInnerSym" {

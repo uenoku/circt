@@ -10,7 +10,7 @@
 // aggregate types with hardware aggregates, with non-hardware fields
 // expanded out as with LowerTypes.
 //
-// This pass supports reference and property types.
+// This pass supports reference, property, and domain types.
 //
 //===----------------------------------------------------------------------===//
 
@@ -780,6 +780,12 @@ FailureOr<MappingInfo> Visitor::mapType(Type type, Location errorLoc,
             // to try to fix a bug when combining + auto w/MSVC.
             .template Case<PropertyType>([&](PropertyType prop) {
               auto f = NonHWField{prop, fieldID, flip, {}};
+              suffix.toVector(f.suffix);
+              pi.fields.emplace_back(std::move(f));
+              return FIRRTLBaseType{};
+            })
+            .template Case<DomainType>([&](DomainType domain) {
+              auto f = NonHWField{domain, fieldID, flip, {}};
               suffix.toVector(f.suffix);
               pi.fields.emplace_back(std::move(f));
               return FIRRTLBaseType{};

@@ -19,6 +19,23 @@ circuit Foo :
     input a : UInt<1> domains [A, B]
     input b : UInt<1> domains [A, B]
 
+  public module Bundle :
+    input A : {a: Domain of ClockDomain}
+    output b : Domain of ClockDomain
+    domain_define b = A.a
+
+  ; Exercise the textual domain operations as well as domain declarations.
+  public module Syntax :
+    input A : Domain of ClockDomain
+    input P : Domain of PowerDomain
+    input value : UInt<1> domains [A, P]
+    output D : Domain of ClockDomain
+    output domainName : String
+    domain local of ClockDomain(String("local"), Integer(100))
+    domain_define D = local
+    node cast = unsafe_domain_cast(value, local)
+    propassign domainName, P.name
+
 ; CHECK-LABEL: om.class @Foo_Class
 ; DOMAIN-NEXT:   om.elaborated_object @ClockDomain_out(%A, %[[#association:]])
 ; DOMAIN-NEXT:   %[[#a:]] = om.frozenpath_create reference %basepath "Foo>a"
