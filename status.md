@@ -8,6 +8,7 @@ a liberty-mapped netlist (`1_2_yosys.v` equivalent) plus SDC, for the
 and ASAP7.
 
 ## Branch / commits (branch: `dev/hidetou/openroad`)
+- `3272e2df96` — this file (handoff doc)
 - `25597653a8` — llhd-lower-sync-processes (conditional-drive sync processes)
 - `fed3cbaffe`, `05ff4c76d9` — strip-assert-like, liberty integration (prior)
 - `cd62d85841` — WIP e2e fixes: llhd-strip-init-drives, comb And/Or truth-table
@@ -32,9 +33,14 @@ cmake -G Ninja llvm/llvm -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 ninja -C build bin/circt-opt bin/circt-synth bin/circt-verilog
 ninja -C build check-circt   # full suite; see pre-existing failures below
 ```
-Targeted lit (lit binary:
-`/home/uenoku/dev/circt/llvm/build/bin/llvm-lit`, run from `build/test`,
-e.g. `llvm-lit ../test/Dialect/Synth/tech-mapper-phase.mlir`).
+Targeted lit (run from `build/test` against the build-tree mirror paths):
+```
+cd build/test && /usr/bin/python3.12 /home/uenoku/dev/circt/llvm/build/bin/llvm-lit -s \
+  Dialect/Synth/tech-mapper-phase.mlir Dialect/LLHD/Transforms/strip-init-drives.mlir
+```
+Re-verified 2026-09-14 ~01:20: `tech-mapper-phase` + `strip-init-drives` +
+`tech-mapper` 3/3 green; broader `Dialect/Synth` + `Dialect/LLHD` sweep
+53/57 with only the 4 known pre-existing `tech-mapper-external*` failures.
 `ninja check-circt` result: **1643 passed, 7 failed — all 7 pre-existing
 and environmental** (verify before/after any change):
 - `Conversion/ImportVerilog/libraries.sv` — `circt-translate` lacks `-l`
@@ -89,7 +95,7 @@ Flows (all verified; timings on 32-core/62GB box):
 ./build/bin/circt-opt --export-verilog /tmp/e2e/rocket_synth.mlir -o /dev/null > /tmp/e2e/rocket_net.v
 ./build/bin/circt-verilog --parse-only /tmp/e2e/rocket_net.v   # 1.8M lines, 211 modules, 0 always-blocks: clean
 ```
-ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0 LLHD, 61 firmems (~2M bits), 11.8k firregs. Synth run launched 2026-09-14 ~00:25 (pids 181974/181975); still running at last poll (~48 min elapsed, ~117 CPU-min, ~15 GB, no output yet).
+ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0 LLHD, 61 firmems (~2M bits), 11.8k firregs. Root-caused 2026-09-14: no SRAM macros are provided, so `SeqMemMapper` exploded all 61 firmems to flops; the 16384x64 alone becomes ~1M flops + ~2M muxes (~5–10M AIG nodes in one module, serial passes). A single-module probe confirmed it (9+ min single-core, still running). Fix: `synth-seq-mem-mapper` now hard-errors above `max-fallback-bits` (default 65536; `circt-synth --max-mem-fallback-bits`). ChipTop now fails in ~1 s listing exactly 4 oversized memories (16384x64, 8192x64, 1024x136, 512x256); fifo (2Kb) and Rocket (≤32Kb single) still explode as before. Next: SRAM macro replacement (plumbing + macro defs) so those 4 map to blackboxes.
 
 ## What's done (with measurements)
 - llhd lowering gaps: sync-process mapper, init-drive stripper, pure-op cloning
@@ -98,9 +104,10 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - Truth-table simulator handles 1-bit comb And/Or (unconverted lib bodies).
 - Seq mapping: wide-flop + array-flop explosion, mem→flop fallback incl.
   masked writes with per-lane enables, SRAM-macro path preserved.
-- Perf: NPN canonical-form memoization (`NPNTable::getCanonicalForm`,
-  `lib/Support/TruthTable.cpp:540`) — fifo NPN stats: 119307 hits / 592
-  misses. Word-level (single-u64) transforms for n≤6
+- Perf: 4-input NPN lookup table (`NPNTable` ctor, 222 representatives —
+  4-input canonicalization is O(1)) plus NPN canonical-form memoization
+  (`NPNTable::getCanonicalForm`, `lib/Support/TruthTable.cpp:540`) — fifo NPN
+  stats: 119307 hits / 592 misses. Word-level (single-u64) transforms for n≤6
   (`applyPermutation`/`applyInputNegation`/`applyOutputNegation`).
   fifo 25 min-hang → 3 s; addr_gen 25 s → 0.95 s.
 - Correctness: phase-aware matching (negated NPN bindings materialize
@@ -108,6 +115,18 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - Robustness: 6-input pattern/cut cap (`kMaxPatternInputs`,
   `TechMapper.cpp:254`) — 9-input AO333/OA333 skipped, logic covers
   through smaller cells (ABC's default cut size).
+- Fail-fast memory fallback: `synth-seq-mem-mapper{max-fallback-bits=65536}`
+  (default 64Kb; `circt-synth --max-mem-fallback-bits`) — memories over
+  the limit with no macro match are a hard error naming geometry, bits,
+  and the fix (was: silent explosion → 76-min ChipTop hang). fifo (2Kb)
+  and Rocket (≤32Kb single) still explode as before.
+- SRAM macro replacement: `circt-synth --sram-macros=<file.mlir>` splices
+  `hw.module.extern` + `#synth.sram.macro` externs into the design for
+  `SeqMemMapper` (design symbols win; warns on empty files). ChipTop's 4
+  oversized SRAMs covered by `tmp/sram-macros-chiptop.mlir` (placeholder
+  names, not PDK cells): with macros, pre-TechMapper stages drop from
+  60+ min to ~16 s; TechMapper over the remaining ~210Kb of small flops
+  is the current long pole (suspected NPN — see below).
 
 ## Open problems (for relaunch)
 1. **Symmetry-pruned exact NPN is BROKEN — reverted, do not reapply blindly.**
@@ -126,6 +145,13 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    mitigated by caps). Options: share one match per NPN class across
    same-function size variants; ABC supergates (`super_gates.c`) for
    multi-level collapse — NOT implemented (each lib cell = one pattern).
+   UPDATE 2026-09-14: ChipTop tech-mapper (post-macro) implicates NPN
+   *canonicalization misses* on the long tail of distinct 5/6-input cuts
+   (each miss = full n!-search; memoization only helps repeats). Plan:
+   semi-canonical prefilter (Lazy Man's): cheap negation+permutation
+   invariant signature per cut, exact canonicalization only on signature
+   hit — behavior-preserving (same matches ⇒ same netlist, diff-verified
+   on fifo/Rocket), unlike the reverted symmetry pruning in (1).
 3. **SDC emission** (`write_sdc` equivalent) untouched; `constraint.sdc`
    files are flow inputs.
 4. Tie constants emit as Verilog literals (valid; Yosys parity = `conb_1`).
@@ -144,14 +170,19 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   cache stats `dumpCacheStats:554`), `include/circt/Support/TruthTable.h`
 - `lib/Dialect/Synth/Transforms/TechMapper.cpp` (phase-aware
   match/rewrite ~117-200, inverter selection, `kMaxPatternInputs:254`)
-- `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (`getNPNClass:484`)
+- `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (`Cut::getNPNClass:477`)
 - `lib/Dialect/Synth/Transforms/SeqMemMapper.cpp` (`explodeToFlops` masked)
 - `lib/Dialect/Synth/Transforms/SeqTechMapper.cpp` (wide/array explode)
 - `lib/Dialect/LLHD/Transforms/LowerSyncProcesses.cpp`,
   `StripInitDrives.cpp`, `lib/Dialect/HW/Transforms/HWAggregateToComb.cpp`
   (array_inject O(N) lowering)
 - Tests: `test/Dialect/Synth/tech-mapper-phase.mlir` (new),
-  `strip-init-drives.mlir` (new), updated mem/tech/error/aggregate tests.
+  `test/Dialect/LLHD/Transforms/strip-init-drives.mlir` (new),
+  `test/Dialect/Synth/seq-mem-mapper-fallback-limit{,-ok}.mlir` (new:
+  over-limit hard error under lowered + default limits; at-limit boundary
+  still explodes), `test/circt-synth/sram-macros.mlir` +
+  `test/circt-synth/Inputs/sram-macros.mlir` (new: `--sram-macros`
+  end-to-end macro mapping), updated mem/tech/error/aggregate tests.
 
 ## Suggested reading for relaunch
 - https://scispace.com/pdf/lazy-man-s-logic-synthesis-43gevit82r.pdf

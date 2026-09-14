@@ -115,11 +115,25 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
     require macro enable pins and are tied active otherwise. Unmappable
     memories (geometry mismatch, missing features) are left untouched.
     Without a compatible macro, memories fall back to flop arrays with
-    address decode (like Yosys memory_map without SRAM libraries): single
-    clock, asynchronous read, single-cycle write, full words only, at most
-    one write port, no read enables. Single-port strobe macros needing
-    read/write arbitration are future work.
+    address decode (like Yosys memory_map without SRAM libraries):
+    single clock, asynchronous read, single-cycle write, full words only,
+    at most one write port, no read enables. Single-port strobe macros
+    needing read/write arbitration are future work.
+
+    Flop-array fallback is bounded by `max-fallback-bits`: a memory with
+    more bits and no macro match is a hard error instead of a silent
+    explosion, since depth*width flops plus per-bit address muxes hang
+    downstream lowering and mapping (a 16384x64 SRAM becomes ~1M flops
+    and ~2M muxes). Provide a matching `synth.sram.macro` extern or
+    raise the limit explicitly.
   }];
+  let options = [
+    Option<"maxFallbackBits", "max-fallback-bits", "unsigned",
+           /*default=*/"65536",
+           "Maximum memory size in bits allowed to fall back to a flop "
+           "array when no SRAM macro matches; larger memories are a "
+           "hard error. Set to 0 to forbid all fallback.">
+  ];
   let statistics = [
     Statistic<"numMemsMapped", "mems-mapped",
               "Number of memories mapped to SRAM macros">,

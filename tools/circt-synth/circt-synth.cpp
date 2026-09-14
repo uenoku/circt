@@ -40,8 +40,10 @@
 #include "mlir/Bytecode/BytecodeReader.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -177,6 +179,12 @@ static cl::list<std::string>
     libertyFiles("liberty",
                  cl::desc("Liberty files to import as technology libraries"),
                  cl::CommaSeparated, cl::cat(mainCategory));
+static cl::list<std::string> sramMacroFiles(
+    "sram-macros",
+    cl::desc("MLIR files contributing hw.module.extern ops carrying "
+             "synth.sram.macro descriptors, merged into the design for "
+             "SRAM macro mapping"),
+    cl::CommaSeparated, cl::cat(mainCategory));
 static cl::list<std::string>
     dontUseCells("dont-use",
                  cl::desc("Cell names excluded from technology mapping"),
@@ -224,6 +232,14 @@ static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
                                       cl::init(6), cl::cat(mainCategory));
 
+static cl::opt<unsigned>
+    maxMemFallbackBits("max-mem-fallback-bits",
+                       cl::desc("Maximum memory size in bits allowed to "
+                                "fall back to a flop array when no SRAM "
+                                "macro matches; larger memories are a "
+                                "hard error"),
+                       cl::init(65536), cl::cat(mainCategory));
+
 static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
     "synthesis-strategy", cl::desc("Synthesis strategy to use"),
     cl::values(clEnumValN(synth::OptimizationStrategyArea, "area",
@@ -246,6 +262,45 @@ static cl::opt<bool>
                                     cl::desc("Enable parameterize constant "
                                              "ports pass"),
                                     cl::init(false), cl::cat(mainCategory));
+
+//===----------------------------------------------------------------------===//
+// SRAM macro import
+//===----------------------------------------------------------------------===//
+
+/// Parse an MLIR file and splice its `hw.module.extern` ops carrying a
+/// `synth.sram.macro` descriptor into the design module, where SeqMemMapper
+/// collects them. A symbol already present in the design keeps the design's
+/// own declaration.
+static LogicalResult importSRAMMacros(ModuleOp module, StringRef filename,
+                                      MLIRContext *context) {
+  std::string errorMessage;
+  auto file = openInputFile(filename, &errorMessage);
+  if (!file) {
+    llvm::errs() << errorMessage << "\n";
+    return failure();
+  }
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(file), llvm::SMLoc());
+  OwningOpRef<ModuleOp> macrosModule =
+      parseSourceFile<ModuleOp>(sourceMgr, context);
+  if (!macrosModule)
+    return failure();
+  SymbolTable symbols(module);
+  OpBuilder builder(module.getBody(), module.getBody()->end());
+  unsigned numImported = 0;
+  for (auto externOp : macrosModule->getOps<hw::HWModuleExternOp>()) {
+    if (!externOp->hasAttr("synth.sram.macro"))
+      continue;
+    if (symbols.lookup(externOp.getModuleName()))
+      continue;
+    (void)symbols.insert(builder.clone(*externOp));
+    ++numImported;
+  }
+  if (numImported == 0)
+    llvm::errs() << "warning: no 'synth.sram.macro' externs found in '"
+                 << filename << "'\n";
+  return success();
+}
 
 //===----------------------------------------------------------------------===//
 // Main Tool Logic
@@ -323,7 +378,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     pm.addPass(synth::createDeriveMappingCost(mappingCostOptions));
     // Memories before flops: flop-array fallbacks from SeqMemMapper are
     // mapped to cells by SeqTechMapper in the same run.
-    pm.addPass(synth::createSeqMemMapper());
+    synth::SeqMemMapperOptions memMapperOptions;
+    memMapperOptions.maxFallbackBits = maxMemFallbackBits;
+    pm.addPass(synth::createSeqMemMapper(memMapperOptions));
     pm.addPass(synth::createSeqTechMapper());
   }
 
@@ -480,6 +537,12 @@ static LogicalResult executeSynthesis(MLIRContext &context) {
   // Merge Liberty technology libraries into the module.
   for (const auto &libertyFile : libertyFiles) {
     if (failed(circt::liberty::importLibertyFile(module.get(), libertyFile)))
+      return failure();
+  }
+
+  // Merge SRAM macro externs into the module for SeqMemMapper.
+  for (const auto &macrosFile : sramMacroFiles) {
+    if (failed(importSRAMMacros(module.get(), macrosFile, &context)))
       return failure();
   }
 

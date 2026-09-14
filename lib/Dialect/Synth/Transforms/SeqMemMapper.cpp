@@ -25,6 +25,7 @@
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/SynthOps.h"
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/APInt.h"
@@ -243,8 +244,29 @@ struct SeqMemMapperPass
       if (!best || macro.module.getModuleName() < best->module.getModuleName())
         best = &macro;
     }
-    if (!best)
+    if (!best) {
+      // No macro match: flop-array fallback builds depth*width flops
+      // plus per-bit address-decode muxes, which downstream lowering and
+      // mapping cannot swallow at scale (a 16384x64 SRAM becomes ~1M
+      // flops and ~2M muxes and hangs the flow). Fail fast above
+      // `max-fallback-bits` instead of exploding silently; provide a
+      // matching `synth.sram.macro` extern or raise the limit explicitly.
+      uint64_t depth = memType.getDepth();
+      uint64_t width = memType.getWidth();
+      if (width != 0 && depth > maxFallbackBits / width) {
+        unsigned __int128 numBits = (unsigned __int128)depth * width;
+        mem.emitError("memory '")
+            << depth << "x" << width << "' (" << static_cast<uint64_t>(numBits)
+            << " bits) has no matching SRAM macro and exceeds "
+               "max-fallback-bits ("
+            << maxFallbackBits.getValue()
+            << "): refusing flop-array fallback; provide a matching "
+               "#synth.sram.macro extern or raise max-fallback-bits";
+        signalPassFailure();
+        return;
+      }
       return explodeToFlops(builder, entry, clock, memType);
+    }
 
     // Per-port feature checks.
     for (auto [read, macro] : llvm::zip(entry.reads, best->reads)) {
