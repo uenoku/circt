@@ -45,15 +45,15 @@ hw.module @top_masktie(in %clk : i1, in %raddr : i6, in %waddr : i6, in %wdata :
   hw.output %d : i32
 }
 
-// Skips: geometry mismatch, read-write ports, init, collision behavior,
-// latency mismatch. All firmems below must survive.
+// Skips: geometry mismatch, read-write ports, init, collision behavior.
+// All firmems below must survive (m0 also has read latency 1, which the
+// flop fallback rejects too).
 // CHECK-LABEL: hw.module @top_skips(
 // CHECK: seq.firmem {{.*}} : <128 x 8>
 // CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
 // CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
 // CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
-// CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
-hw.module @top_skips(in %clk : i1, in %addr : i8, in %addr6 : i6, in %addr7 : i7, in %data : i32, in %data8 : i8, in %en : i1, in %mode : i1, out o0 : i8, out o1 : i32, out o2 : i32, out o3 : i32, out o4 : i32) {
+hw.module @top_skips(in %clk : i1, in %addr : i8, in %addr6 : i6, in %addr7 : i7, in %data : i32, in %data8 : i8, in %en : i1, in %mode : i1, out o0 : i8, out o1 : i32, out o2 : i32, out o3 : i32) {
   %c = seq.to_clock %clk
   // Wrong depth.
   %m0 = seq.firmem 1, 1, undefined, undefined : <128 x 8>
@@ -67,8 +67,35 @@ hw.module @top_skips(in %clk : i1, in %addr : i8, in %addr6 : i6, in %addr7 : i7
   // Defined collision behavior.
   %m3 = seq.firmem 1, 1, old, undefined : <64 x 32, mask 4>
   %r3 = seq.firmem.read_port %m3[%addr6], clock %c : <64 x 32, mask 4>
-  // Read latency 0 has no macro.
-  %m4 = seq.firmem 0, 1, undefined, undefined : <64 x 32, mask 4>
-  %r4 = seq.firmem.read_port %m4[%addr6], clock %c : <64 x 32, mask 4>
-  hw.output %r0, %r1, %r2, %r3, %r4 : i8, i32, i32, i32, i32
+  hw.output %r0, %r1, %r2, %r3 : i8, i32, i32, i32
+}
+
+// No macro matches: unmasked asynchronous-read memory explodes to flops
+// (Yosys memory_map default).
+// CHECK-LABEL: hw.module @top_explode(
+// CHECK-NOT: seq.firmem
+// CHECK-COUNT-16: seq.firreg {{.*}} : i1
+// CHECK: hw.output
+// CHECK-NOT: seq.firmem
+hw.module @top_explode(in %clk : i1, in %raddr : i2, in %waddr : i2, in %wdata : i8, in %wen : i1, out dout : i8) {
+  %c = seq.to_clock %clk
+  %mem = seq.firmem 0, 1, undefined, undefined : <4 x 8>
+  %d = seq.firmem.read_port %mem[%raddr], clock %c : <4 x 8>
+  seq.firmem.write_port %mem[%waddr] = %wdata, clock %c enable %wen : <4 x 8>
+  hw.output %d : i8
+}
+
+// Masked writes explode with per-lane write enables: bit 0 follows mask
+// bit 0, bit 4 follows mask bit 1 (lanes of 4).
+// CHECK-LABEL: hw.module @top_explode_masked(
+// CHECK-NOT: seq.firmem
+// CHECK-COUNT-32: seq.firreg {{.*}} : i1
+// CHECK: comb.extract {{.*}} from 0{{.*}} -> i1
+// CHECK: comb.extract {{.*}} from 1{{.*}} -> i1
+hw.module @top_explode_masked(in %clk : i1, in %raddr : i2, in %waddr : i2, in %wdata : i8, in %wen : i1, in %mask : i2, out dout : i8) {
+  %c = seq.to_clock %clk
+  %mem = seq.firmem 0, 1, undefined, undefined : <4 x 8, mask 2>
+  %d = seq.firmem.read_port %mem[%raddr], clock %c : <4 x 8, mask 2>
+  seq.firmem.write_port %mem[%waddr] = %wdata, clock %c enable %wen mask %mask : <4 x 8, mask 2>, i2
+  hw.output %d : i8
 }

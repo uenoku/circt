@@ -357,9 +357,11 @@ struct SeqMemMapperPass
   // Yosys `memory_map` default: with no SRAM macro available, memories
   // become flop arrays with address-decode muxes. Strict preconditions
   // beyond mapMemory's: asynchronous read (latency 0; a synchronous
-  // read would need a held-output register), single-cycle write, full
-  // words only (mask width 1 or absent, no per-write mask operand), at
-  // most one write port, and no read enables.
+  // read would need a held-output register), single-cycle write, at
+  // most one write port, and no read enables. Masks are supported when
+  // lanes are equal-width and aligned (word width divisible by mask
+  // width); each lane bit gates its lane's flops like a per-bit write
+  // enable.
   void explodeToFlops(OpBuilder &builder, MemPorts &entry, Value clock,
                       seq::FirMemType memType) {
     auto mem = entry.mem;
@@ -372,15 +374,30 @@ struct SeqMemMapperPass
     if (mem.getReadLatency() != 0 || mem.getWriteLatency() != 1)
       return skip();
     auto maskWidth = memType.getMaskWidth();
-    if (maskWidth && *maskWidth != 1)
-      return skip();
+    // Masked words need equal-width aligned lanes; a present mask must
+    // cover exactly the declared mask width. An absent mask writes the
+    // full word.
+    unsigned laneWidth = width;
+    if (maskWidth && *maskWidth != 1) {
+      if (width % *maskWidth != 0)
+        return skip();
+      laneWidth = width / *maskWidth;
+      for (auto write : entry.writes) {
+        if (!write.getMask())
+          continue;
+        auto maskTy = dyn_cast<IntegerType>(write.getMask().getType());
+        if (!maskTy || maskTy.getWidth() != *maskWidth)
+          return skip();
+      }
+    } else {
+      for (auto write : entry.writes)
+        if (write.getMask())
+          return skip();
+    }
     if (entry.writes.size() > 1)
       return skip();
     for (auto read : entry.reads)
       if (read.getEnable())
-        return skip();
-    for (auto write : entry.writes)
-      if (write.getMask())
         return skip();
 
     // Dead memory: no readers, nothing to build.
@@ -409,8 +426,8 @@ struct SeqMemMapperPass
     Value zero = constInt(i1, 0);
     seq::FirMemWriteOp write =
         entry.writes.empty() ? seq::FirMemWriteOp() : entry.writes[0];
-    Value wren = write && write.getEnable() ? write.getEnable()
-                                            : constInt(i1, 1);
+    Value wren =
+        write && write.getEnable() ? write.getEnable() : constInt(i1, 1);
     // Storage[row][bit].
     SmallVector<SmallVector<seq::FirRegOp>> storage;
     for (uint64_t r = 0; r < depth; ++r) {
@@ -425,20 +442,25 @@ struct SeqMemMapperPass
       storage.push_back(std::move(row));
     }
     // Write path, built at the write port where every operand dominates.
+    // With a mask, each lane bit gates its lane's flops.
     if (write) {
       builder.setInsertionPoint(write);
       Value wdata = write.getData();
       Value waddr = write.getAddress();
       auto waddrTy = cast<IntegerType>(waddr.getType());
-      auto wdataTy = cast<IntegerType>(wdata.getType());
+      Value wmask = write.getMask();
       for (uint64_t r = 0; r < depth; ++r) {
         Value match = comb::ICmpOp::create(
-            builder, loc, comb::ICmpPredicate::eq, waddr,
-            constInt(waddrTy, r));
-        Value fire = comb::AndOp::create(builder, loc, wren, match);
+            builder, loc, comb::ICmpPredicate::eq, waddr, constInt(waddrTy, r));
+        Value rowFire = comb::AndOp::create(builder, loc, wren, match);
         for (unsigned b = 0; b < width; ++b) {
-          Value dataBit =
-              comb::ExtractOp::create(builder, loc, wdata, b, 1);
+          Value fire = rowFire;
+          if (wmask) {
+            Value laneBit =
+                comb::ExtractOp::create(builder, loc, wmask, b / laneWidth, 1);
+            fire = comb::AndOp::create(builder, loc, rowFire, laneBit);
+          }
+          Value dataBit = comb::ExtractOp::create(builder, loc, wdata, b, 1);
           Value next = comb::MuxOp::create(builder, loc, fire, dataBit,
                                            storage[r][b].getData());
           storage[r][b].getNextMutable().assign(next);
@@ -456,9 +478,9 @@ struct SeqMemMapperPass
       for (unsigned b = 0; b < width; ++b) {
         Value acc = storage[0][b].getData();
         for (uint64_t r = 1; r < depth; ++r) {
-          Value match = comb::ICmpOp::create(
-              builder, loc, comb::ICmpPredicate::eq, raddr,
-              constInt(raddrTy, r));
+          Value match =
+              comb::ICmpOp::create(builder, loc, comb::ICmpPredicate::eq, raddr,
+                                   constInt(raddrTy, r));
           acc = comb::MuxOp::create(builder, loc, match,
                                     storage[r][b].getData(), acc);
         }

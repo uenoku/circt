@@ -103,3 +103,16 @@ hw.module @top_wide(in %clk : i1, in %d : i8, out q : i8) {
   %r = seq.firreg %d clock %c : i8
   hw.output %r : i8
 }
+
+// Array flops explode through lossless bitcasts, bit by bit (the
+// surrounding bitcasts fold away in later canonicalization).
+// CHECK-LABEL: hw.module @top_array(
+// CHECK-COUNT-32: hw.instance {{.*}} @sdf(
+// CHECK-NOT: seq.firreg
+hw.module @top_array(in %clk : i1, in %d : i32, out q : i32) {
+  %c = seq.to_clock %clk
+  %a = hw.bitcast %d : (i32) -> !hw.array<4xi8>
+  %r = seq.firreg %a clock %c : !hw.array<4xi8>
+  %o = hw.bitcast %r : (!hw.array<4xi8>) -> i32
+  hw.output %o : i32
+}
