@@ -975,6 +975,10 @@ public:
   CutRewritePatternSet(
       llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns);
 
+  /// Maximum input size over accepted truth-table patterns. Bounds cut
+  /// enumeration: wider cuts can never match.
+  unsigned getMaxMatchedInputs() const { return maxMatchedInputs; }
+
   /// One pin-permutation occurrence of a truth-table pattern, keyed by the
   /// N-canonical table of the permuted function.
   struct NPNPatternEntry {
@@ -997,9 +1001,19 @@ private:
   DenseMap<std::pair<APInt, unsigned>, SmallVector<NPNPatternEntry, 2>>
       npnPatternMap;
 
+  /// Instantiate offline witness-table entries for a wide (7+ input)
+  /// pattern. Returns false when the pattern's function has no offline
+  /// table, in which case the caller skips the pattern.
+  bool addOfflineEntries(const CutRewritePattern *pattern,
+                         const BinaryTruthTable &table);
+
   /// Patterns that use custom matching logic instead of truth-table lookup.
   /// These patterns are checked against every cut.
   SmallVector<const CutRewritePattern *, 4> nonNPNPatterns;
+
+  /// Maximum input size over accepted truth-table patterns (maintained
+  /// during construction).
+  unsigned maxMatchedInputs = 0;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;

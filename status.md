@@ -141,9 +141,24 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   (rocket 71965=71965, ASAP7 226235=226235).
 - Correctness: phase-aware matching (negated NPN bindings materialize
   inverter cells with area/delay folded in; `TechMapper.cpp` match/rewrite).
-- Robustness: 6-input pattern/cut cap (`kMaxPatternInputs`,
-  `TechMapper.cpp:254`) — 9-input AO333/OA333 skipped, logic covers
-  through smaller cells (ABC's default cut size).
+- Robustness: pattern/cut cap raised 6→9 (`kMaxPatternInputs`). sky130
+  unaffected (nothing wider; bound follows the library via
+  `maxMatchedInputs`). ASAP7's ~21 wide AO/OA/AOI/OAI cells (7–9 inputs)
+  map via offline witness tables (below).
+- **9-input scaling**: multi-word (≤9 input) word-level swap/negate
+  transforms (single-word fast path untouched for n≤6; differential
+  unit-tested vs naive reference incl. the pos-5 cross-word case);
+  `enumeratePatternEntries` shared by load-time indexing and offline
+  generation; wide (7+) patterns use checked-in offline witness tables
+  (`lib/Dialect/Synth/Transforms/WidePatternTables.{h,cpp}`, 15 ASAP7
+  functions, 2835 key groups, ≤16 entries/key — sound: dropping only
+  loses pin-diversity candidates, never completeness) with mechanical
+  per-entry verification at load (corrupt data is fatal, never silent).
+  ASAP7 ChipTop: 800+ wide instances across all 15 functions (pin order
+  agreement proven by hits), flops exact (226235), Verilog exports clean.
+  Raising `max-cut-size-per-root` to 16 gains only 1.7x more wide matches
+  for 4x time and MORE total instances (2.01M vs 1.96M) — wide cuts get
+  pruned by design under timing priority; default settings stand.
 - Fail-fast memory fallback: `synth-seq-mem-mapper{max-fallback-bits=65536}`
   (default 64Kb; `circt-synth --max-mem-fallback-bits`) — memories over
   the limit with no macro match are a hard error naming geometry, bits,
@@ -186,11 +201,13 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    multi-read/write arrays fall back to synth-side flop explosion
    (correct; macros unreachable for them). See `rf_31x64`, `head_*`,
    `tail_*`, `regfile_*` modules.
-8. **Wide cells (7–9 inputs)**: `kMaxPatternInputs` still 6. sky130 has
-   nothing wider; ASAP7 has ~21 AO/OA/AOI/OAI cells at 7–9 inputs now
-   excluded. The flip makes lifting feasible (per-cut N-canon stays
-   cheap; only load-time permutation enumeration grows): 7–8 directly,
-   9 via offline witness tables. Next scaling task.
+8. **Wide cells (7–9 inputs): DONE.** `kMaxPatternInputs` 6→9 with the
+   bound following the library (`maxMatchedInputs`, so sky130 flows are
+   untouched); multi-word transforms; offline witness tables for all 15
+   distinct ASAP7 wide functions with load-time mechanical verification;
+   800+ wide instances on ChipTop ASAP7 at default settings. Cut-retention
+   tuning (`max-cut-size-per-root` 16) explored and rejected: 1.7x more
+   wide matches for 4x time and higher totals.
 
 ## Key files
 - `lib/Support/TruthTable.cpp` (word transforms, `computeNCanonicalForm`),
@@ -198,7 +215,9 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - `lib/Dialect/Synth/Transforms/TechMapper.cpp` (phase-aware
   match/rewrite, inverter selection, `kMaxPatternInputs`)
 - `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (N-canon pattern map,
-  `makeNPNBinding` + debug `verifyNPNBinding`)
+  `makeNPNBinding` + debug `verifyNPNBinding`, offline loader)
+- `lib/Dialect/Synth/Transforms/WidePatternTables.{h,cpp}` (offline
+  witness data + accessor)
 - `lib/Dialect/Synth/Transforms/SeqMemMapper.cpp` (`explodeToFlops` masked)
 - `lib/Dialect/Synth/Transforms/SeqTechMapper.cpp` (wide/array explode)
 - `lib/Dialect/LLHD/Transforms/LowerSyncProcesses.cpp`,
@@ -211,6 +230,11 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   `test/circt-synth/Inputs/sram-macros.mlir` (new). Flip covered by
   binding self-verification (active in assertion builds) + E2E counts
   (flops exact everywhere) + full lit suites.
+- Tests for 9-input scaling: `test/Dialect/Synth/tech-mapper-wide-skip.mlir`
+  (wide pattern without offline table is skipped, maps via smaller cells),
+  `NCanonicalFormTest.MatchesNaiveReference` (randomized differential to
+  n=9), `BinaryTruthTableTest.MultiWordPermutation` (every swap position
+  incl. cross-word pos=5 + random perms, n=7..9).
 
 ## Suggested reading for relaunch
 - https://scispace.com/pdf/lazy-man-s-logic-synthesis-43gevit82r.pdf

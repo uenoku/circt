@@ -182,6 +182,65 @@ uint64_t tableAllOnes(unsigned numInputs) {
   return (1ULL << (1u << numInputs)) - 1;
 }
 
+// Number of 64-bit words of a single-output table with 7..9 inputs.
+// Widths 128/256/512 are whole words, so no trim masks are ever needed.
+unsigned numTableWords(unsigned numInputs) {
+  assert(numInputs >= 7 && numInputs <= 9 && "multi-word range");
+  return 1u << (numInputs - 6);
+}
+
+// Negate one variable in a multi-word table (7..9 inputs). Variables below
+// 6 reuse the identical per-word masks (their pattern repeats every word);
+// variables at/above 6 swap adjacent blocks of whole words.
+void negateVariableWords(MutableArrayRef<uint64_t> words, unsigned numInputs,
+                         unsigned v) {
+  if (v < 6) {
+    uint64_t hi = kVarMasks[1][v];
+    unsigned s = 1u << v;
+    for (uint64_t &w : words)
+      w = ((w & hi) >> s) | ((w & ~hi) << s);
+    return;
+  }
+  unsigned block = 1u << (v - 6);
+  for (unsigned base = 0; base < words.size(); base += 2 * block)
+    for (unsigned i = 0; i < block; ++i)
+      std::swap(words[base + i], words[base + block + i]);
+}
+
+// Swap two adjacent variables (pos and pos+1) in a multi-word table.
+// Positions below 5 reuse the identical per-word closed forms; position 5
+// exchanges 32-bit halves across word pairs (its pattern repeats every 4
+// words); positions at/above 6 exchange blocks of whole words.
+void swapAdjacentWords(MutableArrayRef<uint64_t> words, unsigned numInputs,
+                       unsigned pos) {
+  if (pos < 5) {
+    unsigned s = 1u << pos;
+    uint64_t middleLow = kVarMasks[1][pos] & ~kVarMasks[1][pos + 1];
+    uint64_t middleHigh = ~kVarMasks[1][pos] & kVarMasks[1][pos + 1];
+    for (uint64_t &w : words) {
+      uint64_t rest = w & ~(middleLow | middleHigh);
+      w = rest | ((w & middleLow) << s) | ((w & middleHigh) >> s);
+    }
+    return;
+  }
+  if (pos == 5) {
+    // Exchange bits [32,64) of each even word with bits [0,32) of the next.
+    // The (var5,var6) joint pattern repeats every 4 words, pairing even
+    // words with their odd successor uniformly at any width.
+    for (unsigned i = 0; i < words.size(); i += 2) {
+      uint64_t lo = words[i] >> 32;
+      uint64_t hi = words[i + 1] & 0xFFFFFFFFULL;
+      words[i] = (words[i] & 0xFFFFFFFFULL) | (hi << 32);
+      words[i + 1] = (words[i + 1] & 0xFFFFFFFF00000000ULL) | lo;
+    }
+    return;
+  }
+  unsigned block = 1u << (pos - 6);
+  for (unsigned base = 0; base < words.size(); base += 4 * block)
+    for (unsigned i = 0; i < block; ++i)
+      std::swap(words[base + block + i], words[base + 2 * block + i]);
+}
+
 // Swap two adjacent variables (bit positions pos and pos+1) in a packed
 // single-output table. The middle minterms (var_pos=1,var_pos+1=0 and vice
 // versa) exchange places; the masks are the closed forms of the previously
@@ -220,6 +279,27 @@ BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
     return BinaryTruthTable(numInputs, numOutputs,
                             llvm::APInt(1u << numInputs, t));
   }
+  if (numOutputs == 1 && numInputs <= 9) {
+    // Multi-word: same adjacent-swap decomposition over whole words.
+    SmallVector<uint64_t, 8> words(
+        table.getRawData(), table.getRawData() + numTableWords(numInputs));
+    SmallVector<unsigned> cur(numInputs);
+    for (unsigned i = 0; i < numInputs; ++i)
+      cur[i] = i;
+    for (unsigned i = 0; i < numInputs; ++i) {
+      unsigned k = i;
+      while (cur[k] != permutation[i])
+        ++k;
+      while (k > i) {
+        swapAdjacentWords(words, numInputs, k - 1);
+        std::swap(cur[k], cur[k - 1]);
+        --k;
+      }
+    }
+    return BinaryTruthTable(
+        numInputs, numOutputs,
+        llvm::APInt(1u << numInputs, ArrayRef<uint64_t>(words)));
+  }
   BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
@@ -254,6 +334,19 @@ BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
     }
     return BinaryTruthTable(numInputs, numOutputs,
                             llvm::APInt(1u << numInputs, t));
+  }
+  if (numOutputs == 1 && numInputs <= 9) {
+    // Multi-word: same per-variable block swaps over whole words.
+    SmallVector<uint64_t, 8> words(
+        table.getRawData(), table.getRawData() + numTableWords(numInputs));
+    for (unsigned v = 0; v < numInputs; ++v) {
+      if (!(mask & (1u << v)))
+        continue;
+      negateVariableWords(words, numInputs, v);
+    }
+    return BinaryTruthTable(
+        numInputs, numOutputs,
+        llvm::APInt(1u << numInputs, ArrayRef<uint64_t>(words)));
   }
   BinaryTruthTable result(numInputs, numOutputs);
 
@@ -309,6 +402,27 @@ NCanonicalForm circt::computeNCanonicalForm(const BinaryTruthTable &tt) {
       best = {std::move(candidate), mask};
   }
   return best;
+}
+
+void circt::enumeratePatternEntries(
+    const BinaryTruthTable &table,
+    llvm::function_ref<void(const BinaryTruthTable &key,
+                            ArrayRef<unsigned> pinMap, unsigned inNeg)>
+        fn) {
+  SmallVector<unsigned, 9> permutation(table.numInputs);
+  for (unsigned i = 0; i < table.numInputs; ++i)
+    permutation[i] = i;
+  SmallVector<unsigned, 9> pinMap(table.numInputs);
+  do {
+    BinaryTruthTable permuted = table.applyPermutation(permutation);
+    NCanonicalForm ncanon = computeNCanonicalForm(permuted);
+    // Store the inverse permutation as the pin map: pinMap[p] is the cut
+    // input driving pattern pin p (applyPermutation composes on the input
+    // side, so the enumerated permutation must be inverted).
+    for (unsigned i = 0; i < permutation.size(); ++i)
+      pinMap[permutation[i]] = i;
+    fn(ncanon.table, pinMap, ncanon.inputNegation);
+  } while (std::next_permutation(permutation.begin(), permutation.end()));
 }
 
 bool BinaryTruthTable::operator==(const BinaryTruthTable &other) const {

@@ -22,6 +22,7 @@
 
 #include "circt/Dialect/Synth/Transforms/CutRewriter.h"
 
+#include "WidePatternTables.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/SynthOpInterfaces.h"
@@ -1157,13 +1158,64 @@ bool CutRewritePattern::useTruthTableMatcher(
 // CutRewritePatternSet
 //===----------------------------------------------------------------------===//
 
+bool CutRewritePatternSet::addOfflineEntries(const CutRewritePattern *pattern,
+                                             const BinaryTruthTable &table) {
+  unsigned n = table.numInputs;
+  unsigned numBits = 1u << n;
+  for (const auto &func : detail::getWidePatternFunctions()) {
+    if (func.numInputs != n)
+      continue;
+    if (func.numTableWords * 64 != numBits)
+      continue;
+    bool same = true;
+    const uint64_t *raw = table.table.getRawData();
+    for (unsigned i = 0; i < func.numTableWords; ++i)
+      same &= func.rawTable[i] == raw[i];
+    if (!same)
+      continue;
+    // Function matched: verify every entry mechanically, then instantiate.
+    // Verification recomputes the key from the stored pin map, so corrupt
+    // checked-in data can never silently miscompile (fatal, not silent).
+    SmallVector<unsigned, 9> pinMap(n), perm(n);
+    for (unsigned g = 0; g < func.numGroups; ++g) {
+      const auto &group = func.groups[g];
+      APInt keyBits(numBits,
+                    ArrayRef<uint64_t>(group.keyTable, group.numTableWords));
+      for (unsigned e = 0; e < group.numEntries; ++e) {
+        const auto &entry = group.entries[e];
+        for (unsigned p = 0; p < n; ++p) {
+          if (entry.pinMap[p] >= n)
+            llvm::report_fatal_error("corrupt offline NPN witness table");
+          pinMap[p] = entry.pinMap[p];
+        }
+        for (unsigned i = 0; i < n; ++i)
+          perm[pinMap[i]] = i;
+        BinaryTruthTable permuted = table.applyPermutation(perm);
+        NCanonicalForm ncanon = computeNCanonicalForm(permuted);
+        BinaryTruthTable check =
+            permuted.applyInputNegation(entry.inputNegation);
+        if (ncanon.table.table != keyBits || check.table != keyBits)
+          llvm::report_fatal_error("corrupt offline NPN witness table");
+        npnPatternMap[{keyBits, n}].push_back(
+            {pattern, SmallVector<unsigned, 6>(pinMap.begin(), pinMap.end()),
+             entry.inputNegation, table});
+      }
+    }
+    maxMatchedInputs = std::max(maxMatchedInputs, n);
+    return true;
+  }
+  return false;
+}
+
 CutRewritePatternSet::CutRewritePatternSet(
     llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns)
     : patterns(std::move(patterns)) {
   // Index truth-table patterns by N-canonical forms over all pin
   // permutations (mockturtle-style): per-cut matching then needs only
   // cheap negation-only canonicalization plus a hash lookup, for both
-  // output polarities. The factorial cost sits here, once per pattern.
+  // output polarities. Patterns up to 6 inputs enumerate here (once per
+  // pattern); wider patterns use offline witness tables (factorial cost
+  // does not scale per run).
   for (auto &pattern : this->patterns) {
     SmallVector<BinaryTruthTable, 2> tables;
     auto result = pattern->useTruthTableMatcher(tables);
@@ -1174,22 +1226,25 @@ CutRewritePatternSet::CutRewritePatternSet(
       continue;
     }
     for (auto &table : tables) {
-      SmallVector<unsigned, 6> permutation(table.numInputs);
-      for (unsigned i = 0; i < table.numInputs; ++i)
-        permutation[i] = i;
-      do {
-        BinaryTruthTable permuted = table.applyPermutation(permutation);
-        NCanonicalForm ncanon = computeNCanonicalForm(permuted);
-        // Store the inverse permutation as the pin map: entry.permutation[p]
-        // is the cut input driving pattern pin p (applyPermutation composes
-        // on the input side, so the enumerated permutation must be inverted
-        // to obtain the pin-to-input map; see makeNPNBinding).
-        SmallVector<unsigned, 6> pinMap(permutation.size());
-        for (unsigned i = 0; i < permutation.size(); ++i)
-          pinMap[permutation[i]] = i;
-        npnPatternMap[{ncanon.table.table, ncanon.table.numInputs}].push_back(
-            {pattern.get(), std::move(pinMap), ncanon.inputNegation, table});
-      } while (std::next_permutation(permutation.begin(), permutation.end()));
+      // Wide patterns (7+ inputs) use offline witness tables: load-time
+      // permutation enumeration does not scale factorially per run.
+      if (table.numInputs > 6) {
+        if (!addOfflineEntries(pattern.get(), table))
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Skipping wide cell with no offline witness table: "
+                     << pattern->getPatternName() << " (" << table.numInputs
+                     << " inputs)\n");
+        continue;
+      }
+      enumeratePatternEntries(table, [&](const BinaryTruthTable &key,
+                                         ArrayRef<unsigned> pinMap,
+                                         unsigned inNeg) {
+        npnPatternMap[{key.table, key.numInputs}].push_back(
+            {pattern.get(),
+             SmallVector<unsigned, 6>(pinMap.begin(), pinMap.end()), inNeg,
+             table});
+      });
+      maxMatchedInputs = std::max(maxMatchedInputs, table.numInputs);
     }
   }
 }
@@ -2123,10 +2178,10 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
                            unsigned outputNegation) {
     NCanonicalForm form = computeNCanonicalForm(table);
     LLVM_DEBUG(llvm::dbgs()
-               << "matchPolarity: cutTT=" << cutTable.table << " table="
-               << table.table << " nform=" << form.table.table
-               << " mwitness=" << form.inputNegation << " outNeg="
-               << outputNegation << "\n");
+               << "matchPolarity: cutTT=" << cutTable.table
+               << " table=" << table.table << " nform=" << form.table.table
+               << " mwitness=" << form.inputNegation
+               << " outNeg=" << outputNegation << "\n");
     for (const auto &entry : getMatchingPatterns(form.table)) {
       assert(entry.permutation.size() == cut.getInputSize() &&
              "Pattern input size must match cut input size");
@@ -2148,8 +2203,8 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
         llvm::dbgs() << "], stored inNeg: " << entry.inputNegation
                      << ", cut binding pins: [";
         llvm::interleaveComma(binding.patternInputToCutInput, llvm::dbgs());
-        llvm::dbgs() << "], inNeg: " << binding.inputNegation << ", outNeg: "
-                     << binding.outputNegation << "\n";
+        llvm::dbgs() << "], inNeg: " << binding.inputNegation
+                     << ", outNeg: " << binding.outputNegation << "\n";
         llvm::report_fatal_error("TechMapper: invalid NPN binding");
       }
 #endif

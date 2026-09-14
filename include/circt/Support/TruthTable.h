@@ -103,6 +103,19 @@ struct NCanonicalForm {
 /// Non-single-output tables are returned unchanged with a zero mask.
 NCanonicalForm computeNCanonicalForm(const BinaryTruthTable &tt);
 
+/// Enumerate all pin permutations of a single-output truth table for
+/// mockturtle-style pattern matching. For each permutation (lexicographic
+/// order from the identity), calls fn with the N-canonical key table, the
+/// pin map (pattern pin p is driven by cut input pinMap[p], i.e. the
+/// inverse permutation), and the input-negation witness. Shared by
+/// load-time pattern indexing and offline witness-table generation so the
+/// two can never diverge.
+void enumeratePatternEntries(
+    const BinaryTruthTable &table,
+    llvm::function_ref<void(const BinaryTruthTable &key,
+                            ArrayRef<unsigned> pinMap, unsigned inNeg)>
+        fn);
+
 //===----------------------------------------------------------------------===//
 // Truth Table Utilities
 //===----------------------------------------------------------------------===//

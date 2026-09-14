@@ -24,6 +24,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   SynthesisPipeline.cpp
   TechMapper.cpp
   TestPriorityCuts.cpp
+  WidePatternTables.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CIRCT_MAIN_INCLUDE_DIR}/circt/Dialect/Synth

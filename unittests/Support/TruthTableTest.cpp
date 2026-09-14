@@ -9,6 +9,8 @@
 #include "circt/Support/TruthTable.h"
 #include "llvm/ADT/APInt.h"
 #include "gtest/gtest.h"
+#include <cstdio>
+#include <random>
 
 using namespace circt;
 using namespace llvm;
@@ -170,129 +172,130 @@ TEST(BinaryTruthTableTest, Equality) {
   EXPECT_FALSE(tt1 == tt2);
 }
 
-TEST(NPNClassTest, BasicConstruction) {
-  // Test default constructor
-  NPNClass defaultNPN;
-  EXPECT_EQ(defaultNPN.inputNegation, 0u);
-  EXPECT_EQ(defaultNPN.outputNegation, 0u);
-  EXPECT_TRUE(defaultNPN.inputPermutation.empty());
-
-  // Test constructor from truth table
-  BinaryTruthTable tt(2, 1);
-  NPNClass npn(tt);
-  EXPECT_EQ(npn.truthTable, tt);
-  EXPECT_EQ(npn.inputNegation, 0u);
-  EXPECT_EQ(npn.outputNegation, 0u);
+TEST(NCanonicalFormTest, BasicMinOverNegations) {
+  // AND2 (1000): min over input negations {1000, 0100, 0010, 0001} is 0001.
+  BinaryTruthTable andTT(2, 1, APInt(4, 0x8));
+  NCanonicalForm canon = computeNCanonicalForm(andTT);
+  EXPECT_EQ(canon.table.table.getZExtValue(), 0x1u);
+  EXPECT_EQ(canon.inputNegation, 3u);
+  // Negated input: (¬a)&b has table 0100; N-canon is still 0001.
+  BinaryTruthTable negAnd(2, 1, APInt(4, 0x4));
+  NCanonicalForm canonNeg = computeNCanonicalForm(negAnd);
+  EXPECT_EQ(canonNeg.table.table.getZExtValue(), 0x1u);
+  // Witness reconstructs the canonical table.
+  EXPECT_EQ(
+      negAnd.applyInputNegation(canonNeg.inputNegation).table.getZExtValue(),
+      0x1u);
 }
 
-TEST(NPNClassTest, CanonicalFormSimple) {
-  // Create truth table for XOR: f(a,b) = a ^ b
-  BinaryTruthTable xorTT(2, 1);
-  xorTT.setOutput(APInt(2, 0), APInt(1, 0)); // 0 ^ 0 = 0
-  xorTT.setOutput(APInt(2, 1), APInt(1, 1)); // 0 ^ 1 = 1
-  xorTT.setOutput(APInt(2, 2), APInt(1, 1)); // 1 ^ 0 = 1
-  xorTT.setOutput(APInt(2, 3), APInt(1, 0)); // 1 ^ 1 = 0
-
-  NPNClass canonical = NPNClass::computeNPNCanonicalForm(xorTT);
-
-  // XOR is symmetric, so canonical form should be predictable
-  EXPECT_EQ(canonical.truthTable.numInputs, 2u);
-  EXPECT_EQ(canonical.truthTable.numOutputs, 1u);
-  EXPECT_EQ(canonical.inputPermutation.size(), 2u);
+TEST(NCanonicalFormTest, NonSingleOutputPassthrough) {
+  BinaryTruthTable tt(2, 2, APInt(8, 0xAB));
+  NCanonicalForm canon = computeNCanonicalForm(tt);
+  EXPECT_EQ(canon.table, tt);
+  EXPECT_EQ(canon.inputNegation, 0u);
 }
 
-TEST(NPNClassTest, EquivalenceOtherThanPermutation) {
-  BinaryTruthTable tt1(2, 1);
-  BinaryTruthTable tt2(2, 1);
-
-  NPNClass npn1(tt1, {0, 1}, 0, 0);
-  NPNClass npn2(tt2, {1, 0}, 0, 0); // Different permutation
-  NPNClass npn3(tt1, {0, 1}, 1, 0); // Different input negation
-
-  EXPECT_TRUE(npn1.equivalentOtherThanPermutation(npn2));
-  EXPECT_FALSE(npn1.equivalentOtherThanPermutation(npn3));
+namespace {
+/// Naive N-canonicalization with explicit per-minterm loops, independent of
+/// the word-level and APInt-vectorized implementations under test.
+static std::pair<APInt, unsigned> naiveNCanonicalForm(const APInt &tt,
+                                                      unsigned numInputs) {
+  unsigned width = 1u << numInputs;
+  APInt best = tt;
+  unsigned bestMask = 0;
+  for (unsigned mask = 0; mask < width; ++mask) {
+    APInt candidate(width, 0);
+    for (unsigned row = 0; row < width; ++row)
+      if (tt[static_cast<unsigned>(row ^ mask)])
+        candidate.setBit(row);
+    if (candidate.ult(best)) {
+      best = candidate;
+      bestMask = mask;
+    }
+  }
+  return {best, bestMask};
 }
 
-TEST(NPNClassTest, InputMapping) {
-  BinaryTruthTable tt(3, 1);
-  NPNClass npn1(tt, {2, 0, 1}, 0, 0); // Permutation [2,0,1]
-  NPNClass npn2(tt, {1, 2, 0}, 0, 0); // Permutation [1,2,0]
-
-  SmallVector<unsigned> permutation;
-  npn1.getInputPermutation(npn2, permutation);
-  // Target input 0 is at canonical slot 2, input 1 at slot 0, and input 2 at
-  // slot 1. Read npn1's input at those canonical slots: [1, 2, 0].
-  EXPECT_EQ(permutation, SmallVector<unsigned>({1, 2, 0}));
+static APInt randomTable(unsigned numInputs, unsigned seed) {
+  std::mt19937 rng(seed);
+  unsigned width = 1u << numInputs;
+  APInt tt(width, 0);
+  for (unsigned i = 0; i < width; ++i)
+    if (rng() & 1u)
+      tt.setBit(i);
+  return tt;
 }
 
-TEST(NPNClassTest, LexicographicalOrdering) {
-  BinaryTruthTable tt1(2, 1, APInt(4, 0x5)); // 0101
-  BinaryTruthTable tt2(2, 1, APInt(4, 0x6)); // 0110
-
-  NPNClass npn1(tt1);
-  NPNClass npn2(tt2);
-
-  // 0x5 < 0x6, so npn1 should be lexicographically smaller
-  EXPECT_TRUE(npn1.isLexicographicallySmaller(npn2));
-  EXPECT_FALSE(npn2.isLexicographicallySmaller(npn1));
+/// Naive permutation with explicit per-minterm loops, independent of the
+/// word-level implementations under test. Matches applyPermutation
+/// semantics: result(y) = orig(x) with y_j = x_{perm[j]}.
+static APInt naivePermute(const APInt &tt, unsigned numInputs,
+                          ArrayRef<unsigned> perm) {
+  unsigned width = 1u << numInputs;
+  APInt res(width, 0);
+  for (unsigned x = 0; x < width; ++x) {
+    if (!tt[x])
+      continue;
+    unsigned y = 0;
+    for (unsigned j = 0; j < numInputs; ++j)
+      if ((x >> perm[j]) & 1u)
+        y |= 1u << j;
+    res.setBit(y);
+  }
+  return res;
 }
+} // namespace
 
-TEST(NPNClassTest, Commutativity) {
-  // Create truth table for AND gate
-  BinaryTruthTable andTT(2, 1);
-  andTT.setOutput(APInt(2, 0), APInt(1, 0));
-  andTT.setOutput(APInt(2, 1), APInt(1, 0));
-  andTT.setOutput(APInt(2, 2), APInt(1, 0));
-  andTT.setOutput(APInt(2, 3), APInt(1, 1));
-
-  // Create swapped version (should be same canonical form since AND is
-  // commutative)
-  BinaryTruthTable andTTSwapped(2, 1);
-  andTTSwapped.setOutput(APInt(2, 0), APInt(1, 0)); // f(0,0) = 0
-  andTTSwapped.setOutput(APInt(2, 1), APInt(1, 0)); // f(0,1) = 0
-  andTTSwapped.setOutput(APInt(2, 2), APInt(1, 0)); // f(1,0) = 0
-  andTTSwapped.setOutput(APInt(2, 3), APInt(1, 1)); // f(1,1) = 1
-
-  NPNClass canonical1 = NPNClass::computeNPNCanonicalForm(andTT);
-  NPNClass canonical2 = NPNClass::computeNPNCanonicalForm(andTTSwapped);
-
-  // Should have same canonical form
-  EXPECT_TRUE(canonical1.equivalentOtherThanPermutation(canonical2));
-}
-
-TEST(NPNTableTest, LookupMatchesGenericCanonicalization) {
-  NPNTable table;
-  for (uint16_t truthTableValue :
-       {uint16_t(0x0000), uint16_t(0x0001), uint16_t(0x0008), uint16_t(0x0069),
-        uint16_t(0x0096), uint16_t(0x00E8), uint16_t(0x6996), uint16_t(0x8000),
-        uint16_t(0x9669), uint16_t(0xFEE8), uint16_t(0xFFFE),
-        uint16_t(0xFFFF)}) {
-    BinaryTruthTable tt(4, 1, APInt(16, truthTableValue));
-    NPNClass expected = NPNClass::computeNPNCanonicalForm(tt);
-    NPNClass actual;
-    ASSERT_TRUE(table.lookup(tt, actual));
-    EXPECT_EQ(actual.truthTable, expected.truthTable);
-    EXPECT_EQ(actual.inputNegation, expected.inputNegation);
-    EXPECT_EQ(actual.outputNegation, expected.outputNegation);
-    EXPECT_EQ(actual.inputPermutation, expected.inputPermutation);
+TEST(NCanonicalFormTest, MatchesNaiveReference) {
+  // Deterministic pseudo-random tables across arities, including shapes
+  // beyond the word-level fast paths. Validates both the table and the
+  // witness: reapplying the witness must reproduce the canonical table.
+  for (unsigned n : {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u}) {
+    for (unsigned seed = 0; seed < 25u; ++seed) {
+      APInt raw = randomTable(n, seed * 1315423911u + n);
+      BinaryTruthTable tt(n, 1, raw);
+      NCanonicalForm canon = computeNCanonicalForm(tt);
+      auto [expectedTable, expectedMask] = naiveNCanonicalForm(raw, n);
+      EXPECT_EQ(canon.table.table, expectedTable)
+          << "n=" << n << " seed=" << seed;
+      // The witness need not equal the naive first-min mask on ties, but
+      // must reproduce the canonical table.
+      BinaryTruthTable Middleton(n, 1, raw);
+      EXPECT_EQ(Middleton.applyInputNegation(canon.inputNegation).table,
+                expectedTable)
+          << "n=" << n << " seed=" << seed;
+    }
   }
 }
 
-TEST(NPNTableTest, LookupRejectsUnsupportedShapes) {
-  NPNTable table;
-  NPNClass result;
-
-  EXPECT_FALSE(table.lookup(BinaryTruthTable(3, 1, APInt(8, 0x96)), result));
-  EXPECT_FALSE(
-      table.lookup(BinaryTruthTable(5, 1, APInt(32, 0x69969669)), result));
-  EXPECT_FALSE(
-      table.lookup(BinaryTruthTable(4, 2, APInt(32, 0x12345678)), result));
-}
-
-TEST(NPNTableTest, Has222DistinctRepresentatives) {
-  SmallVector<uint16_t, 222> representatives;
-  collectCanonicalNPN4Representatives(representatives);
-  EXPECT_EQ(representatives.size(), 222u);
+TEST(BinaryTruthTableTest, MultiWordPermutation) {
+  // Multi-word adjacent swaps (7..9 inputs), exercising every swap position
+  // including the cross-word-boundary pos=5 case, plus random full
+  // permutations, against the naive reference.
+  std::mt19937 rng(0xC0FFEEu);
+  for (unsigned n : {7u, 8u, 9u}) {
+    APInt raw = randomTable(n, n * 2654435761u);
+    BinaryTruthTable tt(n, 1, raw);
+    // Every adjacent transposition individually.
+    for (unsigned pos = 0; pos + 1 < n; ++pos) {
+      SmallVector<unsigned, 9> perm(n);
+      for (unsigned i = 0; i < n; ++i)
+        perm[i] = i;
+      std::swap(perm[pos], perm[pos + 1]);
+      EXPECT_EQ(tt.applyPermutation(perm).table, naivePermute(raw, n, perm))
+          << "n=" << n << " pos=" << pos;
+    }
+    // Random full permutations.
+    for (unsigned trial = 0; trial < 10u; ++trial) {
+      SmallVector<unsigned, 9> perm(n);
+      for (unsigned i = 0; i < n; ++i)
+        perm[i] = i;
+      for (unsigned i = n - 1; i > 0; --i)
+        std::swap(perm[i], perm[rng() % (i + 1)]);
+      EXPECT_EQ(tt.applyPermutation(perm).table, naivePermute(raw, n, perm))
+          << "n=" << n << " trial=" << trial;
+    }
+  }
 }
 
 TEST(BinaryTruthTableTest, MultiBitOutput) {
@@ -467,89 +470,16 @@ TEST(BinaryTruthTableTest, MultiBitOutputNegation) {
   EXPECT_EQ(negated3.getOutput(APInt(2, 3)), APInt(2, 0)); // 11 -> 00
 }
 
-TEST(NPNClassTest, MultiBitOutputCanonical) {
-  // Create a 2-input, 2-output function: f(a,b) = (a&b, a|b)
-  BinaryTruthTable tt(2, 2);
-
-  tt.setOutput(APInt(2, 0), APInt(2, 0)); // f(0,0) = (0,0)
-  tt.setOutput(APInt(2, 1), APInt(2, 1)); // f(0,1) = (0,1)
-  tt.setOutput(APInt(2, 2), APInt(2, 1)); // f(1,0) = (0,1)
-  tt.setOutput(APInt(2, 3), APInt(2, 3)); // f(1,1) = (1,1)
-
-  NPNClass canonical = NPNClass::computeNPNCanonicalForm(tt);
-
-  // Should have correct dimensions
-  EXPECT_EQ(canonical.truthTable.numInputs, 2u);
-  EXPECT_EQ(canonical.truthTable.numOutputs, 2u);
-  EXPECT_EQ(canonical.inputPermutation.size(), 2u);
-
-  // The canonical form should be well-defined and reproducible
-  NPNClass canonical2 = NPNClass::computeNPNCanonicalForm(tt);
-  EXPECT_TRUE(canonical.equivalentOtherThanPermutation(canonical2));
-}
-
-TEST(NPNClassTest, MultiBitOutputEquivalence) {
-  // Create two equivalent 2-input, 2-output functions with different input
-  // orderings
-  BinaryTruthTable tt1(2, 2);
-  BinaryTruthTable tt2(2, 2);
-
-  // tt1: f(a,b) = (a&b, a^b)
-  tt1.setOutput(APInt(2, 0), APInt(2, 0)); // f(0,0) = (0,0)
-  tt1.setOutput(APInt(2, 1), APInt(2, 1)); // f(0,1) = (0,1)
-  tt1.setOutput(APInt(2, 2), APInt(2, 1)); // f(1,0) = (0,1)
-  tt1.setOutput(APInt(2, 3), APInt(2, 2)); // f(1,1) = (1,0)
-
-  // tt2: g(a,b) = f(b,a) = (b&a, b^a) - same function with swapped inputs
-  tt2.setOutput(APInt(2, 0), APInt(2, 0)); // g(0,0) = (0,0)
-  tt2.setOutput(APInt(2, 1), APInt(2, 1)); // g(0,1) = (0,1)
-  tt2.setOutput(APInt(2, 2), APInt(2, 1)); // g(1,0) = (0,1)
-  tt2.setOutput(APInt(2, 3), APInt(2, 2)); // g(1,1) = (1,0)
-
-  NPNClass canonical1 = NPNClass::computeNPNCanonicalForm(tt1);
-  NPNClass canonical2 = NPNClass::computeNPNCanonicalForm(tt2);
-
-  // Since the functions are equivalent under permutation, their canonical forms
-  // should be equivalent (though permutations might differ)
-  EXPECT_TRUE(canonical1.equivalentOtherThanPermutation(canonical2));
-}
-
-TEST(NPNClassTest, MultiBitOutputMapping) {
-  // Test input mapping with multi-bit outputs
-  BinaryTruthTable tt(2, 3); // 2 inputs, 3 outputs
-
-  NPNClass npn1(tt, {0, 1}, 0, 0); // Identity permutation
-  NPNClass npn2(tt, {1, 0}, 0, 0); // Swapped permutation
-
-  SmallVector<unsigned> permutation;
-  npn1.getInputPermutation(npn2, permutation);
-  EXPECT_EQ(permutation.size(), 2u);
-
-  // Verify the mapping relationship.
-  for (unsigned i = 0; i < 2; ++i) {
-    auto it = llvm::find(npn2.inputPermutation, i);
-    ASSERT_NE(it, npn2.inputPermutation.end());
-    unsigned canonicalPos = it - npn2.inputPermutation.begin();
-    EXPECT_EQ(permutation[i], npn1.inputPermutation[canonicalPos]);
-  }
-}
-
-TEST(NPNClassTest, MultiBitOutputLexicographical) {
-  // Test lexicographical ordering with multi-bit outputs
+TEST(BinaryTruthTableTest, LexicographicalOrderingMultiOutput) {
+  // Lexicographical ordering still works on raw tables (used by N-canonical
+  // min-search across arities).
   BinaryTruthTable tt1(2, 2, APInt(8, 0x12)); // 00010010
   BinaryTruthTable tt2(2, 2, APInt(8, 0x34)); // 00110100
 
-  NPNClass npn1(tt1);
-  NPNClass npn2(tt2);
-
-  // 0x12 < 0x34, so npn1 should be lexicographically smaller
-  EXPECT_TRUE(npn1.isLexicographicallySmaller(npn2));
-  EXPECT_FALSE(npn2.isLexicographicallySmaller(npn1));
+  // 0x12 < 0x34, so tt1 is lexicographically smaller.
+  EXPECT_TRUE(tt1.isLexicographicallySmaller(tt2));
+  EXPECT_FALSE(tt2.isLexicographicallySmaller(tt1));
 }
-
-//===----------------------------------------------------------------------===//
-// Variable Mask Tests
-//===----------------------------------------------------------------------===//
 
 TEST(VarMaskTest, TwoVariables) {
   // Test masks for 2 variables (4-bit truth table)

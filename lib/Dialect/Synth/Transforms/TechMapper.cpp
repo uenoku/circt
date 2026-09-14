@@ -233,13 +233,13 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
     // Only cells with at most this many inputs become patterns (ABC's
-    // default cut size). Pattern pin permutations are enumerated at load
-    // time (n! per cell), so wider cells would blow up startup; logic
-    // still maps through smaller cells. This also bounds cut enumeration.
-    // Wider cells (e.g. 9-input AO333) stay usable for future offline
-    // witness tables.
-    constexpr unsigned kMaxPatternInputs = 6;
-    unsigned maxInputSize = 0;
+    // default cut size is 6; 7..9 supported via word-level transforms with
+    // load-time permutation enumeration, 9-input functions via offline
+    // witness tables). Wider cells are skipped instead of crashing the
+    // canonicalizer. This also bounds cut enumeration.
+    // Wider cells (e.g. 9-input AO333) use offline witness tables (see
+    // the pattern-set constructor).
+    constexpr unsigned kMaxPatternInputs = 9;
     // Consider modules with the "synth.mapping_cost" attribute as library
     // modules.
     SmallVector<hw::HWModuleOp> nonLibraryModules;
@@ -340,9 +340,6 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
           std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
                                                std::move(*table));
 
-      // Update the maximum input size
-      maxInputSize = std::max(maxInputSize, pattern->getNumInputs());
-
       // Add the pattern to the library
       libraryPatterns.push_back(std::move(pattern));
     }
@@ -370,7 +367,10 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     CutRewritePatternSet patternSet(std::move(libraryPatterns));
     CutRewriterOptions options;
     options.strategy = strategy;
-    options.maxCutInputSize = std::min(maxInputSize, kMaxPatternInputs);
+    // Bound cut enumeration by the widest actually-matchable pattern:
+    // skipped wide cells (no offline table) must not widen it.
+    options.maxCutInputSize =
+        std::min(patternSet.getMaxMatchedInputs(), kMaxPatternInputs);
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = test;
     options.additionalCutRankings.push_back({compareCutsByAreaFlow, 1});
