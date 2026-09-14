@@ -153,9 +153,56 @@ void BinaryTruthTable::setOutput(const llvm::APInt &input,
     table.setBitVal(offset + i, output[i]);
 }
 
+namespace {
+// All-ones mask for a single-output table with n <= 6 inputs (2^n bits).
+uint64_t tableAllOnes(unsigned numInputs) {
+  if (numInputs >= 6)
+    return ~0ULL;
+  return (1ULL << (1u << numInputs)) - 1;
+}
+
+// Swap two adjacent variables (bit positions pos and pos+1) in a packed
+// single-output table. Minterms are grouped in chunks of 4 blocks of size
+// s = 2^pos; the middle two blocks exchange places.
+uint64_t swapAdjacentVariables(uint64_t table, unsigned numInputs,
+                               unsigned pos) {
+  unsigned s = 1u << pos;
+  unsigned chunk = s << 2;
+  unsigned width = 1u << numInputs;
+  uint64_t middleLow = 0, middleHigh = 0;
+  for (unsigned base = 0; base < width; base += chunk) {
+    for (unsigned i = 0; i < s; ++i) {
+      middleLow |= 1ULL << (base + s + i);
+      middleHigh |= 1ULL << (base + 2 * s + i);
+    }
+  }
+  uint64_t rest = table & ~(middleLow | middleHigh);
+  return rest | ((table & middleLow) << s) | ((table & middleHigh) >> s);
+}
+} // namespace
+
 BinaryTruthTable
 BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
   assert(permutation.size() == numInputs && "Permutation size mismatch");
+  if (numOutputs == 1 && numInputs <= 6) {
+    // Word-level: decompose into adjacent variable swaps.
+    uint64_t t = table.getZExtValue();
+    SmallVector<unsigned> cur(numInputs);
+    for (unsigned i = 0; i < numInputs; ++i)
+      cur[i] = i;
+    for (unsigned i = 0; i < numInputs; ++i) {
+      unsigned k = i;
+      while (cur[k] != permutation[i])
+        ++k;
+      while (k > i) {
+        t = swapAdjacentVariables(t, numInputs, k - 1);
+        std::swap(cur[k], cur[k - 1]);
+        --k;
+      }
+    }
+    return BinaryTruthTable(numInputs, numOutputs,
+                            llvm::APInt(1u << numInputs, t));
+  }
   BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
@@ -175,6 +222,24 @@ BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
 }
 
 BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
+  if (numOutputs == 1 && numInputs <= 6) {
+    // Word-level: negating variable v swaps adjacent blocks of size 2^v.
+    uint64_t t = table.getZExtValue();
+    for (unsigned v = 0; v < numInputs; ++v) {
+      if (!(mask & (1u << v)))
+        continue;
+      unsigned s = 1u << v;
+      unsigned width = 1u << numInputs;
+      uint64_t hi = 0;
+      for (unsigned base = 0; base < width; base += (s << 1))
+        for (unsigned i = 0; i < s; ++i)
+          hi |= 1ULL << (base + s + i);
+      t = ((t & hi) >> s) | ((t & ~hi) << s);
+      t &= tableAllOnes(numInputs);
+    }
+    return BinaryTruthTable(numInputs, numOutputs,
+                            llvm::APInt(1u << numInputs, t));
+  }
   BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
@@ -191,6 +256,13 @@ BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
 
 BinaryTruthTable
 BinaryTruthTable::applyOutputNegation(unsigned negation) const {
+  if (numOutputs == 1 && numInputs <= 6) {
+    uint64_t t = table.getZExtValue();
+    if (negation & 1)
+      t ^= tableAllOnes(numInputs);
+    return BinaryTruthTable(numInputs, numOutputs,
+                            llvm::APInt(1u << numInputs, t));
+  }
   BinaryTruthTable result(numInputs, numOutputs);
 
   for (unsigned i = 0; i < (1u << numInputs); ++i) {
@@ -463,6 +535,17 @@ NPNTable::NPNTable() {
   }
 
   assert(initialized.all() && "expected to populate all 4-input NPN entries");
+}
+
+NPNClass NPNTable::getCanonicalForm(const BinaryTruthTable &tt) const {
+  NPNClass result;
+  if (lookup(tt, result))
+    return result;
+  std::lock_guard<std::mutex> lock(cacheMutex);
+  auto it = canonicalCache.find(tt);
+  if (it != canonicalCache.end())
+    return it->second;
+  return canonicalCache[tt] = NPNClass::computeNPNCanonicalForm(tt);
 }
 
 bool NPNTable::lookup(const BinaryTruthTable &tt, NPNClass &result) const {

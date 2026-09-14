@@ -245,47 +245,31 @@ struct HWArrayInjectOpConversion : OpConversionPattern<hw::ArrayInjectOp> {
 
     Location loc = op.getLoc();
 
-    // Extract all elements from the input array
-    SmallVector<Value> originalElements;
+    // Select per element: mux(index == i, newElement, oldElements[i]).
+    // The previous lowering built an N x N matrix of candidate rows,
+    // which exceeds the integer bitwidth limit on large arrays (e.g.
+    // 512 x 64-bit elements need 16M bits). Out-of-range indices match
+    // nothing and keep the old element.
     auto inputArray = adaptor.getInput();
-    for (size_t i = 0; i < numElements; ++i) {
-      originalElements.push_back(rewriter.createOrFold<comb::ExtractOp>(
-          loc, inputArray, i * elemWidth, elemWidth));
+    auto index = adaptor.getIndex();
+    auto indexWidth =
+        cast<IntegerType>(index.getType()).getWidth();
+    // concat places its first operand at the MSB, so collect from the
+    // top element down.
+    SmallVector<Value> newElements;
+    newElements.reserve(numElements);
+    for (size_t i = numElements; i-- > 0;) {
+      Value oldElt = rewriter.createOrFold<comb::ExtractOp>(
+          loc, inputArray, i * elemWidth, elemWidth);
+      Value isTarget = rewriter.createOrFold<comb::ICmpOp>(
+          loc, comb::ICmpPredicate::eq, index,
+          hw::ConstantOp::create(rewriter, loc,
+                                 APInt(indexWidth, i)));
+      newElements.push_back(comb::MuxOp::create(rewriter, loc, isTarget,
+                                                adaptor.getElement(),
+                                                oldElt));
     }
-
-    // Create 2D array: each row represents what the array would look like
-    // if injection happened at that specific index
-    SmallVector<Value> arrayRows;
-    arrayRows.reserve(numElements);
-    for (int injectIdx = numElements - 1; injectIdx >= 0; --injectIdx) {
-      SmallVector<Value> rowElements;
-      rowElements.reserve(numElements);
-
-      // Build the row: array[n-1], array[n-2], ..., but replace element at
-      // injectIdx with newVal
-      for (int originalIdx = numElements - 1; originalIdx >= 0; --originalIdx) {
-        if (originalIdx == injectIdx) {
-          rowElements.push_back(adaptor.getElement());
-        } else {
-          rowElements.push_back(originalElements[originalIdx]);
-        }
-      }
-
-      // Concatenate elements to form this row
-      Value row = hw::ArrayCreateOp::create(rewriter, loc, rowElements);
-      arrayRows.push_back(row);
-    }
-
-    // Create the 2D array by concatenating all rows
-    // arrayRows[0] corresponds to injection at index 0
-    // arrayRows[1] corresponds to injection at index 1, etc.
-    Value array2D = hw::ArrayCreateOp::create(rewriter, loc, arrayRows);
-
-    // Create array_get operation to select the row
-    auto arrayGetOp =
-        hw::ArrayGetOp::create(rewriter, loc, array2D, adaptor.getIndex());
-
-    rewriter.replaceOp(op, arrayGetOp);
+    rewriter.replaceOpWithNewOp<comb::ConcatOp>(op, newElements);
     return success();
   }
 };

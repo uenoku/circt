@@ -20,6 +20,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include <array>
 #include <cstdint>
+#include <map>
+#include <mutex>
 
 namespace circt {
 
@@ -172,6 +174,12 @@ public:
   /// Returns false if the given truth table shape is unsupported.
   bool lookup(const BinaryTruthTable &tt, NPNClass &result) const;
 
+  /// Canonical form, using the precomputed table for 4-input functions
+  /// and a memoized brute force otherwise. Cuts share boolean functions
+  /// heavily (every 2:1 mux is identical), so the cache turns repeated
+  /// O(n! * 2^n) searches into map lookups. Thread-safe.
+  NPNClass getCanonicalForm(const BinaryTruthTable &tt) const;
+
 private:
   struct Entry4 {
     uint16_t representative = 0;
@@ -181,6 +189,23 @@ private:
   };
 
   std::array<Entry4, 1u << 16> entries4;
+
+  struct TruthTableLess {
+    bool operator()(const BinaryTruthTable &a,
+                    const BinaryTruthTable &b) const {
+      if (a.numInputs != b.numInputs)
+        return a.numInputs < b.numInputs;
+      if (a.numOutputs != b.numOutputs)
+        return a.numOutputs < b.numOutputs;
+      if (a.table == b.table)
+        return false;
+      return a.table.ult(b.table);
+    }
+  };
+
+  mutable std::mutex cacheMutex;
+  mutable std::map<BinaryTruthTable, NPNClass, TruthTableLess>
+      canonicalCache;
 };
 
 /// Collect all canonical 4-input single-output NPN representatives in

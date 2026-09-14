@@ -480,7 +480,9 @@ const NPNClass &Cut::getNPNClass(const NPNTable *npnTable) const {
 
   const auto &truthTable = *getTruthTable();
   NPNClass canonicalForm;
-  if (!npnTable || !npnTable->lookup(truthTable, canonicalForm))
+  if (npnTable)
+    canonicalForm = npnTable->getCanonicalForm(truthTable);
+  else
     canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
 
   npnClass.emplace(std::move(canonicalForm));

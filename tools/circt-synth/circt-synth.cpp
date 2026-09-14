@@ -330,6 +330,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
 
   if (!untilReached(UntilMapping)) {
+    // NOTE: imported library bodies intentionally stay in comb here:
+    // with --top, the hierarchical runner above only visits the design
+    // hierarchy. TechMapper simulates comb And/Or/Xor directly, so no
+    // normalization is needed. (A top-level ConvertCombToSynth would
+    // also rewrite design modules outside the --top scope.)
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;
