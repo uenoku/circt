@@ -127,25 +127,18 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - Truth-table simulator handles 1-bit comb And/Or (unconverted lib bodies).
 - Seq mapping: wide-flop + array-flop explosion, mem→flop fallback incl.
   masked writes with per-lane enables, SRAM-macro path preserved.
-- Perf: 4-input NPN lookup table (`NPNTable` ctor, 222 representatives —
-  4-input canonicalization is O(1), same as ABC's mapper tables) plus NPN
-  canonical-form memoization (`NPNTable::getCanonicalForm`) — fifo NPN
-  stats BEFORE the prefilter: 119307 hits / 592 misses. Word-level
-  (single-u64) transforms for n≤6 with closed-form var masks (no per-call
-  bit loops). fifo 25 min-hang → ~1–3 s; addr_gen 25 s → 0.95 s.
-- **Semi-canonical NPN prefilter** (`BinaryTruthTable::getNPNSignature`,
-  `CutRewritePatternSet::hasFamilyWithSignature`): cheap
-  negation+permutation-invariant signature (arity, normalized weight,
-  sorted normalized cofactor pairs) per cut; exact O(n!·2^n)
-  canonicalization runs only on signature hits. fifo NPN stats AFTER:
-  57024 hits / 117 misses (5x fewer exact searches). Exactness PRESERVED
-  (unlike kitty's lossy flip-swap): fifo outputs byte-identical across 4
-  binaries, rocket deterministic run-to-run. ChipTop tech-map: 6+ min
-  (failing) → 11 s (succeeding) — combined with the constant-fold fix;
-  NPN-stats + fifo timing are the clean attribution. ABC reference: same
-  4-input tables, cofactor trick for n=5, exhaustive for n=6 (no better
-  exact algorithm there either — Gray-code incremental enumeration
-  evaluated and deferred at 11 s).
+- Perf: mockturtle-style NPN matching — patterns pre-enumerate all pin
+  permutations at load (keyed by N-canonical tables), per-cut matching is
+  negation-only canonicalization (both output polarities) + hash lookup.
+  Replaced: 4-input NPN table, canonical-form memoization, semi-canonical
+  prefilter (~470 lines deleted). Exactness preserved end-to-end (every
+  binding mechanically simulated in assertion builds). Word-level
+  (single-u64) transforms for n≤6 with closed-form var masks. fifo
+  25 min-hang → ~2.6 s; ChipTop tech-map 6+ min → ~11 s (sky130).
+  Selections differ benignly from pre-flip on symmetric cells (more
+  same-class pin assignments explored, best-arrival wins; e.g. fifo
+  mux2_4 1602→1 with AOI+INV absorbing) — flop counts exact everywhere
+  (rocket 71965=71965, ASAP7 226235=226235).
 - Correctness: phase-aware matching (negated NPN bindings materialize
   inverter cells with area/delay folded in; `TechMapper.cpp` match/rewrite).
 - Robustness: 6-input pattern/cut cap (`kMaxPatternInputs`,
@@ -160,9 +153,7 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   `hw.module.extern` + `#synth.sram.macro` externs into the design for
   `SeqMemMapper` (design symbols win; warns on empty files). ChipTop's 4
   oversized SRAMs covered by `tmp/sram-macros-chiptop.mlir` (placeholder
-  names, not PDK cells): with macros, pre-TechMapper stages drop from
-  60+ min to ~16 s; TechMapper over the remaining ~210Kb of small flops
-  is the current long pole (suspected NPN — see below).
+  names, not PDK cells).
 
 ## Open problems (for relaunch)
 1. **Symmetry-pruned exact NPN is BROKEN — reverted, do not reapply blindly.**
@@ -171,20 +162,17 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    Result: `tech-mapper.mlir` + `tech-mapper-phase.mlir` failed with
    "No matching cut found" on previously-matching cuts. The coset proof
    must have a hole (prime suspect: static symmetries vs. the dynamic
-   prefix context, or the skip predicate direction). Reverted to plain
-   exhaustive search; suite green. Cache + word ops carry scaling for now.
-   The Lazy Man's paper (§ cut rewriting / choice networks) is the right
-   background before retrying; also compare ABC's `Abc_NpnSymmetries` +
+   prefix context, or the skip predicate direction). Superseded by the
+   mockturtle-style flip (no per-cut permutation search at all).
+   The Lazy Man's paper (§ cut rewriting / choice networks) remains useful
+   background; also compare ABC's `Abc_NpnSymmetries` +
    canonicalization approach.
-2. **Per-pattern NPN re-matching** is the next scaling wall after
-   canonicalization (~0.1 s/cut with 400-pattern libs observed earlier;
-   mitigated by caps). Options: share one match per NPN class across
-   same-function size variants; ABC supergates (`super_gates.c`) for
-   multi-level collapse — NOT implemented (each lib cell = one pattern).
-   UPDATE 2026-09-14: semi-canonical prefilter implemented (see What's
-   done) — exact search now runs only on signature hits; per-pattern
-   match cost itself (binding + arrival, O(n) over same-class drive
-   variants) measured negligible. CLOSED unless profiles say otherwise.
+2. **Per-pattern NPN re-matching** is obsolete as a scaling wall: the
+   mockturtle-style flip (see What's done) moved the factorial to
+   load time; per-cut matching is O(2^n) + hash lookups. Supergates
+   (`super_gates.c` for multi-level collapse) are now EASY to add —
+   just more entries in the same N-canon map — but NOT yet implemented
+   (each lib cell = one pattern). CLOSED unless profiles say otherwise.
 3. **SDC emission** (`write_sdc` equivalent) untouched; `constraint.sdc`
    files are flow inputs. Now the TOP remaining flow gap: netlist + SDC
    are the stated goal and only the netlist exists.
@@ -198,13 +186,19 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    multi-read/write arrays fall back to synth-side flop explosion
    (correct; macros unreachable for them). See `rf_31x64`, `head_*`,
    `tail_*`, `regfile_*` modules.
+8. **Wide cells (7–9 inputs)**: `kMaxPatternInputs` still 6. sky130 has
+   nothing wider; ASAP7 has ~21 AO/OA/AOI/OAI cells at 7–9 inputs now
+   excluded. The flip makes lifting feasible (per-cut N-canon stays
+   cheap; only load-time permutation enumeration grows): 7–8 directly,
+   9 via offline witness tables. Next scaling task.
 
 ## Key files
-- `lib/Support/TruthTable.cpp` (`getCanonicalForm:540`, word transforms,
-  cache stats `dumpCacheStats:554`), `include/circt/Support/TruthTable.h`
+- `lib/Support/TruthTable.cpp` (word transforms, `computeNCanonicalForm`),
+  `include/circt/Support/TruthTable.h`
 - `lib/Dialect/Synth/Transforms/TechMapper.cpp` (phase-aware
-  match/rewrite ~117-200, inverter selection, `kMaxPatternInputs:254`)
-- `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (`Cut::getNPNClass:477`)
+  match/rewrite, inverter selection, `kMaxPatternInputs`)
+- `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (N-canon pattern map,
+  `makeNPNBinding` + debug `verifyNPNBinding`)
 - `lib/Dialect/Synth/Transforms/SeqMemMapper.cpp` (`explodeToFlops` masked)
 - `lib/Dialect/Synth/Transforms/SeqTechMapper.cpp` (wide/array explode)
 - `lib/Dialect/LLHD/Transforms/LowerSyncProcesses.cpp`,
@@ -214,9 +208,9 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   `test/Dialect/LLHD/Transforms/strip-init-drives.mlir` (new),
   `test/Dialect/Synth/seq-mem-mapper-fallback-limit{,-ok}.mlir` (new),
   `test/circt-synth/sram-macros.mlir` +
-  `test/circt-synth/Inputs/sram-macros.mlir` (new). Prefilter + mask +
-  pipeline-cleanup covered by output-identity (fifo byte-identical
-  across 4 binaries; rocket deterministic) + full lit suites.
+  `test/circt-synth/Inputs/sram-macros.mlir` (new). Flip covered by
+  binding self-verification (active in assertion builds) + E2E counts
+  (flops exact everywhere) + full lit suites.
 
 ## Suggested reading for relaunch
 - https://scispace.com/pdf/lazy-man-s-logic-synthesis-43gevit82r.pdf

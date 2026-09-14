@@ -33,7 +33,6 @@
 #include <memory>
 #include <optional>
 #include <utility>
-#include <vector>
 
 namespace circt {
 namespace synth {
@@ -543,10 +542,6 @@ class Cut {
   /// Computed lazily when first accessed to avoid unnecessary computation.
   mutable std::optional<BinaryTruthTable> truthTable;
 
-  /// Cached NPN canonical form for this cut.
-  /// Computed lazily from the truth table when first accessed.
-  mutable std::optional<NPNClass> npnClass;
-
   std::optional<MatchedPattern> matchedPattern;
 
   /// Root index in LogicNetwork (0 indicates no root for a trivial cut).
@@ -635,18 +630,6 @@ public:
 
   /// Get operand cuts (for fast TT computation).
   ArrayRef<const Cut *> getOperandCuts() const { return operandCuts; }
-
-  /// Get the NPN canonical form for this cut.
-  /// This is used for efficient pattern matching against library components.
-  const NPNClass &getNPNClass() const;
-  const NPNClass &getNPNClass(const NPNTable *npnTable) const;
-
-  /// Get the permutated inputs for this cut based on the given pattern NPN.
-  /// Returns indices into the inputs vector.
-  void
-  getPermutatedInputIndices(const NPNTable *npnTable,
-                            const NPNClass &patternNPN,
-                            SmallVectorImpl<unsigned> &permutedIndices) const;
 
   /// Get arrival times for each input of this cut.
   /// Returns failure if any input doesn't have a valid matched pattern.
@@ -765,9 +748,6 @@ struct CutRewriterOptions {
 
   /// Run priority cuts enumeration and dump the cut sets.
   bool testPriorityCuts = false;
-
-  /// Optional lookup table used to accelerate 4-input NPN canonicalization.
-  const NPNTable *npnTable = nullptr;
 };
 
 //===----------------------------------------------------------------------===//
@@ -944,7 +924,7 @@ struct CutRewritePattern {
   /// This is useful for patterns that match regardless of their truth tables,
   /// such as LUT-based patterns.
   virtual bool
-  useTruthTableMatcher(SmallVectorImpl<NPNClass> &matchingNPNClasses) const;
+  useTruthTableMatcher(SmallVectorImpl<BinaryTruthTable> &matchingTables) const;
 
   /// Return a new operation that replaces the matched cut.
   ///
@@ -989,37 +969,37 @@ public:
   /// Constructor that takes ownership of the provided patterns.
   ///
   /// During construction, patterns are analyzed and organized for efficient
-  /// lookup. Truth table matchers are indexed by their NPN canonical forms.
+  /// lookup. Truth table matchers enumerate all pin permutations at load
+  /// time, indexed by N-canonical forms, so per-cut matching needs only
+  /// cheap negation-only canonicalization plus a hash lookup.
   CutRewritePatternSet(
       llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns);
 
-  /// Return true if any truth-table pattern family shares the table's
-  /// NPN-invariant signature. Signatures are necessary for NPN
-  /// equivalence, so false means the cut can match no pattern and exact
-  /// canonicalization is safely skipped. Empty (non-single-output or
-  /// degenerate) signatures, and pattern sets containing custom
-  /// (non-NPN) matchers that observe every cut, always return true.
-  bool hasFamilyWithSignature(const BinaryTruthTable &tt) const;
+  /// One pin-permutation occurrence of a truth-table pattern, keyed by the
+  /// N-canonical table of the permuted function.
+  struct NPNPatternEntry {
+    const CutRewritePattern *pattern;
+    /// Pattern pin p is driven by cut input permutation[p] (inverse of the
+    /// load-time enumerated permutation; see makeNPNBinding).
+    SmallVector<unsigned, 6> permutation;
+    /// Input-negation witness achieving the N-canonical table.
+    unsigned inputNegation = 0;
+    /// Raw function of the pattern (for debug verification of bindings).
+    BinaryTruthTable table;
+  };
 
 private:
   /// Owned collection of all rewriting patterns.
   llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
 
-  /// Fast lookup table mapping NPN canonical forms to matching patterns.
-  /// Each entry maps a truth table and input size to patterns that can handle
-  /// it.
-  DenseMap<std::pair<APInt, unsigned>,
-           SmallVector<std::pair<NPNClass, const CutRewritePattern *>>>
-      npnToPatternMap;
+  /// Fast lookup table mapping N-canonical tables (plus input size) to
+  /// pattern pin-permutation occurrences that implement them.
+  DenseMap<std::pair<APInt, unsigned>, SmallVector<NPNPatternEntry, 2>>
+      npnPatternMap;
 
-  /// Patterns that use custom matching logic instead of NPN lookup.
+  /// Patterns that use custom matching logic instead of truth-table lookup.
   /// These patterns are checked against every cut.
   SmallVector<const CutRewritePattern *, 4> nonNPNPatterns;
-
-  /// NPN-invariant signatures (see BinaryTruthTable::getNPNSignature),
-  /// one per distinct pattern canonical table. Used by the
-  /// semi-canonical prefilter in pattern matching.
-  SmallVector<std::vector<unsigned>, 64> npnSignatures;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
@@ -1077,9 +1057,10 @@ private:
   /// rewriting across the hierarchy.
   LogicalResult enumerateCuts(Operation *topOp);
 
-  /// Find patterns that match a cut's truth table.
-  ArrayRef<std::pair<NPNClass, const CutRewritePattern *>>
-  getMatchingPatternsFromTruthTable(const Cut &cut) const;
+  /// Find pattern pin-permutation occurrences whose N-canonical table
+  /// equals the given (already N-canonicalized) table.
+  ArrayRef<CutRewritePatternSet::NPNPatternEntry>
+  getMatchingPatterns(const BinaryTruthTable &table) const;
 
   /// Match a cut against available patterns and compute arrival time.
   std::optional<MatchedPattern> patternMatchCut(const Cut &cut);

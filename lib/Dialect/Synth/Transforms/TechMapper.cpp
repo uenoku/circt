@@ -47,7 +47,8 @@ using namespace circt::synth;
 // Tech Mapper Pass
 //===----------------------------------------------------------------------===//
 
-static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
+static llvm::FailureOr<BinaryTruthTable>
+getCellTruthTable(hw::HWModuleOp module) {
   // Get input and output ports
   auto inputTypes = module.getInputTypes();
   auto outputTypes = module.getOutputTypes();
@@ -80,30 +81,23 @@ static llvm::FailureOr<NPNClass> getNPNClassFromModule(hw::HWModuleOp module) {
   for (auto result : bodyBlock->getTerminator()->getOperands())
     results.push_back(result);
 
-  // Create a truth table for the module
-  FailureOr<BinaryTruthTable> truthTable = getTruthTable(results, bodyBlock);
-  if (failed(truthTable))
-    return failure();
-
-  return NPNClass::computeNPNCanonicalForm(*truthTable);
+  // Create a truth table for the module. Pin permutations are enumerated
+  // by the pattern set at load time; no canonicalization is needed here.
+  return getTruthTable(results, bodyBlock);
 }
 
 /// Simple technology library encoded as a HWModuleOp.
 struct TechLibraryPattern : public CutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,
-                     SmallVector<DelayType> delay, NPNClass npnClass)
+                     SmallVector<DelayType> delay, BinaryTruthTable table)
       : CutRewritePattern(module->getContext()), area(area),
-        delay(std::move(delay)), module(module), npnClass(std::move(npnClass)) {
+        delay(std::move(delay)), module(module), table(std::move(table)) {
 
     LLVM_DEBUG({
       llvm::dbgs() << "Created Tech Library Pattern for module: "
                    << module.getModuleName() << "\n"
-                   << "NPN Class: " << this->npnClass.truthTable.table << "\n"
-                   << "Inputs: " << this->npnClass.inputPermutation.size()
-                   << "\n"
-                   << "Input Negation: " << this->npnClass.inputNegation << "\n"
-                   << "Output Negation: " << this->npnClass.outputNegation
-                   << "\n";
+                   << "Table: " << this->table.table << "\n"
+                   << "Inputs: " << this->table.numInputs << "\n";
     });
   }
 
@@ -112,16 +106,15 @@ struct TechLibraryPattern : public CutRewritePattern {
     return moduleCp.getModuleName();
   }
 
-  /// Match the cut set against this library primitive. Bindings with
-  /// negation are phase-aware: each negated terminal materializes an
-  /// inverter cell, with its area and delay folded into the match cost
-  /// so selection stays timing- and area-accurate.
-  std::optional<MatchResult> match(CutEnumerator &enumerator, const Cut &cut,
+  /// Match the cut set against this library primitive. The caller
+  /// guarantees N-canonical agreement (via the pattern-set lookup, for
+  /// either output polarity); the binding describes how pattern pins
+  /// map to the cut. Bindings with negation are phase-aware: each negated
+  /// terminal materializes an inverter cell, with its area and delay
+  /// folded into the match cost so selection stays timing- and
+  /// area-accurate.
+  std::optional<MatchResult> match(CutEnumerator &, const Cut &,
                                    const MatchBinding &binding) const override {
-    const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
-    if (!(cutNPN.truthTable == npnClass.truthTable))
-      return std::nullopt;
-
     if (!binding.hasNegation())
       return MatchResult(area, delay);
     if (!inverter || inverter->delay.empty())
@@ -154,8 +147,8 @@ struct TechLibraryPattern : public CutRewritePattern {
 
   /// Enable truth table matching for this pattern
   bool useTruthTableMatcher(
-      SmallVectorImpl<NPNClass> &matchingNPNClasses) const override {
-    matchingNPNClasses.push_back(npnClass);
+      SmallVectorImpl<BinaryTruthTable> &matchingTables) const override {
+    matchingTables.push_back(table);
     return true;
   }
 
@@ -217,14 +210,14 @@ struct TechLibraryPattern : public CutRewritePattern {
   }
 
   double getArea() const { return area; }
-  const NPNClass &getNPNClass() const { return npnClass; }
+  const BinaryTruthTable &getTruthTable() const { return table; }
   void setInverter(const TechLibraryPattern *inv) { inverter = inv; }
 
 private:
   const double area;
   const SmallVector<DelayType> delay;
   hw::HWModuleOp module;
-  NPNClass npnClass;
+  BinaryTruthTable table;
   // Cheapest 1-input inverter cell, for phase-aware matches. Null when
   // the library has none (negated bindings then never match).
   const TechLibraryPattern *inverter = nullptr;
@@ -234,23 +227,17 @@ namespace {
 struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
   using TechMapperBase<TechMapperPass>::TechMapperBase;
 
-  LogicalResult initialize(MLIRContext *context) override {
-    (void)context;
-    npnTable = std::make_shared<const NPNTable>();
-    return success();
-  }
-
   void runOnOperation() override {
     auto module = getOperation();
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
-    // NPN canonicalization is brute force O(n! * 2^n): only cells with
-    // at most this many inputs become patterns (ABC's default cut size).
-    // Wider cells (e.g. 9-input AO333) stay usable for future
-    // semi-canonical matching but never match today; logic still maps
-    // through smaller cells. This also bounds cut enumeration, whose
-    // canonicalization cost would otherwise explode on wide cuts.
+    // Only cells with at most this many inputs become patterns (ABC's
+    // default cut size). Pattern pin permutations are enumerated at load
+    // time (n! per cell), so wider cells would blow up startup; logic
+    // still maps through smaller cells. This also bounds cut enumeration.
+    // Wider cells (e.g. 9-input AO333) stay usable for future offline
+    // witness tables.
     constexpr unsigned kMaxPatternInputs = 6;
     unsigned maxInputSize = 0;
     // Consider modules with the "synth.mapping_cost" attribute as library
@@ -340,9 +327,10 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         delay.push_back(static_cast<DelayType>(arc.getIntrinsic()));
       }
 
-      // Compute NPN Class for the module.
-      auto npnClass = getNPNClassFromModule(hwModule);
-      if (failed(npnClass)) {
+      // Compute the raw truth table for the module. Pin permutations
+      // are enumerated by the pattern set; no canonicalization here.
+      auto table = getCellTruthTable(hwModule);
+      if (failed(table)) {
         signalPassFailure();
         return;
       }
@@ -350,7 +338,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       // Create a CutRewritePattern for the library module
       std::unique_ptr<TechLibraryPattern> pattern =
           std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
-                                               std::move(*npnClass));
+                                               std::move(*table));
 
       // Update the maximum input size
       maxInputSize = std::max(maxInputSize, pattern->getNumInputs());
@@ -363,19 +351,15 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       return markAllAnalysesPreserved();
 
     // Phase-aware matching needs one inverter cell: the cheapest 1-input
-    // pattern implementing negation (canonical NOT class). Every pattern
-    // shares it; without one, negated bindings keep failing as before.
+    // pattern implementing negation (raw NOT table). Every pattern shares
+    // it; without one, negated bindings keep failing as before.
     const TechLibraryPattern *inverter = nullptr;
-    NPNClass notClass =
-        NPNClass::computeNPNCanonicalForm(BinaryTruthTable(1, 1, APInt(2, 1)));
+    BinaryTruthTable notTable(1, 1, APInt(2, 1));
     for (auto &pattern : libraryPatterns) {
       auto *tech = static_cast<TechLibraryPattern *>(pattern.get());
       if (tech->getNumInputs() != 1 || tech->getNumOutputs() != 1)
         continue;
-      const NPNClass &npn = tech->getNPNClass();
-      if (!(npn.truthTable == notClass.truthTable) ||
-          npn.inputNegation != notClass.inputNegation ||
-          npn.outputNegation != notClass.outputNegation)
+      if (!(tech->getTruthTable() == notTable))
         continue;
       if (!inverter || tech->getArea() < inverter->getArea())
         inverter = tech;
@@ -389,7 +373,6 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.maxCutInputSize = std::min(maxInputSize, kMaxPatternInputs);
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = test;
-    options.npnTable = npnTable.get();
     options.additionalCutRankings.push_back({compareCutsByAreaFlow, 1});
     options.additionalCutRankings.push_back({compareCutsByArea, 1});
     std::atomic<uint64_t> numCutsCreatedCount = 0;
@@ -416,11 +399,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     numCutsCreated += numCutsCreatedCount;
     numCutSetsCreated += numCutSetsCreatedCount;
     numCutsRewritten += numCutsRewrittenCount;
-    LLVM_DEBUG(npnTable->dumpCacheStats(llvm::dbgs()));
   }
-
-private:
-  std::shared_ptr<const NPNTable> npnTable;
 };
 
 } // namespace

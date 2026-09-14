@@ -472,30 +472,6 @@ bool Cut::isTrivialCut() const {
   return rootIndex == 0 && inputs.size() == 1;
 }
 
-const NPNClass &Cut::getNPNClass() const { return getNPNClass(nullptr); }
-
-const NPNClass &Cut::getNPNClass(const NPNTable *npnTable) const {
-  if (npnClass)
-    return *npnClass;
-
-  const auto &truthTable = *getTruthTable();
-  NPNClass canonicalForm;
-  if (npnTable)
-    canonicalForm = npnTable->getCanonicalForm(truthTable);
-  else
-    canonicalForm = NPNClass::computeNPNCanonicalForm(truthTable);
-
-  npnClass.emplace(std::move(canonicalForm));
-  return *npnClass;
-}
-
-void Cut::getPermutatedInputIndices(
-    const NPNTable *npnTable, const NPNClass &patternNPN,
-    SmallVectorImpl<unsigned> &permutedIndices) const {
-  const auto &npnClass = getNPNClass(npnTable);
-  npnClass.getInputPermutation(patternNPN, permutedIndices);
-}
-
 LogicalResult
 Cut::getInputArrivalTimes(CutEnumerator &enumerator,
                           SmallVectorImpl<DelayType> &results) const {
@@ -561,8 +537,10 @@ void Cut::dump(llvm::raw_ostream &os, const LogicNetwork &network) const {
     os << "\n";
   }
 
-  auto &npnClass = getNPNClass();
-  npnClass.dump(os);
+  if (truthTable)
+    truthTable->dump(os);
+  else
+    os << "<no truth table>\n";
 
   os << "// === Cut End ===\n";
 }
@@ -805,32 +783,70 @@ MatchBinding::getPatternInputForCutInput(unsigned cutInputIndex) const {
   return it - patternInputToCutInput.begin();
 }
 
-static MatchBinding computeMatchBinding(const NPNClass &cutNPN,
-                                        const NPNClass &patternNPN) {
-  assert(cutNPN.truthTable == patternNPN.truthTable &&
-         "NPN classes must share a canonical representative");
-  assert(cutNPN.inputPermutation.size() == patternNPN.inputPermutation.size() &&
-         "NPN classes must have the same number of inputs");
-
-  unsigned numInputs = cutNPN.inputPermutation.size();
-  SmallVector<unsigned, 6> patternInputToCutInput(numInputs);
+/// Build the pin binding for an N-canonical match.
+///
+/// The entry's key satisfies C o flip(m_c) == P o PX_o flip(m), where C is
+/// the cut function, P the pattern function, m_c/m the N-canonical input
+/// negation witnesses, and PX(x)_j = x_{pi[j]} for the load-time enumerated
+/// permutation pi (applyPermutation composes on the input side). Hence
+/// C(x) == P(z) with z_p = x_{pi^{-1}[p]} ^ m_c[pi^{-1}[p]] ^ m[pi^{-1}[p]]:
+/// pattern pin p observes cut input permutation[p] (the STORED array is
+/// already the inverse, see the pattern-set constructor) with the composed
+/// negation. The caller supplies outputNegation separately (0 for positive
+/// polarity matches, 1 for negated-polarity matches).
+static MatchBinding
+makeNPNBinding(const CutRewritePatternSet::NPNPatternEntry &entry,
+               unsigned cutInputNegation, unsigned outputNegation) {
+  unsigned numInputs = entry.permutation.size();
+  MatchBinding binding;
+  binding.patternInputToCutInput.reserve(numInputs);
   unsigned inputNegation = 0;
-  for (unsigned canonicalInput = 0; canonicalInput < numInputs;
-       ++canonicalInput) {
-    unsigned patternInput = patternNPN.inputPermutation[canonicalInput];
-    unsigned cutInput = cutNPN.inputPermutation[canonicalInput];
-    patternInputToCutInput[patternInput] = cutInput;
-
-    bool negateInput =
-        ((cutNPN.inputNegation ^ patternNPN.inputNegation) >> canonicalInput) &
-        1u;
-    if (negateInput)
+  for (unsigned patternInput = 0; patternInput < numInputs; ++patternInput) {
+    unsigned cutInput = entry.permutation[patternInput];
+    assert(cutInput < numInputs && "permutation index out of range");
+    binding.patternInputToCutInput.push_back(cutInput);
+    bool negate = ((cutInputNegation >> cutInput) & 1u) ^
+                  ((entry.inputNegation >> cutInput) & 1u);
+    if (negate)
       inputNegation |= 1u << patternInput;
   }
-
-  return MatchBinding(patternInputToCutInput, inputNegation,
-                      cutNPN.outputNegation ^ patternNPN.outputNegation);
+  binding.inputNegation = inputNegation;
+  binding.outputNegation = outputNegation;
+  return binding;
 }
+
+#ifndef NDEBUG
+/// Debug-only check that a binding really implements the cut function
+/// with the pattern function: simulate every minterm through the binding.
+/// Used under LLVM_DEBUG to validate matching after refactors. Note the
+/// binding always implements `table` itself (for negative-polarity matches
+/// the table is the complemented cut, with the output inverter applied
+/// separately at rewrite); outputNegation plays no role here.
+static bool verifyNPNBinding(const BinaryTruthTable &cutTable,
+                             const BinaryTruthTable &patternTable,
+                             const MatchBinding &binding) {
+  unsigned n = binding.getNumInputs();
+  if (cutTable.numInputs != n || cutTable.numOutputs != 1 ||
+      patternTable.numInputs != n || patternTable.numOutputs != 1)
+    return false;
+  for (unsigned row = 0; row < (1u << n); ++row) {
+    bool cutBit = cutTable.table[row];
+    unsigned patternRow = 0;
+    for (unsigned p = 0; p < n; ++p) {
+      unsigned cutInput = binding.getCutInputForPatternInput(p);
+      if (cutInput >= n)
+        return false;
+      bool bit = (row >> cutInput) & 1u;
+      if (binding.isPatternInputNegated(p))
+        bit = !bit;
+      patternRow |= static_cast<unsigned>(bit) << p;
+    }
+    if (cutBit != static_cast<bool>(patternTable.table[patternRow]))
+      return false;
+  }
+  return true;
+}
+#endif
 
 //===----------------------------------------------------------------------===//
 // MatchedPattern
@@ -1133,7 +1149,7 @@ void CutSet::finalize(
 //===----------------------------------------------------------------------===//
 
 bool CutRewritePattern::useTruthTableMatcher(
-    SmallVectorImpl<NPNClass> &matchingNPNClasses) const {
+    SmallVectorImpl<BinaryTruthTable> &matchingTables) const {
   return false;
 }
 
@@ -1144,31 +1160,36 @@ bool CutRewritePattern::useTruthTableMatcher(
 CutRewritePatternSet::CutRewritePatternSet(
     llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns)
     : patterns(std::move(patterns)) {
-  // Initialize the NPN to pattern map
+  // Index truth-table patterns by N-canonical forms over all pin
+  // permutations (mockturtle-style): per-cut matching then needs only
+  // cheap negation-only canonicalization plus a hash lookup, for both
+  // output polarities. The factorial cost sits here, once per pattern.
   for (auto &pattern : this->patterns) {
-    SmallVector<NPNClass, 2> npnClasses;
-    auto result = pattern->useTruthTableMatcher(npnClasses);
-    if (result) {
-      for (auto npnClass : npnClasses) {
-        // Index the NPN-invariant signature for the semi-canonical
-        // prefilter in pattern matching (deduplicated; patterns sharing
-        // a canonical table share its signature).
-        SmallVector<unsigned, 8> sig;
-        npnClass.truthTable.getNPNSignature(sig);
-        if (!sig.empty()) {
-          std::vector<unsigned> key(sig.begin(), sig.end());
-          if (!llvm::is_contained(npnSignatures, key))
-            npnSignatures.push_back(std::move(key));
-        }
-        // Create a NPN class from the truth table
-        npnToPatternMap[{npnClass.truthTable.table,
-                         npnClass.truthTable.numInputs}]
-            .push_back(std::make_pair(std::move(npnClass), pattern.get()));
-      }
-    } else {
-      // If the pattern does not provide NPN classes, we use a special key
+    SmallVector<BinaryTruthTable, 2> tables;
+    auto result = pattern->useTruthTableMatcher(tables);
+    if (!result) {
+      // If the pattern does not provide tables, we use a special list
       // to indicate that it should be considered for all cuts.
       nonNPNPatterns.push_back(pattern.get());
+      continue;
+    }
+    for (auto &table : tables) {
+      SmallVector<unsigned, 6> permutation(table.numInputs);
+      for (unsigned i = 0; i < table.numInputs; ++i)
+        permutation[i] = i;
+      do {
+        BinaryTruthTable permuted = table.applyPermutation(permutation);
+        NCanonicalForm ncanon = computeNCanonicalForm(permuted);
+        // Store the inverse permutation as the pin map: entry.permutation[p]
+        // is the cut input driving pattern pin p (applyPermutation composes
+        // on the input side, so the enumerated permutation must be inverted
+        // to obtain the pin-to-input map; see makeNPNBinding).
+        SmallVector<unsigned, 6> pinMap(permutation.size());
+        for (unsigned i = 0; i < permutation.size(); ++i)
+          pinMap[permutation[i]] = i;
+        npnPatternMap[{ncanon.table.table, ncanon.table.numInputs}].push_back(
+            {pattern.get(), std::move(pinMap), ncanon.inputNegation, table});
+      } while (std::next_permutation(permutation.begin(), permutation.end()));
     }
   }
 }
@@ -2028,32 +2049,12 @@ LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
       });
 }
 
-bool CutRewritePatternSet::hasFamilyWithSignature(
-    const BinaryTruthTable &tt) const {
-  // Patterns with custom matchers observe every cut, so the prefilter
-  // only applies to pure NPN-family matching.
-  if (!nonNPNPatterns.empty())
-    return true;
-  SmallVector<unsigned, 8> sig;
-  tt.getNPNSignature(sig);
-  if (sig.empty())
-    return true;
-  ArrayRef<unsigned> key(sig);
-  for (const auto &family : npnSignatures)
-    if (ArrayRef<unsigned>(family) == key)
-      return true;
-  return false;
-}
-
-ArrayRef<std::pair<NPNClass, const CutRewritePattern *>>
-CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
-  if (patterns.npnToPatternMap.empty())
+ArrayRef<CutRewritePatternSet::NPNPatternEntry>
+CutRewriter::getMatchingPatterns(const BinaryTruthTable &table) const {
+  if (patterns.npnPatternMap.empty())
     return {};
-
-  auto &npnClass = cut.getNPNClass(options.npnTable);
-  auto it = patterns.npnToPatternMap.find(
-      {npnClass.truthTable.table, npnClass.truthTable.numInputs});
-  if (it == patterns.npnToPatternMap.end())
+  auto it = patterns.npnPatternMap.find({table.table, table.numInputs});
+  if (it == patterns.npnPatternMap.end())
     return {};
   return it->getSecond();
 }
@@ -2061,16 +2062,6 @@ CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
 std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   if (cut.isTrivialCut())
     return {};
-
-  // Semi-canonical prefilter: skip the O(n! * 2^n) exact NPN
-  // canonicalization when the cut's cheap NPN-invariant signature matches
-  // no pattern family. Signatures are necessary for NPN equivalence, so
-  // this never drops a real match; it only avoids provably fruitless
-  // exact searches on the long tail of distinct cut functions.
-  if (const auto &truthTable = cut.getTruthTable()) {
-    if (!patterns.hasFamilyWithSignature(*truthTable))
-      return {};
-  }
 
   const auto &network = cutEnumerator.getLogicNetwork();
   const CutRewritePattern *bestPattern = nullptr;
@@ -2122,18 +2113,54 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     }
   };
 
-  for (auto &[patternNPN, pattern] : getMatchingPatternsFromTruthTable(cut)) {
-    assert(patternNPN.truthTable.numInputs == cut.getInputSize() &&
-           "Pattern input size must match cut input size");
-    auto &cutNPN = cut.getNPNClass(options.npnTable);
-    MatchBinding binding = computeMatchBinding(cutNPN, patternNPN);
-
-    auto match = pattern->match(cutEnumerator, cut, binding);
-    if (!match)
-      continue;
-    computeArrivalTimeAndPickBest(pattern, std::move(*match),
-                                  std::move(binding));
-  }
+  // N-canonical matching (both output polarities, mockturtle-style):
+  // the load-time permutation enumeration reduces per-cut matching to
+  // cheap negation-only canonicalization plus hash lookups. The negative
+  // polarity reuses the same machinery on the complemented table with an
+  // output inverter materialized by phase-aware patterns.
+  const BinaryTruthTable &cutTable = *cut.getTruthTable();
+  auto matchPolarity = [&](const BinaryTruthTable &table,
+                           unsigned outputNegation) {
+    NCanonicalForm form = computeNCanonicalForm(table);
+    LLVM_DEBUG(llvm::dbgs()
+               << "matchPolarity: cutTT=" << cutTable.table << " table="
+               << table.table << " nform=" << form.table.table
+               << " mwitness=" << form.inputNegation << " outNeg="
+               << outputNegation << "\n");
+    for (const auto &entry : getMatchingPatterns(form.table)) {
+      assert(entry.permutation.size() == cut.getInputSize() &&
+             "Pattern input size must match cut input size");
+      MatchBinding binding =
+          makeNPNBinding(entry, form.inputNegation, outputNegation);
+      auto match = entry.pattern->match(cutEnumerator, cut, binding);
+      if (!match)
+        continue;
+#ifndef NDEBUG
+      if (!verifyNPNBinding(table, entry.table, binding)) {
+        llvm::dbgs() << "Invalid NPN binding for pattern "
+                     << entry.pattern->getPatternName() << "\ncut table ("
+                     << table.numInputs << " inputs): ";
+        table.dump(llvm::dbgs());
+        llvm::dbgs() << "pattern table: ";
+        entry.table.dump(llvm::dbgs());
+        llvm::dbgs() << "stored perm: [";
+        llvm::interleaveComma(entry.permutation, llvm::dbgs());
+        llvm::dbgs() << "], stored inNeg: " << entry.inputNegation
+                     << ", cut binding pins: [";
+        llvm::interleaveComma(binding.patternInputToCutInput, llvm::dbgs());
+        llvm::dbgs() << "], inNeg: " << binding.inputNegation << ", outNeg: "
+                     << binding.outputNegation << "\n";
+        llvm::report_fatal_error("TechMapper: invalid NPN binding");
+      }
+#endif
+      computeArrivalTimeAndPickBest(entry.pattern, std::move(*match),
+                                    std::move(binding));
+    }
+  };
+  matchPolarity(cutTable, /*outputNegation=*/0);
+  BinaryTruthTable negTable = cutTable;
+  negTable.table.flipAllBits();
+  matchPolarity(negTable, /*outputNegation=*/1);
 
   for (const CutRewritePattern *pattern : patterns.nonNPNPatterns) {
     if (auto match = pattern->match(cutEnumerator, cut, identityBinding))

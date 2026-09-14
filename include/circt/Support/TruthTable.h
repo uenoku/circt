@@ -18,11 +18,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
-#include <array>
-#include <atomic>
 #include <cstdint>
-#include <map>
-#include <mutex>
 
 namespace circt {
 
@@ -84,20 +80,6 @@ struct BinaryTruthTable {
   /// Used for canonical ordering of truth tables.
   bool isLexicographicallySmaller(const BinaryTruthTable &other) const;
 
-  /// Compute a cheap NPN-invariant signature for this truth table.
-  ///
-  /// The signature is a necessary (but not sufficient) condition for NPN
-  /// equivalence: NPN-equivalent functions always share a signature, so a
-  /// signature mismatch proves non-equivalence without the O(n! * 2^n)
-  /// exact canonicalization (semi-canonical matching in the Lazy Man's
-  /// spirit: cheap filter first, exact search only on hits). It holds the
-  /// arity, the output-negation-normalized weight, and the sorted
-  /// per-variable normalized cofactor-weight pairs, all of which are
-  /// preserved by input/output negation and permutation.
-  /// Only defined for single-output functions with 1..16 inputs; other
-  /// shapes yield an empty signature meaning "unknown".
-  void getNPNSignature(SmallVectorImpl<unsigned> &signature) const;
-
   /// Equality comparison for truth tables.
   bool operator==(const BinaryTruthTable &other) const;
 
@@ -105,132 +87,21 @@ struct BinaryTruthTable {
   void dump(llvm::raw_ostream &os = llvm::errs()) const;
 };
 
-/// Represents the canonical form of a boolean function under NPN equivalence.
+/// N-canonical form of a boolean function: the lexicographically smallest
+/// truth table over all input negation masks (no permutation search), plus
+/// the achieving mask (first/smallest on ties).
 ///
-/// NPN (Negation-Permutation-Negation) equivalence considers two boolean
-/// functions equivalent if one can be obtained from the other by:
-/// 1. Negating some inputs (pre-negation)
-/// 2. Permuting the inputs
-/// 3. Negating some outputs (post-negation)
-///
-/// Example: The function ab+c is NPN equivalent to !a + b(!c) since we can
-/// transform the first function into the second by negating inputs 'a' and 'c',
-/// then reordering the inputs appropriately.
-///
-/// This canonical form is used to efficiently match cuts against library
-/// patterns, as functions in the same NPN class can be implemented by the
-/// same circuit with appropriate input/output inversions.
-struct NPNClass {
-  BinaryTruthTable truthTable;                  ///< Canonical truth table
-  llvm::SmallVector<unsigned> inputPermutation; ///< Input permutation applied
-  unsigned inputNegation = 0;                   ///< Input negation mask
-  unsigned outputNegation = 0;                  ///< Output negation mask
-
-  /// Default constructor creates an empty NPN class.
-  NPNClass() = default;
-
-  /// Constructor from a truth table.
-  NPNClass(const BinaryTruthTable &tt) : truthTable(tt) {}
-
-  NPNClass(const BinaryTruthTable &tt, llvm::SmallVector<unsigned> inputPerm,
-           unsigned inputNeg, unsigned outputNeg)
-      : truthTable(tt), inputPermutation(std::move(inputPerm)),
-        inputNegation(inputNeg), outputNegation(outputNeg) {}
-
-  /// Compute the canonical NPN form for a given truth table.
-  ///
-  /// This method exhaustively tries all possible input permutations and
-  /// negations to find the lexicographically smallest canonical form.
-  ///
-  /// FIXME: Currently we are using exact canonicalization which doesn't scale
-  /// well. For larger truth tables, semi-canonical forms should be used
-  /// instead.
-  static NPNClass computeNPNCanonicalForm(const BinaryTruthTable &tt);
-
-  /// Get input permutation from this NPN class to another equivalent NPN class.
-  ///
-  /// When two NPN classes are equivalent, they may have different input
-  /// permutations. This function computes a permutation that allows
-  /// transforming input indices from the target NPN class to input indices of
-  /// this NPN class.
-  ///
-  /// Returns a permutation vector where result[i] gives the input index in this
-  /// NPN class that corresponds to input i in the target NPN class.
-  ///
-  /// Example: If this has permutation [2,0,1] and target has [1,2,0],
-  /// the mapping allows connecting target inputs to this inputs correctly.
-  void getInputPermutation(const NPNClass &targetNPN,
-                           llvm::SmallVectorImpl<unsigned> &permutation) const;
-
-  /// Equality comparison for NPN classes.
-  bool equivalentOtherThanPermutation(const NPNClass &other) const {
-    return truthTable == other.truthTable &&
-           inputNegation == other.inputNegation &&
-           outputNegation == other.outputNegation;
-  }
-
-  bool isLexicographicallySmaller(const NPNClass &other) const {
-    if (truthTable.table != other.truthTable.table)
-      return truthTable.isLexicographicallySmaller(other.truthTable);
-    if (inputNegation != other.inputNegation)
-      return inputNegation < other.inputNegation;
-    return outputNegation < other.outputNegation;
-  }
-
-  /// Debug dump method for NPN classes.
-  void dump(llvm::raw_ostream &os = llvm::errs()) const;
+/// Used for mockturtle-style matching: patterns pre-enumerate all pin
+/// permutations at load time, so per-cut matching needs only this cheap
+/// O(2^n) canonicalization plus a hash lookup, for both output polarities.
+struct NCanonicalForm {
+  BinaryTruthTable table;
+  unsigned inputNegation = 0;
 };
 
-/// Precomputed NPN canonicalization table for 4-input single-output functions.
-class NPNTable {
-public:
-  NPNTable();
-
-  /// Returns false if the given truth table shape is unsupported.
-  bool lookup(const BinaryTruthTable &tt, NPNClass &result) const;
-
-  /// Canonical form, using the precomputed table for 4-input functions
-  /// and a memoized brute force otherwise. Cuts share boolean functions
-  /// heavily (every 2:1 mux is identical), so the cache turns repeated
-  /// O(n! * 2^n) searches into map lookups. Thread-safe.
-  NPNClass getCanonicalForm(const BinaryTruthTable &tt) const;
-
-private:
-  struct Entry4 {
-    uint16_t representative = 0;
-    std::array<uint8_t, 4> inputPermutation = {};
-    uint8_t inputNegation = 0;
-    bool outputNegation = false;
-  };
-
-  std::array<Entry4, 1u << 16> entries4;
-
-  struct TruthTableLess {
-    bool operator()(const BinaryTruthTable &a,
-                    const BinaryTruthTable &b) const {
-      if (a.numInputs != b.numInputs)
-        return a.numInputs < b.numInputs;
-      if (a.numOutputs != b.numOutputs)
-        return a.numOutputs < b.numOutputs;
-      if (a.table == b.table)
-        return false;
-      return a.table.ult(b.table);
-    }
-  };
-
-  mutable std::mutex cacheMutex;
-  mutable std::map<BinaryTruthTable, NPNClass, TruthTableLess> canonicalCache;
-  mutable std::atomic<uint64_t> numCacheHits{0};
-  mutable std::atomic<uint64_t> numCacheMisses{0};
-
-public:
-  void dumpCacheStats(llvm::raw_ostream &os) const;
-};
-
-/// Collect all canonical 4-input single-output NPN representatives in
-/// ascending truth-table order.
-void collectCanonicalNPN4Representatives(
-    llvm::SmallVectorImpl<uint16_t> &representatives);
+/// Compute the N-canonical form of a single-output truth table.
+/// Non-single-output tables are returned unchanged with a zero mask.
+NCanonicalForm computeNCanonicalForm(const BinaryTruthTable &tt);
 
 //===----------------------------------------------------------------------===//
 // Truth Table Utilities

@@ -19,7 +19,7 @@ hw.module @myinv(in %a : i1, out result : i1) attributes {synth.mapping_cost = #
 
 // CHECK-LABEL: hw.module @phase_and_not(
 // CHECK: %[[INV:.+]] = hw.instance {{.*}} @myinv(a: %a: i1) -> (result: i1)
-// CHECK: %[[OUT:.+]] = hw.instance {{.*}} @myand2(a: %b: i1, b: %[[INV]]: i1) -> (result: i1)
+// CHECK: %[[OUT:.+]] = hw.instance {{.*}} @myand2(a: %[[INV]]: i1, b: %b: i1) -> (result: i1)
 // CHECK: hw.output %[[OUT]] : i1
 hw.module @phase_and_not(in %a : i1, in %b : i1, out result : i1) {
   %0 = synth.aig.and_inv not %a, %b : i1
