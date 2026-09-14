@@ -154,6 +154,27 @@ void BinaryTruthTable::setOutput(const llvm::APInt &input,
 }
 
 namespace {
+/// Precomputed masks for variables in truth tables up to 6 variables (64 bits).
+///
+/// In a truth table, bit position i represents minterm i, where the binary
+/// representation of i gives the variable values. For example, with 3 variables
+/// (a,b,c), bit 5 (binary 101) represents minterm a=1, b=0, c=1.
+///
+/// These masks identify which minterms have a particular variable value:
+/// - Masks[0][var] = minterms where var=0 (for negative literal !var)
+/// - Masks[1][var] = minterms where var=1 (for positive literal var)
+// NOTE: also used by createVarMaskImpl below; kept here so the word-level
+// NPN transforms above can use the closed forms instead of rebuilding
+// equivalent masks with bit loops per call.
+static constexpr uint64_t kVarMasks[2][6] = {
+    {0x5555555555555555ULL, 0x3333333333333333ULL, 0x0F0F0F0F0F0F0F0FULL,
+     0x00FF00FF00FF00FFULL, 0x0000FFFF0000FFFFULL,
+     0x00000000FFFFFFFFULL}, // var=0 masks
+    {0xAAAAAAAAAAAAAAAAULL, 0xCCCCCCCCCCCCCCCCULL, 0xF0F0F0F0F0F0F0F0ULL,
+     0xFF00FF00FF00FF00ULL, 0xFFFF0000FFFF0000ULL,
+     0xFFFFFFFF00000000ULL}, // var=1 masks
+};
+
 // All-ones mask for a single-output table with n <= 6 inputs (2^n bits).
 uint64_t tableAllOnes(unsigned numInputs) {
   if (numInputs >= 6)
@@ -162,20 +183,16 @@ uint64_t tableAllOnes(unsigned numInputs) {
 }
 
 // Swap two adjacent variables (bit positions pos and pos+1) in a packed
-// single-output table. Minterms are grouped in chunks of 4 blocks of size
-// s = 2^pos; the middle two blocks exchange places.
+// single-output table. The middle minterms (var_pos=1,var_pos+1=0 and vice
+// versa) exchange places; the masks are the closed forms of the previously
+// loop-built sets: middleLow rows have var_pos=1,var_pos+1=0 and middleHigh
+// rows the converse (pos <= 4 for n <= 6, so pos + 1 stays in bounds).
 uint64_t swapAdjacentVariables(uint64_t table, unsigned numInputs,
                                unsigned pos) {
   unsigned s = 1u << pos;
-  unsigned chunk = s << 2;
-  unsigned width = 1u << numInputs;
-  uint64_t middleLow = 0, middleHigh = 0;
-  for (unsigned base = 0; base < width; base += chunk) {
-    for (unsigned i = 0; i < s; ++i) {
-      middleLow |= 1ULL << (base + s + i);
-      middleHigh |= 1ULL << (base + 2 * s + i);
-    }
-  }
+  uint64_t widthMask = tableAllOnes(numInputs);
+  uint64_t middleLow = kVarMasks[1][pos] & ~kVarMasks[1][pos + 1] & widthMask;
+  uint64_t middleHigh = ~kVarMasks[1][pos] & kVarMasks[1][pos + 1] & widthMask;
   uint64_t rest = table & ~(middleLow | middleHigh);
   return rest | ((table & middleLow) << s) | ((table & middleHigh) >> s);
 }
@@ -224,16 +241,14 @@ BinaryTruthTable::applyPermutation(ArrayRef<unsigned> permutation) const {
 BinaryTruthTable BinaryTruthTable::applyInputNegation(unsigned mask) const {
   if (numOutputs == 1 && numInputs <= 6) {
     // Word-level: negating variable v swaps adjacent blocks of size 2^v.
+    // The var=1 rows are exactly the precomputed var mask (closed form of
+    // the previously loop-built set).
     uint64_t t = table.getZExtValue();
     for (unsigned v = 0; v < numInputs; ++v) {
       if (!(mask & (1u << v)))
         continue;
       unsigned s = 1u << v;
-      unsigned width = 1u << numInputs;
-      uint64_t hi = 0;
-      for (unsigned base = 0; base < width; base += (s << 1))
-        for (unsigned i = 0; i < s; ++i)
-          hi |= 1ULL << (base + s + i);
+      uint64_t hi = kVarMasks[1][v] & tableAllOnes(numInputs);
       t = ((t & hi) >> s) | ((t & ~hi) << s);
       t &= tableAllOnes(numInputs);
     }
@@ -282,6 +297,37 @@ bool BinaryTruthTable::isLexicographicallySmaller(
     const BinaryTruthTable &other) const {
   assert(numInputs == other.numInputs && numOutputs == other.numOutputs);
   return table.ult(other.table);
+}
+
+void BinaryTruthTable::getNPNSignature(
+    SmallVectorImpl<unsigned> &signature) const {
+  signature.clear();
+  if (numOutputs != 1 || numInputs == 0 || numInputs > 16)
+    return;
+  unsigned n = numInputs;
+  uint64_t numMinterms = 1ULL << n;
+  uint64_t half = numMinterms / 2;
+  uint64_t weight = table.popcount();
+  signature.push_back(n);
+  // Output negation maps weight w to N - w; normalize to stay invariant.
+  signature.push_back(
+      static_cast<unsigned>(std::min(weight, numMinterms - weight)));
+  // Per-variable cofactor-weight pairs, normalized against input negation
+  // (which swaps each pair) and output negation (which maps a to half - a),
+  // then sorted across variables for permutation invariance.
+  SmallVector<unsigned, 8> codes;
+  codes.reserve(n);
+  for (unsigned var = 0; var < n; ++var) {
+    uint64_t pos = (table & createVarMask(n, var, true)).popcount();
+    uint64_t neg = weight - pos;
+    unsigned lo = static_cast<unsigned>(
+        std::min(std::min(pos, half - pos), std::min(neg, half - neg)));
+    unsigned hi = static_cast<unsigned>(
+        std::max(std::min(pos, half - pos), std::min(neg, half - neg)));
+    codes.push_back((lo << 16) | hi);
+  }
+  llvm::sort(codes);
+  signature.append(codes.begin(), codes.end());
 }
 
 bool BinaryTruthTable::operator==(const BinaryTruthTable &other) const {
@@ -656,24 +702,6 @@ void NPNClass::dump(llvm::raw_ostream &os) const {
   os << "  Canonical truth table:\n";
   truthTable.dump(os);
 }
-
-/// Precomputed masks for variables in truth tables up to 6 variables (64 bits).
-///
-/// In a truth table, bit position i represents minterm i, where the binary
-/// representation of i gives the variable values. For example, with 3 variables
-/// (a,b,c), bit 5 (binary 101) represents minterm a=1, b=0, c=1.
-///
-/// These masks identify which minterms have a particular variable value:
-/// - Masks[0][var] = minterms where var=0 (for negative literal !var)
-/// - Masks[1][var] = minterms where var=1 (for positive literal var)
-static constexpr uint64_t kVarMasks[2][6] = {
-    {0x5555555555555555ULL, 0x3333333333333333ULL, 0x0F0F0F0F0F0F0F0FULL,
-     0x00FF00FF00FF00FFULL, 0x0000FFFF0000FFFFULL,
-     0x00000000FFFFFFFFULL}, // var=0 masks
-    {0xAAAAAAAAAAAAAAAAULL, 0xCCCCCCCCCCCCCCCCULL, 0xF0F0F0F0F0F0F0F0ULL,
-     0xFF00FF00FF00FF00ULL, 0xFFFF0000FFFF0000ULL,
-     0xFFFFFFFF00000000ULL}, // var=1 masks
-};
 
 /// Create a mask for a variable in the truth table.
 /// For positive=true: mask has 1s where var=1 in the truth table encoding

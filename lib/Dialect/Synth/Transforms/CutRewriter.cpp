@@ -1150,6 +1150,16 @@ CutRewritePatternSet::CutRewritePatternSet(
     auto result = pattern->useTruthTableMatcher(npnClasses);
     if (result) {
       for (auto npnClass : npnClasses) {
+        // Index the NPN-invariant signature for the semi-canonical
+        // prefilter in pattern matching (deduplicated; patterns sharing
+        // a canonical table share its signature).
+        SmallVector<unsigned, 8> sig;
+        npnClass.truthTable.getNPNSignature(sig);
+        if (!sig.empty()) {
+          std::vector<unsigned> key(sig.begin(), sig.end());
+          if (!llvm::is_contained(npnSignatures, key))
+            npnSignatures.push_back(std::move(key));
+        }
         // Create a NPN class from the truth table
         npnToPatternMap[{npnClass.truthTable.table,
                          npnClass.truthTable.numInputs}]
@@ -2018,6 +2028,23 @@ LogicalResult CutRewriter::enumerateCuts(Operation *topOp) {
       });
 }
 
+bool CutRewritePatternSet::hasFamilyWithSignature(
+    const BinaryTruthTable &tt) const {
+  // Patterns with custom matchers observe every cut, so the prefilter
+  // only applies to pure NPN-family matching.
+  if (!nonNPNPatterns.empty())
+    return true;
+  SmallVector<unsigned, 8> sig;
+  tt.getNPNSignature(sig);
+  if (sig.empty())
+    return true;
+  ArrayRef<unsigned> key(sig);
+  for (const auto &family : npnSignatures)
+    if (ArrayRef<unsigned>(family) == key)
+      return true;
+  return false;
+}
+
 ArrayRef<std::pair<NPNClass, const CutRewritePattern *>>
 CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
   if (patterns.npnToPatternMap.empty())
@@ -2034,6 +2061,16 @@ CutRewriter::getMatchingPatternsFromTruthTable(const Cut &cut) const {
 std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
   if (cut.isTrivialCut())
     return {};
+
+  // Semi-canonical prefilter: skip the O(n! * 2^n) exact NPN
+  // canonicalization when the cut's cheap NPN-invariant signature matches
+  // no pattern family. Signatures are necessary for NPN equivalence, so
+  // this never drops a real match; it only avoids provably fruitless
+  // exact searches on the long tail of distinct cut functions.
+  if (const auto &truthTable = cut.getTruthTable()) {
+    if (!patterns.hasFamilyWithSignature(*truthTable))
+      return {};
+  }
 
   const auto &network = cutEnumerator.getLogicNetwork();
   const CutRewritePattern *bestPattern = nullptr;
@@ -2161,8 +2198,33 @@ LogicalResult CutRewriter::runBottomUpRewrite(Operation *top) {
     if (!bestCut) {
       if (options.allowNoMatch)
         continue; // No matching pattern found, skip this value
-      return emitError(value.getLoc(), "No matching cut found for value: ")
-             << value;
+      auto diag = emitError(value.getLoc(), "No matching cut found for value: ")
+                  << value;
+      // Point at the likely root cause: cuts whose fanin has no matched
+      // cut can never match (no arrival times), so an unmatched fanin
+      // usually means the unmappable logic is upstream of this value.
+      // Rewrite runs in reverse topological order and aborts on the
+      // first failures, so upstream culprits are otherwise silent.
+      llvm::SmallSetVector<Value, 8> unmatchedInputs;
+      for (Cut *cut : cutSet.getCuts()) {
+        if (cut->isTrivialCut())
+          continue;
+        for (uint32_t inputIndex : cut->inputs) {
+          if (isCutLeaf(network, inputIndex))
+            continue;
+          auto inputIt = cutSets.find(inputIndex);
+          if (inputIt == cutSets.end() || !inputIt->second->getBestMatchedCut())
+            unmatchedInputs.insert(network.getValue(inputIndex));
+          if (unmatchedInputs.size() >= 8)
+            break;
+        }
+        if (unmatchedInputs.size() >= 8)
+          break;
+      }
+      for (Value input : unmatchedInputs)
+        diag.attachNote(value.getLoc())
+            << "cut input without a matched cut: " << input;
+      return failure();
     }
 
     // Get the root operation from LogicNetwork

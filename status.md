@@ -95,7 +95,18 @@ Flows (all verified; timings on 32-core/62GB box):
 ./build/bin/circt-opt --export-verilog /tmp/e2e/rocket_synth.mlir -o /dev/null > /tmp/e2e/rocket_net.v
 ./build/bin/circt-verilog --parse-only /tmp/e2e/rocket_net.v   # 1.8M lines, 211 modules, 0 always-blocks: clean
 ```
-ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0 LLHD, 61 firmems (~2M bits), 11.8k firregs. Root-caused 2026-09-14: no SRAM macros are provided, so `SeqMemMapper` exploded all 61 firmems to flops; the 16384x64 alone becomes ~1M flops + ~2M muxes (~5–10M AIG nodes in one module, serial passes). A single-module probe confirmed it (9+ min single-core, still running). Fix: `synth-seq-mem-mapper` now hard-errors above `max-fallback-bits` (default 65536; `circt-synth --max-mem-fallback-bits`). ChipTop now fails in ~1 s listing exactly 4 oversized memories (16384x64, 8192x64, 1024x136, 512x256); fifo (2Kb) and Rocket (≤32Kb single) still explode as before. Next: SRAM macro replacement (plumbing + macro defs) so those 4 map to blackboxes.
+ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0 LLHD, 61 firmems (~2M bits), 11.8k firregs. Root-caused 2026-09-14: no SRAM macros are provided, so `SeqMemMapper` exploded all 61 firmems to flops; the 16384x64 alone becomes ~1M flops + ~2M muxes (~5–10M AIG nodes in one module, serial passes). A single-module probe confirmed it (9+ min single-core, still running). Fix: `synth-seq-mem-mapper` now hard-errors above `max-fallback-bits` (default 65536; `circt-synth --max-mem-fallback-bits`). ChipTop now fails in ~1 s listing exactly 4 oversized memories (16384x64, 8192x64, 1024x136, 512x256); fifo (2Kb) and Rocket (≤32Kb single) still explode as before.
+- **ChipTop COMPLETE end-to-end (2026-09-14 ~02:37): ~30 s total**
+  (0.5 s seq-mem-map, 16 s lowering, 11 s tech-map, 1 s strip) → 177MB
+  mapped MLIR: 1,149,473 instances, 226,157 flops (210Kb exploded mem +
+  regs, reconciles), 4 SRAM macro blackboxes, 0 firmem/firreg/aig
+  leftovers → 461MB Verilog (`circt-opt --export-verilog`, 23 s), 456
+  modules, 0 always-blocks, `circt-verilog --parse-only` clean. Two
+  blockers fell: (i) silent flop explosion (fail-fast + macros);
+  (ii) `x & ~x` constant nodes from late covering with no trailing
+  cleanup → "No matching cut" (TechMapper has no constant patterns) —
+  fixed by trailing CSE+canonicalize in the optimization pipeline, plus
+  poison-chain notes on the error.
 
 ## What's done (with measurements)
 - llhd lowering gaps: sync-process mapper, init-drive stripper, pure-op cloning
@@ -105,11 +116,24 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - Seq mapping: wide-flop + array-flop explosion, mem→flop fallback incl.
   masked writes with per-lane enables, SRAM-macro path preserved.
 - Perf: 4-input NPN lookup table (`NPNTable` ctor, 222 representatives —
-  4-input canonicalization is O(1)) plus NPN canonical-form memoization
-  (`NPNTable::getCanonicalForm`, `lib/Support/TruthTable.cpp:540`) — fifo NPN
-  stats: 119307 hits / 592 misses. Word-level (single-u64) transforms for n≤6
-  (`applyPermutation`/`applyInputNegation`/`applyOutputNegation`).
-  fifo 25 min-hang → 3 s; addr_gen 25 s → 0.95 s.
+  4-input canonicalization is O(1), same as ABC's mapper tables) plus NPN
+  canonical-form memoization (`NPNTable::getCanonicalForm`) — fifo NPN
+  stats BEFORE the prefilter: 119307 hits / 592 misses. Word-level
+  (single-u64) transforms for n≤6 with closed-form var masks (no per-call
+  bit loops). fifo 25 min-hang → ~1–3 s; addr_gen 25 s → 0.95 s.
+- **Semi-canonical NPN prefilter** (`BinaryTruthTable::getNPNSignature`,
+  `CutRewritePatternSet::hasFamilyWithSignature`): cheap
+  negation+permutation-invariant signature (arity, normalized weight,
+  sorted normalized cofactor pairs) per cut; exact O(n!·2^n)
+  canonicalization runs only on signature hits. fifo NPN stats AFTER:
+  57024 hits / 117 misses (5x fewer exact searches). Exactness PRESERVED
+  (unlike kitty's lossy flip-swap): fifo outputs byte-identical across 4
+  binaries, rocket deterministic run-to-run. ChipTop tech-map: 6+ min
+  (failing) → 11 s (succeeding) — combined with the constant-fold fix;
+  NPN-stats + fifo timing are the clean attribution. ABC reference: same
+  4-input tables, cofactor trick for n=5, exhaustive for n=6 (no better
+  exact algorithm there either — Gray-code incremental enumeration
+  evaluated and deferred at 11 s).
 - Correctness: phase-aware matching (negated NPN bindings materialize
   inverter cells with area/delay folded in; `TechMapper.cpp` match/rewrite).
 - Robustness: 6-input pattern/cut cap (`kMaxPatternInputs`,
@@ -145,15 +169,13 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    mitigated by caps). Options: share one match per NPN class across
    same-function size variants; ABC supergates (`super_gates.c`) for
    multi-level collapse — NOT implemented (each lib cell = one pattern).
-   UPDATE 2026-09-14: ChipTop tech-mapper (post-macro) implicates NPN
-   *canonicalization misses* on the long tail of distinct 5/6-input cuts
-   (each miss = full n!-search; memoization only helps repeats). Plan:
-   semi-canonical prefilter (Lazy Man's): cheap negation+permutation
-   invariant signature per cut, exact canonicalization only on signature
-   hit — behavior-preserving (same matches ⇒ same netlist, diff-verified
-   on fifo/Rocket), unlike the reverted symmetry pruning in (1).
+   UPDATE 2026-09-14: semi-canonical prefilter implemented (see What's
+   done) — exact search now runs only on signature hits; per-pattern
+   match cost itself (binding + arrival, O(n) over same-class drive
+   variants) measured negligible. CLOSED unless profiles say otherwise.
 3. **SDC emission** (`write_sdc` equivalent) untouched; `constraint.sdc`
-   files are flow inputs.
+   files are flow inputs. Now the TOP remaining flow gap: netlist + SDC
+   are the stated goal and only the netlist exists.
 4. Tie constants emit as Verilog literals (valid; Yosys parity = `conb_1`).
 5. `lpflow_isobufsrc` picked as generic buffers (~10k in fifo ASAP7 run) —
    functionally fine, flow dont-uses some lpflow cells; QoR question.
@@ -178,11 +200,11 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   (array_inject O(N) lowering)
 - Tests: `test/Dialect/Synth/tech-mapper-phase.mlir` (new),
   `test/Dialect/LLHD/Transforms/strip-init-drives.mlir` (new),
-  `test/Dialect/Synth/seq-mem-mapper-fallback-limit{,-ok}.mlir` (new:
-  over-limit hard error under lowered + default limits; at-limit boundary
-  still explodes), `test/circt-synth/sram-macros.mlir` +
-  `test/circt-synth/Inputs/sram-macros.mlir` (new: `--sram-macros`
-  end-to-end macro mapping), updated mem/tech/error/aggregate tests.
+  `test/Dialect/Synth/seq-mem-mapper-fallback-limit{,-ok}.mlir` (new),
+  `test/circt-synth/sram-macros.mlir` +
+  `test/circt-synth/Inputs/sram-macros.mlir` (new). Prefilter + mask +
+  pipeline-cleanup covered by output-identity (fifo byte-identical
+  across 4 binaries; rocket deterministic) + full lit suites.
 
 ## Suggested reading for relaunch
 - https://scispace.com/pdf/lazy-man-s-logic-synthesis-43gevit82r.pdf

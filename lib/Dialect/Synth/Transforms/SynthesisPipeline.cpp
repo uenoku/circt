@@ -145,6 +145,12 @@ void circt::synth::buildSynthOptimizationPipeline(
     abcOptions.continueOnFailure = options.ignoreAbcFailures;
     pm.addPass(synth::createABCRunner(abcOptions));
   }
+  // Final cleanup: covering, balancing, and structural hashing can expose
+  // constant logic (e.g. x & ~x) that no downstream pass folds. TechMapper
+  // has no constant patterns, so such nodes would fail matching; fold them
+  // here, immediately before technology mapping.
+  pm.addPass(createCSEPass());
+  pm.addPass(createSimpleCanonicalizerPass());
   // TODO: Add more balancing and rewriting passes.
 }
 

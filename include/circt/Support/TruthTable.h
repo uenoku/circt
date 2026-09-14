@@ -84,6 +84,20 @@ struct BinaryTruthTable {
   /// Used for canonical ordering of truth tables.
   bool isLexicographicallySmaller(const BinaryTruthTable &other) const;
 
+  /// Compute a cheap NPN-invariant signature for this truth table.
+  ///
+  /// The signature is a necessary (but not sufficient) condition for NPN
+  /// equivalence: NPN-equivalent functions always share a signature, so a
+  /// signature mismatch proves non-equivalence without the O(n! * 2^n)
+  /// exact canonicalization (semi-canonical matching in the Lazy Man's
+  /// spirit: cheap filter first, exact search only on hits). It holds the
+  /// arity, the output-negation-normalized weight, and the sorted
+  /// per-variable normalized cofactor-weight pairs, all of which are
+  /// preserved by input/output negation and permutation.
+  /// Only defined for single-output functions with 1..16 inputs; other
+  /// shapes yield an empty signature meaning "unknown".
+  void getNPNSignature(SmallVectorImpl<unsigned> &signature) const;
+
   /// Equality comparison for truth tables.
   bool operator==(const BinaryTruthTable &other) const;
 
@@ -205,8 +219,7 @@ private:
   };
 
   mutable std::mutex cacheMutex;
-  mutable std::map<BinaryTruthTable, NPNClass, TruthTableLess>
-      canonicalCache;
+  mutable std::map<BinaryTruthTable, NPNClass, TruthTableLess> canonicalCache;
   mutable std::atomic<uint64_t> numCacheHits{0};
   mutable std::atomic<uint64_t> numCacheMisses{0};
 

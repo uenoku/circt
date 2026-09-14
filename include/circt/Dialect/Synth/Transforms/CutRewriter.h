@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace circt {
 namespace synth {
@@ -992,6 +993,14 @@ public:
   CutRewritePatternSet(
       llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns);
 
+  /// Return true if any truth-table pattern family shares the table's
+  /// NPN-invariant signature. Signatures are necessary for NPN
+  /// equivalence, so false means the cut can match no pattern and exact
+  /// canonicalization is safely skipped. Empty (non-single-output or
+  /// degenerate) signatures, and pattern sets containing custom
+  /// (non-NPN) matchers that observe every cut, always return true.
+  bool hasFamilyWithSignature(const BinaryTruthTable &tt) const;
+
 private:
   /// Owned collection of all rewriting patterns.
   llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns;
@@ -1006,6 +1015,11 @@ private:
   /// Patterns that use custom matching logic instead of NPN lookup.
   /// These patterns are checked against every cut.
   SmallVector<const CutRewritePattern *, 4> nonNPNPatterns;
+
+  /// NPN-invariant signatures (see BinaryTruthTable::getNPNSignature),
+  /// one per distinct pattern canonical table. Used by the
+  /// semi-canonical prefilter in pattern matching.
+  SmallVector<std::vector<unsigned>, 64> npnSignatures;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;
