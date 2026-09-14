@@ -91,24 +91,26 @@ hw.module @array_slice_const(in %arg0: i2, in %arg1: i2, in %arg2: i2, in %arg3:
   hw.output %0, %1 : !hw.array<4xi2>, !hw.array<2xi2>
 }
 
+// Per-element select: mux(sel == i, val, elt_i), concatenated MSB-first.
+// A 2D matrix of candidate rows would exceed the integer bitwidth limit
+// on large arrays.
 // CHECK-LABEL: @array_inject(
 hw.module @array_inject(in %in: !hw.array<3xi2>, in %sel: i2, in %val: i2, out out_inject: !hw.array<3xi2>) {
   // CHECK-NEXT: %[[in_bitcast:.+]] = hw.bitcast %in
-  // CHECK-NEXT: %[[element_0:.+]] = comb.extract %[[in_bitcast]] from 0 : (i6) -> i2
-  // CHECK-NEXT: %[[element_1:.+]] = comb.extract %[[in_bitcast]] from 2 : (i6) -> i2
   // CHECK-NEXT: %[[element_2:.+]] = comb.extract %[[in_bitcast]] from 4 : (i6) -> i2
-  // CHECK-NEXT: %[[inject_2:.+]] = comb.concat %val, %[[element_1]], %[[element_0]]
-  // CHECK-NEXT: %[[inject_1:.+]] = comb.concat %[[element_2]], %val, %[[element_0]]
-  // CHECK-NEXT: %[[inject_0:.+]] = comb.concat %[[element_2]], %[[element_1]], %val
-  // CHECK-NEXT: %[[array_2d:.+]] = comb.concat %[[inject_2]], %[[inject_1]], %[[inject_0]]
-  // CHECK-NEXT: %[[array_0:.+]] = comb.extract %[[array_2d]] from 0 : (i18) -> i6
-  // CHECK-NEXT: %[[array_1:.+]] = comb.extract %[[array_2d]] from 6 : (i18) -> i6
-  // CHECK-NEXT: %[[array_2:.+]] = comb.extract %[[array_2d]] from 12 : (i18) -> i6
-  // CHECK-NEXT: %[[sel_0:.+]] = comb.extract %sel from 0 : (i2) -> i1
-  // CHECK-NEXT: %[[sel_1:.+]] = comb.extract %sel from 1 : (i2) -> i1
-  // CHECK-NEXT: %[[mux_0:.+]] = comb.mux %[[sel_0]], %[[array_1]], %[[array_0]]
-  // CHECK-NEXT: %[[mux_1:.+]] = comb.mux %[[sel_1]], %[[array_2]], %[[mux_0]]
-  // CHECK-NEXT: %[[result:.+]] = hw.bitcast %[[mux_1]]
+  // CHECK-NEXT: %[[c_2:.+]] = hw.constant {{.+}} : i2
+  // CHECK-NEXT: %[[is_2:.+]] = comb.icmp eq %sel, %[[c_2]] : i2
+  // CHECK-NEXT: %[[mux_2:.+]] = comb.mux %[[is_2]], %val, %[[element_2]]
+  // CHECK-NEXT: %[[element_1:.+]] = comb.extract %[[in_bitcast]] from 2 : (i6) -> i2
+  // CHECK-NEXT: %[[c_1:.+]] = hw.constant {{.+}} : i2
+  // CHECK-NEXT: %[[is_1:.+]] = comb.icmp eq %sel, %[[c_1]] : i2
+  // CHECK-NEXT: %[[mux_1:.+]] = comb.mux %[[is_1]], %val, %[[element_1]]
+  // CHECK-NEXT: %[[element_0:.+]] = comb.extract %[[in_bitcast]] from 0 : (i6) -> i2
+  // CHECK-NEXT: %[[c_0:.+]] = hw.constant {{.+}} : i2
+  // CHECK-NEXT: %[[is_0:.+]] = comb.icmp eq %sel, %[[c_0]] : i2
+  // CHECK-NEXT: %[[mux_0:.+]] = comb.mux %[[is_0]], %val, %[[element_0]]
+  // CHECK-NEXT: %[[concat:.+]] = comb.concat %[[mux_2]], %[[mux_1]], %[[mux_0]]
+  // CHECK-NEXT: %[[result:.+]] = hw.bitcast %[[concat]]
   // CHECK-NEXT: hw.output %[[result]]
   %0 = hw.array_inject %in[%sel], %val : !hw.array<3xi2>, i2
   hw.output %0 : !hw.array<3xi2>

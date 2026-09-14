@@ -59,7 +59,10 @@ hw.module @multibit(in %a : i1, in %b: i1, out result : i1) attributes {synth.ma
 
 // -----
 
-// expected-error@+1 {{Too many inputs for truth table generation}}
+// Wide cells (here 17 inputs, e.g. 9-input AO333 in real libraries) are
+// silently skipped as patterns instead of erroring: NPN canonicalization
+// only scales to 6 inputs, and logic still maps through smaller cells.
+// No error expected; the module is left alone.
 hw.module @too_many_input_bits(in %a0 : i1, in %a1 : i1, in %a2 : i1, in %a3 : i1, in %a4 : i1,
                                in %a5 : i1, in %a6 : i1, in %a7 : i1, in %a8 : i1, in %a9 : i1,
                                in %a10 : i1, in %a11 : i1, in %a12 : i1, in %a13 : i1, in %a14 : i1,

@@ -112,19 +112,44 @@ struct TechLibraryPattern : public CutRewritePattern {
     return moduleCp.getModuleName();
   }
 
-  /// Match the cut set against this library primitive
+  /// Match the cut set against this library primitive. Bindings with
+  /// negation are phase-aware: each negated terminal materializes an
+  /// inverter cell, with its area and delay folded into the match cost
+  /// so selection stays timing- and area-accurate.
   std::optional<MatchResult> match(CutEnumerator &enumerator, const Cut &cut,
                                    const MatchBinding &binding) const override {
     const auto &cutNPN = cut.getNPNClass(enumerator.getOptions().npnTable);
     if (!(cutNPN.truthTable == npnClass.truthTable))
       return std::nullopt;
 
-    // TODO: Support phase-aware mapping by materializing or reusing inverted
-    // input/output values from the binding.
-    if (binding.hasNegation())
+    if (!binding.hasNegation())
+      return MatchResult(area, delay);
+    if (!inverter || inverter->delay.empty())
       return std::nullopt;
 
-    return MatchResult(area, delay);
+    unsigned numInputs = binding.getNumInputs();
+    unsigned numOutputs = numInputs ? delay.size() / numInputs : 0;
+    double totalArea = area;
+    SmallVector<DelayType, 6> adjusted(delay.begin(), delay.end());
+    DelayType invDelay = inverter->delay.front();
+    for (unsigned i = 0; i < numInputs; ++i) {
+      if (binding.isPatternInputNegated(i)) {
+        for (unsigned o = 0; o < numOutputs; ++o)
+          adjusted[o * numInputs + i] += invDelay;
+        totalArea += inverter->area;
+      }
+    }
+    for (unsigned o = 0; o < numOutputs; ++o) {
+      if (binding.isOutputNegated(o)) {
+        for (unsigned i = 0; i < numInputs; ++i)
+          adjusted[o * numInputs + i] += invDelay;
+        totalArea += inverter->area;
+      }
+    }
+    MatchResult result;
+    result.area = totalArea;
+    result.setOwnedDelays(std::move(adjusted));
+    return result;
   }
 
   /// Enable truth table matching for this pattern
@@ -140,25 +165,42 @@ struct TechLibraryPattern : public CutRewritePattern {
           const MatchedPattern &matched) const override {
     const auto &network = enumerator.getLogicNetwork();
     const MatchBinding &binding = matched.getBinding();
-    assert(!binding.hasNegation() &&
-           "phase-aware tech mapping is not implemented yet");
-
+    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
+    assert(rootOp && "cut root must be a valid operation");
+    Location loc = rootOp->getLoc();
+    // Negated pattern inputs observe inverted cut inputs through
+    // inverter cells (guaranteed to exist: match() only accepts negated
+    // bindings when an inverter pattern is available).
+    assert((!binding.hasNegation() || inverter) &&
+           "negated binding without inverter pattern");
     SmallVector<Value> inputs;
     unsigned numInputs = binding.getNumInputs();
     inputs.reserve(numInputs);
     for (unsigned patternInput = 0; patternInput < numInputs; ++patternInput) {
       unsigned idx = binding.getCutInputForPatternInput(patternInput);
       assert(idx < cut.inputs.size() && "input permutation index out of range");
-      inputs.push_back(network.getValue(cut.inputs[idx]));
+      Value val = network.getValue(cut.inputs[idx]);
+      if (binding.isPatternInputNegated(patternInput)) {
+        auto invOp = hw::InstanceOp::create(builder, loc, inverter->module,
+                                            "mapped_inv", ArrayRef<Value>(val));
+        val = invOp.getResult(0);
+      }
+      inputs.push_back(val);
     }
 
-    auto *rootOp = network.getGate(cut.getRootIndex()).getOperation();
-    assert(rootOp && "cut root must be a valid operation");
-
     // TODO: Give a better name to the instance
-    auto instanceOp = hw::InstanceOp::create(builder, rootOp->getLoc(), module,
-                                             "mapped", ArrayRef<Value>(inputs));
-    return instanceOp.getOperation();
+    auto instanceOp = hw::InstanceOp::create(builder, loc, module, "mapped",
+                                             ArrayRef<Value>(inputs));
+    Operation *resultOp = instanceOp.getOperation();
+    // A negated pattern output is inverted back for the cut consumers.
+    // (Multi-output patterns are rejected upstream.)
+    if (binding.isOutputNegated(0)) {
+      auto invOp =
+          hw::InstanceOp::create(builder, loc, inverter->module, "mapped_inv",
+                                 ArrayRef<Value>(resultOp->getResult(0)));
+      resultOp = invOp.getOperation();
+    }
+    return resultOp;
   }
 
   unsigned getNumInputs() const {
@@ -174,11 +216,18 @@ struct TechLibraryPattern : public CutRewritePattern {
     return module.getLoc();
   }
 
+  double getArea() const { return area; }
+  const NPNClass &getNPNClass() const { return npnClass; }
+  void setInverter(const TechLibraryPattern *inv) { inverter = inv; }
+
 private:
   const double area;
   const SmallVector<DelayType> delay;
   hw::HWModuleOp module;
   NPNClass npnClass;
+  // Cheapest 1-input inverter cell, for phase-aware matches. Null when
+  // the library has none (negated bindings then never match).
+  const TechLibraryPattern *inverter = nullptr;
 };
 
 namespace {
@@ -196,6 +245,13 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
+    // NPN canonicalization is brute force O(n! * 2^n): only cells with
+    // at most this many inputs become patterns (ABC's default cut size).
+    // Wider cells (e.g. 9-input AO333) stay usable for future
+    // semi-canonical matching but never match today; logic still maps
+    // through smaller cells. This also bounds cut enumeration, whose
+    // canonicalization cost would otherwise explode on wide cuts.
+    constexpr unsigned kMaxPatternInputs = 6;
     unsigned maxInputSize = 0;
     // Consider modules with the "synth.mapping_cost" attribute as library
     // modules.
@@ -259,6 +315,14 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
         inputPorts.push_back(port);
       }
 
+      // Cells wider than the NPN cap never match capped cuts; skip
+      // them instead of crashing the canonicalizer.
+      if (inputPorts.size() > kMaxPatternInputs) {
+        LLVM_DEBUG(llvm::dbgs() << "Skipping wide cell (no NPN support): "
+                                << hwModule.getModuleName() << "\n");
+        continue;
+      }
+
       if (arcs.size() != inputPorts.size()) {
         hwModule.emitError(
             "synth.mapping_cost arcs do not match module inputs");
@@ -298,10 +362,31 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     if (libraryPatterns.empty())
       return markAllAnalysesPreserved();
 
+    // Phase-aware matching needs one inverter cell: the cheapest 1-input
+    // pattern implementing negation (canonical NOT class). Every pattern
+    // shares it; without one, negated bindings keep failing as before.
+    const TechLibraryPattern *inverter = nullptr;
+    NPNClass notClass =
+        NPNClass::computeNPNCanonicalForm(BinaryTruthTable(1, 1, APInt(2, 1)));
+    for (auto &pattern : libraryPatterns) {
+      auto *tech = static_cast<TechLibraryPattern *>(pattern.get());
+      if (tech->getNumInputs() != 1 || tech->getNumOutputs() != 1)
+        continue;
+      const NPNClass &npn = tech->getNPNClass();
+      if (!(npn.truthTable == notClass.truthTable) ||
+          npn.inputNegation != notClass.inputNegation ||
+          npn.outputNegation != notClass.outputNegation)
+        continue;
+      if (!inverter || tech->getArea() < inverter->getArea())
+        inverter = tech;
+    }
+    for (auto &pattern : libraryPatterns)
+      static_cast<TechLibraryPattern *>(pattern.get())->setInverter(inverter);
+
     CutRewritePatternSet patternSet(std::move(libraryPatterns));
     CutRewriterOptions options;
     options.strategy = strategy;
-    options.maxCutInputSize = maxInputSize;
+    options.maxCutInputSize = std::min(maxInputSize, kMaxPatternInputs);
     options.maxCutSizePerRoot = maxCutsPerRoot;
     options.attachDebugTiming = test;
     options.npnTable = npnTable.get();
