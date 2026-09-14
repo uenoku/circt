@@ -25,6 +25,7 @@
 #include "circt/Dialect/Seq/SeqPasses.h"
 #include "circt/Dialect/Sim/SimDialect.h"
 #include "circt/Dialect/Verif/VerifDialect.h"
+#include "circt/Dialect/Verif/VerifPasses.h"
 #include "circt/Support/Passes.h"
 #include "circt/Support/Version.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
@@ -152,6 +153,12 @@ struct CLOptions {
   cl::opt<bool> inferClockPorts{
       "infer-clock-ports",
       cl::desc("Retype `i1` ports used as clocks to `!seq.clock`"),
+      cl::init(true), cl::cat(cat)};
+
+  cl::opt<bool> stripAssertLike{
+      "strip-assert-like",
+      cl::desc("Remove assert-like ops before lowering (synthesis "
+               "drops verification constructs; BMC flows keep them)"),
       cl::init(true), cl::cat(cat)};
 
   cl::opt<bool> sroa{
@@ -334,6 +341,10 @@ static void populatePasses(PassManager &pm) {
   populateMooreToCorePipeline(pm);
   if (opts.loweringMode == LoweringMode::OutputIRLLHD)
     return;
+  // Synthesis drops verification constructs (they block LLHD lowering);
+  // BMC and inspection flows keep them.
+  if (opts.stripAssertLike)
+    pm.addPass(verif::createStripAssertLikePass());
   LlhdToCorePipelineOptions options;
   options.detectMemories = opts.detectMemories;
   options.inferClockPorts = opts.inferClockPorts;

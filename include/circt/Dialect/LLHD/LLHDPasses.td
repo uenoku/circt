@@ -65,6 +65,33 @@ def DeseqPass : Pass<"llhd-deseq", "hw::HWModuleOp"> {
   ];
 }
 
+def LowerSyncProcessesPass : Pass<"llhd-lower-sync-processes",
+                                   "hw::HWModuleOp"> {
+  let summary = "Convert synchronous processes with conditional drives to "
+                "registers";
+  let description = [{
+    Deseq handles canonical async-reset flops and Sig2Reg handles signals
+    with unconditional drives. What remains in practice (e.g. Chisel TileLink
+    adapters) are multi-result processes with a single observed clock, a
+    rising-edge resume gate, and one conditional drive per state signal.
+    Since the context is synchronous, sync reset, enable and hold all reduce
+    to next-state muxes feeding plain `seq.firreg` ops -- the same shape
+    Yosys builds, since Liberty flops have no sync-reset pins. Anything
+    outside this shape is skipped loudly.
+  }];
+  let statistics = [
+    Statistic<"numLowered", "lowered",
+              "Number of processes lowered to registers">,
+    Statistic<"numSkipped", "skipped",
+              "Number of processes left untouched">
+  ];
+  let dependentDialects = [
+    "comb::CombDialect",
+    "hw::HWDialect",
+    "seq::SeqDialect",
+  ];
+}
+
 def CombineDrivesPass : Pass<"llhd-combine-drives", "hw::HWModuleOp"> {
   let summary = "Combine scalar drives into aggregate drives";
   let description = [{

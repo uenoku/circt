@@ -14,6 +14,7 @@ set(libs
   CIRCTSupport
   CIRCTTransforms
   CIRCTVerif
+  CIRCTVerifTransforms
   MLIRArithDialect
   MLIRBytecodeReader
   MLIRBytecodeWriter
