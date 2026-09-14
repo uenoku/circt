@@ -91,7 +91,9 @@ def SeqTechMapper : Pass<"synth-seq-tech-mapper", "mlir::ModuleOp"> {
     Statistic<"numFlopsMapped", "flops-mapped",
               "Number of sequential ops mapped to library cells">,
     Statistic<"numFlopsSkipped", "flops-skipped",
-              "Number of sequential ops left unmapped">
+              "Number of sequential ops left unmapped">,
+    Statistic<"numFlopsExploded", "flops-exploded",
+              "Number of wide sequential ops exploded bit by bit">
   ];
   let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
                              "seq::SeqDialect", "synth::SynthDialect"];
@@ -111,15 +113,20 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
     and no read-write ports. Write masks require a matching macro mask
     width; unmasked writes tie macro masks to all-ones. Design enables
     require macro enable pins and are tied active otherwise. Unmappable
-    memories (geometry mismatch, missing features, or no compatible macro)
-    are left untouched. Single-port strobe macros needing read/write
-    arbitration are future work.
+    memories (geometry mismatch, missing features) are left untouched.
+    Without a compatible macro, memories fall back to flop arrays with
+    address decode (like Yosys memory_map without SRAM libraries): single
+    clock, asynchronous read, single-cycle write, full words only, at most
+    one write port, no read enables. Single-port strobe macros needing
+    read/write arbitration are future work.
   }];
   let statistics = [
     Statistic<"numMemsMapped", "mems-mapped",
               "Number of memories mapped to SRAM macros">,
     Statistic<"numMemsSkipped", "mems-skipped",
-              "Number of memories left unmapped">
+              "Number of memories left unmapped">,
+    Statistic<"numMemsExploded", "mems-exploded",
+              "Number of memories exploded to flop arrays">
   ];
   let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
                              "seq::SeqDialect", "synth::SynthDialect"];

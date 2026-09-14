@@ -321,8 +321,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     synth::DeriveMappingCostOptions mappingCostOptions;
     mappingCostOptions.dontUse.assign(dontUseCells.begin(), dontUseCells.end());
     pm.addPass(synth::createDeriveMappingCost(mappingCostOptions));
-    pm.addPass(synth::createSeqTechMapper());
+    // Memories before flops: flop-array fallbacks from SeqMemMapper are
+    // mapped to cells by SeqTechMapper in the same run.
     pm.addPass(synth::createSeqMemMapper());
+    pm.addPass(synth::createSeqTechMapper());
   }
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);

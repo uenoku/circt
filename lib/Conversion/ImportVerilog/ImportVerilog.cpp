@@ -562,6 +562,8 @@ void circt::populateLlhdToCorePipeline(
   modulePM.addPass(createMapArithToCombPass(true));
 
   // Simplify module-level signals.
+  if (options.stripInitDrives)
+    modulePM.addPass(llhd::createStripInitDrivesPass());
   modulePM.addPass(llhd::createCombineDrivesPass());
   modulePM.addPass(llhd::createSig2Reg());
   modulePM.addPass(mlir::createCSEPass());

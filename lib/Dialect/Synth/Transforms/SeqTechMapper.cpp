@@ -238,6 +238,120 @@ FailureOr<CellSignature> extractSignature(hw::HWModuleOp module) {
   return sig;
 }
 
+// Wide integer flops (width > 1) that can be exploded bit by bit: reset
+// values, if any, must be constants so each bit keeps one.
+SmallVector<Operation *> collectWideFlops(hw::HWModuleOp module) {
+  SmallVector<Operation *> wide;
+  module.getBodyBlock()->walk([&](Operation *op) {
+    if (op->getNumResults() != 1)
+      return;
+    auto intTy = dyn_cast<IntegerType>(op->getResult(0).getType());
+    if (!intTy || intTy.getWidth() <= 1)
+      return;
+    if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+      if (firreg.getReset() && !firreg.getResetValue()
+                                    .getDefiningOp<hw::ConstantOp>())
+        return;
+      wide.push_back(op);
+    } else if (auto compreg = dyn_cast<seq::CompRegOp>(op)) {
+      if (compreg.getReset() && !compreg.getResetValue()
+                                     .getDefiningOp<hw::ConstantOp>())
+        return;
+      wide.push_back(op);
+    } else if (auto ce = dyn_cast<seq::CompRegClockEnabledOp>(op)) {
+      if (ce.getReset() &&
+          !ce.getResetValue().getDefiningOp<hw::ConstantOp>())
+        return;
+      wide.push_back(op);
+    }
+  });
+  return wide;
+}
+
+// Replace a wide flop with per-bit flops concatenated MSB-first. Returns
+// false (leaving the op alone) if reset values are not per-bit constants.
+bool explodeFlop(OpBuilder &builder, Operation *op) {
+  Location loc = op->getLoc();
+  auto intTy = cast<IntegerType>(op->getResult(0).getType());
+  unsigned width = intTy.getWidth();
+  Value next, clock, reset, enable, resetValue;
+  bool isAsync = false;
+  std::string baseName;
+  if (auto firreg = dyn_cast<seq::FirRegOp>(op)) {
+    next = firreg.getNext();
+    clock = firreg.getClk();
+    reset = firreg.getReset();
+    resetValue = firreg.getResetValue();
+    isAsync = firreg.getIsAsync();
+    if (!firreg.getName().empty())
+      baseName = firreg.getName().str();
+  } else if (auto compreg = dyn_cast<seq::CompRegOp>(op)) {
+    next = compreg.getInput();
+    clock = compreg.getClk();
+    reset = compreg.getReset();
+    resetValue = compreg.getResetValue();
+    if (auto name = compreg.getNameAttr())
+      baseName = name.getValue().str();
+  } else if (auto ce = dyn_cast<seq::CompRegClockEnabledOp>(op)) {
+    next = ce.getInput();
+    clock = ce.getClk();
+    enable = ce.getClockEnable();
+    reset = ce.getReset();
+    resetValue = ce.getResetValue();
+    if (auto name = ce.getNameAttr())
+      baseName = name.getValue().str();
+  } else {
+    return false;
+  }
+  APInt resetBits(width, 0);
+  if (reset) {
+    auto constOp = resetValue.getDefiningOp<hw::ConstantOp>();
+    if (!constOp)
+      return false;
+    resetBits = constOp.getValue();
+  }
+  auto i1 = builder.getI1Type();
+  mlir::ImplicitLocOpBuilder ibuilder(loc, builder);
+  builder.setInsertionPoint(op);
+  SmallVector<Value> bits;
+  for (unsigned i = 0; i < width; ++i) {
+    Value dataBit = comb::ExtractOp::create(builder, loc, next, i, 1);
+    Value resetBit;
+    if (reset) {
+      resetBit = hw::ConstantOp::create(builder, loc, i1,
+                                        resetBits[i] ? 1 : 0);
+    }
+    StringAttr bitName;
+    if (!baseName.empty())
+      bitName = builder.getStringAttr(baseName + "_bit" + Twine(i).str());
+    Value q;
+    if (isa<seq::FirRegOp>(op)) {
+      if (reset) {
+        q = seq::FirRegOp::create(builder, loc, dataBit, clock, bitName,
+                                  reset, resetBit, hw::InnerSymAttr{},
+                                  isAsync);
+      } else {
+        q = seq::FirRegOp::create(builder, loc, dataBit, clock, bitName);
+      }
+    } else if (isa<seq::CompRegOp>(op)) {
+      q = seq::CompRegOp::create(ibuilder, i1, dataBit, clock, bitName,
+                                 reset, resetBit, Value(),
+                                 hw::InnerSymAttr{});
+    } else {
+      q = seq::CompRegClockEnabledOp::create(
+          ibuilder, i1, dataBit, clock, enable, bitName, reset, resetBit,
+          Value(), hw::InnerSymAttr{});
+    }
+    bits.push_back(q);
+  }
+  // concat takes MSB first.
+  SmallVector<Value> reversed(bits.rbegin(), bits.rend());
+  Value concat = comb::ConcatOp::create(builder, loc, reversed);
+  op->getResult(0).replaceAllUsesWith(concat);
+  op->erase();
+  return true;
+}
+
 // A design flop in canonical terms.
 struct FlopSpec {
   Operation *op;
@@ -409,6 +523,13 @@ struct SeqTechMapperPass
     for (auto module : top.getOps<hw::HWModuleOp>()) {
       if (libraryModules.contains(module))
         continue;
+      // Library cells are single-bit; explode wide integer flops bit by
+      // bit first (Yosys `techmap` does the same for `$dff`). Only when
+      // reset values (if any) are constants, so each bit keeps the
+      // constant reset the mapper requires.
+      for (auto *wideOp : collectWideFlops(module))
+        if (explodeFlop(builder, wideOp))
+          ++numFlopsExploded;
       // Collect first; rewriting mutates the block.
       SmallVector<Operation *> flops;
       module.getBodyBlock()->walk([&](Operation *op) {

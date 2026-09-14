@@ -161,6 +161,12 @@ struct CLOptions {
                "drops verification constructs; BMC flows keep them)"),
       cl::init(true), cl::cat(cat)};
 
+  cl::opt<bool> stripInitDrives{
+      "strip-init-drives",
+      cl::desc("Drop constant `initial` drives subsumed by a real driver "
+               "(power-up only; unrealizable on ASIC cells)"),
+      cl::init(true), cl::cat(cat)};
+
   cl::opt<bool> sroa{
       "sroa",
       cl::desc("Destructure arrays and structs into individual signals."),
@@ -349,6 +355,7 @@ static void populatePasses(PassManager &pm) {
   options.detectMemories = opts.detectMemories;
   options.inferClockPorts = opts.inferClockPorts;
   options.sroa = opts.sroa;
+  options.stripInitDrives = opts.stripInitDrives;
   populateLlhdToCorePipeline(pm, options);
 }
 

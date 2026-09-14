@@ -15,7 +15,8 @@
 // write port counts in order, a single shared clock, equal latencies,
 // undefined read/write-under-write behavior, no power-on init, and no
 // read-write ports. Single-port strobe macros needing read/write
-// arbitration are future work, as are flop-based and mock fallbacks.
+// arbitration are future work. Without a macro match, memories fall back
+// to flop arrays with address decode (Yosys `memory_map` default).
 //
 //===----------------------------------------------------------------------===//
 
@@ -142,10 +143,8 @@ struct SeqMemMapperPass
         continue;
       lib.push_back(std::move(*info));
     }
-    if (lib.empty())
-      return markAllAnalysesPreserved();
-
-    // Collect memories with their ports.
+    // Collect memories with their ports (flop-array fallback needs no
+    // macros, so an empty library only skips macro matching).
     SmallVector<MemPorts> memories;
     DenseMap<Value, size_t> memIndex;
     for (auto module : top.getOps<hw::HWModuleOp>()) {
@@ -245,7 +244,7 @@ struct SeqMemMapperPass
         best = &macro;
     }
     if (!best)
-      return skip();
+      return explodeToFlops(builder, entry, clock, memType);
 
     // Per-port feature checks.
     for (auto [read, macro] : llvm::zip(entry.reads, best->reads)) {
@@ -353,6 +352,127 @@ struct SeqMemMapperPass
       write.erase();
     mem.erase();
     ++numMemsMapped;
+  }
+
+  // Yosys `memory_map` default: with no SRAM macro available, memories
+  // become flop arrays with address-decode muxes. Strict preconditions
+  // beyond mapMemory's: asynchronous read (latency 0; a synchronous
+  // read would need a held-output register), single-cycle write, full
+  // words only (mask width 1 or absent, no per-write mask operand), at
+  // most one write port, and no read enables.
+  void explodeToFlops(OpBuilder &builder, MemPorts &entry, Value clock,
+                      seq::FirMemType memType) {
+    auto mem = entry.mem;
+    Location loc = mem.getLoc();
+    auto skip = [&] { ++numMemsSkipped; };
+    uint64_t depth = memType.getDepth();
+    unsigned width = memType.getWidth();
+    if (depth == 0 || width == 0)
+      return skip();
+    if (mem.getReadLatency() != 0 || mem.getWriteLatency() != 1)
+      return skip();
+    auto maskWidth = memType.getMaskWidth();
+    if (maskWidth && *maskWidth != 1)
+      return skip();
+    if (entry.writes.size() > 1)
+      return skip();
+    for (auto read : entry.reads)
+      if (read.getEnable())
+        return skip();
+    for (auto write : entry.writes)
+      if (write.getMask())
+        return skip();
+
+    // Dead memory: no readers, nothing to build.
+    if (entry.reads.empty()) {
+      for (auto write : entry.writes)
+        write.erase();
+      mem.erase();
+      ++numMemsExploded;
+      return;
+    }
+
+    auto i1 = builder.getI1Type();
+    auto constInt = [&](Type type, uint64_t v) -> Value {
+      return hw::ConstantOp::create(
+          builder, loc, type,
+          builder.getIntegerAttr(type,
+                                 APInt(cast<IntegerType>(type).getWidth(), v)));
+    };
+    std::string baseName = "mem";
+    if (auto name = mem.getNameAttr(); name && !name.getValue().empty())
+      baseName = name.getValue().str();
+
+    // One flop per bit, built at the memory: the memory dominates its
+    // ports, so every flop output dominates every port position.
+    builder.setInsertionPoint(mem);
+    Value zero = constInt(i1, 0);
+    seq::FirMemWriteOp write =
+        entry.writes.empty() ? seq::FirMemWriteOp() : entry.writes[0];
+    Value wren = write && write.getEnable() ? write.getEnable()
+                                            : constInt(i1, 1);
+    // Storage[row][bit].
+    SmallVector<SmallVector<seq::FirRegOp>> storage;
+    for (uint64_t r = 0; r < depth; ++r) {
+      SmallVector<seq::FirRegOp> row;
+      for (unsigned b = 0; b < width; ++b) {
+        auto flop = seq::FirRegOp::create(
+            builder, loc, zero, clock,
+            builder.getStringAttr(baseName + "_r" + Twine(r).str() + "_b" +
+                                  Twine(b).str()));
+        row.push_back(flop);
+      }
+      storage.push_back(std::move(row));
+    }
+    // Write path, built at the write port where every operand dominates.
+    if (write) {
+      builder.setInsertionPoint(write);
+      Value wdata = write.getData();
+      Value waddr = write.getAddress();
+      auto waddrTy = cast<IntegerType>(waddr.getType());
+      auto wdataTy = cast<IntegerType>(wdata.getType());
+      for (uint64_t r = 0; r < depth; ++r) {
+        Value match = comb::ICmpOp::create(
+            builder, loc, comb::ICmpPredicate::eq, waddr,
+            constInt(waddrTy, r));
+        Value fire = comb::AndOp::create(builder, loc, wren, match);
+        for (unsigned b = 0; b < width; ++b) {
+          Value dataBit =
+              comb::ExtractOp::create(builder, loc, wdata, b, 1);
+          Value next = comb::MuxOp::create(builder, loc, fire, dataBit,
+                                           storage[r][b].getData());
+          storage[r][b].getNextMutable().assign(next);
+        }
+      }
+    }
+    // Read path: per-bit mux cascade over rows, built at each read port.
+    // Out-of-range addresses match nothing and read row 0 (don't-care,
+    // deterministic, mirroring Yosys undefined-address behavior).
+    for (auto read : entry.reads) {
+      builder.setInsertionPoint(read);
+      Value raddr = read.getAddress();
+      auto raddrTy = cast<IntegerType>(raddr.getType());
+      SmallVector<Value> bits;
+      for (unsigned b = 0; b < width; ++b) {
+        Value acc = storage[0][b].getData();
+        for (uint64_t r = 1; r < depth; ++r) {
+          Value match = comb::ICmpOp::create(
+              builder, loc, comb::ICmpPredicate::eq, raddr,
+              constInt(raddrTy, r));
+          acc = comb::MuxOp::create(builder, loc, match,
+                                    storage[r][b].getData(), acc);
+        }
+        bits.push_back(acc);
+      }
+      SmallVector<Value> reversed(bits.rbegin(), bits.rend());
+      Value data = comb::ConcatOp::create(builder, loc, reversed);
+      read.getData().replaceAllUsesWith(data);
+      read.erase();
+    }
+    for (auto writeOp : entry.writes)
+      writeOp.erase();
+    mem.erase();
+    ++numMemsExploded;
   }
 };
 

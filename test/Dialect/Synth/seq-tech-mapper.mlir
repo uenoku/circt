@@ -93,9 +93,11 @@ hw.module @top_async1(in %clk : i1, in %d : i1, in %rst : i1, out q : i1) {
   hw.output %r : i1
 }
 
-// Wide flops and initialized flops are left alone.
+// Wide flops explode bit by bit (like Yosys techmap), each bit mapping
+// to the cheapest cell.
 // CHECK-LABEL: hw.module @top_wide(
-// CHECK: seq.firreg {{.*}} : i8
+// CHECK-COUNT-8: hw.instance {{.*}} @sdf(
+// CHECK-NOT: seq.firreg
 hw.module @top_wide(in %clk : i1, in %d : i8, out q : i8) {
   %c = seq.to_clock %clk
   %r = seq.firreg %d clock %c : i8

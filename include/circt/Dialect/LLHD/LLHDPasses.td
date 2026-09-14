@@ -141,6 +141,26 @@ def RemoveControlFlowPass : Pass<"llhd-remove-control-flow", "hw::HWModuleOp"> {
   ];
 }
 
+def StripInitDrivesPass : Pass<"llhd-strip-init-drives", "hw::HWModuleOp"> {
+  let summary = "Drop constant drives subsumed by a real driver";
+  let description = [{
+    Verilog `initial reg = const` lowers to a module-level constant drive
+    next to the driver from the `always` block. The two unconditional
+    drives look like a multi-driver conflict to Sig2Reg, so the signal
+    gets stuck. For synthesis the constant only selects power-up state,
+    which ASIC cells cannot realize (Yosys likewise drops init values at
+    techmap when the cell has no init pin), so the drive can go once a
+    real driver exists. This changes simulation semantics and therefore
+    only runs in synthesis flows. All-constant identical drives are
+    deduplicated to one so Sig2Reg can fold the tie; differing constants
+    are a genuine conflict and bail out.
+  }];
+  let statistics = [
+    Statistic<"numDrivesErased", "drives-erased",
+              "Number of constant drives erased">,
+  ];
+}
+
 def UnrollLoopsPass : Pass<"llhd-unroll-loops", "hw::HWModuleOp"> {
   let summary = "Unroll control flow loops with static bounds";
   let description = [{

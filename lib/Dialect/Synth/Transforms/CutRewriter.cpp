@@ -364,6 +364,30 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
         result ^= it->second;
       }
       eval[xorOp.getResult()] = result;
+      // TODO: Define And/Or as Synth ops. Single-bit comb And/Or have
+      // identical boolean semantics; library bodies that were never
+      // converted (e.g. outside the HierarchicalRunner scope) simulate
+      // exactly the same way.
+    } else if (auto andOp = dyn_cast<comb::AndOp>(&op)) {
+      auto tableSize = 1ULL << numInputs;
+      llvm::APInt result = llvm::APInt::getAllOnes(tableSize);
+      for (auto operand : andOp.getOperands()) {
+        auto it = eval.find(operand);
+        if (it == eval.end())
+          return andOp.emitError("Input value not found in evaluation map");
+        result &= it->second;
+      }
+      eval[andOp.getResult()] = result;
+    } else if (auto orOp = dyn_cast<comb::OrOp>(&op)) {
+      auto tableSize = 1ULL << numInputs;
+      llvm::APInt result = llvm::APInt::getZero(tableSize);
+      for (auto operand : orOp.getOperands()) {
+        auto it = eval.find(operand);
+        if (it == eval.end())
+          return orOp.emitError("Input value not found in evaluation map");
+        result |= it->second;
+      }
+      eval[orOp.getResult()] = result;
     } else if (auto constantOp = dyn_cast<hw::ConstantOp>(&op)) {
       auto tableSize = 1ULL << numInputs;
       eval[constantOp.getResult()] = constantOp.getValue().isZero()

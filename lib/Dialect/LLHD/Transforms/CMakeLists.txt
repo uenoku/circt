@@ -9,6 +9,7 @@ add_circt_dialect_library(CIRCTLLHDTransforms
   Mem2Reg.cpp
   RemoveControlFlow.cpp
   Sig2RegPass.cpp
+  StripInitDrives.cpp
   UnrollLoops.cpp
   WrapProceduralOps.cpp
 
