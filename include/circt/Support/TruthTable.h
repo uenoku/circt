@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -206,6 +207,11 @@ private:
   mutable std::mutex cacheMutex;
   mutable std::map<BinaryTruthTable, NPNClass, TruthTableLess>
       canonicalCache;
+  mutable std::atomic<uint64_t> numCacheHits{0};
+  mutable std::atomic<uint64_t> numCacheMisses{0};
+
+public:
+  void dumpCacheStats(llvm::raw_ostream &os) const;
 };
 
 /// Collect all canonical 4-input single-output NPN representatives in

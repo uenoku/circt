@@ -416,6 +416,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     numCutsCreated += numCutsCreatedCount;
     numCutSetsCreated += numCutSetsCreatedCount;
     numCutsRewritten += numCutsRewrittenCount;
+    LLVM_DEBUG(npnTable->dumpCacheStats(llvm::dbgs()));
   }
 
 private:

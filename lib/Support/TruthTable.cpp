@@ -543,9 +543,17 @@ NPNClass NPNTable::getCanonicalForm(const BinaryTruthTable &tt) const {
     return result;
   std::lock_guard<std::mutex> lock(cacheMutex);
   auto it = canonicalCache.find(tt);
-  if (it != canonicalCache.end())
+  if (it != canonicalCache.end()) {
+    ++numCacheHits;
     return it->second;
+  }
+  ++numCacheMisses;
   return canonicalCache[tt] = NPNClass::computeNPNCanonicalForm(tt);
+}
+
+void NPNTable::dumpCacheStats(llvm::raw_ostream &os) const {
+  os << "NPN cache: " << numCacheHits << " hits, " << numCacheMisses
+     << " misses, " << canonicalCache.size() << " entries\n";
 }
 
 bool NPNTable::lookup(const BinaryTruthTable &tt, NPNClass &result) const {
