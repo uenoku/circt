@@ -53,13 +53,19 @@ and environmental** (verify before/after any change):
 ## End-to-end recipes
 PDK libs:
 - sky130hd: `circt-sfc-experiments/OpenROAD-flow-scripts/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib`
-- ASAP7 LVT_FF set (assemble once):
-  - `~/Downloads/asap7sc7p5t_{AO_SLVT→extract LVT,OA_LVT from as7p5t_27/LIB/NLDM,...}` —
-    concretely: SIMPLE_LVT + INVBUF_LVT + AO_LVT + OA_LVT from
-    `/home/uenoku/dev/asap7/asap7sc7p5t_27/LIB/NLDM/*.lib.7z` (extract with
-    `7z x`), plus `~/Downloads/asap7sc7p5t_SEQ_LVT_FF_nldm_220123.lib`.
-    INV/BUF live in a separate INVBUF lib (ORFS uses it too); no MUX2
-    cells exist in these libs (muxes decompose — correct, verbose).
+- ASAP7 LVT_FF set (assemble once): exactly these 5 files —
+  `asap7sc7p5t_SIMPLE_LVT_FF_nldm_201020.lib`,
+  `asap7sc7p5t_INVBUF_LVT_FF_nldm_201020.lib`,
+  `asap7sc7p5t_AO_LVT_FF_nldm_201020.lib`,
+  `asap7sc7p5t_OA_LVT_FF_nldm_201020.lib` (all extracted with `7z x` from
+  `/home/uenoku/dev/asap7/asap7sc7p5t_27/LIB/NLDM/*.lib.7z`),
+  plus `asap7sc7p5t_SEQ_LVT_FF_nldm_220123.lib` (all under `~/Downloads/`).
+  Pass comma-separated via one `--liberty a,b,c,d,e` (no spaces).
+  INV/BUF live in a separate INVBUF lib (ORFS uses it too); no MUX2
+  cells exist in these libs (muxes decompose — correct, verbose:
+  ChipTop ASAP7 has 681K INVs).
+  NOTE: `~/Downloads/asap7sc7p5t_AO_SLVT_FF_nldm_201020.lib` also exists
+  but is NOT part of the set (SLVT ≠ LVT).
 
 Stubs needed for elaboration (recreate under /tmp; /tmp is wiped
 between sessions!):
@@ -88,6 +94,12 @@ Flows (all verified; timings on 32-core/62GB box):
 ./build/bin/circt-verilog --top=fifo circt-sfc-experiments/example/fifo/fifo.v -o /tmp/e2e/fifo.mlir
 ./build/bin/circt-synth --liberty <sky130.lib> --strip-lib-to-extern --top fifo /tmp/e2e/fifo.mlir -o /tmp/e2e/fifo_synth.mlir
 # fifo → ASAP7 (5 libs): ~4 s, same flop count
+# ChipTop → ASAP7 (5 libs + same tmp/sram-macros-chiptop.mlir — macros are
+# liberty-independent): ~33 s, 1,974,297 instances, 226,157 flops EXACT-match
+# with sky130 (seq path is PDK-independent), 4 SRAM blackboxes, 0 leftovers
+# → 717MB Verilog, 456 modules, 0 always-blocks, parse clean.
+# (1.97M vs 1.15M sky130 instances = MUX2-less decomposition + 681K INVs.)
+./build/bin/circt-synth --liberty <a>,<b>,<c>,<d>,<e> --sram-macros tmp/sram-macros-chiptop.mlir --strip-lib-to-extern --top ChipTop /tmp/e2e/chiptop.mlir -o /tmp/e2e/chiptop_asap7.mlir
 # Rocket → sky130: ~3 min, 266,566 instances, ~72k flops (54.8k mem + 15.1k reg, reconciled)
 ./build/bin/circt-verilog -D SYNTHESIS --ignore-unknown-modules --top=RocketSystem <Rocket.v> /tmp/plusarg_stub.sv -o /tmp/e2e/rocket.mlir
 ./build/bin/circt-synth --liberty <sky130.lib> --strip-lib-to-extern --top RocketSystem /tmp/e2e/rocket.mlir -o /tmp/e2e/rocket_synth.mlir
