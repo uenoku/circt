@@ -8,7 +8,7 @@
 //
 // This file implements the SeqTechMapper pass, which maps sequential
 // operations (`seq.firreg`, `seq.compreg`, `seq.compreg.ce`) to instances of
-// library cells, the Yosys `dfflibmap` equivalent.
+// library cells, the standard sequential library-mapping equivalent.
 //
 // Library cells are `hw.module`s in the same `ModuleOp` whose bodies contain
 // a `synth.ff` state element (as produced by the Liberty importer). Only
@@ -535,7 +535,7 @@ struct SeqTechMapperPass
       if (libraryModules.contains(module))
         continue;
       // Library cells are single-bit; explode wide integer flops bit by
-      // bit first (Yosys `techmap` does the same for `$dff`). Only when
+      // bit first (as required by the sequential mapping flow). Only when
       // reset values (if any) are constants, so each bit keeps the
       // constant reset the mapper requires.
       for (auto *wideOp : collectWideFlops(module))

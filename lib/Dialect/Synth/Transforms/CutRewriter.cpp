@@ -35,6 +35,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/RegionKindInterface.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
@@ -367,8 +368,86 @@ LogicalResult circt::synth::topologicallySortLogicNetwork(Operation *topOp) {
 }
 
 /// Get the truth table for operations within a block.
-FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
-                                                        Block *block) {
+/// Instances of single-output combinational modules are followed into
+/// callee bodies (with memoization); this supports supergate modules whose
+/// bodies instantiate base cells.
+static llvm::APInt composeTruthTable(const BinaryTruthTable &truthTable,
+                                     ArrayRef<llvm::APInt> operands,
+                                     unsigned outputWidth) {
+  assert(truthTable.numOutputs == 1 &&
+         "Only single-output truth tables are supported");
+  assert(truthTable.numInputs == operands.size() &&
+         "Operand count must match truth table inputs");
+
+  if (truthTable.table.isZero())
+    return llvm::APInt::getZero(outputWidth);
+  if (truthTable.table.isAllOnes())
+    return llvm::APInt::getAllOnes(outputWidth);
+
+  bool enumerateSetBits =
+      truthTable.table.popcount() <= truthTable.table.getBitWidth() / 2;
+  llvm::APInt result = enumerateSetBits ? llvm::APInt::getZero(outputWidth)
+                                        : llvm::APInt::getAllOnes(outputWidth);
+
+  for (unsigned row = 0, e = truthTable.table.getBitWidth(); row != e; ++row) {
+    if (static_cast<bool>(truthTable.table[row]) != enumerateSetBits)
+      continue;
+
+    llvm::APInt pattern = llvm::APInt::getAllOnes(outputWidth);
+    for (unsigned i = 0, e = operands.size(); i != e; ++i) {
+      bool bit = (row >> i) & 1U;
+      pattern &= bit ? operands[i] : ~operands[i];
+    }
+
+    if (enumerateSetBits)
+      result |= pattern;
+    else
+      result &= ~pattern;
+  }
+
+  return result;
+}
+
+static FailureOr<BinaryTruthTable>
+getTruthTableImpl(ValueRange values, Block *block,
+                  DenseMap<Operation *, BinaryTruthTable> &moduleCache);
+
+static FailureOr<BinaryTruthTable>
+getModuleTruthTableImpl(hw::HWModuleOp module,
+                        DenseMap<Operation *, BinaryTruthTable> &moduleCache) {
+  auto cached = moduleCache.find(module.getOperation());
+  if (cached != moduleCache.end())
+    return cached->second;
+
+  if (module.getNumOutputPorts() != 1)
+    return module.emitError(
+        "Modules with multiple outputs are not supported yet");
+  if (module.getNumInputPorts() >= maxTruthTableInputs)
+    return module.emitError("Too many inputs for truth table generation");
+  if (!module.getOutputTypes()[0].isInteger(1))
+    return module.emitError("All output ports must be single bit");
+  for (auto type : module.getInputTypes())
+    if (!type.isInteger(1))
+      return module.emitError("All input ports must be single bit");
+
+  auto *bodyBlock = module.getBodyBlock();
+  assert(bodyBlock && "Module must have a body block");
+  auto outputOp = dyn_cast<hw::OutputOp>(bodyBlock->getTerminator());
+  if (!outputOp)
+    return module.emitError("expected hw.output terminator");
+
+  auto truthTable =
+      getTruthTableImpl(outputOp.getOutputs(), bodyBlock, moduleCache);
+  if (failed(truthTable))
+    return failure();
+
+  moduleCache.try_emplace(module.getOperation(), *truthTable);
+  return truthTable;
+}
+
+static FailureOr<BinaryTruthTable>
+getTruthTableImpl(ValueRange values, Block *block,
+                  DenseMap<Operation *, BinaryTruthTable> &moduleCache) {
   llvm::SmallSetVector<Value, 4> inputArgs;
   for (Value arg : block->getArguments())
     inputArgs.insert(arg);
@@ -455,12 +534,53 @@ FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
       eval[constantOp.getResult()] = constantOp.getValue().isZero()
                                          ? llvm::APInt::getZero(tableSize)
                                          : llvm::APInt::getAllOnes(tableSize);
+    } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
+      if (instanceOp.getNumResults() != 1)
+        return instanceOp.emitError(
+            "Only single-output instances are supported for truth table "
+            "simulation");
+
+      Operation *referencedOp = SymbolTable::lookupNearestSymbolFrom(
+          instanceOp, instanceOp.getModuleNameAttr());
+      auto referencedModule = dyn_cast_or_null<hw::HWModuleOp>(referencedOp);
+      if (!referencedModule)
+        return instanceOp.emitError("Cannot find HW module definition '")
+               << instanceOp.getModuleName() << "'";
+
+      auto instanceTruthTable =
+          getModuleTruthTableImpl(referencedModule, moduleCache);
+      if (failed(instanceTruthTable))
+        return failure();
+
+      SmallVector<llvm::APInt> operands;
+      operands.reserve(instanceOp.getNumOperands());
+      for (auto value : instanceOp.getInputs()) {
+        auto it = eval.find(value);
+        if (it == eval.end())
+          return instanceOp.emitError(
+              "Input value not found in evaluation map");
+        operands.push_back(it->second);
+      }
+
+      eval[instanceOp.getResult(0)] =
+          composeTruthTable(*instanceTruthTable, operands, 1ULL << numInputs);
     } else {
       return op.emitError("Unsupported operation for truth table simulation");
     }
   }
 
   return BinaryTruthTable(numInputs, 1, eval[values[0]]);
+}
+
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(ValueRange values,
+                                                        Block *block) {
+  DenseMap<Operation *, BinaryTruthTable> moduleCache;
+  return getTruthTableImpl(values, block, moduleCache);
+}
+
+FailureOr<BinaryTruthTable> circt::synth::getTruthTable(hw::HWModuleOp module) {
+  DenseMap<Operation *, BinaryTruthTable> moduleCache;
+  return getModuleTruthTableImpl(module, moduleCache);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1211,7 +1331,7 @@ CutRewritePatternSet::CutRewritePatternSet(
     llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns)
     : patterns(std::move(patterns)) {
   // Index truth-table patterns by N-canonical forms over all pin
-  // permutations (mockturtle-style): per-cut matching then needs only
+  // permutations (permutation-aware): per-cut matching then needs only
   // cheap negation-only canonicalization plus a hash lookup, for both
   // output polarities. Patterns up to 6 inputs enumerate here (once per
   // pattern); wider patterns use offline witness tables (factorial cost
@@ -1236,10 +1356,20 @@ CutRewritePatternSet::CutRewritePatternSet(
                      << " inputs)\n");
         continue;
       }
+      // Cap entries per (pattern, key): symmetric pin permutations would
+      // otherwise explode buckets (tens of thousands), and every entry
+      // under a key yields a valid binding, so dropping only loses
+      // pin-diversity candidates, never completeness (one entry per
+      // (pattern, key) suffices to match).
+      constexpr unsigned kMaxEntriesPerKey = 8;
+      DenseMap<std::pair<APInt, unsigned>, unsigned> keyCounts;
       enumeratePatternEntries(table, [&](const BinaryTruthTable &key,
                                          ArrayRef<unsigned> pinMap,
                                          unsigned inNeg) {
-        npnPatternMap[{key.table, key.numInputs}].push_back(
+        auto mapKey = std::make_pair(key.table, key.numInputs);
+        if (keyCounts[mapKey]++ >= kMaxEntriesPerKey)
+          return;
+        npnPatternMap[mapKey].push_back(
             {pattern.get(),
              SmallVector<unsigned, 6>(pinMap.begin(), pinMap.end()), inNeg,
              table});
@@ -1247,6 +1377,15 @@ CutRewritePatternSet::CutRewritePatternSet(
       maxMatchedInputs = std::max(maxMatchedInputs, table.numInputs);
     }
   }
+  LLVM_DEBUG({
+    size_t numEntries = 0, maxBucket = 0;
+    for (const auto &kv : npnPatternMap) {
+      numEntries += kv.second.size();
+      maxBucket = std::max(maxBucket, kv.second.size());
+    }
+    llvm::dbgs() << "Pattern map: " << npnPatternMap.size() << " keys, "
+                 << numEntries << " entries, max bucket " << maxBucket << "\n";
+  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -2168,7 +2307,7 @@ std::optional<MatchedPattern> CutRewriter::patternMatchCut(const Cut &cut) {
     }
   };
 
-  // N-canonical matching (both output polarities, mockturtle-style):
+  // N-canonical matching (both output polarities, permutation-aware):
   // the load-time permutation enumeration reduces per-cut matching to
   // cheap negation-only canonicalization plus hash lookups. The negative
   // polarity reuses the same machinery on the complemented table with an

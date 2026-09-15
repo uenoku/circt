@@ -71,7 +71,7 @@ hw.module @top_skips(in %clk : i1, in %addr : i8, in %addr6 : i6, in %addr7 : i7
 }
 
 // No macro matches: unmasked asynchronous-read memory explodes to flops
-// (Yosys memory_map default).
+// (standard memory-mapper default).
 // CHECK-LABEL: hw.module @top_explode(
 // CHECK-NOT: seq.firmem
 // CHECK-COUNT-16: seq.firreg {{.*}} : i1

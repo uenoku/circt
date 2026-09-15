@@ -91,7 +91,7 @@ struct BinaryTruthTable {
 /// truth table over all input negation masks (no permutation search), plus
 /// the achieving mask (first/smallest on ties).
 ///
-/// Used for mockturtle-style matching: patterns pre-enumerate all pin
+/// Used for permutation-aware matching: patterns pre-enumerate all pin
 /// permutations at load time, so per-cut matching needs only this cheap
 /// O(2^n) canonicalization plus a hash lookup, for both output polarities.
 struct NCanonicalForm {
@@ -104,7 +104,7 @@ struct NCanonicalForm {
 NCanonicalForm computeNCanonicalForm(const BinaryTruthTable &tt);
 
 /// Enumerate all pin permutations of a single-output truth table for
-/// mockturtle-style pattern matching. For each permutation (lexicographic
+/// permutation-aware pattern matching. For each permutation (lexicographic
 /// order from the identity), calls fn with the N-canonical key table, the
 /// pin map (pattern pin p is driven by cut input pinMap[p], i.e. the
 /// inverse permutation), and the input-negation witness. Shared by

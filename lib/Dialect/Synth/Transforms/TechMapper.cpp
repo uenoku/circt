@@ -232,7 +232,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
 
     SmallVector<std::unique_ptr<CutRewritePattern>> libraryPatterns;
 
-    // Only cells with at most this many inputs become patterns (ABC's
+    // Only cells with at most this many inputs become patterns (the reference
     // default cut size is 6; 7..9 supported via word-level transforms with
     // load-time permutation enumeration, 9-input functions via offline
     // witness tables). Wider cells are skipped instead of crashing the
@@ -270,6 +270,12 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       auto mappingCost =
           hwModule->getAttrOfType<MappingCostAttr>("synth.mapping_cost");
       if (!mappingCost) {
+        // Rejected supergate candidates (marked, without derived costs)
+        // are neither patterns nor design logic; mapping them as design
+        // would rewrite their bodies.
+        if (hwModule->hasAttr("synth.supergate_candidate") ||
+            hwModule.getModuleName().starts_with("__supergate_"))
+          continue;
         nonLibraryModules.push_back(hwModule);
         continue;
       }

@@ -182,7 +182,8 @@ def StripAssertLikePass : Pass<"strip-assert-like"> {
     their clocked variants) from the IR. These ops model verification
     intent only and carry no synthesizable behavior; removing them unblocks
     lowering of processes that contain assertions (e.g. Chisel monitors)
-    to core dialects for synthesis flows, mirroring Yosys `chformal -remove`.
+    to core dialects for synthesis flows, mirroring the usual verification
+    stripping flow.
   }];
 }
 

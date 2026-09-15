@@ -74,8 +74,8 @@ def SeqTechMapper : Pass<"synth-seq-tech-mapper", "mlir::ModuleOp"> {
   let summary = "Technology mapping for sequential elements";
   let description = [{
     This pass maps sequential operations (`seq.firreg`, `seq.compreg`,
-    `seq.compreg.ce`) to instances of library cells, the Yosys `dfflibmap`
-    equivalent. Library cells are `hw.module`s in the same `ModuleOp` whose
+    `seq.compreg.ce`) to instances of library cells, the standard sequential
+    library-mapping equivalent. Library cells are `hw.module`s in the same `ModuleOp` whose
     bodies contain a `synth.ff` state element (as produced by the Liberty
     importer); design flops are single-bit `seq` operations.
 
@@ -103,7 +103,7 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
   let summary = "Technology mapping for SRAMs";
   let description = [{
     This pass maps `seq.firmem` memories to instances of SRAM macro cells,
-    the Yosys `memory_map` equivalent for the macro-mapping part. SRAM
+    the standard memory-mapping equivalent for the macro-mapping part. SRAM
     macros are `hw.module.extern` ops carrying a `synth.sram.macro`
     descriptor (geometry plus dedicated read/write ports).
 
@@ -115,7 +115,7 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
     require macro enable pins and are tied active otherwise. Unmappable
     memories (geometry mismatch, missing features) are left untouched.
     Without a compatible macro, memories fall back to flop arrays with
-    address decode (like Yosys memory_map without SRAM libraries):
+    address decode (like the standard memory mapper without SRAM libraries):
     single clock, asynchronous read, single-cycle write, full words only,
     at most one write port, no read enables. Single-port strobe macros
     needing read/write arbitration are future work.
@@ -144,6 +144,35 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
   ];
   let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
                              "seq::SeqDialect", "synth::SynthDialect"];
+}
+
+def GenSupergates : Pass<"synth-gen-supergates", "mlir::ModuleOp"> {
+  let summary = "Generate supergate library from primitive cells";
+  let description = [{
+    This pass generates supergates by composing primitive technology library
+    cells (including phase-flipped variants with an inverter between the
+    inner and outer cell). Supergates are emitted as hw.modules with
+    synth.mapping_cost so TechMapper picks them up transparently.
+
+    Only the best-area supergate per exact function is kept, and functions
+    already covered by primitive cells are skipped.
+  }];
+  let options = [
+    Option<"maxInputs", "max-inputs", "unsigned", "6",
+           "Maximum number of primary inputs per supergate">,
+    Option<"allowDuplicateInputs", "allow-duplicate-inputs", "bool", "false",
+           "Allow candidates that merge one inner input with one outer bypass input">,
+    Option<"maxGates", "max-gates", "unsigned", "3",
+           "Maximum number of primitive gates per supergate (phase-flipped\n           variants with an inner inverter need 3)">,
+    Option<"maxDelay", "max-delay", "int64_t", "0",
+           "Maximum pin-to-pin delay per supergate (0 = unlimited)">,
+    Option<"maxCandidatesPerRoot", "max-candidates-per-root", "unsigned",
+           "256", "Maximum inner candidates tried per (root,pin)">,
+    Option<"maxArea", "max-area", "double", "0.0",
+           "Maximum area per supergate (0 = unlimited)">
+  ];
+  let dependentDialects = ["hw::HWDialect", "circt::synth::SynthDialect",
+                             "circt::comb::CombDialect"];
 }
 
 def GenericLutMapper : CutRewriterPassBase<"synth-generic-lut-mapper",

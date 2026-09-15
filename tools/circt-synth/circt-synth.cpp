@@ -240,6 +240,13 @@ static cl::opt<unsigned>
                                 "hard error"),
                        cl::init(65536), cl::cat(mainCategory));
 
+static cl::opt<bool>
+    genSupergates("gen-supergates",
+                  cl::desc("Generate supergates (including phase-flipped "
+                           "variants) from library cells before technology "
+                           "mapping"),
+                  cl::init(false), cl::cat(mainCategory));
+
 static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
     "synthesis-strategy", cl::desc("Synthesis strategy to use"),
     cl::values(clEnumValN(synth::OptimizationStrategyArea, "area",
@@ -392,6 +399,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // hierarchy. TechMapper simulates comb And/Or/Xor directly, so no
     // normalization is needed. (A top-level ConvertCombToSynth would
     // also rewrite design modules outside the --top scope.)
+    // Supergates (opt-in) compose library cells before mapping; TechMapper
+    // picks generated modules up as ordinary patterns via mapping_cost.
+    if (genSupergates)
+      pm.addPass(synth::createGenSupergates());
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;

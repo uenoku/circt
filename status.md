@@ -1,9 +1,9 @@
-# circt-synth as Yosys replacement — status
+# circt-synth synthesis-flow status
 
 ## Goal
-Make `circt-synth` a drop-in replacement for Yosys in
+Make `circt-synth` reproduce the target synthesis flow in
 `circt-sfc-experiments/OpenROAD-flow-scripts/flow`:
-a liberty-mapped netlist (`1_2_yosys.v` equivalent) plus SDC, for the
+a liberty-mapped netlist plus SDC, for the
 `fifo`, `Rocket`, `ChipTop`/`SmallBoomV4Config` examples, on sky130hd
 and ASAP7.
 
@@ -127,7 +127,7 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - Truth-table simulator handles 1-bit comb And/Or (unconverted lib bodies).
 - Seq mapping: wide-flop + array-flop explosion, mem→flop fallback incl.
   masked writes with per-lane enables, SRAM-macro path preserved.
-- Perf: mockturtle-style NPN matching — patterns pre-enumerate all pin
+- Perf: permutation-aware NPN matching — patterns pre-enumerate all pin
   permutations at load (keyed by N-canonical tables), per-cut matching is
   negation-only canonicalization (both output polarities) + hash lookup.
   Replaced: 4-input NPN table, canonical-form memoization, semi-canonical
@@ -178,20 +178,28 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
    "No matching cut found" on previously-matching cuts. The coset proof
    must have a hole (prime suspect: static symmetries vs. the dynamic
    prefix context, or the skip predicate direction). Superseded by the
-   mockturtle-style flip (no per-cut permutation search at all).
+   permutation-aware matching (no per-cut permutation search at all).
    The Lazy Man's paper (§ cut rewriting / choice networks) remains useful
-   background; also compare ABC's `Abc_NpnSymmetries` +
-   canonicalization approach.
+   background; also compare symmetry analysis plus canonicalization.
 2. **Per-pattern NPN re-matching** is obsolete as a scaling wall: the
-   mockturtle-style flip (see What's done) moved the factorial to
-   load time; per-cut matching is O(2^n) + hash lookups. Supergates
-   (`super_gates.c` for multi-level collapse) are now EASY to add —
-   just more entries in the same N-canon map — but NOT yet implemented
-   (each lib cell = one pattern). CLOSED unless profiles say otherwise.
+   permutation-aware matching (see What's done) moved the factorial to
+   load time; per-cut matching is O(2^n) + hash lookups.
+- **Supergates** (multi-level collapse, incl. phase-flipped variants with
+  an inner inverter): `synth-gen-supergates` pass (opt-in via
+  `circt-synth --gen-supergates`), ported from `ueno/dev/hidetou/tech-lib`
+  and adapted to N-canon matching (raw-table dedup keeping pin diversity;
+  compose-first generation builds only dedup winners; per-(pattern,key)
+  entry cap 8 bounds matching). Supergates flow into TechMapper as
+  ordinary patterns (mapping_cost); instance-aware truth tables support
+  their bodies. fifo sky130: 15,641 → 9,927 instances (37% fewer, 377
+  supergate uses across 35 distinct) in 9.8 s (vs 2.6 s). ChipTop sky130
+  with supergates: 1,433,470 → 1,280,895 instances (11% fewer, 172K
+  supergate uses across 1547 distinct, flops exact), 0.7 s generation +
+  108 s tech-map; Verilog exports clean (6059 modules).
 3. **SDC emission** (`write_sdc` equivalent) untouched; `constraint.sdc`
    files are flow inputs. Now the TOP remaining flow gap: netlist + SDC
    are the stated goal and only the netlist exists.
-4. Tie constants emit as Verilog literals (valid; Yosys parity = `conb_1`).
+4. Tie constants emit as Verilog literals (valid; reference parity = `conb_1`).
 5. `lpflow_isobufsrc` picked as generic buffers (~10k in fifo ASAP7 run) —
    functionally fine, flow dont-uses some lpflow cells; QoR question.
 6. Upstream PRs #10193 (area-flow, cherry-picked+squashed) and #11106
@@ -215,7 +223,10 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
 - `lib/Dialect/Synth/Transforms/TechMapper.cpp` (phase-aware
   match/rewrite, inverter selection, `kMaxPatternInputs`)
 - `lib/Dialect/Synth/Transforms/CutRewriter.cpp` (N-canon pattern map,
-  `makeNPNBinding` + debug `verifyNPNBinding`, offline loader)
+  `makeNPNBinding` + debug `verifyNPNBinding`, offline loader,
+  instance-aware truth tables)
+- `lib/Dialect/Synth/Transforms/GenSupergates.cpp` (supergate generation
+  with phase-flipped variants)
 - `lib/Dialect/Synth/Transforms/WidePatternTables.{h,cpp}` (offline
   witness data + accessor)
 - `lib/Dialect/Synth/Transforms/SeqMemMapper.cpp` (`explodeToFlops` masked)
@@ -235,6 +246,10 @@ ChipTop: `circt-verilog ... --top=ChipTop <536 gen-collateral/*.sv> stubs` → 0
   `NCanonicalFormTest.MatchesNaiveReference` (randomized differential to
   n=9), `BinaryTruthTableTest.MultiWordPermutation` (every swap position
   incl. cross-word pos=5 + random perms, n=7..9).
+- Tests for supergates: `test/Dialect/Synth/gen-supergates.mlir`
+  (generation incl. phase-flipped inner_inv, budgets, duplicate-input
+  merging), `test/Dialect/Synth/tech-mapper-supergates.mlir`
+  (TechMapper consumes generated supergates as ordinary patterns).
 
 ## Suggested reading for relaunch
 - https://scispace.com/pdf/lazy-man-s-logic-synthesis-43gevit82r.pdf

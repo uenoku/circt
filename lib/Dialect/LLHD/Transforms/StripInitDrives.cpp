@@ -13,8 +13,8 @@
 // to the driver from the `always` block. The two unconditional drives look
 // like a multi-driver conflict to Sig2Reg, so the signal gets stuck. For
 // synthesis the constant only selects power-up state, which ASIC cells
-// cannot realize (Yosys likewise drops init values at techmap when the
-// cell has no init pin), so the drive can go once a real driver exists.
+// cannot realize (the reference flow likewise drops init values at techmap when
+// the cell has no init pin), so the drive can go once a real driver exists.
 // This changes simulation semantics and therefore only runs in synthesis
 // flows (gated by flag, like strip-assert-like).
 //
@@ -126,16 +126,14 @@ struct StripInitDrivesPass
       if (hasRealDrive) {
         // Power-up values are unrealizable once a real driver exists.
         for (auto drive : constDrives) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Erasing init drive: " << drive << "\n");
+          LLVM_DEBUG(llvm::dbgs() << "Erasing init drive: " << drive << "\n");
           drive.erase();
           ++numDrivesErased;
         }
       } else if (constDrives.size() > 1) {
         // Identical constants: dedupe to one so Sig2Reg can fold the tie.
         for (auto drive : llvm::drop_begin(constDrives)) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Deduping tie drive: " << drive << "\n");
+          LLVM_DEBUG(llvm::dbgs() << "Deduping tie drive: " << drive << "\n");
           drive.erase();
           ++numDrivesErased;
         }

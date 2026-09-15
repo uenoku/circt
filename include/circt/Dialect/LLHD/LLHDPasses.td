@@ -76,7 +76,8 @@ def LowerSyncProcessesPass : Pass<"llhd-lower-sync-processes",
     rising-edge resume gate, and one conditional drive per state signal.
     Since the context is synchronous, sync reset, enable and hold all reduce
     to next-state muxes feeding plain `seq.firreg` ops -- the same shape
-    Yosys builds, since Liberty flops have no sync-reset pins. Anything
+    used by the reference flow, since Liberty flops have no sync-reset pins.
+    Anything
     outside this shape is skipped loudly.
   }];
   let statistics = [
@@ -148,7 +149,7 @@ def StripInitDrivesPass : Pass<"llhd-strip-init-drives", "hw::HWModuleOp"> {
     next to the driver from the `always` block. The two unconditional
     drives look like a multi-driver conflict to Sig2Reg, so the signal
     gets stuck. For synthesis the constant only selects power-up state,
-    which ASIC cells cannot realize (Yosys likewise drops init values at
+    which ASIC cells cannot realize (the reference flow likewise drops init values at
     techmap when the cell has no init pin), so the drive can go once a
     real driver exists. This changes simulation semantics and therefore
     only runs in synthesis flows. All-constant identical drives are

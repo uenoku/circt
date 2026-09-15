@@ -3,7 +3,7 @@
 // Lowering synchronous processes with conditional drives (the shape Deseq
 // leaves behind: single observed clock, rising-edge resume gate, one
 // conditional drive per state signal) to plain seq.firreg with next-state
-// muxes -- the same shape Yosys builds, since Liberty flops have no
+// muxes -- the same shape used by the reference flow, since Liberty flops have no
 // sync-reset/enable pins.
 
 // CHECK-LABEL: hw.module @enableFlop

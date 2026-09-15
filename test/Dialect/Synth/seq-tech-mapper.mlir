@@ -93,7 +93,7 @@ hw.module @top_async1(in %clk : i1, in %d : i1, in %rst : i1, out q : i1) {
   hw.output %r : i1
 }
 
-// Wide flops explode bit by bit (like Yosys techmap), each bit mapping
+// Wide flops explode bit by bit, each bit mapping
 // to the cheapest cell.
 // CHECK-LABEL: hw.module @top_wide(
 // CHECK-COUNT-8: hw.instance {{.*}} @sdf(

@@ -15,8 +15,8 @@
 // single observed clock, a rising-edge resume gate, and one conditional drive
 // per state signal. Since the context is synchronous, sync reset, enable and
 // hold all reduce to next-state muxes feeding plain `seq.firreg` ops -- there
-// are no flop reset pins involved, mirroring what Yosys builds for the same
-// RTL given Liberty flops without sync-reset pins.
+// are no flop reset pins involved, mirroring the reference mapped shape for the
+// same RTL given Liberty flops without sync-reset pins.
 //
 // Soundness contract (violations skip the process loudly, changing nothing):
 // - Single wait, no delay, no halt; exactly one observed i1 clock; the
@@ -28,10 +28,10 @@
 //   on the observed clock, and the sample entry takes no arguments. The
 //   gate is proven but not materialized: plain `seq.firreg` holds by
 //   itself on wakes without an edge, so next-state logic only needs to be
-//   right when the sample runs (same as Yosys, flop-for-flop for LEC).
+//   right when the sample runs (flop-for-flop for LEC).
 // - The entry block branches directly to the wait block with matching
 //   arity and holds only constants (cycle-0 values, ignored for synthesis
-//   where power-up is unknown, matching Yosys-mapped netlists).
+//   where power-up is unknown, matching reference-mapped netlists).
 // - Wait yields pass the wait-block arguments through in order (state
 //   slots past an optional past-clock arg 0).
 // - Sample region (forward-reachable from the sample side, excluding the
@@ -319,7 +319,7 @@ LogicalResult SyncLowering::analyzeStructure() {
     return skip("resume condition is not rising-edge detection");
 
   // The entry block only provides cycle-0 values, which synthesis ignores
-  // (matching Yosys-mapped netlists where power-up is unknown). It must
+  // (matching reference-mapped netlists where power-up is unknown). It must
   // branch directly to the wait block and hold no live logic.
   auto entryBr = dyn_cast<cf::BranchOp>(entryBlock->getTerminator());
   if (!entryBr || entryBr.getDest() != waitBlock)
@@ -937,7 +937,7 @@ LogicalResult SyncLowering::buildAndRewrite() {
   // paths carry constant-false enables (HoistSignals convention), so
   // their dummy value operands are never selected. Plain `seq.firreg`
   // holds past state by itself on wakes without a rising edge, so no gate
-  // mux is needed (matching Yosys flop-for-flop for LEC).
+  // mux is needed (flop-for-flop for LEC).
   //
   // Completion operand positions shift past the past-clock slot (variant
   // a): wait-block arg[pastShift+i] carries result[i].

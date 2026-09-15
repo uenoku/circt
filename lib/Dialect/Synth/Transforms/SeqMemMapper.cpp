@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This file implements the SeqMemMapper pass, which maps `seq.firmem`
-// memories to instances of SRAM macro cells, the Yosys `memory_map`
+// memories to instances of SRAM macro cells, the standard memory mapper
 // equivalent for the macro-mapping part.
 //
 // SRAM macros are `hw.module.extern` ops carrying a `synth.sram.macro`
@@ -16,7 +16,7 @@
 // undefined read/write-under-write behavior, no power-on init, and no
 // read-write ports. Single-port strobe macros needing read/write
 // arbitration are future work. Without a macro match, memories fall back
-// to flop arrays with address decode (Yosys `memory_map` default).
+// to flop arrays with address decode (the standard memory-mapper default).
 //
 //===----------------------------------------------------------------------===//
 
@@ -376,7 +376,7 @@ struct SeqMemMapperPass
     ++numMemsMapped;
   }
 
-  // Yosys `memory_map` default: with no SRAM macro available, memories
+  // Standard memory-mapper default: with no SRAM macro available, memories
   // become flop arrays with address-decode muxes. Strict preconditions
   // beyond mapMemory's: asynchronous read (latency 0; a synchronous
   // read would need a held-output register), single-cycle write, at
@@ -491,7 +491,7 @@ struct SeqMemMapperPass
     }
     // Read path: per-bit mux cascade over rows, built at each read port.
     // Out-of-range addresses match nothing and read row 0 (don't-care,
-    // deterministic, mirroring Yosys undefined-address behavior).
+    // deterministic, mirroring standard undefined-address behavior).
     for (auto read : entry.reads) {
       builder.setInsertionPoint(read);
       Value raddr = read.getAddress();

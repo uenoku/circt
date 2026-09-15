@@ -12,6 +12,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   ExactSynthesis.cpp
   FunctionalReduction.cpp
   GenericLUTMapper.cpp
+  GenSupergates.cpp
   LowerVariadic.cpp
   LowerWordToBits.cpp
   MaximumAndCover.cpp
