@@ -237,6 +237,15 @@ static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::init(6), cl::cat(mainCategory));
 
 static cl::opt<unsigned>
+    supergateMaxGates("supergate-max-gates",
+                      cl::desc("Maximum primitive gates per supergate"),
+                      cl::init(3), cl::cat(mainCategory));
+static cl::opt<unsigned>
+    maxEntriesPerKey("max-entries-per-key",
+                     cl::desc("Maximum pin-permutation entries kept per "
+                              "(pattern, N-canonical key) during matching"),
+                     cl::init(8), cl::cat(mainCategory));
+static cl::opt<unsigned>
     maxMemFallbackBits("max-mem-fallback-bits",
                        cl::desc("Maximum memory size in bits allowed to "
                                 "fall back to a flop array when no SRAM "
@@ -405,10 +414,14 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // also rewrite design modules outside the --top scope.)
     // Supergates (opt-in) compose library cells before mapping; TechMapper
     // picks generated modules up as ordinary patterns via mapping_cost.
-    if (genSupergates)
-      pm.addPass(synth::createGenSupergates());
+    if (genSupergates) {
+      synth::GenSupergatesOptions sgOptions;
+      sgOptions.maxGates = supergateMaxGates;
+      pm.addPass(synth::createGenSupergates(std::move(sgOptions)));
+    }
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
+    options.maxEntriesPerKey = maxEntriesPerKey;
     options.strategy = synthesisStrategy;
     pm.addPass(synth::createTechMapper(options));
     // Post-map duplicate merging: TechMapper materializes one inverter per
@@ -416,8 +429,15 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // duplicates). Merge before emitting or stripping.
     if (!disableDedup)
       pm.addPass(synth::createDedupInstances());
+    // Tie cells for constant instance inputs (reference parity with
+    // Yosys/ORFS netlists); must precede stripping while lib cells are
+    // still plain modules.
+    pm.addPass(synth::createTieCells());
     if (stripLibToExtern)
       pm.addPass(synth::createStripLibToExtern());
+    // NOTE: synth-sort-topologically exists for downstream MLIR consumers
+    // needing strict SSA order (e.g. circt-lec), but it is off by default:
+    // MLIR's sort is ~5 min single-threaded on ChipTop-scale blocks.
   }
 
   // Run analysis if analysis output is specified.

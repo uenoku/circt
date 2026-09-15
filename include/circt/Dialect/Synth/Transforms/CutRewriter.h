@@ -979,8 +979,13 @@ public:
   /// lookup. Truth table matchers enumerate all pin permutations at load
   /// time, indexed by N-canonical forms, so per-cut matching needs only
   /// cheap negation-only canonicalization plus a hash lookup.
+  /// `maxEntriesPerKey` bounds entries per (pattern, N-canonical key):
+  /// symmetric pin permutations would otherwise explode buckets, and every
+  /// entry under a key yields a valid binding, so dropping only loses
+  /// pin-diversity candidates, never completeness.
   CutRewritePatternSet(
-      llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns);
+      llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns,
+      unsigned maxEntriesPerKey = 8);
 
   /// Maximum input size over accepted truth-table patterns. Bounds cut
   /// enumeration: wider cuts can never match.
@@ -1021,6 +1026,10 @@ private:
   /// Maximum input size over accepted truth-table patterns (maintained
   /// during construction).
   unsigned maxMatchedInputs = 0;
+
+  /// Cap on entries per (pattern, N-canonical key) applied at
+  /// construction (see constructor).
+  unsigned maxEntriesPerKey = 8;
 
   /// CutRewriter needs access to internal data structures for pattern matching.
   friend class CutRewriter;

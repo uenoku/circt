@@ -66,7 +66,12 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
 
     Supports both area and timing optimization strategies.
   }];
-  let options = baseOptions;
+  let options = baseOptions # [
+    Option<"maxEntriesPerKey", "max-entries-per-key", "unsigned", "8",
+           "Maximum pin-permutation entries kept per (pattern, N-canonical "
+           "key); bounds matching work, dropping only pin-diversity "
+           "candidates">
+  ];
   let dependentDialects = ["hw::HWDialect"];
 }
 
@@ -538,6 +543,48 @@ def DedupInstances : Pass<"synth-dedup-instances", "mlir::ModuleOp"> {
   let statistics = [
     Statistic<"numMerged", "merged",
               "Number of duplicate instances merged">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
+def SortTopologically : Pass<"synth-sort-topologically", "mlir::ModuleOp"> {
+  let summary = "Sort module bodies into topological (SSA dominance) order";
+  let description = [{
+    Technology mapping appends cell instances after their users (sequential
+    cells are placed before the combinational drivers TechMapper creates
+    later), so mapped modules violate SSA dominance order. ExportVerilog
+    tolerates any order, but downstream MLIR consumers (notably circt-lec,
+    which verifies inputs on load) do not. This pass stably sorts every
+    non-extern module body topologically so definitions precede uses.
+    Blocks with combinational cycles are ordered with cycle breaks and
+    counted separately.
+  }];
+  let statistics = [
+    Statistic<"numSorted", "sorted",
+              "Number of module bodies sorted">,
+    Statistic<"numUnsortable", "unsortable",
+              "Number of module bodies ordered with cycle breaks">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
+def TieCells : Pass<"synth-tie-cells", "mlir::ModuleOp"> {
+  let summary = "Drive constant instance inputs from tie cells";
+  let description = [{
+    ExportVerilog emits `hw.constant` drivers as Verilog literals, but the
+    reference flow uses tie cells (`conb_1` on sky130, `TIEHIx1`/`TIELOx1`
+    on ASAP7). This pass reroutes i1-constant operands of `hw.instance` ops
+    to shared tie-cell instances: per design module, at most one instance
+    per needed polarity. Tie cells are auto-detected liberty cells with no
+    inputs whose output pin function is the constant "1"/"0" (smallest
+    area wins); without them the pass is a no-op. Library modules
+    themselves are never rewritten.
+  }];
+  let statistics = [
+    Statistic<"numRerouted", "rerouted",
+              "Number of constant operands rerouted to tie cells">,
+    Statistic<"numTieInstances", "tie-instances",
+              "Number of tie-cell instances created">
   ];
   let dependentDialects = ["hw::HWDialect"];
 }

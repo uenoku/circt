@@ -73,7 +73,10 @@ def run_sta(lib, net, top, clock, period, stubs=""):
     tcl += (
         f"link_design {top}\n"
         f"create_clock -name clk -period {period} [get_ports {clock}]\n"
-        f"report_checks -path_delay max -digits 4 -no_line_splits\n"
+        # Richer than bare report_checks: several endpoints per group so the
+        # scoreboard sees path families, not just the single worst path.
+        f"report_checks -path_delay max -digits 4 -no_line_splits "
+        f"-group_count 5 -endpoint_count 10\n"
     )
     with tempfile.NamedTemporaryFile(
         "w", suffix=".tcl", delete=False

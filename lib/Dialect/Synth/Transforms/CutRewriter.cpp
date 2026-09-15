@@ -1328,8 +1328,9 @@ bool CutRewritePatternSet::addOfflineEntries(const CutRewritePattern *pattern,
 }
 
 CutRewritePatternSet::CutRewritePatternSet(
-    llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns)
-    : patterns(std::move(patterns)) {
+    llvm::SmallVector<std::unique_ptr<CutRewritePattern>, 4> patterns,
+    unsigned maxEntriesPerKey)
+    : patterns(std::move(patterns)), maxEntriesPerKey(maxEntriesPerKey) {
   // Index truth-table patterns by N-canonical forms over all pin
   // permutations (permutation-aware): per-cut matching then needs only
   // cheap negation-only canonicalization plus a hash lookup, for both
@@ -1361,13 +1362,12 @@ CutRewritePatternSet::CutRewritePatternSet(
       // under a key yields a valid binding, so dropping only loses
       // pin-diversity candidates, never completeness (one entry per
       // (pattern, key) suffices to match).
-      constexpr unsigned kMaxEntriesPerKey = 8;
       DenseMap<std::pair<APInt, unsigned>, unsigned> keyCounts;
       enumeratePatternEntries(table, [&](const BinaryTruthTable &key,
                                          ArrayRef<unsigned> pinMap,
                                          unsigned inNeg) {
         auto mapKey = std::make_pair(key.table, key.numInputs);
-        if (keyCounts[mapKey]++ >= kMaxEntriesPerKey)
+        if (keyCounts[mapKey]++ >= maxEntriesPerKey)
           return;
         npnPatternMap[mapKey].push_back(
             {pattern.get(),

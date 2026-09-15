@@ -370,7 +370,8 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     for (auto &pattern : libraryPatterns)
       static_cast<TechLibraryPattern *>(pattern.get())->setInverter(inverter);
 
-    CutRewritePatternSet patternSet(std::move(libraryPatterns));
+    CutRewritePatternSet patternSet(std::move(libraryPatterns),
+                                       maxEntriesPerKey);
     CutRewriterOptions options;
     options.strategy = strategy;
     // Bound cut enumeration by the widest actually-matchable pattern:
