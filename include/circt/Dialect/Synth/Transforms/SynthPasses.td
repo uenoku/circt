@@ -516,4 +516,30 @@ def StripLibToExtern : Pass<"synth-strip-lib-to-extern", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def DedupInstances : Pass<"synth-dedup-instances", "mlir::ModuleOp"> {
+  let summary = "Merge duplicate cell instances after technology mapping";
+  let description = [{
+    Phase-aware technology mapping materializes one inverter cell per negated
+    NPN binding, after the last CSE, so shared signals fan out to many
+    exactly-duplicate inverters (typically ~30% of all inverters, ~5% of all
+    instances). This pass merges exactly-duplicate `hw.instance` ops within
+    each module: same target cell, same operands, same parameters. Only
+    pure-combinational instances (all-integer operands and results, at least
+    one of each) are eligible, which excludes memories, hierarchical modules
+    with aggregate ports, and physical-only cells (filler/decap with no
+    inputs). Only leaf-cell targets merge: hierarchical targets (design
+    modules, composed supergates) and `synth.sram.macro` targets never
+    merge, preserving hierarchy and flop counts exactly. Sequential cells
+    are excluded even though mapped clocks are plain i1: targets whose body
+    holds state or whose liberty pin metadata marks a clock input never
+    merge. Instances carrying an `inner_sym` (possibly referenced by XMR)
+    or `doNotPrint` are left alone.
+  }];
+  let statistics = [
+    Statistic<"numMerged", "merged",
+              "Number of duplicate instances merged">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

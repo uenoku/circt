@@ -18,6 +18,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   MaximumAndCover.cpp
   SOPBalancing.cpp
   DeriveMappingCost.cpp
+  DedupInstances.cpp
   SeqMemMapper.cpp
   StripLibToExtern.cpp
   SeqTechMapper.cpp

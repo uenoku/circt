@@ -206,6 +206,10 @@ static cl::opt<bool>
 static cl::opt<bool> disableWordToBits("disable-word-to-bits",
                                        cl::desc("Disable LowerWordToBits pass"),
                                        cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> disableDedup("disable-dedup",
+                                  cl::desc("Disable post-map duplicate "
+                                           "instance merging"),
+                                  cl::init(false), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -407,6 +411,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.strategy = synthesisStrategy;
     pm.addPass(synth::createTechMapper(options));
+    // Post-map duplicate merging: TechMapper materializes one inverter per
+    // negated binding after the last CSE (~30% of inverters are exact
+    // duplicates). Merge before emitting or stripping.
+    if (!disableDedup)
+      pm.addPass(synth::createDedupInstances());
     if (stripLibToExtern)
       pm.addPass(synth::createStripLibToExtern());
   }

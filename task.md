@@ -21,7 +21,12 @@
 
  Inverters (20%/34% of instances, 7%/14% of area)
 
- 5. Post-map inverter dedup — ~60K/201K exact duplicates (30%), created after the last CSE; merge for ~5% instance reduction.
+ 5. Post-map inverter dedup — DONE: `synth-dedup-instances` pass (leaf
+    combinational cells only; flops/hierarchy/SRAMs never merge) runs after
+    TechMapper (`--disable-dedup` opt-out). fifo 10277→9003 (−12.4%, INV
+    −37%), ChipTop 2405730→2080760 (−13.5%, clkinv −42%), flops exact
+    (2081/422417), fifo STA bit-identical. Merges 100% of predicted dups.
+    ChipTop STA A/B is the next loop step.
  6. ASAP7 MUX check — 34% INV is driven by MUX2-less decomposition; look for a mux cell in other Vt flavors/full libs.
  7. Inversion-absorbing selection — verify cost model already prefers NAND/NOR/AOI/OAI over AND/OR+INV.
 
@@ -42,6 +47,14 @@
  14. Real PDK SRAM names — placeholders work structurally; binding is later work.
  15. RegOfVecToMem multi-read/write arrays — still flop-explode; macros unreachable.
  16. lpflow buffer selection — functionally fine, QoR open.
+
+ Multi-output mapping (new; see docs/MultiOutputMapping.md)
+
+ 17. emap-style FA/HA mapping — fa/ha cells exist in both PDKs but usage is
+    zero (multi-output patterns rejected). Measured tax: add32 15.4
+    cells/bit, inc16 7.3 cells/bit vs ~1–2 FA ideal. Designed: extraction
+    pre-pass (synth.full_adder/half_adder + barrier mapping) first, pair
+    matching only if non-adder multi-output cells justify it. Not started.
 
  Suggested order
 
