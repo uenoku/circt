@@ -15,6 +15,7 @@
 #include "circt/Dialect/Synth/Analysis/ResourceUsageAnalysis.h"
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOpInterfaces.h"
+#include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Synth/SynthOpInterfaces.h"
 #include "circt/Dialect/Synth/SynthOps.h"
@@ -46,6 +47,23 @@ using namespace synth;
 /// Returns true if the operation was tracked, false otherwise.
 static bool accumulateResourceCounts(Operation *op,
                                      llvm::StringMap<uint64_t> &counts) {
+  // Count hardware instances per referenced cell. These are the post-map
+  // standard cells (and hierarchical design instances). Counting here plus
+  // the hierarchical accumulation in getResourceUsage yields
+  // flattening-equivalent totals with multiplicity, without regexes on
+  // emitted Verilog. `doNotPrint` instances are bind/layer artifacts that
+  // never reach the netlist, so they are tracked (not `<unknown>`) but not
+  // counted.
+  if (isa<hw::HWInstanceLike>(op)) {
+    if (op->hasAttrOfType<UnitAttr>("doNotPrint"))
+      return true;
+    counts["hw.instance"] += 1;
+    if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
+      std::string key = (Twine("hw.instance@") + inst.getModuleName()).str();
+      counts[key] += 1;
+    }
+    return true;
+  }
   // Memory declarations do not produce integer values, and memory ports are
   // already accounted for by their declaration.
   if (auto memory = dyn_cast<seq::FirMemOp>(op)) {
@@ -152,13 +170,18 @@ ResourceUsageAnalysis::getResourceUsage(igraph::ModuleOpInterface module) {
     auto childModule = targetNode->getModule();
 
     auto *instanceOp = child->getInstance().getOperation();
-    // Skip instances with no results or marked as "doNotPrint".
-    if (instanceOp->getNumResults() == 0 ||
-        instanceOp->hasAttrOfType<UnitAttr>("doNotPrint"))
+    // `doNotPrint` instances are bind/layer artifacts excluded from the
+    // netlist; skip their subtrees. Note: local per-cell counts above
+    // already excluded them, so totals stay flattening-equivalent with the
+    // emitted Verilog. Zero-result instances (sinks, memories with only
+    // inputs) are real netlist instances and must still recurse.
+    if (instanceOp->hasAttrOfType<UnitAttr>("doNotPrint"))
       continue;
 
     // Recursively compute child usage and accumulate into total.
     auto *childUsage = getResourceUsage(childModule);
+    if (!childUsage)
+      continue;
     moduleUsage->total += childUsage->total;
     moduleUsage->instances.emplace_back(
         childModule.getModuleNameAttr(),

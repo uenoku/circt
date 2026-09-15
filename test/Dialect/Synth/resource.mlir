@@ -9,13 +9,15 @@
 // CHECK-NEXT:   comb.and: 2
 // CHECK-NEXT:   comb.or: 3
 // CHECK-NEXT:   comb.xor: 2
+// CHECK-NEXT:   hw.instance: 2
+// CHECK-NEXT:   hw.instance@basic: 2
 // CHECK-NEXT:   synth.aig.and_inv: 2
 
 // Test JSON output - basic hierarchy
 // JSON: [{"instances":[
 // JSON-SAME: {"instanceName":"inst1","moduleName":"basic"
 // JSON-SAME: {"instanceName":"inst2","moduleName":"basic"
-// JSON-SAME: "moduleName":"top","total":{"comb.and":2,"comb.or":3,"comb.xor":2,"synth.aig.and_inv":2}}]
+// JSON-SAME: "moduleName":"top","total":{"comb.and":2,"comb.or":3,"comb.xor":2,"hw.instance":2,"hw.instance@basic":2,"synth.aig.and_inv":2}}]
 
 // Test JSON output - nested hierarchy with local and total counts
 // JSON-NESTED: [{"instances":[
@@ -24,11 +26,11 @@
 // JSON-NESTED-SAME: "local":{"comb.and":1,"comb.xor":1}
 // JSON-NESTED-SAME: "total":{"comb.and":1,"comb.xor":1}
 // JSON-NESTED-SAME: {"instanceName":"leaf2","moduleName":"leaf"
-// JSON-NESTED-SAME: "local":{"comb.or":1}
-// JSON-NESTED-SAME: "moduleName":"middle","total":{"comb.and":2,"comb.or":1,"comb.xor":2}
+// JSON-NESTED-SAME: "local":{"comb.or":1,"hw.instance":2,"hw.instance@leaf":2}
+// JSON-NESTED-SAME: "moduleName":"middle","total":{"comb.and":2,"comb.or":1,"comb.xor":2,"hw.instance":2,"hw.instance@leaf":2}
 // JSON-NESTED-SAME: {"instanceName":"mid2","moduleName":"middle","usage":{"instances":[
-// JSON-NESTED-SAME: "local":{"comb.or":1}
-// JSON-NESTED-SAME: "moduleName":"nested","total":{"comb.and":4,"comb.or":3,"comb.xor":4}}]
+// JSON-NESTED-SAME: "local":{"comb.or":1,"hw.instance":2,"hw.instance@middle":2}
+// JSON-NESTED-SAME: "moduleName":"nested","total":{"comb.and":4,"comb.or":3,"comb.xor":4,"hw.instance":6,"hw.instance@leaf":4,"hw.instance@middle":2}}]
 
 hw.module private @basic(in %a : i1, in %b : i1, out x : i1) {
   %p = synth.aig.and_inv not %a, %b : i1
@@ -112,6 +114,9 @@ hw.module private @sequential(in %clk : !seq.clock, in %a : i8, in %b : i8, out 
 // CHECK-NEXT:   comb.and: 4
 // CHECK-NEXT:   comb.or: 3
 // CHECK-NEXT:   comb.xor: 4
+// CHECK-NEXT:   hw.instance: 6
+// CHECK-NEXT:   hw.instance@leaf: 4
+// CHECK-NEXT:   hw.instance@middle: 2
 
 hw.module private @leaf(in %a : i1, in %b : i1, out x : i1) {
   %and = comb.and %a, %b : i1
