@@ -2774,6 +2774,25 @@ SubExprInfo ExprEmitter::emitSubExpr(Value exp,
 }
 
 SubExprInfo ExprEmitter::visitComb(ReplicateOp op) {
+  // Some tools (e.g. OpenSTA) cannot parse the replication operator, so
+  // expand it into an explicit concatenation when requested.
+  if (state.options.disallowReplicate) {
+    // If the subexpression is an inline concat, splice its operands in
+    // directly to avoid an extra nesting level.
+    if (auto concatOp = op.getOperand().getDefiningOp<ConcatOp>()) {
+      if (op.getOperand().hasOneUse()) {
+        SmallVector<Value> expanded;
+        for (size_t i = 0, e = op.getMultiple(); i < e; ++i)
+          expanded.append(concatOp.getOperands().begin(),
+                          concatOp.getOperands().end());
+        emitBracedList(expanded);
+        return {Symbol, IsUnsigned};
+      }
+    }
+    emitBracedList(SmallVector<Value>(op.getMultiple(), op.getOperand()));
+    return {Symbol, IsUnsigned};
+  }
+
   auto openFn = [&]() {
     ps << "{";
     ps.addAsString(op.getMultiple());
