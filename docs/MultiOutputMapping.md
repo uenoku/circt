@@ -57,47 +57,44 @@ adder chains pre-mapping instead of pair matching during covering.
 - Selection: area-flow/delay accounting assumes one gate per cover node;
   a shared 2-output gate needs joint accounting or double-counting.
 
-## Recommended approach: extraction first (B), pair matching later (A)
+## Recommended approach: pass-through bundles (supersedes adder-specific ops)
 
-**Phase B — `extract_adders`-style pre-pass (small blast radius).**
-Detect XOR3/MAJ3 (and XOR2/AND2) on shared support in the post-optimization
-AIG, replace with new `synth.full_adder` / `synth.half_adder` ops (3→2 and
-2→2 outputs), and map those ops 1:1 to fa/ha cells the way `SeqTechMapper`
-maps flops 1:1 today: cut enumeration treats them as barriers (roots and
-leaves of the mapping network, never cut through), and TechMapper gets a
-direct rule instead of an NPN pattern. No cover-extraction changes, no
-sharing accounting: each adder bit is one gate by construction.
+An earlier revision of this doc proposed dedicated `synth.full_adder` /
+`synth.half_adder` ops with 1:1 barrier mapping. That was set aside: a
+generic pass-through grouping op covers adders and any future
+multi-output family with one mechanism, and fallback is free erase
+instead of a lowering. Concretely (`synth.create_bundle`, landed):
 
-Concretely:
-1. `SynthOps.td`/`SynthOps.cpp`: `FullAdderOp` (`(i1,i1,i1)->(sum:i1,
-   carry:i1)`), `HalfAdderOp` (`(i1,i1)->(sum,carry)`), pure, with
-   folders/verifier.
-2. `ExtractAdders.cpp` (`synth-extract-adders`, ModuleOp): run after the
-   optimization pipeline, before mapping. For each 3-input XOR node, check
-   whether the same triple feeds a majority (3×AND2 on the input pairs +
-   combining AND, modulo phases — mirror mockturtle's complemented-edge
-   handling); same for 2-input XOR+AND pairs. Rewrite to adder ops.
-   Statistics: `numFullAdders`, `numHalfAdders`.
-3. `TechMapper.cpp` (+ CutRewriter network build): barrier treatment +
-   direct cell rule keyed off `mapping_cost` of the fa/ha lib modules
-   (works for any PDK exposing them; sky130 `fa_1`, ASAP7 `FAx1_*`).
-4. Tests: `test/Dialect/Synth/extract-adders.mlir` (structural incl.
-   phases), `tech-mapper-adders.mlir` (fa cell selected, both outputs
-   wired), LEC old-vs-new on the microbenchmarks (`circt-lec`), STA
-   scoreboard (`tmp/sta_scoreboard.py`) for delay parity, flop-count
-   invariance.
-5. `circt-synth.cpp`: run extraction as part of the mapping stage
-   (flag-gated at first: `--disable-adder-extraction` default-off amongst
-   `disable-*`? or opt-in `--enable-...`? House style has both; recommend
-   opt-in until STA parity is demonstrated, then default-on).
+```mlir
+%o0, %o1 = synth.create_bundle %sum, %carry : (i1, i1) -> (i1, i1)
+```
 
-**Phase A — emap-style pair matching (only if B leaves general
-multi-output cells on the table).** Requires: 2-output pattern loading
-(truth tables per output), pair enumeration over shared ≤3-leaf supports,
-joint area/delay in the CutRewriter cost model, overlap-free cover
-extraction, and 2-output rewrite in TechMapper. Strictly harder than B
-for the same HA/FA payoff; justified only by non-adder multi-output cells
-(which neither PDK has in practice — audit before starting).
+Pure N-in/N-out grouping, result `i` equals operand `i`, pairwise same
+types (verifier-enforced). Carries no function data; the joint function
+is derived by simulating producer cones at match time (ground truth),
+and no canonicalization may forward through it before mapping.
+
+1. **Extraction** (`synth-extract-bundles`, ModuleOp, opt-in
+   `--extract-bundles`): reuse `CutEnumerator` (k=3) + cut truth tables +
+   N-canonical AND2/XOR2/MAJ3/XOR3 IDs + leaf-set hashing over shared
+   support (mockturtle `extract_adders` structure, adapted). Propose
+   bundles only; map disposes. Statistics double as the opportunity
+   measurement. MFFC/overlap filtering: skip already-bundled roots (v1).
+2. **Joint matching**: brute-force joint NPN (input perm/neg + output
+   perm/neg; 384 combos for FA) against multi-output library cells,
+   reusing the truth-table simulator. Single-output flow untouched.
+3. **Value-based rewrite**: replace uses of the bundled values with the
+   cell outputs (not op-based like cut rewriting); DCE cleans producers.
+   Unmatched bundles are erased (discrete logic stays) — never leak
+   downstream (fail-fast if any survive mapping).
+4. Tests: extraction detection (structural incl. phases) +
+   `tech-mapper-bundles.mlir` (fa cell selected, both outputs wired) +
+   adder microbenchmarks (`/tmp/e2e/momap`) via STA scoreboard.
+5. Cut enumeration treats bundles as barriers (roots/leaves only, never
+   cut through) — same treatment flops already get.
+
+Extraction + joint matching land as one atomic unit: unverified
+extraction is untestable, so they are not split across commits.
 
 ## Open questions
 
