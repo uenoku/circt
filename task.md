@@ -54,10 +54,14 @@
 
  Flow completeness
 
- 13. SDC emission — DESIGNED (docs/SdcEmission.md + measured clock
-    inventory: 10 nets, top-3 cover 99.9%, 5 comb-clocked flops, async
-    jtag). Minimal `synth-emit-sdc` specified (root tracing, async groups,
-    reset false-paths). Top remaining implementation gap.
+ 13. SDC emission — IMPLEMENTED (v1): `synth-emit-sdc` pass + --sdc-output
+    --sdc-clock-period/--sdc-input-delay/--sdc-output-delay/
+    --sdc-clock-gates/--sdc-clock-sources flags. Exact hierarchical descent
+    (follows real driver nets, not name pairing); EICG gate rule;
+    FixedClock* source recording; shared-context unions reported, not
+    constrained. fifo: 1 clock, STA-equivalent to hand TCL. ChipTop: 1
+    certain clock (clock_uncore, 10.6K flops) + 4 source pins + 8 shared
+    candidates; emitted SDC loads in STA. See docs/SdcEmission.md.
  14. Real PDK SRAM names — PATH FOUND: ASAP7 compiler collateral exists
     (asap7_sram_0p0/generated); needs exact-geometry compilation for
     16384x64/8192x64/1024x136/512x256 (pre-generated banks are small).

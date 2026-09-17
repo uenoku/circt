@@ -21,6 +21,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   DedupInstances.cpp
   SortTopologically.cpp
   TieCells.cpp
+  EmitSDC.cpp
   SeqMemMapper.cpp
   StripLibToExtern.cpp
   SeqTechMapper.cpp

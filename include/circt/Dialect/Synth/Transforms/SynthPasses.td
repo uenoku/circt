@@ -589,4 +589,43 @@ def TieCells : Pass<"synth-tie-cells", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {
+  let summary = "Emit SDC timing constraints for a mapped design";
+  let description = [{
+    Discovers flop clock roots by tracing clock pins back through
+    single-input cells and hierarchy to top-level input ports, then emits
+    `create_clock` constraints plus default input/output delays. Clocks
+    that do not resolve to a top port (comb-generated, tied, or lost in
+    hierarchy) are reported as unconstrained comments. Requires
+    --top-module-name.
+  }];
+  let options = [
+    Option<"topModuleName", "top-module-name", "std::string", "\"\"",
+           "Top module to emit constraints for (required)">,
+    Option<"clockPeriodNs", "clock-period-ns", "double", "10.0",
+           "Clock period in nanoseconds">,
+    Option<"inputDelayNs", "input-delay-ns", "double", "0.0",
+           "Default input delay in nanoseconds">,
+    Option<"outputDelayNs", "output-delay-ns", "double", "0.0",
+           "Default output delay in nanoseconds">,
+    Option<"outputFile", "output-file", "std::string", "\"-\"",
+           "Output file (\"-\" for stdout)">,
+    Option<"clockGateCells", "clock-gate-cells", "std::string",
+           "\"EICG_wrapper:out=in\"",
+           "Clock gates as Cell:out=in pairs (comma-separated); the gate "
+           "output traces to its input for domain attribution">,
+    Option<"clockSourceCells", "clock-source-cells", "std::string",
+           "\"FixedClock\"",
+           "Cell-name substrings treated as on-chip clock sources "
+           "(comma-separated); reported for manual constraint">,
+  ];
+  let statistics = [
+    Statistic<"numClocks", "clocks",
+              "Number of constrained clocks emitted">,
+    Statistic<"numUnconstrained", "unconstrained",
+              "Number of flop clocks with no top-port root">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

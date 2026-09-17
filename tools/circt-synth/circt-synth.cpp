@@ -245,6 +245,33 @@ static cl::opt<unsigned>
                      cl::desc("Maximum pin-permutation entries kept per "
                               "(pattern, N-canonical key) during matching"),
                      cl::init(8), cl::cat(mainCategory));
+static cl::opt<std::string> sdcOutput("sdc-output",
+                                      cl::desc("Write SDC timing constraints "
+                                               "to this file (requires --top)"),
+                                      cl::value_desc("filename"), cl::init(""),
+                                      cl::cat(mainCategory));
+static cl::opt<double> sdcClockPeriod("sdc-clock-period",
+                                      cl::desc("Clock period in nanoseconds "
+                                               "for emitted SDC"),
+                                      cl::init(10.0), cl::cat(mainCategory));
+static cl::opt<double> sdcInputDelay("sdc-input-delay",
+                                     cl::desc("Default input delay in "
+                                              "nanoseconds for emitted SDC"),
+                                     cl::init(0.0), cl::cat(mainCategory));
+static cl::opt<double> sdcOutputDelay("sdc-output-delay",
+                                      cl::desc("Default output delay in "
+                                               "nanoseconds for emitted SDC"),
+                                      cl::init(0.0), cl::cat(mainCategory));
+static cl::opt<std::string> sdcClockGates(
+    "sdc-clock-gates",
+    cl::desc(
+        "Clock gates as Cell:out=in pairs (comma-separated) for emitted SDC"),
+    cl::init("EICG_wrapper:out=in"), cl::cat(mainCategory));
+static cl::opt<std::string> sdcClockSources(
+    "sdc-clock-sources",
+    cl::desc("On-chip clock source cell-name substrings (comma-separated) "
+             "for emitted SDC"),
+    cl::init("FixedClock"), cl::cat(mainCategory));
 static cl::opt<unsigned>
     maxMemFallbackBits("max-mem-fallback-bits",
                        cl::desc("Maximum memory size in bits allowed to "
@@ -438,6 +465,17 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // NOTE: synth-sort-topologically exists for downstream MLIR consumers
     // needing strict SSA order (e.g. circt-lec), but it is off by default:
     // MLIR's sort is ~5 min single-threaded on ChipTop-scale blocks.
+    if (!sdcOutput.empty()) {
+      synth::EmitSDCOptions sdcOptions;
+      sdcOptions.topModuleName = topName;
+      sdcOptions.clockPeriodNs = sdcClockPeriod;
+      sdcOptions.inputDelayNs = sdcInputDelay;
+      sdcOptions.outputDelayNs = sdcOutputDelay;
+      sdcOptions.outputFile = sdcOutput;
+      sdcOptions.clockGateCells = sdcClockGates;
+      sdcOptions.clockSourceCells = sdcClockSources;
+      pm.addPass(synth::createEmitSDC(std::move(sdcOptions)));
+    }
   }
 
   // Run analysis if analysis output is specified.

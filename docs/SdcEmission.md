@@ -1,6 +1,6 @@
 # SDC emission (`write_sdc` equivalent)
 
-## Status: designed, not implemented. Top remaining flow gap.
+## Status: implemented (v1) as `synth-emit-sdc`; see pass docs below.
 
 ## Measured input: ChipTop clock inventory (authoritative, mapped MLIR)
 
