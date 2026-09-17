@@ -231,6 +231,34 @@ def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$inputs attr-dict `:` type($result)";
 }
 
+def CreateBundleOp : SynthOp<"create_bundle", [Pure]> {
+  let summary = "Group values for joint multi-output mapping";
+  let description = [{
+    The `synth.create_bundle` operation groups values so the technology
+    mapper can consider them jointly for multi-output cells (e.g. a sum
+    and carry sharing support mapping to one full-adder cell). It is a
+    pure pass-through: result `i` is defined to equal operand `i`.
+    Extraction creates bundles for shared-support value groups immediately
+    pre-mapping; mapping either consumes each bundle into one multi-output
+    cell or erases it (falling back to the discrete logic, which stays in
+    place). Nothing downstream of mapping may observe one.
+
+    The operation deliberately carries no function data: the joint function
+    is derived by simulating the producer cones at match time (ground
+    truth), and erasing is a complete fallback. No canonicalization may
+    forward operands through it before mapping consumes it.
+
+    Example:
+    ```mlir
+      %o0, %o1 = synth.create_bundle %sum, %carry : (i1, i1) -> (i1, i1)
+    ```
+  }];
+  let arguments = (ins Variadic<AnyType>:$inputs);
+  let results = (outs Variadic<AnyType>:$results);
+  let hasVerifier = 1;
+  let assemblyFormat = "$inputs attr-dict `:` functional-type($inputs, $results)";
+}
+
 def MajorityOp : SymmetricThreeInputOp<"majority", "evaluateMajorityLogic"> {
   let summary = "Majority gate with invertible inputs";
   let description = [{

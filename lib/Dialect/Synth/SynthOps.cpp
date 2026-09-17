@@ -70,6 +70,20 @@ LogicalResult ChoiceOp::verify() {
   return success();
 }
 
+LogicalResult CreateBundleOp::verify() {
+  if (getNumOperands() < 1)
+    return emitOpError("requires at least one operand");
+  if (getNumOperands() != getNumResults())
+    return emitOpError("requires as many results as operands, but found ")
+           << getNumOperands() << " operands and " << getNumResults()
+           << " results";
+  for (unsigned i = 0, e = getNumOperands(); i < e; ++i) {
+    if (getOperand(i).getType() != getResult(i).getType())
+      return emitOpError("result ") << i << " type must match operand type";
+  }
+  return success();
+}
+
 OpFoldResult ChoiceOp::fold(FoldAdaptor adaptor) {
   if (adaptor.getInputs().size() == 1)
     return getOperand(0);
