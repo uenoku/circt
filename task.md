@@ -78,14 +78,20 @@
 
  Multi-output mapping (see docs/MultiOutputMapping.md)
 
- 17. emap-style FA/HA mapping — DESIGNED, not started: extraction pre-pass
-    (synth.full_adder/half_adder + barrier mapping) first. Measured tax:
-    add32 15.4 cells/bit, inc16 7.3 cells/bit vs ~1–2 FA ideal; fa/ha
-    usage today zero.
+ 17. emap-style FA/HA mapping — IN PROGRESS (pass-through bundle design,
+    supersedes full_adder/half_adder ops): `synth.create_bundle` op landed
+    (pure N-in/N-out grouping, verifier, roundtrip test). No function data
+    carried: joint functions derived by simulating producer cones at match
+    time; fallback is free erase. Extraction scoped: reuse CutEnumerator
+    (k=3) + cut truth tables + N-canonical AND2/XOR2/MAJ3/XOR3 IDs +
+    leaf-set hashing + bundle creation (opt-in, statistics double as
+    opportunity measurement). Joint matching + value-based rewrite remain
+    (one atomic unit with extraction). Measured tax: add32 15.4 cells/bit,
+    inc16 7.3 cells/bit vs ~1–2 FA ideal; fa/ha usage today zero.
 
  Suggested order (updated)
 
- Scoreboard/counting/dedup/tie done. Remaining implementation order:
- SDC emission (13) → adder extraction (17) → load-aware (8) → buffers (9)
+ Scoreboard/counting/dedup/tie/SDC done. Remaining implementation order:
+ adder extraction+matching (17) → load-aware (8) → buffers (9)
  → multi-RW (15), with Yosys/ORFS parity (3) and LEC revival (4) as
  background tracks. Items 6/7/10/11/12/16 closed; 14 needs PDK/ORFS time.
