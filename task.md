@@ -32,9 +32,20 @@
 
  Timing-driven (needs STA first)
 
- 8. Load-aware delay — DESIGNED (docs/TimingDrivenMapping.md): sensitivity
-    fit in DeriveMappingCost + match-time delay=intrinsic+sensitivity×load,
-    then cover-iterated loads. Attr fields already carried for this.
+ 8. Load-aware delay — STAGE 1 LANDED (opt-in --load-aware-delay,
+    default off; docs/TimingDrivenMapping.md): sensitivity fit in
+    DeriveMappingCost (least-squares dDelay/dLoad over NLDM load
+    columns at mid-slew; index_2 = load on both PDKs) + match-time
+    delay=intrinsic+min(sens×load, intrinsic), load=min(fanout,64)
+    × mean input cap, trusted-fanout gate ≤8 (pointer-free,
+    deterministic; ChipTop-scale determinism inherited from flow).
+    Zero default regression proven (fifo control 9003/36.802ns
+    identical). Measured opt-in: add32 494→464 (-6%), 2.26→1.82ns
+    (-20%); fifo 9003→8572 (-4.8%) BUT worst path 36.8→87ns
+    (subject-fanout ≠ cover load + arrival-only blindness; needs
+    Stage 2 cover-iteration + backward criticality pass — scoped
+    future work, stays opt-in until then). Tests: fitted-sensitivity
+    case + area/timing split + flag-off control.
  9. Buffer insertion — DESIGNED (same doc): post-map clkbuf on
     total-cap-ranked nets, STA-closed threshold. Needs 8 + SDC first.
  10. Supergate tuning — DONE (measured): maxGates=3 default confirmed

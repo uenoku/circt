@@ -17,6 +17,16 @@ hw.module @xor2(in %a : i1, in %b : i1, out z : i1) attributes {synth.liberty.ce
   hw.output %0 : i1
 }
 
+// Sensitivity fit: middle slew row (index1 rows 0,1 -> row 1) over load
+// columns [1.0,2.0,4.0]: rise (0.15,0.25,0.45) and fall (0.25,0.35,0.55)
+// both fit slope 0.1ns/unit -> 100ps/unit. Intrinsic: mean of all 12
+// delay values = 0.308333ns -> 308ps.
+// CHECK-LABEL: hw.module @sens(
+// CHECK-SAME: synth.mapping_cost = #synth.mapping_cost<area = 7.000000e+00 : f64, arcs = [#synth.linear_timing_arc<308, 100, <positive>>]>
+hw.module @sens(in %a : i1, out z : i1) attributes {synth.liberty.cell = {area = 7.0 : f64}, synth.timing.nldm = [#synth.nldm_timing_arc<"z", "a", "positive_unate", <[0.01, 0.02], [1.0, 2.0, 4.0], [0.1, 0.2, 0.4, 0.15, 0.25, 0.45]>, <[0.01, 0.02], [1.0, 2.0, 4.0], [0.2, 0.3, 0.5, 0.25, 0.35, 0.55]>, <[0.01, 0.02], [1.0, 2.0, 4.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]>, <[0.01, 0.02], [1.0, 2.0, 4.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]>>]} {
+  hw.output %a : i1
+}
+
 // Missing arc for an input: no cost.
 // CHECK-LABEL: hw.module @partial(
 // CHECK-NOT: synth.mapping_cost

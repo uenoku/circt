@@ -70,7 +70,11 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
     Option<"maxEntriesPerKey", "max-entries-per-key", "unsigned", "8",
            "Maximum pin-permutation entries kept per (pattern, N-canonical "
            "key); bounds matching work, dropping only pin-diversity "
-           "candidates">
+           "candidates">,
+    Option<"loadAwareDelay", "load-aware-delay", "bool", "false",
+           "Load-aware arc delays (intrinsic + sensitivity x estimated "
+           "output load) during matching; off by default (load-blind "
+           "intrinsics)">
   ];
   let dependentDialects = ["hw::HWDialect"];
 }

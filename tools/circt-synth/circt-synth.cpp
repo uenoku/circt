@@ -210,6 +210,13 @@ static cl::opt<bool> disableDedup("disable-dedup",
                                   cl::desc("Disable post-map duplicate "
                                            "instance merging"),
                                   cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> loadAwareDelay(
+    "load-aware-delay",
+    cl::desc("Load-aware arc delays in tech mapping (intrinsic + "
+             "sensitivity x estimated output load); helps "
+             "selection-dominated logic, can mislead on "
+             "broadcast-dominated nets (opt-in)"),
+    cl::init(false), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -462,6 +469,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.maxEntriesPerKey = maxEntriesPerKey;
     options.strategy = synthesisStrategy;
+    options.loadAwareDelay = loadAwareDelay;
     pm.addPass(synth::createTechMapper(options));
     // Post-map duplicate merging: TechMapper materializes one inverter per
     // negated binding after the last CSE (~30% of inverters are exact

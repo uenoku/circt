@@ -29,6 +29,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
 #include <atomic>
 
 namespace circt {
@@ -89,9 +90,12 @@ getCellTruthTable(hw::HWModuleOp module) {
 /// Simple technology library encoded as a HWModuleOp.
 struct TechLibraryPattern : public CutRewritePattern {
   TechLibraryPattern(hw::HWModuleOp module, double area,
-                     SmallVector<DelayType> delay, BinaryTruthTable table)
+                     SmallVector<DelayType> delay,
+                     SmallVector<int64_t> sensitivity, double meanInputCap,
+                     BinaryTruthTable table)
       : CutRewritePattern(module->getContext()), area(area),
-        delay(std::move(delay)), module(module), table(std::move(table)) {
+        delay(std::move(delay)), sensitivity(std::move(sensitivity)),
+        meanInputCap(meanInputCap), module(module), table(std::move(table)) {
 
     LLVM_DEBUG({
       llvm::dbgs() << "Created Tech Library Pattern for module: "
@@ -112,31 +116,83 @@ struct TechLibraryPattern : public CutRewritePattern {
   /// map to the cut. Bindings with negation are phase-aware: each negated
   /// terminal materializes an inverter cell, with its area and delay
   /// folded into the match cost so selection stays timing- and
-  /// area-accurate.
-  std::optional<MatchResult> match(CutEnumerator &, const Cut &,
+  /// area-accurate. Delays are load-aware (Stage 1): each arc reports
+  /// intrinsic + sensitivity x output_load, with output_load estimated
+  /// from the cut root's subject-graph fanout times the library mean
+  /// input capacitance (no cover context needed).
+  std::optional<MatchResult> match(CutEnumerator &enumerator, const Cut &cut,
                                    const MatchBinding &binding) const override {
-    if (!binding.hasNegation())
-      return MatchResult(area, delay);
-    if (!inverter || inverter->delay.empty())
-      return std::nullopt;
-
     unsigned numInputs = binding.getNumInputs();
     unsigned numOutputs = numInputs ? delay.size() / numInputs : 0;
-    double totalArea = area;
-    SmallVector<DelayType, 6> adjusted(delay.begin(), delay.end());
-    DelayType invDelay = inverter->delay.front();
-    for (unsigned i = 0; i < numInputs; ++i) {
-      if (binding.isPatternInputNegated(i)) {
-        for (unsigned o = 0; o < numOutputs; ++o)
-          adjusted[o * numInputs + i] += invDelay;
-        totalArea += inverter->area;
+    // Fast path: load-independent arcs without negation report intrinsics
+    // directly (borrowed, as before).
+    if (!binding.hasNegation() &&
+        llvm::all_of(sensitivity, [](int64_t s) { return s == 0; }))
+      return MatchResult(area, delay);
+    if (binding.hasNegation() && (!inverter || inverter->delay.empty()))
+      return std::nullopt;
+    // Stage-1 load estimate: subject-graph fanout x mean input cap.
+    // Deterministic: refcount and mean cap are both order-independent.
+    // The fanout is clamped: broadcast nets above the cap are assumed to
+    // be buffered downstream (buffer insertion), so mapping must not see
+    // linear-model loads extrapolated orders of magnitude past the fitted
+    // NLDM range (which otherwise dominates and distorts selection).
+    // Trusted-fanout gate: the subject-fanout proxy is only applied to
+    // small-fanout roots, where subject fanout still resembles cover
+    // load. On heavily shared/broadcast roots the proxy lies (cover
+    // sharing and duplication reshape fanout), and arrival-only
+    // penalties without criticality context systematically mislead
+    // selection and arrival-ordered pruning; those roots stay
+    // load-blind (intrinsic delays).
+    constexpr unsigned kMaxFanoutForLoadEstimate = 64;
+    constexpr unsigned kTrustedFanoutForLoadEstimate = 8;
+    unsigned fanout =
+        enumerator.getLogicNetwork().getTotalRefCount(cut.getRootIndex());
+    double load =
+        fanout > kTrustedFanoutForLoadEstimate
+            ? 0.0
+            : meanInputCap * std::min(fanout, kMaxFanoutForLoadEstimate);
+    SmallVector<DelayType, 6> adjusted;
+    adjusted.reserve(delay.size());
+    // The load penalty per arc is capped at one intrinsic: broadcast
+    // loads are a buffering problem (buffer insertion), not a selection
+    // signal, and uncapped penalties let non-critical broadcast nets
+    // dominate selection and arrival-ordered pruning. Normal-fanout
+    // penalties (far below intrinsic) are unaffected.
+    for (unsigned o = 0; o < numOutputs; ++o)
+      for (unsigned i = 0; i < numInputs; ++i) {
+        DelayType intrinsic = delay[o * numInputs + i];
+        DelayType penalty =
+            std::min<DelayType>(llround(sensitivity[i] * load), intrinsic);
+        adjusted.push_back(intrinsic + penalty);
       }
-    }
-    for (unsigned o = 0; o < numOutputs; ++o) {
-      if (binding.isOutputNegated(o)) {
-        for (unsigned i = 0; i < numInputs; ++i)
-          adjusted[o * numInputs + i] += invDelay;
-        totalArea += inverter->area;
+    double totalArea = area;
+    if (binding.hasNegation()) {
+      // Input-negating inverters drive one cell input (mean-cap load);
+      // an output-negating inverter drives this cell's output load.
+      // Same per-arc penalty cap as above.
+      DelayType inInvDelay =
+          inverter->delay.front() +
+          std::min<DelayType>(
+              llround(inverter->sensitivity.front() * meanInputCap),
+              inverter->delay.front());
+      DelayType outInvDelay =
+          inverter->delay.front() +
+          std::min<DelayType>(llround(inverter->sensitivity.front() * load),
+                              inverter->delay.front());
+      for (unsigned i = 0; i < numInputs; ++i) {
+        if (binding.isPatternInputNegated(i)) {
+          for (unsigned o = 0; o < numOutputs; ++o)
+            adjusted[o * numInputs + i] += inInvDelay;
+          totalArea += inverter->area;
+        }
+      }
+      for (unsigned o = 0; o < numOutputs; ++o) {
+        if (binding.isOutputNegated(o)) {
+          for (unsigned i = 0; i < numInputs; ++i)
+            adjusted[o * numInputs + i] += outInvDelay;
+          totalArea += inverter->area;
+        }
       }
     }
     MatchResult result;
@@ -216,6 +272,11 @@ struct TechLibraryPattern : public CutRewritePattern {
 private:
   const double area;
   const SmallVector<DelayType> delay;
+  // Per-pattern-input load sensitivities (ps per load unit), parallel to
+  // the input dimension of `delay`; plus the library mean input cap (pF)
+  // for Stage-1 load estimates.
+  const SmallVector<int64_t> sensitivity;
+  const double meanInputCap;
   hw::HWModuleOp module;
   BinaryTruthTable table;
   // Cheapest 1-input inverter cell, for phase-aware matches. Null when
@@ -241,7 +302,18 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     // the pattern-set constructor).
     constexpr unsigned kMaxPatternInputs = 9;
     // Consider modules with the "synth.mapping_cost" attribute as library
-    // modules.
+    // modules. Priced cells are collected first so the library mean input
+    // capacitance (Stage-1 load estimates) is known before patterns are
+    // built; module/port order keeps it deterministic.
+    struct PricedCell {
+      hw::HWModuleOp module;
+      double area;
+      SmallVector<DelayType> delay;
+      SmallVector<int64_t> sensitivity;
+    };
+    SmallVector<PricedCell> pricedCells;
+    double capSum = 0.0;
+    size_t capCount = 0;
     SmallVector<hw::HWModuleOp> nonLibraryModules;
     for (auto hwModule : module.getOps<hw::HWModuleOp>()) {
 
@@ -324,27 +396,43 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       }
 
       SmallVector<DelayType> delay;
+      SmallVector<int64_t> sensitivity;
       for (auto attr : arcs) {
         auto arc = cast<LinearTimingArcAttr>(attr);
-
-        // TechMapper currently preserves the old integer per-pin delay model.
-        // The sensitivity, polarity, and input capacitance fields are carried
-        // in the attribute for future load-aware mapping.
         delay.push_back(static_cast<DelayType>(arc.getIntrinsic()));
+        sensitivity.push_back(arc.getSensitivity());
       }
+      // Accumulate input capacitances for the library mean (pF).
+      if (auto inputCaps = mappingCost.getInputCaps()) {
+        for (const auto &port : inputPorts) {
+          if (auto cap = dyn_cast_or_null<FloatAttr>(inputCaps.get(port.name)))
+            capSum += cap.getValue().convertToDouble(), ++capCount;
+        }
+      }
+      pricedCells.push_back(
+          {hwModule, area, std::move(delay), std::move(sensitivity)});
+    }
 
+    double meanInputCap = capCount == 0 ? 0.0 : capSum / capCount;
+    for (auto &cell : pricedCells) {
       // Compute the raw truth table for the module. Pin permutations
       // are enumerated by the pattern set; no canonicalization here.
-      auto table = getCellTruthTable(hwModule);
+      auto table = getCellTruthTable(cell.module);
       if (failed(table)) {
         signalPassFailure();
         return;
       }
-
+      // Load-aware matching is opt-in; when off, zero sensitivities take
+      // the borrowed-intrinsics fast path in match() (bit-identical to
+      // the old load-blind behavior).
+      SmallVector<int64_t> sens =
+          loadAwareDelay ? std::move(cell.sensitivity)
+                         : SmallVector<int64_t>(cell.sensitivity.size(), 0);
       // Create a CutRewritePattern for the library module
       std::unique_ptr<TechLibraryPattern> pattern =
-          std::make_unique<TechLibraryPattern>(hwModule, area, std::move(delay),
-                                               std::move(*table));
+          std::make_unique<TechLibraryPattern>(
+              cell.module, cell.area, std::move(cell.delay), std::move(sens),
+              meanInputCap, std::move(*table));
 
       // Add the pattern to the library
       libraryPatterns.push_back(std::move(pattern));
@@ -371,7 +459,7 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
       static_cast<TechLibraryPattern *>(pattern.get())->setInverter(inverter);
 
     CutRewritePatternSet patternSet(std::move(libraryPatterns),
-                                       maxEntriesPerKey);
+                                    maxEntriesPerKey);
     CutRewriterOptions options;
     options.strategy = strategy;
     // Bound cut enumeration by the widest actually-matchable pattern:

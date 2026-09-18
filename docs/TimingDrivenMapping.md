@@ -1,6 +1,7 @@
 # Timing-driven mapping: load-aware delay + buffer insertion
 
-## Status: designed, not implemented. Do load-aware first; buffers need loads.
+## Status: Stage 1 landed (opt-in `--load-aware-delay`, default off);
+Stage 2 / buffers remain.
 
 ## 8. Load-aware delay
 
@@ -15,12 +16,26 @@ model per the circt-sta-implementation skill).
 
 Design (two stages):
 
-- **Stage 1 — linear sensitivity (cheap, no iteration).** Derive per-arc
-  `sensitivity` (dDelay/dLoad slope fitted over NLDM load columns at
-  mid-slew) in `DeriveMappingCost` instead of 0. At match time,
-  `delay = intrinsic + sensitivity × output_load`, with `output_load`
-  estimated from fanout count × mean input cap (no cover context needed).
-  Validates the plumbing end-to-end via the STA scoreboard.
+- **Stage 1 — linear sensitivity (cheap, no iteration).** LANDED
+  (opt-in `--load-aware-delay`, default off; zero default regression
+  proven: fifo control 9003/36.802ns identical to pre-load-aware).
+  `DeriveMappingCost` fits per-arc `sensitivity` (least-squares
+  dDelay/dLoad over NLDM load columns at mid-slew; index_2 is output
+  load on both PDKs, verified sky130/ASAP7; degenerate tables get 0).
+  At match time, `delay = intrinsic + min(sensitivity × output_load,
+  intrinsic)` (per-arc penalty cap: broadcasts are a buffering problem,
+  not a selection signal), with `output_load` = min(fanout,64) ×
+  library-mean input cap, applied only to roots with fanout ≤ 8
+  (trusted-fanout gate). Unbounded penalties (fanout-2000 reset at
+  27× past the fitted range) and even in-range penalties on shared
+  roots otherwise dominate selection and arrival-ordered pruning.
+  Measured: add32 opt-in 494→464 (-6%) and 2.26→1.82ns (-20%);
+  fifo opt-in 9003→8572 (-4.8%) BUT worst path 36.8→87ns (same
+  addr_bit0 endpoints: subject-fanout ≠ cover load after
+  sharing/duplication, and arrival-only penalties lack criticality
+  context — needs Stage 2/backward pass to fix; stays opt-in).
+  Tests: `derive-mapping-cost.mlir` (fitted 308/100 case) +
+  `tech-mapper-load-aware.mlir` (area/timing split + flag-off control).
 - **Stage 2 — cover-iterated loads (ABC-style).** `output_load` = Σ input
   caps of the cells driven in the *current* cover; iterate mapping 2–3×,
   recomputing loads from the previous cover (same loop shape as
