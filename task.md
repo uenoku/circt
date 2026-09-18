@@ -12,8 +12,14 @@
     wiring only, zero unmapped gates.
  3. Yosys baselines — fifo DONE: Yosys/ABC 3,478 cells / 23.84ns vs ours
     9,003 / 36.80ns (logic ~5x gap: ABC delay mapping + mux4). Reference
-    nets/logs in /tmp/e2e/momap. ChipTop ORFS run outstanding (hours; needs
-    ORFS checkout + PDK SRAM collateral per item 14).
+    nets/logs in /tmp/e2e/momap. Buffered ours is now 9,256 / 4.45ns
+    (better than Yosys/ABC on delay, 2.7x on area — the gap is closed
+    on timing, open on area). ChipTop ORFS run outstanding: no OpenROAD
+    binary installed (no docker image; source build is hours). ORFS
+    groundwork landed (docs/ORFSBringup.md): fifo needs no SRAM macros
+    (flop-array memories) so it is the first target; netlist + emitted
+    SDC regenerate from flags, SDC verified loading in STA (all MET).
+    ChipTop ORFS additionally needs item-14 macros.
  4. LEC validation — SKIPPED per user (hard-blocked, findings recorded):
     needs unstripped MLIR + --verify-each=false, then blocked on synth.ff
     legalization in circt-lec. `synth-sort-topologically` kept for revival
@@ -53,6 +59,10 @@
     without required-time gating. fifo combos: load-aware+buffers =
     8752/8.21ns (buffers fix the 87ns pathology; buf-only 9256/4.45ns
     still best delay — flags compose safely, trade-offs differ).
+    ChipTop combo (LA+buffers): 2080890→2050077 (-1.5%, -31K, flops
+    exact, 60K bufs); worst -3.12 same async path (buffers can't fix
+    non-broadcast paths; LA delay cost persists, LA area win partly
+    kept; buf-only still best delay). Opt-ins compose safely at scale.
     Tests: fitted-sensitivity case + area/timing split + flag-off control.
  9. Buffer insertion — LANDED v1 (opt-in --buffer-high-fanout,
     default off; --max-fanout default 32; docs/TimingDrivenMapping.md):
