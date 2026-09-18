@@ -217,6 +217,16 @@ static cl::opt<bool> loadAwareDelay(
              "selection-dominated logic, can mislead on "
              "broadcast-dominated nets (opt-in)"),
     cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> bufferHighFanout(
+    "buffer-high-fanout",
+    cl::desc("Buffer high-fanout nets with fanout-splitting buffers "
+             "after mapping (opt-in)"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<int>
+    maxFanout("max-fanout",
+              cl::desc("Maximum per-copy fanout before buffer insertion splits "
+                       "a net (with --buffer-high-fanout)"),
+              cl::init(32), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -480,6 +490,14 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // Yosys/ORFS netlists); must precede stripping while lib cells are
     // still plain modules.
     pm.addPass(synth::createTieCells());
+    // Fanout-splitting buffers for broadcast nets (opt-in): needs plain
+    // lib modules (auto-detected buffer cell + clock-pin metadata), so
+    // it also precedes stripping.
+    if (bufferHighFanout) {
+      synth::BufferHighFanoutOptions bufferOptions;
+      bufferOptions.maxFanout = maxFanout;
+      pm.addPass(synth::createBufferHighFanout(bufferOptions));
+    }
     if (stripLibToExtern)
       pm.addPass(synth::createStripLibToExtern());
     // NOTE: synth-sort-topologically exists for downstream MLIR consumers

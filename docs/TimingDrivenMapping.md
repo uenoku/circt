@@ -47,22 +47,33 @@ Watch-outs: phase-flipped variants and supergates multiply the patterns
 whose arcs need sensitivities (all derivable the same way); wide
 AO/OA cells have the steepest load slopes, so ASAP7 gains most.
 
-## 9. Buffer insertion
+## 9. Buffer insertion — LANDED v1 (opt-in `--buffer-high-fanout`,
+default off; `--max-fanout`, default 32)
 
-Nothing buffers high-fanout nets today; the fifo scoreboard is dominated
-by a reset-fanout path (36.8ns arrival). New post-map pass
-(`synth-buffer-high-fanout` sketch):
+`synth-buffer-high-fanout` runs post-map (after TieCells, before strip
+so liberty pin metadata is available). Per-copy fanout counting
+*through hierarchy*: local gate loads are chunked behind one buffer
+instance per ≤max-fanout chunk, and output ports with large downstream
+loads get one buffer between driver and port. Ranking by subject-graph
+refcount alone misses broadcasts (the addr_bit0 flop shows 8 local
+loads but ~500 through-port memory-mux forest loads — 11.9pF at STA);
+per-copy downstream loads are memoized over the instance DAG, no
+multiplicity needed (every flat copy sees the same loads). The buffer
+cell is auto-detected (smallest-area simulated identity cell:
+sky130 `buf_1`), so the pass stays PDK-agnostic. Nets driving
+clock=true pins are never touched (unknown targets conservatively
+count as clock); tie-cell/constant drivers need no buffers.
+Deterministic (file/IR order only; fifo A/B and ChipTop pre/post-speed-opt
+bit-identical). Speed: instance index keeps ChipTop at 1m23s vs 45s
+baseline (was 3m39s before indexing).
 
-- Rank nets by total driven capacitance (Σ fanout input caps from
-  `mapping_cost`, plus wire estimate).
-- Above `--max-fanout-cap`, insert `clkbuf` (positive) chains sized by
-  load; single level first, chain for very high fanout later.
-- Never touch clock/reset nets with logic cells (no `isobufsrc`
-  repurposing — item 16 showed why that reading was wrong; use real
-  buffers), and never buffer synchronizer inputs.
-- Close the loop with the STA scoreboard: buffers cost area/leakage, so
-  land the threshold where worst-slack stops improving.
+Measured (same binary): fifo 9003/36.802ns → 9256/4.451ns (**8.3×**,
++253 bufs, flops exact, MET with +5.47 slack at period 10); add32
+untouched (0 buffers, no high fanout); ChipTop 2080890→2143663 (+3.0%,
+flops exact), worst slack +3.22→+3.36 MET (different path; neutral to
+slightly positive where broadcasts don't dominate).
 
-Requires 8 (sizing by load) for anything beyond a fixed threshold, and
-the SDC work (docs/SdcEmission.md) so inserted buffers on clock trees
-are constrained, not just logic nets.
+Follow-ups: buffer trees/chains for very high fanout (single level
+today), load-sized selection (needs item 8 Stage 2), synchronizer-input
+markers (no reliable detection today; STA judges), default-on decision
+once area/delay tradeoff is closed on more designs.

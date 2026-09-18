@@ -46,8 +46,17 @@
     Stage 2 cover-iteration + backward criticality pass — scoped
     future work, stays opt-in until then). Tests: fitted-sensitivity
     case + area/timing split + flag-off control.
- 9. Buffer insertion — DESIGNED (same doc): post-map clkbuf on
-    total-cap-ranked nets, STA-closed threshold. Needs 8 + SDC first.
+ 9. Buffer insertion — LANDED v1 (opt-in --buffer-high-fanout,
+    default off; --max-fanout default 32; docs/TimingDrivenMapping.md):
+    `synth-buffer-high-fanout` (post-map, pre-strip): per-copy fanout
+    through hierarchy (local chunking + driver-to-port buffers for
+    through-port forests); auto-detected identity buffer cell (buf_1);
+    clock-pin nets never touched; tie drivers skipped; deterministic
+    (A/B identical); 1m23s on ChipTop vs 45s baseline. Measured:
+    fifo 9003/36.802ns → 9256/4.451ns (8.3×, +253 bufs, flops exact,
+    MET); add32 untouched (0 bufs); ChipTop +3.0% area, worst slack
+    +3.22→+3.36 MET (neutral-positive). Follow-ups: trees/chains,
+    load-sizing (needs 8/Stage-2), sync markers, default-on decision.
  10. Supergate tuning — DONE (measured): maxGates=3 default confirmed
     (sg3 = baseline area, −1.15ns; sg2 +38 inst same delay); per-key cap
     stays 8 (cap4+sg −190 inst but base+cap4 +35 — thin evidence, keep
@@ -114,7 +123,9 @@
 
  Suggested order (updated)
 
- Scoreboard/counting/dedup/tie/SDC/bundles done. Remaining implementation order:
- load-aware (8) → buffers (9)
- → multi-RW (15), with Yosys/ORFS parity (3) and LEC revival (4) as
- background tracks. Items 6/7/10/11/12/16/17 closed; 14 needs PDK/ORFS time.
+ Scoreboard/counting/dedup/tie/SDC/bundles/load-aware/buffers done.
+ Remaining implementation order: multi-RW (15), with Yosys/ORFS parity
+ (3) and LEC revival (4) as background tracks.
+ Items 6/7/10/11/12/16/17 closed; 8 needs Stage-2/criticality for
+ default-on; 9 needs trees/sizing/more designs for default-on;
+ 14 needs PDK/ORFS time.

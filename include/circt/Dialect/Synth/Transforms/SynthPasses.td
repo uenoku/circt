@@ -593,6 +593,33 @@ def TieCells : Pass<"synth-tie-cells", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def BufferHighFanout : Pass<"synth-buffer-high-fanout", "mlir::ModuleOp"> {
+  let summary = "Buffer high-fanout nets with fanout-splitting buffers";
+  let description = [{
+    Nothing buffers high-fanout nets today; scoreboards are dominated by
+    broadcast paths (a flop fanning out through hierarchy to a wide
+    memory-decoder mux forest). This pass splits nets whose per-copy
+    fanout exceeds `max-fanout`: local gate loads are chunked behind one
+    buffer instance per chunk, and output ports with large downstream
+    (through-hierarchy) loads get one buffer between driver and port.
+    The buffer cell is auto-detected (smallest-area identity cell), so
+    the pass stays PDK-agnostic. Nets driving clock pins are never
+    touched; constant (tie-cell) drivers need no buffers. Deterministic:
+    file/IR order only, no pointer-ordered decisions.
+  }];
+  let options = [
+    Option<"maxFanout", "max-fanout", "int", "32",
+           "Maximum per-copy fanout before buffer insertion splits a net">
+  ];
+  let statistics = [
+    Statistic<"numBuffersInserted", "buffers-inserted",
+              "Number of buffer instances inserted">,
+    Statistic<"numNetsBuffered", "nets-buffered",
+              "Number of nets split behind buffers">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {
   let summary = "Emit SDC timing constraints for a mapped design";
   let description = [{
