@@ -21,7 +21,15 @@
     no-op in this flow (identical md5). inc16: Yosys 70/1.75ns vs ours
     116/1.83ns — delay parity, ABC area 1.7x. Remaining area gaps
     (fifo 2.6x, add32 2x, inc16 1.7x) point at ABC rewriting/balancing
-    + mux4 (fifo) as the next selection/structure work. Reference
+    + mux4 (fifo) as the next selection/structure work: mux census
+    (sky130hd fifo) is ours 2228 mux2i_1 + 17 mux2i_4 + 336 mux4_2
+    vs Yosys 4 mux2_1 + 36 mux2i_1 + 575 mux4_2 — ABC collapses the
+    decoder forest ~4x into 4:1s (mux4_2 area 22.5 beats 3x mux2i_1
+    30.0). Our matcher DOES pick mux4_2 on clean 4:1 trees (probed),
+    so the gap is pre-map shape/restructuring (shared selects, phases,
+    interleaved logic defeat 6-input collapse), not matching power —
+    next direction is mux restructuring/SOP-balancing evaluation on
+    forests. Reference
     nets/logs in /tmp/e2e/momap (yosys_*_fresh/fifo/add32/inc16).
     Buffered ours is now 9,256 / 4.45ns
     (better than Yosys/ABC on delay, 2.7x on area — the gap is closed
