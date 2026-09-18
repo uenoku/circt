@@ -34,6 +34,14 @@ Design (two stages):
   addr_bit0 endpoints: subject-fanout ≠ cover load after
   sharing/duplication, and arrival-only penalties lack criticality
   context — needs Stage 2/backward pass to fix; stays opt-in).
+  ChipTop opt-in: 2080890→1989878 (-4.4%, flops exact); mechanistic
+  win (mux2i_1→mux2i_4 drive shift on loaded nets) with delay cost
+  on both axes (sync 6.78→10.32ns, async +3.22→-3.12) — selection
+  responds to loads, worst paths need required-time gating.
+  fifo flag combos (opt-ins compose safely): load-aware+buffers =
+  8752/8.21ns (buffers fix the 87ns pathology; buf-only 9256/4.45ns
+  still best delay). fifo ASAP7 buffers: 13055/32.13ns → 13267/0.556ns
+  (58×; auto-picked HB1xp67_ASAP7_75t_L — PDK-agnostic discovery works).
   Tests: `derive-mapping-cost.mlir` (fitted 308/100 case) +
   `tech-mapper-load-aware.mlir` (area/timing split + flag-off control).
 - **Stage 2 — cover-iterated loads (ABC-style).** `output_load` = Σ input

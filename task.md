@@ -44,8 +44,16 @@
     (-20%); fifo 9003→8572 (-4.8%) BUT worst path 36.8→87ns
     (subject-fanout ≠ cover load + arrival-only blindness; needs
     Stage 2 cover-iteration + backward criticality pass — scoped
-    future work, stays opt-in until then). Tests: fitted-sensitivity
-    case + area/timing split + flag-off control.
+    future work, stays opt-in until then). ChipTop opt-in: 2080890→
+    1989878 (-4.4%, -91K, flops exact 422417); the win is mechanistic
+    (mux2i_1→mux2i_4 drive shift -455K/+347K on loaded nets + broad
+    reselection: 56 cells down, 88 up) BUT delay regresses on both
+    axes (sync out_arb 6.78→10.32ns, async in_demux +3.22→-3.12) —
+    drive-strength selection responds to loads yet worst paths lose
+    without required-time gating. fifo combos: load-aware+buffers =
+    8752/8.21ns (buffers fix the 87ns pathology; buf-only 9256/4.45ns
+    still best delay — flags compose safely, trade-offs differ).
+    Tests: fitted-sensitivity case + area/timing split + flag-off control.
  9. Buffer insertion — LANDED v1 (opt-in --buffer-high-fanout,
     default off; --max-fanout default 32; docs/TimingDrivenMapping.md):
     `synth-buffer-high-fanout` (post-map, pre-strip): per-copy fanout
