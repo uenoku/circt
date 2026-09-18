@@ -86,10 +86,16 @@
     (asap7_sram_0p0/generated); needs exact-geometry compilation for
     16384x64/8192x64/1024x136/512x256 (pre-generated banks are small).
     sky130 platform has no SRAM macros visible. ORFS-integration work.
- 15. RegOfVecToMem multi-read/write arrays — SCOPED: synth-side
-    SeqMemMapper already matches N-port macros; gap is solely the
-    `seq.regofvectomem` import pass (single-read). Bounded, delicate
-    (read-during-write/write-ordering semantics). Not started.
+ 15. RegOfVecToMem multi-read/write arrays — CLOSED (no gap on current
+    designs): census of /tmp/e2e/chiptop.mlir finds 9 array-typed
+    firregs, all in top ChipTop, 7,836 bits total (1.9% of 422K flops),
+    depths 2–52 (LUTRAM-scale; no SRAM macro fits 2-deep arrays, and
+    multi-port read-during-write semantics are delicate). Upstream
+    RegOfVecToMem already extracted every single-read array (the rest
+    of memory is seq.firmem); the 9 leftovers are flop-appropriate even
+    under a perfect multi-read extension (firmem→SeqMemMapper→flop
+    fallback without a fitting macro = same flops). Revisit only if a
+    design shows large multi-read arrays.
  16. lpflow buffer selection — DONE (measured + explained): the 30 sites
     are and2b-function (A & ~SLEEP), not buffers; isobufsrc_1 (6.26/339ps)
     correctly beats dedicated and2b_1 (7.51/419ps); dont-use substitutes
@@ -123,9 +129,10 @@
 
  Suggested order (updated)
 
- Scoreboard/counting/dedup/tie/SDC/bundles/load-aware/buffers done.
- Remaining implementation order: multi-RW (15), with Yosys/ORFS parity
- (3) and LEC revival (4) as background tracks.
- Items 6/7/10/11/12/16/17 closed; 8 needs Stage-2/criticality for
- default-on; 9 needs trees/sizing/more designs for default-on;
- 14 needs PDK/ORFS time.
+ Implementation program complete. Scoreboard/counting/dedup/tie/SDC/
+ bundles/load-aware/buffers done; 6/7/10/11/12/15/16/17 closed by
+ measurement or implementation. Remaining tracks are external/
+ background: Yosys/ORFS parity (3, ChipTop ORFS is hours), LEC
+ revival (4, skipped per user), PDK SRAM compilation (14). Item 8
+ stays opt-in pending Stage-2/criticality; item 9 stays opt-in
+ pending trees/sizing/more designs.
