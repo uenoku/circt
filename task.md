@@ -10,9 +10,20 @@
  2. Authoritative counting — DONE: hw.instance per cell, flattening-
     equivalent. ChipTop 2,080,760 flat vs 1,229,085 textual; <unknown> is
     wiring only, zero unmapped gates.
- 3. Yosys baselines — fifo DONE: Yosys/ABC 3,478 cells / 23.84ns vs ours
-    9,003 / 36.80ns (logic ~5x gap: ABC delay mapping + mux4). Reference
-    nets/logs in /tmp/e2e/momap. Buffered ours is now 9,256 / 4.45ns
+ 3. Yosys baselines — fifo DONE (fresh reproduce: 3,447 cells /
+    23.839ns vs recorded 3,478/23.84): Yosys/ABC beats our baseline on
+    both axes (2.6x area, 1.5x delay); our buffered (9,256/4.45ns)
+    beats Yosys 5.4x on delay at 2.7x cells. Yosys worst path is ALSO
+    broadcast-launched (17.7ns flop-Q stage) — ABC suffers the same
+    disease, milder (tighter selection → smaller decoder forest).
+    add32: Yosys 226/6.65ns vs ours 464/1.82ns (load-aware) — ABC wins
+    area 2x with no FAs on either side; we win delay 3.6x; ABC -D is a
+    no-op in this flow (identical md5). inc16: Yosys 70/1.75ns vs ours
+    116/1.83ns — delay parity, ABC area 1.7x. Remaining area gaps
+    (fifo 2.6x, add32 2x, inc16 1.7x) point at ABC rewriting/balancing
+    + mux4 (fifo) as the next selection/structure work. Reference
+    nets/logs in /tmp/e2e/momap (yosys_*_fresh/fifo/add32/inc16).
+    Buffered ours is now 9,256 / 4.45ns
     (better than Yosys/ABC on delay, 2.7x on area — the gap is closed
     on timing, open on area). ChipTop ORFS run outstanding: no OpenROAD
     binary installed (no docker image; source build is hours). ORFS
