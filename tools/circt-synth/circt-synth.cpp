@@ -286,6 +286,11 @@ static cl::opt<bool>
                            "variants) from library cells before technology "
                            "mapping"),
                   cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> extractBundles(
+    "extract-bundles",
+    cl::desc("Extract shared-support value groups for joint multi-output "
+             "cell mapping"),
+    cl::init(false), cl::cat(mainCategory));
 
 static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
     "synthesis-strategy", cl::desc("Synthesis strategy to use"),
@@ -445,6 +450,13 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       synth::GenSupergatesOptions sgOptions;
       sgOptions.maxGates = supergateMaxGates;
       pm.addPass(synth::createGenSupergates(std::move(sgOptions)));
+    }
+    // Bundle extraction + joint multi-output mapping (opt-in): propose
+    // shared-support pairs, then map each bundle to one cell or erase it.
+    // Nothing downstream ever observes a bundle.
+    if (extractBundles) {
+      pm.addPass(synth::createExtractBundles());
+      pm.addPass(synth::createMapBundles());
     }
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;

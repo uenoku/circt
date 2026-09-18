@@ -96,6 +96,32 @@ and no canonicalization may forward through it before mapping.
 Extraction + joint matching land as one atomic unit: unverified
 extraction is untestable, so they are not split across commits.
 
+
+## v1 results (landed, opt-in `--extract-bundles`)
+
+- Passes: `synth-extract-bundles` + `synth-map-bundles` (in mapping
+  section when the flag is on; MapBundles runs standalone in tests).
+- Joint tables by fresh cone simulation at match time (no persistent cut
+  state — survives intervening passes; combinational-only domain:
+  `comb`, `hw.constant`, `synth.choice`, single-output instances).
+  Cheapest-area approval (`synth.liberty.cell` or `mapping_cost`, minus
+  `dont_use`); free erase fallback; flops/hierarchy/SRAM untouched.
+- Determinism: index-based + discovery-order canonicalization only.
+  Pointer-order sorts caused ASLR run-to-run variance (caught by A/B
+  md5); ChipTop A/B now bit-identical.
+- Measured (same binary, authoritative flattening counts): add32
+  494→411 (-17%, 47 ha_1, delay 2.26→2.40ns); fifo 9003→8988 (-15);
+  inc16 0 bundles (counter structures out of scope); ChipTop
+  2080890→2077933 (-2957, -0.14%, 9261 ha_1 flattened, flops exact
+  422417). Compile tax +5s on ChipTop. Extraction finds 14972 ChipTop
+  bundles (1 FA + 14971 HA); 5902 map, rest erased (negated phases etc).
+- Delay caveat: selection is area-only and load-blind; stays opt-in
+  until load-aware delay (task 8). ChipTop worst reported path moved
+  +3.22 MET to -22.73 on an async-crossing path with a 27ns single-stage
+  load pathology and no bundle cells on it (TechMapper reselection
+  variance); sync parity needs SDC clock groups + item 8.
+- Next: negated-phase pairs, FA coverage, MFFC economics.
+
 ## Open questions
 
 - Interaction with datapath compressor trees: extraction placement (after

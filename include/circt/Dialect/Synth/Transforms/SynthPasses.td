@@ -628,4 +628,51 @@ def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def ExtractBundles : Pass<"synth-extract-bundles", "mlir::ModuleOp"> {
+  let summary = "Group shared-support values for joint multi-output mapping";
+  let description = [{
+    Enumerates small (2-3 input) cuts over the optimized network, classifies
+    AND2/XOR2/MAJ3/XOR3 functions under input permutation, and groups cuts
+    sharing a leaf set. XOR3+MAJ3 pairs on a triple (full adders) and
+    XOR2+AND2 pairs on a pair (half adders) become `synth.create_bundle`
+    ops for the technology mapper to consume jointly into multi-output
+    cells. Roots already bundled are skipped. Purely additive: discrete
+    logic stays in place, so erasing a bundle is a complete fallback.
+  }];
+  let statistics = [
+    Statistic<"numBundles", "bundles",
+              "Number of create_bundle ops created">,
+    Statistic<"numFullAdders", "full-adders",
+              "Number of full-adder (XOR3+MAJ3) bundles">,
+    Statistic<"numHalfAdders", "half-adders",
+              "Number of half-adder (XOR2+AND2) bundles">
+  ];
+  let dependentDialects = ["hw::HWDialect",
+                             "synth::SynthDialect"];
+}
+
+def MapBundles : Pass<"synth-map-bundles", "mlir::ModuleOp"> {
+  let summary = "Map bundles to multi-output cells";
+  let description = [{
+    Consumes `synth.create_bundle` ops produced by extraction: re-derives
+    the joint function of each bundle over its shared support (via small
+    cut re-enumeration) and matches it against multi-output library cells
+    under input/output permutation (positive phases only; the discrete
+    phase-aware flow covers the rest). On a match the bundle becomes one
+    cell instance (cheapest area wins); otherwise it is erased and the
+    discrete logic maps as before. Nothing downstream ever observes a
+    bundle.
+  }];
+  let statistics = [
+    Statistic<"numCandidates", "candidates",
+              "Number of multi-output library cells considered">,
+    Statistic<"numMapped", "mapped",
+              "Number of bundles mapped to multi-output cells">,
+    Statistic<"numErased", "erased",
+              "Number of bundles erased without a cell match">
+  ];
+  let dependentDialects = ["hw::HWDialect",
+                             "synth::SynthDialect"];
+}
+
 #endif // CIRCT_DIALECT_SYNTH_TRANSFORMS_PASSES_TD

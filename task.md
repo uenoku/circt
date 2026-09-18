@@ -78,20 +78,32 @@
 
  Multi-output mapping (see docs/MultiOutputMapping.md)
 
- 17. emap-style FA/HA mapping — IN PROGRESS (pass-through bundle design,
-    supersedes full_adder/half_adder ops): `synth.create_bundle` op landed
-    (pure N-in/N-out grouping, verifier, roundtrip test). No function data
-    carried: joint functions derived by simulating producer cones at match
-    time; fallback is free erase. Extraction scoped: reuse CutEnumerator
-    (k=3) + cut truth tables + N-canonical AND2/XOR2/MAJ3/XOR3 IDs +
-    leaf-set hashing + bundle creation (opt-in, statistics double as
-    opportunity measurement). Joint matching + value-based rewrite remain
-    (one atomic unit with extraction). Measured tax: add32 15.4 cells/bit,
-    inc16 7.3 cells/bit vs ~1–2 FA ideal; fa/ha usage today zero.
+ 17. emap-style FA/HA mapping — DONE v1 (pass-through bundle design,
+    supersedes full_adder/half_adder ops): `synth.create_bundle` op +
+    `synth-extract-bundles` (CutEnumerator k=3, AND2/XOR2/MAJ3/XOR3 IDs,
+    leaf-set pairing, opt-in `--extract-bundles`) + `synth-map-bundles`
+    (fresh cone simulation for joint tables — no persistent cut state,
+    survives intervening passes; cheapest-area cell wins; free erase
+    fallback; flops/hierarchy/SRAM untouched). Determinism: index-based
+    + discovery-order canonicalization only (pointer sorts caused ASLR
+    run-to-run variance; verified bit-identical ChipTop A/B). Measured
+    (same binary, flattening counts): add32 494→411 (-17%, 47 ha_1,
+    delay 2.26→2.40ns +6% area/delay tradeoff of area-only selection);
+    fifo 9003→8988 (-15, 2 mapped); ChipTop 2080890→2077933 (-2957,
+    -0.14%, 9261 ha_1 flattened / 6320 textual, flops exact 422417).
+    Compile tax +5s on ChipTop (50s vs 45s). Delay caveat: selection is
+    area-only and load-blind; ChipTop worst reported path moved
+    +3.22 MET (out_arb, sync) to -22.73 on an async-crossing in_demux
+    path with a 27ns single-stage load pathology and zero ha cells on
+    it (TechMapper reselection variance, not bundle cells) — sync
+    parity needs SDC clock groups + item 8. Stays opt-in until item 8
+    (load-aware delay) lands. Remaining: negated-phase pairs (mostly
+    erased today: 9070/14972 on ChipTop), FA coverage (0-1 bundles),
+    MFFC economics.
 
  Suggested order (updated)
 
- Scoreboard/counting/dedup/tie/SDC done. Remaining implementation order:
- adder extraction+matching (17) → load-aware (8) → buffers (9)
+ Scoreboard/counting/dedup/tie/SDC/bundles done. Remaining implementation order:
+ load-aware (8) → buffers (9)
  → multi-RW (15), with Yosys/ORFS parity (3) and LEC revival (4) as
- background tracks. Items 6/7/10/11/12/16 closed; 14 needs PDK/ORFS time.
+ background tracks. Items 6/7/10/11/12/16/17 closed; 14 needs PDK/ORFS time.
