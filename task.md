@@ -174,10 +174,25 @@
 
  Suggested order (updated)
 
+ 18. Constraint-driven retry (landed v1: --lowering-strategy hook +
+    tmp/lowering_sweep.py with --arrival-target/--slack-target
+    constraint mode). Findings: lowering-policy axis is byte-identical
+    on fifo/add32 (2x2 matrix proves mapping-dominance; flag kept as
+    future structural-variant hook); mapper-effort axis is live
+    (fifo timing K=16: 9003->8355, -7% free area, delay neutral;
+    default K=6). Constraint loop auto-picks best-area-satisfying:
+    fifo <=35ns -> nota+map-area 5972/33.44; add32 <=2.1ns ->
+    sop+map-area 419/1.89. Area-strategy bonus finding: fifo
+    9003/36.80 -> 6071/33.46 (-33% area AND faster), add32 494/2.26
+    -> 434/2.04 (-12% AND faster) — timing lowering is pure loss here;
+    Yosys area gap recomputed vs area-strategy (1.76x, not 2.6x).
+    Powers-of-two depth budgets (AIG-depth-constrained balancing) scoped
+    as the follow-up effort axis.
+
  Implementation program complete. Scoreboard/counting/dedup/tie/SDC/
- bundles/load-aware/buffers done; 6/7/10/11/12/15/16/17 closed by
- measurement or implementation. Remaining tracks are external/
- background: Yosys/ORFS parity (3, ChipTop ORFS is hours), LEC
- revival (4, skipped per user), PDK SRAM compilation (14). Item 8
+ bundles/load-aware/buffers/retry done; 6/7/10/11/12/15/16/17 closed by
+ measurement or implementation; 18 landed v1. Remaining tracks are
+ external/background: Yosys/ORFS parity (3, ChipTop ORFS is hours),
+ LEC revival (4, skipped per user), PDK SRAM compilation (14). Item 8
  stays opt-in pending Stage-2/criticality; item 9 stays opt-in
  pending trees/sizing/more designs.

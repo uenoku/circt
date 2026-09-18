@@ -317,6 +317,19 @@ static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
                           "Optimize for timing")),
     cl::init(synth::OptimizationStrategyTiming), cl::cat(mainCategory));
 
+// Lowering policy (word-level -> bits structure) decoupled from mapping
+// selection policy: the two axes span very different structures
+// (area lowering is -33% on fifo with better delay), so retrying
+// lowering means varying this independently. Defaults to following
+// --synthesis-strategy (previous behavior) unless explicitly set.
+static cl::opt<synth::OptimizationStrategy> loweringStrategy(
+    "lowering-strategy", cl::desc("Datapath lowering policy to use"),
+    cl::values(clEnumValN(synth::OptimizationStrategyArea, "area",
+                          "Lower for area-lean structures"),
+               clEnumValN(synth::OptimizationStrategyTiming, "timing",
+                          "Lower for timing-lean structures")),
+    cl::init(synth::OptimizationStrategyTiming), cl::cat(mainCategory));
+
 static cl::opt<int>
     lowerToKLUTs("lower-to-k-lut",
                  cl::desc("Lower to generic a truth table op with K inputs"),
@@ -409,7 +422,10 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     circt::synth::CombLoweringPipelineOptions loweringOptions;
     loweringOptions.disableDatapath = disableDatapath;
     loweringOptions.timingAware = !disableTimingAware;
-    loweringOptions.synthesisStrategy = synthesisStrategy;
+    // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
+    loweringOptions.synthesisStrategy =
+        loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
+                                                 : synthesisStrategy;
     circt::synth::buildCombLoweringPipeline(pm, loweringOptions);
     if (untilReached(UntilCombLowering))
       return;
