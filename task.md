@@ -29,7 +29,10 @@
     so the gap is pre-map shape/restructuring (shared selects, phases,
     interleaved logic defeat 6-input collapse), not matching power —
     next direction is mux restructuring/SOP-balancing evaluation on
-    forests. Reference
+    forests: PROBED --enable-sop-balancing on fifo → 9705/+7.8% area,
+    37.08ns (mux4_2 336→1, drive-4 mux2s 0→454) — SOP balancing
+    anti-collapses (spreads into 2-input shapes); mux collapse needs
+    dedicated mux-tree restructuring, not SOP balancing. Reference
     nets/logs in /tmp/e2e/momap (yosys_*_fresh/fifo/add32/inc16).
     Buffered ours is now 9,256 / 4.45ns
     (better than Yosys/ABC on delay, 2.7x on area — the gap is closed
