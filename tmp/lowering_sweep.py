@@ -78,6 +78,10 @@ def main():
                     help="comma-separated subset of: " + ",".join(COMBOS))
     ap.add_argument("--synth-extra", default="",
                     help="extra flags prepended to every synth run")
+    ap.add_argument("--timeout", type=int, default=600,
+                    help="per-combo synth timeout in seconds "
+                         "(0 disables; exploration must always be "
+                         "time-bounded: small thresholds can hang)")
     ap.add_argument("--arrival-target", default="",
                     help="constraint mode: keep the min-area combo with "
                          "worst arrival_ns <= target (ns)")
@@ -99,10 +103,18 @@ def main():
             + flags
             + [args.mlir_in, "-o", mlir]
         )
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           cwd=CIRCT_ROOT)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               cwd=CIRCT_ROOT, timeout=args.timeout or None)
+        except subprocess.TimeoutExpired:
+            print(f"[{name}] synth TIMEOUT")
+            results.append({"combo": name, "flags": " ".join(flags),
+                            "error": "synth-timeout"})
+            continue
         if r.returncode != 0 or not os.path.exists(mlir):
             print(f"[{name}] synth FAILED")
+            results.append({"combo": name, "flags": " ".join(flags),
+                            "error": "synth-failed"})
             continue
         # --export-verilog emits to stdout (scoreboard convention).
         r = subprocess.run(
@@ -145,11 +157,11 @@ def main():
     if args.arrival_target:
         target = float(args.arrival_target)
         sat = [r for r in results
-               if r["arrival_ns"] is not None
+               if r.get("arrival_ns") is not None
                and r["arrival_ns"] <= target]
         if sat:
-            pick = min(sat, key=lambda r: (r["instances"] is None,
-                                           r["instances"]))
+            pick = min(sat, key=lambda r: (r.get("instances") is None,
+                                           r.get("instances") or 0))
             print(f"[constraint] arrival <= {target}ns:"
                   f" pick {pick['combo']} inst={pick['instances']}"
                   f" arrival={pick['arrival_ns']}")
@@ -159,10 +171,10 @@ def main():
     if args.slack_target:
         target = float(args.slack_target)
         sat = [r for r in results
-               if r["slack_ns"] is not None and r["slack_ns"] >= target]
+               if r.get("slack_ns") is not None and r["slack_ns"] >= target]
         if sat:
-            pick = min(sat, key=lambda r: (r["instances"] is None,
-                                           r["instances"]))
+            pick = min(sat, key=lambda r: (r.get("instances") is None,
+                                           r.get("instances") or 0))
             print(f"[constraint] slack >= {target}ns:"
                   f" pick {pick['combo']} inst={pick['instances']}"
                   f" slack={pick['slack_ns']}")

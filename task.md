@@ -205,7 +205,13 @@
     -> 434/2.04 (-12% AND faster) — timing lowering is pure loss here;
     Yosys area gap recomputed vs area-strategy (1.76x, not 2.6x).
     Powers-of-two depth budgets (AIG-depth-constrained balancing) scoped
-    as the follow-up effort axis.
+    as the follow-up effort axis. Mux-threshold powers-of-two probed on
+    fifo (--mux-balance-threshold, legacy-16-preserving default; latent
+    always-16 ternary documented): 1,2 hang (killed at 180s — small
+    thresholds blow up balancing, hence mandatory per-combo timeouts,
+    now in the sweep harness); 4-128 all 9003 (threshold never binds:
+    fifo muxes are shallow/wide, not deep chains — dead axis here).
+    Depth effort that matters is mapper-side (cut16) + constraint loop.
 
  Implementation program complete. Scoreboard/counting/dedup/tie/SDC/
  bundles/load-aware/buffers/retry done; 6/7/10/11/12/15/16/17 closed by
