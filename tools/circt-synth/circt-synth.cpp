@@ -45,6 +45,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
+#include "DatapathRetry.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
@@ -256,6 +257,27 @@ static cl::opt<bool> compressToAdd(
     cl::desc("Lower compressors to variadic adds for downstream "
              "optimization instead of Wallace trees (datapath "
              "structural variant)"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<int> datapathRetry(
+    "datapath-retry",
+    cl::desc("Retry datapath structural variants with STA judging, "
+             "keeping the best (0 disables). Variants run in subprocesses "
+             "under --retry-timeout; needs --liberty, --top and `sta` "
+             "on PATH"),
+    cl::init(0), cl::cat(mainCategory));
+static cl::opt<unsigned> retryTimeout(
+    "retry-timeout",
+    cl::desc("Per-candidate wall-clock timeout in seconds for "
+             "--datapath-retry (0 disables; exploration hangs without one)"),
+    cl::init(600), cl::cat(mainCategory));
+static cl::opt<double> retrySlackTarget(
+    "retry-slack-target",
+    cl::desc("Satisfying slack threshold in ns for --datapath-retry "
+             "(min area among satisfying wins)"),
+    cl::init(0.0), cl::cat(mainCategory));
+static cl::opt<bool> retryKeepTemps(
+    "retry-keep-temps",
+    cl::desc("Keep --datapath-retry candidate files for inspection"),
     cl::init(false), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
@@ -778,6 +800,37 @@ int main(int argc, char **argv) {
 
   // Parse the command-line options provided by the user.
   cl::ParseCommandLineOptions(argc, argv, "Logic synthesis tool\n\n");
+
+  // In-driver datapath retry: STA-judged structural variants.
+  if (datapathRetry > 0) {
+    if (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd) {
+      llvm::errs() << "circt-synth: --datapath-retry needs full runs "
+                      "(no --until-before/after)\n";
+      return EXIT_FAILURE;
+    }
+    synth::DatapathRetryConfig config;
+    config.maxVariants = datapathRetry;
+    config.slackTarget = retrySlackTarget;
+    config.timeoutSecs = retryTimeout;
+    config.keepTemps = retryKeepTemps;
+    config.selfPath = argv[0];
+    for (int i = 0; i < argc; ++i)
+      config.argv.push_back(argv[i]);
+    std::string liberty;
+    for (const auto &lib : libertyFiles) {
+      if (!liberty.empty())
+        liberty += ",";
+      liberty += lib;
+    }
+    config.liberty = liberty;
+    config.top = topName;
+    config.inputFile = inputFilename;
+    config.outputFile = outputFilename;
+    config.userSdcOutput = sdcOutput;
+    bool ok = synth::runDatapathRetry(config);
+    // Match the exit() discipline below (fast teardown).
+    exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
+  }
 
   // Set the bug report message to indicate users should file issues on
   // llvm/circt and not llvm/llvm-project.
