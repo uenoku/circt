@@ -172,6 +172,24 @@
     erased today: 9070/14972 on ChipTop), FA coverage (0-1 bundles),
     MFFC economics.
 
+ 19. Timing-guided synthesis v1 (LANDED: probe op + derive +
+    STA-feedback buffers; docs/TimingDrivenMapping.md):
+    `synth.timing_probe` (transparent required_time) + `synth-derive-
+    probes` (clock tracing via liberty pins/EICG; lifecycle
+    derive→buffer→erase) + buffer honoring (violator launches by
+    hierarchical names + endpoint probes with STA required times +
+    forward broadcast-distribution closure for sibling loads; clocks
+    never crossed). Scoreboard gained --violators-out (per-path
+    blocks with required/arrival). Measured: fifo probe-gated
+    9272/4.49ns (≈ blanket); fifo STA-sparse 9019/43.56ns (selectivity
+    loses 2.5x delay saving 1.6% area here — sibling dominance);
+    fifo iter2 9115/11.06 (reader fixed via endpoint cones, writer
+    persists: port buf overloaded 1.1pF/7.5ns — forest chunking gap);
+    ChipTop pressure-guided 3 bufs, delay identical (logic-depth
+    violators correctly untouched — tool envelope). Selectivity pays
+    on mixed designs; saturated broadcasts need blanket. Follow-ups:
+    required-driven mapping, SRAM/logic-rebroadcast distributions.
+
  Suggested order (updated)
 
  18. Constraint-driven retry (landed v1: --lowering-strategy hook +

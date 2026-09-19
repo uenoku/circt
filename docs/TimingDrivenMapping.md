@@ -55,6 +55,42 @@ Watch-outs: phase-flipped variants and supergates multiply the patterns
 whose arcs need sensitivities (all derivable the same way); wide
 AO/OA cells have the steepest load slopes, so ASAP7 gains most.
 
+## Timing-guided synthesis: probes + STA feedback (landed v1)
+
+Arrival-only estimates mislead (item 8 lesson); true criticality needs
+either required-time propagation (not built) or the real timer. v1 does
+both ends pragmatically:
+
+- `synth.timing_probe` op: transparent pass-through carrying
+  `required_time` (ps) at a dataflow point. Pure/opt-in scope marker.
+- `synth-derive-probes`: places probes on flop Ds whose clocks trace to
+  listed ports (`--probe-clocks`, `--probe-period-ns`), via liberty
+  clock-pin metadata (single-input cells + EICG gates; else conservative
+  skip). Lifecycle: derive → buffer consumes + erases; nothing
+  downstream observes one (bundle-style contract).
+- `synth-buffer-high-fanout` honors probes + STA violators
+  (`--sta-violators` = scoreboard `--violators-out` JSON with per-path
+  startpoint/endpoint/slack/arrival/required): violator launches (flop-Q
+  by hierarchical instance names — stable) union probe-cone launches
+  seed a forward broadcast-distribution closure (data-ops/ports,
+  terminating at gate pins; linear total work, deterministic) that
+  captures sibling loads fanin cones miss. STA endpoints additionally
+  get probes carrying the timer's own required times. Clock pins are
+  never crossed/collected; tie drivers skipped; per-bit port feeds for
+  buses.
+- Measured: fifo probe-gated 9272/4.49ns (≈ blanket 9256/4.45ns —
+  broadcast-saturated designs need blanket coverage); fifo STA-sparse
+  9019/43.56ns (worse than baseline! sibling-load dominance: sparse
+  misses load-bearing siblings — selectivity costs 2.5x delay here to
+  save 1.6% area); fifo iter2 9115/11.06 (loop converges reader then
+  writer side); ChipTop pressure-guided (@5ns violators are logic-depth
+  out_arb, not broadcasts) 3 bufs, delay identical (correctly minimal
+  action — defines the tool envelope: broadcasts fixable, logic depth
+  needs mapping). Selectivity pays on mixed designs, not saturated ones.
+- Follow-ups: required-time-driven mapping selection (the far goal;
+  probes are its future required-time source), SRAM-addr distributions,
+  logic-rebroadcast crossing, default-on decisions.
+
 ## 9. Buffer insertion — LANDED v1 (opt-in `--buffer-high-fanout`,
 default off; `--max-fanout`, default 32)
 

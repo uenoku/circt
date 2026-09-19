@@ -231,6 +231,37 @@ def ChoiceOp : SynthOp<"choice", [SameOperandsAndResultType, Pure]> {
   let assemblyFormat = "$inputs attr-dict `:` type($result)";
 }
 
+def TimingProbeOp : SynthOp<"timing_probe", [SameOperandsAndResultType, Pure]> {
+  let summary = "Assume a required time at a dataflow point";
+  let description = [{
+    The `synth.timing_probe` operation records a timing assumption at a
+    specific dataflow point: the operand value must be stable no later
+    than `required_time` picoseconds (max-delay requirement). It is a
+    pure pass-through: the result is defined to equal the operand.
+
+    Probes are placed by `synth-derive-probes` (from clock ports and a
+    period: every flop D gets `required_time` = period) or by hand, and
+    consumed by timing-guided passes (`synth-buffer-high-fanout`
+    buffers broadcast drivers feeding violated probes). The buffer pass
+    erases all probes when done; nothing downstream of it may observe
+    one (mirroring the `create_bundle` lifecycle). No canonicalization
+    may forward operands through a probe before its consumer runs.
+
+    Required times are optimistic by construction (input slews, flop
+    clock-to-Q and setup times are not modeled); OpenSTA remains ground
+    truth, probes are the in-flow action signal.
+
+    Example:
+    ```mlir
+      %d = synth.timing_probe %driver : i1 {required_time = 10000 : i64}
+    ```
+  }];
+  let arguments = (ins AnyType:$input, I64Attr:$required_time);
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$input `:` type($result) attr-dict";
+}
+
 def CreateBundleOp : SynthOp<"create_bundle", [Pure]> {
   let summary = "Group values for joint multi-output mapping";
   let description = [{

@@ -227,6 +227,25 @@ static cl::opt<int>
               cl::desc("Maximum per-copy fanout before buffer insertion splits "
                        "a net (with --buffer-high-fanout)"),
               cl::init(32), cl::cat(mainCategory));
+static cl::opt<std::string> probeClocks(
+    "probe-clocks",
+    cl::desc("Comma-separated top-level clock port names for timing "
+             "probe derivation (with --buffer-high-fanout); empty "
+             "derives nothing"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<std::string> staViolators(
+    "sta-violators",
+    cl::desc("STA violator paths file (JSON from sta_scoreboard "
+             "--violators-out) for timing-guided buffering: violator "
+             "launches buffered (fanout-gated) and violator endpoints "
+             "get probes (with --buffer-high-fanout)"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<int> muxBalanceThreshold(
+    "mux-balance-threshold",
+    cl::desc("Mux-chain depth above which to balance in lowering "
+             "(negative keeps legacy 16; powers of two sweep depth "
+             "effort)"),
+    cl::init(-1), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -422,6 +441,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     circt::synth::CombLoweringPipelineOptions loweringOptions;
     loweringOptions.disableDatapath = disableDatapath;
     loweringOptions.timingAware = !disableTimingAware;
+    loweringOptions.muxBalanceThreshold = muxBalanceThreshold;
     // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
     loweringOptions.synthesisStrategy =
         loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
@@ -508,10 +528,18 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     pm.addPass(synth::createTieCells());
     // Fanout-splitting buffers for broadcast nets (opt-in): needs plain
     // lib modules (auto-detected buffer cell + clock-pin metadata), so
-    // it also precedes stripping.
+    // it also precedes stripping. Timing probes are derived first when
+    // clock ports are listed (paired: probes never leak downstream).
     if (bufferHighFanout) {
+      if (!probeClocks.empty()) {
+        synth::DeriveProbesOptions probeOptions;
+        probeOptions.probeClocks = probeClocks;
+        probeOptions.probePeriodNs = sdcClockPeriod;
+        pm.addPass(synth::createDeriveProbes(probeOptions));
+      }
       synth::BufferHighFanoutOptions bufferOptions;
       bufferOptions.maxFanout = maxFanout;
+      bufferOptions.staViolators = staViolators;
       pm.addPass(synth::createBufferHighFanout(bufferOptions));
     }
     if (stripLibToExtern)

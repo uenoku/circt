@@ -43,6 +43,16 @@ struct CombLoweringPipelineOptions
           clEnumValN(OptimizationStrategyTiming, "timing",
                      "Optimize for timing")),
       llvm::cl::init(OptimizationStrategyTiming)};
+  // Mux-chain balance depth threshold. Negative (default) preserves the
+  // legacy behavior (16); explicit values sweep depth effort directly.
+  // NOTE: legacy code reads `OptimizationStrategyTiming ? 16 : 64`, which
+  // is always 16 (enum used as bool); -1 keeps that status quo so recorded
+  // measurements stay valid.
+  PassOptions::Option<int> muxBalanceThreshold{
+      *this, "mux-balance-threshold",
+      llvm::cl::desc("Mux-chain depth above which to balance "
+                      "(negative keeps legacy 16)"),
+      llvm::cl::init(-1)};
 };
 
 /// Options for the synth optimization pipeline.

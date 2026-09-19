@@ -70,6 +70,14 @@ LogicalResult ChoiceOp::verify() {
   return success();
 }
 
+LogicalResult TimingProbeOp::verify() {
+  if (getInput().getType() != getResult().getType())
+    return emitOpError("result type must match input type");
+  if (getRequiredTime() < 0)
+    return emitOpError("required_time must be non-negative");
+  return success();
+}
+
 LogicalResult CreateBundleOp::verify() {
   if (getNumOperands() < 1)
     return emitOpError("requires at least one operand");

@@ -105,23 +105,46 @@ def lib_time_scale_to_ns(lib):
 
 
 def parse_sta(log, time_scale=1.0):
-    """Extract worst slack/arrival and endpoints from report_checks."""
-    slacks = [
-        float(x) * time_scale
-        for x in re.findall(r"^\s*([-\d.]+)\s+slack", log, re.M)
-    ]
-    arrivals = [
-        float(x) * time_scale
-        for x in re.findall(r"^\s*([-\d.]+)\s+data arrival time", log, re.M)
-    ]
-    starts = re.findall(r"Startpoint:\s*(\S+)", log)
-    ends = re.findall(r"Endpoint:\s*(\S+)", log)
+    """Extract worst slack/arrival and endpoints from report_checks.
+
+    Paths are parsed per report block (split on Startpoint:) so
+    startpoint/endpoint/slack/arrival/required stay aligned even when
+    blocks are long. Required/arrival may be absent for unconstrained
+    reports (None then)."""
+    blocks = re.split(r"(?m)^Startpoint:", log)[1:]
+    paths = []
+    arrivals_all = []
+    for block in blocks:
+        m_start = re.match(r"\s*(\S+)", block)
+        m_end = re.search(r"Endpoint:\s*(\S+)", block)
+        m_slack = re.search(r"^\s*([-\d.]+)\s+slack", block, re.M)
+        m_arr = re.search(r"^\s*([-\d.]+)\s+data arrival time", block,
+                          re.M)
+        m_req = re.search(r"^\s*([-\d.]+)\s+data required time", block,
+                          re.M)
+        if not (m_start and m_end and m_slack):
+            continue
+        arrival = float(m_arr.group(1)) * time_scale if m_arr else None
+        if arrival is not None:
+            arrivals_all.append(arrival)
+        paths.append({
+            "startpoint": m_start.group(1),
+            "endpoint": m_end.group(1),
+            "slack_ns": float(m_slack.group(1)) * time_scale,
+            "arrival_ns": arrival,
+            "required_ns": (float(m_req.group(1)) * time_scale
+                              if m_req else None),
+        })
+    slacks = [p["slack_ns"] for p in paths]
+    starts = [p["startpoint"] for p in paths]
+    ends = [p["endpoint"] for p in paths]
     return {
         "worst_slack": min(slacks) if slacks else None,
-        "worst_arrival": max(arrivals) if arrivals else None,
+        "worst_arrival": max(arrivals_all) if arrivals_all else None,
         "num_paths": len(slacks),
         "startpoint": starts[0] if starts else None,
         "endpoint": ends[0] if ends else None,
+        "paths": paths,
     }
 
 
@@ -178,6 +201,10 @@ def main():
     ap.add_argument("--stubs", default="")
     ap.add_argument("--mlir", default="")
     ap.add_argument("--workdir", default="/tmp/e2e")
+    ap.add_argument("--violators-out", default="",
+                    help="Write all reported STA paths "
+                         "(startpoint/endpoint/slack_ns) as JSON for "
+                         "STA-guided feedback (e.g. buffer gating)")
     ap.add_argument("--skip-yosys", action="store_true")
     ap.add_argument("--yosys-log", default="")
     args = ap.parse_args()
@@ -207,6 +234,11 @@ def main():
     }
     if args.mlir:
         row["count"] = resource_counts(args.mlir, args.top)
+    if args.violators_out:
+        with open(args.violators_out, "w") as f:
+            json.dump(sta["paths"], f, indent=2)
+        print(f"[violators] {len(sta['paths'])} paths -> "
+              f"{args.violators_out}")
     print(json.dumps(row, indent=2))
     print("---- STA tail ----")
     print("\n".join(sta_log.splitlines()[-25:]))

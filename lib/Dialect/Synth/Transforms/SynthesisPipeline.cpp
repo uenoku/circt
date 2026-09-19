@@ -84,8 +84,12 @@ void circt::synth::buildCombLoweringPipeline(
   pm.addPass(createCSEPass());
   pm.addPass(createSimpleCanonicalizerPass());
   // Balance mux chains. For area oriented flow, we want to keep the mux chains
-  // unless they are very deep.
-  comb::BalanceMuxOptions balanceOptions{OptimizationStrategyTiming ? 16 : 64};
+  // unless they are very deep. An explicit --mux-balance-threshold overrides
+  // the legacy always-16 behavior (see CombLoweringPipelineOptions).
+  int muxThreshold = options.muxBalanceThreshold >= 0
+                         ? (int)options.muxBalanceThreshold
+                         : 16;
+  comb::BalanceMuxOptions balanceOptions{(unsigned)muxThreshold};
   pm.addPass(comb::createBalanceMux(balanceOptions));
 
   // Lower variadic ops before running full lowering to target IR.

@@ -27,6 +27,7 @@
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/SynthAttributes.h"
 #include "circt/Dialect/Synth/SynthOpInterfaces.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/IR/SymbolTable.h"
@@ -34,7 +35,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace circt {
@@ -85,6 +89,34 @@ struct BufferHighFanoutPass
       signalPassFailure();
       return;
     }
+    // Timing-guided mode: resolve STA violator launches to values.
+    // Only violator nets are buffered (still max-fanout-gated).
+    if (!staViolators.empty() && failed(resolveViolators(top))) {
+      signalPassFailure();
+      return;
+    }
+    // Probes anywhere also enable guided mode (set union with STA).
+    guidedMode = !staViolators.empty();
+    if (!guidedMode) {
+      for (auto module : top.getOps<hw::HWModuleOp>()) {
+        if (isLibModule(module))
+          continue;
+        bool found = false;
+        for (auto &block : module->getRegion(0)) {
+          for (auto &op : block)
+            if (isa<synth::TimingProbeOp>(op)) {
+              found = true;
+              break;
+            }
+          if (found)
+            break;
+        }
+        if (found) {
+          guidedMode = true;
+          break;
+        }
+      }
+    }
     auto buffer = findBufferCell(top);
     if (!buffer) {
       LLVM_DEBUG(llvm::dbgs() << "no identity buffer cell found\n");
@@ -94,6 +126,16 @@ struct BufferHighFanoutPass
                << "buffer cell: " << buffer->getModuleName() << "\n");
     buildChildren();
 
+    // Phase 1: collect probe launches GLOBALLY first, then expand to
+    // the forward broadcast distribution (sibling loads through
+    // data-ops and ports). Per-module collection would gate early
+    // modules by incomplete sets.
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (isLibModule(module))
+        continue;
+      collectProbeLaunches(module);
+    }
+    collectDistribution(top);
     bool changed = false;
     for (auto module : top.getOps<hw::HWModuleOp>()) {
       if (isLibModule(module))
@@ -108,6 +150,14 @@ struct BufferHighFanoutPass
   // so hierarchy queries touch only relevant instances.
   DenseMap<StringAttr, SmallVector<std::pair<hw::HWModuleOp, hw::InstanceOp>>>
       instancesByTarget;
+  // STA violator launch nets (timing-guided mode). Empty unless
+  // --sta-violators is set, in which case only these nets are buffered.
+  DenseSet<Value> violatorLaunches;
+  // Guided mode: STA file set, or probes derived anywhere. Only
+  // violator launches are actionable (legacy fanout-only otherwise).
+  bool guidedMode = false;
+  // Memoized stateful (flop/latch/clock-gate) target modules.
+  DenseMap<Operation *, char> statefulMemo;
   // Memoized per-copy downstream loads per (module, output-port index),
   // and whether that downstream reaches a clock pin.
   DenseMap<std::pair<Operation *, unsigned>, uint64_t> downMemo;
@@ -139,6 +189,253 @@ struct BufferHighFanoutPass
       else if (port.isOutput())
         outputs.push_back(port);
     }
+  }
+
+  // Parse --sta-violators (JSON list of {startpoint, endpoint,
+  // slack_ns}) and resolve each startpoint to a launch value.
+  LogicalResult resolveViolators(ModuleOp top) {
+    auto file = llvm::MemoryBuffer::getFile(staViolators);
+    if (!file) {
+      top->emitError("cannot read sta-violators file '") << staViolators << "'";
+      return failure();
+    }
+    auto json = llvm::json::parse(file.get()->getBuffer());
+    if (!json) {
+      top->emitError("cannot parse sta-violators file '")
+          << staViolators << "'";
+      return failure();
+    }
+    auto *list = json->getAsArray();
+    if (!list) {
+      top->emitError("sta-violators file must contain a JSON list");
+      return failure();
+    }
+    // Collect placements first (endpoint probes mutate operands).
+    SmallVector<std::pair<std::string, double>> endpointProbes;
+    for (const auto &entry : *list) {
+      auto *obj = entry.getAsObject();
+      if (!obj)
+        continue;
+      auto start = obj->getString("startpoint");
+      if (start) {
+        if (Value launch = resolveLaunch(top, *start)) {
+          violatorLaunches.insert(launch);
+          ++numViolatorsResolved;
+        } else {
+          ++numViolatorsUnresolved;
+        }
+      }
+      auto end = obj->getString("endpoint");
+      auto required = obj->getNumber("required_ns");
+      if (end && required)
+        endpointProbes.push_back({end->str(), *required});
+    }
+    // STA endpoint probes carry the timer's own required times: sparse,
+    // exact selectivity for cone membership (no in-flow modeling).
+    for (auto &[endpoint, requiredNs] : endpointProbes) {
+      if (placeEndpointProbe(top, endpoint, requiredNs))
+        ++numEndpointsProbed;
+      else
+        ++numEndpointsUnresolved;
+    }
+    return success();
+  }
+
+  // Resolve one STA startpoint (hierarchical instance path, or a
+  // top-level port name) to its launch value: the Q output of the
+  // launch flop, or the matching top-level input block argument.
+  // Returns null on any ambiguity or lookup failure (skip conservatively).
+  Value resolveLaunch(ModuleOp top, StringRef startpoint) {
+    SmallVector<StringRef> segments;
+    startpoint.split(segments, '/');
+    if (segments.empty())
+      return Value();
+    if (segments.size() == 1)
+      return resolvePortLaunch(top, segments[0]);
+    return resolveInstanceLaunch(top, segments);
+  }
+
+  // Single-segment startpoint: a top-level input port. Requires the
+  // port name to be unique across design modules.
+  Value resolvePortLaunch(ModuleOp top, StringRef portName) {
+    Value found;
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (isLibModule(module))
+        continue;
+      SmallVector<hw::PortInfo> inputs, outputs;
+      splitPorts(module, inputs, outputs);
+      for (unsigned i = 0; i < inputs.size(); ++i) {
+        if (inputs[i].name.getValue() == portName) {
+          if (found)
+            return Value(); // Ambiguous: skip.
+          found = module.getBodyBlock()->getArgument(i);
+        }
+      }
+    }
+    return found;
+  }
+
+  // Multi-segment startpoint: hierarchical instance path from a root
+  // design module down to a flop instance; yields its Q output.
+  // Final instance of a hierarchical instance path (null on any
+  // ambiguity or lookup failure).
+  hw::InstanceOp findInstance(ModuleOp top, ArrayRef<StringRef> segments) {
+    // Roots: design modules never instantiated by another design module.
+    DenseSet<Operation *> hasDesignParent;
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (isLibModule(module))
+        continue;
+      for (auto &block : module->getRegion(0))
+        for (auto &op : block)
+          if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
+            auto *target = top.lookupSymbol(inst.getModuleName());
+            auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+            if (targetModule && !isLibModule(targetModule))
+              hasDesignParent.insert(target);
+          }
+    }
+    SmallVector<hw::HWModuleOp> worklist;
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (!isLibModule(module) && !hasDesignParent.contains(module))
+        worklist.push_back(module);
+    }
+    // Descend one level per segment; duplicate instance names at any
+    // level are ambiguous: skip.
+    for (size_t level = 0; level < segments.size(); ++level) {
+      hw::InstanceOp match;
+      for (auto parent : worklist) {
+        for (auto &block : parent->getRegion(0))
+          for (auto &op : block) {
+            auto inst = dyn_cast<hw::InstanceOp>(op);
+            if (!inst || inst.getInstanceName() != segments[level])
+              continue;
+            if (match)
+              return hw::InstanceOp(); // Ambiguous: skip.
+            match = inst;
+          }
+      }
+      if (!match)
+        return hw::InstanceOp();
+      if (level + 1 == segments.size())
+        return match;
+      auto *target = top.lookupSymbol(match.getModuleName());
+      auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+      if (!targetModule || isLibModule(targetModule))
+        return hw::InstanceOp();
+      worklist.clear();
+      worklist.push_back(targetModule);
+    }
+    return hw::InstanceOp();
+  }
+
+  Value resolveInstanceLaunch(ModuleOp top, ArrayRef<StringRef> segments) {
+    hw::InstanceOp inst = findInstance(top, segments);
+    if (!inst)
+      return Value();
+    return flopQ(top, inst);
+  }
+
+  // Place a timing probe carrying STA required time on an endpoint flop
+  // D input. Returns false when the endpoint cannot be resolved.
+  bool placeEndpointProbe(ModuleOp top, StringRef endpoint, double requiredNs) {
+    SmallVector<StringRef> segments;
+    endpoint.split(segments, '/');
+    if (segments.empty())
+      return false;
+    hw::InstanceOp inst = findInstance(top, segments);
+    if (!inst)
+      return false;
+    auto *target = top.lookupSymbol(inst.getModuleName());
+    auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+    if (!targetModule)
+      return false;
+    SmallVector<hw::PortInfo> inputs, outputs;
+    splitPorts(targetModule, inputs, outputs);
+    int dataIdx = -1;
+    for (unsigned i = 0; i < inputs.size(); ++i)
+      if (inputs[i].name.getValue() == "D")
+        dataIdx = (int)i;
+    if (dataIdx < 0 || (unsigned)dataIdx >= inst.getNumOperands())
+      return false;
+    int64_t required = llround(requiredNs * 1000.0);
+    if (required <= 0)
+      return false;
+    OpBuilder builder(inst->getContext());
+    builder.setInsertionPoint(inst);
+    auto probe = synth::TimingProbeOp::create(
+        builder, inst.getLoc(), inst.getOperand((unsigned)dataIdx), required);
+    inst.setOperand((unsigned)dataIdx, probe.getResult());
+    return true;
+  }
+
+  // Q output of a flop instance (output port named "Q"); null when the
+  // instance has no such output (not a flop launch).
+  static Value flopQ(ModuleOp top, hw::InstanceOp inst) {
+    auto *target = top.lookupSymbol(inst.getModuleName());
+    auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+    if (!targetModule)
+      return Value();
+    SmallVector<hw::PortInfo> inputs, outputs;
+    splitPorts(targetModule, inputs, outputs);
+    for (unsigned i = 0; i < outputs.size(); ++i)
+      if (outputs[i].name.getValue() == "Q")
+        return i < inst.getNumResults() ? inst.getResult(i) : Value();
+    return Value();
+  }
+
+  // Data-closure of a net within one module: the net plus results of
+  // data-passthrough ops (extract/concat/array/comb) reachable from it.
+  // Deterministic (operand-order DFS).
+  static void dataClosure(hw::HWModuleOp module, Value root,
+                          DenseSet<Value> &closure) {
+    SmallVector<Value> worklist{root};
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      if (!closure.insert(current).second)
+        continue;
+      for (auto &use : current.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<hw::OutputOp>(user))
+          continue;
+        // Instances and stateful ops terminate the closure (their input
+        // pins are the loads); data ops are transparent.
+        if (isa<hw::InstanceOp>(user))
+          continue;
+        if (user->hasTrait<mlir::OpTrait::ConstantLike>())
+          continue;
+        if (isa<FFOp, LatchOp, ClockGateOp>(user))
+          continue;
+        for (auto result : user->getResults())
+          worklist.push_back(result);
+      }
+    }
+    (void)module;
+  }
+
+  // Instance-input pin loads on a net's data closure (same module).
+  static unsigned dataClosurePinLoads(hw::HWModuleOp module, Value net,
+                                      ArrayRef<hw::PortInfo> inputs) {
+    DenseSet<Value> closure;
+    dataClosure(module, net, closure);
+    unsigned count = 0;
+    for (Value member : closure) {
+      for (auto &use : member.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<hw::OutputOp>(user))
+          continue;
+        if (isa<hw::InstanceOp>(user))
+          ++count;
+      }
+    }
+    (void)inputs;
+    return count;
+  }
+
+  // Whether a terminator operand is in a net's data closure.
+  static bool closureDrives(hw::HWModuleOp module, Value net, Value operand) {
+    DenseSet<Value> closure;
+    dataClosure(module, net, closure);
+    return closure.contains(operand);
   }
 
   // Non-terminator uses of a net inside its module.
@@ -190,13 +487,18 @@ struct BufferHighFanoutPass
                   .first;
         }
         Value net = inst.getResult(outputIdx);
-        total += gateUses(net);
-        // The net may drive the parent's own output ports: recurse.
+        // Direct pin loads reachable through data operators
+        // (extract/concat/array/comb passthrough): same electrical net
+        // for load purposes. Gates/instances terminate (their input
+        // pins ARE the counted loads); parent ports recurse below.
+        total += dataClosurePinLoads(parent, net, cacheIt->second.first);
+        // The net (or its data-closure) may drive the parent's own
+        // output ports: recurse.
         if (auto outputOp = dyn_cast_or_null<hw::OutputOp>(
                 parent.getBodyBlock()->getTerminator())) {
           for (unsigned q = 0; q < outputOp->getNumOperands(); ++q) {
-            if (outputOp->getOperand(q) == net &&
-                q < cacheIt->second.second.size())
+            if (q < cacheIt->second.second.size() &&
+                closureDrives(parent, net, outputOp->getOperand(q)))
               total += downstreamLoads(parent, q);
           }
         }
@@ -318,10 +620,159 @@ struct BufferHighFanoutPass
     return loads;
   }
 
+  bool isStatefulTarget(Operation *target) {
+    auto memo = statefulMemo.find(target);
+    if (memo != statefulMemo.end())
+      return memo->second;
+    bool stateful = false;
+    if (auto mod = dyn_cast_or_null<hw::HWModuleOp>(target)) {
+      if (mod.getBodyBlock())
+        stateful = mod.getBodyBlock()
+                       ->walk([](Operation *op) {
+                         if (isa<FFOp, LatchOp, ClockGateOp>(op))
+                           return WalkResult::interrupt();
+                         return WalkResult::advance();
+                       })
+                       .wasInterrupted();
+    }
+    statefulMemo[target] = stateful;
+    return stateful;
+  }
+
+  // Every probe contributes its backward launch nets (flop Qs, top
+  // inputs: combinational-cone boundaries) to violatorLaunches. The
+  // visited set is global (linear total work); ordering is operand-order
+  // DFS. Walk whitelist (safe default): data-transparent ops are crossed;
+  // clocks (conservative pins), constants, and anything unlisted stop
+  // the walk (under-collection only ever skips buffer candidates, never
+  // breaks clocks or logic).
+  DenseSet<Value> coneVisited;
+  void collectProbeLaunches(hw::HWModuleOp module) {
+    for (auto &block : module->getRegion(0))
+      for (auto &op : block) {
+        auto probe = dyn_cast<synth::TimingProbeOp>(op);
+        if (!probe)
+          continue;
+        SmallVector<Value> worklist{probe.getInput()};
+        while (!worklist.empty()) {
+          Value current = worklist.pop_back_val();
+          if (!coneVisited.insert(current).second)
+            continue;
+          Operation *defOp = current.getDefiningOp();
+          if (!defOp) {
+            violatorLaunches.insert(current); // Block arg / PI.
+            continue;
+          }
+          if (isa<hw::ConstantOp>(defOp))
+            continue;
+          if (auto inner = dyn_cast<synth::TimingProbeOp>(defOp)) {
+            worklist.push_back(inner.getInput());
+            continue;
+          }
+          // Sequential boundary (instances and bare ops): launch,
+          // never crossed.
+          if (isa<FFOp, LatchOp, ClockGateOp>(defOp)) {
+            violatorLaunches.insert(current);
+            continue;
+          }
+          if (auto inst = dyn_cast<hw::InstanceOp>(defOp)) {
+            auto *target = getOperation().lookupSymbol(inst.getModuleName());
+            if (isStatefulTarget(target)) {
+              violatorLaunches.insert(current);
+              continue;
+            }
+            for (auto &operand : inst->getOpOperands()) {
+              if (isClockPinUse(inst.getOperation(), &operand))
+                continue;
+              worklist.push_back(operand.get());
+            }
+            continue;
+          }
+          if (isa<BooleanLogicOpInterface>(defOp) ||
+              isa<comb::MuxOp, comb::ExtractOp, comb::ConcatOp, hw::ArrayGetOp,
+                  hw::ArrayCreateOp, hw::ArrayConcatOp, hw::ArraySliceOp>(
+                  defOp)) {
+            for (auto operand : defOp->getOperands())
+              worklist.push_back(operand);
+            continue;
+          }
+          // Unlisted (comb-arith, truth tables, unknown, memory ports):
+          // stop (safe under-collection).
+        }
+      }
+  }
+
+  // Forward broadcast-distribution closure from the launch union:
+  // data operators (extract/concat/array) and hierarchy ports, stopping
+  // at gate pins (counted as loads elsewhere, not crossed), flop inputs
+  // (sequential boundary), and clocks. Captures sibling loads sharing a
+  // launch driver through parallel branches (fanin cones miss these:
+  // the actual broadcast disease). Seeds in file order; membership is a
+  // reachability fixpoint hence deterministic. Global visited (linear).
+  void collectDistribution(ModuleOp top) {
+    SmallVector<Value> worklist;
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (isLibModule(module))
+        continue;
+      for (auto &block : module->getRegion(0)) {
+        for (auto arg : block.getArguments())
+          if (violatorLaunches.contains(arg))
+            worklist.push_back(arg);
+        for (auto &op : block)
+          for (auto result : op.getResults())
+            if (violatorLaunches.contains(result))
+              worklist.push_back(result);
+      }
+    }
+    // Owner module per value for port crossing (recomputed lazily).
+    DenseSet<Value> seen;
+    while (!worklist.empty()) {
+      Value current = worklist.pop_back_val();
+      if (!seen.insert(current).second)
+        continue;
+      violatorLaunches.insert(current);
+      for (auto &use : current.getUses()) {
+        Operation *user = use.getOwner();
+        if (auto outOp = dyn_cast<hw::OutputOp>(user)) {
+          // Through the port: parent instances' corresponding nets.
+          unsigned portIdx = use.getOperandNumber();
+          auto owner = dyn_cast<hw::HWModuleOp>(outOp->getParentOp());
+          if (!owner)
+            continue;
+          auto instIt = instancesByTarget.find(owner.getModuleNameAttr());
+          if (instIt == instancesByTarget.end())
+            continue;
+          for (auto &entry : instIt->second) {
+            hw::InstanceOp inst = entry.second;
+            if (portIdx >= inst.getNumResults())
+              continue;
+            worklist.push_back(inst.getResult(portIdx));
+          }
+          continue;
+        }
+        if (isa<hw::InstanceOp>(user))
+          continue; // Gate pin: load, not crossed.
+        if (user->hasTrait<mlir::OpTrait::ConstantLike>())
+          continue;
+        if (isa<FFOp, LatchOp, ClockGateOp>(user))
+          continue; // Sequential: never crossed.
+        if (isa<comb::ExtractOp, comb::ConcatOp, hw::ArrayGetOp,
+                hw::ArrayCreateOp, hw::ArrayConcatOp, hw::ArraySliceOp>(user)) {
+          for (auto result : user->getResults())
+            worklist.push_back(result);
+          continue;
+        }
+        // Comb gates and anything else: terminate (their input pins
+        // are the counted loads; outputs are different nets).
+      }
+    }
+  }
+
   // Output-port indices driven by a value (terminator operands).
   SmallVector<unsigned> drivenPorts(hw::HWModuleOp module, Value value) {
     SmallVector<unsigned> ports;
-    auto *terminator = module.getBodyBlock()->getTerminator();
+    auto *body = module.getBodyBlock();
+    auto *terminator = body ? body->getTerminator() : nullptr;
     if (!terminator)
       return ports;
     for (unsigned i = 0; i < terminator->getNumOperands(); ++i)
@@ -340,11 +791,20 @@ struct BufferHighFanoutPass
         for (auto result : op.getResults())
           values.push_back(result);
     }
+    // Probe launches were collected globally in phase 1 (see
+    // runOnOperation); gating below uses the complete set.
     bool changed = false;
     OpBuilder builder(module.getContext());
     for (Value value : values) {
-      if (!value.getType().isInteger(1))
-        continue;
+      // Local chunking handles 1-bit nets (buffers are 1-bit cells).
+      // Port feeds below handle any integer width bit-wise.
+      bool isI1 = value.getType().isInteger(1);
+      bool isInt = value.getType().isInteger();
+      // Timing-guided mode gates LOCAL chunking by violator launches.
+      // Port feeds (below) are always evaluated: ports are rare,
+      // high-leverage hierarchy boundaries, and ungated ports keep
+      // through-hierarchy broadcasts (concat-mediated drivers) covered.
+      bool launchGated = guidedMode && !violatorLaunches.contains(value);
       if (auto *defOp = value.getDefiningOp()) {
         if (defOp->hasTrait<mlir::OpTrait::ConstantLike>())
           continue;
@@ -352,12 +812,16 @@ struct BufferHighFanoutPass
           if (inst.getNumOperands() == 0)
             continue; // Tie-cell (constant) drivers need no buffers.
       }
-      LocalLoads loads = collectLoads(value);
-      if (loads.hasUnknownTarget)
-        continue;
-      // Chunk local data loads behind one buffer each.
+      LocalLoads loads;
+      if (isI1) {
+        loads = collectLoads(value);
+        if (loads.hasUnknownTarget)
+          continue;
+      }
+      // Chunk local data loads behind one buffer each (1-bit nets;
+      // launch-gated in guided mode).
       size_t chunk = (size_t)std::max<int64_t>(maxFanout, 1);
-      if (loads.dataLoads.size() > chunk) {
+      if (isI1 && !launchGated && loads.dataLoads.size() > chunk) {
         if (auto *defOp = value.getDefiningOp())
           builder.setInsertionPointAfter(defOp);
         else
@@ -374,20 +838,62 @@ struct BufferHighFanoutPass
         ++numNetsBuffered;
         changed = true;
       }
-      // One buffer between driver and heavily loaded output ports.
+      // Buffers between driver and heavily loaded output ports (any
+      // integer width, bit-wise). Port drivers join the actionable set
+      // through the broadcast distribution; ungated only in legacy mode.
+      if (guidedMode && !violatorLaunches.contains(value))
+        continue;
+      if (!isInt)
+        continue;
       for (unsigned portIdx : drivenPorts(module, value)) {
-        if (downstreamLoads(module, portIdx) <= (uint64_t)maxFanout)
+        uint64_t down = downstreamLoads(module, portIdx);
+        bool clk = downstreamClock(module, portIdx);
+        if (down <= (uint64_t)maxFanout)
           continue;
-        if (downstreamClock(module, portIdx))
+        if (clk)
           continue;
         auto *terminator = module.getBodyBlock()->getTerminator();
         builder.setInsertionPoint(terminator);
-        SmallVector<Value> bufInputs{value};
-        auto buf = hw::InstanceOp::create(builder, value.getLoc(), bufferCell,
-                                          "buffered", bufInputs);
-        ++numBuffersInserted;
-        terminator->setOperand(portIdx, buf.getResult(0));
+        unsigned width = value.getType().getIntOrFloatBitWidth();
+        if (width == 1) {
+          SmallVector<Value> bufInputs{value};
+          auto buf = hw::InstanceOp::create(builder, value.getLoc(), bufferCell,
+                                            "buffered", bufInputs);
+          ++numBuffersInserted;
+          terminator->setOperand(portIdx, buf.getResult(0));
+        } else {
+          // Per-bit buffers recombined through a concat (deterministic
+          // bit order).
+          SmallVector<Value> bits;
+          bits.reserve(width);
+          for (unsigned b = 0; b < width; ++b) {
+            auto bit =
+                comb::ExtractOp::create(builder, value.getLoc(), value, b, 1);
+            SmallVector<Value> bufInputs{bit};
+            auto buf = hw::InstanceOp::create(
+                builder, value.getLoc(), bufferCell, "buffered", bufInputs);
+            ++numBuffersInserted;
+            bits.push_back(buf.getResult(0));
+          }
+          auto concat =
+              comb::ConcatOp::create(builder, value.getLoc(), ValueRange(bits));
+          terminator->setOperand(portIdx, concat.getResult());
+        }
         ++numNetsBuffered;
+        changed = true;
+      }
+    }
+    // Probes are consumed here: rewire to the raw value and erase so
+    // nothing downstream (strip/export) ever observes one.
+    for (auto &block : module->getRegion(0)) {
+      SmallVector<synth::TimingProbeOp> probes;
+      for (auto &op : block)
+        if (auto probe = dyn_cast<synth::TimingProbeOp>(op))
+          probes.push_back(probe);
+      for (auto probe : probes) {
+        probe.getResult().replaceAllUsesWith(probe.getInput());
+        probe->erase();
+        ++numProbesErased;
         changed = true;
       }
     }

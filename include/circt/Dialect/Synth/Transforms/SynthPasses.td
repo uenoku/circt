@@ -593,6 +593,32 @@ def TieCells : Pass<"synth-tie-cells", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def DeriveProbes : Pass<"synth-derive-probes", "mlir::ModuleOp"> {
+  let summary = "Derive timing probes from clock ports and a period";
+  let description = [{
+    Places one `synth.timing_probe` on every flop D input whose clock is
+    traced to a listed clock port, with `required_time` = period. Clock
+    tracing follows nets upward through single-input cells and EICG
+    clock gates (liberty clock-pin metadata); other clocking
+    (multi-input gating, generated clocks) conservatively yields no
+    probes. Empty clock list (default) is a no-op. Probes are consumed
+    (and erased) by `synth-buffer-high-fanout`; nothing downstream of
+    it may observe one. Single synchronous domain is assumed; required
+    times are optimistic (no slew, clock-to-Q, or setup modeling).
+  }];
+  let options = [
+    Option<"probeClocks", "probe-clocks", "std::string", "\"\"",
+           "Comma-separated top-level clock port names to trace">,
+    Option<"probePeriodNs", "probe-period-ns", "double", "10.0",
+           "Clock period in nanoseconds for derived required times">
+  ];
+  let statistics = [
+    Statistic<"numProbesDerived", "probes-derived",
+              "Number of timing probes placed on flop inputs">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 def BufferHighFanout : Pass<"synth-buffer-high-fanout", "mlir::ModuleOp"> {
   let summary = "Buffer high-fanout nets with fanout-splitting buffers";
   let description = [{
@@ -609,13 +635,27 @@ def BufferHighFanout : Pass<"synth-buffer-high-fanout", "mlir::ModuleOp"> {
   }];
   let options = [
     Option<"maxFanout", "max-fanout", "int", "32",
-           "Maximum per-copy fanout before buffer insertion splits a net">
+           "Maximum per-copy fanout before buffer insertion splits a net">,
+    Option<"staViolators", "sta-violators", "std::string", "",
+           "STA violator paths file (JSON list of startpoint/endpoint/"
+           "slack_ns from sta_scoreboard --violators-out); when set, only "
+           "violator launch nets are buffered (timing-guided mode)">
   ];
   let statistics = [
     Statistic<"numBuffersInserted", "buffers-inserted",
               "Number of buffer instances inserted">,
     Statistic<"numNetsBuffered", "nets-buffered",
-              "Number of nets split behind buffers">
+              "Number of nets split behind buffers">,
+    Statistic<"numViolatorsResolved", "violators-resolved",
+              "Number of STA violator launches resolved to nets">,
+    Statistic<"numViolatorsUnresolved", "violators-unresolved",
+              "Number of STA violator launches that could not be resolved">,
+    Statistic<"numEndpointsProbed", "endpoints-probed",
+              "Number of STA endpoints given timing probes">,
+    Statistic<"numEndpointsUnresolved", "endpoints-unresolved",
+              "Number of STA endpoints that could not be resolved">,
+    Statistic<"numProbesErased", "probes-erased",
+              "Number of timing probes consumed and erased">
   ];
   let dependentDialects = ["hw::HWDialect"];
 }
