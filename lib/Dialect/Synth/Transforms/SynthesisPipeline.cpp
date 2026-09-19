@@ -62,13 +62,17 @@ void circt::synth::buildCombLoweringPipeline(
         pm.addPass(datapath::createDatapathReduceDelay());
       circt::ConvertDatapathToCombOptions datapathOptions;
       datapathOptions.timingAware = options.timingAware;
+      datapathOptions.forceBooth = options.forceBooth;
+      datapathOptions.lowerCompressToAdd = false;
       datapathOptions.lowerCompress = false;
       // Incrementally lower - first lower partial product operations
       pm.addPass(createConvertDatapathToComb(datapathOptions));
       pm.addPass(createSimpleCanonicalizerPass());
-      datapathOptions.lowerCompress = true;
       // Then lower compress operations after canononicalization to reduce the
-      // number of compress operations.
+      // number of compress operations: either to variadic adds (structural
+      // variant for downstream optimization) or to Wallace trees, never both.
+      datapathOptions.lowerCompressToAdd = options.compressToAdd;
+      datapathOptions.lowerCompress = !options.compressToAdd;
       pm.addPass(createConvertDatapathToComb(datapathOptions));
     }
     pm.addPass(createCSEPass());

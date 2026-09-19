@@ -53,6 +53,16 @@ struct CombLoweringPipelineOptions
       llvm::cl::desc("Mux-chain depth above which to balance "
                       "(negative keeps legacy 16)"),
       llvm::cl::init(-1)};
+  // Datapath structural variants (multiplier lowering freedom).
+  PassOptions::Option<bool> forceBooth{
+      *this, "force-booth",
+      llvm::cl::desc("Lower all partial products to Booth arrays"),
+      llvm::cl::init(false)};
+  PassOptions::Option<bool> compressToAdd{
+      *this, "compress-to-add",
+      llvm::cl::desc("Lower compressors to variadic adds for downstream "
+                      "optimization (instead of Wallace trees)"),
+      llvm::cl::init(false)};
 };
 
 /// Options for the synth optimization pipeline.

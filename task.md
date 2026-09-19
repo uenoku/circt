@@ -212,6 +212,16 @@
     now in the sweep harness); 4-128 all 9003 (threshold never binds:
     fifo muxes are shallow/wide, not deep chains — dead axis here).
     Depth effort that matters is mapper-side (cut16) + constraint loop.
+    Datapath structural variants (flags --force-booth +
+    --compress-to-add, either/or compressor lowering): mul16
+    (16x16->32) base 1504/4.87ns, booth 1459/6.72, c2a 2259/8.01
+    (flat adds need downstream compression — ABC combo follow-up),
+    booth+c2a 1866/9.17; mulsq (16x16->16, true And-vs-Booth, no
+    auto-Booth): base 642/3.91, booth 604/5.62 (-6% area, +44% delay:
+    encoder overhead dominates small widths; Booth wins only wider).
+    Deterministic (base-identical A/B). Retry loop (--datapath-retry
+    in-driver, STA-judged, timeouts) scoped next: these flags are
+    its variant axes.
 
  Implementation program complete. Scoreboard/counting/dedup/tie/SDC/
  bundles/load-aware/buffers/retry done; 6/7/10/11/12/15/16/17 closed by

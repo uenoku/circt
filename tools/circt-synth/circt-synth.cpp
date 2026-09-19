@@ -246,6 +246,17 @@ static cl::opt<int> muxBalanceThreshold(
              "(negative keeps legacy 16; powers of two sweep depth "
              "effort)"),
     cl::init(-1), cl::cat(mainCategory));
+static cl::opt<bool> forceBooth(
+    "force-booth",
+    cl::desc("Lower all multiplier partial products to Booth arrays "
+             "(datapath structural variant)"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> compressToAdd(
+    "compress-to-add",
+    cl::desc("Lower compressors to variadic adds for downstream "
+             "optimization instead of Wallace trees (datapath "
+             "structural variant)"),
+    cl::init(false), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -442,6 +453,8 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     loweringOptions.disableDatapath = disableDatapath;
     loweringOptions.timingAware = !disableTimingAware;
     loweringOptions.muxBalanceThreshold = muxBalanceThreshold;
+    loweringOptions.forceBooth = forceBooth;
+    loweringOptions.compressToAdd = compressToAdd;
     // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
     loweringOptions.synthesisStrategy =
         loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
