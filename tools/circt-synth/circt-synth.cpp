@@ -11,6 +11,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "DatapathRetry.h"
 #include "circt/Conversion/ImportAIGER.h"
 #include "circt/Conversion/ImportLiberty.h"
 #include "circt/Conversion/SynthToComb.h"
@@ -45,7 +46,6 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
-#include "DatapathRetry.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
@@ -291,6 +291,11 @@ static cl::opt<bool>
 static cl::opt<bool> enableSOPBalancing("enable-sop-balancing",
                                         cl::desc("Enable SOP balancing"),
                                         cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> restructureMuxTrees(
+    "restructure-mux-trees",
+    cl::desc("Rephase shared-select mux trees into collapsible 4:1 cones "
+             "before technology mapping (opt-in)"),
+    cl::init(false), cl::cat(mainCategory));
 static cl::opt<bool> enableFunctionalReduction(
     "enable-functional-reduction",
     cl::desc("Enable FunctionalReduction during synth optimization"),
@@ -546,6 +551,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       pm.addPass(synth::createExtractBundles());
       pm.addPass(synth::createMapBundles());
     }
+    // Mux-tree rephasing (opt-in): normalize alternating AIG phases so
+    // 4:1 cones present clean mux4 tables to TechMapper (see
+    // RestructureMuxTrees pass description). Runs last before mapping.
+    if (restructureMuxTrees)
+      pm.addPass(synth::createRestructureMuxTrees());
     synth::TechMapperOptions options;
     options.maxCutsPerRoot = maxCutSizePerRoot;
     options.maxEntriesPerKey = maxEntriesPerKey;

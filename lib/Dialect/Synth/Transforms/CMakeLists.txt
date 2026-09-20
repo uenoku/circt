@@ -26,6 +26,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   BufferHighFanout.cpp
   ExtractBundles.cpp
   MapBundles.cpp
+  RestructureMuxTrees.cpp
   SeqMemMapper.cpp
   StripLibToExtern.cpp
   SeqTechMapper.cpp

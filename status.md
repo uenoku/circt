@@ -1,5 +1,12 @@
 # circt-synth synthesis-flow status
 
+> **Update (2026-09-19):** This handoff captures the state from 2026-09-14.
+> The current branch is `dev/hidetou/openroad-2`; subsequent timing-driven
+> work and the live remaining tracks are recorded in [task.md](task.md).
+> In particular, SDC emission (listed as open below) has since been
+> implemented and measured. Treat the open-problem list below as historical
+> where it conflicts with `task.md`.
+
 ## Goal
 Make `circt-synth` reproduce the target synthesis flow in
 `circt-sfc-experiments/OpenROAD-flow-scripts/flow`:
@@ -7,7 +14,7 @@ a liberty-mapped netlist plus SDC, for the
 `fifo`, `Rocket`, `ChipTop`/`SmallBoomV4Config` examples, on sky130hd
 and ASAP7.
 
-## Branch / commits (branch: `dev/hidetou/openroad`)
+## Branch / commits at original handoff (branch: `dev/hidetou/openroad`)
 - `3272e2df96` — this file (handoff doc)
 - `25597653a8` — llhd-lower-sync-processes (conditional-drive sync processes)
 - `fed3cbaffe`, `05ff4c76d9` — strip-assert-like, liberty integration (prior)

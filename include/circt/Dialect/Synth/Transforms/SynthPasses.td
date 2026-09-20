@@ -593,6 +593,35 @@ def TieCells : Pass<"synth-tie-cells", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def RestructureMuxTrees : Pass<"synth-restructure-mux-trees", "mlir::ModuleOp"> {
+  let summary = "Rephase shared-select mux trees into collapsible 4:1 cones";
+  let description = [{
+    AIG lowering absorbs each mux's output inverter into its consumer, so
+    mux trees (e.g. memory read decoders) arrive at technology mapping
+    with alternating phases: odd-level 4:1 cones present inverted mux4
+    truth tables that cost an extra discrete inverter, while even-level
+    cones are clean. The mapper then fuses only the clean levels
+    (shifted pairing), leaving the widest level unpacked. This pass pushes
+    inversions down through single-use `synth.aig.and_inv` mux triples
+    (output-NAND over two branch ANDs sharing an oppositely-driven
+    select): a triple whose data arms are both consumed inverted is
+    rewritten to consume them positively, toggling its consumer edges so
+    every consumer observes identical values. Inversions concentrate at
+    cone boundaries (module-output inverters absorb the top), leaving
+    interior 4:1 cones clean for TechMapper to collapse bottom-up.
+    Each rewrite is an exact local equivalence; pre-map node count is
+    unchanged (edge polarities only). Library, supergate-candidate, and
+    stateful modules are never touched.
+  }];
+  let statistics = [
+    Statistic<"numMuxTriples", "mux-triples",
+              "Number of mux triples detected">,
+    Statistic<"numRephased", "rephased",
+              "Number of mux triples rephased to clean polarity">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 def DeriveProbes : Pass<"synth-derive-probes", "mlir::ModuleOp"> {
   let summary = "Derive timing probes from clock ports and a period";
   let description = [{

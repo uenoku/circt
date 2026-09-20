@@ -32,11 +32,15 @@
     forests: PROBED --enable-sop-balancing on fifo → 9705/+7.8% area,
     37.08ns (mux4_2 336→1, drive-4 mux2s 0→454) — SOP balancing
     anti-collapses (spreads into 2-input shapes); mux collapse needs
-    dedicated mux-tree restructuring, not SOP balancing. Scoped next
-    direction (not started): a pre-map mux-restructuring pass that
-    reassociates shared-select mux trees into collapsible 4:1 cones
-    (phase-normalized selects via existing negation machinery,
-    forest-local, STA-judged on fifo decoder; ~4x mux-count prize).
+    dedicated mux-tree restructuring, not SOP balancing. A pre-map
+    rephasing prototype is now wired as opt-in `--restructure-mux-trees`.
+    First fresh sky130 fifo A/B (10ns SDC, same input and mapper settings):
+    baseline 9003 instances / 36.802ns / -26.888ns slack versus rephased
+    8647 / 24.837ns / -15.022ns (2081 flops unchanged). Mux4_2 rises
+    336→512 (+176), mux2i_1 falls 2232→1208 (-1024), and mux2i_4 rises
+    25→520 (+495); total mapped instances fall 4.0%. The pass builds, but
+    this is an initial measurement only; it remains opt-in pending broader
+    correctness and determinism coverage.
     Reference
     nets/logs in /tmp/e2e/momap (yosys_*_fresh/fifo/add32/inc16).
     Buffered ours is now 9,256 / 4.45ns
@@ -204,6 +208,12 @@
     9003/36.80 -> 6071/33.46 (-33% area AND faster), add32 494/2.26
     -> 434/2.04 (-12% AND faster) — timing lowering is pure loss here;
     Yosys area gap recomputed vs area-strategy (1.76x, not 2.6x).
+    In-driver retry measured on clocked fifo (sky130, 10ns period,
+    0ns slack target): no candidate met target, so best-slack fallback
+    selected timing-unaware at 8547 instances / 35.42ns / -25.66ns slack
+    vs baseline 9003 / 36.80ns / -26.89ns. Booth/compress-to-add variants
+    and no-datapath were baseline-identical; winner MLIR and clocked SDC
+    were emitted.
     Powers-of-two depth budgets (AIG-depth-constrained balancing) scoped
     as the follow-up effort axis. Mux-threshold powers-of-two probed on
     fifo (--mux-balance-threshold, legacy-16-preserving default; latent
@@ -219,11 +229,18 @@
     booth+c2a 1866/9.17; mulsq (16x16->16, true And-vs-Booth, no
     auto-Booth): base 642/3.91, booth 604/5.62 (-6% area, +44% delay:
     encoder overhead dominates small widths; Booth wins only wider).
-    Deterministic (base-identical A/B). Retry loop (--datapath-retry
-    in-driver, STA-judged, timeouts) scoped next: these flags are
-    its variant axes.
+    Deterministic (base-identical A/B). In-driver retry (`--datapath-retry`)
+    measured on the same sky130 mul16 and reproduced the earlier four-way
+    matrix: baseline 1504/4.87ns, Booth 1459/6.72, compress-to-add
+    2259/8.01, Booth+compress-to-add 1866/9.17; timing-unaware was
+    1551/5.49 and no-datapath 1504/4.87. Baseline wins; clockless STA
+    falls back to minimum arrival. `--sdc-output` emitted the winner's SDC
+    alongside its MLIR. A 4-bit multiplier probe chose compress-to-add at
+    24 instances / 0.90ns vs baseline 24 / 1.13ns.
 
- Implementation program complete. Scoreboard/counting/dedup/tie/SDC/
+ Implementation program complete. The mux-tree rephasing prototype is
+ opt-in and has a positive first fifo measurement; broader correctness and
+ determinism coverage remain open. Scoreboard/counting/dedup/tie/SDC/
  bundles/load-aware/buffers/retry done; 6/7/10/11/12/15/16/17 closed by
  measurement or implementation; 18 landed v1. Remaining tracks are
  external/background: Yosys/ORFS parity (3, ChipTop ORFS is hours),
