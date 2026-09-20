@@ -57,6 +57,10 @@ AO/OA cells have the steepest load slopes, so ASAP7 gains most.
 
 ## Timing-guided synthesis: probes + STA feedback (landed v1)
 
+The proposed use of these probes for pre-map arithmetic optimization and a
+bounded STA feedback loop is described in
+[Timing-probe-driven datapath refinement](TimingProbeDatapathRefinement.md).
+
 Arrival-only estimates mislead (item 8 lesson); true criticality needs
 either required-time propagation (not built) or the real timer. v1 does
 both ends pragmatically:
