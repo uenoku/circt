@@ -1607,6 +1607,17 @@ variants) to 7 MAJs. Two structures defeat it in context:
   `add(a,b,c)` with 7 MAJ at 70 cells; Yosys strength-reduces `a+a` to
 a shift (free wiring) and maps it in 27 cells / 2.78 area. The
   `add(r0,r0,c)` cone in muladd8 hits exactly this case.
+- Supergates (`--gen-supergates`) are NOT the missing piece for MAJ:
+  fixed a crash blocking evaluation (outcompeted winners erased while
+  still instantiated as inner cells by newer candidates; now retargeted
+  to the surviving winner, with a regression test), then measured:
+  241 -> 212 instances and -0.073 -> -0.031 WNS, but still 0 MAJ.
+  Expected -- supergates skip functions already covered by primitive
+  cells (MAJ3/MAJIxp5 exist), composing bigger single-output patterns
+  (NOR/AOI soup absorption: 52 -> 29 NOR2) instead. They help timing
+  and area somewhat through larger patterns, but cannot produce the
+  joint sum+carry full-adder covers; that needs cut-search or
+  multi-output (bundle) improvements.
 
 Ruled out by isolation: flop counts (16/16), bit-blast glue folding,
 QN-output phases (flopped adders still reach MAJ), timing-vs-area
