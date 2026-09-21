@@ -4,14 +4,100 @@
 
 This document proposes a timing refinement loop that uses
 `synth.timing_probe` to carry endpoint requirements from sequential timing
-boundaries back into datapath lowering. The datapath refinement loop itself
-is not implemented yet.
+boundaries back into datapath lowering. Phases 1-5 are implemented
+(opt-in `--datapath-refinement`, default off); Phase 6 model and
+performance improvements remain future work.
 
-What *is* implemented is the probe mechanism and its first consumer:
+What was already implemented is the probe mechanism and its first consumer:
 post-map high-fanout buffering guided by probes and STA feedback, described in
 [Timing-driven mapping](TimingDrivenMapping.md) ("Timing-guided synthesis:
 probes + STA feedback"). That document is the status authority for landed
-probe work; this document proposes the pre-map arithmetic consumer.
+probe work; this document covers the pre-map arithmetic consumer.
+
+Phase 1 (early probes + explicit cleanup) has landed:
+
+- `synth-derive-probes` runs once right after sequential mapping (decoupled
+  from `--buffer-high-fanout`) and is idempotent: D inputs already driven by
+  a probe are skipped, so repeated invocation never nests probes.
+- probes ride the lowering/mapping pipeline as transparent pass-throughs
+  (Comb -> Datapath, `datapath-reduce-delay`, Datapath -> Comb,
+  Comb -> Synth, technology mapping all preserve them).
+- `synth-strip-timing-probes` is the explicit lifetime terminator; it runs
+  after buffering whenever probes could exist and is a no-op otherwise.
+  Default-off pipelines add no passes and are output-identical.
+- `synth.timing_probe` rejects a negative `required_time` (the verifier
+  previously compared unsigned storage against zero, accepting everything).
+- tests: `strip-probes.mlir`, `probe-early-pipeline.mlir`, derive-twice
+  idempotency in `derive-probes.mlir`, and end-to-end
+  `circt-synth/probe-early-buffer.mlir` (early derive -> buffers consume ->
+  no leak, plus a strip-only mode).
+
+Phases 2-5 (probe-guided selective refinement loop) have landed:
+
+- shared timing-feedback support (`Synth/Analysis/TimingFeedback`): parses
+  the versioned `circt.synth.timing-feedback.v1` schema (s/ms/us/ns/ps)
+  and the legacy scoreboard violator list, validates (schema, units,
+  finiteness, slack consistency, top match), converts once to picoseconds
+  with checked rounding, and resolves hierarchical endpoints/launches
+  (ambiguous and missing names fail closed).
+- `TimingPressureAnalysis` (`Synth/Analysis`): module-local value-level
+  structural arrivals (levels) plus backward required levels, with
+  conservative shared-module hierarchical summaries (arrivals maximize,
+  requirements minimize over instance contexts; cycles stay unknown).
+  Structural slack is non-positive by construction (zero on critical
+  paths) and is a ranking score only, never physical slack. Reachability
+  (cone membership) is delay-independent, so feedback-violating cones are
+  selected even where delay modeling gives up.
+- refinement regions (`Synth/Analysis/RefinementRegions`): deterministic
+  datapath components (`@Module:preorder`), probe relation, worst slack,
+  violation flags, and endpoint strings. Selection order: explicit policy
+  manifest > STA-violating cone > structural pressure within the margin.
+  Selected policies are recorded as transient `datapath.refine.policy`
+  attributes (member datapath ops plus reached comb add/compare roots)
+  and in a versioned JSON decision report.
+- `synth-discover-refinement-regions` (ModuleOp): selection + recording +
+  report; `datapath-reduce-delay` pressure gating
+  (`--pressure-margin-levels`, explicit records always win, continuation
+  inheritance, legacy behavior preserved when unselected);
+  `convert-datapath-to-comb` per-operation Booth/compress-to-add/Wallace
+  overrides (disjoint conditions; no-attribute behavior unchanged).
+- `synth-import-timing-feedback` (ModuleOp): parses feedback, resolves
+  endpoints, creates or tightens (minimum) endpoint probes, reports
+  resolved/unresolved/invalid.
+- `circt-synth --datapath-refinement`: derive -> import -> CombToDatapath
+  -> discover -> gated lowering -> map -> buffer/strip, all opt-in.
+  `--timing-feedback` without a consumer warns and leaves lowering
+  unchanged (probes still stripped; no leak).
+- driver (`--datapath-retry` + `--datapath-refinement`): round-0 STAjudged
+  baseline with report, per-path feedback extraction, ranked single-region
+  manifests (priors carried), bounded rounds (default 2, at most 4
+  candidates each, `--datapath-retry` total budget), whole-design
+  objective (target met -> min area; else max WNS, then TNS, violators,
+  area; baseline wins ties), signature cycle detection, minimum-
+  improvement and target-met termination.
+- tests: `discover-regions/hierarchical/feedback/manifest/determinism`,
+  `import-feedback` (versioned units, legacy, strict/permissive, top
+  mismatch), `datapath-reduce-delay-pressure` (selective proof),
+  `refine-policies` (per-op Booth/compress-to-add),
+  `circt-synth/datapath-refine` (fake-STA BEST + no-leak output) and
+  `datapath-refine-noimprove` (baseline wins ties, emitted byte-exact).
+- fixed along the way: `synth.timing_probe` negative-time verifier
+  (unsigned comparison), `synth-derive-probes` idempotency, QN-only flop
+  launches (ASAP7 DFFHQNx1) in pressure analysis, feedback launch
+  resolution, and guided buffering, plus STA path-record field order
+  (arrival-before-slack) in the retry driver.
+
+Deliberate MVP deviations from the proposal (documented, not accidental):
+
+- pressure is structural levels (`--datapath-pressure-margin-levels`, not
+  picoseconds); Liberty-calibrated arrivals are Phase 6.
+- the discovery pass is named `synth-discover-refinement-regions`
+  (SynthTransforms library naming).
+- per-round candidate cap is fixed at 4 within the `--datapath-retry`
+  total budget (no separate `--datapath-refinement-candidates`).
+- area-recovery rounds after the target is met are not attempted; the loop
+  stops (bounded effort).
+- decided regions are not re-targeted unless currently violated.
 
 The recommended first implementation is deliberately incremental:
 
@@ -303,7 +389,7 @@ strip library bodies
 emit SDC
 ```
 
-The proposed ordering is:
+The landed ordering with `--datapath-refinement` is:
 
 ```text
 derive mapping costs
@@ -972,10 +1058,7 @@ This requires careful handling of analysis managers, pass instrumentation,
 symbol tables, temporary output, and library modules. It should be justified
 by profiles rather than included in the MVP.
 
-## Proposed command-line interface
-
-Names below are proposals and may be adjusted to match established option
-style.
+## Command-line interface (landed)
 
 ### Probe creation and import
 
@@ -987,35 +1070,37 @@ style.
 --timing-feedback-report=<path.json>
 ```
 
-`--probe-clocks` should cause early probe derivation even when
+`--probe-clocks` causes early probe derivation even when
 `--buffer-high-fanout` is disabled.
 
 ### Probe-guided datapath refinement
 
 ```text
 --datapath-refinement
---datapath-refinement-policy=<baseline|reduce-delay|booth|compress-to-add|auto>
+--datapath-refinement-policy=<baseline|reduce-delay|booth|compress-to-add|fastest|auto>
 --datapath-policy-file=<path.json>
---datapath-pressure-margin-ps=<integer>
+--datapath-policy-strict
+--datapath-pressure-margin-levels=<integer>
 --datapath-refinement-report=<path.json>
 ```
 
+Pressure is structural levels, hence `--datapath-pressure-margin-levels`
+(not picoseconds); negative disables structural selection.
+
 ### Closed-loop control
 
-The existing `--datapath-retry` may remain the candidate-count control for
-compatibility, or a clearer interface can be introduced:
-
 ```text
---datapath-refinement-iterations=<N>
---datapath-refinement-candidates=<N>
---retry-min-improvement-ps=<integer>
+--datapath-refinement-iterations=<N>   (default 2)
+--retry-min-improvement-ps=<ps>        (default 10)
+--datapath-retry=<N>                   (total candidate budget)
 --retry-slack-target=<ns>
 --retry-timeout=<seconds>
 --retry-keep-temps
 ```
 
-Supplying a feedback file without enabling a consumer should parse and report
-the file but leave lowering unchanged, or issue a clear unused-option warning.
+Per-round candidates are capped at 4 within the `--datapath-retry` total
+budget. Supplying a feedback file without enabling a consumer parses and
+reports the file but leaves lowering unchanged, with a clear warning.
 
 ## Proposed passes and ownership
 
@@ -1047,19 +1132,21 @@ Responsibilities:
 
 It should not rewrite arithmetic.
 
-### `datapath-discover-refinement-regions`
+### `synth-discover-refinement-regions` (landed)
 
-This may initially be an analysis rather than a standalone pass.
+Implemented as a standalone ModuleOp pass (named with the `synth-` prefix
+per library style) backed by `Synth/Analysis/RefinementRegions`.
 
-Responsibilities:
+Responsibilities (all landed):
 
 - partition relevant datapath operations into stable regions;
 - connect regions to reachable probes;
-- calculate pressure summaries; and
-- import explicit region policies.
+- calculate pressure summaries;
+- import explicit region policies; and
+- record selected policies as transient attributes plus a JSON report.
 
-If region IDs need to survive several passes, a materializing pass may attach
-temporary discardable attributes that are removed with the probes.
+Region IDs survive passes that need them via temporary discardable
+attributes removed with the probes.
 
 ### `datapath-reduce-delay`
 
@@ -1403,6 +1490,61 @@ For each benchmark, record:
 - synthesis and STA runtime; and
 - whether the critical path actually intersects the selected region.
 
+#### Initial ASAP7 results (real OpenSTA, opt-in flow)
+
+Method: ASAP7 RVT FF CCS libraries (AO/OA/INVBUF/SEQ/SIMPLE) converted
+once from 1ps to 1ns units (all time quantities scaled; capacitances
+kept; see `tmp/measure/liberty_ps_to_ns.py`) so circt-synth, SDC, and
+OpenSTA agree on nanoseconds. Same binary, same libraries, same SDC
+period per design; `sta -no_init -exit` with `report_checks -path_delay
+max`. Designs are hierarchical (`u_sub` + flops) so feedback endpoints
+resolve to real instance paths.
+
+| design | period | config | inst | WNS (ns) | arrival (ns) |
+|---|---|---|---|---|---|
+| muladd8 (mul+add) | 0.30 | baseline | 263 | -0.070 | 0.358 |
+| muladd8 | 0.30 | probe-guided datapath only | 263 | -0.070 | 0.358 |
+| muladd8 | 0.30 | global retry | 241 | +0.008 MET | 0.280 |
+| muladd8 | 0.30 | probe-scoped retry | 241 | +0.008 MET | 0.280 |
+| mul16 | 0.45 | baseline | 1062 | -0.086 | 0.524 |
+| mul16 | 0.45 | global retry | 1062 | -0.086 kept | 0.524 |
+| mul16 | 0.45 | probe-scoped retry | 865 | -0.079 | 0.516 |
+| twomul12 (deep+shallow mul) | 0.65 | baseline | 1341 | -0.106 | 0.743 |
+| twomul12 | 0.65 | global retry | 1341 | -0.106 kept | 0.743 |
+| twomul12 | 0.65 | probe-scoped retry | 1341 | -0.106 kept | 0.743 |
+| mixed12 (mul-chain+add) | 0.65 | baseline | 973 | -0.106 | 0.743 |
+| mixed12 | 0.65 | probe-scoped retry | baseline kept | -0.106 | 0.743 |
+
+Reading the table:
+
+- muladd8: the winner (`ref-r1-_sub_0-booth`) applies Booth lowering to
+  the multiplier region only: WNS -0.070 -> +0.008 (MET, +78ps) at 241
+  vs 263 instances (-8%). The global whole-design Booth reaches the same
+  point here (single multiplier), as expected.
+- mul16: the winner (`fastest` on the mul region) improves WNS -0.086 ->
+  -0.079 while cutting area 1062 -> 865 (-19%). No whole-design variant
+  reaches this point (force-booth ties baseline WNS at 878 inst and loses
+  the tiebreak; booth+compress-to-add is smallest at 842 but far slower
+  at -0.21): per-region combinations cover ground global flags cannot.
+- twomul12: whole-design Booth is smaller (1106) but slower (-0.20) than
+  baseline; compress-to-add variants also miss. Both retry modes retain
+  the baseline: fail-closed on real STA, as required.
+- mixed12: no candidate beats the baseline; retained.
+- in-process reduce-delay alone changes nothing on these kernels (no
+  matching add-chains); movement comes from Booth/compress policies via
+  the driver, which is the intended division of labor.
+- single runs take ~13s, full retry runs ~75s (5 candidates x
+  synth+export+STA+count on tiny designs).
+
+Against the success criteria: zero default regressions (lit suites),
+deterministic repeats (report diff test), LEC coverage
+(`datapath-refine-lec.mlir`: selective reduce-delay, per-op Booth,
+per-op compress-to-add), baseline fallback on real STA (twomul12,
+mixed12), one reproducible WNS fix (muladd8), lower area than the global
+variant where they differ (mul16 fastest at 865 vs global Booth; on
+single-multiplier designs both coincide). System-scale (FIFO/ChipTop)
+numbers and default-on guidance remain open.
+
 ### System designs
 
 The existing FIFO and ChipTop experiments exercise different failure modes:
@@ -1501,7 +1643,8 @@ constraints.
 Datapath refinement and buffering solve different problems:
 
 - datapath refinement changes logic depth and arithmetic structure;
-- buffering changes load distribution after mapping.
+- buffering changes load distribution after mapping (landed v1, see
+  [Timing-driven mapping](TimingDrivenMapping.md)).
 
 The same endpoint may need both. Candidate reports should distinguish whether
 the critical path is dominated by arithmetic depth, a high-fanout stage, or an
@@ -1511,7 +1654,9 @@ mapping and buffering after mapping.
 ### Load-aware technology mapping
 
 Probe-derived required times can eventually guide technology mapping as well
-as datapath lowering. That is a separate consumer of the same timing-pressure
+as datapath lowering (load-aware delay status, see
+[Timing-driven mapping](TimingDrivenMapping.md)). That is a separate consumer
+of the same timing-pressure
 analysis. It should not be bundled into the first datapath patch because
 mapper cover iteration and datapath structural search have different rollback
 and cost-accounting requirements.
@@ -1742,45 +1887,26 @@ standalone `circt-opt` path where practical.
 
 ## Open design questions
 
-The following questions should be answered with prototypes or measurements:
+Answered by the landed implementation:
 
-1. Is a value-level timing model sufficient to select useful multiplier and
-   compressor refinements, or is per-bit pressure needed immediately?
-2. How often do critical datapath cones cross module boundaries in the target
-   designs?
-3. How much area pessimism results from merging timing contexts for shared
-   module definitions?
-4. Should feedback `required` replace a period-derived probe requirement or be
-   combined with it by minimum? Can the source constraint identity make this
-   unambiguous?
-5. Is endpoint-scoped policy sufficient for the MVP, or are stable region IDs
-   needed before the first retry experiment?
-6. Which delay model gives useful ranking before mapping without duplicating a
-   full STA engine?
-7. Should WNS improvement take priority over all area while the target is
-   missed, or should a bounded area guard reject extreme transformations?
-8. Does pressure-gated `datapath-reduce-delay` provide measurable benefit by
-   itself?
-9. How should async paths and multiple clock groups be filtered before they
-   become probe requirements?
-10. At what design size does subprocess retry become expensive enough to
-    justify an in-process checkpoint?
+4. Feedback `required` is combined with period-derived probes by minimum
+   (tightest wins); the importer records created/updated/kept per endpoint.
+5. Stable region IDs (`@Module:preorder`) were needed and are implemented;
+   manifests round-trip through them and the retry driver ranks by them.
+
+Still open (need measurements on larger designs): 1, 2, 3, 6, 7, 8, 9, 10.
+In particular, value-level structural pressure plus STA acceptance is the
+implemented ranking; per-bit timing, Liberty calibration, and
+deadline-aware compressor scheduling remain Phase 6.
 
 ## Recommended MVP
 
 The recommended first end-to-end milestone is narrower than the complete
-design:
-
-1. derive probes after sequential mapping for one explicitly listed clock;
-2. preserve them through Comb-to-Datapath;
-3. perform module-local, value-level structural arrival and backward required
-   propagation;
-4. identify regions with a negative normalized timing margin or an explicitly
-   violating feedback endpoint;
-5. run `datapath-reduce-delay` only in those regions;
-6. lower, map, and run OpenSTA;
-7. accept the candidate only if it improves the baseline objective; and
-8. strip all probes before final output.
+design, and it has landed (see Status): derive probes after sequential
+mapping, preserve them through Comb-to-Datapath, propagate structural
+arrival and required times (module-local plus hierarchical summaries),
+identify pressured or feedback-violating regions, refine selectively,
+judge with OpenSTA, keep the baseline on ties, and strip all probes.
 
 This milestone answers the most important feasibility question: can a probe
 select a datapath-local change that improves measured timing without imposing
@@ -1789,16 +1915,28 @@ policies and per-bit models should wait until the failure is understood.
 
 ## Completion criteria
 
-The task is complete when the repository contains an opt-in flow that:
+Status of each criterion (opt-in `--datapath-refinement`, default off):
 
-- derives or imports endpoint probes before datapath lowering;
-- propagates enough timing information to identify pressured datapath regions;
-- applies at least one datapath structural refinement selectively;
-- evaluates refined candidates with OpenSTA;
-- retains the baseline when refinement is not beneficial;
-- supports a bounded feedback iteration;
-- emits deterministic decision diagnostics;
-- removes probes from final output;
-- passes unit, integration, determinism, and equivalence tests; and
-- has documented area, WNS/TNS, and runtime results on both arithmetic
-  microbenchmarks and at least one system-scale design.
+- derives or imports endpoint probes before datapath lowering: DONE
+  (`synth-derive-probes` early + idempotent, `synth-import-timing-feedback`).
+- propagates enough timing information to identify pressured datapath
+  regions: DONE (`TimingPressureAnalysis` + hierarchical summaries +
+  region discovery with decision reports).
+- applies at least one datapath structural refinement selectively: DONE
+  (gated `datapath-reduce-delay`, per-region Booth/compress-to-add/Wallace).
+- evaluates refined candidates with OpenSTA: DONE (retry driver STA judging;
+  hermetic fake-STA lit coverage).
+- retains the baseline when refinement is not beneficial: DONE (baseline
+  wins ties; byte-exact emission proven by `datapath-refine-noimprove`).
+- supports a bounded feedback iteration: DONE (ranked single-region rounds
+  with priors, signature cycle detection, budget/min-improvement stops).
+- emits deterministic decision diagnostics: DONE (reports byte-identical
+  across runs; `discover-determinism`).
+- removes probes from final output: DONE (buffer/strip terminators;
+  `CHECK-NOT` coverage on winner MLIR).
+- passes unit, integration, determinism, and equivalence tests: DONE except
+  end-to-end LEC, which reuses existing semantics-preserving patterns and
+  awaits dedicated LEC coverage (see Phase 6).
+- documented area, WNS/TNS, and runtime results on microbenchmarks and at
+  least one system-scale design: OPEN (requires PDK STA runs beyond hermetic
+  tests; the driver prints per-candidate area/WNS/TNS/arrival for this).

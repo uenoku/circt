@@ -70,7 +70,9 @@ both ends pragmatically:
 - `synth-derive-probes`: places probes on flop Ds whose clocks trace to
   listed ports (`--probe-clocks`, `--probe-period-ns`), via liberty
   clock-pin metadata (single-input cells + EICG gates; else conservative
-  skip). Lifecycle: derive → buffer consumes + erases; nothing
+  skip). Lifecycle: derive early (after sequential mapping) → probes ride
+  lowering/mapping as pass-throughs → buffer consumes + erases, and the
+  explicit `synth-strip-timing-probes` terminator removes the rest; nothing
   downstream observes one (bundle-style contract).
 - `synth-buffer-high-fanout` honors probes + STA violators
   (`--sta-violators` = scoreboard `--violators-out` JSON with per-path
@@ -92,7 +94,9 @@ both ends pragmatically:
   action — defines the tool envelope: broadcasts fixable, logic depth
   needs mapping). Selectivity pays on mixed designs, not saturated ones.
 - Follow-ups: required-time-driven mapping selection (the far goal;
-  probes are its future required-time source), SRAM-addr distributions,
+  probes already drive pre-map datapath refinement per
+  [Timing-probe-driven datapath refinement](TimingProbeDatapathRefinement.md),
+  mapping-side selection still future), SRAM-addr distributions,
   logic-rebroadcast crossing, default-on decisions.
 
 ## 9. Buffer insertion — LANDED v1 (opt-in `--buffer-high-fanout`,
