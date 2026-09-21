@@ -28,7 +28,7 @@ def TestPriorityCuts : Pass<"synth-test-priority-cuts", "hw::HWModuleOp"> {
 
 class CutRewriterPassBase<string name, string op> : Pass<name, op> {
   list<Option> baseOptions = [
-    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "6",
+    Option<"maxCutsPerRoot", "max-cuts-per-root", "int", "8",
            "Maximum number of non-trivial cuts to maintain per node">,
     Option<"strategy", "strategy", "synth::OptimizationStrategy",
            /*default=*/"synth::OptimizationStrategyTiming",
@@ -76,7 +76,7 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
            "output load) during matching; off by default (load-blind "
            "intrinsics)">,
     Option<"reserveIngredientCuts", "reserve-ingredient-cuts", "unsigned",
-           "0",
+           "2",
            "Retention slots reserved per node for the smallest cuts "
            "(ingredient protection): guards the small building-block "
            "cuts that combine into larger covers (e.g. majority) "

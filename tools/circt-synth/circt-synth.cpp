@@ -228,8 +228,8 @@ static cl::opt<unsigned> reserveIngredientCuts(
     cl::desc("Retention slots reserved per node for the smallest cuts "
              "during tech mapping; protects building-block cuts that "
              "combine into larger covers (e.g. majority) from "
-             "bottom-up truncation crowding (opt-in)"),
-    cl::init(0), cl::cat(mainCategory));
+             "bottom-up truncation crowding"),
+    cl::init(2), cl::cat(mainCategory));
 static cl::opt<int>
     maxFanout("max-fanout",
               cl::desc("Maximum per-copy fanout before buffer insertion splits "
@@ -371,7 +371,7 @@ static cl::opt<int64_t> functionalReductionConflictLimit(
 
 static cl::opt<int> maxCutSizePerRoot("max-cut-size-per-root",
                                       cl::desc("Maximum cut size per root"),
-                                      cl::init(6), cl::cat(mainCategory));
+                                      cl::init(8), cl::cat(mainCategory));
 
 static cl::opt<unsigned>
     supergateMaxGates("supergate-max-gates",
