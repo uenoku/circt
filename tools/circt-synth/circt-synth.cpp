@@ -946,6 +946,23 @@ int main(int argc, char **argv) {
                     "stripped without affecting lowering\n";
   }
 
+  // Register the supported CIRCT dialects and create a context to work
+  // with. This precedes the retry driver, which needs a context for
+  // timing identity strings even though it exits before synthesis.
+  DialectRegistry registry;
+  mlir::transform::registerInterpreterPass();
+
+  registry.insert<comb::CombDialect, datapath::DatapathDialect,
+                  debug::DebugDialect, emit::EmitDialect, hw::HWDialect,
+                  ltl::LTLDialect, om::OMDialect, seq::SeqDialect,
+                  sim::SimDialect, synth::SynthDialect, sv::SVDialect,
+                  verif::VerifDialect, mlir::transform::TransformDialect>();
+
+  // Register the standard passes we want.
+  MLIRContext context(registry);
+  if (allowUnregisteredDialects)
+    context.allowUnregisteredDialects();
+
   // In-driver datapath retry: STA-judged structural variants.
   if (datapathRetry > 0) {
     if (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd) {
@@ -977,6 +994,7 @@ int main(int argc, char **argv) {
     config.inputFile = inputFilename;
     config.outputFile = outputFilename;
     config.userSdcOutput = sdcOutput;
+    config.mlirContext = &context;
     bool ok = synth::runDatapathRetry(config);
     // Match the exit() discipline below (fast teardown).
     exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
@@ -986,20 +1004,7 @@ int main(int argc, char **argv) {
   // llvm/circt and not llvm/llvm-project.
   llvm::setBugReportMsg(circt::circtBugReportMsg);
 
-  // Register the supported CIRCT dialects and create a context to work with.
-  DialectRegistry registry;
-  mlir::transform::registerInterpreterPass();
-
-  registry.insert<comb::CombDialect, datapath::DatapathDialect,
-                  debug::DebugDialect, emit::EmitDialect, hw::HWDialect,
-                  ltl::LTLDialect, om::OMDialect, seq::SeqDialect,
-                  sim::SimDialect, synth::SynthDialect, sv::SVDialect,
-                  verif::VerifDialect, mlir::transform::TransformDialect>();
-
-  // Register the standard passes we want.
-  MLIRContext context(registry);
-  if (allowUnregisteredDialects)
-    context.allowUnregisteredDialects();
+  // Context and registry were created above (before the retry driver).
 
   // Setup of diagnostic handling.
   llvm::SourceMgr sourceMgr;

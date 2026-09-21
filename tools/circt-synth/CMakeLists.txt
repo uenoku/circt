@@ -6,6 +6,7 @@ target_link_libraries(circt-synth
   CIRCTSynth
   CIRCTSynthToComb
   CIRCTSynthAnalysis
+  CIRCTSynthTiming
   CIRCTComb
   CIRCTCombToDatapath
   CIRCTCombTransforms

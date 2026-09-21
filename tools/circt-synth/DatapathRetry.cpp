@@ -15,6 +15,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "DatapathRetry.h"
+#include "circt/Dialect/Synth/Timing/TimingJSON.h"
+#include "circt/Dialect/Synth/Timing/TimingResult.h"
+#include "circt/Dialect/Synth/Timing/TimingTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -25,6 +29,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -154,7 +159,18 @@ std::string siblingTool(StringRef selfPath, StringRef tool) {
   return std::string(path.str());
 }
 
-// One STA path for feedback generation and TNS scoring.
+// One STA path record from text parsing (adapter input, not scoring).
+struct TextPath {
+  std::string startpoint;
+  std::string endpoint;
+  std::string pathGroup;
+  double slackNs = 0.0;
+  bool hasSlack = false;
+  double arrivalNs = 0.0;
+};
+
+// v1 feedback record (display names, nanoseconds). Patch 2 replaces these
+// with resolved v2 keys; toStaPaths derives them from TimingResult.
 struct StaPath {
   std::string startpoint;
   std::string endpoint;
@@ -169,14 +185,12 @@ struct CandidateResult {
   std::string flags;
   bool ok = false;
   int64_t instances = -1;
-  // Clocked judging (when the SDC has clocks).
-  bool hasSlack = false;
-  double slackNs = 0.0;
-  double arrivalNs = 0.0;
-  // Whole-design TNS/violator scoring and feedback generation.
-  double tnsNs = 0.0;
-  int numViolated = 0;
-  std::vector<StaPath> paths;
+  // Worst arrival in picoseconds (-1 when unknown); display and the
+  // no-slack comparison only. Scoring uses timing below.
+  int64_t arrivalPs = -1;
+  // Structured timing (populated by the text adapter today, backends
+  // tomorrow). WNS/TNS/failing-endpoints normalized per endpoint.
+  timing::TimingResult timing;
 };
 
 // Shared candidate runner: synthesis, export, STA, and counting in
@@ -185,6 +199,7 @@ struct RetryRunner {
   DatapathRetryConfig config;
   std::string tmpDir;
   std::string circtOpt;
+  mlir::MLIRContext *mlirContext = nullptr;
   bool runCandidate(StringRef name, ArrayRef<std::string> variantFlags,
                     CandidateResult &result);
 };
@@ -333,19 +348,20 @@ bool RetryRunner::runCandidate(StringRef name,
   std::string log = buffer.get()->getBuffer().str();
   // All slack/arrival lines (report_checks lists worst first, but
   // min/max over all lines matches scoreboard semantics robustly).
-  // Per-path records additionally feed TNS scoring and feedback
-  // generation. Field order varies (arrival before slack in real
-  // report_checks, the reverse in some scoreboards), so a path completes
-  // when both fields are known, at the next path, or at end of log.
-  // First field occurrence wins within a path.
-  std::optional<double> slack;
+  // Per-path records are grouped by endpoint into the structured result;
+  // group minima make TNS per-endpoint-once instead of per-path.
+  // Field order varies (arrival before slack in real report_checks, the
+  // reverse in some scoreboards), so a path completes when both fields
+  // are known, at the next path, or at end of log. First field occurrence
+  // wins within a path.
   std::optional<double> arrival;
-  StaPath curPath;
+  std::vector<TextPath> textPaths;
+  TextPath curPath;
   bool inPath = false;
   bool curHasArrival = false;
   auto pushPath = [&] {
     if (inPath && curHasArrival) {
-      result.paths.push_back(curPath);
+      textPaths.push_back(curPath);
       inPath = false;
     }
   };
@@ -361,7 +377,7 @@ bool RetryRunner::runCandidate(StringRef name,
     StringRef trimmed = line.trim();
     if (auto start = stripPrefix(trimmed, "Startpoint:")) {
       pushPath();
-      curPath = StaPath();
+      curPath = TextPath();
       curHasArrival = false;
       curPath.startpoint = *start;
       inPath = true;
@@ -378,7 +394,6 @@ bool RetryRunner::runCandidate(StringRef name,
       continue;
     }
     if (auto s = parseTrailingNumber(line, "slack")) {
-      slack = !slack ? s : std::min(*slack, *s);
       if (inPath && !curPath.hasSlack) {
         curPath.slackNs = *s;
         curPath.hasSlack = true;
@@ -404,17 +419,60 @@ bool RetryRunner::runCandidate(StringRef name,
            << "' STA unparsable (skipped)\n";
     return false;
   }
-  result.arrivalNs = *arrival;
-  if (slack) {
-    result.hasSlack = true;
-    result.slackNs = *slack;
-  }
-  for (const auto &path : result.paths) {
-    if (path.hasSlack && path.slackNs < 0.0) {
-      result.tnsNs += path.slackNs;
-      ++result.numViolated;
+  result.arrivalPs = llround(*arrival * 1000.0);
+  // Text adapter: group records by endpoint display string into one
+  // structured endpoint each (import-only identity; v2 feedback resolves
+  // real objects). Each record becomes one rise transition with
+  // required = arrival - slack. Unknown transition direction defaults
+  // to rise; the minimum over transitions still normalizes correctly.
+  // The report is treated as complete (as the judge always has); backend
+  // adapters must establish coverage honestly instead.
+  using namespace timing;
+  mlir::MLIRContext &ctx = *mlirContext;
+  TimingResult timing;
+  timing.status = TimingResultStatus::Complete;
+  timing.backend = mlir::StringAttr::get(&ctx, "external-opensta");
+  timing.backendVersion = mlir::StringAttr::get(&ctx, "text-report");
+  std::map<std::string, size_t> endpointIndex;
+  for (const auto &path : textPaths) {
+    auto it = endpointIndex.find(path.endpoint);
+    size_t idx;
+    if (it == endpointIndex.end()) {
+      idx = timing.endpoints.size();
+      endpointIndex[path.endpoint] = idx;
+      TimingEndpointResult endpoint;
+      endpoint.endpoint.kind = TimingObjectKind::InstancePin;
+      endpoint.endpoint.portName = mlir::StringAttr::get(&ctx, path.endpoint);
+      endpoint.pathGroup = mlir::StringAttr::get(&ctx, path.pathGroup);
+      timing.endpoints.push_back(std::move(endpoint));
+    } else {
+      idx = it->second;
     }
+    TimingTransitionResult tr;
+    tr.transition = TimingTransition::Rise;
+    tr.arrival = TimePs{llround(path.arrivalNs * 1000.0)};
+    tr.slack =
+        TimePs{llround((path.hasSlack ? path.slackNs : 0.0) * 1000.0)};
+    tr.required =
+        TimePs{tr.arrival.value - (path.hasSlack ? tr.slack.value : 0)};
+    TimingObjectKey launch;
+    launch.kind = TimingObjectKind::InstancePin;
+    launch.portName = mlir::StringAttr::get(&ctx, path.startpoint);
+    tr.worstLaunch = launch;
+    timing.endpoints[idx].transitions.push_back(std::move(tr));
+    TimingPathResult pathResult;
+    pathResult.endpoint = timing.endpoints[idx].endpoint;
+    pathResult.transition = TimingTransition::Rise;
+    pathResult.arrival = tr.arrival;
+    pathResult.required = tr.required;
+    pathResult.slack = tr.slack;
+    timing.paths.push_back(std::move(pathResult));
   }
+  timing.coverage.expectedEndpoints = timing.endpoints.size();
+  timing.coverage.constrainedEndpoints = timing.endpoints.size();
+  timing.coverage.analyzedEndpoints = timing.endpoints.size();
+  normalizeTimingResult(timing);
+  result.timing = std::move(timing);
 
   // Area via the authoritative resource analysis. The pass options
   // form a SINGLE argv token (spaces split internally by the pass
@@ -486,30 +544,41 @@ bool emitWinner(const RetryRunner &runner, const CandidateResult &best) {
 
 // Refinement comparator: target met dominates (min area among meeting),
 // else max WNS, then max TNS, then fewest violators, then min area.
-// Strict inequalities only, so the baseline wins all ties.
+// All timing compares on integral picoseconds. Strict inequalities only,
+// so the baseline wins all ties.
 bool isBetterRefinement(const CandidateResult &a, const CandidateResult &b,
                         double slackTarget) {
-  bool aSat = a.hasSlack && a.slackNs >= slackTarget;
-  bool bSat = b.hasSlack && b.slackNs >= slackTarget;
+  int64_t targetPs = llround(slackTarget * 1000.0);
+  auto getWns = [](const CandidateResult &r) -> std::optional<int64_t> {
+    if (r.timing.wns)
+      return r.timing.wns->value;
+    return std::nullopt;
+  };
+  auto aWns = getWns(a);
+  auto bWns = getWns(b);
+  bool aSat = aWns && *aWns >= targetPs;
+  bool bSat = bWns && *bWns >= targetPs;
   if (aSat != bSat)
     return aSat;
   if (aSat)
     return a.instances < b.instances;
-  if (a.hasSlack && b.hasSlack) {
-    if (a.slackNs != b.slackNs)
-      return a.slackNs > b.slackNs;
-    if (a.tnsNs != b.tnsNs)
-      return a.tnsNs > b.tnsNs;
-    if (a.numViolated != b.numViolated)
-      return a.numViolated < b.numViolated;
+  if (aWns && bWns) {
+    if (*aWns != *bWns)
+      return *aWns > *bWns;
+    int64_t aTns = a.timing.tns ? a.timing.tns->value : 0;
+    int64_t bTns = b.timing.tns ? b.timing.tns->value : 0;
+    if (aTns != bTns)
+      return aTns > bTns;
+    if (a.timing.failingEndpoints != b.timing.failingEndpoints)
+      return a.timing.failingEndpoints < b.timing.failingEndpoints;
     return a.instances < b.instances;
   }
-  if (!a.hasSlack && !b.hasSlack) {
-    if (a.arrivalNs != b.arrivalNs)
-      return a.arrivalNs < b.arrivalNs;
+  if (!aWns && !bWns) {
+    if (a.arrivalPs != b.arrivalPs)
+      return a.arrivalPs < b.arrivalPs;
     return a.instances < b.instances;
   }
-  return a.hasSlack;
+  return (bool)aWns;
 }
 
 void printRefinementTable(ArrayRef<CandidateResult> results, size_t bestIdx,
@@ -522,10 +591,11 @@ void printRefinementTable(ArrayRef<CandidateResult> results, size_t bestIdx,
     if (!r.flags.empty())
       errs() << " (" << r.flags << ")";
     errs() << ": inst=" << r.instances;
-    if (r.hasSlack)
-      errs() << " slack=" << r.slackNs << "ns tns=" << r.tnsNs
-             << "ns viol=" << r.numViolated;
-    errs() << " arrival=" << r.arrivalNs << "ns\n";
+    if (r.timing.wns)
+      errs() << " slack=" << (r.timing.wns->value / 1000.0) << "ns tns="
+             << (r.timing.tns ? r.timing.tns->value / 1000.0 : 0.0)
+             << "ns viol=" << r.timing.failingEndpoints;
+    errs() << " arrival=" << (r.arrivalPs / 1000.0) << "ns\n";
   }
 }
 
@@ -589,7 +659,27 @@ std::vector<ReportRegion> readRefinementReport(const std::string &path) {
   return regions;
 }
 
-// Versioned feedback JSON from STA path records (paths with slack only).
+// v1 feedback view over a structured result: one record per transition
+// with display names and nanosecond values. Patch 2 replaces this with
+// resolved v2 keys; until then the text adapter's import-only identity
+// flows through unchanged.
+std::vector<StaPath> toStaPaths(const timing::TimingResult &timing) {
+  std::vector<StaPath> paths;
+  for (const auto &endpoint : timing.endpoints) {
+    for (const auto &tr : endpoint.transitions) {
+      StaPath record;
+      record.endpoint = endpoint.endpoint.portName.str();
+      record.pathGroup = endpoint.pathGroup.str();
+      if (tr.worstLaunch)
+        record.startpoint = tr.worstLaunch->portName.str();
+      record.slackNs = tr.slack.value / 1000.0;
+      record.hasSlack = true;
+      record.arrivalNs = tr.arrival.value / 1000.0;
+      paths.push_back(std::move(record));
+    }
+  }
+  return paths;
+}
 std::string buildFeedbackJson(StringRef top, ArrayRef<StaPath> paths) {
   std::string out = "{\"schema\": \"circt.synth.timing-feedback.v1\", "
                     "\"time_unit\": \"ns\", \"top\": \"";
@@ -749,9 +839,11 @@ bool runRefinementRetry(RetryRunner &runner) {
 
   // Fresh feedback from the baseline STA (paths with slack only).
   std::string feedbackFile = runner.tmpDir + "/feedback-r0.json";
-  if (!writeFile(feedbackFile, buildFeedbackJson(config.top, baseline.paths)))
+  if (!writeFile(feedbackFile,
+                 buildFeedbackJson(config.top,
+                                   toStaPaths(baseline.timing))))
     return false;
-  std::vector<StaPath> feedback(baseline.paths.begin(), baseline.paths.end());
+  std::vector<StaPath> feedback = toStaPaths(baseline.timing);
 
   for (int round = 1; round <= config.refinementIterations; ++round) {
     std::string sig = feedbackSignature(feedback, accepted);
@@ -877,10 +969,12 @@ bool runRefinementRetry(RetryRunner &runner) {
       size_t displayBest = roundBest == best ? 0 : 1 + (roundBest - appendBase);
       printRefinementTable(display, displayBest, config.slackTarget);
     }
-    double before = results[best].hasSlack ? results[best].slackNs
-                                           : -results[best].arrivalNs;
-    double after = results[roundBest].hasSlack ? results[roundBest].slackNs
-                                               : -results[roundBest].arrivalNs;
+    double before = results[best].timing.wns
+                        ? results[best].timing.wns->value / 1000.0
+                        : -results[best].arrivalPs / 1000.0;
+    double after = results[roundBest].timing.wns
+                       ? results[roundBest].timing.wns->value / 1000.0
+                       : -results[roundBest].arrivalPs / 1000.0;
     bool improved = roundBest != best;
     if (improved) {
       // Carry the winning single-region decision (plus priors) forward
@@ -895,8 +989,9 @@ bool runRefinementRetry(RetryRunner &runner) {
       }
     }
     best = roundBest;
-    feedback.assign(results[best].paths.begin(), results[best].paths.end());
-    if (results[best].hasSlack && results[best].slackNs >= config.slackTarget) {
+    feedback = toStaPaths(results[best].timing);
+    if (results[best].timing.wns &&
+        results[best].timing.wns->value >= llround(config.slackTarget * 1000.0)) {
       errs() << "circt-synth: refinement stops: slack target met (round "
              << round << ")\n";
       break;
@@ -945,6 +1040,7 @@ bool circt::synth::runDatapathRetry(const DatapathRetryConfig &config) {
 
   RetryRunner runner{config, tmpDir.str().str(),
                      siblingTool(config.selfPath, "circt-opt")};
+  runner.mlirContext = config.mlirContext;
 
   // Probe-guided refinement rounds replace the global variant list.
   if (config.refinement) {
@@ -968,8 +1064,10 @@ bool circt::synth::runDatapathRetry(const DatapathRetryConfig &config) {
 
   // Select: min area among slack-satisfying (else max slack; clockless
   // judges by min arrival). Baseline wins all ties: never regresses.
+  // Timing compares on integral picoseconds.
+  int64_t targetPs = llround(config.slackTarget * 1000.0);
   auto isSatisfying = [&](const CandidateResult &r) {
-    return r.hasSlack && r.slackNs >= config.slackTarget;
+    return r.timing.wns && r.timing.wns->value >= targetPs;
   };
   bool anySatisfying = false;
   for (const auto &r : results)
@@ -981,11 +1079,11 @@ bool circt::synth::runDatapathRetry(const DatapathRetryConfig &config) {
       bool bestSat = isSatisfying(*best);
       if (isSatisfying(r) && (!bestSat || r.instances < best->instances))
         best = &r;
-    } else if (r.hasSlack && best->hasSlack) {
-      if (r.slackNs > best->slackNs)
+    } else if (r.timing.wns && best->timing.wns) {
+      if (r.timing.wns->value > best->timing.wns->value)
         best = &r;
-    } else if (!r.hasSlack && !best->hasSlack) {
-      if (r.arrivalNs < best->arrivalNs)
+    } else if (!r.timing.wns && !best->timing.wns) {
+      if (r.arrivalPs < best->arrivalPs)
         best = &r;
     }
   }
@@ -997,9 +1095,9 @@ bool circt::synth::runDatapathRetry(const DatapathRetryConfig &config) {
     if (!r.flags.empty())
       errs() << " (" << r.flags << ")";
     errs() << ": inst=" << r.instances;
-    if (r.hasSlack)
-      errs() << " slack=" << r.slackNs << "ns";
-    errs() << " arrival=" << r.arrivalNs << "ns\n";
+    if (r.timing.wns)
+      errs() << " slack=" << (r.timing.wns->value / 1000.0) << "ns";
+    errs() << " arrival=" << (r.arrivalPs / 1000.0) << "ns\n";
   }
 
   bool ok = emitWinner(runner, *best);

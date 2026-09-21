@@ -21,6 +21,10 @@
 #include <string>
 #include <vector>
 
+namespace mlir {
+class MLIRContext;
+} // namespace mlir
+
 namespace circt {
 namespace synth {
 
@@ -52,6 +56,9 @@ struct DatapathRetryConfig {
   std::string inputFile;
   std::string outputFile;    // "-" means stdout
   std::string userSdcOutput; // "" means none
+  // Parent MLIR context for interning timing identity strings. Must be
+  // set by callers that run candidates (never null in that path).
+  mlir::MLIRContext *mlirContext = nullptr;
 };
 
 // Run the retry loop; writes the best candidate to outputFile (or stdout).
