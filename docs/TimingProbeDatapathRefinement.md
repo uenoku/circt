@@ -8,6 +8,10 @@ boundaries back into datapath lowering. Phases 1-5 are implemented
 (opt-in `--datapath-refinement`, default off); Phase 6 model and
 performance improvements remain future work.
 
+The proposed replacement of external report scraping with a backend-neutral
+STA library and an initial OpenTimer backend is described in
+[Static timing analysis library integration for `circt-synth`](StaticTimingAnalysisLibraryIntegration.md).
+
 What was already implemented is the probe mechanism and its first consumer:
 post-map high-fanout buffering guided by probes and STA feedback, described in
 [Timing-driven mapping](TimingDrivenMapping.md) ("Timing-guided synthesis:
@@ -169,8 +173,10 @@ The central selection rule is:
    slack and area; and
 4. retain the baseline on ties.
 
-OpenSTA is the acceptance authority. In-flow estimates are used to focus the
-search and construct candidates, not to claim signoff timing.
+The current implementation uses OpenSTA as the acceptance authority. In-flow
+estimates are used to focus the search and construct candidates, not to claim
+signoff timing. The proposed backend-neutral replacement is described in
+[Static timing analysis library integration for `circt-synth`](StaticTimingAnalysisLibraryIntegration.md).
 
 ## Motivation
 
@@ -267,8 +273,9 @@ The first implementation does not attempt to provide:
 - a guarantee that a locally faster structural estimate produces a faster
   placed-and-routed design.
 
-OpenSTA remains the timing oracle for candidate acceptance. The in-flow model
-exists to reduce the size of the candidate space.
+The current implementation uses OpenSTA as the timing oracle for candidate
+acceptance. The in-flow model exists to reduce the size of the candidate
+space.
 
 ## Terminology
 
@@ -1490,60 +1497,86 @@ For each benchmark, record:
 - synthesis and STA runtime; and
 - whether the critical path actually intersects the selected region.
 
-#### Initial ASAP7 results (real OpenSTA, opt-in flow)
+#### Measured results (ASAP7 RVT, real OpenSTA)
 
-Method: ASAP7 RVT FF CCS libraries (AO/OA/INVBUF/SEQ/SIMPLE) converted
+Method: ASAP7 RVT CCS libraries (AO/OA/INVBUF/SEQ/SIMPLE) converted
 once from 1ps to 1ns units (all time quantities scaled; capacitances
-kept; see `tmp/measure/liberty_ps_to_ns.py`) so circt-synth, SDC, and
-OpenSTA agree on nanoseconds. Same binary, same libraries, same SDC
-period per design; `sta -no_init -exit` with `report_checks -path_delay
-max`. Designs are hierarchical (`u_sub` + flops) so feedback endpoints
-resolve to real instance paths.
+kept) so circt-synth, SDC, Yosys/ABC, and OpenSTA agree on nanoseconds.
+IMPORTANT: all `--liberty` files in one run must share a time unit -
+`DeriveMappingCost` assumes nanoseconds, so mixed-unit libraries distort
+selection (measured 21% area swing on twomul12: 1341 vs 1112 instances
+for identical input). Same binary, same libraries, same SDC period per
+design; `sta -no_init -exit` with `report_checks -path_delay max`.
+Designs are hierarchical (`u_sub` + flops) so feedback endpoints
+resolve to real instance paths. Yosys 0.68 reference: `proc/opt/fsm/
+memory/techmap`, `dfflibmap`, `abc -liberty` on one merged liberty
+(202 unique cells), `stat -liberty` area, same SDC judged by the same
+OpenSTA. Yosys `abc -D` timing targets (ps) did not move results past
+the default script at this scale (already optimal / not engaging).
 
-| design | period | config | inst | WNS (ns) | arrival (ns) |
-|---|---|---|---|---|---|
-| muladd8 (mul+add) | 0.30 | baseline | 263 | -0.070 | 0.358 |
-| muladd8 | 0.30 | probe-guided datapath only | 263 | -0.070 | 0.358 |
-| muladd8 | 0.30 | global retry | 241 | +0.008 MET | 0.280 |
-| muladd8 | 0.30 | probe-scoped retry | 241 | +0.008 MET | 0.280 |
-| mul16 | 0.45 | baseline | 1062 | -0.086 | 0.524 |
-| mul16 | 0.45 | global retry | 1062 | -0.086 kept | 0.524 |
-| mul16 | 0.45 | probe-scoped retry | 865 | -0.079 | 0.516 |
-| twomul12 (deep+shallow mul) | 0.65 | baseline | 1341 | -0.106 | 0.743 |
-| twomul12 | 0.65 | global retry | 1341 | -0.106 kept | 0.743 |
-| twomul12 | 0.65 | probe-scoped retry | 1341 | -0.106 kept | 0.743 |
-| mixed12 (mul-chain+add) | 0.65 | baseline | 973 | -0.106 | 0.743 |
-| mixed12 | 0.65 | probe-scoped retry | baseline kept | -0.106 | 0.743 |
+| design | period | config | inst | area | WNS (ns) | arrival (ns) |
+|---|---|---|---|---|---|---|
+| muladd8 | 0.22 | yosys | 175 | 20.46 | -0.034 | 0.242 |
+| muladd8 | 0.22 | baseline | 239 | 27.76 | -0.0395 | 0.245 |
+| muladd8 | 0.22 | global / probe-scoped retry | 239 | 27.76 | -0.0395 kept | 0.245 |
+| mul16 | 0.40 | yosys | 671 | 71.98 | -0.053 | 0.440 |
+| mul16 | 0.40 | baseline | 877 | 97.90 | -0.0595 | 0.445 |
+| mul16 | 0.40 | global booth | 741 | 83.16 | -0.0168 | 0.402 |
+| mul16 | 0.40 | probe-scoped booth | 741 | 83.16 | -0.0168 | 0.402 |
+| twomul12 | 0.50 | yosys | 970 | 99.07 | -0.077 | 0.565 |
+| twomul12 | 0.50 | baseline | 1112 | 115.37 | -0.076 | 0.562 |
+| twomul12 | 0.50 | global / probe-scoped retry | 1112 | 115.37 | kept | 0.562 |
+| mixed12 | 0.50 | yosys | 649 | 67.58 | -0.078 | 0.566 |
+| mixed12 | 0.50 | baseline | 778 | 82.93 | -0.076 | 0.562 |
+| mixed12 | 0.50 | probe-scoped retry | baseline kept (777) | -0.076 | 0.562 |
 
 Reading the table:
 
-- muladd8: the winner (`ref-r1-_sub_0-booth`) applies Booth lowering to
-  the multiplier region only: WNS -0.070 -> +0.008 (MET, +78ps) at 241
-  vs 263 instances (-8%). The global whole-design Booth reaches the same
-  point here (single multiplier), as expected.
-- mul16: the winner (`fastest` on the mul region) improves WNS -0.086 ->
-  -0.079 while cutting area 1062 -> 865 (-19%). No whole-design variant
-  reaches this point (force-booth ties baseline WNS at 878 inst and loses
-  the tiebreak; booth+compress-to-add is smallest at 842 but far slower
-  at -0.21): per-region combinations cover ground global flags cannot.
-- twomul12: whole-design Booth is smaller (1106) but slower (-0.20) than
-  baseline; compress-to-add variants also miss. Both retry modes retain
-  the baseline: fail-closed on real STA, as required.
-- mixed12: no candidate beats the baseline; retained.
-- in-process reduce-delay alone changes nothing on these kernels (no
+- Yosys+ABC beats CIRCT TechMapper on area by 20-30% at comparable
+  timing on all four kernels. That gap lives in the mapper, not the
+  refinement layer: refinement improves CIRCT's own baseline where the
+  structure allows (mul16: WNS -0.0595 -> -0.0168, +43ps, with 877 ->
+  741 instances and 97.90 -> 83.16 area), matches the global best, and
+  fails closed elsewhere (twomul12, mixed12, muladd8: baseline retained,
+  including a case where full-precision judging correctly rejects a
+  Booth candidate that coarse rounding would have accepted on area).
+- In-process reduce-delay alone changes nothing on these kernels (no
   matching add-chains); movement comes from Booth/compress policies via
   the driver, which is the intended division of labor.
-- single runs take ~13s, full retry runs ~75s (5 candidates x
-  synth+export+STA+count on tiny designs).
+- Single runs take ~13s, full retry runs ~75s (5 candidates x
+  synth+export+STA+count on tiny designs); winners are byte-identical
+  across repeated driver runs.
 
 Against the success criteria: zero default regressions (lit suites),
-deterministic repeats (report diff test), LEC coverage
-(`datapath-refine-lec.mlir`: selective reduce-delay, per-op Booth,
-per-op compress-to-add), baseline fallback on real STA (twomul12,
-mixed12), one reproducible WNS fix (muladd8), lower area than the global
-variant where they differ (mul16 fastest at 865 vs global Booth; on
-single-multiplier designs both coincide). System-scale (FIFO/ChipTop)
-numbers and default-on guidance remain open.
+deterministic repeats (report diff test plus byte-identical driver
+winners), LEC coverage (`datapath-refine-lec.mlir`: selective
+reduce-delay, per-op Booth, per-op compress-to-add), baseline fallback
+on real STA (twomul12, mixed12, muladd8), one reproducible WNS fix over
+the baseline (mul16 scoped Booth: +43ps with -15% area, matching the
+global best), and a Yosys/ABC reference comparison (below). System-scale
+(FIFO/ChipTop) numbers and default-on guidance remain open.
+
+#### Yosys/ABC reference (same SDC, same OpenSTA)
+
+Yosys 0.68 (`proc/opt/fsm/memory/techmap`, `dfflibmap`, `abc -liberty`
+on one merged 202-cell liberty, `stat -liberty` area) judges the same
+four kernels under identical constraints. `abc -D` timing targets did
+not move results past the default script at this scale. Areas are
+library square microns on both sides (CIRCT area sums liberty cell
+areas over mapped instances).
+
+| design | Yosys inst / area / WNS | CIRCT best | CIRCT best inst / area / WNS |
+|---|---|---|---|
+| muladd8 | 175 / 20.46 / -0.034 | baseline (both retries keep) | 239 / 27.76 / -0.0395 |
+| mul16 | 671 / 71.98 / -0.053 | scoped booth (= global best) | 741 / 83.16 / -0.0168 |
+| twomul12 | 970 / 99.07 / -0.077 | baseline (both retries keep) | 1112 / 115.37 / -0.076 |
+| mixed12 | 649 / 67.58 / -0.078 | baseline (scoped keeps) | 778 / 82.93 / -0.076 |
+
+Yosys+ABC is 20-30% smaller at comparable timing on every kernel: the
+area gap lives in technology mapping, not in refinement selection.
+Refinement's job is selectivity inside CIRCT's flow (improve CIRCT's
+baseline where structure allows, with diagnostics and rollback), not
+beating ABC. Closing the mapper gap is separate future work.
 
 ### System designs
 
@@ -1934,9 +1967,11 @@ Status of each criterion (opt-in `--datapath-refinement`, default off):
   across runs; `discover-determinism`).
 - removes probes from final output: DONE (buffer/strip terminators;
   `CHECK-NOT` coverage on winner MLIR).
-- passes unit, integration, determinism, and equivalence tests: DONE except
-  end-to-end LEC, which reuses existing semantics-preserving patterns and
-  awaits dedicated LEC coverage (see Phase 6).
+- passes unit, integration, determinism, and equivalence tests: DONE
+  (`datapath-refine-lec.mlir` covers selective reduce-delay, per-op
+  Booth, and per-op compress-to-add end to end; driver-level multi-round
+  winners are not yet LEC-checked against the source).
 - documented area, WNS/TNS, and runtime results on microbenchmarks and at
-  least one system-scale design: OPEN (requires PDK STA runs beyond hermetic
-  tests; the driver prints per-candidate area/WNS/TNS/arrival for this).
+  least one system-scale design: PARTIAL (microbenchmarks with real STA
+  plus a Yosys/ABC reference above; system-scale FIFO/ChipTop designs are
+external to this repo and remain open).
