@@ -709,6 +709,105 @@ def StripTimingProbes : Pass<"synth-strip-timing-probes", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect"];
 }
 
+def DiscoverRefinementRegions : Pass<"synth-discover-refinement-regions", "mlir::ModuleOp"> {
+  let summary = "Select datapath refinement policies for pressured regions";
+  let description = [{
+    Probe-guided datapath refinement targeting: partitions datapath logic
+    into deterministic regions, relates each region to the timing probes
+    it can reach (via TimingPressureAnalysis), and selects a refinement
+    policy per region (explicit manifest > STA-feedback-violating cones >
+    structural pressure within the margin). Selected policies are recorded
+    as `datapath.refine.policy` attributes consumed by
+    `datapath-reduce-delay` and `convert-datapath-to-comb`, and reported
+    as a JSON decision report for the retry driver. Regions without
+    pressure keep the baseline and are untouched. Deterministic for fixed
+    input, feedback, manifest, and options.
+  }];
+  let options = [
+    Option<"pressureMarginLevels", "pressure-margin-levels", "int", "0",
+           "Structural slack margin in levels; regions within the margin "
+           "of critical are pressured (negative disables structural "
+           "selection)">,
+    Option<"refinementPolicy", "refinement-policy", "std::string", "\"auto\"",
+           "Policy for selected regions: baseline|reduce-delay|booth|"
+           "compress-to-add|fastest|auto (auto is reduce-delay)">,
+    Option<"policyFile", "policy-file", "std::string", "\"\"",
+           "JSON policy manifest mapping region IDs to policies "
+           "(overrides per-region selection)">,
+    Option<"policyFileStrict", "policy-file-strict", "bool", "false",
+           "Fail on unknown manifest region IDs or policies instead of "
+           "warning and falling back to baseline">,
+    Option<"timingFeedback", "timing-feedback", "std::string", "\"\"",
+           "Timing feedback JSON (versioned schema or legacy violator "
+           "list); violating endpoints select their cones">,
+    Option<"topModuleName", "top-module-name", "std::string", "\"\"",
+           "Expected design top for feedback validation (empty skips)">,
+    Option<"timingFeedbackStrict", "timing-feedback-strict", "bool", "false",
+           "Fail on invalid feedback records instead of diagnosing and "
+           "skipping them">,
+    Option<"refinementReport", "refinement-report", "std::string", "\"\"",
+           "Write the JSON decision report to this file (empty disables)">
+  ];
+  let statistics = [
+    Statistic<"numRegions", "datapath-regions",
+              "Number of datapath regions discovered">,
+    Statistic<"numRegionsReachingProbes", "regions-reaching-probes",
+              "Number of regions reaching a timing probe">,
+    Statistic<"numRegionsViolated", "regions-violated",
+              "Number of regions in STA-violating endpoint cones">,
+    Statistic<"numRegionsRefined", "regions-refined",
+              "Number of regions given a non-baseline policy">,
+    Statistic<"numOpsAnnotated", "refinement-ops-annotated",
+              "Number of operations annotated with a refinement policy">,
+    Statistic<"numManifestUnknown", "refinement-manifest-unknown",
+              "Number of manifest region IDs matching nothing">,
+    Statistic<"numFeedbackUnresolved", "refinement-feedback-unresolved",
+              "Number of feedback endpoints resolving to no probe">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
+def ImportTimingFeedback : Pass<"synth-import-timing-feedback", "mlir::ModuleOp"> {
+  let summary = "Import STA timing feedback as endpoint probes";
+  let description = [{
+    Reads timing feedback (the versioned `circt.synth.timing-feedback.v1`
+    schema or the legacy scoreboard violator list) after sequential
+    mapping and materializes it as endpoint requirements: each resolvable
+    endpoint gets a `synth.timing_probe` on its flop D input carrying the
+    timer's required time (tightest wins against period-derived probes).
+    Unresolvable endpoints (missing, ambiguous, clock pins, unsupported
+    constructs) are reported and skipped; the baseline is preserved.
+    Empty file list (default) is a no-op. Deterministic: file order for
+    records, file/IR order otherwise.
+  }];
+  let options = [
+    Option<"feedbackFile", "timing-feedback", "std::string", "\"\"",
+           "Timing feedback JSON file (empty disables)">,
+    Option<"topModuleName", "top-module-name", "std::string", "\"\"",
+           "Expected design top for feedback validation (empty skips)">,
+    Option<"strict", "timing-feedback-strict", "bool", "false",
+           "Fail on invalid feedback records instead of diagnosing and "
+           "skipping them">,
+    Option<"feedbackReport", "feedback-report", "std::string", "\"\"",
+           "Write the JSON resolution report to this file (empty disables)">
+  ];
+  let statistics = [
+    Statistic<"numFeedbackRecords", "feedback-records",
+              "Number of feedback records parsed">,
+    Statistic<"numFeedbackResolved", "feedback-resolved",
+              "Number of feedback endpoints resolved to flop D inputs">,
+    Statistic<"numFeedbackUnresolved", "feedback-unresolved",
+              "Number of feedback endpoints that could not be resolved">,
+    Statistic<"numFeedbackInvalid", "feedback-invalid",
+              "Number of feedback records rejected as invalid">,
+    Statistic<"numProbesImported", "probes-imported",
+              "Number of endpoint probes created from feedback">,
+    Statistic<"numProbesUpdated", "probes-updated",
+              "Number of existing probes tightened by feedback">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
 def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {
   let summary = "Emit SDC timing constraints for a mapped design";
   let description = [{

@@ -12,6 +12,7 @@ add_circt_dialect_library(CIRCTSynthAnalysis
   ResourceUsageAnalysis.cpp
   TimingFeedback.cpp
   TimingPressureAnalysis.cpp
+  RefinementRegions.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${CIRCT_MAIN_INCLUDE_DIR}/circt/Dialect/Synth
