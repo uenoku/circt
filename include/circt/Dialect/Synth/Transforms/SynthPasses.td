@@ -155,7 +155,11 @@ def SeqMemMapper : Pass<"synth-seq-mem-mapper", "mlir::ModuleOp"> {
     Statistic<"numMemsSkipped", "mems-skipped",
               "Number of memories left unmapped">,
     Statistic<"numMemsExploded", "mems-exploded",
-              "Number of memories exploded to flop arrays">
+              "Number of memories exploded to flop arrays">,
+    Statistic<"numReadWriteSplit", "rw-ports-split",
+              "Number of read-write ports split into read+write pairs">,
+    Statistic<"numReadLatencyRegs", "read-latency-regs",
+              "Number of output registers inserted to adapt read latency">
   ];
   let dependentDialects = ["hw::HWDialect", "comb::CombDialect",
                              "seq::SeqDialect", "synth::SynthDialect"];

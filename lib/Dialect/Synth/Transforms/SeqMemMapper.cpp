@@ -144,6 +144,15 @@ struct SeqMemMapperPass
         continue;
       lib.push_back(std::move(*info));
     }
+    OpBuilder builder(top.getContext());
+    // Split read-write ports into read+write pairs when macros are
+    // available. Sound when read-under-write is undefined: the port
+    // reads whenever enabled and writes when enabled with mode set, so
+    // a read plus a mode-gated write preserves behavior while any
+    // same-cycle same-address collision stays undefined as specified.
+    // Without macros this never runs, leaving behavior unchanged.
+    if (!lib.empty())
+      splitReadWritePorts(builder, top);
     // Collect memories with their ports (flop-array fallback needs no
     // macros, so an empty library only skips macro matching).
     SmallVector<MemPorts> memories;
@@ -174,9 +183,40 @@ struct SeqMemMapperPass
       });
     }
 
-    OpBuilder builder(top.getContext());
     for (auto &entry : memories)
       mapMemory(builder, entry, lib);
+  }
+
+  // Split each read-write port with undefined read-under-write into a
+  // read plus a mode-gated write sharing address and clock. Reads occur
+  // whenever the port is enabled; writes occur when enabled with mode
+  // set. Any same-cycle same-address collision stays undefined exactly
+  // as specified, matching 1R1W macro behavior, so existing 1R1W macro
+  // descriptors apply unchanged. Ports are split in place (results replace
+  // uses at the original position), keeping dominance intact.
+  void splitReadWritePorts(OpBuilder &builder, ModuleOp top) {
+    SmallVector<seq::FirMemReadWriteOp> rws;
+    for (auto module : top.getOps<hw::HWModuleOp>())
+      module.walk([&](seq::FirMemReadWriteOp rw) { rws.push_back(rw); });
+    for (auto rw : rws) {
+      auto mem = dyn_cast<seq::FirMemOp>(rw.getMemory().getDefiningOp());
+      if (!mem || mem.getRuw() != seq::RUW::Undefined)
+        continue;
+      ImplicitLocOpBuilder b(rw.getLoc(), builder);
+      b.setInsertionPoint(rw);
+      Value en = rw.getEnable();
+      Value wren = rw.getMode();
+      if (en)
+        wren = comb::AndOp::create(b, en, rw.getMode());
+      auto read = seq::FirMemReadOp::create(b, mem.getResult(), rw.getAddress(),
+                                            rw.getClk(), en);
+      seq::FirMemWriteOp::create(b, mem.getResult(), rw.getAddress(),
+                                 rw.getClk(), wren, rw.getWriteData(),
+                                 rw.getMask());
+      rw.getReadData().replaceAllUsesWith(read.getData());
+      rw.erase();
+      ++numReadWriteSplit;
+    }
   }
 
   // Clock identity key: through `to_clock` to the i1 signal when possible.
@@ -194,12 +234,15 @@ struct SeqMemMapperPass
 
     auto skip = [&] { ++numMemsSkipped; };
     // Preconditions: no init, undefined collision behavior, sane geometry.
+    // Write-under-write port order is vacuous with a single write port
+    // (no collision to resolve), which covers split read-write ports.
     if (mem.getInitAttr())
       return skip();
     if (mem.getRuw() != seq::RUW::Undefined ||
-        mem.getWuw() != seq::WUW::Undefined)
+        (mem.getWuw() != seq::WUW::Undefined && entry.writes.size() > 1))
       return skip();
-    // Read-write ports have no macro counterpart yet.
+    // Read-write ports that could not be split (defined read-under-write)
+    // have no macro counterpart yet.
     if (entry.hasReadWrite)
       return skip();
 
@@ -229,14 +272,31 @@ struct SeqMemMapperPass
     MacroInfo *best = nullptr;
     for (auto &macro : lib) {
       if (macro.width != static_cast<int64_t>(memType.getWidth()) ||
-          macro.depth != static_cast<int64_t>(memType.getDepth()))
+          macro.depth != static_cast<int64_t>(memType.getDepth())) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "mem " << memType.getDepth() << "x"
+                       << memType.getWidth() << ": reject "
+                       << macro.module.getModuleName() << " (geometry)\n";
+        });
         continue;
+      }
       if (macro.reads.size() != entry.reads.size() ||
-          macro.writes.size() != entry.writes.size())
+          macro.writes.size() != entry.writes.size()) {
+        LLVM_DEBUG({
+          llvm::dbgs() << "mem " << memType.getDepth() << "x"
+                       << memType.getWidth() << ": reject "
+                       << macro.module.getModuleName() << " (port counts "
+                       << macro.reads.size() << "R" << macro.writes.size()
+                       << "W vs " << entry.reads.size() << "R"
+                       << entry.writes.size() << "W)\n";
+        });
         continue;
+      }
+      // Read latency may be adapted upward with output registers; write
+      // latency must match exactly (adapting writes would retime them).
       bool latenciesOk = true;
       for (auto read : macro.reads)
-        latenciesOk &= read.getLatency() == mem.getReadLatency();
+        latenciesOk &= read.getLatency() <= mem.getReadLatency();
       for (auto write : macro.writes)
         latenciesOk &= write.getLatency() == mem.getWriteLatency();
       if (!latenciesOk)
@@ -268,10 +328,15 @@ struct SeqMemMapperPass
       return explodeToFlops(builder, entry, clock, memType);
     }
 
-    // Per-port feature checks.
+    // Per-port feature checks. A read enable without a macro enable is
+    // absorbed by the output registers inserted below for latency
+    // adaptation, which concretize disabled cycles (standard
+    // don't-care mapping); it only blocks when no register stage will
+    // exist to absorb it. Write enables have no such absorption.
     for (auto [read, macro] : llvm::zip(entry.reads, best->reads)) {
-      if (read.getEnable() && macro.getEnable().empty())
-        return skip(); // Held output needs a register; out of scope.
+      if (read.getEnable() && macro.getEnable().empty() &&
+          mem.getReadLatency() == macro.getLatency())
+        return skip();
       if (static_cast<int64_t>(
               cast<IntegerType>(read.getAddress().getType()).getWidth()) !=
           macro.getAddrWidth())
@@ -358,13 +423,30 @@ struct SeqMemMapperPass
         hw::InstanceOp::create(builder, loc, best->module, instName, inputs,
                                builder.getArrayAttr({}), mem.getInnerSymAttr());
     // Results follow output ports in order; every output is a read-data pin.
+    // Reads needing more latency than the macro provides get output
+    // registers, one stage per extra cycle. Plain always-clocked flops
+    // suffice: a disabled read output is don't-care, and concretizing
+    // don't-cares is standard mapping practice (the flop-array fallback
+    // below zero-initializes storage the same way).
     unsigned resultIdx = 0;
     for (const auto &port : best->module.getPortList()) {
       if (!port.isOutput())
         continue;
       for (auto [read, macro] : llvm::zip(entry.reads, best->reads)) {
-        if (macro.getData() == port.name)
-          read.getData().replaceAllUsesWith(inst.getResult(resultIdx));
+        if (macro.getData() != port.name)
+          continue;
+        Value data = inst.getResult(resultIdx);
+        int64_t stages = mem.getReadLatency() - macro.getLatency();
+        for (int64_t s = 0; s < stages; ++s) {
+          data = seq::FirRegOp::create(
+              builder, loc, data, clock,
+              builder.getStringAttr(
+                  ((mem.getNameAttr() ? mem.getNameAttr().getValue().str()
+                                      : std::string("mem")) +
+                   "_outreg")));
+          ++numReadLatencyRegs;
+        }
+        read.getData().replaceAllUsesWith(data);
       }
       ++resultIdx;
     }
