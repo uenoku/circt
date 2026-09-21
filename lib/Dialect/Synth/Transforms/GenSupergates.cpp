@@ -306,6 +306,9 @@ struct GenSupergatesPass
     Location loc = topModule.getLoc();
 
     DenseMap<RawTableKey, SupergateCandidate> bestByRaw;
+    // Every created candidate module by its function key (for retargeting
+    // references when a cheaper same-function candidate outcompetes it).
+    DenseMap<Operation *, RawTableKey> moduleToKey;
     unsigned supergateOrdinal = 0;
 
     for (unsigned depth = 2; depth <= maxGates; ++depth) {
@@ -401,6 +404,7 @@ struct GenSupergatesPass
                   outer, pin, innerToInput, outerBypassToInput, totalInputs,
                   innerInverter);
 
+
               SmallVector<int64_t> delays(totalInputs, 0);
               for (unsigned i = 0; i < innerInputs; ++i) {
                 unsigned inputIdx = innerToInput[i];
@@ -418,6 +422,7 @@ struct GenSupergatesPass
 
               // New best (checked above): building the module already
               // consumed an ordinal; store with its composed function.
+              moduleToKey[sg] = key;
               bestByRaw[key] = {sg,
                                 area,
                                 std::move(delays),
@@ -498,16 +503,50 @@ struct GenSupergatesPass
                               << candidate.module.getModuleName() << "\n");
     }
 
-    // Drop rejected candidates (outcompeted winners without costs): they are
-    // unreferenced (inner pools only ever reference current winners) and
-    // would otherwise bloat the output as dead modules.
+    // Drop rejected candidates (outcompeted winners without costs). Before
+    // erasing, retarget any instances of each dropped module (referenced
+    // as inner by candidates composed while it was still the winner) to
+    // the surviving winner for the same function. Same key means same
+    // function and input count, and all supergates share the in0..inN
+    // plus Y interface, so substitution is exact.
     SmallVector<hw::HWModuleOp> deadCandidates;
     for (auto hwModule : topModule.getOps<hw::HWModuleOp>())
       if (hwModule->hasAttr("synth.supergate_candidate") &&
           !hwModule->hasAttr("synth.mapping_cost"))
         deadCandidates.push_back(hwModule);
+    for (auto dead : deadCandidates) {
+      auto keyIt = moduleToKey.find(dead);
+      if (keyIt == moduleToKey.end())
+        continue;
+      auto winnerIt = bestByRaw.find(keyIt->second);
+      if (winnerIt == bestByRaw.end() || winnerIt->second.module == dead)
+        continue;
+      hw::HWModuleOp winner = winnerIt->second.module;
+      for (auto userModule : topModule.getOps<hw::HWModuleOp>()) {
+        if (!userModule.getBodyBlock() || userModule == dead)
+          continue;
+        SmallVector<hw::InstanceOp> users;
+        for (auto &op : userModule.getBodyBlock()->getOperations()) {
+          auto inst = dyn_cast<hw::InstanceOp>(op);
+          if (inst && inst.getModuleName() == dead.getModuleName())
+            users.push_back(inst);
+        }
+        OpBuilder userBuilder(userModule.getContext());
+        for (auto inst : users) {
+          userBuilder.setInsertionPoint(inst);
+          SmallVector<Value> operands(inst.getOperands().begin(),
+                                      inst.getOperands().end());
+          auto replacement = hw::InstanceOp::create(
+              userBuilder, inst.getLoc(), winner,
+              inst.getInstanceNameAttr().getValue(), operands);
+          inst.getResult(0).replaceAllUsesWith(replacement.getResult(0));
+          inst->erase();
+        }
+      }
+    }
     for (auto dead : deadCandidates)
       dead.erase();
+
 
     LLVM_DEBUG(llvm::dbgs()
                << "Generated " << bestByRaw.size() << " supergates\n");
