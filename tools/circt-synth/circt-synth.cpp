@@ -279,6 +279,62 @@ static cl::opt<bool> retryKeepTemps(
     "retry-keep-temps",
     cl::desc("Keep --datapath-retry candidate files for inspection"),
     cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool> datapathRefinement(
+    "datapath-refinement",
+    cl::desc("Probe-guided selective datapath refinement: derive endpoint "
+             "probes early, discover pressured datapath regions, and apply "
+             "structural policies only there (opt-in)"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string> refinementPolicy(
+    "datapath-refinement-policy",
+    cl::desc("Policy for pressured datapath regions: baseline|reduce-delay|"
+             "booth|compress-to-add|fastest|auto (auto is reduce-delay)"),
+    cl::init("auto"), cl::cat(mainCategory));
+static cl::opt<std::string> datapathPolicyFile(
+    "datapath-policy-file",
+    cl::desc("JSON policy manifest mapping refinement region IDs to "
+             "policies (overrides per-region selection)"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<bool> datapathPolicyStrict(
+    "datapath-policy-strict",
+    cl::desc("Fail on unknown refinement region IDs or policies in "
+             "--datapath-policy-file instead of warning and using baseline"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<int> pressureMarginLevels(
+    "datapath-pressure-margin-levels",
+    cl::desc("Structural slack margin in levels for refinement selection "
+             "(negative disables structural selection)"),
+    cl::init(0), cl::cat(mainCategory));
+static cl::opt<std::string> timingFeedback(
+    "timing-feedback",
+    cl::desc("Timing feedback JSON (versioned schema or legacy violator "
+             "list) imported as endpoint probes before datapath lowering"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<bool> timingFeedbackStrict(
+    "timing-feedback-strict",
+    cl::desc("Fail on invalid timing feedback records instead of "
+             "diagnosing and skipping them"),
+    cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string> timingFeedbackReport(
+    "timing-feedback-report",
+    cl::desc("Write the timing feedback resolution report JSON here "
+             "(empty disables)"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<std::string> refinementReport(
+    "datapath-refinement-report",
+    cl::desc("Write the refinement region decision report JSON here "
+             "(empty disables)"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<int> refinementIterations(
+    "datapath-refinement-iterations",
+    cl::desc("Feedback-guided refinement rounds in --datapath-retry "
+             "driver mode (0 disables driver rounds)"),
+    cl::init(2), cl::cat(mainCategory));
+static cl::opt<double> retryMinImprovementPs(
+    "retry-min-improvement-ps",
+    cl::desc("Minimum WNS improvement in ps for a refinement round to "
+             "continue iterating"),
+    cl::init(10.0), cl::cat(mainCategory));
 static cl::opt<bool>
     disableDatapath("disable-datapath",
                     cl::desc("Disable datapath optimization passes"),
@@ -475,33 +531,34 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   }
   pm.nest<hw::HWModuleOp>().addPass(mlir::createCSEPass());
 
-  auto pipeline = [](OpPassManager &pm) {
-    circt::synth::CombLoweringPipelineOptions loweringOptions;
-    loweringOptions.disableDatapath = disableDatapath;
-    loweringOptions.timingAware = !disableTimingAware;
-    loweringOptions.muxBalanceThreshold = muxBalanceThreshold;
-    loweringOptions.forceBooth = forceBooth;
-    loweringOptions.compressToAdd = compressToAdd;
-    // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
-    loweringOptions.synthesisStrategy =
-        loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
-                                                 : synthesisStrategy;
-    circt::synth::buildCombLoweringPipeline(pm, loweringOptions);
+  circt::synth::CombLoweringPipelineOptions loweringOptions;
+  loweringOptions.disableDatapath = disableDatapath;
+  loweringOptions.timingAware = !disableTimingAware;
+  loweringOptions.muxBalanceThreshold = muxBalanceThreshold;
+  loweringOptions.forceBooth = forceBooth;
+  loweringOptions.compressToAdd = compressToAdd;
+  // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
+  loweringOptions.synthesisStrategy =
+      loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
+                                               : synthesisStrategy;
+  loweringOptions.datapathRefinement = datapathRefinement;
+  loweringOptions.pressureMarginLevels = pressureMarginLevels;
+
+  circt::synth::SynthOptimizationPipelineOptions optimizationOptions;
+  optimizationOptions.abcCommands = abcCommands;
+  optimizationOptions.abcPath.setValue(abcPath);
+  optimizationOptions.ignoreAbcFailures.setValue(ignoreAbcFailures);
+  optimizationOptions.disableWordToBits.setValue(disableWordToBits);
+  optimizationOptions.timingAware.setValue(!disableTimingAware);
+  optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
+  optimizationOptions.disableFunctionalReduction.setValue(
+      !enableFunctionalReduction);
+  optimizationOptions.functionalReductionConflictLimit.setValue(
+      functionalReductionConflictLimit);
+
+  auto pipelineTail = [&](OpPassManager &pm) {
     if (untilReached(UntilCombLowering))
       return;
-
-    circt::synth::SynthOptimizationPipelineOptions optimizationOptions;
-    optimizationOptions.abcCommands = abcCommands;
-    optimizationOptions.abcPath.setValue(abcPath);
-    optimizationOptions.ignoreAbcFailures.setValue(ignoreAbcFailures);
-    optimizationOptions.disableWordToBits.setValue(disableWordToBits);
-    optimizationOptions.timingAware.setValue(!disableTimingAware);
-    optimizationOptions.disableSOPBalancing.setValue(!enableSOPBalancing);
-    optimizationOptions.disableFunctionalReduction.setValue(
-        !enableFunctionalReduction);
-    optimizationOptions.functionalReductionConflictLimit.setValue(
-        functionalReductionConflictLimit);
-
     circt::synth::buildSynthOptimizationPipeline(pm, optimizationOptions);
     if (untilReached(UntilMapping))
       return;
@@ -511,6 +568,22 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       lutOptions.maxCutsPerRoot = maxCutSizePerRoot;
       pm.addPass(circt::synth::createGenericLutMapper(lutOptions));
     }
+  };
+
+  auto pipeline = [&](OpPassManager &pm) {
+    circt::synth::buildCombLoweringPipeline(pm, loweringOptions);
+    pipelineTail(pm);
+  };
+
+  // Probe-guided refinement splits the nested pipeline around a ModuleOp
+  // discovery pass: phase A materializes datapath regions, discovery
+  // selects policies, phase B lowers with per-region overrides.
+  auto refinementPhaseA = [&](OpPassManager &pm) {
+    circt::synth::buildCombToDatapathPipeline(pm, loweringOptions);
+  };
+  auto refinementPhaseB = [&](OpPassManager &pm) {
+    circt::synth::buildDatapathLoweringPipeline(pm, loweringOptions);
+    pipelineTail(pm);
   };
 
   if (!untilReached(UntilMapping)) {
@@ -529,19 +602,47 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     pm.addPass(synth::createSeqTechMapper());
     // Timing probes (opt-in): derive once on mapped flop D inputs while
     // the original combinational drivers still exist, so pre-map consumers
-    // and post-map consumers (buffering) share one probe set. Probes ride
-    // the lowering/mapping pipeline as transparent pass-throughs; the
-    // explicit strip terminator after buffering guarantees none leaks
-    // downstream. Default (no --probe-clocks): nothing is added.
+    // (datapath refinement) and post-map consumers (buffering) share one
+    // probe set. Probes ride the lowering/mapping pipeline as transparent
+    // pass-throughs; the explicit strip terminator after buffering
+    // guarantees none leaks downstream. Default (no --probe-clocks):
+    // nothing is added.
     if (!probeClocks.empty()) {
       synth::DeriveProbesOptions probeOptions;
       probeOptions.probeClocks = probeClocks;
       probeOptions.probePeriodNs = sdcClockPeriod;
       pm.addPass(synth::createDeriveProbes(probeOptions));
     }
+    // Timing feedback (opt-in): STA endpoint requirements imported as
+    // probes on mapped flop D inputs, tightening period-derived probes
+    // where both exist. Runs before combinational lowering so datapath
+    // refinement can consume it.
+    if (!timingFeedback.empty()) {
+      synth::ImportTimingFeedbackOptions importOptions;
+      importOptions.feedbackFile = timingFeedback;
+      importOptions.topModuleName = topName;
+      importOptions.strict = timingFeedbackStrict;
+      importOptions.feedbackReport = timingFeedbackReport;
+      pm.addPass(synth::createImportTimingFeedback(importOptions));
+    }
   }
 
-  nestOrAddToHierarchicalRunner(pm, pipeline, topName);
+  if (datapathRefinement) {
+    nestOrAddToHierarchicalRunner(pm, refinementPhaseA, topName);
+    synth::DiscoverRefinementRegionsOptions discoverOptions;
+    discoverOptions.pressureMarginLevels = pressureMarginLevels;
+    discoverOptions.refinementPolicy = refinementPolicy;
+    discoverOptions.policyFile = datapathPolicyFile;
+    discoverOptions.policyFileStrict = datapathPolicyStrict;
+    discoverOptions.timingFeedback = timingFeedback;
+    discoverOptions.topModuleName = topName;
+    discoverOptions.timingFeedbackStrict = timingFeedbackStrict;
+    discoverOptions.refinementReport = refinementReport;
+    pm.addPass(synth::createDiscoverRefinementRegions(discoverOptions));
+    nestOrAddToHierarchicalRunner(pm, refinementPhaseB, topName);
+  } else {
+    nestOrAddToHierarchicalRunner(pm, pipeline, topName);
+  }
 
   if (!untilReached(UntilMapping)) {
     // NOTE: imported library bodies intentionally stay in comb here:
@@ -595,9 +696,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
       bufferOptions.staViolators = staViolators;
       pm.addPass(synth::createBufferHighFanout(bufferOptions));
     }
-    // Explicit probe-lifetime terminator. Runs whenever probes could exist;
-    // a no-op otherwise. Default-off pipelines are untouched.
-    if (!probeClocks.empty() || bufferHighFanout)
+    // Explicit probe-lifetime terminator. Runs whenever probes could exist
+    // (early-derived, imported feedback, or STA-endpoint probes created by
+    // guided buffering); a no-op otherwise. Default-off pipelines are
+    // untouched.
+    if (!probeClocks.empty() || bufferHighFanout || !timingFeedback.empty())
       pm.addPass(synth::createStripTimingProbes());
     if (stripLibToExtern)
       pm.addPass(synth::createStripLibToExtern());
@@ -823,6 +926,18 @@ int main(int argc, char **argv) {
   // Parse the command-line options provided by the user.
   cl::ParseCommandLineOptions(argc, argv, "Logic synthesis tool\n\n");
 
+  if (datapathRefinement &&
+      (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd)) {
+    llvm::errs() << "circt-synth: --datapath-refinement needs full runs "
+                    "(no --until-before/after)\n";
+    return EXIT_FAILURE;
+  }
+  if (!timingFeedback.empty() && !datapathRefinement && !bufferHighFanout) {
+    llvm::errs() << "circt-synth: warning: --timing-feedback has no consumer "
+                    "(enable --datapath-refinement); probes are imported and "
+                    "stripped without affecting lowering\n";
+  }
+
   // In-driver datapath retry: STA-judged structural variants.
   if (datapathRetry > 0) {
     if (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd) {
@@ -835,6 +950,11 @@ int main(int argc, char **argv) {
     config.slackTarget = retrySlackTarget;
     config.timeoutSecs = retryTimeout;
     config.keepTemps = retryKeepTemps;
+    config.refinement = datapathRefinement;
+    config.refinementIterations = refinementIterations;
+    config.pressureMarginLevels = pressureMarginLevels;
+    config.minImprovementPs = retryMinImprovementPs;
+    config.initialFeedback = timingFeedback;
     config.selfPath = argv[0];
     for (int i = 0; i < argc; ++i)
       config.argv.push_back(argv[i]);

@@ -49,7 +49,7 @@ createLowerVariadicPass(bool timingAware, bool reuseSubsets = false) {
   options.reuseSubsets = reuseSubsets;
   return createLowerVariadic(options);
 }
-void circt::synth::buildCombLoweringPipeline(
+void circt::synth::buildCombToDatapathPipeline(
     OpPassManager &pm, const CombLoweringPipelineOptions &options) {
   {
     if (!options.disableDatapath) {
@@ -58,8 +58,26 @@ void circt::synth::buildCombLoweringPipeline(
       pm.addPass(createConvertCombToDatapath());
       pm.addPass(createSimpleCanonicalizerPass());
       pm.addPass(createCSEPass());
-      if (options.synthesisStrategy == OptimizationStrategyTiming)
+    }
+  }
+}
+
+void circt::synth::buildDatapathLoweringPipeline(
+    OpPassManager &pm, const CombLoweringPipelineOptions &options) {
+  {
+    if (!options.disableDatapath) {
+      if (options.datapathRefinement) {
+        // Probe-guided selective mode: explicit records plus structural
+        // pressure within the margin. The discovery pass (ModuleOp scope,
+        // scheduled by the driver between the phases) records policies.
+        datapath::DatapathReduceDelayOptions reduceDelayOptions;
+        reduceDelayOptions.pressureMarginLevels =
+            options.pressureMarginLevels;
+        pm.addPass(
+            datapath::createDatapathReduceDelay(reduceDelayOptions));
+      } else if (options.synthesisStrategy == OptimizationStrategyTiming) {
         pm.addPass(datapath::createDatapathReduceDelay());
+      }
       circt::ConvertDatapathToCombOptions datapathOptions;
       datapathOptions.timingAware = options.timingAware;
       datapathOptions.forceBooth = options.forceBooth;
@@ -108,6 +126,12 @@ void circt::synth::buildCombLoweringPipeline(
   pm.addPass(createCSEPass());
   pm.addPass(createSimpleCanonicalizerPass());
   pm.addPass(createCSEPass());
+}
+
+void circt::synth::buildCombLoweringPipeline(
+    OpPassManager &pm, const CombLoweringPipelineOptions &options) {
+  buildCombToDatapathPipeline(pm, options);
+  buildDatapathLoweringPipeline(pm, options);
 }
 
 void circt::synth::buildSynthOptimizationPipeline(

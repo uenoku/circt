@@ -63,6 +63,18 @@ struct CombLoweringPipelineOptions
       llvm::cl::desc("Lower compressors to variadic adds for downstream "
                       "optimization (instead of Wallace trees)"),
       llvm::cl::init(false)};
+  // Probe-guided selective refinement: run datapath-reduce-delay in gated
+  // mode (explicit records plus structural pressure within the margin).
+  // Negative (default) preserves legacy whole-module behavior.
+  PassOptions::Option<int> pressureMarginLevels{
+      *this, "pressure-margin-levels",
+      llvm::cl::desc("Structural slack margin in levels for selective "
+                      "datapath-reduce-delay (negative keeps legacy)"),
+      llvm::cl::init(-1)};
+  PassOptions::Option<bool> datapathRefinement{
+      *this, "datapath-refinement",
+      llvm::cl::desc("Enable probe-guided selective datapath refinement"),
+      llvm::cl::init(false)};
 };
 
 /// Options for the synth optimization pipeline.
@@ -111,6 +123,14 @@ struct SynthOptimizationPipelineOptions
 /// Populate the synthesis pipelines.
 void buildCombLoweringPipeline(mlir::OpPassManager &pm,
                                const CombLoweringPipelineOptions &options);
+// Split of the comb lowering pipeline around the refinement discovery
+// point: phase A ends after Comb-to-Datapath canonicalization and CSE
+// (datapath regions exist); phase B starts with datapath-reduce-delay.
+// buildCombLoweringPipeline is exactly phase A followed by phase B.
+void buildCombToDatapathPipeline(mlir::OpPassManager &pm,
+                                 const CombLoweringPipelineOptions &options);
+void buildDatapathLoweringPipeline(mlir::OpPassManager &pm,
+                                   const CombLoweringPipelineOptions &options);
 void buildSynthOptimizationPipeline(
     mlir::OpPassManager &pm, const SynthOptimizationPipelineOptions &options);
 

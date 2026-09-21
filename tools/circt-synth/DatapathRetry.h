@@ -32,6 +32,16 @@ struct DatapathRetryConfig {
   // Per-candidate wall-clock timeout in seconds (0 disables).
   unsigned timeoutSecs = 600;
   bool keepTemps = false;
+  // Probe-guided refinement rounds (scoped per-region candidates driven
+  // by STA feedback). 0 disables driver rounds.
+  bool refinement = false;
+  int refinementIterations = 2;
+  int pressureMarginLevels = 0;
+  // Minimum WNS improvement in ps for a refinement round to continue.
+  double minImprovementPs = 10.0;
+  // Parent --timing-feedback file reused for round 0 (children otherwise
+  // receive per-round generated feedback).
+  std::string initialFeedback;
   // argv[0] of this driver (for self-exec and sibling lookup).
   std::string selfPath;
   // Full original argv (forwarded to children, minus retry flags).
