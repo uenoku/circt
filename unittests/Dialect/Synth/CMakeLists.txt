@@ -1,5 +1,6 @@
 add_circt_unittest(CIRCTSynthTests
   LongestPathTest.cpp
+  TimingJSONTest.cpp
 )
 
 target_link_libraries(CIRCTSynthTests
@@ -8,6 +9,7 @@ target_link_libraries(CIRCTSynthTests
   CIRCTSeq
   CIRCTSynth
   CIRCTSynthAnalysis
+  CIRCTSynthTiming
   CIRCTHWTransforms
   CIRCTCombToSynth
   MLIRTransforms

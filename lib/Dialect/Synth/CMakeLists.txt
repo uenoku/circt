@@ -30,4 +30,5 @@ add_circt_dialect_library(CIRCTSynth
 )
 
 add_subdirectory(Analysis)
+add_subdirectory(Timing)
 add_subdirectory(Transforms)
