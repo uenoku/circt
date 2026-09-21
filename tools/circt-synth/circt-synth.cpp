@@ -223,6 +223,13 @@ static cl::opt<bool> bufferHighFanout(
     cl::desc("Buffer high-fanout nets with fanout-splitting buffers "
              "after mapping (opt-in)"),
     cl::init(false), cl::cat(mainCategory));
+static cl::opt<unsigned> reserveIngredientCuts(
+    "reserve-ingredient-cuts",
+    cl::desc("Retention slots reserved per node for the smallest cuts "
+             "during tech mapping; protects building-block cuts that "
+             "combine into larger covers (e.g. majority) from "
+             "bottom-up truncation crowding (opt-in)"),
+    cl::init(0), cl::cat(mainCategory));
 static cl::opt<int>
     maxFanout("max-fanout",
               cl::desc("Maximum per-copy fanout before buffer insertion splits "
@@ -674,6 +681,7 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     options.maxEntriesPerKey = maxEntriesPerKey;
     options.strategy = synthesisStrategy;
     options.loadAwareDelay = loadAwareDelay;
+    options.reserveIngredientCuts = reserveIngredientCuts;
     pm.addPass(synth::createTechMapper(options));
     // Post-map duplicate merging: TechMapper materializes one inverter per
     // negated binding after the last CSE (~30% of inverters are exact

@@ -725,6 +725,13 @@ bool compareCutsByAreaFlow(const Cut &lhs, const Cut &rhs);
 /// Compare matched cuts by local area, then timing and cut size.
 bool compareCutsByArea(const Cut &lhs, const Cut &rhs);
 
+/// Compare cuts by input size (fewest inputs first), then area flow and
+/// local area. Used to reserve retention slots for small ingredient cuts:
+/// priority-cut truncation applied bottom-up otherwise fills fanin slots
+/// with wide matched patterns, starving the small building-block cuts
+/// that would combine into larger (e.g. majority) cuts downstream.
+bool compareCutsBySmallInputs(const Cut &lhs, const Cut &rhs);
+
 /// Configuration options for the cut-based rewriting algorithm.
 ///
 /// These options control various aspects of the rewriting process including

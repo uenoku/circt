@@ -1055,6 +1055,20 @@ bool circt::synth::compareCutsByArea(const Cut &lhs, const Cut &rhs) {
   return lhs.getInputSize() < rhs.getInputSize();
 }
 
+bool circt::synth::compareCutsBySmallInputs(const Cut &lhs, const Cut &rhs) {
+  if (lhs.getInputSize() != rhs.getInputSize())
+    return lhs.getInputSize() < rhs.getInputSize();
+  const auto &lhsMatch = lhs.getMatchedPattern();
+  const auto &rhsMatch = rhs.getMatchedPattern();
+  if (lhsMatch && rhsMatch) {
+    if (!areEquivalent(lhsMatch->getAreaFlow(), rhsMatch->getAreaFlow()))
+      return lhsMatch->getAreaFlow() < rhsMatch->getAreaFlow();
+    if (!areEquivalent(lhsMatch->getArea(), rhsMatch->getArea()))
+      return lhsMatch->getArea() < rhsMatch->getArea();
+  }
+  return false;
+}
+
 // Remove duplicate cuts and non-minimal cuts. A cut is non-minimal if there
 // exists another cut that is a subset of it.
 static void removeDuplicateAndNonMinimalCuts(SmallVectorImpl<Cut *> &cuts) {

@@ -74,7 +74,13 @@ def TechMapper : CutRewriterPassBase<"synth-tech-mapper", "mlir::ModuleOp"> {
     Option<"loadAwareDelay", "load-aware-delay", "bool", "false",
            "Load-aware arc delays (intrinsic + sensitivity x estimated "
            "output load) during matching; off by default (load-blind "
-           "intrinsics)">
+           "intrinsics)">,
+    Option<"reserveIngredientCuts", "reserve-ingredient-cuts", "unsigned",
+           "0",
+           "Retention slots reserved per node for the smallest cuts "
+           "(ingredient protection): guards the small building-block "
+           "cuts that combine into larger covers (e.g. majority) "
+           "against bottom-up truncation crowding; 0 disables">
   ];
   let dependentDialects = ["hw::HWDialect"];
 }

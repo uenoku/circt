@@ -470,6 +470,9 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
     options.attachDebugTiming = test;
     options.additionalCutRankings.push_back({compareCutsByAreaFlow, 1});
     options.additionalCutRankings.push_back({compareCutsByArea, 1});
+    if (reserveIngredientCuts > 0)
+      options.additionalCutRankings.push_back(
+          {compareCutsBySmallInputs, reserveIngredientCuts});
     std::atomic<uint64_t> numCutsCreatedCount = 0;
     std::atomic<uint64_t> numCutSetsCreatedCount = 0;
     std::atomic<uint64_t> numCutsRewrittenCount = 0;
