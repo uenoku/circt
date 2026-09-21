@@ -1660,6 +1660,18 @@ equivalence class / 2 merged nodes on a 180-node multiplier cone, even
   Corollary: supergates are antagonistic to MAJ here -- more wide
   patterns competing for the same retention slots, crowding out MAJ's
   building blocks further.
+- Fix (implemented, opt-in): `compareCutsBySmallInputs` retention view
+  + `reserve-ingredient-cuts` knob on TechMapper/circt-synth (default
+  0: zero default-output change, all existing mapping tests pass
+  unmodified). `--max-cut-size-per-root=12 --reserve-ingredient-cuts=2`
+  on muladd8: 241 instances (same as baseline), WNS -0.073 -> -0.034
+  (+39ps, ties Yosys), 4 MAJIxp5 recovered. Reservation alone at the
+  default limit backfires (shrinks the primary ranking: 244-247
+  instances, only 1 MAJ) -- the fix needs both added capacity and
+  ingredient protection. Covered by
+  `test/Dialect/Synth/tech-mapper-ingredient-cuts.mlir` (6-bit Wallace:
+  5 -> 6 MAJI, 61 -> 60 cells). Area gap to Yosys (241 vs ~175)
+  remains a separate global-structure problem, not MAJ selection.
 
 ### System designs
 
