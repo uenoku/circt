@@ -368,8 +368,9 @@ struct BufferHighFanoutPass
     return true;
   }
 
-  // Q output of a flop instance (output port named "Q"); null when the
-  // instance has no such output (not a flop launch).
+  // Q output of a flop instance (output port named "Q", else "QN" for
+  // cells exposing only the inverted output); null when the instance has
+  // no such output (not a flop launch).
   static Value flopQ(ModuleOp top, hw::InstanceOp inst) {
     auto *target = top.lookupSymbol(inst.getModuleName());
     auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
@@ -379,6 +380,9 @@ struct BufferHighFanoutPass
     splitPorts(targetModule, inputs, outputs);
     for (unsigned i = 0; i < outputs.size(); ++i)
       if (outputs[i].name.getValue() == "Q")
+        return i < inst.getNumResults() ? inst.getResult(i) : Value();
+    for (unsigned i = 0; i < outputs.size(); ++i)
+      if (outputs[i].name.getValue() == "QN")
         return i < inst.getNumResults() ? inst.getResult(i) : Value();
     return Value();
   }

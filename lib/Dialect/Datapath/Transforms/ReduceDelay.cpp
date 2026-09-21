@@ -10,6 +10,8 @@
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/Datapath/DatapathPasses.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/RefinementRegions.h"
+#include "circt/Dialect/Synth/Analysis/TimingPressureAnalysis.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -26,6 +28,58 @@ using namespace mlir;
 
 namespace {
 
+// Eligibility for selective rewriting. Roots carrying an explicit
+// reduce-delay/fastest policy record are always eligible. Otherwise, when
+// the margin is non-negative, roots touching timing-pressured values
+// (results or operands) are eligible, as are operations created downstream
+// of an applied rewrite (region inheritance for greedy revisits). With no
+// selection active the pass preserves legacy whole-module behavior.
+struct PressureFilter {
+  const synth::TimingPressureAnalysis *analysis = nullptr;
+  int64_t marginLevels = -1;
+  bool selective = false;
+  DenseSet<Operation *> applied;
+  unsigned numConsidered = 0;
+  unsigned numApplied = 0;
+  unsigned numSkipped = 0;
+
+  bool isEligible(Operation *root) {
+    if (auto policy = synth::getRecordedRefinePolicy(root))
+      return *policy == synth::DatapathRefinementPolicy::ReduceDelay ||
+             *policy == synth::DatapathRefinementPolicy::FastestKnown;
+    if (!selective)
+      return true;
+    if (marginLevels >= 0 && analysis) {
+      for (Value result : root->getResults())
+        if (analysis->isPressured(result, marginLevels))
+          return true;
+      for (Value operand : root->getOperands())
+        if (analysis->isPressured(operand, marginLevels))
+          return true;
+    }
+    for (Value operand : root->getOperands())
+      if (Operation *defOp = operand.getDefiningOp())
+        if (applied.contains(defOp))
+          return true;
+    return false;
+  }
+};
+
+struct AppliedListener : public RewriterBase::Listener {
+  DenseSet<Operation *> *applied = nullptr;
+  void notifyOperationReplaced(Operation *op, ValueRange) override {
+    if (applied)
+      applied->insert(op);
+  }
+};
+
+// Region inheritance: operations created by an approved rewrite carry the
+// matched root's recorded policy, so greedy revisits stay in-region.
+void inheritPolicy(Operation *from, Operation *to) {
+  if (auto attr = from->getAttr(synth::refinePolicyAttrName()))
+    to->setAttr(synth::refinePolicyAttrName(), attr);
+}
+
 // Fold add operations even if used multiple times incurring area overhead as
 // transformation reduces shared logic - but reduces delay
 // add = a + b;
@@ -37,10 +91,19 @@ namespace {
 // out1 = comp1[0] + comp1[1];
 // out2 = add << d;
 struct FoldAddReplicate : public OpRewritePattern<comb::AddOp> {
-  using OpRewritePattern::OpRewritePattern;
+  FoldAddReplicate(MLIRContext *ctx, PressureFilter *filter = nullptr)
+      : OpRewritePattern<comb::AddOp>(ctx), filter(filter) {}
+  PressureFilter *filter = nullptr;
 
   LogicalResult matchAndRewrite(comb::AddOp addOp,
                                 PatternRewriter &rewriter) const override {
+    if (filter) {
+      ++filter->numConsidered;
+      if (!filter->isEligible(addOp)) {
+        ++filter->numSkipped;
+        return failure();
+      }
+    }
 
     SmallVector<Value, 8> newCompressOperands;
     // Check if any operand is an AddOp that has not be folded by comb folds
@@ -59,10 +122,14 @@ struct FoldAddReplicate : public OpRewritePattern<comb::AddOp> {
     // Create a new CompressOp with all collected operands
     auto newCompressOp = datapath::CompressOp::create(rewriter, addOp.getLoc(),
                                                       newCompressOperands, 2);
+    inheritPolicy(addOp, newCompressOp);
 
     // Add the results of the CompressOp
-    rewriter.replaceOpWithNewOp<comb::AddOp>(addOp, newCompressOp.getResults(),
-                                             true);
+    auto newAdd = rewriter.replaceOpWithNewOp<comb::AddOp>(
+        addOp, newCompressOp.getResults(), true);
+    inheritPolicy(addOp, newAdd);
+    if (filter)
+      ++filter->numApplied;
     return success();
   }
 };
@@ -71,12 +138,21 @@ struct FoldAddReplicate : public OpRewritePattern<comb::AddOp> {
 // -->
 // (a ? b : d) + (a ? c : e) + f
 struct FoldMuxAdd : public OpRewritePattern<comb::AddOp> {
-  using OpRewritePattern::OpRewritePattern;
+  FoldMuxAdd(MLIRContext *ctx, PressureFilter *filter = nullptr)
+      : OpRewritePattern<comb::AddOp>(ctx), filter(filter) {}
+  PressureFilter *filter = nullptr;
 
   // When used in conjunction with datapath canonicalization will only replicate
   // two input adders.
   LogicalResult matchAndRewrite(comb::AddOp addOp,
                                 PatternRewriter &rewriter) const override {
+    if (filter) {
+      ++filter->numConsidered;
+      if (!filter->isEligible(addOp)) {
+        ++filter->numSkipped;
+        return failure();
+      }
+    }
 
     SmallVector<Value, 8> newCompressOperands;
     for (Value operand : addOp.getOperands()) {
@@ -131,16 +207,22 @@ struct FoldMuxAdd : public OpRewritePattern<comb::AddOp> {
     // Create a new CompressOp with all collected operands
     auto newCompressOp = datapath::CompressOp::create(rewriter, addOp.getLoc(),
                                                       newCompressOperands, 2);
+    inheritPolicy(addOp, newCompressOp);
 
     // Add the results of the CompressOp
-    rewriter.replaceOpWithNewOp<comb::AddOp>(addOp, newCompressOp.getResults(),
-                                             true);
+    auto newAdd = rewriter.replaceOpWithNewOp<comb::AddOp>(
+        addOp, newCompressOp.getResults(), true);
+    inheritPolicy(addOp, newAdd);
+    if (filter)
+      ++filter->numApplied;
     return success();
   }
 };
 
 struct ConvertCmpToAdd : public OpRewritePattern<comb::ICmpOp> {
-  using OpRewritePattern::OpRewritePattern;
+  ConvertCmpToAdd(MLIRContext *ctx, PressureFilter *filter = nullptr)
+      : OpRewritePattern<comb::ICmpOp>(ctx), filter(filter) {}
+  PressureFilter *filter = nullptr;
 
   // Applicable to unsigned comparisons without overflow:
   // a + b < c + d
@@ -148,6 +230,13 @@ struct ConvertCmpToAdd : public OpRewritePattern<comb::ICmpOp> {
   // msb( {0,a} + {0,b} - {0,c} - {0,d} )
   LogicalResult matchAndRewrite(comb::ICmpOp op,
                                 PatternRewriter &rewriter) const override {
+    if (filter) {
+      ++filter->numConsidered;
+      if (!filter->isEligible(op)) {
+        ++filter->numSkipped;
+        return failure();
+      }
+    }
     Value lhs = op.getLhs();
     Value rhs = op.getRhs();
     auto width = lhs.getType().getIntOrFloatBitWidth();
@@ -214,16 +303,21 @@ struct ConvertCmpToAdd : public OpRewritePattern<comb::ICmpOp> {
     SmallVector<Value> allAddends = std::move(lhsExtend);
     llvm::append_range(allAddends, rhsExtend);
     auto add = comb::AddOp::create(rewriter, op.getLoc(), allAddends, false);
+    inheritPolicy(op, add);
     auto msb = rewriter.createOrFold<comb::ExtractOp>(
         op.getLoc(), add.getResult(), width, 1);
 
     if (!invertOut) {
       rewriter.replaceOp(op, msb);
+      if (filter)
+        ++filter->numApplied;
       return success();
     }
 
     auto notOp = comb::createOrFoldNot(rewriter, op.getLoc(), msb);
     rewriter.replaceOp(op, notOp);
+    if (filter)
+      ++filter->numApplied;
     return success();
   }
 };
@@ -234,16 +328,44 @@ namespace {
 struct DatapathReduceDelayPass
     : public circt::datapath::impl::DatapathReduceDelayBase<
           DatapathReduceDelayPass> {
+  using circt::datapath::impl::DatapathReduceDelayBase<
+      DatapathReduceDelayPass>::DatapathReduceDelayBase;
 
   void runOnOperation() override {
     Operation *op = getOperation();
     MLIRContext *ctx = op->getContext();
 
-    RewritePatternSet patterns(ctx);
-    patterns.add<FoldAddReplicate, FoldMuxAdd, ConvertCmpToAdd>(ctx);
+    // Selective mode: explicit policy records anywhere in the scope, or
+    // a non-negative pressure margin. Otherwise legacy whole-module.
+    PressureFilter filter;
+    filter.marginLevels = pressureMarginLevels;
+    std::optional<synth::TimingPressureAnalysis> analysis;
+    if (pressureMarginLevels >= 0) {
+      analysis.emplace(op);
+      filter.analysis = &*analysis;
+      filter.selective = true;
+    } else {
+      auto hasRecord = op->walk([](Operation *nested) {
+        if (nested->hasAttr(synth::refinePolicyAttrName()))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      });
+      filter.selective = hasRecord.wasInterrupted();
+    }
 
-    if (failed(applyPatternsGreedily(op, std::move(patterns))))
+    RewritePatternSet patterns(ctx);
+    patterns.add<FoldAddReplicate, FoldMuxAdd, ConvertCmpToAdd>(ctx, &filter);
+
+    AppliedListener listener;
+    listener.applied = &filter.applied;
+    GreedyRewriteConfig config;
+    config.setListener(&listener);
+    if (failed(applyPatternsGreedily(op, std::move(patterns), config)))
       signalPassFailure();
+
+    numMatchesConsidered += filter.numConsidered;
+    numMatchesApplied += filter.numApplied;
+    numMatchesSkipped += filter.numSkipped;
   };
 };
 } // namespace

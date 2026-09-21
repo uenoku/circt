@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Analysis/RefinementRegions.h"
 #include "circt/Dialect/Synth/SynthOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -46,13 +47,23 @@ struct StripTimingProbesPass
         return WalkResult::advance();
       // Collect first; erasure mutates the block.
       SmallVector<synth::TimingProbeOp> probes;
-      for (auto &op : module.getBodyBlock()->getOperations())
+      SmallVector<Operation *> recorded;
+      for (auto &op : module.getBodyBlock()->getOperations()) {
         if (auto probe = dyn_cast<synth::TimingProbeOp>(op))
           probes.push_back(probe);
+        else if (op.hasAttr(synth::refinePolicyAttrName()))
+          recorded.push_back(&op);
+      }
       for (auto probe : probes) {
         probe.getResult().replaceAllUsesWith(probe.getInput());
         probe->erase();
         ++numProbesStripped;
+        changed = true;
+      }
+      // Transient refinement records never survive stripping.
+      for (Operation *op : recorded) {
+        op->removeAttr(synth::refinePolicyAttrName());
+        ++numRefineAttrsRemoved;
         changed = true;
       }
       return WalkResult::advance();

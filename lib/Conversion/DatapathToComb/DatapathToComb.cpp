@@ -11,6 +11,7 @@
 #include "circt/Dialect/Datapath/DatapathOps.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/Synth/Analysis/LongestPathAnalysis.h"
+#include "circt/Dialect/Synth/Analysis/RefinementRegions.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -70,14 +71,44 @@ static std::pair<bool, Value> getBaseOfExt(PatternRewriter &rewriter,
 //===----------------------------------------------------------------------===//
 
 namespace {
+// A recorded per-operation refinement policy overrides the global lowering
+// flags for that operation only; operations without a record behave exactly
+// as before.
+std::optional<synth::DatapathRefinementPolicy> recordedPolicy(Operation *op) {
+  return synth::getRecordedRefinePolicy(op);
+}
+
+bool policyRequestsBooth(Operation *op) {
+  auto policy = recordedPolicy(op);
+  return policy && (*policy == synth::DatapathRefinementPolicy::ForceBooth ||
+                    *policy == synth::DatapathRefinementPolicy::FastestKnown);
+}
+} // namespace
+
+namespace {
 // Replace compressor by an adder of the inputs and zero for the other results:
 // compress(a,b,c,d) -> {a+b+c+d, 0}
 // Facilitates use of downstream compression algorithms e.g. Yosys
 struct DatapathCompressOpAddConversion : mlir::OpRewritePattern<CompressOp> {
-  using mlir::OpRewritePattern<CompressOp>::OpRewritePattern;
+  DatapathCompressOpAddConversion(MLIRContext *context, bool lowerCompressToAdd)
+      : mlir::OpRewritePattern<CompressOp>(context),
+        lowerCompressToAdd(lowerCompressToAdd) {}
+
+  const bool lowerCompressToAdd;
+
   LogicalResult
   matchAndRewrite(CompressOp op,
                   mlir::PatternRewriter &rewriter) const override {
+    // A recorded fastest policy defers to the Wallace implementation;
+    // compress-to-add selects the variadic add for this operation only.
+    auto policy = recordedPolicy(op);
+    bool fastest =
+        policy && *policy == synth::DatapathRefinementPolicy::FastestKnown;
+    if ((!lowerCompressToAdd && !policy) || fastest)
+      return failure();
+    if (policy && *policy != synth::DatapathRefinementPolicy::CompressToAdd &&
+        !lowerCompressToAdd)
+      return failure();
     Location loc = op.getLoc();
     auto inputs = op.getOperands();
     unsigned width = inputs[0].getType().getIntOrFloatBitWidth();
@@ -95,12 +126,23 @@ struct DatapathCompressOpAddConversion : mlir::OpRewritePattern<CompressOp> {
 // Replace compressor by a wallace tree of full-adders
 struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
   DatapathCompressOpConversion(MLIRContext *context,
-                               synth::IncrementalLongestPathAnalysis *analysis)
-      : mlir::OpRewritePattern<CompressOp>(context), analysis(analysis) {}
+                               synth::IncrementalLongestPathAnalysis *analysis,
+                               bool lowerCompress)
+      : mlir::OpRewritePattern<CompressOp>(context), analysis(analysis),
+        lowerCompress(lowerCompress) {}
 
   LogicalResult
   matchAndRewrite(CompressOp op,
                   mlir::PatternRewriter &rewriter) const override {
+    // A recorded compress-to-add policy defers to the variadic-add
+    // implementation; fastest selects Wallace for this operation only.
+    auto policy = recordedPolicy(op);
+    bool toAdd =
+        policy && *policy == synth::DatapathRefinementPolicy::CompressToAdd;
+    bool fastest =
+        policy && *policy == synth::DatapathRefinementPolicy::FastestKnown;
+    if ((!lowerCompress && !fastest) || toAdd)
+      return failure();
     Location loc = op.getLoc();
     auto inputs = op.getOperands();
 
@@ -128,6 +170,7 @@ struct DatapathCompressOpConversion : mlir::OpRewritePattern<CompressOp> {
 
 private:
   synth::IncrementalLongestPathAnalysis *analysis = nullptr;
+  bool lowerCompress = false;
 };
 
 struct DatapathPartialProductOpConversion : OpRewritePattern<PartialProductOp> {
@@ -167,8 +210,10 @@ struct DatapathPartialProductOpConversion : OpRewritePattern<PartialProductOp> {
       return lowerSqrAndArray(rewriter, a, op, width);
 
     // Use result rows as a heuristic to guide partial product
-    // implementation
-    if (comb::shouldUseBoothEncoding(a, b) || forceBooth)
+    // implementation. A recorded booth/fastest policy selects Booth for
+    // this operation only.
+    if (comb::shouldUseBoothEncoding(a, b) || forceBooth ||
+        policyRequestsBooth(op))
       return lowerBoothArray(rewriter, a, b, op, width);
     else
       return lowerAndArray(rewriter, a, b, op, width);
@@ -521,8 +566,10 @@ struct DatapathPosPartialProductOpConversion
       return lowerAndArray(rewriter, a, b, c, op, width);
 
     // Recoding the carry-save operand directly avoids materializing a
-    // carry-propagate addition before the multiplier.
-    if (comb::shouldUseBoothEncoding(a, b) || forceBooth)
+    // carry-propagate addition before the multiplier. A recorded
+    // booth/fastest policy selects Booth for this operation only.
+    if (comb::shouldUseBoothEncoding(a, b) || forceBooth ||
+        policyRequestsBooth(op))
       return lowerBoothArray(rewriter, a, b, c, op, width);
     return lowerAndArray(rewriter, a, b, c, op, width);
   }
@@ -841,12 +888,15 @@ void ConvertDatapathToCombPass::runOnOperation() {
   if (timingAware)
     analysis = &getAnalysis<synth::IncrementalLongestPathAnalysis>();
 
-  if (lowerCompressToAdd)
-    // Lower compressors to simple add operations for downstream optimisations
-    patterns.add<DatapathCompressOpAddConversion>(patterns.getContext());
-  if (lowerCompress)
-    // Lower compressors to a complete gate-level implementation
-    patterns.add<DatapathCompressOpConversion>(patterns.getContext(), analysis);
+  // Both compressor lowerings are always registered; each fires only for
+  // operations selected by the global flags or a recorded per-operation
+  // refinement policy (compress-to-add selects the variadic add, fastest
+  // selects Wallace for that operation). The conditions are disjoint per
+  // operation, so at most one fires.
+  patterns.add<DatapathCompressOpAddConversion>(patterns.getContext(),
+                                                lowerCompressToAdd);
+  patterns.add<DatapathCompressOpConversion>(patterns.getContext(), analysis,
+                                             lowerCompress);
 
   if (failed(applyPatternsGreedilyWithTimingInfo(
           getOperation(), std::move(patterns), analysis)))
