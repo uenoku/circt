@@ -305,8 +305,9 @@ bool RetryRunner::runCandidate(StringRef name,
     tcl += (std::string("read_verilog ") + verilogFile + "\n");
     tcl += (std::string("link_design ") + config.top + "\n");
     tcl += (std::string("read_sdc ") + sdcFile + "\n");
-    tcl += hasClocks ? "report_checks -path_delay max\n"
-                     : "report_checks -path_delay max -unconstrained\n";
+    tcl += hasClocks ? "report_checks -path_delay max -digits 6\n"
+                     : "report_checks -path_delay max -unconstrained "
+                       "-digits 6\n";
     std::error_code ec;
     raw_fd_ostream tclOut(tclFile, ec);
     if (ec) {
