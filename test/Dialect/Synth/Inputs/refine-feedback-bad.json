@@ -1,0 +1,3 @@
+{"schema": "circt.synth.timing-feedback.v1", "time_unit": "ns", "top": "top",
+ "paths": [{"startpoint": "u_sub/f0/Q", "endpoint": "u_sub/f0",
+            "required": 8.0, "arrival": 9.5, "slack": 5.0}]}

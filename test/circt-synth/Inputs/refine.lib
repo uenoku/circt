@@ -1,0 +1,225 @@
+library(retrytest) {
+  lu_table_template (t1) {
+    variable_1: input_net_transition;
+    variable_2: total_output_net_capacitance;
+    index_1 ("0.01, 0.02");
+    index_2 ("0.001, 0.002");
+  }
+  cell (myand2) {
+    area : 4.0;
+    pin (A) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (B) {
+      direction: input;
+      capacitance : 0.002;
+    }
+    pin (X) {
+      direction: output;
+      function: "A * B";
+      timing () {
+        related_pin: "A";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+      timing () {
+        related_pin: "B";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+  cell (myor2) {
+    area : 5.0;
+    pin (A) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (B) {
+      direction: input;
+      capacitance : 0.002;
+    }
+    pin (X) {
+      direction: output;
+      function: "A + B";
+      timing () {
+        related_pin: "A";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+      timing () {
+        related_pin: "B";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+  cell (myxor2) {
+    area : 6.0;
+    pin (A) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (B) {
+      direction: input;
+      capacitance : 0.002;
+    }
+    pin (X) {
+      direction: output;
+      function: "A ^ B";
+      timing () {
+        related_pin: "A";
+        timing_sense: non_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+      timing () {
+        related_pin: "B";
+        timing_sense: non_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+  cell (myinv) {
+    area : 2.0;
+    pin (A) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (X) {
+      direction: output;
+      function: "!A";
+      timing () {
+        related_pin: "A";
+        timing_sense: negative_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        rise_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        fall_transition (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+  cell (mydff) {
+    area : 10.0;
+    ff ("IQ", "IQN") {
+      clocked_on: "CLK";
+      next_state: "D";
+    }
+    pin (D) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (CLK) {
+      direction: input;
+      clock : true;
+      capacitance : 0.001;
+    }
+    pin (Q) {
+      direction: output;
+      function: "IQ";
+    }
+  }
+  cell (mybuf) {
+    area : 2.0;
+    pin (A) {
+      direction: input;
+      capacitance : 0.001;
+    }
+    pin (X) {
+      direction: output;
+      function: "A";
+      timing () {
+        related_pin: "A";
+        timing_sense: positive_unate;
+        timing_type: combinational;
+        cell_rise (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+        cell_fall (t1) {
+          values ("0.1, 0.2", "0.3, 0.4");
+        }
+      }
+    }
+  }
+}

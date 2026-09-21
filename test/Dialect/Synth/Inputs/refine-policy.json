@@ -1,0 +1,4 @@
+{"schema": "circt.synth.datapath-policy.v1",
+ "regions": [{"id": "@arith:0", "policy": "booth"},
+             {"id": "@arith:NOPE", "policy": "reduce-delay"},
+             {"id": "@arith:3", "policy": "bogus"}]}

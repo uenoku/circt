@@ -37,3 +37,13 @@ hw.module @strip_clean(in %a : i1, out z : i1) {
     // CHECK: hw.output %a : i1
     hw.output %a : i1
 }
+
+// Transient refinement records are removed with the probes.
+// CHECK-LABEL: hw.module @strip_recorded
+// CHECK-NOT: datapath.refine.policy
+// CHECK-NOT: synth.timing_probe
+hw.module @strip_recorded(in %a : i4, in %b : i4, out z : i4) {
+    %p = synth.timing_probe %a : i4 {required_time = 10000 : i64}
+    %s = comb.add %p, %b {datapath.refine.policy = "reduce-delay"} : i4
+    hw.output %s : i4
+}

@@ -1,0 +1,7 @@
+{"schema": "circt.synth.timing-feedback.v1", "time_unit": "ns", "top": "top",
+ "paths": [{"startpoint": "u_sub/f0/Q", "endpoint": "u_sub/f0",
+            "required": 8.0, "arrival": 9.5, "slack": -1.5},
+           {"startpoint": "u_sub/f1/Q", "endpoint": "u_sub/f1",
+            "required": 9.0, "arrival": 9.5, "slack": -0.5},
+           {"startpoint": "u_sub/f0/Q", "endpoint": "u_sub/missing",
+            "required": 1.0, "arrival": 2.0, "slack": -1.0}]}
