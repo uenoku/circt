@@ -45,12 +45,13 @@ hw.module @top_masktie(in %clk : i1, in %raddr : i6, in %waddr : i6, in %wdata :
   hw.output %d : i32
 }
 
-// Skips: geometry mismatch, read-write ports, init, collision behavior.
-// All firmems below must survive (m0 also has read latency 1, which the
-// flop fallback rejects too).
+// Skips: geometry mismatch, init, collision behavior. Read-write ports
+// with undefined collisions split into read+write pairs first: m1 maps
+// below. All other firmems must survive (m0 also has read latency 1,
+// which the flop fallback rejects too).
 // CHECK-LABEL: hw.module @top_skips(
 // CHECK: seq.firmem {{.*}} : <128 x 8>
-// CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
+// CHECK: hw.instance {{.*}} @sram_64x32_mask(
 // CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
 // CHECK: seq.firmem {{.*}} : <64 x 32, mask 4>
 hw.module @top_skips(in %clk : i1, in %addr : i8, in %addr6 : i6, in %addr7 : i7, in %data : i32, in %data8 : i8, in %en : i1, in %mode : i1, out o0 : i8, out o1 : i32, out o2 : i32, out o3 : i32) {
@@ -97,5 +98,35 @@ hw.module @top_explode_masked(in %clk : i1, in %raddr : i2, in %waddr : i2, in %
   %mem = seq.firmem 0, 1, undefined, undefined : <4 x 8, mask 2>
   %d = seq.firmem.read_port %mem[%raddr], clock %c : <4 x 8, mask 2>
   seq.firmem.write_port %mem[%waddr] = %wdata, clock %c enable %wen mask %mask : <4 x 8, mask 2>, i2
+  hw.output %d : i8
+}
+
+// Combinational-read macro for latency-adaptation tests.
+// CHECK-LABEL: hw.module.extern @sram_16x8_comb
+hw.module.extern @sram_16x8_comb(in %clk : i1, in %raddr : i4, out rdout : i8, in %we : i1, in %waddr : i4, in %wdin : i8) attributes {synth.sram.macro = #synth.sram_macro<8 x 16, [#synth.sram_port<read, "clk", "", "raddr", 4, "rdout", 8, "", 0, 0>, #synth.sram_port<write, "clk", "we", "waddr", 4, "wdin", 8, "", 0, 1>]>}
+
+// A read-write port with defined collision behavior never splits and the
+// memory survives.
+// CHECK-LABEL: hw.module @top_rw_defined_ruw(
+// CHECK: seq.firmem.read_write_port
+// CHECK-NOT: hw.instance
+hw.module @top_rw_defined_ruw(in %clk : i1, in %addr : i4, in %wdata : i8, in %mode : i1, in %en : i1, out dout : i8) {
+  %c = seq.to_clock %clk
+  %mem = seq.firmem 1, 1, old, undefined : <16 x 8>
+  %d = seq.firmem.read_write_port %mem[%addr] = %wdata if %mode, clock %c enable %en : <16 x 8>
+  hw.output %d : i8
+}
+
+// A read-write port with undefined collisions splits; the synchronous read
+// maps onto the combinational macro with one output register stage.
+// CHECK-LABEL: hw.module @top_rw_split_latency(
+// CHECK: hw.instance {{.*}} @sram_16x8_comb(
+// CHECK: seq.firreg
+// CHECK-NOT: seq.firmem
+// CHECK-NOT: seq.firmem.read_write_port
+hw.module @top_rw_split_latency(in %clk : i1, in %addr : i4, in %wdata : i8, in %mode : i1, in %en : i1, out dout : i8) {
+  %c = seq.to_clock %clk
+  %mem = seq.firmem 1, 1, undefined, undefined : <16 x 8>
+  %d = seq.firmem.read_write_port %mem[%addr] = %wdata if %mode, clock %c enable %en : <16 x 8>
   hw.output %d : i8
 }
