@@ -1642,6 +1642,24 @@ equivalence class / 2 merged nodes on a 180-node multiplier cone, even
   was an artifact of running STA without the emitted input/output
   delays, which hides input paths; fully constrained STA is the
   reference everywhere in this document.)
+- Cut-retention slots (`--max-cut-size-per-root`, default 6): the actual
+  root cause. Raising it to 16 recovers 4 MAJIxp5 on muladd8 with WNS
+  -0.073 -> -0.042 (+31ps) at 243 instances -- and on an isolated
+  minority-over-intermediates cone it recovers the provably optimal
+  3xAND + 1xMAJI 4-cell cover (the default flow picks 5 discretes).
+  Debug tracing (`--debug-only=synth-cut-rewriter`) shows MAJ patterns
+  exist with correct tables (MAJIxp5: t23, MAJx3: t232) and MAJ cuts
+  enumerate fine, but at default limits the minority/majority cut is
+  never even submitted for matching while its sibling cuts are.
+  Mechanism: priority-cut retention (top-K per node, matched-first)
+  applied bottom-up fills fanin slots with wide matched complex
+  patterns (AOI/OAI/...), starving the small ingredient cuts that
+  would combine into MAJ cuts downstream. MAJ cuts are never born,
+  not outbid -- when they do form (more slots), selection picks them.
+  Clean PI-input cones work because PIs need no retained ingredients.
+  Corollary: supergates are antagonistic to MAJ here -- more wide
+  patterns competing for the same retention slots, crowding out MAJ's
+  building blocks further.
 
 ### System designs
 
