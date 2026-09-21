@@ -1627,6 +1627,22 @@ Separately, this analysis exposed a sequential-mapping correctness bug
 fixed with driver compensation plus a `seq-tech-mapper-qn` regression
 test). All numbers above are post-fix, functionally correct circuits.
 
+Two more mechanisms tested directly:
+
+- FunctionalReduction (`--enable-functional-reduction`, SAT-backed):
+  works mechanically but finds almost nothing on Wallace AIGs (1
+equivalence class / 2 merged nodes on a 180-node multiplier cone, even
+  at 100x conflict budget) and changes neither area (241) nor MAJ (0).
+  Not a redundancy problem, so sweeping alone cannot fix selection.
+- SOPBalancing (`--enable-sop-balancing`, off by default): DOES move
+  the needle -- 4 MAJs (2 MAJIxp5 + 2 MAJx3) appear, NOR2 drops 38 ->
+  22, WNS -0.073 -> -0.054 (+19ps) at 241 instances and 28.10 -> 28.88
+  area. SOP restructuring exposes MAJ cuts that the default flow
+  misses, trading a little area for delay. (An early +0.045 MET reading
+  was an artifact of running STA without the emitted input/output
+  delays, which hides input paths; fully constrained STA is the
+  reference everywhere in this document.)
+
 ### System designs
 
 The existing FIFO and ChipTop experiments exercise different failure modes:
