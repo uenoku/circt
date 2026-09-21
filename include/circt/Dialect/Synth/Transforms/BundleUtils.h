@@ -30,8 +30,9 @@ constexpr uint64_t kAnd2Table = 0b1000;
 constexpr uint64_t kXor2Table = 0b0110;
 constexpr uint64_t kMaj3Table = 0b11101000;
 constexpr uint64_t kXor3Table = 0b10010110;
+constexpr uint64_t kMinority3Table = 0b00010111;
 
-enum class GateClass { None, And2, Xor2, Maj3, Xor3 };
+enum class GateClass { None, And2, Xor2, Maj3, Xor3, Minority3 };
 
 /// Apply an input permutation to a truth table: bit `i` of each row moves
 /// to position `perm[i]`. Brute force is trivial for the small supports
@@ -78,6 +79,11 @@ inline GateClass classifyTable(uint64_t table, unsigned numInputs) {
       return GateClass::Maj3;
     if (matchesUnderPermutation(table, 3, kXor3Table))
       return GateClass::Xor3;
+    // Complemented carry: Wallace trees predominantly materialize
+    // carries in inverted form, so XOR3+Minority3 is the common
+    // full-adder shape (e.g. ASAP7 FAx1 with its CON output).
+    if (matchesUnderPermutation(table, 3, kMinority3Table))
+      return GateClass::Minority3;
   }
   return GateClass::None;
 }

@@ -274,6 +274,13 @@ def CreateBundleOp : SynthOp<"create_bundle", [Pure]> {
     cell or erases it (falling back to the discrete logic, which stays in
     place). Nothing downstream of mapping may observe one.
 
+    The first two operands are the roots (e.g. sum and carry); any
+    further operands record the shared support the pair was extracted
+    over. Mapping simulates the joint function over the recorded
+    support instead of walking transitively past it, which keeps deep
+    cones matchable. Bundles without recorded support simulate
+    transitively as before.
+
     The operation deliberately carries no function data: the joint function
     is derived by simulating the producer cones at match time (ground
     truth), and erasing is a complete fallback. No canonicalization may

@@ -41,6 +41,7 @@ namespace {
 struct ClassifiedCut {
   uint32_t rootIdx;
   Value root;
+  // Shared-support values in sorted leaf-index order (matches leafIdxs).
   SmallVector<Value, 4> leaves;
   // Sorted leaf indices: the deterministic group key (pointer order varies
   // per run and must never affect decisions).
@@ -120,8 +121,17 @@ struct ExtractBundlesPass
         SmallVector<uint32_t, 4> leafIdxs(cut->inputs.begin(),
                                           cut->inputs.end());
         llvm::sort(leafIdxs);
-        classified.push_back(
-            {index, root, {leaves.begin(), leaves.end()}, leafIdxs, gateClass});
+        // Order values by sorted leaf index so paired cuts share an
+        // identical leaf sequence for the bundle record.
+        DenseMap<uint32_t, Value> idxToValue;
+        for (size_t k = 0; k < cut->inputs.size(); ++k)
+          idxToValue[cut->inputs[k]] = leaves[k];
+        SmallVector<Value, 4> sortedLeaves;
+        for (uint32_t idx : leafIdxs)
+          sortedLeaves.push_back(idxToValue[idx]);
+        classified.push_back({index, root,
+                              {sortedLeaves.begin(), sortedLeaves.end()},
+                              leafIdxs, gateClass});
       }
     }
 
@@ -137,21 +147,32 @@ struct ExtractBundlesPass
     });
     bool changed = false;
     DenseSet<Value> bundled;
-    for (size_t groupBegin = 0; groupBegin < classified.size();) {
-      size_t groupEnd = groupBegin + 1;
-      while (groupEnd < classified.size() &&
-             classified[groupEnd].leafIdxs == classified[groupBegin].leafIdxs)
-        ++groupEnd;
-      changed |= pairGroup(module, classified, groupBegin, groupEnd, bundled);
-      groupBegin = groupEnd;
+    // Two-phase pairing: full adders first across ALL groups, then half
+    // adders. Groups are visited smallest-first, so single-pass pairing
+    // would let half-adder pairs in small groups steal roots that form
+    // full adders in larger groups (e.g. a sum consumed via an XOR2
+    // sub-cut). Full adders strictly dominate, so they claim roots first.
+    for (int phase = 0; phase < 2; ++phase) {
+      for (size_t groupBegin = 0; groupBegin < classified.size();) {
+        size_t groupEnd = groupBegin + 1;
+        while (groupEnd < classified.size() &&
+               classified[groupEnd].leafIdxs == classified[groupBegin].leafIdxs)
+          ++groupEnd;
+        changed |= pairGroup(module, classified, groupBegin, groupEnd, bundled,
+                             /*fullAddersOnly=*/phase == 0);
+        groupBegin = groupEnd;
+      }
     }
     return changed;
   }
 
   /// Pair XOR3+MAJ3 (full adders) and XOR2+AND2 (half adders) within one
-  /// leaf group. First pair wins per root (deterministic).
+  /// leaf group. First pair wins per root (deterministic). When
+  /// fullAddersOnly is set, half-adder pairing is deferred to a later
+  /// phase so full adders claim shared roots first.
   bool pairGroup(hw::HWModuleOp module, ArrayRef<ClassifiedCut> classified,
-                 size_t begin, size_t end, DenseSet<Value> &bundled) {
+                 size_t begin, size_t end, DenseSet<Value> &bundled,
+                 bool fullAddersOnly) {
     bool changed = false;
     auto tryPair = [&](bundle::GateClass first, bundle::GateClass second,
                        bool fullAdder) {
@@ -165,7 +186,7 @@ struct ExtractBundlesPass
               classified[j].root == classified[i].root)
             continue;
           createBundle(module, classified[i].root, classified[j].root,
-                       fullAdder);
+                       classified[i].leaves, fullAdder);
           bundled.insert(classified[i].root);
           bundled.insert(classified[j].root);
           changed = true;
@@ -176,18 +197,33 @@ struct ExtractBundlesPass
     // XOR-first ordering keeps sum before carry in the bundle.
     tryPair(bundle::GateClass::Xor3, bundle::GateClass::Maj3,
             /*fullAdder=*/true);
+    // Complemented-carry full adders (XOR3 sum + minority carry) map to
+    // cells like ASAP7 FAx1 whose carry output is negated; MapBundles
+    // re-derives joint tables, so no polarity bookkeeping is needed here.
+    tryPair(bundle::GateClass::Xor3, bundle::GateClass::Minority3,
+            /*fullAdder=*/true);
+    if (fullAddersOnly)
+      return changed;
     tryPair(bundle::GateClass::Xor2, bundle::GateClass::And2,
             /*fullAdder=*/false);
     return changed;
   }
 
   void createBundle(hw::HWModuleOp module, Value sum, Value carry,
-                    bool fullAdder) {
+                    ArrayRef<Value> leaves, bool fullAdder) {
     auto *block = module.getBodyBlock();
     OpBuilder builder(block, block->getTerminator()->getIterator());
-    synth::CreateBundleOp::create(builder, sum.getLoc(),
-                                  TypeRange{sum.getType(), carry.getType()},
-                                  ValueRange{sum, carry});
+    // Operands are the two roots followed by the shared support; results
+    // pass everything through (leaf results are unused). Recording the
+    // support lets mapping simulate the joint function over the paired
+    // cut boundary instead of walking transitively past it.
+    SmallVector<Value> operands{sum, carry};
+    operands.append(leaves.begin(), leaves.end());
+    SmallVector<Type> types{sum.getType(), carry.getType()};
+    for (Value leaf : leaves)
+      types.push_back(leaf.getType());
+    synth::CreateBundleOp::create(builder, sum.getLoc(), TypeRange(types),
+                                  ValueRange(operands));
     ++numBundles;
     if (fullAdder)
       ++numFullAdders;

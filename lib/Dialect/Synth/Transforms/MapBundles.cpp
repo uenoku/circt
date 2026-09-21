@@ -30,6 +30,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/bit.h"
 #include <algorithm>
 
 namespace circt {
@@ -84,9 +85,61 @@ struct MapBundlesPass
     return !hasState;
   }
 
+  /// Cheapest single-output cell computing negation (raw NOT table),
+  /// used to materialize output inverters when a bundle matches a cell
+  /// with negated outputs (e.g. an XOR3+minority pair onto a cell with
+  /// XNOR3 sum). Null when no inverter cell is available, in which case
+  /// only exact-polarity matches are considered.
+  static hw::HWModuleOp findCheapestInverter(ModuleOp top) {
+    hw::HWModuleOp best = nullptr;
+    double bestArea = std::numeric_limits<double>::infinity();
+    for (auto module : top.getOps<hw::HWModuleOp>()) {
+      if (isa<hw::HWModuleExternOp>(module) ||
+          module->hasAttr("synth.dont_use"))
+        continue;
+      if (module.getNumInputPorts() != 1 || module.getNumOutputPorts() != 1)
+        continue;
+      auto *body = module.getBodyBlock();
+      if (!body)
+        continue;
+      auto *terminator = body->getTerminator();
+      auto outputOp = dyn_cast_or_null<hw::OutputOp>(terminator);
+      if (!outputOp || outputOp->getNumOperands() != 1)
+        continue;
+      auto table = getTruthTable(ValueRange{outputOp->getOperand(0)}, body);
+      if (failed(table) || table->numInputs != 1 ||
+          table->table.getZExtValue() != 1)
+        continue;
+      double area = std::numeric_limits<double>::infinity();
+      if (auto cost =
+              module->getAttrOfType<MappingCostAttr>("synth.mapping_cost"))
+        area = cost.getArea().getValue().convertToDouble();
+      else if (auto cellDict =
+                   module->getAttrOfType<DictionaryAttr>("synth.liberty.cell"))
+        if (auto areaAttr = dyn_cast_or_null<FloatAttr>(cellDict.get("area")))
+          area = areaAttr.getValue().convertToDouble();
+      if (area < bestArea) {
+        bestArea = area;
+        best = module;
+      }
+    }
+    return best;
+  }
+
   void runOnOperation() override {
     ModuleOp top = getOperation();
     SmallVector<MultiOutputCell> cells = collectCells(top);
+    hw::HWModuleOp inverter = findCheapestInverter(top);
+    double inverterArea = std::numeric_limits<double>::infinity();
+    if (inverter) {
+      if (auto cost =
+              inverter->getAttrOfType<MappingCostAttr>("synth.mapping_cost"))
+        inverterArea = cost.getArea().getValue().convertToDouble();
+      else if (auto cellDict = inverter->getAttrOfType<DictionaryAttr>(
+                   "synth.liberty.cell"))
+        if (auto areaAttr = dyn_cast_or_null<FloatAttr>(cellDict.get("area")))
+          inverterArea = areaAttr.getValue().convertToDouble();
+    }
     bool changed = false;
     for (auto module : top.getOps<hw::HWModuleOp>()) {
       if (isa<hw::HWModuleExternOp>(module) ||
@@ -94,7 +147,7 @@ struct MapBundlesPass
           module->hasAttr("synth.dont_use") ||
           module->hasAttr("synth.mapping_cost"))
         continue;
-      changed |= mapInModule(module, cells);
+      changed |= mapInModule(module, cells, inverter, inverterArea);
     }
     if (!changed)
       markAllAnalysesPreserved();
@@ -180,7 +233,8 @@ struct MapBundlesPass
     return cells;
   }
 
-  bool mapInModule(hw::HWModuleOp module, ArrayRef<MultiOutputCell> cells) {
+  bool mapInModule(hw::HWModuleOp module, ArrayRef<MultiOutputCell> cells,
+                   hw::HWModuleOp inverter, double inverterArea) {
     // Collect bundles first; rewriting mutates the block.
     SmallVector<synth::CreateBundleOp> bundles;
     for (auto &block : module->getRegion(0))
@@ -191,7 +245,7 @@ struct MapBundlesPass
       return false;
     bool changed = false;
     for (auto bundle : bundles) {
-      if (mapOneBundle(bundle, cells))
+      if (mapOneBundle(bundle, cells, inverter, inverterArea))
         changed = true;
     }
     return changed;
@@ -290,10 +344,21 @@ struct MapBundlesPass
   };
 
   std::optional<JointTables> deriveJointTables(synth::CreateBundleOp bundle) {
-    if (bundle.getNumOperands() != 2)
+    if (bundle.getNumOperands() < 2)
       return std::nullopt;
     ConeWalker walker;
-    for (Value root : bundle.getOperands())
+    // Recorded shared support (operands past the two roots) bounds the
+    // walk: pre-seeding marks those values opaque, so simulation covers
+    // the paired cut boundary instead of expanding transitively past it
+    // (which would overshoot the cell input count on deep cones).
+    // Bundles without recorded leaves walk transitively as before.
+    for (Value leaf : bundle.getOperands().drop_front(2)) {
+      if (!leaf.getType().isInteger(1))
+        return std::nullopt;
+      walker.addLeaf(leaf);
+      walker.doneValues.insert(leaf);
+    }
+    for (Value root : bundle.getOperands().take_front(2))
       walker.walk(root);
     if (!walker.ok || walker.support.size() < 2 || walker.support.size() > 3)
       return std::nullopt;
@@ -368,9 +433,14 @@ struct MapBundlesPass
     return joint;
   }
 
-  /// Try every input permutation and both output orders against each cell.
+  /// Try every input permutation, both output orders, and output-negation
+  /// masks against each cell, keeping the cheapest total (cell + output
+  /// inverters). Negation lets pairs with complemented outputs map onto
+  /// cells with negated pins (e.g. an XOR3+minority pair onto a cell with
+  /// XNOR3 sum); without an inverter cell only exact matches are tried.
   bool mapOneBundle(synth::CreateBundleOp bundle,
-                    ArrayRef<MultiOutputCell> cells) {
+                    ArrayRef<MultiOutputCell> cells, hw::HWModuleOp inverter,
+                    double inverterArea) {
     auto joint = deriveJointTables(bundle);
     if (!joint) {
       eraseBundle(bundle);
@@ -387,40 +457,77 @@ struct MapBundlesPass
     SmallVector<unsigned, 4> inPerm;
     for (unsigned i = 0; i < n; ++i)
       inPerm.push_back(i);
+    const MultiOutputCell *bestCell = nullptr;
+    SmallVector<unsigned, 4> bestPerm;
+    unsigned bestSwap = 0, bestNegMask = 0;
+    double bestCost = std::numeric_limits<double>::infinity();
+    SmallVector<unsigned, 4> curPerm = inPerm;
     do {
       for (unsigned swap = 0; swap < 2; ++swap) {
         for (const auto &cell : cells) {
           if (cell.numInputs != n)
             continue;
-          bool match = true;
-          for (unsigned row = 0, rows = 1u << n; row < rows && match; ++row) {
-            unsigned cellRow = 0;
-            for (unsigned j = 0; j < n; ++j)
-              if ((row >> j) & 1u)
-                cellRow |= 1u << inPerm[j];
-            for (unsigned o = 0; o < 2; ++o) {
-              unsigned cellOut = swap ? 1u - o : o;
-              if (((joint->tables[o] >> row) & 1u) !=
-                  ((cell.tables[cellOut] >> cellRow) & 1u)) {
-                match = false;
-                break;
+          for (unsigned negMask = 0; negMask < 4; ++negMask) {
+            if (negMask != 0 && !inverter)
+              continue;
+            // At most one output inverter: a single negation rides on
+            // the joint-selection win (absorbed shared logic), while
+            // two inverters provably exceed the discrete lower bound
+            // for a 2-output bundle on area and delay.
+            if (llvm::popcount(negMask) > 1)
+              continue;
+            bool match = true;
+            for (unsigned row = 0, rows = 1u << n; row < rows && match; ++row) {
+              unsigned cellRow = 0;
+              for (unsigned j = 0; j < n; ++j)
+                if ((row >> j) & 1u)
+                  cellRow |= 1u << curPerm[j];
+              for (unsigned o = 0; o < 2; ++o) {
+                unsigned cellOut = swap ? 1u - o : o;
+                bool cellBit = ((cell.tables[cellOut] >> cellRow) & 1u);
+                if (negMask & (1u << o))
+                  cellBit = !cellBit;
+                if (((joint->tables[o] >> row) & 1u) != cellBit) {
+                  match = false;
+                  break;
+                }
               }
             }
-          }
-          if (match) {
-            rewriteBundle(bundle, cell, inPerm, swap, *joint);
-            return true;
+            if (!match)
+              continue;
+            // NB: fold the inverter cost only when negated (0 times
+            // inf is NaN when no inverter cell exists).
+            double cost = cell.area;
+            if (negMask != 0)
+              cost += llvm::popcount(negMask) * inverterArea;
+            if (cost < bestCost) {
+              bestCost = cost;
+              bestCell = &cell;
+              bestPerm = curPerm;
+              bestSwap = swap;
+              bestNegMask = negMask;
+            }
           }
         }
       }
-    } while (std::next_permutation(inPerm.begin(), inPerm.end()));
+    } while (std::next_permutation(curPerm.begin(), curPerm.end()));
+    if (bestCell) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "bundle maps to " << bestCell->name.getValue()
+                     << " negMask=" << bestNegMask << " cost=" << bestCost
+                     << "\n";
+      });
+      rewriteBundle(bundle, *bestCell, bestPerm, bestSwap, bestNegMask,
+                    inverter, *joint);
+      return true;
+    }
     eraseBundle(bundle);
     return true;
   }
 
   void rewriteBundle(synth::CreateBundleOp bundle, const MultiOutputCell &cell,
-                     ArrayRef<unsigned> inPerm, unsigned swap,
-                     const JointTables &joint) {
+                     ArrayRef<unsigned> inPerm, unsigned swap, unsigned negMask,
+                     hw::HWModuleOp inverter, const JointTables &joint) {
     OpBuilder builder(bundle->getBlock(), bundle->getIterator());
     SmallVector<Value> inputs;
     for (unsigned i = 0; i < joint.leaves.size(); ++i) {
@@ -437,11 +544,27 @@ struct MapBundlesPass
     // consumers) to the cell outputs: the discrete roots always die, and
     // shared producers survive via the use_empty gate in eraseDeadCone.
     // This is what makes joint mapping profitable by construction.
+    // Negated outputs go through an inverter cell instance so the
+    // bundle roots observe the exact joint function.
     Value sumRoot = bundle.getOperand(0), carryRoot = bundle.getOperand(1);
     SmallVector<Operation *, 2> rootOps{sumRoot.getDefiningOp(),
                                         carryRoot.getDefiningOp()};
     Value cellSum = inst.getResult(swap ? 1 : 0);
     Value cellCarry = inst.getResult(swap ? 0 : 1);
+    if (negMask & 1u) {
+      SmallVector<Value, 1> invOperands{cellSum};
+      auto inv =
+          hw::InstanceOp::create(builder, bundle.getLoc(), inverter,
+                                 "mapped_mo_inv", ArrayRef<Value>(invOperands));
+      cellSum = inv.getResult(0);
+    }
+    if (negMask & 2u) {
+      SmallVector<Value, 1> invOperands{cellCarry};
+      auto inv =
+          hw::InstanceOp::create(builder, bundle.getLoc(), inverter,
+                                 "mapped_mo_inv", ArrayRef<Value>(invOperands));
+      cellCarry = inv.getResult(0);
+    }
     bundle.getResult(0).replaceAllUsesWith(cellSum);
     bundle.getResult(1).replaceAllUsesWith(cellCarry);
     sumRoot.replaceAllUsesWith(cellSum);
