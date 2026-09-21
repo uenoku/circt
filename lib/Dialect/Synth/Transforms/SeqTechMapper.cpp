@@ -104,6 +104,10 @@ struct CellSignature {
   hw::HWModuleOp module;
   StringAttr clockPin;
   StringAttr dataPin;
+  // Data pin inverted-at-port (e.g. cells exposing only QN model D
+  // inverted in their bodies). The driver is inverted at mapping time so
+  // the exposed state still equals the source flop output.
+  bool dataInverted = false;
   // Optional controls as (pin, inverted-at-port).
   std::optional<std::pair<StringAttr, bool>> enable;
   std::optional<std::pair<StringAttr, bool>> clear;
@@ -169,11 +173,13 @@ FailureOr<CellSignature> extractSignature(hw::HWModuleOp module) {
     sig.tiedPins.emplace_back(sel->first, sel->second);
     sig.tiedPins.emplace_back(tru->first, false);
     sig.dataPin = fls->first;
+    sig.dataInverted = fls->second;
   } else {
     auto base = traceOperand(data);
     if (failed(base))
       return failure();
     sig.dataPin = base->first;
+    sig.dataInverted = base->second;
   }
   tracedPins.insert(sig.dataPin);
 
@@ -578,6 +584,11 @@ struct SeqTechMapperPass
               comb::MuxOp::create(builder, loc, spec->reset,
                                   constVal(loc, spec->resetValue), dataVal);
         }
+        // Compensate an inverted-at-port data pin (e.g. QN-only cells)
+        // so the exposed state equals the source flop output. The same
+        // compensated value feeds the hold-feedback mux below.
+        Value portDataVal =
+            toPort(dataVal, {cell.dataPin, cell.dataInverted});
 
         // Instance inputs in input-port order.
         hw::ModulePortInfo ports(cell.module.getPortList());
@@ -590,7 +601,7 @@ struct SeqTechMapperPass
             if (port.name == cell.clockPin) {
               val = clkI1;
             } else if (port.name == cell.dataPin) {
-              val = dataVal;
+              val = portDataVal;
               dataIdx = idx;
             } else if (cell.enable && port.name == cell.enable->first) {
               if (spec->enable) {
@@ -646,7 +657,9 @@ struct SeqTechMapperPass
           // reason `seq.firreg` feedback is.
           Value held =
               comb::MuxOp::create(builder, loc, spec->enable, dataVal, q);
-          inst->setOperand(dataIdx, held);
+          // The hold mux drives the same possibly-inverted data pin.
+          inst->setOperand(
+              dataIdx, toPort(held, {cell.dataPin, cell.dataInverted}));
         }
         spec->op->getResult(0).replaceAllUsesWith(q);
         spec->op->erase();
