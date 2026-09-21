@@ -1,5 +1,14 @@
 // RUN: circt-opt %s --verify-diagnostics --split-input-file
 
+// Negative required times are invalid (picoseconds, non-negative).
+hw.module @probe_negative(in %a : i1, out z : i1) {
+    // expected-error @+1 {{'synth.timing_probe' op required_time must be non-negative}}
+    %p = synth.timing_probe %a : i1 {required_time = -1 : i64}
+    hw.output %p : i1
+}
+
+// -----
+
 hw.module @test(out result : i1) {
     // expected-error @+1 {{'synth.choice' op expected 1 or more operands, but found 0}}
     %0 = synth.choice : i1

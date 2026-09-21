@@ -24,6 +24,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   EmitSDC.cpp
   DeriveProbes.cpp
   BufferHighFanout.cpp
+  StripTimingProbes.cpp
   ExtractBundles.cpp
   MapBundles.cpp
   RestructureMuxTrees.cpp

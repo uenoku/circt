@@ -231,7 +231,7 @@ static cl::opt<int>
 static cl::opt<std::string> probeClocks(
     "probe-clocks",
     cl::desc("Comma-separated top-level clock port names for timing "
-             "probe derivation (with --buffer-high-fanout); empty "
+             "probe derivation right after sequential mapping; empty "
              "derives nothing"),
     cl::init(""), cl::cat(mainCategory));
 static cl::opt<std::string> staViolators(
@@ -527,6 +527,18 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     memMapperOptions.maxFallbackBits = maxMemFallbackBits;
     pm.addPass(synth::createSeqMemMapper(memMapperOptions));
     pm.addPass(synth::createSeqTechMapper());
+    // Timing probes (opt-in): derive once on mapped flop D inputs while
+    // the original combinational drivers still exist, so pre-map consumers
+    // and post-map consumers (buffering) share one probe set. Probes ride
+    // the lowering/mapping pipeline as transparent pass-throughs; the
+    // explicit strip terminator after buffering guarantees none leaks
+    // downstream. Default (no --probe-clocks): nothing is added.
+    if (!probeClocks.empty()) {
+      synth::DeriveProbesOptions probeOptions;
+      probeOptions.probeClocks = probeClocks;
+      probeOptions.probePeriodNs = sdcClockPeriod;
+      pm.addPass(synth::createDeriveProbes(probeOptions));
+    }
   }
 
   nestOrAddToHierarchicalRunner(pm, pipeline, topName);
@@ -573,20 +585,20 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     pm.addPass(synth::createTieCells());
     // Fanout-splitting buffers for broadcast nets (opt-in): needs plain
     // lib modules (auto-detected buffer cell + clock-pin metadata), so
-    // it also precedes stripping. Timing probes are derived first when
-    // clock ports are listed (paired: probes never leak downstream).
+    // it also precedes stripping. Probes were derived early (above) when
+    // clock ports are listed; the buffer pass consumes the ones it finds
+    // and the strip terminator below removes the rest, so probes never
+    // leak downstream.
     if (bufferHighFanout) {
-      if (!probeClocks.empty()) {
-        synth::DeriveProbesOptions probeOptions;
-        probeOptions.probeClocks = probeClocks;
-        probeOptions.probePeriodNs = sdcClockPeriod;
-        pm.addPass(synth::createDeriveProbes(probeOptions));
-      }
       synth::BufferHighFanoutOptions bufferOptions;
       bufferOptions.maxFanout = maxFanout;
       bufferOptions.staViolators = staViolators;
       pm.addPass(synth::createBufferHighFanout(bufferOptions));
     }
+    // Explicit probe-lifetime terminator. Runs whenever probes could exist;
+    // a no-op otherwise. Default-off pipelines are untouched.
+    if (!probeClocks.empty() || bufferHighFanout)
+      pm.addPass(synth::createStripTimingProbes());
     if (stripLibToExtern)
       pm.addPass(synth::createStripLibToExtern());
     // NOTE: synth-sort-topologically exists for downstream MLIR consumers

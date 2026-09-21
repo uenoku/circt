@@ -11,8 +11,11 @@
 // to a listed clock port, with required_time = period. Clock tracing walks
 // nets upward through single-input cells and EICG clock gates using liberty
 // clock-pin metadata; anything else (multi-input gating, generated clocks)
-// conservatively yields no probes. Probes are consumed and erased by
-// `synth-buffer-high-fanout`. All ordering is file/IR order.
+// conservatively yields no probes. Idempotent: D inputs already driven by a
+// probe are skipped, so repeated invocation (early derivation plus a later
+// re-derivation) never nests probes. Probes are consumed and erased by
+// `synth-buffer-high-fanout` or the explicit `synth-strip-timing-probes`
+// terminator. All ordering is file/IR order.
 //
 //===----------------------------------------------------------------------===//
 
@@ -249,6 +252,11 @@ struct DeriveProbesPass
       if (dataIdx < 0 || clkIdx < 0 ||
           (unsigned)dataIdx >= inst.getNumOperands() ||
           (unsigned)clkIdx >= inst.getNumOperands())
+        continue;
+      // Idempotent: a previous derivation (or a hand-placed probe) already
+      // constrains this endpoint; never nest probes.
+      if (isa_and_nonnull<synth::TimingProbeOp>(
+              inst.getOperand((unsigned)dataIdx).getDefiningOp()))
         continue;
       if (!isClocked(getOperation(), clocks, module,
                      inst.getOperand((unsigned)clkIdx)))

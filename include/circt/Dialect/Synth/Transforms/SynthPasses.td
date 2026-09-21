@@ -631,8 +631,9 @@ def DeriveProbes : Pass<"synth-derive-probes", "mlir::ModuleOp"> {
     clock gates (liberty clock-pin metadata); other clocking
     (multi-input gating, generated clocks) conservatively yields no
     probes. Empty clock list (default) is a no-op. Probes are consumed
-    (and erased) by `synth-buffer-high-fanout`; nothing downstream of
-    it may observe one. Single synchronous domain is assumed; required
+    (and erased) by `synth-buffer-high-fanout` or removed by the explicit
+    `synth-strip-timing-probes` terminator; nothing downstream of
+    either may observe one. Single synchronous domain is assumed; required
     times are optimistic (no slew, clock-to-Q, or setup modeling).
   }];
   let options = [
@@ -685,6 +686,25 @@ def BufferHighFanout : Pass<"synth-buffer-high-fanout", "mlir::ModuleOp"> {
               "Number of STA endpoints that could not be resolved">,
     Statistic<"numProbesErased", "probes-erased",
               "Number of timing probes consumed and erased">
+  ];
+  let dependentDialects = ["hw::HWDialect"];
+}
+
+def StripTimingProbes : Pass<"synth-strip-timing-probes", "mlir::ModuleOp"> {
+  let summary = "Erase timing probes, rewiring each result to its input";
+  let description = [{
+    Explicit probe-lifetime terminator: replaces every `synth.timing_probe`
+    result with its input and erases the probe, so nothing downstream
+    (stripping, export) ever observes one. Every pipeline that derives or
+    imports probes must run this pass or a consuming pass
+    (`synth-buffer-high-fanout` also erases probes it finds). With no
+    probes present the pass is a no-op. Deterministic: file/IR order only.
+  }];
+  let statistics = [
+    Statistic<"numProbesStripped", "probes-stripped",
+              "Number of timing probes rewired and erased">,
+    Statistic<"numRefineAttrsRemoved", "refinement-attrs-removed",
+              "Number of transient refinement policy records removed">
   ];
   let dependentDialects = ["hw::HWDialect"];
 }

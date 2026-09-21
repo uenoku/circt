@@ -73,7 +73,8 @@ LogicalResult ChoiceOp::verify() {
 LogicalResult TimingProbeOp::verify() {
   if (getInput().getType() != getResult().getType())
     return emitOpError("result type must match input type");
-  if (getRequiredTime() < 0)
+  // getRequiredTime() is unsigned storage; interpret as signed picoseconds.
+  if (static_cast<int64_t>(getRequiredTime()) < 0)
     return emitOpError("required_time must be non-negative");
   return success();
 }

@@ -1,4 +1,5 @@
 // RUN: circt-opt --pass-pipeline='builtin.module(synth-derive-probes{probe-clocks=clk probe-period-ns=10.0})' %s | FileCheck %s
+// RUN: circt-opt --pass-pipeline='builtin.module(synth-derive-probes{probe-clocks=clk probe-period-ns=10.0},synth-derive-probes{probe-clocks=clk probe-period-ns=10.0})' %s | FileCheck %s --check-prefix=IDEMPOTENT
 
 // Buffer cell (untouched by derive; presence keeps the file realistic).
 hw.module @buf1(in %a : i1, out z : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 1.0 : f64, arcs = [#synth.linear_timing_arc<10, 0, #synth.polarity<positive>>], input_caps = {a = 1.0 : f64}>} {
@@ -26,3 +27,8 @@ hw.module @top(in %clk : i1, in %d : i1, in %e : i1, out q : i1, out r : i1) {
     %q, %r = hw.instance "gen" @sub(clk: %clk: i1, d: %d: i1, e: %e: i1) -> (q: i1, r: i1)
     hw.output %q, %r : i1, i1
 }
+
+// Repeated derivation never nests probes: the second run sees D already
+// driven by a probe and skips the endpoint, so @sub keeps exactly one.
+// IDEMPOTENT-LABEL: hw.module @sub
+// IDEMPOTENT-COUNT-1: synth.timing_probe
