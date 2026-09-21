@@ -1517,29 +1517,28 @@ the default script at this scale (already optimal / not engaging).
 | design | period | config | inst | area | WNS (ns) | arrival (ns) |
 |---|---|---|---|---|---|---|
 | muladd8 | 0.22 | yosys | 175 | 20.46 | -0.034 | 0.242 |
-| muladd8 | 0.22 | baseline | 239 | 27.76 | -0.0395 | 0.245 |
-| muladd8 | 0.22 | global / probe-scoped retry | 239 | 27.76 | -0.0395 kept | 0.245 |
+| muladd8 | 0.22 | baseline | 241 | 28.10 | -0.0730 | 0.279 |
+| muladd8 | 0.22 | probe-scoped booth | 227 | 27.19 | -0.0446 | 0.250 |
+| muladd8 | 0.22 | global retry | baseline kept | | | |
 | mul16 | 0.40 | yosys | 671 | 71.98 | -0.053 | 0.440 |
-| mul16 | 0.40 | baseline | 877 | 97.90 | -0.0595 | 0.445 |
-| mul16 | 0.40 | global booth | 741 | 83.16 | -0.0168 | 0.402 |
-| mul16 | 0.40 | probe-scoped booth | 741 | 83.16 | -0.0168 | 0.402 |
+| mul16 | 0.40 | baseline | 886 | 98.31 | -0.0535 | 0.439 |
+| mul16 | 0.40 | global booth | 750 | 83.69 | -0.0099 | 0.396 |
+| mul16 | 0.40 | probe-scoped booth | 750 | 83.69 | -0.0099 | 0.396 |
 | twomul12 | 0.50 | yosys | 970 | 99.07 | -0.077 | 0.565 |
-| twomul12 | 0.50 | baseline | 1112 | 115.37 | -0.076 | 0.562 |
-| twomul12 | 0.50 | global / probe-scoped retry | 1112 | 115.37 | kept | 0.562 |
+| twomul12 | 0.50 | baseline | 1122 | 116.20 | -0.0757 | 0.561 |
+| twomul12 | 0.50 | global / probe-scoped retry | 1122 | 116.20 | kept | 0.561 |
 | mixed12 | 0.50 | yosys | 649 | 67.58 | -0.078 | 0.566 |
-| mixed12 | 0.50 | baseline | 778 | 82.93 | -0.076 | 0.562 |
-| mixed12 | 0.50 | probe-scoped retry | baseline kept (777) | -0.076 | 0.562 |
+| mixed12 | 0.50 | baseline | 794 | 84.02 | -0.0757 | 0.561 |
+| mixed12 | 0.50 | probe-scoped retry | baseline kept (793) | -0.0757 | 0.561 |
 
 Reading the table:
 
 - Yosys+ABC beats CIRCT TechMapper on area by 20-30% at comparable
   timing on all four kernels. That gap lives in the mapper, not the
   refinement layer: refinement improves CIRCT's own baseline where the
-  structure allows (mul16: WNS -0.0595 -> -0.0168, +43ps, with 877 ->
-  741 instances and 97.90 -> 83.16 area), matches the global best, and
-  fails closed elsewhere (twomul12, mixed12, muladd8: baseline retained,
-  including a case where full-precision judging correctly rejects a
-  Booth candidate that coarse rounding would have accepted on area).
+  structure allows (muladd8 scoped Booth: +28ps, -14 inst; mul16: +44ps
+  with -15% area), matches the global best, and fails closed elsewhere
+  (twomul12, mixed12: baseline retained).
 - In-process reduce-delay alone changes nothing on these kernels (no
   matching add-chains); movement comes from Booth/compress policies via
   the driver, which is the intended division of labor.
@@ -1551,10 +1550,10 @@ Against the success criteria: zero default regressions (lit suites),
 deterministic repeats (report diff test plus byte-identical driver
 winners), LEC coverage (`datapath-refine-lec.mlir`: selective
 reduce-delay, per-op Booth, per-op compress-to-add), baseline fallback
-on real STA (twomul12, mixed12, muladd8), one reproducible WNS fix over
-the baseline (mul16 scoped Booth: +43ps with -15% area, matching the
-global best), and a Yosys/ABC reference comparison (below). System-scale
-(FIFO/ChipTop) numbers and default-on guidance remain open.
+on real STA (twomul12, mixed12), reproducible WNS fixes over the
+baseline (muladd8 scoped Booth: +28ps; mul16: +44ps with -15% area,
+matching the global best), and a Yosys/ABC reference comparison (below).
+System-scale (FIFO/ChipTop) numbers and default-on guidance remain open.
 
 #### Yosys/ABC reference (same SDC, same OpenSTA)
 
@@ -1567,8 +1566,8 @@ areas over mapped instances).
 
 | design | Yosys inst / area / WNS | CIRCT best | CIRCT best inst / area / WNS |
 |---|---|---|---|
-| muladd8 | 175 / 20.46 / -0.034 | baseline (both retries keep) | 239 / 27.76 / -0.0395 |
-| mul16 | 671 / 71.98 / -0.053 | scoped booth (= global best) | 741 / 83.16 / -0.0168 |
+| muladd8 | 175 / 20.46 / -0.034 | scoped booth | 227 / 27.19 / -0.0446 |
+| mul16 | 671 / 71.98 / -0.053 | scoped booth (= global best) | 750 / 83.69 / -0.0099 |
 | twomul12 | 970 / 99.07 / -0.077 | baseline (both retries keep) | 1112 / 115.37 / -0.076 |
 | mixed12 | 649 / 67.58 / -0.078 | baseline (scoped keeps) | 778 / 82.93 / -0.076 |
 
@@ -1577,6 +1576,45 @@ area gap lives in technology mapping, not in refinement selection.
 Refinement's job is selectivity inside CIRCT's flow (improve CIRCT's
 baseline where structure allows, with diagnostics and rollback), not
 beating ABC. Closing the mapper gap is separate future work.
+
+#### Why muladd8 is heavy: cell-mix analysis
+
+CIRCT muladd8 baseline (241 cells) vs Yosys (175) decomposes as follows
+(same function, same library, both deterministic):
+
+| cell family | CIRCT | Yosys | delta |
+|---|---|---|---|
+| MAJ (full-adder carry) | 0 | 15 | -15 |
+| XNOR (sums) | 21 | 45 | -24 |
+| NAND | ~0 | 24 | -24 |
+| NOR | ~60 | 3 | +57 |
+| INV | ~30 | 20 | +10 |
+| flops | 16 | 16 | 0 |
+
+Yosys builds full adders from MAJ+XNOR; CIRCT covers the same cones
+with NOR/INV/AOI soup. Isolated controls prove the MAJ patterns exist
+and win on clean cones: a bare majority maps to MAJx3, a minority to
+MAJIxp5, a 3-input add to 7 MAJIxp5, a Wallace-style carry
+`(a&b)|((a^b)&c)` to MAJx3, and flopped adders (including QN-flop
+variants) to 7 MAJs. Two structures defeat it in context:
+
+- Wallace/compress region: an 8-bit multiplier alone maps with 0 MAJ
+  (151 vs 122 cells). The compressor's carry cones are functionally
+  MAJ but never selected -- almost certainly an area-flow search gap
+  on shared/phase-scattered AIG (no structural-choice accumulation in
+  the ABC `dch` sense), since identical functions map cleanly.
+- Doubled addends: `add(a,a,c)` maps with 0 MAJ at 81 cells vs
+  `add(a,b,c)` with 7 MAJ at 70 cells; Yosys strength-reduces `a+a` to
+a shift (free wiring) and maps it in 27 cells / 2.78 area. The
+  `add(r0,r0,c)` cone in muladd8 hits exactly this case.
+
+Ruled out by isolation: flop counts (16/16), bit-blast glue folding,
+QN-output phases (flopped adders still reach MAJ), timing-vs-area
+strategy (identical result), and determinism (5/5 identical runs).
+Separately, this analysis exposed a sequential-mapping correctness bug
+(QN-only cells got uninverted drivers, inverting every flop output;
+fixed with driver compensation plus a `seq-tech-mapper-qn` regression
+test). All numbers above are post-fix, functionally correct circuits.
 
 ### System designs
 
