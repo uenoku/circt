@@ -1220,6 +1220,7 @@ Measured:
 |---|---|---|---|---|
 | muladd @0.4ns | CIRCT baseline | 243 | 28.42 | 0.128 |
 | muladd @0.4ns | CIRCT best (booth) | 230 | 27.26 | 0.128 |
+| muladd @0.4ns | CIRCT + ABC rewrite + booth | 186 | 23.01 | 0.128 |
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
 | mul16 @0.6ns | CIRCT best (booth) | 753 | 84.81 | 0.186 |
@@ -1227,9 +1228,13 @@ Measured:
 | fifo @2ns | CIRCT + buffer-high-fanout | 12324 | 1540.6 | 1.649 (STA) / 1.331 (OT) |
 | fifo @2ns | Yosys 0.68 + ABC | 10376 | 1199.4 | 1.721 |
 
-Findings: Yosys leads area by 15-25% everywhere (ABC rewriting + better
-balancing; CIRCT's Wallace/compress structures are larger). Timing is
-mixed: Yosys wins muladd (+19ps), CIRCT wins mul16 (+41ps). FIFO without
+Findings: Yosys leads area by 15-25% without ABC rewriting (CIRCT's
+Wallace/compress structures are larger); enabling `--abc-commands`
+(balance/rewrite/refactor, via `--abc-path` to yosys-abc) closes muladd
+to 6% inst / 12% area (186 vs 175, 23.01 vs 20.46um2) with identical
+timing. Timing is mixed: Yosys wins muladd (+19ps), CIRCT wins mul16
+(+41ps). Remaining area gap is mapping quality (ABC's mapper vs
+TechMapper), not rewriting. FIFO without
 buffering is broken in CIRCT (21ns unbuffered inverter, -23ns WNS);
 `--buffer-high-fanout` restores competitiveness (+1.65ns STA). Open item:
 buffered-FIFO OT-vs-STA differ by 318ps (OT pessimistic here, opposite
