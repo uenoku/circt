@@ -64,6 +64,15 @@ const std::vector<std::pair<std::string, std::vector<std::string>>> kVariants =
         {"booth+compress-to-add", {"--force-booth", "--compress-to-add"}},
         {"timing-unaware", {"--disable-timing-aware"}},
         {"no-datapath", {"--disable-datapath"}},
+        // Mapping portfolio (merged results via scoreboard selection):
+        // supergates help some designs but regress others (muladd -12,
+        // mul16 +25%), and bundling is neutral on control logic, so trying
+        // both and keeping the best per design beats any fixed choice.
+        // True per-cone choice merging needs cover-set refactoring
+        // (TechMapper picks per root today); this portfolio selection is
+        // the bounded step that captures most of the variance.
+        {"supergates", {"--gen-supergates"}},
+        {"no-bundles", {"--extract-bundles=false"}},
 };
 
 // Shell-quote one argv token.
