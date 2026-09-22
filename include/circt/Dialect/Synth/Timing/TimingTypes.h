@@ -66,6 +66,15 @@ struct TimingObjectKey {
   unsigned portIndex = 0;
   mlir::StringAttr portName;
   unsigned bit = 0;
+
+  bool operator==(const TimingObjectKey &other) const {
+    return kind == other.kind && moduleName == other.moduleName &&
+           instancePath == other.instancePath && portName == other.portName &&
+           portIndex == other.portIndex && bit == other.bit;
+  }
+  bool operator!=(const TimingObjectKey &other) const {
+    return !(*this == other);
+  }
 };
 
 /// A clock constraint with an explicit source object.

@@ -1,0 +1,92 @@
+From: CIRCT STA integration
+Subject: [PATCH] timer: expose analyzed endpoints for backend-neutral queries
+
+Upstream OpenTimer reports worst paths but offers no public API to
+enumerate every analyzed endpoint (pin, split, transition) with its
+arrival, required, and slack. Path tracing only materializes violated
+paths, so full-coverage aggregates (WNS/TNS/failing over all
+constrained endpoints) cannot be built from report_timing alone.
+
+Add Timer::report_endpoints(), which returns one record per analyzed
+endpoint after _update_endpoints(), reading the same _endpoints store
+that backs report_wns/report_tns/report_fep. No tracing, no new
+analysis, deterministic ordering left to the caller.
+
+Applies to OpenTimer 2.0 (cd0565fc).
+
+--- a/ot/timer/timer.hpp	2026-09-22 01:33:07.798535207 -0700
++++ b/ot/timer/timer.hpp	2026-09-22 01:33:07.788965312 -0700
+@@ -63,6 +63,21 @@
+     Timer& set_voltage_unit(volt_t);
+     Timer& set_power_unit(watt_t);
+ 
++    // Struct: EndpointInfo
++    // One analyzed endpoint: pin name plus split/transition identity
++    // with arrival, required, and slack. Arrival or required may be
++    // absent when the timer did not compute them; slack is always
++    // present for analyzed endpoints.
++    struct EndpointInfo {
++      std::string pin;
++      Split split;
++      Tran transition;
++      std::optional<float> arrival;
++      std::optional<float> required;
++      float slack;
++    };
++
++    std::vector<EndpointInfo> report_endpoints();
+     Timer& set_current_unit(ampere_t);
+ 
+     // Action.
+--- a/ot/timer/endpoint.cpp	2026-09-22 01:33:07.798631549 -0700
++++ b/ot/timer/endpoint.cpp	2026-09-22 01:33:07.790314662 -0700
+@@ -1,4 +1,5 @@
+ #include <ot/timer/endpoint.hpp>
++#include <ot/timer/test.hpp>
+ #include <ot/timer/timer.hpp>
+ 
+ namespace ot {
+@@ -21,6 +22,43 @@
+   OT_LOGF_IF(!po.slack(el, rf), "PO slack not defined");
+ }
+ 
++// Function: report_endpoints
++// Enumerate every analyzed endpoint with arrival, required, and slack.
++// Backed by the same endpoint store as report_wns/report_tns/report_fep.
++std::vector<Timer::EndpointInfo> Timer::report_endpoints() {
++
++  std::scoped_lock lock(_mutex);
++
++  _update_endpoints();
++
++  std::vector<EndpointInfo> infos;
++
++  FOR_EACH_EL_RF(el, rf) {
++    for(auto& ept : _endpoints[el][rf]) {
++      EndpointInfo info;
++      info.split = el;
++      info.transition = rf;
++      info.slack = ept.slack();
++      if(auto test = ept.test()) {
++        info.pin = test->_arc._to._name;
++        info.arrival = test->_arc._to._at[el][rf];
++        info.required = test->_rat[el][rf];
++      }
++      else if(auto po = ept.primary_output()) {
++        info.pin = po->_pin._name;
++        info.arrival = po->_pin._at[el][rf];
++        info.required = po->_rat[el][rf];
++      }
++      else {
++        continue;
++      }
++      infos.push_back(std::move(info));
++    }
++  }
++
++  return infos;
++}
++
+ // Function: slack
+ float Endpoint::slack() const {
+   return std::visit([this] (auto&& handle) {

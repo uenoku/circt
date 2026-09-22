@@ -51,6 +51,10 @@ private:
   TimingDesign design;
   TimingDesignDiagnostics diagnostics;
   bool failed = false;
+  // Running node counter: every pin gets a unique dense id.
+  uint32_t nextNode = 0;
+
+  uint32_t freshNode() { return nextNode++; }
 
   // Active design modules on the current elaboration path (recursion guard).
   llvm::DenseSet<mlir::StringAttr> activeModules;

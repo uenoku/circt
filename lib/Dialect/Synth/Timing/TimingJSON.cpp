@@ -213,8 +213,10 @@ void circt::synth::timing::printTimingResult(const TimingResult &result,
     for (const auto &tr : endpoint->transitions) {
       Object trobj;
       trobj["transition"] = transitionName(tr.transition);
-      trobj["arrival"] = tr.arrival.value;
-      trobj["required"] = tr.required.value;
+      if (tr.arrival)
+        trobj["arrival"] = tr.arrival->value;
+      if (tr.required)
+        trobj["required"] = tr.required->value;
       trobj["slack"] = tr.slack.value;
       if (tr.worstLaunch)
         trobj["worst_launch"] = writeKey(*tr.worstLaunch);
@@ -373,17 +375,9 @@ mlir::LogicalResult circt::synth::timing::parseTimingResult(
           if (!transition || !reader.transition(*transition, tr.transition))
             continue;
           if (auto arrival = trObj->getInteger("arrival"))
-            tr.arrival.value = *arrival;
-          else {
-            reader.ok = false;
-            continue;
-          }
+            tr.arrival = TimePs{*arrival};
           if (auto required = trObj->getInteger("required"))
-            tr.required.value = *required;
-          else {
-            reader.ok = false;
-            continue;
-          }
+            tr.required = TimePs{*required};
           if (auto slack = trObj->getInteger("slack"))
             tr.slack.value = *slack;
           else {
@@ -523,8 +517,12 @@ void circt::synth::timing::printTimingFeedbackV2(const TimingResult &result,
     else
       obj["startpoint"] = writeKey(TimingObjectKey());
     obj["endpoint"] = writeKey(endpoint->endpoint);
-    obj["required"] = worst->required.value;
-    obj["arrival"] = worst->arrival.value;
+    if (worst->required)
+      obj["required"] = worst->required->value;
+    else
+      continue;
+    if (worst->arrival)
+      obj["arrival"] = worst->arrival->value;
     obj["slack"] = worst->slack.value;
     obj["path_group"] = strOrEmpty(endpoint->pathGroup);
     paths.push_back(std::move(obj));

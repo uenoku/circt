@@ -19,3 +19,7 @@ add_circt_dialect_library(CIRCTSynthTiming
   CIRCTSeq
   MLIRIR
 )
+
+if(CIRCT_ENABLE_OPENTIMER)
+  add_subdirectory(OpenTimer)
+endif()

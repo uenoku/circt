@@ -28,11 +28,14 @@ namespace timing {
 /// Whether the analysis covered everything requested.
 enum class TimingResultStatus { Complete, Incomplete, Failed };
 
-/// One transition of one endpoint.
+/// One transition of one endpoint. Arrival and required are present only
+// when the backend traced the endpoint (top-K paths); slack is always
+// present for analyzed endpoints. This keeps full-coverage aggregates
+// affordable while preserving detailed traces where they matter.
 struct TimingTransitionResult {
   TimingTransition transition = TimingTransition::Rise;
-  TimePs arrival;
-  TimePs required;
+  std::optional<TimePs> arrival;
+  std::optional<TimePs> required;
   TimePs slack;
   std::optional<TimingObjectKey> worstLaunch;
 };

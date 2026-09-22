@@ -451,11 +451,11 @@ bool RetryRunner::runCandidate(StringRef name,
     }
     TimingTransitionResult tr;
     tr.transition = TimingTransition::Rise;
-    tr.arrival = TimePs{llround(path.arrivalNs * 1000.0)};
-    tr.slack =
-        TimePs{llround((path.hasSlack ? path.slackNs : 0.0) * 1000.0)};
-    tr.required =
-        TimePs{tr.arrival.value - (path.hasSlack ? tr.slack.value : 0)};
+    TimePs arrival{llround(path.arrivalNs * 1000.0)};
+    TimePs slack{llround((path.hasSlack ? path.slackNs : 0.0) * 1000.0)};
+    tr.arrival = arrival;
+    tr.slack = slack;
+    tr.required = TimePs{arrival.value - (path.hasSlack ? slack.value : 0)};
     TimingObjectKey launch;
     launch.kind = TimingObjectKind::InstancePin;
     launch.moduleName = mlir::StringAttr::get(&ctx, "");
@@ -465,9 +465,9 @@ bool RetryRunner::runCandidate(StringRef name,
     TimingPathResult pathResult;
     pathResult.endpoint = timing.endpoints[idx].endpoint;
     pathResult.transition = TimingTransition::Rise;
-    pathResult.arrival = tr.arrival;
-    pathResult.required = tr.required;
-    pathResult.slack = tr.slack;
+    pathResult.arrival = arrival;
+    pathResult.required = tr.required.value_or(TimePs{0});
+    pathResult.slack = slack;
     timing.paths.push_back(std::move(pathResult));
   }
   timing.coverage.expectedEndpoints = timing.endpoints.size();
@@ -676,7 +676,7 @@ std::vector<StaPath> toStaPaths(const timing::TimingResult &timing) {
         record.startpoint = tr.worstLaunch->portName.str();
       record.slackNs = tr.slack.value / 1000.0;
       record.hasSlack = true;
-      record.arrivalNs = tr.arrival.value / 1000.0;
+      record.arrivalNs = tr.arrival ? tr.arrival->value / 1000.0 : 0.0;
       paths.push_back(std::move(record));
     }
   }

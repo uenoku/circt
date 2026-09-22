@@ -102,6 +102,13 @@ mlir::FailureOr<TimingDesign> TimingDesignBuilder::build(mlir::ModuleOp top) {
         primary.port.portIndex = (unsigned)port.argNum;
         primary.port.bit = i;
         primary.isInput = true;
+        primary.node = TimingNodeId{freshNode()};
+        uint32_t net = argNets[argPos][i];
+        if (design.nets[net].driver) {
+          fail("multiple drivers on primary input net");
+          return mlir::failure();
+        }
+        design.nets[net].driver = primary.node;
         design.ports.push_back(std::move(primary));
       }
       ++argPos;
@@ -125,6 +132,8 @@ mlir::FailureOr<TimingDesign> TimingDesignBuilder::build(mlir::ModuleOp top) {
         primary.port.portIndex = (unsigned)port.argNum;
         primary.port.bit = i;
         primary.isInput = false;
+        primary.node = TimingNodeId{freshNode()};
+        design.nets[(*resultNets)[resultPos][i]].loads.push_back(primary.node);
         design.ports.push_back(std::move(primary));
       }
       ++resultPos;
@@ -198,7 +207,7 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
         auto top = inst->getParentOfType<mlir::ModuleOp>();
         auto *sym =
             top.lookupSymbol(mlir::StringAttr::get(ctx, inst.getModuleName()));
-        auto cellModule = dyn_cast_or_null<hw::HWModuleOp>(sym);
+        auto cellModule = dyn_cast_or_null<hw::HWModuleLike>(sym);
         if (!cellModule) {
           fail("library cell module not found");
           return std::nullopt;
@@ -242,13 +251,13 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
           }
           for (unsigned i = 0; i < *width; ++i) {
             TimingPinConnection pin;
-            pin.node = TimingNodeId{id};
+            pin.node = TimingNodeId{freshNode()};
             pin.portName = inputs[pi].name;
             pin.portIndex = (unsigned)inputs[pi].argNum;
             pin.isInput = true;
             pin.bit = i;
             cell.pins.push_back(pin);
-            design.nets[it->second[i]].loads.push_back(TimingNodeId{id});
+            design.nets[it->second[i]].loads.push_back(cell.pins.back().node);
           }
         }
         for (size_t pi = 0; pi < outputs.size(); ++pi) {
@@ -263,7 +272,7 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
           for (unsigned i = 0; i < *width; ++i) {
             uint32_t net = freshNet();
             TimingPinConnection pin;
-            pin.node = TimingNodeId{id};
+            pin.node = TimingNodeId{freshNode()};
             pin.portName = outputs[pi].name;
             pin.portIndex = (unsigned)outputs[pi].argNum;
             pin.isInput = false;
@@ -274,7 +283,7 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
               fail("multiple drivers on net");
               return std::nullopt;
             }
-            netRef.driver = TimingNodeId{id};
+            netRef.driver = cell.pins.back().node;
             bits.push_back(net);
           }
           valueNets[result] = std::move(bits);

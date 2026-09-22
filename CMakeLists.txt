@@ -694,6 +694,11 @@ endif()
 option(CIRCT_CADICAL_ENABLED "Enables CaDiCaL usage." OFF)
 llvm_canonicalize_cmake_booleans(CIRCT_CADICAL_ENABLED)
 
+option(CIRCT_ENABLE_OPENTIMER "Enables the OpenTimer timing backend (STA)." OFF)
+set(CIRCT_OPENTIMER_SOURCE_DIR "" CACHE PATH
+    "OpenTimer source directory override (required when enabling OpenTimer)")
+llvm_canonicalize_cmake_booleans(CIRCT_ENABLE_OPENTIMER)
+
 if(CIRCT_CADICAL_ENABLED)
   message(STATUS "CaDiCaL is enabled")
 

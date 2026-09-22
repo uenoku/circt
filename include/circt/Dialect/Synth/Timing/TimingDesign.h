@@ -54,10 +54,12 @@ struct TimingNet {
   bool constantValue = false;
 };
 
-/// One top-level port bit.
+/// One top-level port bit, with its graph node (the driver for inputs,
+/// a load for outputs).
 struct TimingPrimaryPort {
   TimingObjectKey port;
   bool isInput = true;
+  TimingNodeId node;
 };
 
 /// Diagnostics collected during graph construction. Unsupported

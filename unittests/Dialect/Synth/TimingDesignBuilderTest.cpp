@@ -117,15 +117,15 @@ TEST(TimingDesignBuilderTest, HierarchyWithMultiplicity) {
     for (const auto &pin : cell.pins)
       EXPECT_FALSE(pin.portName.getValue().empty());
   }
-  // Nets are singly driven; undriven non-constant nets must be top
-  // inputs (primary sources have no driver by construction).
-  // Top inputs a, b produce 2 input nets (1 bit each).
+  // Nets are singly driven; primary input nets are driven by their port
+  // nodes and primary output nets sink into theirs, so no undriven
+  // non-constant nets remain.
   unsigned undriven = 0;
   for (const auto &net : design->nets) {
     if (!net.isConstant && !net.driver.has_value())
       ++undriven;
   }
-  EXPECT_EQ(undriven, 2u);
+  EXPECT_EQ(undriven, 0u);
   // Top ports recorded in order: a, b inputs; z0, z1 outputs.
   size_t inputs = 0, outputs = 0;
   for (const auto &port : design->ports) {
