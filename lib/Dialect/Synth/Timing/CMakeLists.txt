@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 add_circt_dialect_library(CIRCTSynthTiming
+  TimingDesignBuilder.cpp
   TimingJSON.cpp
   TimingResult.cpp
 
@@ -13,5 +14,8 @@ add_circt_dialect_library(CIRCTSynthTiming
   Support
 
   LINK_LIBS PUBLIC
+  CIRCTComb
+  CIRCTHW
+  CIRCTSeq
   MLIRIR
 )

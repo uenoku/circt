@@ -1,5 +1,6 @@
 add_circt_unittest(CIRCTSynthTests
   LongestPathTest.cpp
+  TimingDesignBuilderTest.cpp
   TimingJSONTest.cpp
 )
 
