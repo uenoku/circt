@@ -1225,8 +1225,17 @@ Measured:
 | muladd @0.4ns | CIRCT + ABC + booth + supergates | 171 | 19.92 | 0.138 |
 Supergates help muladd (-12) but regress mul16 (569->714); not universal,
 stay opt-in. FIFO control logic barely responds to ABC/bundles/bubble
-(-46 cells); the control gap (NAND/OAI-heavy Yosys vs AND/OR/INV-heavy
-CIRCT) needs polarity-aware matching, not post-passes.
+(-46 cells). Polarity analysis (FIFO full flow): every complemented
+driver also feeds positive logic (zero all-complemented fanouts), so no
+covering can remove the 1780 INVs without breaking positive users;
+duplicating drivers as complements is area-neutral at best. Yosys's
+NAND/OAI-heavy structure (2470 NAND2, 2127 OAI21, 533 BUFs) vs CIRCT's
+AND/OR/INV-heavy structure comes from restructuring (ABC mapping with
+choices isolates polarities), not covering. Decision: polarity-aware
+covering is complete (bubble pushing optimal for single-fanout);
+closing the control gap needs choice-based restructuring (native choices
+or ABC-map integration — AIGER boundary loses choices today), a larger
+future project.
 | muladd @0.4ns | CIRCT + ABC + booth + bundles | 150 | 21.01 | 0.121 |
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
