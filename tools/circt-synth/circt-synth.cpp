@@ -456,8 +456,8 @@ static cl::opt<bool>
 static cl::opt<bool> extractBundles(
     "extract-bundles",
     cl::desc("Extract shared-support value groups for joint multi-output "
-             "cell mapping"),
-    cl::init(false), cl::cat(mainCategory));
+             "cell mapping (default on; pass =false to disable)"),
+    cl::init(true), cl::cat(mainCategory));
 
 static cl::opt<synth::OptimizationStrategy> synthesisStrategy(
     "synthesis-strategy", cl::desc("Synthesis strategy to use"),

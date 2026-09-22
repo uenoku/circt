@@ -1239,10 +1239,10 @@ to 6% inst / 12% area (186 vs 175, 23.01 vs 20.46um2) with identical
 timing. Timing is mixed: Yosys wins muladd (+19ps), CIRCT wins mul16
 (+41ps). Remaining area gap is mapping quality (ABC's mapper vs
 TechMapper), not rewriting. MAJ gap closed by `--extract-bundles`
-(opt-in): muladd 183->150 inst with 10 FAx1 full adders (total 15
-majorities vs Yosys 14); mul16 636->569. Bundling is neutral on control
-logic (FIFO -8 inst) so it stays opt-in pending full-regression
-validation for a default flip. Flop QN+INV swapping analyzed and
+(now default-on, opt-out via `=false`): muladd 183->150 inst with 10 FAx1
+full adders (total 15 majorities vs Yosys 14); mul16 636->569. Bundling
+is neutral on control logic (FIFO -8 inst) and the full lit suite passes
+unchanged, so it flipped to default. Flop QN+INV swapping analyzed and
 rejected: QN outputs fan out to mixed-polarity users, so no economical
 swap exists (would need dual-output flops or add a flop to remove an
 inverter). FIFO without
