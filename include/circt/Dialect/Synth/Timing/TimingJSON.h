@@ -36,6 +36,40 @@ mlir::LogicalResult parseTimingResult(llvm::StringRef json,
                                       TimingResult &result,
                                       mlir::MLIRContext *ctx);
 
+/// Result schema identifier. Bump on any incompatible change.
+constexpr llvm::StringLiteral kTimingFeedbackV2Schema =
+    "circt.synth.timing-feedback.v2";
+
+/// One v2 feedback path with structured endpoint keys. Times are
+/// picoseconds; arrival and slack are optional (period-derived constraints
+/// may carry only a requirement).
+struct TimingFeedbackV2Path {
+  TimingObjectKey startpoint;
+  TimingObjectKey endpoint;
+  TimePs required;
+  std::optional<TimePs> arrival;
+  std::optional<TimePs> slack;
+  mlir::StringAttr pathGroup;
+};
+
+/// Parsed v2 feedback document.
+struct TimingFeedbackV2 {
+  mlir::StringAttr top;
+  SmallVector<TimingFeedbackV2Path, 2> paths;
+};
+
+/// Serialize a timing result's endpoints as v2 feedback (integral
+/// picoseconds, deterministic ordering). Emits every analyzed endpoint;
+/// callers decide which need another refinement round.
+void printTimingFeedbackV2(const TimingResult &result, llvm::StringRef top,
+                           llvm::raw_ostream &os);
+
+/// Parse a v2 feedback document. Fails on schema mismatch or malformed
+/// content; StringAttrs are interned in the given context.
+mlir::LogicalResult parseTimingFeedbackV2(llvm::StringRef json,
+                                          TimingFeedbackV2 &feedback,
+                                          mlir::MLIRContext *ctx);
+
 /// Serialize with deterministic ordering (endpoints by key, paths by slack
 /// then endpoint key, transition, and launch key).
 void printTimingResult(const TimingResult &result, llvm::raw_ostream &os);

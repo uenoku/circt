@@ -1,0 +1,10 @@
+{"schema": "circt.synth.timing-feedback.v2", "time_unit": "ps", "top": "top",
+ "paths": [{"startpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f0"], "module": "fd1", "port_index": 1, "port_name": "Q", "bit": 0},
+            "endpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f0"], "module": "fd1", "port_index": 0, "port_name": "D", "bit": 0},
+            "required": 8000, "arrival": 9500, "slack": -1500, "path_group": "clk"},
+           {"startpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f1"], "module": "fd1", "port_index": 1, "port_name": "Q", "bit": 0},
+            "endpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f1"], "module": "fd1", "port_index": 0, "port_name": "D", "bit": 0},
+            "required": 9000, "arrival": 9500, "slack": -500, "path_group": "clk"},
+           {"startpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f9"], "module": "fd1", "port_index": 1, "port_name": "Q", "bit": 0},
+            "endpoint": {"kind": "instance-pin", "instance_path": ["u_sub", "f9"], "module": "fd1", "port_index": 0, "port_name": "D", "bit": 0},
+            "required": 1000, "arrival": 2000, "slack": -1000, "path_group": "clk"}]}

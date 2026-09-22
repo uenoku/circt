@@ -10,8 +10,10 @@
 #include "circt/Dialect/Synth/Analysis/RefinementRegions.h"
 #include "circt/Dialect/Synth/Analysis/TimingFeedback.h"
 #include "circt/Dialect/Synth/Analysis/TimingPressureAnalysis.h"
+#include "circt/Dialect/Synth/Timing/TimingJSON.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -72,7 +74,9 @@ struct DiscoverRefinementRegionsPass
       manifest = std::move(*parsed);
     }
 
-    // Timing feedback overlay (optional).
+    // Timing feedback overlay (optional). Accepts v1 display records
+    // and v2 structured keys (converted to display records; keys from
+    // the text adapter round-trip exactly).
     std::vector<TimingFeedbackPath> feedback;
     if (!timingFeedback.empty()) {
       auto file = MemoryBuffer::getFile(timingFeedback);
@@ -82,14 +86,36 @@ struct DiscoverRefinementRegionsPass
         signalPassFailure();
         return;
       }
-      auto parsed = TimingFeedback::parse(
-          file.get()->getBuffer(), topModuleName, timingFeedbackStrict,
-          [&](const Twine &msg) { top->emitWarning(msg); });
-      if (::failed(parsed)) {
-        signalPassFailure();
-        return;
+      StringRef contents = file.get()->getBuffer();
+      bool isV2 = false;
+      if (auto parsedJson = json::parse(contents)) {
+        if (const auto *obj = parsedJson->getAsObject())
+          if (auto schema = obj->getString("schema"))
+            isV2 = *schema == timing::kTimingFeedbackV2Schema;
       }
-      feedback = std::move(parsed->paths);
+      if (isV2) {
+        timing::TimingFeedbackV2 feedbackV2;
+        if (failed(timing::parseTimingFeedbackV2(contents, feedbackV2,
+                                                 top.getContext()))) {
+          if (timingFeedbackStrict) {
+            top->emitError("malformed v2 timing feedback");
+            signalPassFailure();
+            return;
+          }
+          top->emitWarning("malformed v2 timing feedback (skipped)");
+        } else {
+          feedback = toV1Paths(feedbackV2);
+        }
+      } else {
+        auto parsed = TimingFeedback::parse(
+            contents, topModuleName, timingFeedbackStrict,
+            [&](const Twine &msg) { top->emitWarning(msg); });
+        if (::failed(parsed)) {
+          signalPassFailure();
+          return;
+        }
+        feedback = std::move(parsed->paths);
+      }
     }
 
     TimingPressureAnalysis analysis(top);

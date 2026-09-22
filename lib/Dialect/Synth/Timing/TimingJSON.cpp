@@ -49,6 +49,12 @@ const char *transitionName(TimingTransition t) {
   return t == TimingTransition::Rise ? "rise" : "fall";
 }
 
+// Null-safe string extraction for writers; backends may leave optional
+// identity fields empty.
+std::string strOrEmpty(mlir::StringAttr attr) {
+  return attr ? attr.getValue().str() : std::string();
+}
+
 Object writeKey(const TimingObjectKey &key) {
   Object obj;
   obj["kind"] = key.kind == TimingObjectKind::Instance      ? "instance"
@@ -56,11 +62,11 @@ Object writeKey(const TimingObjectKey &key) {
                                                             : "top-port";
   Array path;
   for (auto part : key.instancePath)
-    path.push_back(part.getValue().str());
+    path.push_back(strOrEmpty(part));
   obj["instance_path"] = std::move(path);
-  obj["module"] = key.moduleName.getValue().str();
+  obj["module"] = strOrEmpty(key.moduleName);
   obj["port_index"] = (int64_t)key.portIndex;
-  obj["port_name"] = key.portName.getValue().str();
+  obj["port_name"] = strOrEmpty(key.portName);
   obj["bit"] = (int64_t)key.bit;
   return obj;
 }
@@ -159,8 +165,8 @@ void circt::synth::timing::printTimingResult(const TimingResult &result,
   root["time_unit"] = "ps";
   // Top is informational in v1; the object keys carry full identity.
   Object backend;
-  backend["name"] = result.backend.getValue().str();
-  backend["version"] = result.backendVersion.getValue().str();
+  backend["name"] = strOrEmpty(result.backend);
+  backend["version"] = strOrEmpty(result.backendVersion);
   root["backend"] = std::move(backend);
   root["analysis"] = "setup-max";
   root["status"] = result.status == TimingResultStatus::Complete ? "complete"
@@ -201,7 +207,7 @@ void circt::synth::timing::printTimingResult(const TimingResult &result,
   for (const auto *endpoint : endpoints) {
     Object obj;
     obj["endpoint"] = writeKey(endpoint->endpoint);
-    obj["path_group"] = endpoint->pathGroup.getValue().str();
+    obj["path_group"] = strOrEmpty(endpoint->pathGroup);
     obj["worst_slack"] = endpoint->worstSlack.value;
     Array transitions;
     for (const auto &tr : endpoint->transitions) {
@@ -257,7 +263,7 @@ void circt::synth::timing::printTimingResult(const TimingResult &result,
   Array diagnostics;
   for (const auto &diag : result.diagnostics) {
     Object dobj;
-    dobj["message"] = diag.message.getValue().str();
+    dobj["message"] = strOrEmpty(diag.message);
     if (diag.object)
       dobj["object"] = writeKey(*diag.object);
     diagnostics.push_back(std::move(dobj));
@@ -484,6 +490,117 @@ mlir::LogicalResult circt::synth::timing::parseTimingResult(
     }
   }
 
+  if (!reader.ok)
+    return mlir::failure();
+  return mlir::success();
+}
+
+void circt::synth::timing::printTimingFeedbackV2(const TimingResult &result,
+                                                 llvm::StringRef top,
+                                                 llvm::raw_ostream &os) {
+  Object root;
+  root["schema"] = kTimingFeedbackV2Schema.str();
+  root["time_unit"] = "ps";
+  root["top"] = top.str();
+  SmallVector<const TimingEndpointResult *> endpoints;
+  for (const auto &endpoint : result.endpoints)
+    endpoints.push_back(&endpoint);
+  llvm::sort(endpoints, [](const auto *a, const auto *b) {
+    return compareKeys(a->endpoint, b->endpoint) < 0;
+  });
+  Array paths;
+  for (const auto *endpoint : endpoints) {
+    const TimingTransitionResult *worst = nullptr;
+    for (const auto &tr : endpoint->transitions) {
+      if (!worst || tr.slack.value < worst->slack.value)
+        worst = &tr;
+    }
+    if (!worst)
+      continue;
+    Object obj;
+    if (worst->worstLaunch)
+      obj["startpoint"] = writeKey(*worst->worstLaunch);
+    else
+      obj["startpoint"] = writeKey(TimingObjectKey());
+    obj["endpoint"] = writeKey(endpoint->endpoint);
+    obj["required"] = worst->required.value;
+    obj["arrival"] = worst->arrival.value;
+    obj["slack"] = worst->slack.value;
+    obj["path_group"] = strOrEmpty(endpoint->pathGroup);
+    paths.push_back(std::move(obj));
+  }
+  root["paths"] = std::move(paths);
+  os << llvm::json::Value(std::move(root));
+}
+
+mlir::LogicalResult circt::synth::timing::parseTimingFeedbackV2(
+    llvm::StringRef json, TimingFeedbackV2 &feedback, mlir::MLIRContext *ctx) {
+  auto parsed = llvm::json::parse(json);
+  if (!parsed) {
+    llvm::consumeError(parsed.takeError());
+    return mlir::failure();
+  }
+  Reader reader{ctx};
+  auto *root = parsed->getAsObject();
+  if (!root)
+    return mlir::failure();
+  auto schema = root->getString("schema");
+  if (!schema || *schema != kTimingFeedbackV2Schema)
+    return mlir::failure();
+  feedback = TimingFeedbackV2();
+  auto top = root->getString("top");
+  if (!top)
+    return mlir::failure();
+  feedback.top = mlir::StringAttr::get(ctx, *top);
+  auto *paths = root->getArray("paths");
+  if (!paths)
+    return mlir::failure();
+  for (const auto &entry : *paths) {
+    auto *obj = entry.getAsObject();
+    if (!obj) {
+      reader.ok = false;
+      break;
+    }
+    TimingFeedbackV2Path path;
+    if (auto *start = obj->get("startpoint")) {
+      if (!reader.key(start, path.startpoint))
+        continue;
+    } else {
+      reader.ok = false;
+      continue;
+    }
+    if (auto *end = obj->get("endpoint")) {
+      if (!reader.key(end, path.endpoint))
+        continue;
+    } else {
+      reader.ok = false;
+      continue;
+    }
+    if (auto required = obj->getInteger("required"))
+      path.required.value = *required;
+    else {
+      reader.ok = false;
+      continue;
+    }
+    if (auto *arrival = obj->get("arrival")) {
+      if (auto v = arrival->getAsInteger())
+        path.arrival = TimePs{*v};
+      else {
+        reader.ok = false;
+        continue;
+      }
+    }
+    if (auto *slack = obj->get("slack")) {
+      if (auto v = slack->getAsInteger())
+        path.slack = TimePs{*v};
+      else {
+        reader.ok = false;
+        continue;
+      }
+    }
+    path.pathGroup = reader.str(obj->get("path_group"), "path_group");
+    feedback.paths.push_back(std::move(path));
+  }
   if (!reader.ok)
     return mlir::failure();
   return mlir::success();

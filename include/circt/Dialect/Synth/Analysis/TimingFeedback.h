@@ -30,6 +30,8 @@
 #define CIRCT_DIALECT_SYNTH_ANALYSIS_TIMINGFEEDBACK_H
 
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Timing/TimingJSON.h"
+#include "circt/Dialect/Synth/Timing/TimingTypes.h"
 #include "circt/Support/LLVM.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
@@ -83,12 +85,43 @@ struct ResolvedEndpoint {
   unsigned dataOperandIdx = 0;
 };
 
+// Convert parsed v2 feedback to v1 display records for consumers that
+// resolve display strings (refinement pressure overlay). Keys produced
+// by the text adapter carry the original display strings, so this
+// round-trips exactly; backend-issued keys with real paths should use
+// direct v2 resolution instead (future work with the timing backend).
+std::vector<TimingFeedbackPath>
+toV1Paths(const timing::TimingFeedbackV2 &feedback);
+
+// v2 resolution failure classes for diagnostics and strict/permissive
+// handling.
+enum class ResolveFailure {
+  Missing,
+  Renamed,
+  Reordered,
+  WrongCell,
+  WrongPinRole,
+  Ambiguous
+};
+
+StringRef describeResolveFailure(ResolveFailure failure);
+
 // Resolve a hierarchical endpoint ("u_core/u_alu/result_reg/D") to the
 // mapped flop instance and D operand index. Fails when the path does not
 // resolve to exactly one instance with a D input (missing, ambiguous, or
 // clock-pin endpoints all fail).
 FailureOr<ResolvedEndpoint> resolveFeedbackEndpoint(ModuleOp top,
                                                     StringRef endpoint);
+
+// Resolve a structured v2 endpoint key from the explicitly configured
+// top design module: walk the instance path, validate module, port
+// index/name/bit, and input direction. The key's pin was selected by
+// Liberty role at extraction; import validates identity. Classifies
+// failures for strict/permissive handling.
+FailureOr<ResolvedEndpoint>
+resolveFeedbackEndpointV2(mlir::ModuleOp top, mlir::StringAttr topName,
+                          const timing::TimingObjectKey &key,
+                          ResolveFailure &failureReason);
 
 // Resolve a hierarchical launch ("u_core/u_alu/a_reg/Q") to the flop Q
 // value. Fails on missing/ambiguous/non-flop targets.

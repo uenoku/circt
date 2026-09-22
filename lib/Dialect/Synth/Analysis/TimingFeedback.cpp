@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "circt/Dialect/Synth/Analysis/TimingFeedback.h"
+#include "circt/Dialect/Synth/Timing/TimingJSON.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/Support/JSON.h"
@@ -405,4 +406,141 @@ FailureOr<Value> circt::synth::resolveFeedbackLaunch(mlir::ModuleOp top,
         return i < inst.getNumResults() ? inst.getResult(i) : Value();
   }
   return failure();
+}
+
+StringRef circt::synth::describeResolveFailure(ResolveFailure failure) {
+  switch (failure) {
+  case ResolveFailure::Missing:
+    return "missing";
+  case ResolveFailure::Renamed:
+    return "renamed";
+  case ResolveFailure::Reordered:
+    return "reordered";
+  case ResolveFailure::WrongCell:
+    return "wrong-cell";
+  case ResolveFailure::WrongPinRole:
+    return "wrong-pin-role";
+  case ResolveFailure::Ambiguous:
+    return "ambiguous";
+  }
+  llvm_unreachable("unknown resolve failure");
+}
+
+// Unique instance by name in one module body. Returns null when missing;
+// sets ambiguous when duplicated.
+static hw::InstanceOp findUniqueInstance(hw::HWModuleOp module, StringRef name,
+                                         bool &ambiguous) {
+  hw::InstanceOp match;
+  if (auto *block = module.getBodyBlock()) {
+    for (auto &op : block->getOperations()) {
+      auto inst = dyn_cast<hw::InstanceOp>(op);
+      if (!inst || inst.getInstanceName() != name)
+        continue;
+      if (match) {
+        ambiguous = true;
+        return hw::InstanceOp();
+      }
+      match = inst;
+    }
+  }
+  return match;
+}
+
+FailureOr<ResolvedEndpoint> circt::synth::resolveFeedbackEndpointV2(
+    mlir::ModuleOp top, mlir::StringAttr topName,
+    const timing::TimingObjectKey &key, ResolveFailure &failureReason) {
+  using timing::TimingObjectKind;
+  if (key.kind != TimingObjectKind::InstancePin) {
+    failureReason = ResolveFailure::WrongPinRole;
+    return mlir::failure();
+  }
+  auto *topSym = top.lookupSymbol(topName);
+  auto topModule = dyn_cast_or_null<hw::HWModuleOp>(topSym);
+  if (!topModule || !topModule.getBodyBlock()) {
+    failureReason = ResolveFailure::Missing;
+    return mlir::failure();
+  }
+  hw::HWModuleOp current = topModule;
+  hw::InstanceOp inst;
+  for (size_t level = 0; level < key.instancePath.size(); ++level) {
+    bool ambiguous = false;
+    inst = findUniqueInstance(current, key.instancePath[level].getValue(),
+                              ambiguous);
+    if (ambiguous) {
+      failureReason = ResolveFailure::Ambiguous;
+      return mlir::failure();
+    }
+    if (!inst) {
+      failureReason = ResolveFailure::Missing;
+      return mlir::failure();
+    }
+    if (level + 1 == key.instancePath.size())
+      break;
+    auto *target = top.lookupSymbol(inst.getModuleName());
+    auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+    if (!targetModule || !targetModule.getBodyBlock()) {
+      failureReason = ResolveFailure::Missing;
+      return mlir::failure();
+    }
+    current = targetModule;
+  }
+  if (!inst) {
+    failureReason = ResolveFailure::Missing;
+    return mlir::failure();
+  }
+  // Empty path means the endpoint is the top module itself: not probale.
+  if (key.instancePath.empty()) {
+    failureReason = ResolveFailure::WrongPinRole;
+    return mlir::failure();
+  }
+  auto *target = top.lookupSymbol(inst.getModuleName());
+  auto targetModule = dyn_cast_or_null<hw::HWModuleOp>(target);
+  if (!targetModule ||
+      targetModule.getModuleName() != key.moduleName.getValue()) {
+    failureReason = ResolveFailure::WrongCell;
+    return mlir::failure();
+  }
+  SmallVector<hw::PortInfo> inputs, outputs;
+  splitPorts(targetModule, inputs, outputs);
+  if (key.portIndex >= inputs.size()) {
+    failureReason = ResolveFailure::Missing;
+    return mlir::failure();
+  }
+  if (inputs[key.portIndex].name != key.portName) {
+    bool foundElsewhere = false;
+    for (const auto &input : inputs)
+      if (input.name == key.portName)
+        foundElsewhere = true;
+    failureReason =
+        foundElsewhere ? ResolveFailure::Reordered : ResolveFailure::Renamed;
+    return mlir::failure();
+  }
+  auto portType = dyn_cast<IntegerType>(inputs[key.portIndex].type);
+  if (!portType || key.bit >= (unsigned)portType.getWidth()) {
+    failureReason = ResolveFailure::WrongPinRole;
+    return mlir::failure();
+  }
+  if (key.portIndex >= inst.getNumOperands()) {
+    failureReason = ResolveFailure::WrongPinRole;
+    return mlir::failure();
+  }
+  return ResolvedEndpoint{inst, key.portIndex};
+}
+
+std::vector<circt::synth::TimingFeedbackPath>
+circt::synth::toV1Paths(const timing::TimingFeedbackV2 &feedback) {
+  std::vector<TimingFeedbackPath> paths;
+  for (const auto &record : feedback.paths) {
+    TimingFeedbackPath path;
+    path.startpoint = record.startpoint.portName.str();
+    path.endpoint = record.endpoint.portName.str();
+    path.pathGroup = record.pathGroup.str();
+    path.requiredPs = record.required.value;
+    if (record.arrival)
+      path.arrivalPs = record.arrival->value;
+    if (record.slack)
+      path.slackPs = record.slack->value;
+    paths.push_back(std::move(path));
+  }
+  return paths;
 }
