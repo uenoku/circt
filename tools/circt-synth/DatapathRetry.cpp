@@ -661,8 +661,12 @@ bool circt::synth::runTimingBackendOnce(const DatapathRetryConfig &config,
     return false;
   TimingDesignBuilder builder(ctx, top.getModuleNameAttr(), libraryCells);
   auto design = builder.build(*module);
-  if (failed(design))
+  if (failed(design)) {
+    for (const auto &diag : builder.getDiagnostics().unsupported)
+      llvm::errs() << "circt-synth: timing graph: "
+                   << diag.message.getValue() << "\n";
     return false;
+  }
   // Constraints: single clock from a top-level input port plus default
   // input boundary conditions. Outputs stay unconstrained in v1.
   TimingRequest request;

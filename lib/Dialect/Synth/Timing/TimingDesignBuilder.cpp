@@ -173,10 +173,31 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
 
   // Value to per-bit nets within this instantiation. Block arguments alias
   // the caller's nets; internal values get fresh per-instantiation nets so
-  // shared modules still flatten with instance-specific loads.
+  // shared modules still flatten with instance-specific loads. Instance
+  // results are pre-assigned so textual order need not dominate: feedback
+  // loops through flops (flop first, comb later) still resolve, while true
+  // combinational cycles get stuck without nets and fail closed below.
   llvm::DenseMap<mlir::Value, SmallVector<uint32_t>> valueNets;
   for (auto [arg, nets] : llvm::zip(body->getArguments(), argNets))
     valueNets[arg] = nets;
+  for (auto &op : body->getOperations()) {
+    if (auto inst = dyn_cast<hw::InstanceOp>(op)) {
+      // Pre-assign only for library cells; design submodules get their
+      // result nets from recursion (pre-assigning those would orphan).
+      if (!libraryCells.contains(
+              mlir::StringAttr::get(ctx, inst.getModuleName())))
+        continue;
+      for (auto result : inst.getResults()) {
+        auto width = bitWidth(result);
+        if (!width)
+          continue;
+        SmallVector<uint32_t> nets;
+        for (unsigned i = 0; i < *width; ++i)
+          nets.push_back(freshNet());
+        valueNets[result] = std::move(nets);
+      }
+    }
+  }
 
   // Persistent key prefix for everything created in this instantiation.
   SmallVector<mlir::StringAttr> prefix(instancePath.begin(),
@@ -269,8 +290,13 @@ TimingDesignBuilder::elaborateModule(hw::HWModuleOp module,
             return std::nullopt;
           }
           SmallVector<uint32_t> bits;
+          auto netIt = valueNets.find(result);
+          if (netIt == valueNets.end() || netIt->second.size() != *width) {
+            fail("instance result without pre-assigned nets");
+            return std::nullopt;
+          }
           for (unsigned i = 0; i < *width; ++i) {
-            uint32_t net = freshNet();
+            uint32_t net = netIt->second[i];
             TimingPinConnection pin;
             pin.node = TimingNodeId{freshNode()};
             pin.portName = outputs[pi].name;

@@ -1204,6 +1204,12 @@ Measured:
   (STA side reported only the worst endpoint despite a high path count;
   full STA-side coverage needs broader report flags, a harness follow-up,
   not a backend gap.)
+- FIFO (merged ASAP7, 2106 flop-D endpoints, 2ns period): OpenTimer WNS
+  -23.65ns, OpenSTA WNS -23.37ns (1%). Same worst endpoints (rdata bits);
+  address-counter flops fail in both (OT -2708 vs STA -2665ps on
+  fifo_reader/addr_bit0, <2%; STA omits them from top-K reports but
+  confirms on direct query). First system-scale agreement (flop-based;
+  SRAM macros remain future work and block memory-based SoCs).
 - Sky130 and system-scale (FIFO/SmallBoom) differentials are deferred:
   no Sky130 PDK is available in this environment, and system scale needs
   the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
