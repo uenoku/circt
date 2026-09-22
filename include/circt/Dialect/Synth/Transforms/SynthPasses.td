@@ -815,7 +815,7 @@ def ImportTimingFeedback : Pass<"synth-import-timing-feedback", "mlir::ModuleOp"
     Statistic<"numProbesUpdated", "probes-updated",
               "Number of existing probes tightened by feedback">
   ];
-  let dependentDialects = ["hw::HWDialect"];
+  let dependentDialects = ["hw::HWDialect", "synth::SynthDialect"];
 }
 
 def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {

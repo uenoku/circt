@@ -442,6 +442,7 @@ bool RetryRunner::runCandidate(StringRef name,
       endpointIndex[path.endpoint] = idx;
       TimingEndpointResult endpoint;
       endpoint.endpoint.kind = TimingObjectKind::InstancePin;
+      endpoint.endpoint.moduleName = mlir::StringAttr::get(&ctx, "");
       endpoint.endpoint.portName = mlir::StringAttr::get(&ctx, path.endpoint);
       endpoint.pathGroup = mlir::StringAttr::get(&ctx, path.pathGroup);
       timing.endpoints.push_back(std::move(endpoint));
@@ -457,6 +458,7 @@ bool RetryRunner::runCandidate(StringRef name,
         TimePs{tr.arrival.value - (path.hasSlack ? tr.slack.value : 0)};
     TimingObjectKey launch;
     launch.kind = TimingObjectKind::InstancePin;
+    launch.moduleName = mlir::StringAttr::get(&ctx, "");
     launch.portName = mlir::StringAttr::get(&ctx, path.startpoint);
     tr.worstLaunch = launch;
     timing.endpoints[idx].transitions.push_back(std::move(tr));
@@ -680,32 +682,12 @@ std::vector<StaPath> toStaPaths(const timing::TimingResult &timing) {
   }
   return paths;
 }
-std::string buildFeedbackJson(StringRef top, ArrayRef<StaPath> paths) {
-  std::string out = "{\"schema\": \"circt.synth.timing-feedback.v1\", "
-                    "\"time_unit\": \"ns\", \"top\": \"";
-  out += top.str();
-  out += "\", \"paths\": [";
-  bool first = true;
-  char buf[64];
-  for (const auto &path : paths) {
-    if (!path.hasSlack)
-      continue;
-    if (!first)
-      out += ", ";
-    first = false;
-    out += "{\"startpoint\": \"";
-    out += path.startpoint;
-    out += "\", \"endpoint\": \"";
-    out += path.endpoint;
-    out += "\", \"path_group\": \"";
-    out += path.pathGroup;
-    snprintf(buf, sizeof(buf),
-             "\", \"required\": %.4f, \"arrival\": %.4f, "
-             "\"slack\": %.4f}",
-             path.arrivalNs + path.slackNs, path.arrivalNs, path.slackNs);
-    out += buf;
-  }
-  out += "]}";
+std::string buildFeedbackJson(StringRef top,
+                              const timing::TimingResult &timing) {
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  timing::printTimingFeedbackV2(timing, top, os);
+  os.flush();
   return out;
 }
 
@@ -840,8 +822,7 @@ bool runRefinementRetry(RetryRunner &runner) {
   // Fresh feedback from the baseline STA (paths with slack only).
   std::string feedbackFile = runner.tmpDir + "/feedback-r0.json";
   if (!writeFile(feedbackFile,
-                 buildFeedbackJson(config.top,
-                                   toStaPaths(baseline.timing))))
+                 buildFeedbackJson(config.top, baseline.timing)))
     return false;
   std::vector<StaPath> feedback = toStaPaths(baseline.timing);
 
@@ -934,7 +915,8 @@ bool runRefinementRetry(RetryRunner &runner) {
       std::string roundFeedback =
           runner.tmpDir + "/feedback-r" + std::to_string(round) + ".json";
       if (!writeFile(manifestFile, manifest) ||
-          !writeFile(roundFeedback, buildFeedbackJson(config.top, feedback)))
+          !writeFile(roundFeedback,
+                      buildFeedbackJson(config.top, results[best].timing)))
         return false;
       CandidateResult result;
       if (runner.runCandidate(
