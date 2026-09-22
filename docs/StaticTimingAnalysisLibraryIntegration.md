@@ -1222,10 +1222,12 @@ Measured:
 | muladd @0.4ns | CIRCT best (booth) | 230 | 27.26 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC rewrite + booth | 186 | 23.01 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC + booth + bubble-push | 183 | 22.85 | 0.128 |
+| muladd @0.4ns | CIRCT + ABC + booth + bundles | 150 | 21.01 | 0.121 |
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
 | mul16 @0.6ns | CIRCT best (booth) | 753 | 84.81 | 0.186 |
 | mul16 @0.6ns | CIRCT + ABC rewrite + booth | 636 | 73.40 | 0.200 |
+| mul16 @0.6ns | CIRCT + ABC + booth + bundles | 569 | 66.97 | 0.170 |
 | mul16 @0.6ns | Yosys 0.68 + ABC | 671 | 71.98 | 0.145 |
 | fifo @2ns | CIRCT + buffer-high-fanout | 12324 | 1540.6 | 1.649 (STA) / 1.331 (OT) |
 | fifo @2ns | Yosys 0.68 + ABC | 10376 | 1199.4 | 1.721 |
@@ -1236,7 +1238,14 @@ Wallace/compress structures are larger); enabling `--abc-commands`
 to 6% inst / 12% area (186 vs 175, 23.01 vs 20.46um2) with identical
 timing. Timing is mixed: Yosys wins muladd (+19ps), CIRCT wins mul16
 (+41ps). Remaining area gap is mapping quality (ABC's mapper vs
-TechMapper), not rewriting. FIFO without
+TechMapper), not rewriting. MAJ gap closed by `--extract-bundles`
+(opt-in): muladd 183->150 inst with 10 FAx1 full adders (total 15
+majorities vs Yosys 14); mul16 636->569. Bundling is neutral on control
+logic (FIFO -8 inst) so it stays opt-in pending full-regression
+validation for a default flip. Flop QN+INV swapping analyzed and
+rejected: QN outputs fan out to mixed-polarity users, so no economical
+swap exists (would need dual-output flops or add a flop to remove an
+inverter). FIFO without
 buffering is broken in CIRCT (21ns unbuffered inverter, -23ns WNS);
 `--buffer-high-fanout` restores competitiveness (+1.65ns STA). Open item:
 buffered-FIFO OT-vs-STA differ by 318ps (OT pessimistic here, opposite
