@@ -1185,9 +1185,14 @@ Measured:
   has state-dependent arcs (`when B` positive-unate vs `when !B`
   negative-unate, ~3ps apart at the operating point) and both inputs switch
   together, so neither side condition statically holds. OpenTimer takes the
-  faster arc, OpenSTA the worst case. Decision: `when`-aware worst-case arc
-  selection is an upstream OpenTimer gap (follow-up patch or constrain to
-  unate-only cells for signoff-critical use); meanwhile the backend is
+  faster arc, OpenSTA the worst case. Mechanism confirmed: OT's Liberty
+  parser merges timing groups by `related_pin` alone (`t = ti` overwrite),
+  so the second `when` variant silently replaces the first and only one
+  arc reaches propagation. Decision: `when`-aware timing (key by
+  related_pin+when, worst-case across applicable variants) is an upstream
+  OpenTimer architecture gap, larger than the enumeration patch
+  (touches Timing, parsing, and propagation); follow up upstream or
+  constrain to unate-only cells for signoff-critical use. Meanwhile the backend is
   usable for candidate ranking where relative order holds, but
   absolute-WNS decisions need the STA cross-check. The backend still
   succeeds without export (elaborates the top only), which the STA flow
