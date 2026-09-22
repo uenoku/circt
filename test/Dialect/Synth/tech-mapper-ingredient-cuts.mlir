@@ -7,8 +7,8 @@
 // Default retention finds 5 MAJI covers; reserving 2 ingredient slots (with
 // a wider 12-cut limit) recovers a 6th MAJI and drops one discrete cell.
 
-// DEFAULT-COUNT-5: hw.instance "mapped" @MAJI(
-// RESERVE-COUNT-6: hw.instance "mapped" @MAJI(
+// DEFAULT-COUNT-5: hw.instance "mapped_{{[0-9]+}}" @MAJI(
+// RESERVE-COUNT-6: hw.instance "mapped_{{[0-9]+}}" @MAJI(
 
 hw.module @AND2(in %A : i1, in %B : i1, out Y : i1) attributes {synth.mapping_cost = #synth.mapping_cost<area = 2.0 : f64, arcs = [#synth.linear_timing_arc<100, 0, #synth.polarity<positive>>, #synth.linear_timing_arc<100, 0, #synth.polarity<positive>>], input_caps = {}>} {
   %y = comb.and %A, %B : i1

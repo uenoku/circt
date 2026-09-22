@@ -483,6 +483,26 @@ struct TechMapperPass : public impl::TechMapperBase<TechMapperPass> {
           CutRewriter rewriter(options, patternSet);
           if (failed(rewriter.run(hwModule)))
             return failure();
+          // Uniquify placeholder instance names deterministically in walk
+          // order (per-module counters keep it thread-safe and stable).
+          // Duplicate names break hierarchical identity for timing and
+          // downstream tools that assume unique instance labels.
+          unsigned mappedCount = 0, mappedInvCount = 0;
+          hwModule.walk([&](hw::InstanceOp inst) {
+            StringRef name = inst.getInstanceName();
+            if (name == "mapped" || name.starts_with("mapped_")) {
+              inst->setAttr(
+                  "instanceName",
+                  StringAttr::get(inst.getContext(),
+                                  "mapped_" + std::to_string(mappedCount++)));
+            } else if (name == "mapped_inv" ||
+                       name.starts_with("mapped_inv_")) {
+              inst->setAttr("instanceName",
+                            StringAttr::get(
+                                inst.getContext(),
+                                "mapped_inv_" + std::to_string(mappedInvCount++)));
+            }
+          });
           const auto &stats = rewriter.getStats();
           numCutsCreatedCount.fetch_add(stats.numCutsCreated,
                                         std::memory_order_relaxed);
