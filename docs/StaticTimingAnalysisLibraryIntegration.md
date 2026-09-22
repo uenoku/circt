@@ -1224,6 +1224,7 @@ Measured:
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
 | mul16 @0.6ns | CIRCT best (booth) | 753 | 84.81 | 0.186 |
+| mul16 @0.6ns | CIRCT + ABC rewrite + booth | 636 | 73.40 | 0.200 |
 | mul16 @0.6ns | Yosys 0.68 + ABC | 671 | 71.98 | 0.145 |
 | fifo @2ns | CIRCT + buffer-high-fanout | 12324 | 1540.6 | 1.649 (STA) / 1.331 (OT) |
 | fifo @2ns | Yosys 0.68 + ABC | 10376 | 1199.4 | 1.721 |
