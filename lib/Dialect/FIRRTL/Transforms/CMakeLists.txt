@@ -7,6 +7,7 @@ add_circt_dialect_library(CIRCTFIRRTLTransforms
   CheckCombLoops.cpp
   CheckLayers.cpp
   CheckRecursiveInstantiation.cpp
+  ConstrainInputClocks.cpp
   CreateSiFiveMetadata.cpp
   Dedup.cpp
   DropConst.cpp

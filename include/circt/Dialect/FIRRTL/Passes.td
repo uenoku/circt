@@ -947,6 +947,17 @@ def PopulateInstanceChoiceSymbols : Pass<"firrtl-populate-instance-choice-symbol
   let dependentDialects = ["sv::SVDialect"];
 }
 
+def ConstrainInputClocks : Pass<"firrtl-constrain-input-clocks", "firrtl::CircuitOp"> {
+  let summary = "Assign distinct clock domains to input clock ports";
+  let description = [{
+    Add an input domain port for every input clock in a public module that does
+    not already have a ClockDomain association, and associate the clock with
+    that port. All instances are updated to match the changed module
+    signatures. This pass runs after FIRRTL types have been lowered and before
+    InferDomains.
+  }];
+}
+
 def InferDomains : Pass<"firrtl-infer-domains", "firrtl::CircuitOp"> {
   let summary = "Infer and type check all firrtl domains";
   let description = [{

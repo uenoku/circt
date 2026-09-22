@@ -129,6 +129,13 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
     modulePM.addPass(firrtl::createSFCCompat());
   }
 
+  // Add distinct domain ports for input clocks before InferDomains.
+  // InferDomains will then infer and check the newly-created clock-domain
+  // associations along with the rest of the circuit.
+  if (opt.getDomainMode() != FirtoolOptions::DomainMode::Disable &&
+      opt.getDomainMode() != FirtoolOptions::DomainMode::Strip)
+    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createConstrainInputClocks());
+
   // InferDomains runs after ExpandWhens because FIRRTL allows for last-connect
   // semantics and users have historically relied on this behavior to set
   // default connections that are then overridden later.  If this pass is run
