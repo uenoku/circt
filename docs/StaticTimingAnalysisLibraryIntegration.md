@@ -1166,13 +1166,19 @@ Measured:
 
 - Tiny flop (extracted ASAP7 subset, 1 endpoint): DIFFERENTIAL PASS,
   per-endpoint slack delta 0.3ps, WNS 0.4700 vs 0.470301ns.
-- muladd candidate (merged ASAP7, 16 flop-D endpoints): OpenTimer WNS
-  159ps at 0.4ns, 0 failing. OpenSTA comparison blocked: the candidate
-  carries dead modules with unmapped `synth.ff`, which fail export-verilog
-  before STA runs. Notably the backend succeeds here precisely because it
-  needs no export (elaborates the top only). Export robustness is a
-  prerequisite for STA-side system-scale differentials, independent of the
-  backend.
+- muladd candidate (merged ASAP7, 16 flop-D endpoints, `--strip-lib-to-
+  extern` for export): OpenTimer WNS 159ps at 0.4ns, 0 failing, worst
+  endpoints r0_bit7/r1_bit7 tied. OpenSTA worst is r0_bit7 at 128ps, then
+  r1_bit7 at 153ps. Per-endpoint: r1_bit7 matches within 6ps (OT 159 vs
+  STA 153), r0_bit7 differs by 31ps (OT 159 vs STA 128). Required times
+  match exactly in both; the gap is arrival-only (OT optimistic). r0 is
+  the multiplier cone (O2A1O1Ixp5/OA211-heavy), r1 the adder cone, so the
+  gap is cell- or path-specific, not a global offset. Decision: follow up
+  with per-arc delay comparison on the r0 worst path (needs timer arc
+  introspection); meanwhile the backend is usable for candidate ranking
+  where relative order holds, but absolute-WNS decisions need the STA
+  cross-check. The backend still succeeds without export (elaborates the
+  top only), which the STA flow cannot.
 - Sky130 and system-scale (FIFO/SmallBoom) differentials are deferred:
   no Sky130 PDK is available in this environment, and system scale needs
   the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
