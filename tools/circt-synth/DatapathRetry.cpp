@@ -28,10 +28,20 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/HW/HWOps.h"
+#ifdef CIRCT_OPENTIMER_ENABLED
+#include "circt/Dialect/Synth/Timing/TimingDesignBuilder.h"
+#include "circt/Dialect/Synth/Timing/TimingOracle.h"
+#include "mlir/Parser/Parser.h"
+#endif
+
 
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 #include <signal.h>
 #include <sys/types.h>
@@ -40,6 +50,7 @@
 
 using namespace circt::synth;
 using namespace llvm;
+using namespace mlir;
 
 namespace {
 
@@ -193,6 +204,38 @@ struct CandidateResult {
   timing::TimingResult timing;
 };
 
+// Parent side of the timing backend: fork a --timing-run-only child with
+// timeout, read its result JSON, and convert to a TimingResult. Any failure
+// (missing backend, child crash/timeout, bad JSON) returns failure so the
+// caller falls back to STA; the baseline is never lost to the backend.
+std::optional<timing::TimingResult>
+runOpenTimerChild(const DatapathRetryConfig &config,
+                  mlir::MLIRContext *ctx, StringRef mlirFile,
+                  StringRef base) {
+  using namespace timing;
+  if (config.timingBackend != "opentimer")
+    return std::nullopt;
+  std::string jsonFile = (Twine(base) + ".timing.json").str();
+  std::string cmd = shellQuote(config.selfPath) + " --timing-run-only " +
+                    shellQuote(mlirFile) + " -o " + shellQuote(jsonFile);
+  // Forward backend configuration explicitly (children drop retry flags).
+  cmd += " --timing-backend=opentimer";
+  cmd += " --timing-clock-period-ns=" + std::to_string(config.timingClockPeriodNs);
+  cmd += " --timing-clock-port=" + shellQuote(config.timingClockPort);
+  cmd += " --timing-input-slew-ps=" + std::to_string(config.timingInputSlewPs);
+  cmd += " --top " + shellQuote(config.top);
+  cmd += " --liberty " + shellQuote(config.liberty);
+  if (runCommand(cmd, config.timeoutSecs) != 0 || !sys::fs::exists(jsonFile))
+    return std::nullopt;
+  auto buffer = MemoryBuffer::getFile(jsonFile);
+  if (!buffer)
+    return std::nullopt;
+  TimingResult result;
+  if (failed(parseTimingResult(buffer.get()->getBuffer(), result, ctx)))
+    return std::nullopt;
+  return result;
+}
+
 // Shared candidate runner: synthesis, export, STA, and counting in
 // isolated subprocesses with timeouts (see DatapathRetry.h).
 struct RetryRunner {
@@ -284,6 +327,70 @@ bool RetryRunner::runCandidate(StringRef name,
     errs() << "circt-synth: retry candidate '" << name
            << "' synth failed (skipped)\n";
     return false;
+  }
+
+  // In-process timing backend first (no Verilog export or sta needed).
+  // Success skips export/STA entirely; any failure falls through to STA.
+  if (config.timingBackend == "opentimer") {
+    bool backendOk = false;
+    if (auto backendResult =
+            runOpenTimerChild(config, mlirContext, mlirFile, base)) {
+      result.timing = std::move(*backendResult);
+      // Worst arrival for display and the no-slack comparison.
+      int64_t worstArrival = -1;
+      for (const auto &endpoint : result.timing.endpoints) {
+        for (const auto &tr : endpoint.transitions) {
+          if (tr.arrival)
+            worstArrival = std::max(worstArrival, tr.arrival->value);
+        }
+      }
+      result.arrivalPs = worstArrival;
+      // Area via the authoritative resource analysis (same as STA path).
+      std::string countJson = base + ".count.json";
+      std::string countCmd =
+          shellQuote(circtOpt) + " " +
+          shellQuote("--synth-print-resource-usage-analysis=top-module-name=" +
+                     config.top + " output-file=" + countJson +
+                     " emit-json=true") +
+          " " + shellQuote(mlirFile) + " -o /dev/null";
+      if (runCommand(countCmd, config.timeoutSecs) == 0 &&
+          sys::fs::exists(countJson)) {
+        if (auto countBuffer = MemoryBuffer::getFile(countJson)) {
+          if (auto parsed = json::parse(countBuffer.get()->getBuffer())) {
+            if (const auto *arr = parsed->getAsArray(); arr && !arr->empty()) {
+              if (const auto *obj = (*arr)[0].getAsObject()) {
+                if (const auto *total = obj->get("total")) {
+                  if (const auto *totalObj = total->getAsObject()) {
+                    if (auto inst = totalObj->getNumber("hw.instance"))
+                      result.instances = (int64_t)*inst;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (result.instances >= 0) {
+        result.ok = true;
+        if (!config.timingResult.empty()) {
+          SmallString<256> tmp(config.timingResult);
+          tmp += ".tmp";
+          std::error_code ec;
+          raw_fd_ostream out(tmp, ec);
+          if (!ec) {
+            printTimingResult(result.timing, out);
+            out.close();
+            if (!out.has_error())
+              sys::fs::rename(tmp, config.timingResult);
+          }
+        }
+        backendOk = true;
+      }
+    }
+    if (backendOk)
+      return true;
+    errs() << "circt-synth: retry candidate '" << name
+           << "' timing backend failed (falling back to STA)\n";
   }
 
   // Export (disallowReplicate keeps STA parsers happy; see item 1).
@@ -519,6 +626,116 @@ bool RetryRunner::runCandidate(StringRef name,
 }
 
 } // namespace
+
+// Run the in-process timing backend once over a synthesized MLIR file and
+// write the structured result JSON atomically. Used by the --timing-run-only
+// child (isolated by fork+exec with timeout, like other candidates). Returns
+// true on success. Without CIRCT_OPENTIMER_ENABLED always fails.
+bool circt::synth::runTimingBackendOnce(const DatapathRetryConfig &config,
+                          mlir::MLIRContext *ctx, StringRef mlirPath,
+                          StringRef jsonPath) {
+#ifdef CIRCT_OPENTIMER_ENABLED
+  using namespace timing;
+  if (!ctx || config.timingClockPeriodNs <= 0.0)
+    return false;
+  auto buffer = MemoryBuffer::getFile(mlirPath);
+  if (!buffer)
+    return false;
+  OwningOpRef<ModuleOp> module =
+      parseSourceString<ModuleOp>(buffer.get()->getBuffer(), ctx);
+  if (!module)
+    return false;
+  auto top = dyn_cast<circt::hw::HWModuleOp>(module->lookupSymbol(config.top));
+  if (!top)
+    return false;
+  // Library cells are extern modules plus defined modules carrying
+  // Liberty data (mapped technology cells embed synth.liberty.cell).
+  llvm::DenseSet<StringAttr> libraryCells;
+  for (auto op : module->getOps<circt::hw::HWModuleExternOp>())
+    libraryCells.insert(op.getModuleNameAttr());
+  for (auto op : module->getOps<circt::hw::HWModuleOp>()) {
+    if (op->hasAttr("synth.liberty.cell"))
+      libraryCells.insert(op.getModuleNameAttr());
+  }
+  if (libraryCells.empty())
+    return false;
+  TimingDesignBuilder builder(ctx, top.getModuleNameAttr(), libraryCells);
+  auto design = builder.build(*module);
+  if (failed(design))
+    return false;
+  // Constraints: single clock from a top-level input port plus default
+  // input boundary conditions. Outputs stay unconstrained in v1.
+  TimingRequest request;
+  request.design = &*design;
+  SmallVector<StringRef> libs;
+  StringRef(config.liberty).split(libs, ',');
+  for (StringRef lib : libs) {
+    lib = lib.trim();
+    if (!lib.empty())
+      request.libertyFiles.push_back(lib.str());
+  }
+  if (request.libertyFiles.empty())
+    return false;
+  TimingClock clock;
+  clock.name = StringAttr::get(ctx, config.timingClockPort);
+  bool clockFound = false;
+  for (const auto &port : top.getPortList()) {
+    if (port.isInput() && port.name.getValue() == config.timingClockPort) {
+      clock.source.kind = TimingObjectKind::TopPort;
+      clock.source.portName = port.name;
+      clock.source.portIndex = (unsigned)port.argNum;
+      clock.source.bit = 0;
+      clockFound = true;
+      break;
+    }
+  }
+  if (!clockFound)
+    return false;
+  clock.period = TimePs{llround(config.timingClockPeriodNs * 1000.0)};
+  request.constraints.clocks.push_back(clock);
+  for (const auto &port : top.getPortList()) {
+    if (!port.isInput())
+      continue;
+    auto width = port.type.getIntOrFloatBitWidth();
+    for (int i = 0; i < width; ++i) {
+      TimingPortConstraint input;
+      input.port.kind = TimingObjectKind::TopPort;
+      input.port.portName = port.name;
+      input.port.portIndex = (unsigned)port.argNum;
+      input.port.bit = (unsigned)i;
+      input.lateArrival = TimePs{0};
+      input.riseSlew = TimePs{llround(config.timingInputSlewPs)};
+      input.fallSlew = TimePs{llround(config.timingInputSlewPs)};
+      request.constraints.ports.push_back(input);
+    }
+  }
+  auto oracle = createOpenTimerTimingOracle(ctx);
+  auto result = oracle->analyze(request);
+  if (failed(result))
+    return false;
+  std::string json;
+  { llvm::raw_string_ostream os(json);
+    printTimingResult(*result, os); }
+  // Atomic write: temp file plus rename.
+  SmallString<256> tmp(jsonPath);
+  tmp += ".tmp";
+  std::error_code ec;
+  raw_fd_ostream out(tmp, ec);
+  if (ec)
+    return false;
+  out << json;
+  out.close();
+  if (out.has_error() || sys::fs::rename(tmp, jsonPath))
+    return false;
+  return true;
+#else
+  (void)config;
+  (void)ctx;
+  (void)mlirPath;
+  (void)jsonPath;
+  return false;
+#endif
+}
 
 // Emit the winning candidate's MLIR (and SDC when requested).
 bool emitWinner(const RetryRunner &runner, const CandidateResult &best) {

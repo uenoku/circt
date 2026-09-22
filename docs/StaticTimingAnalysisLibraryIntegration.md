@@ -1136,6 +1136,19 @@ Findings that constrain the design (all validated empirically):
 Acceptance: an OpenTimer-backed retry completes without Verilog export, SDC
 parsing, OpenSTA report parsing, or a `sta` executable.
 
+Status (implemented): `--timing-backend={sta,opentimer}` (default sta),
+`--timing-result`, `--timing-clock-period-ns`, `--timing-clock-port`, and
+`--timing-input-slew-ps`. The opentimer backend runs in a `--timing-run-only`
+child (fork+exec under the existing candidate timeout; crash/timeout contained
+like other children) over the synthesized candidate MLIR: extern plus
+Liberty-annotated modules become library cells, constraints use the clock
+port plus default input boundary, and the result JSON returns over a file
+(atomic writes both ways) for judging with the existing TimingResult
+scoreboard. Any backend failure falls back to STA, so the baseline is never
+lost. `test/circt-synth/datapath-retry-opentimer.mlir` (REQUIRES: opentimer)
+covers it; candidate isolation already fork+execs, which satisfies the
+dedicated-child containment requirement.
+
 ### Patch 6: differential harness and measurements
 
 - run OpenTimer and external OpenSTA on identical candidate artifacts;

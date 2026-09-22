@@ -31,6 +31,10 @@ target_link_libraries(circt-synth
   MLIRTransformDialect
   MLIRTransformDialectTransforms
 )
+if(CIRCT_ENABLE_OPENTIMER)
+  target_link_libraries(circt-synth PRIVATE CIRCTSynthOpenTimer)
+  target_compile_definitions(circt-synth PRIVATE CIRCT_OPENTIMER_ENABLED=1)
+endif()
 
 llvm_update_compile_flags(circt-synth)
 mlir_check_all_link_libraries(circt-synth)

@@ -286,6 +286,36 @@ static cl::opt<bool> retryKeepTemps(
     "retry-keep-temps",
     cl::desc("Keep --datapath-retry candidate files for inspection"),
     cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string> timingBackend(
+    "timing-backend",
+    cl::desc("Timing backend for --datapath-retry judging: sta (external "
+             "OpenSTA text report, default) or opentimer (in-process "
+             "backend, no Verilog export or sta executable; failures fall "
+             "back to sta)"),
+    cl::init("sta"), cl::cat(mainCategory));
+static cl::opt<std::string> timingResult(
+    "timing-result",
+    cl::desc("Write the structured timing result JSON to this path "
+             "(atomic) for --datapath-retry candidates"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<double> timingClockPeriodNs(
+    "timing-clock-period-ns",
+    cl::desc("Clock period in ns for --timing-backend=opentimer"),
+    cl::init(0.0), cl::cat(mainCategory));
+static cl::opt<std::string> timingClockPort(
+    "timing-clock-port",
+    cl::desc("Top-level clock port name for --timing-backend=opentimer"),
+    cl::init("clk"), cl::cat(mainCategory));
+static cl::opt<double> timingInputSlewPs(
+    "timing-input-slew-ps",
+    cl::desc("Default input slew in ps for --timing-backend=opentimer"),
+    cl::init(10.0), cl::cat(mainCategory));
+static cl::opt<std::string> timingRunOnly(
+    "timing-run-only",
+    cl::desc("Internal: run the timing backend once over the input MLIR "
+             "and write the result JSON to -o (used by --timing-backend "
+             "children; not for direct use)"),
+    cl::init(""), cl::cat(mainCategory));
 static cl::opt<bool> datapathRefinement(
     "datapath-refinement",
     cl::desc("Probe-guided selective datapath refinement: derive endpoint "
@@ -963,6 +993,25 @@ int main(int argc, char **argv) {
   if (allowUnregisteredDialects)
     context.allowUnregisteredDialects();
 
+  // Internal timing backend child: run the oracle once and exit.
+  if (!timingRunOnly.empty()) {
+    synth::DatapathRetryConfig backendConfig;
+    backendConfig.top = topName;
+    backendConfig.timingClockPeriodNs = timingClockPeriodNs;
+    backendConfig.timingClockPort = timingClockPort;
+    backendConfig.timingInputSlewPs = timingInputSlewPs;
+    std::string liberty;
+    for (const auto &lib : libertyFiles) {
+      if (!liberty.empty())
+        liberty += ",";
+      liberty += lib;
+    }
+    backendConfig.liberty = liberty;
+    bool ok = synth::runTimingBackendOnce(backendConfig, &context,
+                                           timingRunOnly, outputFilename);
+    exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
+  }
+
   // In-driver datapath retry: STA-judged structural variants.
   if (datapathRetry > 0) {
     if (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd) {
@@ -991,6 +1040,11 @@ int main(int argc, char **argv) {
     }
     config.liberty = liberty;
     config.top = topName;
+    config.timingBackend = timingBackend;
+    config.timingResult = timingResult;
+    config.timingClockPeriodNs = timingClockPeriodNs;
+    config.timingClockPort = timingClockPort;
+    config.timingInputSlewPs = timingInputSlewPs;
     config.inputFile = inputFilename;
     config.outputFile = outputFilename;
     config.userSdcOutput = sdcOutput;

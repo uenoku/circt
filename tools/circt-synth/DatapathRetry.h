@@ -18,6 +18,8 @@
 #ifndef CIRCT_SYNTH_DATAPATHRETRY_H
 #define CIRCT_SYNTH_DATAPATHRETRY_H
 
+#include "llvm/ADT/StringRef.h"
+
 #include <string>
 #include <vector>
 
@@ -53,6 +55,17 @@ struct DatapathRetryConfig {
   // Resolved flag values needed by the judge.
   std::string liberty; // comma-joined
   std::string top;
+  // Timing backend: "sta" (external OpenSTA text, default) or "opentimer"
+  // (in-process backend, no Verilog export or sta executable). Failures
+  // fall back to "sta" so the baseline is never lost to the backend.
+  std::string timingBackend = "sta";
+  // Optional path for the structured timing result JSON (atomic write).
+  std::string timingResult;
+  // OpenTimer constraints: clock period (ns), clock port name (top-level
+  // input, bit 0), and default input slew (ps) for boundary conditions.
+  double timingClockPeriodNs = 0.0;
+  std::string timingClockPort = "clk";
+  double timingInputSlewPs = 10.0;
   std::string inputFile;
   std::string outputFile;    // "-" means stdout
   std::string userSdcOutput; // "" means none
@@ -64,6 +77,13 @@ struct DatapathRetryConfig {
 // Run the retry loop; writes the best candidate to outputFile (or stdout).
 // Returns true on success.
 bool runDatapathRetry(const DatapathRetryConfig &config);
+
+// Run the timing backend once over a synthesized MLIR file and write the
+// structured result JSON atomically to jsonPath. Used by --timing-run-only
+// children (isolated by fork+exec with timeout). Returns true on success.
+bool runTimingBackendOnce(const DatapathRetryConfig &config,
+                          mlir::MLIRContext *ctx, llvm::StringRef mlirPath,
+                          llvm::StringRef jsonPath);
 
 } // namespace synth
 } // namespace circt

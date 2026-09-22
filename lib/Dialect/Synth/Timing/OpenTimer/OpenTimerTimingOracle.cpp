@@ -313,6 +313,7 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
   result.coverage.constrainedEndpoints = result.endpoints.size();
   result.coverage.analyzedEndpoints = result.endpoints.size();
   result.coverage.unconstrainedEndpoints = 0;
+  result.status = TimingResultStatus::Complete;
   TimingDiagnostic coverageNote;
   coverageNote.message = mlir::StringAttr::get(
       ctx, "endpoint set enumerated by the timer backend");
