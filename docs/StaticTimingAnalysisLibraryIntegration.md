@@ -1159,6 +1159,24 @@ dedicated-child containment requirement.
 Acceptance: Stage B rollout criteria are either met or the discrepancies are
 documented with a decision to fix, constrain, or stop the backend rollout.
 
+Status (partial): `tmp/measure/diff-timing.py` compares OpenTimer result JSON
+against OpenSTA `report_checks` logs with independent per-endpoint
+normalization (group by endpoint, worst transition) plus WNS and coverage.
+Measured:
+
+- Tiny flop (extracted ASAP7 subset, 1 endpoint): DIFFERENTIAL PASS,
+  per-endpoint slack delta 0.3ps, WNS 0.4700 vs 0.470301ns.
+- muladd candidate (merged ASAP7, 16 flop-D endpoints): OpenTimer WNS
+  159ps at 0.4ns, 0 failing. OpenSTA comparison blocked: the candidate
+  carries dead modules with unmapped `synth.ff`, which fail export-verilog
+  before STA runs. Notably the backend succeeds here precisely because it
+  needs no export (elaborates the top only). Export robustness is a
+  prerequisite for STA-side system-scale differentials, independent of the
+  backend.
+- Sky130 and system-scale (FIFO/SmallBoom) differentials are deferred:
+  no Sky130 PDK is available in this environment, and system scale needs
+  the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
+
 ### Patch 7: remove transitional text parsing
 
 After Stage B succeeds:
