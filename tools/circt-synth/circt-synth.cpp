@@ -310,6 +310,11 @@ static cl::opt<double> timingInputSlewPs(
     "timing-input-slew-ps",
     cl::desc("Default input slew in ps for --timing-backend=opentimer"),
     cl::init(10.0), cl::cat(mainCategory));
+static cl::opt<bool> mergeModules(
+    "merge-modules",
+    cl::desc("Merge mapped retry candidates per submodule (best instance "
+             "count each) and judge the composition alongside them"),
+    cl::init(false), cl::cat(mainCategory));
 static cl::opt<std::string> timingRunOnly(
     "timing-run-only",
     cl::desc("Internal: run the timing backend once over the input MLIR "
@@ -1050,6 +1055,7 @@ int main(int argc, char **argv) {
     config.timingClockPeriodNs = timingClockPeriodNs;
     config.timingClockPort = timingClockPort;
     config.timingInputSlewPs = timingInputSlewPs;
+    config.mergeModules = mergeModules;
     config.inputFile = inputFilename;
     config.outputFile = outputFilename;
     config.userSdcOutput = sdcOutput;

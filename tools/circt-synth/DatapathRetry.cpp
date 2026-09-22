@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <functional>
 #include <optional>
 #include <set>
 #include <signal.h>
@@ -255,7 +256,8 @@ struct RetryRunner {
   std::string circtOpt;
   mlir::MLIRContext *mlirContext = nullptr;
   bool runCandidate(StringRef name, ArrayRef<std::string> variantFlags,
-                    CandidateResult &result);
+                    CandidateResult &result,
+                    StringRef preMappedFile = StringRef());
 };
 
 std::optional<double> parseTrailingNumber(StringRef line, StringRef tag) {
@@ -282,13 +284,34 @@ std::optional<double> parseTrailingNumber(StringRef line, StringRef tag) {
 
 bool RetryRunner::runCandidate(StringRef name,
                                ArrayRef<std::string> variantFlags,
-                               CandidateResult &result) {
+                               CandidateResult &result,
+                               StringRef preMappedFile) {
   result.name = name.str();
   result.flags = joinFlags(variantFlags);
   std::string base = (Twine(tmpDir) + "/" + name).str();
   std::string mlirFile = base + ".mlir";
   std::string sdcFile = base + ".sdc";
   std::string verilogFile = base + ".v";
+  // Pre-mapped input (e.g. merged portfolio result): judge directly
+  // without re-synthesis. SDC comes from the emit pass (STA path) since
+  // no synth child generates it.
+  if (!preMappedFile.empty()) {
+    mlirFile = preMappedFile.str();
+    base = (Twine(tmpDir) + "/" + name + "-judge").str();
+    sdcFile = base + ".sdc";
+    verilogFile = base + ".v";
+    if (config.timingBackend != "opentimer") {
+      std::string emitCmd = shellQuote(circtOpt) +
+                            " --synth-emit-sdc " + shellQuote(mlirFile) +
+                            " -o /dev/null > " + shellQuote(sdcFile);
+      if (runCommand(emitCmd, config.timeoutSecs) != 0 ||
+          !sys::fs::exists(sdcFile)) {
+        errs() << "circt-synth: retry candidate '" << name
+               << "' SDC emission failed (skipped)\n";
+        return false;
+      }
+    }
+  } else {
 
   // Rebuild argv: drop retry control + output plumbing, add variant.
   // argv[0] is the tool itself; it is re-added by the caller below.
@@ -339,6 +362,8 @@ bool RetryRunner::runCandidate(StringRef name,
            << "' synth failed (skipped)\n";
     return false;
   }
+
+  } // end fresh-candidate synth child; judging below runs for both.
 
   // In-process timing backend first (no Verilog export or sta needed).
   // Success skips export/STA entirely; any failure falls through to STA.
@@ -765,7 +790,198 @@ bool circt::synth::runTimingBackendOnce(const DatapathRetryConfig &config,
 #endif
 }
 
+// Merge mapped candidates per submodule (best instance count each) into
+// one MLIR file. Module boundaries isolate logic (no sharing to reconcile);
+// ports must match across runs (same source) or the module keeps the first
+// candidate's body. Supergate dependencies travel with their bodies.
+// Returns true and writes mergedPath on success.
+static bool mergeMappedCandidates(mlir::MLIRContext *ctx,
+                                  const std::vector<std::string> &mlirFiles,
+                                  StringRef topName, StringRef mergedPath) {
+  if (mlirFiles.size() < 2 || !ctx)
+    return false;
+  struct ParsedRun {
+    OwningOpRef<ModuleOp> module;
+    llvm::DenseMap<StringAttr, circt::hw::HWModuleOp> defined;
+    llvm::DenseMap<StringAttr, Operation *> externs;
+  };
+  std::vector<ParsedRun> runs;
+  for (const auto &path : mlirFiles) {
+    auto buffer = MemoryBuffer::getFile(path);
+    if (!buffer)
+      return false;
+    auto module = parseSourceString<ModuleOp>(buffer.get()->getBuffer(), ctx);
+    if (!module)
+      return false;
+    ParsedRun run;
+    run.module = std::move(module);
+    for (auto op : run.module->getOps<circt::hw::HWModuleOp>())
+      run.defined[op.getModuleNameAttr()] = op;
+    for (auto op : run.module->getOps<circt::hw::HWModuleExternOp>())
+      run.externs[op.getModuleNameAttr()] = op;
+    runs.push_back(std::move(run));
+  }
+  auto isDesignModule = [&](circt::hw::HWModuleOp mod) {
+    return !mod->hasAttr("synth.mapping_cost");
+  };
+  llvm::DenseSet<StringAttr> targets;
+  {
+    bool first = true;
+    llvm::DenseSet<StringAttr> common;
+    for (auto &run : runs) {
+      llvm::DenseSet<StringAttr> defined;
+      for (auto &[name, mod] : run.defined) {
+        if (isDesignModule(mod))
+          defined.insert(name);
+      }
+      if (first) {
+        common = defined;
+        first = false;
+      } else {
+        llvm::DenseSet<StringAttr> next;
+        for (auto name : common) {
+          if (defined.contains(name))
+            next.insert(name);
+        }
+        common = std::move(next);
+      }
+    }
+    auto topAttr = StringAttr::get(ctx, topName);
+    for (auto name : common) {
+      if (name != topAttr)
+        targets.insert(name);
+    }
+  }
+  if (targets.empty())
+    return false;
+  auto portSignature = [](circt::hw::HWModuleOp mod) {
+    std::string sig;
+    for (const auto &port : mod.getPortList()) {
+      sig += (port.isInput() ? "i:" : port.isOutput() ? "o:" : "io:");
+      sig += port.name.getValue().str() + ":";
+      std::string ts;
+      llvm::raw_string_ostream os(ts);
+      port.type.print(os);
+      sig += ts + ";";
+    }
+    return sig;
+  };
+  // Transitive instance count expanding supergate bodies (with
+  // multiplicity; hierarchy is a DAG so this terminates). Plain body
+  // counts undercount supergate-based bodies and mis-pick. Design
+  // submodules stay separate targets and are not expanded here.
+  std::function<unsigned(unsigned, StringAttr)> transitiveCount =
+      [&](unsigned runIdx, StringAttr modName) -> unsigned {
+    auto it = runs[runIdx].defined.find(modName);
+    if (it == runs[runIdx].defined.end())
+      return 0u;
+    unsigned n = 0;
+    auto *body = it->second.getBodyBlock();
+    if (!body)
+      return 0u;
+    for (auto &op : body->getOperations()) {
+      auto inst = dyn_cast<circt::hw::InstanceOp>(op);
+      if (!inst)
+        continue;
+      ++n;
+      StringRef target = inst.getModuleName();
+      if (!target.starts_with("__supergate_"))
+        continue;
+      n += transitiveCount(runIdx, StringAttr::get(ctx, target));
+    }
+    return n;
+  };
+  llvm::DenseMap<StringAttr, unsigned> pick;
+  llvm::DenseSet<StringAttr> neededSupergates;
+  for (auto target : targets) {
+    std::string sig;
+    bool mismatch = false;
+    for (auto &run : runs) {
+      auto it = run.defined.find(target);
+      if (it == run.defined.end()) {
+        mismatch = true;
+        break;
+      }
+      std::string s = portSignature(it->second);
+      if (sig.empty())
+        sig = s;
+      else if (sig != s) {
+        mismatch = true;
+        break;
+      }
+    }
+    if (mismatch)
+      continue;
+    unsigned bestRun = 0, bestCount = UINT_MAX;
+    for (unsigned i = 0; i < runs.size(); ++i) {
+      unsigned n = transitiveCount(i, target);
+      if (n < bestCount) {
+        bestCount = n;
+        bestRun = i;
+      }
+    }
+    pick[target] = bestRun;
+    auto *body = runs[bestRun].defined[target].getBodyBlock();
+    if (!body)
+      continue;
+    for (auto &op : body->getOperations()) {
+      if (auto inst = dyn_cast<circt::hw::InstanceOp>(op)) {
+        StringRef modName = inst.getModuleName();
+        if (modName.starts_with("__supergate_"))
+          neededSupergates.insert(StringAttr::get(ctx, modName));
+      }
+    }
+  }
+  if (pick.empty())
+    return false;
+  auto merged = ModuleOp::create(UnknownLoc::get(ctx));
+  llvm::DenseSet<StringAttr> emitted;
+  for (auto &run : runs) {
+    for (auto &[name, op] : run.externs) {
+      if (emitted.insert(name).second)
+        merged.push_back(op->clone());
+    }
+  }
+  {
+    auto topAttr = StringAttr::get(ctx, topName);
+    auto it = runs[0].defined.find(topAttr);
+    if (it == runs[0].defined.end())
+      return false;
+    merged.push_back(it->second->clone());
+    emitted.insert(topAttr);
+  }
+  for (auto &[target, runIdx] : pick) {
+    merged.push_back(runs[runIdx].defined[target]->clone());
+    emitted.insert(target);
+  }
+  for (auto sg : neededSupergates) {
+    if (emitted.contains(sg))
+      continue;
+    for (auto &run : runs) {
+      auto it = run.defined.find(sg);
+      if (it != run.defined.end()) {
+        merged.push_back(it->second->clone());
+        emitted.insert(sg);
+        break;
+      }
+    }
+  }
+  for (auto &[name, mod] : runs[0].defined) {
+    if (!emitted.contains(name) && isDesignModule(mod) &&
+        name != StringAttr::get(ctx, topName))
+      merged.push_back(mod->clone());
+  }
+  std::error_code ec;
+  raw_fd_ostream out(mergedPath, ec);
+  if (ec)
+    return false;
+  merged.print(out);
+  out.close();
+  return !out.has_error();
+}
+
 // Emit the winning candidate's MLIR (and SDC when requested).
+
 bool emitWinner(const RetryRunner &runner, const CandidateResult &best) {
   const DatapathRetryConfig &config = runner.config;
   std::string winnerMlir = runner.tmpDir + "/" + best.name + ".mlir";
@@ -1288,6 +1504,29 @@ bool circt::synth::runDatapathRetry(const DatapathRetryConfig &config) {
     if (CandidateResult result;
         runner.runCandidate(kVariants[i].first, kVariants[i].second, result))
       results.push_back(result);
+
+  // Merge mapped results per submodule (best instance count each) and
+  // judge the composition as an extra candidate. Module boundaries make
+  // this safe (no sharing to reconcile); ports must match or the module
+  // keeps the first candidate's body. The merged result competes fairly
+  // in selection below (baseline wins ties).
+  if (config.mergeModules && results.size() >= 2) {
+    std::vector<std::string> files;
+    for (const auto &r : results)
+      files.push_back((Twine(runner.tmpDir) + "/" + r.name + ".mlir").str());
+    std::string mergedPath = (Twine(runner.tmpDir) + "/merged.mlir").str();
+    if (mergeMappedCandidates(runner.mlirContext, files, config.top,
+                              mergedPath)) {
+      CandidateResult merged;
+      if (runner.runCandidate("merged", {}, merged, mergedPath))
+        results.push_back(std::move(merged));
+      else
+        errs() << "circt-synth: merged candidate failed judging (skipped)\n";
+    } else {
+      errs() << "circt-synth: module merging found nothing to compose "
+                "(skipped)\n";
+    }
+  }
 
   // Select: min area among slack-satisfying (else max slack; clockless
   // judges by min arrival). Baseline wins all ties: never regresses.

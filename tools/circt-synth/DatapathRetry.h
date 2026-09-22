@@ -59,6 +59,9 @@ struct DatapathRetryConfig {
   // (in-process backend, no Verilog export or sta executable). Failures
   // fall back to "sta" so the baseline is never lost to the backend.
   std::string timingBackend = "sta";
+  // Merge mapped candidates per submodule (best instance count each) and
+  // judge the composition alongside portfolio results (opt-in).
+  bool mergeModules = false;
   // Optional path for the structured timing result JSON (atomic write).
   std::string timingResult;
   // OpenTimer constraints: clock period (ns), clock port name (top-level
