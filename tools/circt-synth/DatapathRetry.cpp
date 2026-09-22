@@ -31,10 +31,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Synth/Transforms/SynthPasses.h"
 #ifdef CIRCT_OPENTIMER_ENABLED
 #include "circt/Dialect/Synth/Timing/TimingDesignBuilder.h"
 #include "circt/Dialect/Synth/Timing/TimingOracle.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
 #endif
 
 
@@ -650,6 +652,8 @@ bool circt::synth::runTimingBackendOnce(const DatapathRetryConfig &config,
     return false;
   // Library cells are extern modules plus defined modules carrying
   // Liberty data (mapped technology cells embed synth.liberty.cell).
+  // Supergates have mapping_cost but no Liberty backing, so they recurse
+  // (timed via primitives) instead of binding as leaves.
   llvm::DenseSet<StringAttr> libraryCells;
   for (auto op : module->getOps<circt::hw::HWModuleExternOp>())
     libraryCells.insert(op.getModuleNameAttr());
@@ -659,6 +663,17 @@ bool circt::synth::runTimingBackendOnce(const DatapathRetryConfig &config,
   }
   if (libraryCells.empty())
     return false;
+  // Sort into dominance order first (mappers emit use-before-def for
+  // feedback loops; the builder assumes dominance for wiring ops).
+  {
+    PassManager pm(ctx);
+    pm.addPass(synth::createSortTopologically());
+    if (failed(pm.run(*module)))
+      return false;
+    top = dyn_cast<hw::HWModuleOp>(module->lookupSymbol(config.top));
+    if (!top)
+      return false;
+  }
   TimingDesignBuilder builder(ctx, top.getModuleNameAttr(), libraryCells);
   auto design = builder.build(*module);
   if (failed(design)) {
