@@ -1224,7 +1224,12 @@ Measured:
 | muladd @0.4ns | CIRCT + ABC + booth + bubble-push | 183 | 22.85 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC + booth + supergates | 171 | 19.92 | 0.138 |
 Supergates help muladd (-12) but regress mul16 (569->714); not universal,
-stay opt-in. FIFO control logic barely responds to ABC/bundles/bubble
+stay opt-in. Mapping portfolio (supergates/no-bundles as retry variants,
+merged via scoreboard selection): muladd tries 8 candidates, baseline
+(bundles, 150 inst) correctly beats supergates (171) and no-bundles
+(201). True per-cone choice merging needs cover-set refactoring; portfolio
+selection captures most variance today.
+FIFO control logic barely responds to ABC/bundles/bubble
 (-46 cells). Polarity analysis (FIFO full flow): every complemented
 driver also feeds positive logic (zero all-complemented fanouts), so no
 covering can remove the 1780 INVs without breaking positive users;
