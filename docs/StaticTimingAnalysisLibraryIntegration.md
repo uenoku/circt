@@ -1214,6 +1214,29 @@ Measured:
   no Sky130 PDK is available in this environment, and system scale needs
   the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
 
+### Yosys reference gap (same Liberty, same SDC/period, STA-measured)
+
+| Design | Flow | Inst | Area (um2) | WNS (ns) |
+|---|---|---|---|---|
+| muladd @0.4ns | CIRCT baseline | 243 | 28.42 | 0.128 |
+| muladd @0.4ns | CIRCT best (booth) | 230 | 27.26 | 0.128 |
+| muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
+| mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
+| mul16 @0.6ns | CIRCT best (booth) | 753 | 84.81 | 0.186 |
+| mul16 @0.6ns | Yosys 0.68 + ABC | 671 | 71.98 | 0.145 |
+| fifo @2ns | CIRCT + buffer-high-fanout | 12324 | 1540.6 | 1.649 (STA) / 1.331 (OT) |
+| fifo @2ns | Yosys 0.68 + ABC | 10376 | 1199.4 | 1.721 |
+
+Findings: Yosys leads area by 15-25% everywhere (ABC rewriting + better
+balancing; CIRCT's Wallace/compress structures are larger). Timing is
+mixed: Yosys wins muladd (+19ps), CIRCT wins mul16 (+41ps). FIFO without
+buffering is broken in CIRCT (21ns unbuffered inverter, -23ns WNS);
+`--buffer-high-fanout` restores competitiveness (+1.65ns STA). Open item:
+buffered-FIFO OT-vs-STA differ by 318ps (OT pessimistic here, opposite
+sign from muladd's optimism) with the same worst endpoints; needs the
+per-stage join treatment to root-cause (likely path-dependent arc/slew
+selection, not systematic).
+
 ### Patch 7: remove transitional text parsing
 
 After Stage B succeeds:
