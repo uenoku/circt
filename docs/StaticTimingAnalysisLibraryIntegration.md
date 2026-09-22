@@ -1223,6 +1223,10 @@ Measured:
 | muladd @0.4ns | CIRCT + ABC rewrite + booth | 186 | 23.01 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC + booth + bubble-push | 183 | 22.85 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC + booth + supergates | 171 | 19.92 | 0.138 |
+Supergates help muladd (-12) but regress mul16 (569->714); not universal,
+stay opt-in. FIFO control logic barely responds to ABC/bundles/bubble
+(-46 cells); the control gap (NAND/OAI-heavy Yosys vs AND/OR/INV-heavy
+CIRCT) needs polarity-aware matching, not post-passes.
 | muladd @0.4ns | CIRCT + ABC + booth + bundles | 150 | 21.01 | 0.121 |
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
@@ -1231,6 +1235,7 @@ Measured:
 | mul16 @0.6ns | CIRCT + ABC + booth + bundles | 569 | 66.97 | 0.170 |
 | mul16 @0.6ns | Yosys 0.68 + ABC | 671 | 71.98 | 0.145 |
 | fifo @2ns | CIRCT + buffer-high-fanout | 12324 | 1540.6 | 1.649 (STA) / 1.331 (OT) |
+| fifo @2ns | CIRCT full (ABC+bundles+bubble+buffer) | 12278 | 1531.5 | 1.594 (STA) / 1.308 (OT) |
 | fifo @2ns | Yosys 0.68 + ABC | 10376 | 1199.4 | 1.721 |
 
 Findings: Yosys leads area by 15-25% without ABC rewriting (CIRCT's
