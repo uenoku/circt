@@ -1179,8 +1179,15 @@ Measured:
   single-cell microbenchmarks (AND2, O2A1O1Ixp5) match within 0.3ps. The
   33ps gap over 10 stages (~3ps/stage) is per-stage accumulation, likely
   slew-propagation or LUT-interpolation divergence amplifying with depth.
-  Decision: follow up with per-stage slew/delay comparison (needs unique
-  instance names plus timer arc introspection); meanwhile the backend is
+  Root-cause update (per-stage join on uniquified instances): AND4 matches
+  exactly; XNOR2xp5/NOR2 stages diverge (up to 15ps at one NOR2, XNOR swings
+  both ways stage to stage). Single-XNOR isolation reproduces 3.3ps: XNOR
+  has state-dependent arcs (`when B` positive-unate vs `when !B`
+  negative-unate, ~3ps apart at the operating point) and both inputs switch
+  together, so neither side condition statically holds. OpenTimer takes the
+  faster arc, OpenSTA the worst case. Decision: `when`-aware worst-case arc
+  selection is an upstream OpenTimer gap (follow-up patch or constrain to
+  unate-only cells for signoff-critical use); meanwhile the backend is
   usable for candidate ranking where relative order holds, but
   absolute-WNS decisions need the STA cross-check. The backend still
   succeeds without export (elaborates the top only), which the STA flow
