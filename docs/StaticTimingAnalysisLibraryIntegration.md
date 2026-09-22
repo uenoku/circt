@@ -1228,7 +1228,12 @@ stay opt-in. Mapping portfolio (supergates/no-bundles as retry variants,
 merged via scoreboard selection): muladd tries 8 candidates, baseline
 (bundles, 150 inst) correctly beats supergates (171) and no-bundles
 (201). True per-cone choice merging needs cover-set refactoring; portfolio
-selection captures most variance today.
+selection captures most variance today. `--merge-modules` (opt-in)
+composes best submodule bodies across portfolio runs by transitive
+instance count (supergates expanded) and judges the composition as an
+extra candidate: safe across module boundaries, never worse than the
+portfolio best, wins when submodule preferences diverge (pending a
+demonstrating design; ties correctly on current benchmarks).
 FIFO control logic barely responds to ABC/bundles/bubble
 (-46 cells). Polarity analysis (FIFO full flow): every complemented
 driver also feeds positive logic (zero all-complemented fanouts), so no
