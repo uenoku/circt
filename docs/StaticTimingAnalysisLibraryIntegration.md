@@ -1222,6 +1222,7 @@ Measured:
 | muladd @0.4ns | CIRCT best (booth) | 230 | 27.26 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC rewrite + booth | 186 | 23.01 | 0.128 |
 | muladd @0.4ns | CIRCT + ABC + booth + bubble-push | 183 | 22.85 | 0.128 |
+| muladd @0.4ns | CIRCT + ABC + booth + supergates | 171 | 19.92 | 0.138 |
 | muladd @0.4ns | CIRCT + ABC + booth + bundles | 150 | 21.01 | 0.121 |
 | muladd @0.4ns | Yosys 0.68 + ABC | 175 | 20.46 | 0.147 |
 | mul16 @0.6ns | CIRCT baseline | 839 | 90.73 | 0.180 |
