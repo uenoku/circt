@@ -1173,12 +1173,18 @@ Measured:
   STA 153), r0_bit7 differs by 31ps (OT 159 vs STA 128). Required times
   match exactly in both; the gap is arrival-only (OT optimistic). r0 is
   the multiplier cone (O2A1O1Ixp5/OA211-heavy), r1 the adder cone, so the
-  gap is cell- or path-specific, not a global offset. Decision: follow up
-  with per-arc delay comparison on the r0 worst path (needs timer arc
-  introspection); meanwhile the backend is usable for candidate ranking
-  where relative order holds, but absolute-WNS decisions need the STA
-  cross-check. The backend still succeeds without export (elaborates the
-  top only), which the STA flow cannot.
+  gap is cell- or path-specific, not a global offset. Root-cause update:
+  launch-sweep (boosting STA's worst launch b[5] by 200ps moves OT's r0
+  arrival by the same 200ps) proves both timers see the same worst path;
+  single-cell microbenchmarks (AND2, O2A1O1Ixp5) match within 0.3ps. The
+  33ps gap over 10 stages (~3ps/stage) is per-stage accumulation, likely
+  slew-propagation or LUT-interpolation divergence amplifying with depth.
+  Decision: follow up with per-stage slew/delay comparison (needs unique
+  instance names plus timer arc introspection); meanwhile the backend is
+  usable for candidate ranking where relative order holds, but
+  absolute-WNS decisions need the STA cross-check. The backend still
+  succeeds without export (elaborates the top only), which the STA flow
+  cannot.
 - Sky130 and system-scale (FIFO/SmallBoom) differentials are deferred:
   no Sky130 PDK is available in this environment, and system scale needs
   the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
