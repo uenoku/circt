@@ -1188,11 +1188,12 @@ Measured:
   faster arc, OpenSTA the worst case. Mechanism confirmed: OT's Liberty
   parser merges timing groups by `related_pin` alone (`t = ti` overwrite),
   so the second `when` variant silently replaces the first and only one
-  arc reaches propagation. Decision: `when`-aware timing (key by
-  related_pin+when, worst-case across applicable variants) is an upstream
-  OpenTimer architecture gap, larger than the enumeration patch
-  (touches Timing, parsing, and propagation); follow up upstream or
-  constrain to unate-only cells for signoff-critical use. Meanwhile the backend is
+  arc reaches propagation. Fixed: retain every timing variant at parse
+  time (merge only into power-only placeholders); forward propagation
+  already maxes over fanin arcs, so worst-case selection is automatic.
+  Single-XNOR now matches (15 vs 15.297ps), muladd r0_bit7 matches
+  (arrival 257 vs 257.4ps, slack 128 vs 128.229ps), mul16 pending
+  re-measurement. Meanwhile the backend is
   usable for candidate ranking where relative order holds, but
   absolute-WNS decisions need the STA cross-check. The backend still
   succeeds without export (elaborates the top only), which the STA flow

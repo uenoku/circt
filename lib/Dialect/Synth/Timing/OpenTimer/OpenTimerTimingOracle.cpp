@@ -284,15 +284,32 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
       continue;
     TimingEndpointResult &endpoint = endpointsByPin[info.pin];
     endpoint.endpoint = keyIt->second;
+    TimingTransition transition = info.transition == ot::RISE
+                                      ? TimingTransition::Rise
+                                      : TimingTransition::Fall;
+    TimePs slack{toPs(info.slack)};
+    // Dedupe multiple records for one pin+transition (e.g. state-dependent
+    // setup variants): keep the worst slack and its arrival/required.
+    TimingTransitionResult *slot = nullptr;
+    for (auto &tr : endpoint.transitions) {
+      if (tr.transition == transition) {
+        slot = &tr;
+        break;
+      }
+    }
+    if (slot && slot->slack.value <= slack.value)
+      continue;
     TimingTransitionResult tr;
-    tr.transition = info.transition == ot::RISE ? TimingTransition::Rise
-                                                : TimingTransition::Fall;
+    tr.transition = transition;
     if (info.arrival)
       tr.arrival = TimePs{toPs(*info.arrival)};
-    tr.slack = TimePs{toPs(info.slack)};
+    tr.slack = slack;
     if (info.required)
       tr.required = TimePs{toPs(*info.required)};
-    endpoint.transitions.push_back(std::move(tr));
+    if (slot)
+      *slot = std::move(tr);
+    else
+      endpoint.transitions.push_back(std::move(tr));
   }
   // Deterministic order: sort transitions rise-before-fall, endpoints by
   // pin name.

@@ -1,5 +1,5 @@
 From: CIRCT STA integration
-Subject: [PATCH] timer: expose analyzed endpoints for backend-neutral queries
+Subject: [PATCH] timer: endpoint enumeration and when-variant retention
 
 Upstream OpenTimer reports worst paths but offers no public API to
 enumerate every analyzed endpoint (pin, split, transition) with its
@@ -11,6 +11,11 @@ Add Timer::report_endpoints(), which returns one record per analyzed
 endpoint after _update_endpoints(), reading the same _endpoints store
 that backs report_wns/report_tns/report_fep. No tracing, no new
 analysis, deterministic ordering left to the caller.
+
+Retain every Liberty timing variant instead of merging by related_pin
+alone, so state-dependent (`when`) arcs all reach propagation (which
+maxes over fanin arcs for setup/max, matching worst-case STA). Power-only
+placeholders still merge to avoid phantom duplication.
 
 Applies to OpenTimer 2.0 (cd0565fc).
 
@@ -90,3 +95,19 @@ Applies to OpenTimer 2.0 (cd0565fc).
  // Function: slack
  float Endpoint::slack() const {
    return std::visit([this] (auto&& handle) {
+--- a/ot/liberty/celllib.cpp	2026-09-22 02:26:48.157038300 -0700
++++ b/ot/liberty/celllib.cpp	2026-09-22 02:26:48.147657902 -0700
+@@ -632,6 +632,13 @@
+       for(auto &t:cellpin.timings) {
+         if (t.related_pin != ti.related_pin)
+           continue;
++        // Merge only into power-only placeholders (no delay or constraint
++        // tables yet). Real variants (e.g. different `when` conditions on
++        // the same related pin) are all kept; forward propagation takes
++        // the worst applicable arc, matching worst-case STA.
++        if (t.cell_rise || t.cell_fall || t.rise_transition ||
++            t.fall_transition || t.rise_constraint || t.fall_constraint)
++          continue;
+         auto ipower_copy = t.internal_power;
+         t = ti;
+         t.internal_power = ipower_copy;
