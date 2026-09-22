@@ -1192,6 +1192,12 @@ Measured:
   absolute-WNS decisions need the STA cross-check. The backend still
   succeeds without export (elaborates the top only), which the STA flow
   cannot.
+- mul16 candidate (merged ASAP7, 32 flop-D endpoints): OpenTimer worst
+  r0_bit14 at 208ps, OpenSTA worst r0_bit14 at 180ps (0.6ns period). Same
+  worst endpoint, 28ps gap, consistent with the muladd state-dependent-arc
+  accumulation at larger scale. (STA side reported only the worst endpoint
+  despite a high path count; full STA-side coverage needs broader report
+  flags, a harness follow-up, not a backend gap.)
 - Sky130 and system-scale (FIFO/SmallBoom) differentials are deferred:
   no Sky130 PDK is available in this environment, and system scale needs
   the export prerequisite above plus SRAM timing models (Patch 3 follow-up).
