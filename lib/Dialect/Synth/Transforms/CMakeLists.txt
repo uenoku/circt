@@ -19,6 +19,7 @@ add_circt_dialect_library(CIRCTSynthTransforms
   SOPBalancing.cpp
   DeriveMappingCost.cpp
   DedupInstances.cpp
+  BubblePushing.cpp
   SortTopologically.cpp
   TieCells.cpp
   EmitSDC.cpp

@@ -558,7 +558,25 @@ def DedupInstances : Pass<"synth-dedup-instances", "mlir::ModuleOp"> {
     Statistic<"numMerged", "merged",
               "Number of duplicate instances merged">
   ];
+
   let dependentDialects = ["hw::HWDialect"];
+}
+
+def BubblePushing : Pass<"synth-bubble-pushing", "mlir::ModuleOp"> {
+  let summary = "Absorb single-fanout inverters into complement cells";
+  let description = [{
+    Technology mapping materializes an inverter per negated binding, but
+    per-root covering often leaves driver+inverter pairs (AND+INV, MAJ+INV,
+    AOI+INV) where the complemented cell exists cheaper (NAND, minority,
+    AO). This pass absorbs single-fanout inverters into complement cells
+    by exact truth-table match with identical port sequences, using
+    mapping_cost areas (strictly cheaper only). Single pass, removals
+    only; multi-fanout inverters and pinout-mismatched complements stay.
+  }];
+  let statistics = [
+    Statistic<"numAbsorbed", "absorbed",
+              "Number of inverters absorbed into complements">
+  ];
 }
 
 def SortTopologically : Pass<"synth-sort-topologically", "mlir::ModuleOp"> {

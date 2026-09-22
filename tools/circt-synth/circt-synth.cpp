@@ -718,6 +718,11 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
     // duplicates). Merge before emitting or stripping.
     if (!disableDedup)
       pm.addPass(synth::createDedupInstances());
+    // Absorb single-fanout inverters into cheaper complements (NAND for
+    // AND+INV, minority for MAJ+INV, etc.). Runs after dedup (fewer INVs)
+    // and before stripping (needs library bodies for truth tables).
+    if (!disableDedup)
+      pm.addPass(synth::createBubblePushing());
     // Tie cells for constant instance inputs (reference parity with
     // Yosys/ORFS netlists); must precede stripping while lib cells are
     // still plain modules.
