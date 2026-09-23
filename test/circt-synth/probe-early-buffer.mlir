@@ -11,7 +11,7 @@
 // CHECK-NOT: synth.timing_probe
 // CHECK-LABEL: hw.module @top
 // CHECK: hw.instance "r1" @mydff(D: %a: i1, CLK: %clk: i1)
-// CHECK-COUNT-2: hw.instance "buffered" @mybuf(A: %r1.Q: i1)
+// CHECK-COUNT-2: hw.instance "buffered_{{.+}}" @mybuf(A: %r1.Q: i1)
 // CHECK: hw.instance "r2" @mydff
 // CHECK-NOT: synth.timing_probe
 

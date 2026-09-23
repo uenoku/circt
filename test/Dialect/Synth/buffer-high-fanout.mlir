@@ -22,7 +22,7 @@ hw.module @dff(in %d : i1, in %clk : i1 {synth.liberty.pin = {clock = "true"}}, 
 // CHECK-LABEL: hw.module @top
 hw.module @top(in %a : i1, in %b : i1, in %c : i1, in %d : i1, in %e : i1, in %f : i1, in %g : i1, in %h : i1, in %i : i1, in %j : i1, in %k : i1, in %clk : i1, out x0 : i1, out x1 : i1, out x2 : i1, out x3 : i1, out x4 : i1, out z0 : i1, out z1 : i1, out z2 : i1, out w0 : i1, out w1 : i1) {
     // %x fans out to 5 data loads with max-fanout=2: chunks 2+2+1.
-    // CHECK-COUNT-3: hw.instance "buffered" @buf1
+    // CHECK-COUNT-3: hw.instance "buffered_{{.+}}" @buf1
     %x = synth.aig.and_inv %a, %b : i1
     %a0 = synth.aig.and_inv %x, %g : i1
     %a1 = synth.aig.and_inv %x, %h : i1

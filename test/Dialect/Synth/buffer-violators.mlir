@@ -15,7 +15,7 @@ hw.module @dff(in %D : i1, in %clk : i1 {synth.liberty.pin = {clock = "true"}}, 
 hw.module @sub(in %clk : i1, in %a : i1, in %e2 : i1, out y0 : i1, out y1 : i1, out y2 : i1, out t0 : i1, out t1 : i1, out t2 : i1, out z3 : i1) {
     // Violator launch gen/st (flop Q): 3 data loads, max-fanout=2 -> 2 bufs.
     // CHECK: hw.instance "st" @dff
-    // CHECK-COUNT-2: hw.instance "buffered" @buf1
+    // CHECK-COUNT-2: hw.instance "buffered_{{.+}}" @buf1
     %s = hw.instance "st" @dff(D: %a: i1, clk: %clk: i1) -> (Q: i1)
     %a0 = synth.aig.and_inv %s, %a : i1
     %a1 = synth.aig.and_inv %s, %a : i1

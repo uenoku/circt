@@ -901,7 +901,18 @@ struct BufferHighFanoutPass
         changed = true;
       }
     }
-    return changed;
+      // Uniquify placeholder buffer names deterministically (same identity
+    // requirement as TechMapper's mapped_N).
+    unsigned bufferedCount = 0;
+    module.walk([&](hw::InstanceOp inst) {
+      StringRef name = inst.getInstanceName();
+      if (name == "buffered" || name.starts_with("buffered_")) {
+        inst->setAttr("instanceName",
+                      StringAttr::get(inst.getContext(),
+                                      "buffered_" + std::to_string(bufferedCount++)));
+      }
+    });
+  return changed;
   }
 
   // Smallest-area identity (positive-phase) 1-in/1-out liberty cell.

@@ -19,7 +19,7 @@ hw.module @top(in %clk : i1, in %a : i1, in %b0 : i1, in %b1 : i1, in %b2 : i1, 
     // Violated probe: arrival 200 (Q=0 + 100 + 100) over required 150.
     // Launch %q (fanout 2 > max-fanout=1) gets chunked: 2 buffers.
     // (Cone args have fanout 1 each: untouched.)
-    // CHECK-COUNT-2: hw.instance "buffered" @buf1
+    // CHECK-COUNT-2: hw.instance "buffered_{{.+}}" @buf1
     %g0 = hw.instance "g0" @and100(a: %q: i1, b: %b0: i1) -> (result: i1)
     %g1 = hw.instance "g1" @and100(a: %g0: i1, b: %b1: i1) -> (result: i1)
     %p1 = synth.timing_probe %g1 : i1 {required_time = 150 : i64}
