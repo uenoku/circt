@@ -130,4 +130,66 @@ TEST(OpenTimerOracle, AndIntoFlop) {
   EXPECT_EQ(result->coverage.unconstrainedEndpoints, 0u);
 }
 
+TEST(OpenTimerOracle, BufferedClockPropagates) {
+  // Two buffers on the clock network: capture required shifts later by
+  // the insertion delay (input-to-flop gains slack). Validates propagated
+  // (non-ideal) clocks without extra code (network in graph suffices).
+  const char *ir = R"MLIR(
+    hw.module.extern @BUFx2_ASAP7_75t_R(in %A : i1, out Y : i1)
+    hw.module.extern @AND2x4_ASAP7_75t_R(in %A : i1, in %B : i1, out Y : i1)
+    hw.module.extern @DFFHQNx1_ASAP7_75t_R(in %D : i1, in %CLK : i1, out QN : i1)
+    hw.module @top(in %a : i1, in %clk : i1, out qn : i1) {
+      %cb1 = hw.instance "cb1" @BUFx2_ASAP7_75t_R(A: %clk: i1) -> (Y: i1)
+      %cb2 = hw.instance "cb2" @BUFx2_ASAP7_75t_R(A: %cb1: i1) -> (Y: i1)
+      %y = hw.instance "g1" @AND2x4_ASAP7_75t_R(A: %a: i1, B: %a: i1) -> (Y: i1)
+      %q = hw.instance "f1" @DFFHQNx1_ASAP7_75t_R(D: %y: i1, CLK: %cb2: i1) -> (QN: i1)
+      hw.output %q : i1
+    }
+    )MLIR";
+  MLIRContext ctx;
+  ctx.loadDialect<hw::HWDialect, comb::CombDialect, seq::SeqDialect,
+                  synth::SynthDialect>();
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(ir, &ctx);
+  ASSERT_TRUE(module);
+  DenseSet<StringAttr> lib{StringAttr::get(&ctx, "BUFx2_ASAP7_75t_R"),
+                           StringAttr::get(&ctx, "AND2x4_ASAP7_75t_R"),
+                           StringAttr::get(&ctx, "DFFHQNx1_ASAP7_75t_R")};
+  TimingDesignBuilder builder(&ctx, StringAttr::get(&ctx, "top"), lib);
+  auto design = builder.build(*module);
+  ASSERT_TRUE(succeeded(design));
+
+  TimingRequest request;
+  request.design = &*design;
+  request.libertyFiles = {kTinyLibPath};
+  TimingClock clock;
+  clock.name = StringAttr::get(&ctx, "clk");
+  clock.source.kind = TimingObjectKind::TopPort;
+  clock.source.portName = StringAttr::get(&ctx, "clk");
+  clock.source.portIndex = 1;
+  clock.source.bit = 0;
+  clock.period = TimePs{500};
+  request.constraints.clocks.push_back(clock);
+  TimingPortConstraint inputA;
+  inputA.port.kind = TimingObjectKind::TopPort;
+  inputA.port.portName = StringAttr::get(&ctx, "a");
+  inputA.port.portIndex = 0;
+  inputA.port.bit = 0;
+  inputA.lateArrival = TimePs{0};
+  inputA.riseSlew = TimePs{10};
+  inputA.fallSlew = TimePs{10};
+  request.constraints.ports.push_back(inputA);
+
+  auto oracle = createOpenTimerTimingOracle(&ctx);
+  auto result = oracle->analyze(request);
+  ASSERT_TRUE(succeeded(result));
+  ASSERT_EQ(result->endpoints.size(), 1u);
+  const auto &tr = result->endpoints.front().transitions.front();
+  ASSERT_TRUE(tr.arrival.has_value());
+  ASSERT_TRUE(tr.required.has_value());
+  // Data arrival unchanged (15ps); required pushed later by clock insertion
+  // (STA ideal: 486ps; propagated must exceed it).
+  EXPECT_NEAR(tr.arrival->value, 15, 1);
+  EXPECT_GT(tr.required->value, 486);
+}
+
 } // namespace

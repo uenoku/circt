@@ -78,9 +78,12 @@
   only) with OpenROAD-parseable SDC tests. Generated-clock inference
   deferred: no divider test vehicle yet, and D-pin identification needs
   Liberty FF `next_state` matching (name guessing rejected).
-- **Phase 2**: propagated-clock constraints in `TimingConstraints` and the
-  OpenTimer backend (per-pin latency, no ideal creation); pre/post-CTS
-  differential in the harness.
+- **Phase 2** (validated, no code needed): clock networks in the graph
+  propagate automatically (required accounts for insertion delay;
+  microbenchmark `BufferedClockPropagates`: required 486->510ps through
+  two buffers). No per-pin latency extension required for gate delays;
+  wire delay awaits SPEF input (future). Pre/post-CTS differential pending
+  a routed design.
 - **Phase 3**: hold/min support; skew-aware refinement loop driven by
   post-CTS STA.
 
