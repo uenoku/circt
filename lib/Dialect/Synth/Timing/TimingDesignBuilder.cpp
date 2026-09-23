@@ -133,7 +133,8 @@ mlir::FailureOr<TimingDesign> TimingDesignBuilder::build(mlir::ModuleOp top) {
         primary.port.bit = i;
         primary.isInput = false;
         primary.node = TimingNodeId{freshNode()};
-        design.nets[(*resultNets)[resultPos][i]].loads.push_back(primary.node);
+        uint32_t onet = (*resultNets)[resultPos][i];
+        design.nets[onet].loads.push_back(primary.node);
         design.ports.push_back(std::move(primary));
       }
       ++resultPos;

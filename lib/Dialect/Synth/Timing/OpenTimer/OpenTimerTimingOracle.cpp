@@ -69,26 +69,31 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
   result.backend = mlir::StringAttr::get(ctx, "opentimer");
   result.backendVersion = mlir::StringAttr::get(ctx, "OpenTimer-2.0");
 
-  if (!request.design || !ctx)
+  if (!request.design || !ctx) {
     return mlir::failure();
+  }
   if (request.libertyFiles.empty() ||
-      request.constraints.analysis != TimingAnalysisKind::SetupMax)
+      request.constraints.analysis != TimingAnalysisKind::SetupMax) {
     return mlir::failure();
+  }
   // v1 supports exactly one active clock.
-  if (request.constraints.clocks.size() != 1)
+  if (request.constraints.clocks.size() != 1) {
     return mlir::failure();
+  }
 
   const TimingDesign &design = *request.design;
   ot::Timer timer;
   auto ps = ot::make_time_unit("1ps");
   auto ff = ot::make_capacitance_unit("1fF");
-  if (!ps || !ff)
+  if (!ps || !ff) {
     return mlir::failure();
+  }
   timer.set_time_unit(*ps);
   timer.set_capacitance_unit(*ff);
   for (const auto &lib : request.libertyFiles) {
-    if (!std::filesystem::exists(lib))
+    if (!std::filesystem::exists(lib)) {
       return mlir::failure();
+    }
     // Populate both analysis splits (setup/max queries the MAX corner).
     timer.read_celllib(lib, ot::MIN).read_celllib(lib, ot::MAX);
   }
@@ -137,50 +142,20 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
     }
   }
   // Primary pins arrive pre-connected to implicit nets named after the
-  // pin (OpenTimer creates and connects them on insertion). Nets touching
-  // a primary therefore merge onto the implicit net: the primary itself
-  // is never reconnected. Feedthrough (primary input straight to primary
-  // output) has two implicit nets with no merge API, so it fails closed.
-  std::map<uint32_t, std::pair<std::string, bool>> primaryNodes;
+  // pin. Disconnect them and use one unified net per graph net: this
+  // handles feedthrough (input straight to output), multi-fanout outputs,
+  // and mixed nets uniformly with exact timing (no buffer pessimism).
+  // Constraints reference pins by name, so they survive the move.
   for (const auto &port : design.ports)
-    primaryNodes[port.node.value] = {primaryName(port.port), port.isInput};
+    timer.disconnect_pin(primaryName(port.port));
   for (const auto &net : design.nets) {
-    const std::string &myNet = netNames[net.id];
-    std::string netStr = myNet;
-    bool needInsert = true;
-    std::string primaryInput;
-    std::string primaryOutput;
-    if (net.driver) {
-      auto it = primaryNodes.find(net.driver->value);
-      if (it != primaryNodes.end() && it->second.second)
-        primaryInput = it->second.first;
-    }
-    for (const auto &load : net.loads) {
-      auto it = primaryNodes.find(load.value);
-      if (it != primaryNodes.end() && !it->second.second) {
-        if (!primaryOutput.empty())
-          return mlir::failure();
-        primaryOutput = it->second.first;
-      }
-    }
-    if (!primaryInput.empty() && !primaryOutput.empty())
-      return mlir::failure();
-    if (!primaryInput.empty()) {
-      netStr = primaryInput;
-      needInsert = false;
-    } else if (!primaryOutput.empty()) {
-      netStr = primaryOutput;
-      needInsert = false;
-    }
-    if (needInsert)
-      timer.insert_net(netStr);
+    const std::string &netStr = netNames[net.id];
+    timer.insert_net(netStr);
     auto connect = [&](uint32_t node) {
-      // Primaries stay on their implicit nets.
-      if (primaryNodes.count(node))
-        return true;
       auto it = nodeToPin.find(node);
-      if (it == nodeToPin.end())
+      if (it == nodeToPin.end()) {
         return false;
+      }
       timer.connect_pin(it->second, netStr);
       return true;
     };
@@ -218,8 +193,9 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
       if (found)
         break;
     }
-    if (!found)
+    if (!found) {
       return mlir::failure();
+    }
   }
   for (auto split : {ot::MIN, ot::MAX}) {
     timer.set_at(clockIt->first, split, ot::RISE, 0.0f);
@@ -239,8 +215,9 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
         break;
       }
     }
-    if (!known)
+    if (!known) {
       return mlir::failure();
+    }
     for (auto split : {ot::MIN, ot::MAX}) {
       if (isInput) {
         if (portC.lateArrival) {

@@ -1276,11 +1276,12 @@ buffering is broken in CIRCT (21ns unbuffered inverter, -23ns WNS);
 (OT 1331 vs STA 1649ps, same worst endpoint mem_r71_b0). Single cells
 match (AND2x4 15 vs 15.365ps), so the gap is contextual, not cellular:
 OT's worst path to shared pins comes from flop launches (sequential
-depth) while STA's traced path launches from primary inputs, and buffer
-(HB1) high-load extrapolation likely diverges. Per-stage join shows OT
-arrivals 5x STA from the first gate on the STA path, confirming different
-worst paths rather than per-arc error. Needs launch-matched comparison
-(same startpoint) to isolate; backend remains valid for ranking.
+depth) while STA's traced path launches from primary inputs. Per-stage
+join attempt (OT RISE arrivals vs STA traced path) shows OT pessimistic
+~1.5-2x on several stages, but single-transition dumps mix rise/fall
+launches and buffer names don't join (MLIR vs Verilog numbering), so no
+firm per-arc conclusion. Needs dual-transition dumps plus launch-matched
+comparison; backend remains valid for ranking.
 
 ### Patch 7: remove transitional text parsing
 
