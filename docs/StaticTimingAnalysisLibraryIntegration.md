@@ -1272,11 +1272,15 @@ rejected: QN outputs fan out to mixed-polarity users, so no economical
 swap exists (would need dual-output flops or add a flop to remove an
 inverter). FIFO without
 buffering is broken in CIRCT (21ns unbuffered inverter, -23ns WNS);
-`--buffer-high-fanout` restores competitiveness (+1.65ns STA). Open item:
-buffered-FIFO OT-vs-STA differ by 318ps (OT pessimistic here, opposite
-sign from muladd's optimism) with the same worst endpoints; needs the
-per-stage join treatment to root-cause (likely path-dependent arc/slew
-selection, not systematic).
+`--buffer-high-fanout` restores competitiveness (+1.65ns STA). Open item (refined): buffered-FIFO OT-vs-STA differ by 318ps setup
+(OT 1331 vs STA 1649ps, same worst endpoint mem_r71_b0). Single cells
+match (AND2x4 15 vs 15.365ps), so the gap is contextual, not cellular:
+OT's worst path to shared pins comes from flop launches (sequential
+depth) while STA's traced path launches from primary inputs, and buffer
+(HB1) high-load extrapolation likely diverges. Per-stage join shows OT
+arrivals 5x STA from the first gate on the STA path, confirming different
+worst paths rather than per-arc error. Needs launch-matched comparison
+(same startpoint) to isolate; backend remains valid for ranking.
 
 ### Patch 7: remove transitional text parsing
 
