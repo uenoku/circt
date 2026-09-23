@@ -865,6 +865,16 @@ def EmitSDC : Pass<"synth-emit-sdc", "mlir::ModuleOp"> {
            "\"FixedClock\"",
            "Cell-name substrings treated as on-chip clock sources "
            "(comma-separated); reported for manual constraint">,
+    Option<"clockUncertaintySetupNs", "clock-uncertainty-setup-ns",
+           "double", "0.0",
+           "Setup clock uncertainty in nanoseconds (pre-CTS skew+jitter "
+           "margin; 0 disables)">,
+    Option<"clockUncertaintyHoldNs", "clock-uncertainty-hold-ns",
+           "double", "0.0",
+           "Hold clock uncertainty in nanoseconds (0 disables)">,
+    Option<"resetPorts", "reset-ports", "std::string", "\"\"",
+           "Top-level reset ports for set_false_path (comma-separated; "
+           "empty disables)">,
   ];
   let statistics = [
     Statistic<"numClocks", "clocks",

@@ -1,6 +1,7 @@
 // RUN: circt-opt --synth-emit-sdc='top-module-name=top output-file="-" clock-period-ns=5.0' %s | FileCheck %s
 // RUN: circt-opt --synth-emit-sdc='top-module-name=top2 output-file="-" clock-gate-cells="eicg_stub:out=in" clock-source-cells="fixedclk"' %s | FileCheck %s --check-prefix=SDC2
 // RUN: circt-opt --synth-emit-sdc='top-module-name=top3 output-file="-"' %s | FileCheck %s --check-prefix=SDC3
+// RUN: circt-opt --synth-emit-sdc='top-module-name=top4 output-file="-" clock-period-ns=5.0 clock-uncertainty-setup-ns=0.05 clock-uncertainty-hold-ns=0.02 reset-ports="rst"' %s | FileCheck %s --check-prefix=SDC4
 
 hw.module.extern @mybuf(in %a: i1 {synth.liberty.pin = {clock = "false"}}, out y: i1)
 hw.module.extern @myff(in %clk: i1 {synth.liberty.pin = {clock = "true"}}, in %d: i1, out q: i1)
@@ -57,4 +58,14 @@ hw.module @top(in %clk: i1, in %d: i1, in %e: i1, out q: i1, out r: i1) {
   %gated = comb.and %clk, %e : i1
   %r = hw.instance "g" @myff(clk: %gated: i1, d: %d: i1) -> (q: i1)
   hw.output %q, %r : i1, i1
+}
+
+// Uncertainty margins and reset false paths (Phase 1 CTS inputs).
+// SDC4: create_clock -name clk -period 5.000 [get_ports {clk}]
+// SDC4: set_clock_uncertainty -setup 0.050 [get_clocks {clk}]
+// SDC4: set_clock_uncertainty -hold 0.020 [get_clocks {clk}]
+// SDC4: set_false_path -from [get_ports {rst}]
+hw.module @top4(in %clk: i1, in %d: i1, in %rst: i1, out q: i1) {
+  %q = hw.instance "f" @myff(clk: %clk: i1, d: %d: i1) -> (q: i1)
+  hw.output %q : i1
 }

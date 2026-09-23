@@ -73,8 +73,11 @@
 
 ## Phases
 
-- **Phase 1**: uncertainty + generated-clock SDC emission; async/C DC
-  false paths; OpenROAD-parseable SDC tests.
+- **Phase 1** (done): uncertainty (`clock-uncertainty-setup/hold-ns`,
+  default 0 = unmargined) + reset false paths (`reset-ports`, explicit
+  only) with OpenROAD-parseable SDC tests. Generated-clock inference
+  deferred: no divider test vehicle yet, and D-pin identification needs
+  Liberty FF `next_state` matching (name guessing rejected).
 - **Phase 2**: propagated-clock constraints in `TimingConstraints` and the
   OpenTimer backend (per-pin latency, no ideal creation); pre/post-CTS
   differential in the harness.

@@ -196,6 +196,40 @@ struct EmitSDCPass : public circt::synth::impl::EmitSDCBase<EmitSDCPass> {
          << root << "}]\n";
       ++numClocks;
     }
+    // Pre-CTS uncertainty margins (skew+jitter budgets are engineering
+    // inputs; zero disables and leaves ideal clocks unmargined).
+    if (clockUncertaintySetupNs.getValue() > 0.0) {
+      for (StringRef root : roots) {
+        os << "set_clock_uncertainty -setup "
+           << llvm::format("%.3f", clockUncertaintySetupNs.getValue())
+           << " [get_clocks {" << root << "}]\n";
+      }
+    }
+    if (clockUncertaintyHoldNs.getValue() > 0.0) {
+      for (StringRef root : roots) {
+        os << "set_clock_uncertainty -hold "
+           << llvm::format("%.3f", clockUncertaintyHoldNs.getValue())
+           << " [get_clocks {" << root << "}]\n";
+      }
+    }
+    // Asynchronous resets are not timed for setup (explicit port list;
+    // no guessing from names).
+    {
+      SmallVector<StringRef> resets;
+      StringRef(resetPorts.getValue()).split(resets, ',');
+      std::string resetList;
+      for (StringRef r : resets) {
+        r = r.trim();
+        if (r.empty())
+          continue;
+        if (!resetList.empty())
+          resetList += " ";
+        resetList += r.str();
+      }
+      if (!resetList.empty()) {
+        os << "set_false_path -from [get_ports {" << resetList << "}]\n";
+      }
+    }
     if (!roots.empty()) {
       std::string all;
       for (StringRef root : roots) {
