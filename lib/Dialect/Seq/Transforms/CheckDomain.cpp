@@ -7,6 +7,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWPasses.h"
+#include "circt/Dialect/SV/SVOps.h"
 #include "circt/Dialect/Seq/SeqOps.h"
 #include "circt/Dialect/Seq/SeqPasses.h"
 #include "mlir/IR/Value.h"
@@ -77,6 +78,11 @@ CheckDomainPass::checkValue(CheckClockDomainOp check, Value value, Value clock,
 }
 
 void CheckDomainPass::runOnOperation() {
+  SmallVector<sv::BindOp> binds;
+  getOperation()->walk([&](sv::BindOp bind) { binds.push_back(bind); });
+  for (auto bind : binds)
+    bind.erase();
+
   if (moduleName.empty()) {
     emitError(getOperation().getLoc()) << "requires --module-name";
     return signalPassFailure();
