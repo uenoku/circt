@@ -25,7 +25,11 @@ def CheckDomain : Pass<"seq-check-domain", "mlir::ModuleOp"> {
   }];
   let options = [
     Option<"moduleName", "module-name", "std::string", "",
-           "Name of the HW module to verify">
+           "Name of the HW module to verify">,
+    Option<"allowCrossing", "allow-crossing", "bool", "false",
+           "Allow clock-domain crossings without failing the pass">,
+    Option<"skipClockGate", "skip-clock-gate", "bool", "false",
+           "Skip clock gates when checking clock-domain dependencies">
   ];
   let dependentDialects = ["circt::hw::HWDialect"];
 }

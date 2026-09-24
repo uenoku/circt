@@ -12,6 +12,7 @@
 #include "circt/Dialect/Seq/SeqPasses.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/PassManager.h"
@@ -20,6 +21,7 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "seq-check-domain"
 
@@ -110,6 +112,7 @@ LogicalResult inlineCheckDomainInstances(hw::HWModuleOp module,
   mlir::InlinerConfig config;
   mlir::SymbolTable symbolTable(top);
   hw::InnerSymbolNamespace ns(module);
+  unsigned numInlined = 0;
 
   while (true) {
     SmallVector<hw::InstanceOp> instances;
@@ -118,8 +121,11 @@ LogicalResult inlineCheckDomainInstances(hw::HWModuleOp module,
               instance.getModuleNameAttr().getValue()))
         instances.push_back(instance);
     });
-    if (instances.empty())
+    if (instances.empty()) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "inlined " << numInlined << " HW instance(s)\n");
       return success();
+    }
 
     for (auto instance : instances) {
       auto sourceModule = symbolTable.lookup<hw::HWModuleOp>(
@@ -130,6 +136,10 @@ LogicalResult inlineCheckDomainInstances(hw::HWModuleOp module,
         instance.emitError("cannot flatten a recursive HW module instance");
         return failure();
       }
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "inlining instance '" << instance.getInstanceName()
+                 << "' of '" << sourceModule.getModuleName() << "'\n");
 
       DenseMap<StringAttr, StringAttr> oldToNewInnerSyms;
       sourceModule.walk([&](Operation *op) {
@@ -170,6 +180,7 @@ LogicalResult inlineCheckDomainInstances(hw::HWModuleOp module,
         return failure();
       }
       instance.erase();
+      ++numInlined;
     }
   }
 }
@@ -182,6 +193,95 @@ static void eraseClonedWireSymbols(hw::HWModuleOp module) {
   module.walk([](hw::WireOp wire) { wire->removeAttr(innerSymAttrName); });
 }
 
+/// Replace EICG wrapper instances in the cloned module with seq.clock_gate.
+/// This mirrors the legalization done by the Arc StripSV pass, but is scoped
+/// to the temporary clone so that the original design and its hierpaths are
+/// left unchanged.
+static LogicalResult legalizeClockGates(hw::HWModuleOp module,
+                                        mlir::ModuleOp top) {
+  mlir::SymbolTable symbolTable(top);
+  SmallVector<hw::InstanceOp> instances;
+  module.walk([&](hw::InstanceOp instance) { instances.push_back(instance); });
+
+  auto *context = module.getContext();
+  auto expectedInputNames =
+      ArrayAttr::get(context, {StringAttr::get(context, "in"),
+                               StringAttr::get(context, "test_en"),
+                               StringAttr::get(context, "en")});
+  auto expectedOutputNames =
+      ArrayAttr::get(context, {StringAttr::get(context, "out")});
+  auto i1Type = IntegerType::get(context, 1);
+
+  SmallPtrSet<Operation *, 4> checkedModules;
+  unsigned numLegalized = 0;
+  for (auto instance : instances) {
+    auto external = symbolTable.lookup<hw::HWModuleExternOp>(
+        instance.getModuleNameAttr().getValue());
+    if (!external || external.getVerilogModuleName() != "EICG_wrapper")
+      continue;
+
+    if (checkedModules.insert(external.getOperation()).second) {
+      if (!llvm::equal(external.getInputNames(), expectedInputNames) ||
+          !llvm::equal(external.getOutputNames(), expectedOutputNames)) {
+        external.emitError("clock gate module `")
+            << external.getModuleName() << "` has incompatible port names "
+            << external.getInputNames() << " -> " << external.getOutputNames();
+        return failure();
+      }
+
+      auto inputTypes = external.getInputTypes();
+      auto outputTypes = external.getOutputTypes();
+      bool clockPorts = inputTypes.size() == 3 && outputTypes.size() == 1 &&
+                        isa<ClockType>(inputTypes[0]) &&
+                        isa<ClockType>(outputTypes[0]);
+      bool bitPorts = inputTypes.size() == 3 && outputTypes.size() == 1 &&
+                      inputTypes[0] == i1Type && outputTypes[0] == i1Type;
+      if (!clockPorts && !bitPorts) {
+        external.emitError("clock gate module `")
+            << external.getModuleName() << "` has incompatible port types "
+            << external.getInputTypes() << " -> " << external.getOutputTypes();
+        return failure();
+      }
+      if (inputTypes[1] != i1Type || inputTypes[2] != i1Type) {
+        external.emitError("clock gate module `")
+            << external.getModuleName()
+            << "` has incompatible enable port types "
+            << external.getInputTypes() << " -> " << external.getOutputTypes();
+        return failure();
+      }
+    }
+
+    if (instance.getNumOperands() != 3 || instance.getNumResults() != 1) {
+      instance.emitError("expected EICG_wrapper instance to have three inputs "
+                         "and one output");
+      return failure();
+    }
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "legalizing EICG instance '" << instance.getInstanceName()
+               << "' in '" << module.getModuleName() << "'\n");
+
+    ImplicitLocOpBuilder builder(instance.getLoc(), instance);
+    Value input = instance.getOperand(0);
+    if (isa<IntegerType>(input.getType()))
+      input = ToClockOp::create(builder, input);
+
+    auto gated =
+        ClockGateOp::create(builder, input, instance.getOperand(1),
+                            instance.getOperand(2), hw::InnerSymAttr{});
+    Value output = gated;
+    if (isa<IntegerType>(instance.getResult(0).getType()))
+      output = FromClockOp::create(builder, gated);
+
+    instance.getResult(0).replaceAllUsesWith(output);
+    instance.erase();
+    ++numLegalized;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "legalized " << numLegalized
+                          << " EICG instance(s)\n");
+  return success();
+}
+
 struct CheckDomainPass : public impl::CheckDomainBase<CheckDomainPass> {
   using Base::Base;
 
@@ -189,7 +289,8 @@ struct CheckDomainPass : public impl::CheckDomainBase<CheckDomainPass> {
 
 private:
   LogicalResult checkValue(CheckClockDomainOp check, Value value, Value clock,
-                           llvm::SmallPtrSetImpl<Value> &visited);
+                           llvm::SmallPtrSetImpl<Value> &visited,
+                           bool allowCrossing, bool skipClockGate);
   static std::string describeValue(Value value);
 };
 
@@ -207,21 +308,64 @@ std::string CheckDomainPass::describeValue(Value value) {
       return ("value '" + name.getValue() + "' (defined by '" +
               definingOp->getName().getStringRef() + "')")
           .str();
-    if (auto namehint = definingOp->getAttrOfType<StringAttr>("sv.namehint"))
-      return ("value '" + namehint.getValue() + "' (defined by '" +
+    if (auto instanceName =
+            definingOp->getAttrOfType<StringAttr>("instanceName"))
+      return ("value '" + instanceName.getValue() + "' (defined by '" +
               definingOp->getName().getStringRef() + "')")
           .str();
+    if (!isa<hw::InstanceOp>(definingOp))
+      if (auto namehint = definingOp->getAttrOfType<StringAttr>("sv.namehint"))
+        return ("value '" + namehint.getValue() + "' (defined by '" +
+                definingOp->getName().getStringRef() + "')")
+            .str();
     return ("result of '" + definingOp->getName().getStringRef() + "'").str();
   }
   return "value";
 }
 
-LogicalResult
-CheckDomainPass::checkValue(CheckClockDomainOp check, Value value, Value clock,
-                            llvm::SmallPtrSetImpl<Value> &visited) {
+LogicalResult CheckDomainPass::checkValue(CheckClockDomainOp check, Value value,
+                                          Value clock,
+                                          llvm::SmallPtrSetImpl<Value> &visited,
+                                          bool allowCrossing,
+                                          bool skipClockGate) {
+  auto normalizeClock = [&](Value clock) {
+    while (true) {
+      if (auto clockGate = clock.getDefiningOp<ClockGateOp>()) {
+        clock = clockGate.getInput();
+        continue;
+      }
+      if (auto toClock = clock.getDefiningOp<ToClockOp>()) {
+        clock = toClock.getInput();
+        continue;
+      }
+      if (auto fromClock = clock.getDefiningOp<FromClockOp>()) {
+        clock = fromClock.getInput();
+        continue;
+      }
+      return clock;
+    }
+  };
+
+  auto isClockGateResult = [&](Value clock) {
+    while (true) {
+      if (auto toClock = clock.getDefiningOp<ToClockOp>()) {
+        clock = toClock.getInput();
+        continue;
+      }
+      if (auto fromClock = clock.getDefiningOp<FromClockOp>()) {
+        clock = fromClock.getInput();
+        continue;
+      }
+      return clock.getDefiningOp<ClockGateOp>() != nullptr;
+    }
+  };
+
   auto checkClocked = [&](Operation *op) -> LogicalResult {
     auto clocked = dyn_cast<Clocked>(op);
-    if (!clocked || clocked.getClk() == clock)
+    if (!clocked || allowCrossing || clocked.getClk() == clock ||
+        (skipClockGate &&
+         (isClockGateResult(clocked.getClk()) ||
+          normalizeClock(clocked.getClk()) == normalizeClock(clock))))
       return success();
 
     check.emitOpError() << "input depends on a sequential element clocked by "
@@ -260,6 +404,13 @@ CheckDomainPass::checkValue(CheckClockDomainOp check, Value value, Value clock,
 
     if (walkUsers) {
       for (Operation *user : current.getUsers()) {
+        if (skipClockGate) {
+          if (isa<ClockGateOp>(user))
+            continue;
+          if (auto clocked = dyn_cast<Clocked>(user))
+            if (isClockGateResult(clocked.getClk()))
+              continue;
+        }
         if (failed(checkClocked(user)))
           return failure();
         for (Value result : user->getResults())
@@ -272,6 +423,8 @@ CheckDomainPass::checkValue(CheckClockDomainOp check, Value value, Value clock,
 }
 
 void CheckDomainPass::runOnOperation() {
+  LLVM_DEBUG(llvm::dbgs() << "starting clock-domain check for module '"
+                          << moduleName << "'\n");
   SmallVector<sv::BindOp> binds;
   getOperation()->walk([&](sv::BindOp bind) { binds.push_back(bind); });
   for (auto bind : binds)
@@ -321,10 +474,19 @@ void CheckDomainPass::runOnOperation() {
   getOperation().push_back(flattenedModule);
   module = flattenedModule;
 
+  LLVM_DEBUG(llvm::dbgs() << "created temporary module '"
+                          << flattenedModule.getModuleName() << "'\n");
+
   // Flatten only the clone. This deliberately does not use FlattenModules:
   // that pass operates on the complete instance graph and would also modify
   // modules and hierarchical paths belonging to the original design.
   if (failed(inlineCheckDomainInstances(module, getOperation())))
+    return signalPassFailure();
+
+  LLVM_DEBUG(llvm::dbgs() << "finished inlining in '" << module.getModuleName()
+                          << "'\n");
+
+  if (failed(legalizeClockGates(module, getOperation())))
     return signalPassFailure();
 
   eraseClonedWireSymbols(module);
@@ -334,12 +496,21 @@ void CheckDomainPass::runOnOperation() {
   pipeline.addPass(mlir::createCSEPass());
   if (failed(runPipeline(pipeline, module)))
     return signalPassFailure();
+  LLVM_DEBUG(llvm::dbgs() << "finished canonicalization in '"
+                          << module.getModuleName() << "'\n");
   LogicalResult result = success();
+  unsigned numChecks = 0;
   module.walk([&](CheckClockDomainOp check) {
+    ++numChecks;
+    LLVM_DEBUG(llvm::dbgs()
+               << "checking seq.check_clock_domain #" << numChecks << "\n");
     llvm::SmallPtrSet<Value, 32> visited;
-    if (failed(checkValue(check, check.getInput(), check.getClock(), visited)))
+    if (failed(checkValue(check, check.getInput(), check.getClock(), visited,
+                          allowCrossing, skipClockGate)))
       result = failure();
   });
+  LLVM_DEBUG(llvm::dbgs() << "finished " << numChecks
+                          << " clock-domain check(s)\n");
   if (failed(result))
     signalPassFailure();
 }
