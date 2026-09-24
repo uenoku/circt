@@ -37,6 +37,12 @@ firrtl.circuit "Foo" {
     firrtl.int.generic "circt.clock_inv"  %clk : (!firrtl.clock) -> !firrtl.clock
   }
 
+  // CHECK-LABEL: @CheckClockDomain
+  firrtl.module @CheckClockDomain(in %clk: !firrtl.clock, in %in: !firrtl.uint<8>) {
+    // CHECK-NEXT: firrtl.int.check_clock_domain %in, %clk : !firrtl.uint<8>, !firrtl.clock
+    firrtl.int.generic "circt.check_clock_domain" %in, %clk : (!firrtl.uint<8>, !firrtl.clock) -> ()
+  }
+
   // CHECK-LABEL: @ClockDivider
   firrtl.module @ClockDivider(in %clk: !firrtl.clock) {
     // CHECK-NEXT: firrtl.int.clock_div %clk by 8

@@ -42,6 +42,12 @@ firrtl.circuit "Intrinsics" {
 
   }
 
+  // CHECK-LABEL: hw.module @CheckClockDomain
+  firrtl.module @CheckClockDomain(in %clk: !firrtl.clock, in %in: !firrtl.uint<8>) {
+    // CHECK-NEXT: seq.check_clock_domain %in, %clk : i8, !seq.clock
+    firrtl.int.check_clock_domain %in, %clk : !firrtl.uint<8>, !firrtl.clock
+  }
+
   // CHECK-LABEL: hw.module @ClockGate
   firrtl.module @ClockGate(
     in %clk: !firrtl.clock,

@@ -127,6 +127,18 @@ def ClockInverterIntrinsicOp : FIRRTLOp<"int.clock_inv", [Pure]> {
   let assemblyFormat = "$input attr-dict";
 }
 
+def CheckClockDomainIntrinsicOp : FIRRTLOp<"int.check_clock_domain"> {
+  let summary = "Checks that a signal belongs to a clock domain";
+  let description = [{
+    The `firrtl.int.check_clock_domain` operation records that `input` must
+    belong to the clock domain represented by `clock`. This is a compiler-only
+    check and does not affect the generated hardware.
+  }];
+
+  let arguments = (ins AnyType:$input, ClockType:$clock);
+  let assemblyFormat = "$input `,` $clock attr-dict `:` type($input) `,` type($clock)";
+}
+
 def ClockDividerIntrinsicOp : FIRRTLOp<"int.clock_div", [Pure]> {
   let summary = "Produces a clock divided by a power of two";
   let description = [{

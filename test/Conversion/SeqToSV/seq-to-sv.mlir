@@ -69,6 +69,12 @@
 
 emit.fragment @SomeFragment {}
 
+// CHECK-LABEL: hw.module @CheckClockDomain(in %clk : i1, in %in : i8)
+// CHECK-NOT: seq.check_clock_domain
+hw.module @CheckClockDomain(in %clk : !seq.clock, in %in : i8) {
+  seq.check_clock_domain %in, %clk : i8, !seq.clock
+}
+
 // CHECK-LABEL: hw.module.generated
 // CHECK-SAME:    emit.fragments = [@RANDOM_INIT_REG_FRAGMENT, @RANDOM_INIT_MEM_FRAGMENT, @RANDOM_INIT_FRAGMENT]
 

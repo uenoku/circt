@@ -293,6 +293,20 @@ public:
 private:
   const MapVector<StringAttr, ModuleLoweringState> &moduleLoweringStates;
 };
+/// Remove compiler-only clock-domain checks before SystemVerilog emission.
+class CheckClockDomainLowering
+    : public OpConversionPattern<CheckClockDomainOp> {
+public:
+  using OpConversionPattern<CheckClockDomainOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CheckClockDomainOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Lower seq.clock_gate to a fairly standard clock gate implementation.
 //
 class ClockGateLowering : public OpConversionPattern<ClockGateOp> {
@@ -704,6 +718,7 @@ void SeqToSVPass::runOnOperation() {
       typeConverter, context, lowerToAlwaysFF, moduleLoweringStates);
   patterns.add<FromImmutableLowering>(typeConverter, context,
                                       moduleLoweringStates);
+  patterns.add<CheckClockDomainLowering>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::FromClockOp>>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::ToClockOp>>(typeConverter, context);
   patterns.add<ClockGateLowering>(typeConverter, context);
