@@ -1963,6 +1963,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitExpr(PlusArgsValueIntrinsicOp op);
   LogicalResult visitStmt(FPGAProbeIntrinsicOp op);
   LogicalResult visitStmt(CheckClockDomainIntrinsicOp op);
+  LogicalResult visitStmt(CheckClockDomainNeqIntrinsicOp op);
   LogicalResult visitExpr(ClockInverterIntrinsicOp op);
   LogicalResult visitExpr(ClockDividerIntrinsicOp op);
   LogicalResult visitExpr(SizeOfIntrinsicOp op);
@@ -4733,6 +4734,15 @@ LogicalResult FIRRTLLowering::visitStmt(CheckClockDomainIntrinsicOp op) {
   if (!input || !clock)
     return failure();
   seq::CheckClockDomainOp::create(builder, input, clock);
+  return success();
+}
+
+LogicalResult FIRRTLLowering::visitStmt(CheckClockDomainNeqIntrinsicOp op) {
+  auto input = getLoweredValue(op.getInput());
+  auto clock = getLoweredValue(op.getClock());
+  if (!input || !clock)
+    return failure();
+  seq::CheckClockDomainNeqOp::create(builder, input, clock);
   return success();
 }
 

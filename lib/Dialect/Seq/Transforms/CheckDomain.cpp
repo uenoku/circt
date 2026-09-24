@@ -288,9 +288,10 @@ struct CheckDomainPass : public impl::CheckDomainBase<CheckDomainPass> {
   void runOnOperation() override;
 
 private:
-  LogicalResult checkValue(CheckClockDomainOp check, Value value, Value clock,
+  LogicalResult checkValue(Operation *check, Value value, Value clock,
                            llvm::SmallPtrSetImpl<Value> &visited,
-                           bool allowCrossing, bool skipClockGate);
+                           bool allowCrossing, bool skipClockGate,
+                           bool requireSameClock);
   static std::string describeValue(Value value);
 };
 
@@ -323,11 +324,12 @@ std::string CheckDomainPass::describeValue(Value value) {
   return "value";
 }
 
-LogicalResult CheckDomainPass::checkValue(CheckClockDomainOp check, Value value,
+LogicalResult CheckDomainPass::checkValue(Operation *check, Value value,
                                           Value clock,
                                           llvm::SmallPtrSetImpl<Value> &visited,
                                           bool allowCrossing,
-                                          bool skipClockGate) {
+                                          bool skipClockGate,
+                                          bool requireSameClock) {
   auto normalizeClock = [&](Value clock) {
     while (true) {
       if (auto clockGate = clock.getDefiningOp<ClockGateOp>()) {
@@ -362,15 +364,33 @@ LogicalResult CheckDomainPass::checkValue(CheckClockDomainOp check, Value value,
 
   auto checkClocked = [&](Operation *op) -> LogicalResult {
     auto clocked = dyn_cast<Clocked>(op);
-    if (!clocked || allowCrossing || clocked.getClk() == clock ||
-        (skipClockGate &&
-         (isClockGateResult(clocked.getClk()) ||
-          normalizeClock(clocked.getClk()) == normalizeClock(clock))))
+    if (!clocked)
       return success();
 
-    check.emitOpError() << "input depends on a sequential element clocked by "
-                        << describeValue(clocked.getClk())
-                        << ", not the expected clock " << describeValue(clock);
+    if (skipClockGate && isClockGateResult(clocked.getClk()))
+      return success();
+
+    bool clocksMatch = clocked.getClk() == clock ||
+                       (skipClockGate && normalizeClock(clocked.getClk()) ==
+                                             normalizeClock(clock));
+    if (requireSameClock) {
+      if (allowCrossing || clocksMatch)
+        return success();
+
+      check->emitOpError()
+          << "input depends on a sequential element clocked by "
+          << describeValue(clocked.getClk()) << ", not the expected clock "
+          << describeValue(clock);
+      return failure();
+    }
+
+    if (!clocksMatch)
+      return success();
+
+    check->emitOpError() << "input depends on a sequential element clocked by "
+                         << describeValue(clocked.getClk())
+                         << ", but it must not depend on the expected clock "
+                         << describeValue(clock);
     return failure();
   };
 
@@ -505,8 +525,19 @@ void CheckDomainPass::runOnOperation() {
     LLVM_DEBUG(llvm::dbgs()
                << "checking seq.check_clock_domain #" << numChecks << "\n");
     llvm::SmallPtrSet<Value, 32> visited;
-    if (failed(checkValue(check, check.getInput(), check.getClock(), visited,
-                          allowCrossing, skipClockGate)))
+    if (failed(checkValue(check.getOperation(), check.getInput(),
+                          check.getClock(), visited, allowCrossing,
+                          skipClockGate, /*requireSameClock=*/true)))
+      result = failure();
+  });
+  module.walk([&](CheckClockDomainNeqOp check) {
+    ++numChecks;
+    LLVM_DEBUG(llvm::dbgs()
+               << "checking seq.check_clock_domain_neq #" << numChecks << "\n");
+    llvm::SmallPtrSet<Value, 32> visited;
+    if (failed(checkValue(check.getOperation(), check.getInput(),
+                          check.getClock(), visited, allowCrossing,
+                          skipClockGate, /*requireSameClock=*/false)))
       result = failure();
   });
   LLVM_DEBUG(llvm::dbgs() << "finished " << numChecks

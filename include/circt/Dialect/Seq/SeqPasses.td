@@ -16,12 +16,13 @@
 include "mlir/Pass/PassBase.td"
 
 def CheckDomain : Pass<"seq-check-domain", "mlir::ModuleOp"> {
-  let summary = "Verify seq.check_clock_domain operations";
+  let summary = "Verify clock-domain check operations";
   let description = [{
     Flattens the hierarchy rooted at the selected HW module, canonicalizes the
-    resulting design, and verifies each `seq.check_clock_domain` operation.
-    The data input of every check is traced through the surrounding dataflow to
-    sequential elements, whose clocks must match the check's clock.
+    resulting design, and verifies each `seq.check_clock_domain` and
+    `seq.check_clock_domain_neq` operation. The data input of every check is
+    traced through the surrounding dataflow to sequential elements, whose
+    clocks must match or differ from the check's clock, respectively.
   }];
   let options = [
     Option<"moduleName", "module-name", "std::string", "",

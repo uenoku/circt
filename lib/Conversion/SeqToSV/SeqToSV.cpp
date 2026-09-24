@@ -307,6 +307,19 @@ public:
   }
 };
 
+class CheckClockDomainNeqLowering
+    : public OpConversionPattern<CheckClockDomainNeqOp> {
+public:
+  using OpConversionPattern<CheckClockDomainNeqOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CheckClockDomainNeqOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Lower seq.clock_gate to a fairly standard clock gate implementation.
 //
 class ClockGateLowering : public OpConversionPattern<ClockGateOp> {
@@ -719,6 +732,7 @@ void SeqToSVPass::runOnOperation() {
   patterns.add<FromImmutableLowering>(typeConverter, context,
                                       moduleLoweringStates);
   patterns.add<CheckClockDomainLowering>(typeConverter, context);
+  patterns.add<CheckClockDomainNeqLowering>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::FromClockOp>>(typeConverter, context);
   patterns.add<ClockCastLowering<seq::ToClockOp>>(typeConverter, context);
   patterns.add<ClockGateLowering>(typeConverter, context);

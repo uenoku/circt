@@ -155,6 +155,19 @@ def CirctCheckClockDomain : FIRRTLIntrinsic {
   }];
 }
 
+def CirctCheckClockDomainNeq : FIRRTLIntrinsic {
+  let mnemonic = "circt.check_clock_domain_neq";
+  let converter = "CirctCheckClockDomainNeqConverter";
+  let description = [{
+    Checks that a signal does not belong to a clock domain.
+
+    | Argument | Type  | Description            |
+    | -------- | ----- | ---------------------- |
+    | input    | Any   | signal whose domain is checked |
+    | clock    | Clock | forbidden clock domain |
+  }];
+}
+
 def CirctClockDivider : FIRRTLIntrinsic {
   let mnemonic = "circt.clock_div";
   let description = [{

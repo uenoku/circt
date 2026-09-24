@@ -322,6 +322,22 @@ public:
   }
 };
 
+class CirctCheckClockDomainNeqConverter : public IntrinsicConverter {
+public:
+  using IntrinsicConverter::IntrinsicConverter;
+
+  bool check(GenericIntrinsic gi) override {
+    return gi.hasNInputs(2) || gi.typedInput<ClockType>(1) || gi.hasNParam(0) ||
+           gi.hasNoOutput();
+  }
+
+  void convert(GenericIntrinsic gi, GenericIntrinsicOpAdaptor adaptor,
+               PatternRewriter &rewriter) override {
+    rewriter.replaceOpWithNewOp<CheckClockDomainNeqIntrinsicOp>(
+        gi.op, adaptor.getOperands()[0], adaptor.getOperands()[1]);
+  }
+};
+
 class CirctClockDividerConverter : public IntrinsicConverter {
 public:
   using IntrinsicConverter::IntrinsicConverter;

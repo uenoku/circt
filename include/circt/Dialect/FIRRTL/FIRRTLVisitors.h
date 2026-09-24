@@ -259,7 +259,8 @@ public:
                        SkipOp, StopOp, WhenOp, AssertOp, AssumeOp, CoverOp,
                        PropAssignOp, RefForceOp, RefForceInitialOp,
                        RefReleaseOp, RefReleaseInitialOp, FPGAProbeIntrinsicOp,
-                       CheckClockDomainIntrinsicOp, VerifAssertIntrinsicOp,
+                       CheckClockDomainIntrinsicOp,
+                       CheckClockDomainNeqIntrinsicOp, VerifAssertIntrinsicOp,
                        VerifAssumeIntrinsicOp,
                        UnclockedAssumeIntrinsicOp, VerifCoverIntrinsicOp,
                        VerifRequireIntrinsicOp, VerifEnsureIntrinsicOp,
@@ -311,6 +312,7 @@ public:
   HANDLE(RefReleaseInitialOp);
   HANDLE(FPGAProbeIntrinsicOp);
   HANDLE(CheckClockDomainIntrinsicOp);
+  HANDLE(CheckClockDomainNeqIntrinsicOp);
   HANDLE(VerifAssertIntrinsicOp);
   HANDLE(VerifAssumeIntrinsicOp);
   HANDLE(VerifCoverIntrinsicOp);

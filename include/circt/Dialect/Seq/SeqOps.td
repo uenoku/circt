@@ -42,6 +42,18 @@ def CheckClockDomainOp : SeqOp<"check_clock_domain"> {
   let assemblyFormat = "$input `,` $clock attr-dict `:` type($input) `,` type($clock)";
 }
 
+def CheckClockDomainNeqOp : SeqOp<"check_clock_domain_neq"> {
+  let summary = "Checks that a signal does not belong to a clock domain";
+  let description = [{
+    Records that `input` does not belong to the clock domain represented by
+    `clock`. This operation is compiler-only and is removed before
+    SystemVerilog emission.
+  }];
+
+  let arguments = (ins AnyType:$input, ClockType:$clock);
+  let assemblyFormat = "$input `,` $clock attr-dict `:` type($input) `,` type($clock)";
+}
+
 def CompRegOp : SeqOp<"compreg",
     [Pure, Clocked, Resettable,
      AllTypesMatch<["input", "data"]>,
