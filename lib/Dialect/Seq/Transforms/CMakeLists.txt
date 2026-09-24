@@ -1,4 +1,5 @@
 add_circt_dialect_library(CIRCTSeqTransforms
+  CheckDomain.cpp
   ExternalizeClockGate.cpp
   HWMemSimImpl.cpp
   RegOfVecToMem.cpp

@@ -15,6 +15,21 @@
 
 include "mlir/Pass/PassBase.td"
 
+def CheckDomain : Pass<"seq-check-domain", "mlir::ModuleOp"> {
+  let summary = "Verify seq.check_clock_domain operations";
+  let description = [{
+    Flattens the hierarchy rooted at the selected HW module, canonicalizes the
+    resulting design, and verifies each `seq.check_clock_domain` operation.
+    The data input of every check is recursively traced through combinational
+    logic to sequential elements, whose clocks must match the check's clock.
+  }];
+  let options = [
+    Option<"moduleName", "module-name", "std::string", "",
+           "Name of the HW module to verify">
+  ];
+  let dependentDialects = ["circt::hw::HWDialect"];
+}
+
 def LowerSeqCompRegCE : Pass<"lower-seq-compreg-ce", "hw::HWModuleOp"> {
   let summary = "Lower seq.compreg.ce to seq.compreg";
   let description = [{
