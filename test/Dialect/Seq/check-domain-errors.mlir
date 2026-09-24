@@ -8,7 +8,7 @@ hw.module @Top(in %expected: !seq.clock, in %actual: !seq.clock, in %in: i8,
 
   %actual_wire = hw.wire %actual sym @actual_clock name "actual_clock" : !seq.clock
   %named_reg = seq.compreg %in, %actual_wire : i8
-  // expected-error @below {{input depends on a sequential element clocked by value 'actual_clock' (defined by 'hw.wire'), not the expected clock module input 'expected'}}
+  // expected-error @below {{input depends on a sequential element clocked by module input 'actual', not the expected clock module input 'expected'}}
   seq.check_clock_domain %named_reg, %expected : i8, !seq.clock
 
   // The checked value is the input of a sequential element through

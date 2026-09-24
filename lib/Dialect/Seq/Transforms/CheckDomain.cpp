@@ -174,6 +174,14 @@ LogicalResult inlineCheckDomainInstances(hw::HWModuleOp module,
   }
 }
 
+/// Drop wire symbols from the temporary flattened module. Wires only preserve
+/// an SSA edge, so keeping their inner symbols prevents canonicalization from
+/// folding them away. The original module and its hierarchical paths are not
+/// visited by this helper.
+static void eraseClonedWireSymbols(hw::HWModuleOp module) {
+  module.walk([](hw::WireOp wire) { wire->removeAttr(innerSymAttrName); });
+}
+
 struct CheckDomainPass : public impl::CheckDomainBase<CheckDomainPass> {
   using Base::Base;
 
@@ -318,6 +326,8 @@ void CheckDomainPass::runOnOperation() {
   // modules and hierarchical paths belonging to the original design.
   if (failed(inlineCheckDomainInstances(module, getOperation())))
     return signalPassFailure();
+
+  eraseClonedWireSymbols(module);
 
   mlir::OpPassManager pipeline("hw.module");
   pipeline.addPass(mlir::createCanonicalizerPass());

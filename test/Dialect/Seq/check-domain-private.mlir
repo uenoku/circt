@@ -3,6 +3,8 @@
 // The selected module is private and has a use in the surrounding design. The
 // checker must analyze the cloned module while leaving the original hierarchy
 // and its hierarchical paths intact.
+// CHECK: hw.module private @Top
+// CHECK: hw.wire %in sym @top_wire
 // CHECK: hw.hierpath private @ChildPath [@Child]
 hw.module @Parent(in %clock: !seq.clock, in %in: i8) {
   hw.instance "top" @Top(clock: %clock: !seq.clock, in: %in: i8) -> ()
@@ -11,9 +13,9 @@ hw.module @Parent(in %clock: !seq.clock, in %in: i8) {
 
 // CHECK-LABEL: hw.module private @Top_flatten
 // CHECK-NOT: hw.instance
-// CHECK: sv.verbatim "top ref" {symbols = [#hw.innerNameRef<@Top_flatten::@top_wire>]}
-// CHECK: hw.wire {{.*}} sym @wire
-// CHECK: sv.verbatim "ref" {symbols = [#hw.innerNameRef<@Top_flatten::@wire>]}
+// CHECK-NOT: hw.wire
+// CHECK: sv.verbatim "top ref"
+// CHECK: sv.verbatim "ref"
 // CHECK: seq.check_clock_domain
 hw.module private @Top(in %clock: !seq.clock, in %in: i8) {
   %top_wire = hw.wire %in sym @top_wire : i8
