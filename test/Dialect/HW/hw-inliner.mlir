@@ -261,4 +261,3 @@ hw.module private @DontInlineModuleNLA(in %a: i4, out b: i4) {
   %0 = comb.add %a, %a : i4
   hw.output %0 : i4
 }
-
