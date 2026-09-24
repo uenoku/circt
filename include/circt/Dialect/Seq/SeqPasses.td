@@ -20,8 +20,8 @@ def CheckDomain : Pass<"seq-check-domain", "mlir::ModuleOp"> {
   let description = [{
     Flattens the hierarchy rooted at the selected HW module, canonicalizes the
     resulting design, and verifies each `seq.check_clock_domain` operation.
-    The data input of every check is recursively traced through combinational
-    logic to sequential elements, whose clocks must match the check's clock.
+    The data input of every check is traced through the surrounding dataflow to
+    sequential elements, whose clocks must match the check's clock.
   }];
   let options = [
     Option<"moduleName", "module-name", "std::string", "",

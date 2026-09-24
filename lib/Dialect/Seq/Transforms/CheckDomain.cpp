@@ -199,27 +199,55 @@ std::string CheckDomainPass::describeValue(Value value) {
 LogicalResult
 CheckDomainPass::checkValue(CheckClockDomainOp check, Value value, Value clock,
                             llvm::SmallPtrSetImpl<Value> &visited) {
-  if (!visited.insert(value).second)
-    return success();
+  auto checkClocked = [&](Operation *op) -> LogicalResult {
+    auto clocked = dyn_cast<Clocked>(op);
+    if (!clocked || clocked.getClk() == clock)
+      return success();
 
-  if (auto clocked = dyn_cast_or_null<Clocked>(value.getDefiningOp())) {
-    if (clocked.getClk() != clock) {
-      check.emitOpError() << "input depends on a sequential element clocked by "
-                          << describeValue(clocked.getClk())
-                          << ", not the expected clock "
-                          << describeValue(clock);
-      return failure();
+    check.emitOpError() << "input depends on a sequential element clocked by "
+                        << describeValue(clocked.getClk())
+                        << ", not the expected clock " << describeValue(clock);
+    return failure();
+  };
+
+  struct WorkItem {
+    Value value;
+    bool walkOperands;
+    bool walkUsers;
+  };
+
+  SmallVector<WorkItem> worklist{
+      {value, /*walkOperands=*/true, /*walkUsers=*/true}};
+  while (!worklist.empty()) {
+    auto [current, walkOperands, walkUsers] = worklist.pop_back_val();
+    if (!visited.insert(current).second)
+      continue;
+
+    if (auto *definingOp = current.getDefiningOp()) {
+      if (failed(checkClocked(definingOp)))
+        return failure();
+      if (definingOp->hasTrait<mlir::OpTrait::ConstantLike>())
+        continue;
+
+      // A clocked operation is a domain boundary. In particular, do not walk
+      // through its data, clock, or reset operands: those operands can belong
+      // to a different domain from the value it produces.
+      if (walkOperands && !isa<Clocked>(definingOp))
+        for (Value operand : definingOp->getOperands())
+          worklist.push_back(
+              {operand, /*walkOperands=*/true, /*walkUsers=*/false});
     }
-    return success();
+
+    if (walkUsers) {
+      for (Operation *user : current.getUsers()) {
+        if (failed(checkClocked(user)))
+          return failure();
+        for (Value result : user->getResults())
+          worklist.push_back(
+              {result, /*walkOperands=*/false, /*walkUsers=*/true});
+      }
+    }
   }
-
-  auto *definingOp = value.getDefiningOp();
-  if (!definingOp)
-    return success();
-
-  for (Value operand : definingOp->getOperands())
-    if (failed(checkValue(check, operand, clock, visited)))
-      return failure();
   return success();
 }
 
