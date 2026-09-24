@@ -1,16 +1,14 @@
 From: CIRCT STA integration
-Subject: [PATCH] timer: endpoint enumeration and when-variant retention
+Subject: [PATCH] timer: endpoint enumeration, when-variant retention, check kinds
 
 Upstream OpenTimer reports worst paths but offers no public API to
 enumerate every analyzed endpoint (pin, split, transition) with its
 arrival, required, and slack. Path tracing only materializes violated
-paths, so full-coverage aggregates (WNS/TNS/failing over all
-constrained endpoints) cannot be built from report_timing alone.
-
-Add Timer::report_endpoints(), which returns one record per analyzed
-endpoint after _update_endpoints(), reading the same _endpoints store
-that backs report_wns/report_tns/report_fep. No tracing, no new
-analysis, deterministic ordering left to the caller.
+paths, so full-coverage aggregates cannot be built from report_timing
+alone. Add Timer::report_endpoints(), backed by the same endpoint store
+as report_wns/report_tns/report_fep, including each endpoint's check
+kind (Liberty timing type, or "output") so callers filter setup vs hold
+vs recovery vs min-pulse honestly.
 
 Retain every Liberty timing variant instead of merging by related_pin
 alone, so state-dependent (`when`) arcs all reach propagation (which
@@ -20,8 +18,8 @@ placeholders still merge to avoid phantom duplication.
 Applies to OpenTimer 2.0 (cd0565fc).
 
 --- a/ot/timer/timer.hpp	2026-09-22 01:33:07.798535207 -0700
-+++ b/ot/timer/timer.hpp	2026-09-22 01:33:07.788965312 -0700
-@@ -63,6 +63,21 @@
++++ b/ot/timer/timer.hpp	2026-09-24 01:52:58.219395833 -0700
+@@ -63,6 +63,24 @@
      Timer& set_voltage_unit(volt_t);
      Timer& set_power_unit(watt_t);
  
@@ -37,21 +35,25 @@ Applies to OpenTimer 2.0 (cd0565fc).
 +      std::optional<float> arrival;
 +      std::optional<float> required;
 +      float slack;
++      // Check kind: Liberty timing type (e.g. setup_rising, hold_falling)
++      // for test endpoints, or "output" for primary outputs.
++      std::string testType;
 +    };
 +
 +    std::vector<EndpointInfo> report_endpoints();
      Timer& set_current_unit(ampere_t);
  
      // Action.
---- a/ot/timer/endpoint.cpp	2026-09-22 01:33:07.798631549 -0700
-+++ b/ot/timer/endpoint.cpp	2026-09-22 01:33:07.790314662 -0700
-@@ -1,4 +1,5 @@
+--- a/ot/timer/endpoint.cpp	2026-09-24 01:53:18.886382018 -0700
++++ b/ot/timer/endpoint.cpp	2026-09-24 01:52:58.220558239 -0700
+@@ -1,4 +1,6 @@
  #include <ot/timer/endpoint.hpp>
++#include <ot/liberty/timing.hpp>
 +#include <ot/timer/test.hpp>
  #include <ot/timer/timer.hpp>
  
  namespace ot {
-@@ -21,6 +22,43 @@
+@@ -21,6 +23,47 @@
    OT_LOGF_IF(!po.slack(el, rf), "PO slack not defined");
  }
  
@@ -76,11 +78,15 @@ Applies to OpenTimer 2.0 (cd0565fc).
 +        info.pin = test->_arc._to._name;
 +        info.arrival = test->_arc._to._at[el][rf];
 +        info.required = test->_rat[el][rf];
++        auto tv = test->_arc.timing_view();
++        if(auto tm = tv[el]; tm && tm->type)
++          info.testType = to_string(*tm->type);
 +      }
 +      else if(auto po = ept.primary_output()) {
 +        info.pin = po->_pin._name;
 +        info.arrival = po->_pin._at[el][rf];
 +        info.required = po->_rat[el][rf];
++        info.testType = "output";
 +      }
 +      else {
 +        continue;
@@ -95,8 +101,8 @@ Applies to OpenTimer 2.0 (cd0565fc).
  // Function: slack
  float Endpoint::slack() const {
    return std::visit([this] (auto&& handle) {
---- a/ot/liberty/celllib.cpp	2026-09-22 02:26:48.157038300 -0700
-+++ b/ot/liberty/celllib.cpp	2026-09-22 02:26:48.147657902 -0700
+--- a/ot/liberty/celllib.cpp	2026-09-24 01:53:25.469326955 -0700
++++ b/ot/liberty/celllib.cpp	2026-09-24 01:53:25.469216737 -0700
 @@ -632,6 +632,13 @@
        for(auto &t:cellpin.timings) {
          if (t.related_pin != ti.related_pin)

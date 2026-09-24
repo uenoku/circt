@@ -84,8 +84,11 @@
   two buffers). No per-pin latency extension required for gate delays;
   wire delay awaits SPEF input (future). Pre/post-CTS differential pending
   a routed design.
-- **Phase 3**: hold/min support; skew-aware refinement loop driven by
-  post-CTS STA.
+- **Phase 3** (hold done, refinement loop pending): `HoldMin`
+  analysis kind with MIN-split hold-only endpoints (recovery, removal,
+  and min-pulse counted as unsupported, no longer mixed into setup);
+  `testType` in the timer patch carries check kinds. Skew-aware
+  refinement driven by post-CTS STA remains future.
 
 ## Non-goals
 

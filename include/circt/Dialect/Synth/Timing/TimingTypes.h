@@ -42,7 +42,7 @@ struct CapacitanceFf {
 enum class TimingTransition { Rise, Fall };
 
 /// Analysis mode. Only setup/max is supported initially.
-enum class TimingAnalysisKind { SetupMax };
+enum class TimingAnalysisKind { SetupMax, HoldMin };
 
 /// Dense handle valid only for one TimingDesign. Makes graph construction
 /// and backend maps efficient.

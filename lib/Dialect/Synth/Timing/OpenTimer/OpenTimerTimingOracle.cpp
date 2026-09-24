@@ -73,13 +73,15 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
     return mlir::failure();
   }
   if (request.libertyFiles.empty() ||
-      request.constraints.analysis != TimingAnalysisKind::SetupMax) {
+      (request.constraints.analysis != TimingAnalysisKind::SetupMax &&
+       request.constraints.analysis != TimingAnalysisKind::HoldMin)) {
     return mlir::failure();
   }
   // v1 supports exactly one active clock.
   if (request.constraints.clocks.size() != 1) {
     return mlir::failure();
   }
+  result.analysis = request.constraints.analysis;
 
   const TimingDesign &design = *request.design;
   ot::Timer timer;
@@ -253,9 +255,24 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
   // tracing, which OpenTimer only materializes for violated paths, so
   // worstLaunch stays empty in v1 (it is optional in the schema).
   std::map<std::string, TimingEndpointResult> endpointsByPin;
+  uint64_t unsupported = 0;
   for (const auto &info : timer.report_endpoints()) {
-    if (info.split != ot::MAX)
+    // Check-type filtering: setup takes MAX-split setup/output endpoints;
+    // hold takes MIN-split hold endpoints. Recovery, removal, min-pulse,
+    // and others are unsupported (counted, not timed).
+    bool wanted = false;
+    if (request.constraints.analysis == TimingAnalysisKind::SetupMax) {
+      wanted = info.split == ot::MAX &&
+               (info.testType == "output" ||
+                info.testType.rfind("setup_", 0) == 0);
+    } else {
+      wanted = info.split == ot::MIN &&
+               info.testType.rfind("hold_", 0) == 0;
+    }
+    if (!wanted) {
+      ++unsupported;
       continue;
+    }
     auto keyIt = pinKeys.find(info.pin);
     if (keyIt == pinKeys.end())
       continue;
@@ -307,6 +324,7 @@ OpenTimerTimingOracle::analyze(const TimingRequest &request) {
   result.coverage.constrainedEndpoints = result.endpoints.size();
   result.coverage.analyzedEndpoints = result.endpoints.size();
   result.coverage.unconstrainedEndpoints = 0;
+  result.coverage.unsupportedEndpoints = unsupported;
   result.status = TimingResultStatus::Complete;
   TimingDiagnostic coverageNote;
   coverageNote.message = mlir::StringAttr::get(

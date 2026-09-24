@@ -130,6 +130,52 @@ TEST(OpenTimerOracle, AndIntoFlop) {
   EXPECT_EQ(result->coverage.unconstrainedEndpoints, 0u);
 }
 
+TEST(OpenTimerOracle, HoldMinAnalysis) {
+  MLIRContext ctx;
+  ctx.loadDialect<hw::HWDialect, comb::CombDialect, seq::SeqDialect,
+                  synth::SynthDialect>();
+  OwningOpRef<ModuleOp> module = parseSourceString<ModuleOp>(andFlopIR, &ctx);
+  ASSERT_TRUE(module);
+  DenseSet<StringAttr> lib{StringAttr::get(&ctx, "AND2x4_ASAP7_75t_R"),
+                           StringAttr::get(&ctx, "DFFHQNx1_ASAP7_75t_R")};
+  TimingDesignBuilder builder(&ctx, StringAttr::get(&ctx, "top"), lib);
+  auto design = builder.build(*module);
+  ASSERT_TRUE(succeeded(design));
+
+  TimingRequest request;
+  request.design = &*design;
+  request.libertyFiles = {kTinyLibPath};
+  request.constraints.analysis = TimingAnalysisKind::HoldMin;
+  TimingClock clock;
+  clock.name = StringAttr::get(&ctx, "clk");
+  clock.source.kind = TimingObjectKind::TopPort;
+  clock.source.portName = StringAttr::get(&ctx, "clk");
+  clock.source.portIndex = 1;
+  clock.source.bit = 0;
+  clock.period = TimePs{500};
+  request.constraints.clocks.push_back(clock);
+  TimingPortConstraint inputA;
+  inputA.port.kind = TimingObjectKind::TopPort;
+  inputA.port.portName = StringAttr::get(&ctx, "a");
+  inputA.port.portIndex = 0;
+  inputA.port.bit = 0;
+  inputA.lateArrival = TimePs{0};
+  inputA.riseSlew = TimePs{10};
+  inputA.fallSlew = TimePs{10};
+  request.constraints.ports.push_back(inputA);
+
+  auto oracle = createOpenTimerTimingOracle(&ctx);
+  auto result = oracle->analyze(request);
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_EQ(result->analysis, TimingAnalysisKind::HoldMin);
+  // Hold checks with ideal clocks are met (positive slack); recovery and
+  // min-pulse checks are excluded as unsupported, not mixed in.
+  ASSERT_EQ(result->endpoints.size(), 1u);
+  for (const auto &tr : result->endpoints.front().transitions)
+    EXPECT_GE(tr.slack.value, 0);
+  EXPECT_EQ(result->failingEndpoints, 0u);
+}
+
 TEST(OpenTimerOracle, BufferedClockPropagates) {
   // Two buffers on the clock network: capture required shifts later by
   // the insertion delay (input-to-flop gains slack). Validates propagated

@@ -86,6 +86,7 @@ struct TimingResult {
   TimingResultStatus status = TimingResultStatus::Failed;
   mlir::StringAttr backend;
   mlir::StringAttr backendVersion;
+  TimingAnalysisKind analysis = TimingAnalysisKind::SetupMax;
   std::optional<TimePs> wns;
   std::optional<TimePs> tns;
   uint64_t failingEndpoints = 0;

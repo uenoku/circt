@@ -168,7 +168,9 @@ void circt::synth::timing::printTimingResult(const TimingResult &result,
   backend["name"] = strOrEmpty(result.backend);
   backend["version"] = strOrEmpty(result.backendVersion);
   root["backend"] = std::move(backend);
-  root["analysis"] = "setup-max";
+  root["analysis"] = result.analysis == TimingAnalysisKind::HoldMin
+                        ? "hold-min"
+                        : "setup-max";
   root["status"] = result.status == TimingResultStatus::Complete ? "complete"
                    : result.status == TimingResultStatus::Incomplete
                        ? "incomplete"
@@ -291,6 +293,14 @@ mlir::LogicalResult circt::synth::timing::parseTimingResult(
     return mlir::failure();
 
   result = TimingResult();
+  if (auto analysis = root->getString("analysis")) {
+    if (*analysis == "hold-min")
+      result.analysis = TimingAnalysisKind::HoldMin;
+    else if (*analysis == "setup-max")
+      result.analysis = TimingAnalysisKind::SetupMax;
+    else
+      reader.ok = false;
+  }
   if (auto *backend = root->getObject("backend")) {
     result.backend = reader.str(backend->get("name"), "backend.name");
     result.backendVersion =
