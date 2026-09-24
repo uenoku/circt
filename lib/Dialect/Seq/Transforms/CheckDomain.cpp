@@ -193,6 +193,18 @@ std::string CheckDomainPass::describeValue(Value value) {
              module.getArgName(blockArg.getArgNumber()).getValue().str() + "'";
     return ("block argument #" + Twine(blockArg.getArgNumber())).str();
   }
+
+  if (auto *definingOp = value.getDefiningOp()) {
+    if (auto name = definingOp->getAttrOfType<StringAttr>("name"))
+      return ("value '" + name.getValue() + "' (defined by '" +
+              definingOp->getName().getStringRef() + "')")
+          .str();
+    if (auto namehint = definingOp->getAttrOfType<StringAttr>("sv.namehint"))
+      return ("value '" + namehint.getValue() + "' (defined by '" +
+              definingOp->getName().getStringRef() + "')")
+          .str();
+    return ("result of '" + definingOp->getName().getStringRef() + "'").str();
+  }
   return "value";
 }
 
