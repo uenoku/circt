@@ -579,6 +579,29 @@ def BubblePushing : Pass<"synth-bubble-pushing", "mlir::ModuleOp"> {
   ];
 }
 
+def SizeCritical : Pass<"synth-size-critical", "mlir::ModuleOp"> {
+  let summary = "Upsize cells on violated paths to stronger drives";
+  let description = [{
+    Reads an OpenSTA report_checks log with path traces and upsizes
+    combinational cells on violated paths to the next
+    stronger drive of the same function (truth-table match, identical
+    ports, minimal area increase). Sequential cells never resize. Single
+    pass; met designs without traces are unaffected.
+  }];
+  let options = [
+    Option<"staLog", "sta-report", "std::string", "\"\"",
+           "OpenSTA report_checks log with path traces">,
+    Option<"topModuleName", "top-module-name", "std::string", "\"\"",
+           "Top module for hierarchical resolution (required)">,
+    Option<"slackThresholdPs", "slack-threshold-ps", "double", "0.0",
+           "Size paths below this slack in picoseconds (0 = violated)">,
+  ];
+  let statistics = [
+    Statistic<"numResized", "resized",
+              "Number of cells upsized to stronger drives">
+  ];
+}
+
 def SortTopologically : Pass<"synth-sort-topologically", "mlir::ModuleOp"> {
   let summary = "Sort module bodies into topological (SSA dominance) order";
   let description = [{

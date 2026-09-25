@@ -1,0 +1,17 @@
+Startpoint: a (input port)
+Endpoint: y (output port)
+Path Group: clk
+Path Type: max
+
+      Delay        Time   Description
+-------------------------------------------------------------
+   0.000000    0.000000   clock clk (rise edge)
+   0.000000    0.000000 ^ a (in)
+   0.050000    0.050000 ^ g0/Y (AND2WEAK)
+   0.000000    0.050000 ^ y (out)
+               0.050000   data arrival time
+
+   0.500000    0.500000   clock clk (rise edge)
+              -0.010000   data required time
+-------------------------------------------------------------
+              -0.060000   slack (VIOLATED)
