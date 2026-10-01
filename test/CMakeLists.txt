@@ -48,6 +48,7 @@ set(CIRCT_TEST_DEPENDS
   hlstool
   kanagawatool
   om-linker
+  om-evaluator
   )
 
 if (CIRCT_GTEST_AVAILABLE)

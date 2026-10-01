@@ -1,0 +1,19 @@
+set(LLVM_LINK_COMPONENTS Support)
+
+get_property(dialect_libs GLOBAL PROPERTY CIRCT_DIALECT_LIBS)
+get_property(mlir_dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+
+set(LIBS
+  ${dialect_libs}
+  ${mlir_dialect_libs}
+  CIRCTOMEvaluator
+  MLIRBytecodeReader
+  MLIRParser
+  MLIRSupport
+  MLIRIR
+)
+
+add_circt_tool(om-evaluator om-evaluator.cpp DEPENDS ${LIBS})
+target_link_libraries(om-evaluator PRIVATE ${LIBS})
+llvm_update_compile_flags(om-evaluator)
+mlir_check_all_link_libraries(om-evaluator)

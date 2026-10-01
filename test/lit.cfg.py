@@ -67,7 +67,8 @@ tools = [
     'circt-capi-firtool-test', 'circt-capi-ltl-test', 'circt-capi-rtg-test',
     'circt-capi-rtgtest-test', 'circt-capi-support-test', 'circt-dis',
     'circt-lec', 'circt-reduce', 'circt-synth', 'circt-test', 'circt-translate',
-    'domaintool', 'firld', 'firtool', 'hlstool', 'om-linker', 'kanagawatool'
+    'domaintool', 'firld', 'firtool', 'hlstool', 'om-linker', 'om-evaluator',
+    'kanagawatool'
 ]
 
 if "CIRCT_OPT_CHECK_IR_ROUNDTRIP" in os.environ:
