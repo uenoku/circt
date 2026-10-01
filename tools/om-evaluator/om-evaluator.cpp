@@ -20,6 +20,8 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/WithColor.h"
 
+#include <limits>
+
 using namespace llvm;
 using namespace mlir;
 using namespace circt;
@@ -32,7 +34,9 @@ static cl::opt<std::string> className("class", cl::Required,
                                       cl::desc("OM class to instantiate"),
                                       cl::cat(category));
 static cl::opt<std::string>
-    inputJSON("input-json", cl::desc("JSON object of named parameters"),
+    inputJSON("input-json",
+              cl::desc("JSON object of named parameters; omit to print the "
+                       "input schema"),
               cl::cat(category));
 static cl::opt<std::string>
     outputFieldPath("output-field-path",
@@ -42,6 +46,51 @@ static cl::opt<std::string>
 static LogicalResult error(const Twine &message) {
   WithColor::error(errs(), "om-evaluator") << message << '\n';
   return failure();
+}
+
+/// Describe the JSON values accepted by parseParameter for an OM type.
+static json::Object parameterSchema(Type type) {
+  std::string typeName;
+  raw_string_ostream(typeName) << type;
+  json::Object schema;
+  schema["x-om-type"] = typeName;
+  if (isa<om::FrozenBasePathType>(type)) {
+    schema["type"] = "string";
+    schema["const"] = "";
+  } else if (isa<om::OMIntegerType>(type)) {
+    schema["type"] = "integer";
+    schema["minimum"] = std::numeric_limits<int64_t>::min();
+    schema["maximum"] = std::numeric_limits<int64_t>::max();
+  } else if (isa<om::StringType>(type)) {
+    schema["type"] = "string";
+  } else if (type.isInteger(1)) {
+    schema["type"] = "boolean";
+  } else if (auto listType = dyn_cast<om::ListType>(type)) {
+    schema["type"] = "array";
+    schema["items"] = parameterSchema(listType.getElementType());
+  } else {
+    schema["not"] = json::Object();
+    schema["description"] = "This OM type is not supported by --input-json";
+  }
+  return schema;
+}
+
+static void printInputSchema(om::ClassOp cls) {
+  json::Object properties;
+  json::Array required;
+  for (auto [name, arg] :
+       llvm::zip(cls.getFormalParamNames().getAsRange<StringAttr>(),
+                 cls.getBodyBlock()->getArguments())) {
+    properties[name.getValue()] = parameterSchema(arg.getType());
+    required.push_back(name.getValue());
+  }
+  json::Object schema;
+  schema["$schema"] = "https://json-schema.org/draft/2020-12/schema";
+  schema["type"] = "object";
+  schema["properties"] = std::move(properties);
+  schema["required"] = std::move(required);
+  schema["additionalProperties"] = false;
+  outs() << formatv("{0:2}", json::Value(std::move(schema))) << '\n';
 }
 
 static FailureOr<om::EvaluatorValuePtr>
@@ -159,20 +208,22 @@ static LogicalResult run(MLIRContext &context) {
   if (!cls)
     return error(Twine("unknown OM class: ") + className);
 
-  json::Object parameters;
-  if (!inputJSON.empty()) {
-    auto buffer = MemoryBuffer::getFile(inputJSON);
-    if (!buffer)
-      return error(Twine("cannot read ") + inputJSON + ": " +
-                   buffer.getError().message());
-    auto parsed = json::parse(buffer.get()->getBuffer());
-    if (!parsed)
-      return error(Twine("invalid JSON: ") + toString(parsed.takeError()));
-    auto *object = parsed->getAsObject();
-    if (!object)
-      return error("input JSON must be an object");
-    parameters = std::move(*object);
+  if (inputJSON.empty()) {
+    printInputSchema(cls);
+    return success();
   }
+
+  auto buffer = MemoryBuffer::getFile(inputJSON);
+  if (!buffer)
+    return error(Twine("cannot read ") + inputJSON + ": " +
+                 buffer.getError().message());
+  auto parsed = json::parse(buffer.get()->getBuffer());
+  if (!parsed)
+    return error(Twine("invalid JSON: ") + toString(parsed.takeError()));
+  auto *object = parsed->getAsObject();
+  if (!object)
+    return error("input JSON must be an object");
+  json::Object parameters = std::move(*object);
 
   SmallVector<om::EvaluatorValuePtr> actualParams;
   for (auto [name, arg] :

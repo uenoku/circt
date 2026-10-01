@@ -1,9 +1,15 @@
 // RUN: om-evaluator %s --class Top --input-json %S/Inputs/parameters.json --output-field-path intrinsicProperties | FileCheck %s --check-prefix=FIELD
+// RUN: om-evaluator %s --class Top | FileCheck %s --check-prefix=SCHEMA
 // RUN: om-evaluator %s --class Top --input-json %S/Inputs/parameters.json --output-field-path intrinsicProperties.subsystem_id | FileCheck %s --check-prefix=SCALAR
 // RUN: om-evaluator %s --class Top --input-json %S/Inputs/parameters.json | FileCheck %s --check-prefix=ALL
 // RUN: not om-evaluator %s --class Top --input-json %S/Inputs/missing.json 2>&1 | FileCheck %s --check-prefix=MISSING
 
 // FIELD: "subsystem_id": 1
+// SCHEMA-DAG: "basepath": {
+// SCHEMA-DAG: "const": ""
+// SCHEMA-DAG: "subsystem_id": {
+// SCHEMA-DAG: "type": "integer"
+// SCHEMA-DAG: "required": [
 // SCALAR: 1
 // ALL: "intrinsicProperties": {
 // ALL: "subsystem_id": 1
