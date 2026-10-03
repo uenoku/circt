@@ -21,6 +21,8 @@
 #include "circt/Dialect/DC/DCDialect.h"
 #include "circt/Dialect/Datapath/DatapathDialect.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
+#include "circt/Dialect/Ematch/EmatchDialect.h"
+#include "circt/Dialect/Equivalence/EquivalenceDialect.h"
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
 #include "circt/Dialect/FIRRTL/CHIRRTLDialect.h"
@@ -67,6 +69,8 @@ inline void registerAllDialects(mlir::DialectRegistry &registry) {
     datapath::DatapathDialect,
     dc::DCDialect,
     debug::DebugDialect,
+    mlir::ematch::EmatchDialect,
+    mlir::equivalence::EquivalenceDialect,
     emit::EmitDialect,
     esi::ESIDialect,
     firrtl::FIRRTLDialect,

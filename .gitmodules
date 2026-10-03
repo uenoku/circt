@@ -3,3 +3,9 @@
 	url = https://github.com/llvm/llvm-project.git
 	shallow = true
 	branch = main
+[submodule "tamagoyaki-integration/Tamagoyaki"]
+	path = tamagoyaki-integration/Tamagoyaki
+	url = https://github.com/jumerckx/Tamagoyaki/
+[submodule "tamagoyaki-integration/tamagoyaki-case-studies"]
+	path = tamagoyaki-integration/tamagoyaki-case-studies
+	url = git@github.com:jumerckx/tamagoyaki-case-studies.git

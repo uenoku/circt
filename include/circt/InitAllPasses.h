@@ -22,6 +22,8 @@
 #include "circt/Dialect/Comb/CombPasses.h"
 #include "circt/Dialect/DC/DCPasses.h"
 #include "circt/Dialect/Datapath/DatapathPasses.h"
+#include "circt/Dialect/Ematch/EmatchDialect.h"
+#include "circt/Dialect/Equivalence/EquivalenceDialect.h"
 #include "circt/Dialect/ESI/ESIDialect.h"
 #include "circt/Dialect/Emit/EmitPasses.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
@@ -34,6 +36,7 @@
 #include "circt/Dialect/Moore/MoorePasses.h"
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Dialect/Pipeline/PipelinePasses.h"
+#include "circt/Dialect/Rover/RoverPasses.h"
 #include "circt/Dialect/RTG/Transforms/RTGPassPipelines.h"
 #include "circt/Dialect/RTG/Transforms/RTGPasses.h"
 #include "circt/Dialect/SSP/SSPPasses.h"
@@ -69,6 +72,8 @@ inline void registerAllPasses() {
   calyx::registerPasses();
   comb::registerPasses();
   datapath::registerPasses();
+  mlir::equivalence::registerPasses();
+  mlir::ematch::registerPasses();
   dc::registerPasses();
   emit::registerPasses();
   esi::registerESIPasses();
@@ -82,6 +87,7 @@ inline void registerAllPasses() {
   msft::registerPasses();
   om::registerPasses();
   pipeline::registerPasses();
+  rover::registerPasses();
   rtg::registerRTGPasses();
   seq::registerPasses();
   sim::registerPasses();

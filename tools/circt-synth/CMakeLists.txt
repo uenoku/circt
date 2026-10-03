@@ -13,12 +13,15 @@ target_link_libraries(circt-synth
   CIRCTDatapath
   CIRCTDatapathToComb
   CIRCTDebug
+  CIRCTEmatch
   CIRCTEmit
+  CIRCTEquivalence
   CIRCTHW
   CIRCTImportAIGER
   CIRCTImportLiberty
   CIRCTLTL
   CIRCTOM
+  CIRCTRover
   CIRCTSeq
   CIRCTSim
   CIRCTSV

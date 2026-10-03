@@ -20,12 +20,15 @@
 #include "circt/Dialect/Comb/CombPasses.h"
 #include "circt/Dialect/Datapath/DatapathDialect.h"
 #include "circt/Dialect/Debug/DebugDialect.h"
+#include "circt/Dialect/Ematch/EmatchDialect.h"
 #include "circt/Dialect/Emit/EmitDialect.h"
+#include "circt/Dialect/Equivalence/EquivalenceDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
 #include "circt/Dialect/HW/HWOps.h"
 #include "circt/Dialect/HW/HWPasses.h"
 #include "circt/Dialect/LTL/LTLDialect.h"
 #include "circt/Dialect/OM/OMDialect.h"
+#include "circt/Dialect/Rover/RoverPasses.h"
 #include "circt/Dialect/SV/SVDialect.h"
 #include "circt/Dialect/Seq/SeqDialect.h"
 #include "circt/Dialect/Sim/SimDialect.h"
@@ -254,17 +257,17 @@ static cl::opt<int> muxBalanceThreshold(
              "(negative keeps legacy 16; powers of two sweep depth "
              "effort)"),
     cl::init(-1), cl::cat(mainCategory));
-static cl::opt<bool> forceBooth(
-    "force-booth",
-    cl::desc("Lower all multiplier partial products to Booth arrays "
-             "(datapath structural variant)"),
-    cl::init(false), cl::cat(mainCategory));
-static cl::opt<bool> compressToAdd(
-    "compress-to-add",
-    cl::desc("Lower compressors to variadic adds for downstream "
-             "optimization instead of Wallace trees (datapath "
-             "structural variant)"),
-    cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool>
+    forceBooth("force-booth",
+               cl::desc("Lower all multiplier partial products to Booth arrays "
+                        "(datapath structural variant)"),
+               cl::init(false), cl::cat(mainCategory));
+static cl::opt<bool>
+    compressToAdd("compress-to-add",
+                  cl::desc("Lower compressors to variadic adds for downstream "
+                           "optimization instead of Wallace trees (datapath "
+                           "structural variant)"),
+                  cl::init(false), cl::cat(mainCategory));
 static cl::opt<int> datapathRetry(
     "datapath-retry",
     cl::desc("Retry datapath structural variants with STA judging, "
@@ -500,6 +503,33 @@ static cl::opt<bool>
                                              "ports pass"),
                                     cl::init(false), cl::cat(mainCategory));
 
+// Rover e-graph datapath optimization (moved in-tree from
+// tamagoyaki-case-studies). Runs before comb lowering while IR is still
+// word-level comb/hw: insert-graph -> saturate -> extract, then the normal
+// lowering consumes any datapath ops rover produced via ConvertDatapathToComb.
+static cl::opt<bool>
+    roverEnable("rover",
+                cl::desc("Enable Rover e-graph datapath optimization "
+                         "before comb lowering (needs --rover-patterns)"),
+                cl::init(false), cl::cat(mainCategory));
+static cl::opt<std::string> roverPatterns(
+    "rover-patterns",
+    cl::desc("PDL-interp patterns file for --rover (e.g. "
+             "lib/Dialect/Rover/rules full set; base+datapath concatenated)"),
+    cl::init(""), cl::cat(mainCategory));
+static cl::opt<int> roverIters(
+    "rover-iters",
+    cl::desc("Maximum saturation iterations for --rover (cf. rover-saturate)"),
+    cl::init(4), cl::cat(mainCategory));
+static cl::opt<int>
+    roverNodes("rover-nodes",
+               cl::desc("Maximum e-graph nodes for --rover (0 = unlimited)"),
+               cl::init(0), cl::cat(mainCategory));
+static cl::opt<bool>
+    roverDelay("rover-delay",
+               cl::desc("Delay-first extraction for --rover (else area-first)"),
+               cl::init(false), cl::cat(mainCategory));
+
 //===----------------------------------------------------------------------===//
 // SRAM macro import
 //===----------------------------------------------------------------------===//
@@ -573,6 +603,22 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   }
   pm.nest<hw::HWModuleOp>().addPass(mlir::createCSEPass());
 
+  // Rover e-graph datapath optimization (opt-in, ModuleOp scope so it sees
+  // every hw.module at once). Must precede Seq mapping + comb lowering:
+  // saturation expects word-level comb/hw and produces datapath ops that
+  // buildDatapathLoweringPipeline lowers via ConvertDatapathToComb.
+  if (roverEnable) {
+    pm.addPass(rover::createRoverInsertGraphPass());
+    rover::RoverSaturatePassOptions saturateOptions;
+    saturateOptions.patternsFile = roverPatterns;
+    saturateOptions.maxIters = roverIters;
+    saturateOptions.maxNodes = roverNodes;
+    pm.addPass(rover::createRoverSaturatePass(saturateOptions));
+    rover::RoverExtractPassOptions extractOptions;
+    extractOptions.extractDelay = roverDelay;
+    pm.addPass(rover::createRoverExtractPass(extractOptions));
+  }
+
   circt::synth::CombLoweringPipelineOptions loweringOptions;
   loweringOptions.disableDatapath = disableDatapath;
   loweringOptions.timingAware = !disableTimingAware;
@@ -580,9 +626,9 @@ static void populateCIRCTSynthPipeline(PassManager &pm) {
   loweringOptions.forceBooth = forceBooth;
   loweringOptions.compressToAdd = compressToAdd;
   // Explicit --lowering-strategy wins; otherwise follow mapping strategy.
-  loweringOptions.synthesisStrategy =
-      loweringStrategy.getNumOccurrences() > 0 ? loweringStrategy
-                                               : synthesisStrategy;
+  loweringOptions.synthesisStrategy = loweringStrategy.getNumOccurrences() > 0
+                                          ? loweringStrategy
+                                          : synthesisStrategy;
   loweringOptions.datapathRefinement = datapathRefinement;
   loweringOptions.pressureMarginLevels = pressureMarginLevels;
 
@@ -985,6 +1031,18 @@ int main(int argc, char **argv) {
                     "(enable --datapath-refinement); probes are imported and "
                     "stripped without affecting lowering\n";
   }
+  if (roverEnable && roverPatterns.empty()) {
+    llvm::errs() << "circt-synth: --rover needs --rover-patterns "
+                    "(path to pdl-interp patterns, e.g. "
+                    "lib/Dialect/Rover/rules full set)\n";
+    return EXIT_FAILURE;
+  }
+  if (roverEnable &&
+      (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd)) {
+    llvm::errs() << "circt-synth: --rover needs full runs "
+                    "(no --until-before/after)\n";
+    return EXIT_FAILURE;
+  }
 
   // Register the supported CIRCT dialects and create a context to work
   // with. This precedes the retry driver, which needs a context for
@@ -992,11 +1050,12 @@ int main(int argc, char **argv) {
   DialectRegistry registry;
   mlir::transform::registerInterpreterPass();
 
-  registry.insert<comb::CombDialect, datapath::DatapathDialect,
-                  debug::DebugDialect, emit::EmitDialect, hw::HWDialect,
-                  ltl::LTLDialect, om::OMDialect, seq::SeqDialect,
-                  sim::SimDialect, synth::SynthDialect, sv::SVDialect,
-                  verif::VerifDialect, mlir::transform::TransformDialect>();
+  registry.insert<
+      comb::CombDialect, datapath::DatapathDialect, debug::DebugDialect,
+      emit::EmitDialect, hw::HWDialect, ltl::LTLDialect, om::OMDialect,
+      seq::SeqDialect, sim::SimDialect, synth::SynthDialect, sv::SVDialect,
+      verif::VerifDialect, mlir::transform::TransformDialect,
+      mlir::equivalence::EquivalenceDialect, mlir::ematch::EmatchDialect>();
 
   // Register the standard passes we want.
   MLIRContext context(registry);
@@ -1018,7 +1077,7 @@ int main(int argc, char **argv) {
     }
     backendConfig.liberty = liberty;
     bool ok = synth::runTimingBackendOnce(backendConfig, &context,
-                                           timingRunOnly, outputFilename);
+                                          timingRunOnly, outputFilename);
     exit(ok ? EXIT_SUCCESS : EXIT_FAILURE);
   }
 
