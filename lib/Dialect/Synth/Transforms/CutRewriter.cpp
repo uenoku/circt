@@ -419,16 +419,35 @@ getModuleTruthTableImpl(hw::HWModuleOp module,
   if (cached != moduleCache.end())
     return cached->second;
 
-  if (module.getNumOutputPorts() != 1)
-    return module.emitError(
-        "Modules with multiple outputs are not supported yet");
-  if (module.getNumInputPorts() >= maxTruthTableInputs)
-    return module.emitError("Too many inputs for truth table generation");
-  if (!module.getOutputTypes()[0].isInteger(1))
-    return module.emitError("All output ports must be single bit");
+  // Structural skips are routine in hierarchical flows (clock-typed ports,
+  // multi-bit/multi-output control modules, blackboxed SRAMs): all callers
+  // treat failure as "cannot table, skip" (library-cell validation keeps
+  // its own hard errors in TechMapper). Stay silent here; debuggable via
+  // --debug-only=synth-cut-rewriter.
+  if (module.getNumOutputPorts() != 1) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Skipping truth table for " << module.getModuleName()
+               << ": multiple outputs\n");
+    return failure();
+  }
+  if (module.getNumInputPorts() >= maxTruthTableInputs) {
+    LLVM_DEBUG(llvm::dbgs() << "Skipping truth table for "
+                            << module.getModuleName() << ": too many inputs\n");
+    return failure();
+  }
+  if (!module.getOutputTypes()[0].isInteger(1)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "Skipping truth table for " << module.getModuleName()
+               << ": non-single-bit output\n");
+    return failure();
+  }
   for (auto type : module.getInputTypes())
-    if (!type.isInteger(1))
-      return module.emitError("All input ports must be single bit");
+    if (!type.isInteger(1)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Skipping truth table for " << module.getModuleName()
+                 << ": non-single-bit input\n");
+      return failure();
+    }
 
   auto *bodyBlock = module.getBodyBlock();
   assert(bodyBlock && "Module must have a body block");
@@ -535,17 +554,23 @@ getTruthTableImpl(ValueRange values, Block *block,
                                          ? llvm::APInt::getZero(tableSize)
                                          : llvm::APInt::getAllOnes(tableSize);
     } else if (auto instanceOp = dyn_cast<hw::InstanceOp>(&op)) {
-      if (instanceOp.getNumResults() != 1)
-        return instanceOp.emitError(
-            "Only single-output instances are supported for truth table "
-            "simulation");
+      if (instanceOp.getNumResults() != 1) {
+        LLVM_DEBUG(llvm::dbgs() << "Skipping truth table: multi-output "
+                                   "instance "
+                                << instanceOp.getModuleName() << "\n");
+        return failure();
+      }
 
       Operation *referencedOp = SymbolTable::lookupNearestSymbolFrom(
           instanceOp, instanceOp.getModuleNameAttr());
       auto referencedModule = dyn_cast_or_null<hw::HWModuleOp>(referencedOp);
-      if (!referencedModule)
-        return instanceOp.emitError("Cannot find HW module definition '")
-               << instanceOp.getModuleName() << "'";
+      if (!referencedModule) {
+        // Extern/blackboxed modules (SRAMs, IO cells) are routine.
+        LLVM_DEBUG(llvm::dbgs() << "Skipping truth table: no HW module "
+                                   "definition for "
+                                << instanceOp.getModuleName() << "\n");
+        return failure();
+      }
 
       auto instanceTruthTable =
           getModuleTruthTableImpl(referencedModule, moduleCache);
