@@ -314,12 +314,8 @@ mapBaseTypeNullable(FIRRTLType type,
 
 /// Given a type, return the corresponding lowered type for the HW dialect.
 /// Non-FIRRTL types are simply passed through. This returns a null type if it
-/// cannot be lowered. The optional function is required to specify how to lower
-/// AliasTypes.
-Type lowerType(
-    Type type, std::optional<Location> loc = {},
-    llvm::function_ref<hw::TypeAliasType(Type, BaseTypeAliasType, Location)>
-        getTypeDeclFn = {});
+/// cannot be lowered.
+Type lowerType(Type type);
 
 //===----------------------------------------------------------------------===//
 // Parser-related utilities

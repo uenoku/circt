@@ -186,9 +186,6 @@ def FVectorImpl : BaseVectorTypeImpl<"FVector","::circt::firrtl::FIRRTLBaseType"
 
     /// Return this type with a 'const' modifiers dropped
     FVectorType getAllConstDroppedType();
-
-    /// Return this type with any type alias types recursively removed from itself.
-    FIRRTLBaseType getAnonymousType();
   }];
 }
 
@@ -286,9 +283,6 @@ def BundleImpl : BaseBundleTypeImpl<"Bundle","::circt::firrtl::FIRRTLBaseType"> 
 
     /// Return this type with a 'const' modifiers dropped
     BundleType getAllConstDroppedType();
-
-    /// Return this type with any type alias types recursively removed from itself.
-    FIRRTLBaseType getAnonymousType();
   }];
 }
 
@@ -341,9 +335,6 @@ def FEnumImpl : FIRRTLImplType<"FEnum"> {
 
     /// Return this type with a 'const' modifiers dropped
     FEnumType getAllConstDroppedType();
-
-    /// Return this type with any type alias types recursively removed from itself.
-    FIRRTLBaseType getAnonymousType();
 
     /// Get the width of this
     size_t getBitWidth();
@@ -455,37 +446,6 @@ def LHSTypeImpl : FIRRTLImplType<"LHS", [], "::circt::firrtl::FIRRTLType"> {
 
   let builders = [
     TypeBuilderWithInferredContext<(ins "::circt::firrtl::FIRRTLBaseType":$type)>
-  ];
-}
-
-def BaseTypeAliasImpl : FIRRTLImplType<"BaseTypeAlias", [DeclareTypeInterfaceMethods<FieldIDTypeInterface>],
-                                        "::circt::firrtl::FIRRTLBaseType"> {
-  let summary = "type alias for firrtl base types";
-  let parameters =
-    (ins  "StringAttr":$name, TypeParameter<"::circt::firrtl::FIRRTLBaseType",
-                                            "An inner type">:$innerType);
-  let storageClass = "BaseTypeAliasStorage";
-  let typeName = "firrtl.basetypealias";
-  let genAccessors = true;
-  let skipDefaultBuilders = true;
-  let extraClassDeclaration = [{
-      // FIRRTLBaseType utils.
-      FIRRTLBaseType getAnonymousType();
-      FIRRTLBaseType getPassiveType();
-      FIRRTLBaseType getConstType(bool isConst) const;
-      FIRRTLBaseType getAllConstDroppedType();
-
-      /// Return the recursive properties of the type.
-      RecursiveTypeProperties getRecursiveTypeProperties() const;
-
-      // If a given `newInnerType` is identical to innerType, return `*this`
-      // because we can reuse the type alias. Otherwise return `newInnerType`.
-      FIRRTLBaseType getModifiedType(FIRRTLBaseType newInnerType) const;
-  }];
-
-  let builders = [
-    TypeBuilderWithInferredContext<(ins "::mlir::StringAttr":$name,
-           "::circt::firrtl::FIRRTLBaseType":$innerType)>
   ];
 }
 

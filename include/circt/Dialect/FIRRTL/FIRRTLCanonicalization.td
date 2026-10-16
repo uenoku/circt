@@ -43,7 +43,7 @@ def NonEmptyAttr : Constraint<CPred<"!$0.getValue().empty()">>;
 def NullAttr : Constraint<CPred<"!$0">>;
 
 // Constraint that enforces equal types
-def EqualTypes : Constraint<CPred<"areAnonymousTypesEquivalent($0.getType(), $1.getType())">>;
+def EqualTypes : Constraint<CPred<"areTypesIdentical($0.getType(), $1.getType())">>;
 
 // Constraint that enforces equal type sizes
 def EqualIntSize : Constraint<CPred<"type_cast<IntType>($0.getType()).getWidth() == type_cast<IntType>($1.getType()).getWidth()">>;
@@ -75,11 +75,11 @@ def SIntTypes : Constraint<CPred<"type_isa<SIntType>($0.getType())">>;
 def UIntTypes : Constraint<CPred<"type_isa<UIntType>($0.getType())">>;
 
 // Constraint that enforces types mismatches
-def mismatchTypes : Constraint<CPred<"!areAnonymousTypesEquivalent($0.getType(), $1.getType())">>;
+def mismatchTypes : Constraint<CPred<"!areTypesIdentical($0.getType(), $1.getType())">>;
 
 // Constraint that enforces types mismatches, ignoring const qualifiers
 def mismatchTypesIgnoringConst : Constraint<CPred<[{
-  !areAnonymousTypesEquivalent(
+  !areTypesIdentical(
     type_cast<FIRRTLBaseType>($0.getType()).getAllConstDroppedType(),
     type_cast<FIRRTLBaseType>($1.getType()).getAllConstDroppedType())
   }]>>;

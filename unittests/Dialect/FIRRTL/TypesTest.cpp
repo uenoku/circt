@@ -8,7 +8,6 @@
 
 #include "circt/Dialect/FIRRTL/FIRRTLDialect.h"
 #include "circt/Dialect/FIRRTL/FIRRTLTypes.h"
-#include "circt/Dialect/HW/HWTypeInterfaces.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -26,28 +25,16 @@ TEST(TypesTest, AnalogContainsAnalog) {
   ASSERT_TRUE(AnalogType::get(&context).containsAnalog());
 }
 
-TEST(TypesTest, TypeAliasCast) {
+TEST(TypesTest, TypeCast) {
   MLIRContext context;
   context.loadDialect<FIRRTLDialect>();
-  // Check ContainAliasableTypes.
-  static_assert(!ContainAliasableTypes<FIRRTLType>::value);
-  // Return false for FIRRTLBaseType.
-  static_assert(!ContainAliasableTypes<FIRRTLBaseType>::value);
-  static_assert(!ContainAliasableTypes<StringType>::value);
-  static_assert(ContainAliasableTypes<FVectorType>::value);
-  static_assert(ContainAliasableTypes<UIntType, StringType>::value);
-  static_assert(ContainAliasableTypes<hw::FieldIDTypeInterface>::value);
   AnalogType analog = AnalogType::get(&context);
-  BaseTypeAliasType alias1 =
-      BaseTypeAliasType::get(StringAttr::get(&context, "foo"), analog);
-  BaseTypeAliasType alias2 =
-      BaseTypeAliasType::get(StringAttr::get(&context, "bar"), alias1);
-  ASSERT_TRUE(!type_isa<FVectorType>(analog));
-  ASSERT_TRUE(type_isa<AnalogType>(analog));
-  ASSERT_TRUE(type_isa<AnalogType>(alias1));
-  ASSERT_TRUE(type_isa<AnalogType>(alias2));
-  ASSERT_TRUE(!type_isa<FVectorType>(alias2));
-  ASSERT_TRUE((type_isa<AnalogType, StringType>(alias2)));
+  EXPECT_FALSE(type_isa<FVectorType>(analog));
+  EXPECT_TRUE(type_isa<AnalogType>(analog));
+  EXPECT_TRUE((type_isa<AnalogType, StringType>(analog)));
+  EXPECT_EQ(type_cast<AnalogType>(analog), analog);
+  EXPECT_EQ(type_dyn_cast<AnalogType>(analog), analog);
+  EXPECT_FALSE(type_dyn_cast<FVectorType>(analog));
 }
 
 //===----------------------------------------------------------------------===//
@@ -172,32 +159,6 @@ TEST_F(TypeWalkTest, RefTypeWalk) {
   // Verify both ref type and base type are visited
   EXPECT_EQ(llvm::ArrayRef(visitedTypes), ArrayRef<Type>({baseType, refType}));
   EXPECT_EQ(llvm::ArrayRef(visitedAttrs), ArrayRef<Attribute>({}));
-}
-
-TEST_F(TypeWalkTest, BaseTypeAliasWalk) {
-  // Create a type alias with nested inner type
-  auto innerType = SIntType::get(&context, 32);
-  auto nameAttr = StringAttr::get(&context, "MyAlias");
-  auto aliasType = BaseTypeAliasType::get(nameAttr, innerType);
-
-  SmallVector<Type> visitedTypes;
-  SmallVector<Attribute> visitedAttrs;
-  aliasType.walk(
-      [&](Type type) {
-        visitedTypes.push_back(type);
-        return WalkResult::advance();
-      },
-      [&](Attribute attr) {
-        visitedAttrs.push_back(attr);
-        return WalkResult::advance();
-      });
-
-  // Verify both alias type and inner type are visited
-  EXPECT_EQ(llvm::ArrayRef(visitedTypes),
-            ArrayRef<Type>({innerType, aliasType}));
-
-  // Verify the name attribute is visited
-  EXPECT_EQ(llvm::ArrayRef(visitedAttrs), ArrayRef<Attribute>({nameAttr}));
 }
 
 //===----------------------------------------------------------------------===//
@@ -408,7 +369,6 @@ TEST_F(TypeWalkTest, ComplexNestedStructureWalk) {
   auto innerFieldAttr = StringAttr::get(&context, "inner_field");
   auto vectorFieldAttr = StringAttr::get(&context, "vector_field");
   auto simpleFieldAttr = StringAttr::get(&context, "simple_field");
-  auto complexTypeNameAttr = StringAttr::get(&context, "ComplexType");
 
   // Create inner bundle
   auto innerBundle =
@@ -422,12 +382,9 @@ TEST_F(TypeWalkTest, ComplexNestedStructureWalk) {
       BundleType::get(&context, {{vectorFieldAttr, false, vectorOfBundles},
                                  {simpleFieldAttr, false, uint16Type}});
 
-  // Create alias for the outer bundle
-  auto aliasType = BaseTypeAliasType::get(complexTypeNameAttr, outerBundle);
-
   SmallVector<Type> visitedTypes;
   SmallVector<Attribute> visitedAttrs;
-  aliasType.walk(
+  outerBundle.walk(
       [&](Type type) {
         visitedTypes.push_back(type);
         return WalkResult::advance();
@@ -439,10 +396,10 @@ TEST_F(TypeWalkTest, ComplexNestedStructureWalk) {
 
   EXPECT_EQ(llvm::ArrayRef(visitedTypes),
             ArrayRef<Type>({uint8Type, innerBundle, vectorOfBundles, uint16Type,
-                            outerBundle, aliasType}));
-  EXPECT_EQ(llvm::ArrayRef(visitedAttrs),
-            ArrayRef<Attribute>({complexTypeNameAttr, vectorFieldAttr,
-                                 innerFieldAttr, simpleFieldAttr}));
+                            outerBundle}));
+  EXPECT_EQ(
+      llvm::ArrayRef(visitedAttrs),
+      ArrayRef<Attribute>({vectorFieldAttr, innerFieldAttr, simpleFieldAttr}));
 }
 
 } // namespace

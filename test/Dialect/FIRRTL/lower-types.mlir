@@ -1326,12 +1326,11 @@ firrtl.module private @is1436_FOO() {
   }
 
   // CHECK-LABEL:  firrtl.module @Alias
-  // CHECK-NOT: alias
   // AGGREGATE-LABEL: firrtl.module @Alias
-  // AGGREGATE-SAME: alias<FooBundle, bundle<x: uint<32>, y: uint<32>>>
+  // AGGREGATE-SAME: bundle<x: uint<32>, y: uint<32>>
   // SIG-LABEL: firrtl.module @Alias
-  // SIG-SAME: alias<FooBundle, bundle<x: uint<32>, y: uint<32>>>
-  firrtl.module @Alias(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, out %io: !firrtl.bundle<in flip: alias<FooBundle, bundle<x: uint<32>, y: uint<32>>>, out: alias<FooBundle, bundle<x: uint<32>, y: uint<32>>>>) {
+  // SIG-SAME: bundle<x: uint<32>, y: uint<32>>
+  firrtl.module @Alias(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, out %io: !firrtl.bundle<in flip: bundle<x: uint<32>, y: uint<32>>, out: bundle<x: uint<32>, y: uint<32>>>) {
   }
 } // CIRCUIT
 

@@ -156,14 +156,15 @@ firrtl.circuit "Test"   {
     firrtl.ref.define %a, %w_ref : !firrtl.rwprobe<bundle<a: uint<1>, b: uint<2>>>
   }
 
-  // COMMON-LABEL: @Alias
-  firrtl.module @Alias(in %i: !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>, out %o: !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>) {
+  // COMMON-LABEL: @Bundle
+  firrtl.module @Bundle(in %i: !firrtl.bundle<f: uint<1>, b: uint<1>>,
+                        out %o: !firrtl.bundle<f: uint<1>, b: uint<1>>) {
     // CHECK-NEXT:  firrtl.matchingconnect %o, %i
-    %0 = firrtl.subfield %i[f] : !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>
-    %1 = firrtl.subfield %o[f] : !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>
+    %0 = firrtl.subfield %i[f] : !firrtl.bundle<f: uint<1>, b: uint<1>>
+    %1 = firrtl.subfield %o[f] : !firrtl.bundle<f: uint<1>, b: uint<1>>
     firrtl.matchingconnect %1, %0 : !firrtl.uint<1>
-    %2 = firrtl.subfield %i[b] : !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>
-    %3 = firrtl.subfield %o[b] : !firrtl.alias<MyBundle, bundle<f: uint<1>, b: uint<1>>>
+    %2 = firrtl.subfield %i[b] : !firrtl.bundle<f: uint<1>, b: uint<1>>
+    %3 = firrtl.subfield %o[b] : !firrtl.bundle<f: uint<1>, b: uint<1>>
     firrtl.matchingconnect %3, %2 : !firrtl.uint<1>
   }
 }

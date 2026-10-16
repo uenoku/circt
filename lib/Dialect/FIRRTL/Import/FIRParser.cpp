@@ -81,7 +81,7 @@ struct SharedParserConstants {
   // Options that control the behavior of the parser.
   const FIRParserOptions options;
 
-  /// A map from identifiers to type aliases.
+  /// A map from identifiers to types declared with FIRRTL's `type` syntax.
   llvm::StringMap<FIRRTLType> aliasMap;
 
   /// A map from identifiers to class ops.
@@ -6422,15 +6422,6 @@ ParseResult FIRCircuitParser::parseTypeDecl() {
       parseType(type, "expected a type"))
     return failure();
   auto name = StringAttr::get(type.getContext(), id);
-  // Create type alias only for base types. Otherwise just pass through the
-  // type.
-  if (auto base = type_dyn_cast<FIRRTLBaseType>(type))
-    type = BaseTypeAliasType::get(name, base);
-  else
-    emitWarning(loc)
-        << "type alias for non-base type " << type
-        << " is currently not supported. Type alias is stripped immediately";
-
   if (!getConstants().aliasMap.insert({id, type}).second)
     return emitError(loc) << "type alias `" << name.getValue()
                           << "` is already defined";

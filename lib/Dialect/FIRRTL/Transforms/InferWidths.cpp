@@ -990,9 +990,7 @@ static ExprSolution solveExpr(Expr *expr, SmallPtrSetImpl<Expr *> &seenVars,
           worklist.emplace_back(expr->lhs(), indent + 1);
           worklist.emplace_back(expr->rhs(), indent + 1);
         })
-        .Default([&](auto) {
-          setSolution(ExprSolution{std::nullopt, false});
-        });
+        .Default([&](auto) { setSolution(ExprSolution{std::nullopt, false}); });
   }
 
   return solvedExprs[expr];
@@ -1444,7 +1442,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
       .Case<DivPrimOp>([&](auto op) {
         auto lhs = getExpr(op.getLhs());
         Expr *e;
-        if (op.getType().base().isSigned()) {
+        if (op.getType().isSigned()) {
           e = solver.add(lhs, solver.known(1));
         } else {
           e = lhs;
@@ -1496,7 +1494,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
       })
       .Case<CvtPrimOp>([&](auto op) {
         auto input = getExpr(op.getInput());
-        auto e = op.getInput().getType().base().isSigned()
+        auto e = op.getInput().getType().isSigned()
                      ? input
                      : solver.add(input, solver.known(1));
         setExpr(op.getResult(), e);
@@ -1527,7 +1525,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
       .Case<ShrPrimOp>([&](auto op) {
         auto input = getExpr(op.getInput());
         // UInt saturates at 0 bits, SInt at 1 bit
-        auto minWidth = op.getInput().getType().base().isUnsigned() ? 0 : 1;
+        auto minWidth = op.getInput().getType().isUnsigned() ? 0 : 1;
         auto e = solver.max(solver.add(input, solver.known(-op.getAmount())),
                             solver.known(minWidth));
         setExpr(op.getResult(), e);

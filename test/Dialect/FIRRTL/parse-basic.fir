@@ -1419,18 +1419,16 @@ circuit Top:
   type Data = {w: const WordType[2], valid: ValidType, flip ready: UInt<1>}
   type Complex = { real: SInt<10>, imag: SInt<10> }
   type Complex_id = Complex
-  ; expected-warning @+1 {{type alias for non-base type '!firrtl.probe<alias<Complex, bundle<real: sint<10>, imag: sint<10>>>>' is currently not supported. Type alias is stripped immediately}}
   type ProbeComplex = Probe<Complex>
   ; CHECK: @Top
-  ; CHECK-SAME: in %in_data: !firrtl.alias<Data, bundle<w: const.vector<const.alias<WordType, const.uint<32>>, 2>,
-  ; CHECK-SAME:                                         valid: alias<ValidType, uint<1>>, ready flip: uint<1>>>,
-  ; CHECK-SAME: in %in_complex: !firrtl.alias<Complex, bundle<real: sint<10>, imag: sint<10>>>
-  ; CHECK-SAME: out %out: !firrtl.probe<alias<Complex, bundle<real: sint<10>, imag: sint<10>>>>
-  ; CHECK-SAME: out %out_valid: !firrtl.alias<ValidType, uint<1>>
+  ; CHECK-SAME: in %in_data: !firrtl.bundle<w: const.vector<const.uint<32>, 2>, valid: uint<1>, ready flip: uint<1>>
+  ; CHECK-SAME: in %in_complex: !firrtl.bundle<real: sint<10>, imag: sint<10>>
+  ; CHECK-SAME: out %out: !firrtl.probe<bundle<real: sint<10>, imag: sint<10>>>
+  ; CHECK-SAME: out %out_valid: !firrtl.uint<1>
 
-  ; CHECK-NEXT: %[[RESULT:.+]] = firrtl.subfield %in_data[valid] : !firrtl.alias<Data, bundle<w: const.vector<const.alias<WordType, const.uint<32>>, 2>, valid: alias<ValidType, uint<1>>, ready flip: uint<1>>>
-  ; CHECK-NEXT: %c = firrtl.wire interesting_name : !firrtl.alias<Complex_id, alias<Complex, bundle<real: sint<10>, imag: sint<10>>>>
-  ; CHECK-NEXT: firrtl.matchingconnect %out_valid, %[[RESULT]] : !firrtl.alias<ValidType, uint<1>>
+  ; CHECK-NEXT: %[[RESULT:.+]] = firrtl.subfield %in_data[valid] : !firrtl.bundle<w: const.vector<const.uint<32>, 2>, valid: uint<1>, ready flip: uint<1>>
+  ; CHECK-NEXT: %c = firrtl.wire interesting_name : !firrtl.bundle<real: sint<10>, imag: sint<10>>
+  ; CHECK-NEXT: firrtl.matchingconnect %out_valid, %[[RESULT]] : !firrtl.uint<1>
   public module Top:
     input in_data: Data
     input in_complex: Complex
@@ -1440,7 +1438,7 @@ circuit Top:
     connect out_valid, in_data.valid
 
   ; CHECK-LABEL: firrtl.module private @Const
-  ; CHECK-SAME: (in %a: !firrtl.const.alias<ConstI1, const.uint<1>>)
+  ; CHECK-SAME: (in %a: !firrtl.const.uint<1>)
   type ConstI1 = const UInt<1>
   module Const :
     input a: ConstI1

@@ -33,7 +33,6 @@ struct FEnumTypeStorage;
 struct CMemoryTypeStorage;
 struct RefTypeStorage;
 struct LHSTypeStorage;
-struct BaseTypeAliasStorage;
 struct OpenBundleTypeStorage;
 struct OpenVectorTypeStorage;
 struct ClassTypeStorage;
@@ -64,7 +63,6 @@ class RegistryType;
 class PathType;
 class BoolType;
 class DoubleType;
-class BaseTypeAliasType;
 class FStringType;
 class DomainType;
 class DomainOp;
@@ -79,8 +77,6 @@ struct RecursiveTypeProperties {
   bool containsAnalog : 1;
   /// Whether the type contains a const type.
   bool containsConst : 1;
-  /// Whether the type contains a type alias.
-  bool containsTypeAlias : 1;
   /// Whether the type has any uninferred bit widths.
   bool hasUninferredWidth : 1;
   /// Whether the type has any uninferred reset.
@@ -112,11 +108,6 @@ public:
   /// Return true if this is or contains a Reference type.
   bool containsReference() {
     return getRecursiveTypeProperties().containsReference;
-  }
-
-  /// Return true if this is an anonymous type (no type alias).
-  bool containsTypeAlias() {
-    return getRecursiveTypeProperties().containsTypeAlias;
   }
 
   /// Return true if this type contains an uninferred bit width.
@@ -161,10 +152,6 @@ public:
 
   /// Return this type with any flip types recursively removed from itself.
   FIRRTLBaseType getPassiveType();
-
-  /// Return this type with any type alias types recursively removed from
-  /// itself.
-  FIRRTLBaseType getAnonymousType();
 
   /// Return a 'const' or non-'const' version of this type.
   FIRRTLBaseType getConstType(bool isConst) const;
@@ -250,10 +237,9 @@ bool areTypesRefCastable(Type dstType, Type srcType);
 /// hold their counterparts.
 bool isTypeLarger(FIRRTLBaseType dstType, FIRRTLBaseType srcType);
 
-/// Return true if anonymous types of given arguments are equivalent by pointer
-/// comparison.
-bool areAnonymousTypesEquivalent(FIRRTLBaseType lhs, FIRRTLBaseType rhs);
-bool areAnonymousTypesEquivalent(mlir::Type lhs, mlir::Type rhs);
+/// Return true if the types of the given arguments are identical.
+bool areTypesIdentical(FIRRTLBaseType lhs, FIRRTLBaseType rhs);
+bool areTypesIdentical(mlir::Type lhs, mlir::Type rhs);
 
 mlir::Type getPassiveType(mlir::Type anyBaseFIRRTLType);
 
@@ -425,92 +411,37 @@ struct DenseMapInfo<circt::firrtl::FIRRTLType> {
 namespace circt {
 namespace firrtl {
 //===--------------------------------------------------------------------===//
-// Utility for type aliases
+// FIRRTL type casting helpers
 //===--------------------------------------------------------------------===//
-
-/// A struct to check if there is a type derived from FIRRTLBaseType.
-/// `ContainAliasableTypes<BaseTy>::value` returns true if `BaseTy` is derived
-/// from `FIRRTLBaseType` and not `FIRRTLBaseType` itself, or is not FIRRTL type
-/// to cover type interfaces.
-template <typename head, typename... tail>
-class ContainAliasableTypes {
-public:
-  static constexpr bool value = ContainAliasableTypes<head>::value ||
-                                ContainAliasableTypes<tail...>::value;
-};
-
-template <typename BaseTy>
-class ContainAliasableTypes<BaseTy> {
-  static constexpr bool isFIRRTLBaseType =
-      std::is_base_of<FIRRTLBaseType, BaseTy>::value &&
-      !std::is_same_v<FIRRTLBaseType, BaseTy>;
-  static constexpr bool isFIRRTLType =
-      std::is_base_of<FIRRTLType, BaseTy>::value;
-
-public:
-  static constexpr bool value = isFIRRTLBaseType || !isFIRRTLType;
-};
 
 template <typename... BaseTy>
 bool type_isa(Type type) { // NOLINT(readability-identifier-naming)
-  // First check if the type is the requested type.
-  if (isa<BaseTy...>(type))
-    return true;
-
-  // If the requested type is a subtype of FIRRTLBaseType, then check if it is a
-  // type alias wrapping the requested type.
-  if constexpr (ContainAliasableTypes<BaseTy...>::value) {
-    if (auto alias = dyn_cast<BaseTypeAliasType>(type))
-      return type_isa<BaseTy...>(alias.getInnerType());
-  }
-
-  return false;
+  return isa<BaseTy...>(type);
 }
 
-// type_isa for a nullable argument.
 template <typename... BaseTy>
 bool type_isa_and_nonnull(Type type) { // NOLINT(readability-identifier-naming)
-  if (!type)
-    return false;
-  return type_isa<BaseTy...>(type);
+  return type && isa<BaseTy...>(type);
 }
 
 template <typename BaseTy>
 BaseTy type_cast(Type type) { // NOLINT(readability-identifier-naming)
-  assert(type_isa<BaseTy>(type) && "type must convert to requested type");
-
-  // If the type is the requested type, return it.
-  if (isa<BaseTy>(type))
-    return cast<BaseTy>(type);
-
-  // Otherwise, it must be a type alias wrapping the requested type.
-  if constexpr (ContainAliasableTypes<BaseTy>::value) {
-    if (auto alias = dyn_cast<BaseTypeAliasType>(type))
-      return type_cast<BaseTy>(alias.getInnerType());
-  }
-
-  // Otherwise, it should fail. `cast` should cause a better assertion failure,
-  // so just use it.
   return cast<BaseTy>(type);
 }
 
 template <typename BaseTy>
 BaseTy type_dyn_cast(Type type) { // NOLINT(readability-identifier-naming)
-  if (type_isa<BaseTy>(type))
-    return type_cast<BaseTy>(type);
-  return {};
+  return dyn_cast<BaseTy>(type);
 }
 
 template <typename BaseTy>
 BaseTy
 type_dyn_cast_or_null(Type type) { // NOLINT(readability-identifier-naming)
-  if (type_isa_and_nonnull<BaseTy>(type))
-    return type_cast<BaseTy>(type);
-  return {};
+  return dyn_cast_or_null<BaseTy>(type);
 }
 
 //===--------------------------------------------------------------------===//
-// Type alias aware TypeSwitch.
+// FIRRTL TypeSwitch.
 //===--------------------------------------------------------------------===//
 
 /// This class implements the same functionality as TypeSwitch except that
@@ -601,24 +532,6 @@ public:
 private:
   /// A flag detailing if we have already found a match.
   bool foundMatch = false;
-};
-
-template <typename BaseTy>
-class BaseTypeAliasOr
-    : public ::mlir::Type::TypeBase<BaseTypeAliasOr<BaseTy>,
-                                    firrtl::FIRRTLBaseType,
-                                    detail::FIRRTLBaseTypeStorage> {
-
-public:
-  using mlir::Type::TypeBase<BaseTypeAliasOr<BaseTy>, firrtl::FIRRTLBaseType,
-                             detail::FIRRTLBaseTypeStorage>::Base::Base;
-  // Support LLVM isa/cast/dyn_cast to BaseTy.
-  static bool classof(Type other) { return type_isa<BaseTy>(other); }
-
-  // Support C++ implicit conversions to BaseTy.
-  operator BaseTy() const { return circt::firrtl::type_cast<BaseTy>(*this); }
-
-  BaseTy base() const { return circt::firrtl::type_cast<BaseTy>(*this); }
 };
 
 } // namespace firrtl

@@ -39,25 +39,25 @@ firrtl.circuit "RefDefineAndCastWidths" {
 
 // -----
 
-// Check trickier transform, and handling of ref.send, ref.sub, aliases, and ref.define.
+// Check trickier transform, and handling of ref.send, ref.sub, and ref.define.
 
 // CHECK-LABEL: "TestP"
 firrtl.circuit "TestP" {
   // CHECK: out %p: !firrtl.uint<1>
-  firrtl.module @TestP(in %cond: !firrtl.uint<1>, in %d: !firrtl.alias<T, bundle<foo: uint<1>, bar: uint<5>>>, out %p: !firrtl.probe<uint<1>>) {
-    // CHECK-NEXT: %w = firrtl.wire : !firrtl.alias<T,
-    %w = firrtl.wire : !firrtl.probe<alias<T, bundle<foo: uint<1>, bar: uint<5>>>>
+  firrtl.module @TestP(in %cond: !firrtl.uint<1>, in %d: !firrtl.bundle<foo: uint<1>, bar: uint<5>>, out %p: !firrtl.probe<uint<1>>) {
+    // CHECK-NEXT: %w = firrtl.wire : !firrtl.bundle<foo: uint<1>, bar: uint<5>>
+    %w = firrtl.wire : !firrtl.probe<bundle<foo: uint<1>, bar: uint<5>>>
     // ref.sub from below placed early.
     // CHECK-NEXT: %[[SUB:.+]] = firrtl.subfield %w[foo]
-    %1 = firrtl.ref.send %d : !firrtl.alias<T, bundle<foo: uint<1>, bar: uint<5>>>
+    %1 = firrtl.ref.send %d : !firrtl.bundle<foo: uint<1>, bar: uint<5>>
     // CHECK-NEXT: firrtl.when
     // CHECK-NEXT: }
     // CHECK-NEXT: firrtl.matchingconnect %w, %d
     // CHECK-NEXT: firrtl.matchingconnect %p, %[[SUB]]
     firrtl.when %cond : !firrtl.uint<1> {
-      firrtl.ref.define %w, %1 : !firrtl.probe<alias<T, bundle<foo: uint<1>, bar: uint<5>>>>
+      firrtl.ref.define %w, %1 : !firrtl.probe<bundle<foo: uint<1>, bar: uint<5>>>
 
-      %0 = firrtl.ref.sub %w[0] : !firrtl.probe<alias<T, bundle<foo: uint<1>, bar: uint<5>>>>
+      %0 = firrtl.ref.sub %w[0] : !firrtl.probe<bundle<foo: uint<1>, bar: uint<5>>>
       firrtl.ref.define %p, %0 : !firrtl.probe<uint<1>>
     }
   }
@@ -65,12 +65,12 @@ firrtl.circuit "TestP" {
 
 // -----
 
-// Extmodule using alias
+// Extmodule with a probe bundle
 
 // CHECK-LABEL: "ExtModule"
 firrtl.circuit "ExtModule" {
-  // CHECK: out p: !firrtl.alias<T, bundle<foo
-  firrtl.extmodule @ExtModule(out p: !firrtl.probe<alias<T, bundle<foo: uint<1>, bar: uint<5>>>>)
+  // CHECK: out p: !firrtl.bundle<foo
+  firrtl.extmodule @ExtModule(out p: !firrtl.probe<bundle<foo: uint<1>, bar: uint<5>>>)
 }
 
 // -----

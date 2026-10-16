@@ -1890,12 +1890,12 @@ firrtl.circuit "ConstOpenBundle" {
 }
 
 // -----
-// Matching connect between non-equivalent anonymous type operands.
+// Matching connect between non-equivalent operand types.
 
 firrtl.circuit "NonEquivalenctMatchingConnect" {
-  firrtl.module @NonEquivalenctMatchingConnect(in %in: !firrtl.uint<1>, out %out: !firrtl.alias<foo, uint<2>>) {
+  firrtl.module @NonEquivalenctMatchingConnect(in %in: !firrtl.uint<1>, out %out: !firrtl.uint<2>) {
     // expected-error @below {{op failed to verify that operands must be structurally equivalent}}
-    firrtl.matchingconnect %out, %in: !firrtl.alias<foo, uint<2>>, !firrtl.uint<1>
+    firrtl.matchingconnect %out, %in: !firrtl.uint<2>, !firrtl.uint<1>
   }
 }
 

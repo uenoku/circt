@@ -372,18 +372,18 @@ firrtl.module @AnyRefTest(in %in: !firrtl.anyref, out %out: !firrtl.anyref, in %
   firrtl.propassign %anyref, %0 : !firrtl.anyref
 }
 
-// CHECK-LABEL: TypeAlias
-// CHECK-SAME: %in: !firrtl.alias<bar, uint<1>>
-// CHECK-SAME: %const: !firrtl.const.alias<baz, const.uint<1>>
-// CHECK-SAME: %r: !firrtl.openbundle<a: alias<baz, uint<1>>>
-// CHECK-SAME: %out: !firrtl.alias<foo, uint<1>>
-// CHECK-NEXT: firrtl.matchingconnect %out, %in : !firrtl.alias<foo, uint<1>>, !firrtl.alias<bar, uint<1>>
+// CHECK-LABEL: TypeCast
+// CHECK-SAME: %in: !firrtl.uint<1>
+// CHECK-SAME: %const: !firrtl.const.uint<1>
+// CHECK-SAME: %r: !firrtl.openbundle<a: const.uint<1>>
+// CHECK-SAME: %out: !firrtl.uint<1>
+// CHECK-NEXT: firrtl.matchingconnect %out, %in : !firrtl.uint<1>
 
-firrtl.module @TypeAlias(in %in: !firrtl.alias<bar, uint<1>>,
-                         in %const: !firrtl.const.alias<baz, const.uint<1>>,
-                         out %r : !firrtl.openbundle<a: alias<baz, uint<1>>>,
-                         out %out: !firrtl.alias<foo, uint<1>>) {
-  firrtl.matchingconnect %out, %in: !firrtl.alias<foo, uint<1>>, !firrtl.alias<bar, uint<1>>
+firrtl.module @TypeCast(in %in: !firrtl.uint<1>,
+                        in %const: !firrtl.const.uint<1>,
+                        out %r : !firrtl.openbundle<a: const.uint<1>>,
+                        out %out: !firrtl.uint<1>) {
+  firrtl.matchingconnect %out, %in: !firrtl.uint<1>
 }
 
 }

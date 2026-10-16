@@ -53,18 +53,18 @@ def ConnectOp : FIRRTLOp<"connect", [FConnectLike]> {
   let hasCanonicalizer = true;
 }
 
-def SameAnonTypeOperands: PredOpTrait<
+def FIRRTLSameTypeOperands: PredOpTrait<
         "operands must be structurally equivalent",
-        CPred<"areAnonymousTypesEquivalent(getOperand(0).getType(), getOperand(1).getType())">>;
+        CPred<"areTypesIdentical(getOperand(0).getType(), getOperand(1).getType())">>;
 def MatchingConnectOp : FIRRTLOp<"matchingconnect", [FConnectLike,
-                      SameAnonTypeOperands]> {
+                      FIRRTLSameTypeOperands]> {
   let summary = "Connect two signals";
   let description =  [{
     Connect two values with matching type constraints.  The types of the lhs and
     rhs must match:
     ```
       firrtl.matchingconnect %dest, %src : t1
-      firrtl.matchingconnect %dest, %src : t1, !firrtl.alias<foo, t1>
+      firrtl.matchingconnect %dest, %src : t1, t1
     ```
     }];
 

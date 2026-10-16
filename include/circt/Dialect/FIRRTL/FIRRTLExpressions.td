@@ -78,7 +78,7 @@ class FIRRTLExprOp<string mnemonic, list<Trait> traits = []> :
       if (l.size () != r.size())
         return false;
       for (auto [l, r] : llvm::zip(l, r)) {
-        if (!areAnonymousTypesEquivalent(l, r))
+        if (!areTypesIdentical(l, r))
           return false;
       }
       return true;
@@ -219,7 +219,7 @@ def FEnumCreateOp : FIRRTLOp<"enumcreate"> {
   let extraClassDeclaration = [{
     /// Return the name attribute of the accessed field.
     StringAttr getFieldNameAttr() {
-      return getResult().getType().base().getElementNameAttr(getFieldIndex());
+      return getResult().getType().getElementNameAttr(getFieldIndex());
     }
 
     /// Return the name of the accessed field.
@@ -355,7 +355,7 @@ def SubindexOp : FIRRTLExprOp<"subindex"> {
   let firrtlExtraClassDeclaration = [{
     /// Return a `FieldRef` to the accessed field.
     FieldRef getAccessedField() {
-      return FieldRef(getInput(), getInput().getType().base().getFieldID(getIndex()));
+      return FieldRef(getInput(), getInput().getType().getFieldID(getIndex()));
     }
     using InputType = FVectorType;
   }];
@@ -505,7 +505,7 @@ def SubtagOp : FIRRTLExprOp<"subtag"> {
   let firrtlExtraClassDeclaration = [{
     /// Return the name of the accessed field.
     StringAttr getFieldNameAttr() {
-      return getInput().getType().base().getElementNameAttr(getFieldIndex());
+      return getInput().getType().getElementNameAttr(getFieldIndex());
     }
 
     /// Return the name of the accessed field.

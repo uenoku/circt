@@ -106,8 +106,8 @@ struct InferReadWritePass
         for (Operation *u : portVal.getUsers())
           if (auto sf = dyn_cast<SubfieldOp>(u)) {
             // Get the field name.
-            auto fName = sf.getInput().getType().base().getElementName(
-                sf.getFieldIndex());
+            auto fName =
+                sf.getInput().getType().getElementName(sf.getFieldIndex());
             // If this is the enable field, record the product terms(the And
             // expression tree).
             if (fName == "en")
@@ -214,8 +214,8 @@ struct InferReadWritePass
         // replace them.
         for (Operation *u : portVal.getUsers())
           if (auto sf = dyn_cast<SubfieldOp>(u)) {
-            StringRef fName = sf.getInput().getType().base().getElementName(
-                sf.getFieldIndex());
+            StringRef fName =
+                sf.getInput().getType().getElementName(sf.getFieldIndex());
             Value repl;
             if (isReadPort)
               repl = llvm::StringSwitch<Value>(fName)
@@ -458,7 +458,7 @@ private:
         if (auto sf = dyn_cast<SubfieldOp>(u)) {
           // Get the field name.
           auto fName =
-              sf.getInput().getType().base().getElementName(sf.getFieldIndex());
+              sf.getInput().getType().getElementName(sf.getFieldIndex());
           // Record the enable and wmode fields.
           if (fName.contains("en"))
             enableDriver = getConnectSrc(sf.getResult());
@@ -526,7 +526,7 @@ private:
         if (auto sf = dyn_cast<SubfieldOp>(u)) {
           // Get the field name.
           auto fName =
-              sf.getInput().getType().base().getElementName(sf.getFieldIndex());
+              sf.getInput().getType().getElementName(sf.getFieldIndex());
           // Check if this is the mask field.
           if (fName.contains("mask")) {
             // Already 1 bit, nothing to do.
@@ -578,7 +578,7 @@ private:
           auto sf =
               SubfieldOp::create(builder, newPortVal, oldRes.getFieldIndex());
           auto fName =
-              sf.getInput().getType().base().getElementName(sf.getFieldIndex());
+              sf.getInput().getType().getElementName(sf.getFieldIndex());
           // Replace all mask fields with a one bit constant 1.
           // Replace all other fields with the new port.
           if (fName.contains("mask")) {

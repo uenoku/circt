@@ -4274,7 +4274,6 @@ static LogicalResult checkConnectConditionality(FConnectLike connect) {
           .Case<SubaccessOp>([&](SubaccessOp op) {
             if (op.getInput()
                     .getType()
-                    .base()
                     .getElementTypePreservingConst()
                     .isConst())
               originalFieldType = originalFieldType.getConstType(true);
@@ -4409,11 +4408,11 @@ LogicalResult MatchingConnectOp::verify() {
     if (baseType && baseType.containsAnalog())
       return emitError("analog types may not be connected");
 
-    // The anonymous types of operands must be equivalent.
-    assert(areAnonymousTypesEquivalent(cast<FIRRTLBaseType>(getSrc().getType()),
-                                       baseType) &&
-           "`SameAnonTypeOperands` trait should have already rejected "
-           "structurally non-equivalent types");
+    // The operand types must be identical.
+    assert(
+        areTypesIdentical(cast<FIRRTLBaseType>(getSrc().getType()), baseType) &&
+        "`FIRRTLSameTypeOperands` trait should have already rejected "
+        "structurally non-equivalent types");
   }
 
   // Check that the flows make sense.
@@ -5157,7 +5156,7 @@ ParseResult FEnumCreateOp::parse(OpAsmParser &parser, OperationState &result) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult IsTagOp::verify() {
-  if (getFieldIndex() >= getInput().getType().base().getNumElements())
+  if (getFieldIndex() >= getInput().getType().getNumElements())
     return emitOpError("element index is greater than the number of fields in "
                        "the bundle type");
   return success();
@@ -5343,7 +5342,7 @@ LogicalResult OpenSubfieldOp::verify() {
 }
 
 LogicalResult SubtagOp::verify() {
-  if (getFieldIndex() >= getInput().getType().base().getNumElements())
+  if (getFieldIndex() >= getInput().getType().getNumElements())
     return emitOpError("subfield element index is greater than the number "
                        "of fields in the bundle type");
   return success();
