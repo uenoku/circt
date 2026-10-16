@@ -515,6 +515,7 @@ void IMConstPropPass::markBlockExecutable(Block *block) {
             [&](auto invalid) { markInvalidValueOp(invalid); })
         .Case<FInstanceLike>([&](auto instance) { markInstanceLike(instance); })
         .Case<ObjectOp>([&](auto obj) { markObjectOp(obj); })
+        .Case<ObjectCreateOp>([&](auto obj) { markOverdefined(obj); })
         .Case<MemOp>([&](auto mem) { markMemOp(mem); })
         .Case<LayerBlockOp>(
             [&](auto layer) { markBlockExecutable(layer.getBody(0)); })

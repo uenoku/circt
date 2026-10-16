@@ -4164,6 +4164,73 @@ void ObjectOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
 }
 
 //===----------------------------------------------------------------------===//
+// ObjectCreateOp
+//===----------------------------------------------------------------------===//
+
+void ObjectCreateOp::build(OpBuilder &builder, OperationState &state,
+                           ClassLike klass, StringRef name, ValueRange inputs) {
+  build(builder, state, klass.getInstanceType(), builder.getStringAttr(name),
+        inputs);
+}
+
+LogicalResult ObjectCreateOp::verify() {
+  unsigned inputIndex = 0;
+  for (auto element : getType().getElements()) {
+    if (element.direction != Direction::In)
+      continue;
+    if (inputIndex >= getInputs().size())
+      return emitOpError("missing operand for input port ") << element.name;
+    auto inputType = getInputs()[inputIndex].getType();
+    if (inputType != element.type)
+      return emitOpError("input port ")
+             << element.name << " expects " << element.type << ", but operand "
+             << inputIndex << " has type " << inputType;
+    ++inputIndex;
+  }
+  if (inputIndex != getInputs().size())
+    return emitOpError("expected ")
+           << inputIndex << " input operands, but got " << getInputs().size();
+  return success();
+}
+
+LogicalResult
+ObjectCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto circuit = getOperation()->getParentOfType<CircuitOp>();
+  auto classOp = dyn_cast_or_null<ClassLike>(
+      symbolTable.lookupSymbolIn(circuit, getType().getNameAttr()));
+  if (!classOp)
+    return emitOpError("references unknown class ") << getType().getNameAttr();
+  return classOp.verifyType(getType(), [&]() { return emitOpError(); });
+}
+
+StringAttr ObjectCreateOp::getClassNameAttr() {
+  return getType().getNameAttr().getAttr();
+}
+
+StringRef ObjectCreateOp::getClassName() { return getType().getName(); }
+
+ClassLike ObjectCreateOp::getReferencedClass(const SymbolTable &symbolTable) {
+  return symbolTable.lookup<ClassLike>(getType().getNameAttr().getAttr());
+}
+
+Operation *
+ObjectCreateOp::getReferencedOperation(const SymbolTable &symbolTable) {
+  return getReferencedClass(symbolTable);
+}
+
+StringRef ObjectCreateOp::getInstanceName() { return getName(); }
+
+StringAttr ObjectCreateOp::getInstanceNameAttr() { return getNameAttr(); }
+
+StringAttr ObjectCreateOp::getReferencedModuleNameAttr() {
+  return getClassNameAttr();
+}
+
+void ObjectCreateOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
+  setNameFn(getResult(), getName());
+}
+
+//===----------------------------------------------------------------------===//
 // Statements
 //===----------------------------------------------------------------------===//
 

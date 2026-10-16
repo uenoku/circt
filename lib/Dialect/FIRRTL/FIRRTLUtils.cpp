@@ -614,7 +614,7 @@ static void getDeclName(Value value, SmallString<64> &string, bool nameSafe) {
 
     auto *op = value.getDefiningOp();
     TypeSwitch<Operation *>(op)
-        .Case<ObjectOp>([&](ObjectOp op) {
+        .Case<ObjectOp, ObjectCreateOp>([&](auto op) {
           string += op.getInstanceName();
           value = nullptr;
         })
