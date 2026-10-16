@@ -17,6 +17,7 @@
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace circt {
 namespace firrtl {
@@ -53,34 +54,45 @@ namespace {
 class DropConstPass : public circt::firrtl::impl::DropConstBase<DropConstPass> {
   void runOnOperation() override {
 
-    // Update signatures of all module-likes.
-    auto moduleLikes = getOperation().getOps<FModuleLike>();
-    for (auto mod : moduleLikes) {
-      //// Update the module signature with non-'const' ports
-      SmallVector<Attribute> portTypes;
-      portTypes.reserve(mod.getNumPorts());
-      bool convertedAny = false;
-      llvm::transform(mod.getPortTypes(), std::back_inserter(portTypes),
-                      [&](Attribute type) -> Attribute {
-                        if (auto convertedType =
-                                convertType(cast<TypeAttr>(type).getValue())) {
-                          convertedAny = true;
-                          return TypeAttr::get(convertedType);
-                        }
-                        return type;
-                      });
-      if (convertedAny)
-        mod.setPortTypesAttr(ArrayAttr::get(mod.getContext(), portTypes));
-    };
-
-    // Rewrite module bodies in parallel.
-    // Filter on FModuleOp specifically as there's no "hasBody()".
+    // Rewrite module signatures and bodies in parallel. Each module has its own
+    // cache so that repeated aggregate types are only converted once, without
+    // locking.
     mlir::parallelForEach(
-        &getContext(),
-        llvm::make_filter_range(moduleLikes, llvm::IsaPred<FModuleOp>),
-        [](auto module) {
-          // Convert the module body if present
-          module->walk([](Operation *op) {
+        &getContext(), getOperation().getOps<FModuleLike>(), [](auto mod) {
+          DenseMap<Type, Type> typeCache;
+          auto convert = [&](Type type) -> Type {
+            // Integer types are cheap to convert and may have many distinct
+            // widths. Keep them out of the cache.
+            if (auto intType = dyn_cast<IntType>(type))
+              return intType.isConst() ? intType.getConstType(false) : Type{};
+
+            auto [it, inserted] = typeCache.try_emplace(type);
+            if (inserted)
+              it->second = convertType(type);
+            return it->second;
+          };
+
+          // Update the module signature with non-'const' ports.
+          SmallVector<Attribute> portTypes;
+          portTypes.reserve(mod.getNumPorts());
+          bool convertedAny = false;
+          llvm::transform(mod.getPortTypes(), std::back_inserter(portTypes),
+                          [&](Attribute type) -> Attribute {
+                            if (auto convertedType =
+                                    convert(cast<TypeAttr>(type).getValue())) {
+                              convertedAny = true;
+                              return TypeAttr::get(convertedType);
+                            }
+                            return type;
+                          });
+          if (convertedAny)
+            mod.setPortTypesAttr(ArrayAttr::get(mod.getContext(), portTypes));
+
+          // Convert the module body if present. Check for FModuleOp
+          // specifically as there's no "hasBody()".
+          if (!isa<FModuleOp>(mod))
+            return;
+          mod->walk([&](Operation *op) {
             if (auto constCastOp = dyn_cast<ConstCastOp>(op)) {
               // Remove any `ConstCastOp`, replacing results with inputs
               constCastOp.getResult().replaceAllUsesWith(
@@ -93,11 +105,11 @@ class DropConstPass : public circt::firrtl::impl::DropConstBase<DropConstPass> {
             for (auto &region : op->getRegions())
               for (auto &block : region.getBlocks())
                 for (auto argument : block.getArguments())
-                  if (auto convertedType = convertType(argument.getType()))
+                  if (auto convertedType = convert(argument.getType()))
                     argument.setType(convertedType);
 
             for (auto result : op->getResults())
-              if (auto convertedType = convertType(result.getType()))
+              if (auto convertedType = convert(result.getType()))
                 result.setType(convertedType);
           });
         });

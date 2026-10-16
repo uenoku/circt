@@ -1,4 +1,5 @@
 // RUN: circt-opt --pass-pipeline='builtin.module(firrtl.circuit(firrtl-drop-const))' %s | FileCheck %s --implicit-check-not=const.
+// RUN: circt-opt --mlir-disable-threading --pass-pipeline='builtin.module(firrtl.circuit(firrtl-drop-const))' %s | FileCheck %s --implicit-check-not=const.
 firrtl.circuit "DropConst" {
 firrtl.module @DropConst() {}
 
