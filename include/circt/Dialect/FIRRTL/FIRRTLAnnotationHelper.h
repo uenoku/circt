@@ -101,7 +101,7 @@ static T &operator<<(T &os, const AnnoPathValue &path) {
       return os;
     auto targetFieldID = path.fieldIdx;
     while (targetFieldID) {
-      FIRRTLTypeSwitch<FIRRTLBaseType>(type)
+      llvm::TypeSwitch<FIRRTLBaseType>(type)
           .Case<FVectorType>([&](FVectorType vector) {
             auto index = vector.getIndexForFieldID(targetFieldID);
             os << "[" << index << "]";

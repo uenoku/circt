@@ -222,11 +222,11 @@ public:
                                                         bool local) {
       // Domain types are exempt from initialization checking and will be
       // handled by the InferDomains pass.
-      if (type_isa<DomainType>(type))
+      if (isa<DomainType>(type))
         return;
 
       // If this is a class type, recurse to each of the fields.
-      if (auto classType = type_dyn_cast<ClassType>(type)) {
+      if (auto classType = dyn_cast<ClassType>(type)) {
         if (local) {
           // If this is a local object declaration, then we are responsible for
           // initializing its input ports.
@@ -250,7 +250,7 @@ public:
       }
 
       // If this is a bundle type, recurse to each of the fields.
-      if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+      if (auto bundleType = dyn_cast<BundleType>(type)) {
         for (auto &element : bundleType.getElements()) {
           id++;
           if (element.isFlip)
@@ -262,7 +262,7 @@ public:
       }
 
       // If this is a vector type, recurse to each of the elements.
-      if (auto vectorType = type_dyn_cast<FVectorType>(type)) {
+      if (auto vectorType = dyn_cast<FVectorType>(type)) {
         for (unsigned i = 0; i < vectorType.getNumElements(); ++i) {
           id++;
           declare(vectorType.getElementType(), flow, false);
@@ -271,7 +271,7 @@ public:
       }
 
       // If this is an analog type, it does not need to be tracked.
-      if (auto analogType = type_dyn_cast<AnalogType>(type))
+      if (auto analogType = dyn_cast<AnalogType>(type))
         return;
 
       // If it is a leaf node with Flow::Sink or Flow::Duplex, it must be
@@ -316,7 +316,7 @@ public:
   /// And then apply function `fn`.
   void foreachSubelement(OpBuilder &builder, Value value,
                          llvm::function_ref<void(Value)> fn) {
-    FIRRTLTypeSwitch<Type>(value.getType())
+    llvm::TypeSwitch<Type>(value.getType())
         .template Case<BundleType>([&](BundleType bundle) {
           for (auto i : llvm::seq(0u, (unsigned)bundle.getNumElements())) {
             auto subfield =

@@ -56,7 +56,7 @@ void EliminateWiresPass::runOnOperation() {
   std::deque<std::pair<WireOp, MatchingConnectOp>> worklist;
 
   for (auto wire : module.getOps<WireOp>()) {
-    auto type = type_dyn_cast<FIRRTLBaseType>(wire.getResult().getType());
+    auto type = dyn_cast<FIRRTLBaseType>(wire.getResult().getType());
     if (!type || !type.isPassive()) {
       ++complexTypeWires;
       continue;

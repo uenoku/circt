@@ -357,7 +357,7 @@ public:
       auto sinkNode = getOrAddNode(sinkPort);
       bool sinkPortIsForceable = false;
       if (auto refResultType =
-              type_dyn_cast<RefType>(instResults[sinkArgNum].getType()))
+              dyn_cast<RefType>(instResults[sinkArgNum].getType()))
         sinkPortIsForceable = refResultType.getForceable();
 
       DenseSet<unsigned> setOfEquivalentRWProbes;
@@ -373,7 +373,7 @@ public:
         FieldRef srcPort(instResults[srcArgNum], modSrcPortField.getFieldID());
         bool srcPortIsForceable = false;
         if (auto refResultType =
-                type_dyn_cast<RefType>(instResults[srcArgNum].getType()))
+                dyn_cast<RefType>(instResults[srcArgNum].getType()))
           srcPortIsForceable = refResultType.getForceable();
         // RWProbes can potentially refer to the same base value. Such ports
         // have a path from each other, a false loop, detect such cases.

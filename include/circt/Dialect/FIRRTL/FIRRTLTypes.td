@@ -73,7 +73,7 @@ def OpenVectorType : FIRRTLDialectTypeHelper<"OpenVectorType", "open vector type
 def FEnumType : FIRRTLDialectTypeHelper<"FEnumType", "enum type">;
 
 def AggregateType : FIRRTLDialectType<
-  CPred<"type_isa<FVectorType, BundleType, FEnumType>($_self)">,
+  CPred<"isa<FVectorType, BundleType, FEnumType>($_self)">,
   "a aggregate type", "::circt::firrtl::FIRRTLBaseType">;
 
 def GroundType : FIRRTLDialectType<
@@ -81,11 +81,11 @@ def GroundType : FIRRTLDialectType<
   "a ground type", "::circt::firrtl::FIRRTLBaseType">;
 
 def PassiveType : FIRRTLDialectType<
-  CPred<"type_isa<FIRRTLBaseType>($_self) && cast<FIRRTLBaseType>($_self).isPassive()">,
+  CPred<"isa<FIRRTLBaseType>($_self) && cast<FIRRTLBaseType>($_self).isPassive()">,
   "a passive base type (contain no flips)", "::circt::firrtl::FIRRTLBaseType">;
 
-def SizedType : FIRRTLDialectType<CPred<"type_isa<FIRRTLBaseType>($_self) && "
-    "!type_cast<FIRRTLBaseType>($_self).hasUninferredWidth()">,
+def SizedType : FIRRTLDialectType<CPred<"isa<FIRRTLBaseType>($_self) && "
+    "!cast<FIRRTLBaseType>($_self).hasUninferredWidth()">,
     "a sized type (contains no uninferred widths)",
     "::circt::firrtl::FIRRTLBaseType">;
 def SizedOrForeignType : AnyTypeOf<[SizedType, ForeignType]>;
@@ -101,7 +101,7 @@ def ResetType : FIRRTLDialectTypeHelper<"ResetType", "reset type">;
 def RefType : FIRRTLDialectTypeHelper<"RefType", "reference type">;
 
 def RWProbe : FIRRTLDialectType<
-  CPred<"type_isa<RefType>($_self) && type_cast<RefType>($_self).getForceable()">,
+  CPred<"isa<RefType>($_self) && cast<RefType>($_self).getForceable()">,
    "rwprobe type", "::circt::firrtl::RefType">;
 
 def LHSType : FIRRTLDialectType<CPred<"isa<LHSType>($_self)">,
@@ -116,18 +116,18 @@ def MatchingConnectableType : AnyTypeOf<[SizedPassiveType, ForeignType]>;
 
 def UnsizedUIntType :
   FIRRTLDialectType<
-    CPred<"type_isa<UIntType>($_self) && "
-          "type_cast<UIntType>($_self).getWidth() == std::nullopt">,
+    CPred<"isa<UIntType>($_self) && "
+          "cast<UIntType>($_self).getWidth() == std::nullopt">,
     "uint with uninferred width", "::circt::firrtl::UIntType">;
 
 class SizedUIntType<int width> : FIRRTLDialectType<
-    CPred<"type_isa<UIntType>($_self) && "
-          "type_cast<UIntType>($_self).getWidth() == " # width>,
+    CPred<"isa<UIntType>($_self) && "
+          "cast<UIntType>($_self).getWidth() == " # width>,
     width # "-bit uint", "::circt::firrtl::UIntType">;
 
 class SizedUIntTypeLTE<int width> : FIRRTLDialectType<
-    CPred<"type_isa<UIntType>($_self) && "
-          "type_cast<UIntType>($_self).getWidth() <= " # width>,
+    CPred<"isa<UIntType>($_self) && "
+          "cast<UIntType>($_self).getWidth() <= " # width>,
     "uint with width less than or equal to " # width # " bits",
     "::circt::firrtl::UIntType">;
 
@@ -149,18 +149,18 @@ def UIntLTE2OrUnsizedType : AnyTypeOf<[SizedUIntTypeLTE<2>, UnsizedUIntType]>;
 //===----------------------------------------------------------------------===//
 
 def OneBitType : FIRRTLDialectType<
- CPred<"(type_isa<IntType>($_self) && type_cast<IntType>($_self).getWidth() == 1) || "
-   "(type_isa<AnalogType>($_self) && type_cast<AnalogType>($_self).getWidth() == 1)">,
+ CPred<"(isa<IntType>($_self) && cast<IntType>($_self).getWidth() == 1) || "
+   "(isa<AnalogType>($_self) && cast<AnalogType>($_self).getWidth() == 1)">,
  "UInt<1>, SInt<1>, or Analog<1>", "::circt::firrtl::FIRRTLBaseType">;
 
 
 def AnyResetType : FIRRTLDialectType<
-    CPred<"type_isa<FIRRTLBaseType>($_self) && type_cast<FIRRTLBaseType>($_self).isResetType()">,
+    CPred<"isa<FIRRTLBaseType>($_self) && cast<FIRRTLBaseType>($_self).isResetType()">,
     "Reset", "::circt::firrtl::FIRRTLBaseType">;
 
 def AnyRegisterType : FIRRTLDialectType<
-    CPred<"type_isa<FIRRTLBaseType>($_self) && "
-          "type_cast<FIRRTLBaseType>($_self).isRegisterType()">,
+    CPred<"isa<FIRRTLBaseType>($_self) && "
+          "cast<FIRRTLBaseType>($_self).isRegisterType()">,
     "a passive non-'const' base type that does not contain analog",
     "::circt::firrtl::FIRRTLBaseType">;
 
@@ -169,11 +169,11 @@ def UIntSIntClockType : AnyTypeOf<[SIntType, UIntType, ClockType],
                                   "::circt::firrtl::FIRRTLBaseType">;
 
 def 1DVecUIntType : FIRRTLDialectType<
-  CPred<"type_isa<FVectorType>($_self) && type_isa<UIntType>(type_cast<FVectorType>($_self).getElementType())">,
+  CPred<"isa<FVectorType>($_self) && isa<UIntType>(cast<FVectorType>($_self).getElementType())">,
   "1d vector with UInt element type", "::circt::firrtl::FIRRTLBaseType">;
 
 def 1DVecIntType : FIRRTLDialectType<
-  CPred<"type_isa<FVectorType>($_self) && type_isa<IntType>(type_cast<FVectorType>($_self).getElementType())">,
+  CPred<"isa<FVectorType>($_self) && isa<IntType>(cast<FVectorType>($_self).getElementType())">,
   "1d vector with Int element type", "::circt::firrtl::FIRRTLBaseType">;
 
 def OneBitCastableType : AnyTypeOf<
@@ -188,12 +188,12 @@ def OneBitCastableType : AnyTypeOf<
 class RefTypeConstraint<string ref, string base>
   : TypesMatchWith<"reference base type should match",
                    ref, base,
-                   "type_cast<RefType>($_self).getType()">;
+                   "cast<RefType>($_self).getType()">;
 
 class RefResultTypeConstraint<string base, string ref>
   : TypesMatchWith<"reference base type should match",
                    base, ref,
-                   "RefType::get(type_cast<FIRRTLBaseType>($_self).getPassiveType())">;
+                   "RefType::get(cast<FIRRTLBaseType>($_self).getPassiveType())">;
 
 class CompatibleRefTypes<string dst, string src>
   : PredOpTrait<"reference " # dst # " must be compatible with reference " # src #
@@ -246,7 +246,7 @@ def FStringType :
 // `FStringType`.  This requires conversion ops that convert from
 // `FIRRTLBaseType` to `FStringType`.
 def PrintfOperandType : FIRRTLDialectType<
-  CPred<"type_isa<FIRRTLBaseType, FStringType>($_self)">,
+  CPred<"isa<FIRRTLBaseType, FStringType>($_self)">,
     "a printf operand type (a FIRRTL base type or a format string type)",
     "::circt::firrtl::FIRRTLType">;
 

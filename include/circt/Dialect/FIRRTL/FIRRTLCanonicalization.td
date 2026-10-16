@@ -46,33 +46,33 @@ def NullAttr : Constraint<CPred<"!$0">>;
 def EqualTypes : Constraint<CPred<"areTypesIdentical($0.getType(), $1.getType())">>;
 
 // Constraint that enforces equal type sizes
-def EqualIntSize : Constraint<CPred<"type_cast<IntType>($0.getType()).getWidth() == type_cast<IntType>($1.getType()).getWidth()">>;
+def EqualIntSize : Constraint<CPred<"cast<IntType>($0.getType()).getWidth() == cast<IntType>($1.getType()).getWidth()">>;
 
 // Constraint that enforces equal type signedness
-def EqualSigns : Constraint<CPred<"type_cast<IntType>($0.getType()).isSigned() == type_cast<IntType>($1.getType()).isSigned()">>;
+def EqualSigns : Constraint<CPred<"cast<IntType>($0.getType()).isSigned() == cast<IntType>($1.getType()).isSigned()">>;
 
 // sizeof(0) >= sizeof(1)
 def IntTypeWidthGEQ32 : Constraint<CPred<
-  "type_cast<IntType>($0.getType()).getBitWidthOrSentinel() >= type_cast<IntType>($1.getType()).getBitWidthOrSentinel()">>;
+  "cast<IntType>($0.getType()).getBitWidthOrSentinel() >= cast<IntType>($1.getType()).getBitWidthOrSentinel()">>;
 
 // sizeof(0) > sizeof(1)
 def IntTypeWidthGT32 : Constraint<CPred<
-  "type_cast<IntType>($0.getType()).getBitWidthOrSentinel() > type_cast<IntType>($1.getType()).getBitWidthOrSentinel()">>;
+  "cast<IntType>($0.getType()).getBitWidthOrSentinel() > cast<IntType>($1.getType()).getBitWidthOrSentinel()">>;
 
 // sizeof(0) < X
 class IntTypeWidthLTX<int X> : Constraint<CPred<
-  "type_cast<IntType>($0.getType()).getBitWidthOrSentinel() >= 0 &&"
-  "type_cast<IntType>($0.getType()).getBitWidthOrSentinel()< " # X
+  "cast<IntType>($0.getType()).getBitWidthOrSentinel() >= 0 &&"
+  "cast<IntType>($0.getType()).getBitWidthOrSentinel()< " # X
 >>;
 
 // Constraint that enforces int types
-def IntTypes : Constraint<CPred<"type_isa<IntType>($0.getType())">>;
+def IntTypes : Constraint<CPred<"isa<IntType>($0.getType())">>;
 
 // Constraint that enforces sint types
-def SIntTypes : Constraint<CPred<"type_isa<SIntType>($0.getType())">>;
+def SIntTypes : Constraint<CPred<"isa<SIntType>($0.getType())">>;
 
 // Constraint that enforces uint types
-def UIntTypes : Constraint<CPred<"type_isa<UIntType>($0.getType())">>;
+def UIntTypes : Constraint<CPred<"isa<UIntType>($0.getType())">>;
 
 // Constraint that enforces types mismatches
 def mismatchTypes : Constraint<CPred<"!areTypesIdentical($0.getType(), $1.getType())">>;
@@ -80,14 +80,14 @@ def mismatchTypes : Constraint<CPred<"!areTypesIdentical($0.getType(), $1.getTyp
 // Constraint that enforces types mismatches, ignoring const qualifiers
 def mismatchTypesIgnoringConst : Constraint<CPred<[{
   !areTypesIdentical(
-    type_cast<FIRRTLBaseType>($0.getType()).getAllConstDroppedType(),
-    type_cast<FIRRTLBaseType>($1.getType()).getAllConstDroppedType())
+    cast<FIRRTLBaseType>($0.getType()).getAllConstDroppedType(),
+    cast<FIRRTLBaseType>($1.getType()).getAllConstDroppedType())
   }]>>;
 
 // Constraint that enforces types of known width
 def KnownWidth : Constraint<CPred<[{
-  type_isa<FIRRTLBaseType>($0.getType()) &&
-    !type_cast<FIRRTLBaseType>($0.getType()).getRecursiveTypeProperties().hasUninferredWidth
+  isa<FIRRTLBaseType>($0.getType()) &&
+    !cast<FIRRTLBaseType>($0.getType()).getRecursiveTypeProperties().hasUninferredWidth
   }]>>;
 
 /// Constraint that matches a false SpecialConstantOp
@@ -126,7 +126,7 @@ def AllOneConstantOp : Constraint<CPred<"$0.getDefiningOp<ConstantOp>() && $0.ge
 
 // Delta between type widths
 def TypeWidthAdjust32 : NativeCodeCall<
-  "$_builder.getI32IntegerAttr(type_cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel() - type_cast<FIRRTLBaseType>($1.getType()).getBitWidthOrSentinel())">;
+  "$_builder.getI32IntegerAttr(cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel() - cast<FIRRTLBaseType>($1.getType()).getBitWidthOrSentinel())">;
 
 // Int 1 is one higher than int 2
 def AdjInt : Constraint<CPred<"$0.getValue() + 1 == $1.getValue()">>;
@@ -215,14 +215,14 @@ def ConnectSameType : Pat<
 def ConnectExtension : Pat<
   (ConnectOp $dst, $src),
   (MatchingConnectOp $dst, (PadPrimOp $src,
-    (NativeCodeCall<"type_cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel()"> $dst))),
+    (NativeCodeCall<"cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel()"> $dst))),
   [(IntType $dst), (IntType $src), (KnownWidth $dst), (KnownWidth $src), (mismatchTypes $src, $dst)]>;
 
 def LimitConstant32 : NativeCodeCall<
   "$_builder.getI32IntegerAttr($0.getValue().getLimitedValue(1ULL << 31))">;
 
 def TypeWidth32 : NativeCodeCall<
-  "$_builder.getI32IntegerAttr(type_cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel())">;
+  "$_builder.getI32IntegerAttr(cast<FIRRTLBaseType>($0.getType()).getBitWidthOrSentinel())">;
 
 // dshl(a, const) -> shl(a, const)
 def DShlOfConstant : Pat<
@@ -325,7 +325,7 @@ def SubFromZeroUnsigned : Pat <
 //sub(a,a) -> 0
 def SubOfSelf : Pat <
   (SubPrimOp:$old $x, $x),
-  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), type_cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
+  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(KnownWidth $x)]>;
 
 // sub((pad a, n), b) -> pad(sub(a, b), n)
@@ -347,7 +347,7 @@ def SubOfPadR : Pat <
 // and(x, 0) -> 0, fold can't handle all cases
 def AndOfZero : Pat <
   (AndPrimOp:$old $x, (ConstantOp:$zcst $cst)),
-  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), type_cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
+  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(KnownWidth $x), (ZeroConstantOp $zcst)]>;
 
 // and(x, -1) -> x, fold can't handle all cases
@@ -389,7 +389,7 @@ def OrOfZero : Pat <
 // or(x, -1) -> -1, fold can't handle all cases
 def OrOfAllOne : Pat <
   (OrPrimOp:$old $x, (ConstantOp:$ocst $cst)),
-  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), type_cast<IntType>($0.getType()), getIntOnesAttr($0.getType()))"> $old),
+  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), cast<IntType>($0.getType()), getIntOnesAttr($0.getType()))"> $old),
   [(KnownWidth $x), (EqualTypes $x, $ocst), (AllOneConstantOp $ocst)]>;
 
 /// or(x,x) -> x, fold can't handle all cases
@@ -421,7 +421,7 @@ def XorOfZero : Pat <
 /// xor(x,x) -> 0, fold can't handle all cases
 def XorOfSelf : Pat <
   (XorPrimOp:$old $x, $x),
-  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), type_cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
+  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(KnownWidth $x)]>;
 
 /// xor(x, pad(y, n)) -> cat(head(x), xor(tail(x), y))
@@ -507,7 +507,7 @@ def AndRasUInt : Pat <
 /// andr(pad(x:U,n)) -> 0 (where pad is doing something)
 def AndRPadU : Pat <
   (AndRPrimOp:$old (PadPrimOp:$pad $x, $n)),
-  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), type_cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
+  (NativeCodeCall<"ConstantOp::create($_builder, $0.getLoc(), cast<IntType>($0.getType()), getIntZerosAttr($0.getType()))"> $old),
   [(KnownWidth $x), (UIntTypes $x), (IntTypeWidthGT32 $pad, $x)]>;
 
 /// andr(pad(x:S,n)) -> andr(x)
@@ -562,7 +562,7 @@ def BitsOfPad : Pat<
   (AsUIntPrimOp $x),
   [(KnownWidth $x), (EqualIntSize $old, $x), (AttrIsZero $oLow)]>;
 
-def IndexInBound : Constraint<CPred<"cast<IntegerAttr>($0).getAPSInt().getExtValue() < static_cast<int64_t>(type_cast<FVectorType>($1.getType()).getNumElements())">>;
+def IndexInBound : Constraint<CPred<"cast<IntegerAttr>($0).getAPSInt().getExtValue() < static_cast<int64_t>(cast<FVectorType>($1.getType()).getNumElements())">>;
 
 // subaccess a, cst -> subindex a, cst
 def SubaccessOfConstant : Pat<
@@ -697,7 +697,7 @@ def CVTUnSigned : Pat<
   (MoveNameHint $old,
     (AsSIntPrimOp
       (PadPrimOp $x,
-        (NativeCodeCall<"$_builder.getI32IntegerAttr(type_cast<SIntType>($0.getType()).getBitWidthOrSentinel())"> $old)))),
+        (NativeCodeCall<"$_builder.getI32IntegerAttr(cast<SIntType>($0.getType()).getBitWidthOrSentinel())"> $old)))),
   [(UIntType $x), (KnownWidth $old)]>;
 
 def AssertXWhenX : Pattern<(AssertOp $_, $x, $x, $_, $_, $_, $_, $_), []>;

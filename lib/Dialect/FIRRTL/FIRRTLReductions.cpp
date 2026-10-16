@@ -220,7 +220,7 @@ struct FIRRTLModuleExternalizer : public OpReduction<FModuleOp> {
     layers.insert_range(module.getLayersAttr().getAsRange<SymbolRefAttr>());
     for (auto attr : module.getPortTypes()) {
       auto type = cast<TypeAttr>(attr).getValue();
-      if (auto refType = type_dyn_cast<RefType>(type))
+      if (auto refType = dyn_cast<RefType>(type))
         if (auto layer = refType.getLayer())
           layers.insert(layer);
     }
@@ -263,12 +263,12 @@ struct FIRRTLModuleExternalizer : public OpReduction<FModuleOp> {
 /// (including those nested in bundles) are properly invalidated.
 static void invalidateOutputs(ImplicitLocOpBuilder &builder, Value value,
                               TieOffCache &tieOffCache, bool flip = false) {
-  auto type = type_dyn_cast<FIRRTLType>(value.getType());
+  auto type = dyn_cast<FIRRTLType>(value.getType());
   if (!type)
     return;
 
   // Handle ref types (probes) by creating wires and defining them properly.
-  if (auto refType = type_dyn_cast<RefType>(type)) {
+  if (auto refType = dyn_cast<RefType>(type)) {
     // Input probes are illegal in FIRRTL.
     assert(!flip && "input probes are not allowed");
 
@@ -308,7 +308,7 @@ static void invalidateOutputs(ImplicitLocOpBuilder &builder, Value value,
   }
 
   // Descend into bundles by creating subfield ops.
-  if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+  if (auto bundleType = dyn_cast<BundleType>(type)) {
     for (auto element : llvm::enumerate(bundleType.getElements())) {
       auto subfield = builder.createOrFold<SubfieldOp>(value, element.index());
       invalidateOutputs(builder, subfield, tieOffCache,
@@ -320,7 +320,7 @@ static void invalidateOutputs(ImplicitLocOpBuilder &builder, Value value,
   }
 
   // Descend into vectors by creating subindex ops.
-  if (auto vectorType = type_dyn_cast<FVectorType>(type)) {
+  if (auto vectorType = dyn_cast<FVectorType>(type)) {
     for (unsigned i = 0, e = vectorType.getNumElements(); i != e; ++i) {
       auto subindex = builder.createOrFold<SubindexOp>(value, i);
       invalidateOutputs(builder, subindex, tieOffCache, flip);
@@ -335,14 +335,14 @@ static void invalidateOutputs(ImplicitLocOpBuilder &builder, Value value,
     return;
 
   // Create InvalidValueOp for FIRRTLBaseType.
-  if (auto baseType = type_dyn_cast<FIRRTLBaseType>(type)) {
+  if (auto baseType = dyn_cast<FIRRTLBaseType>(type)) {
     auto invalid = InvalidValueOp::create(builder, baseType);
     ConnectOp::create(builder, value, invalid);
     return;
   }
 
   // For property types, use UnknownValueOp to tie off the connection.
-  if (auto propType = type_dyn_cast<PropertyType>(type)) {
+  if (auto propType = dyn_cast<PropertyType>(type)) {
     auto unknown = tieOffCache.getUnknown(propType);
     builder.create<PropAssignOp>(value, unknown);
   }
@@ -1869,7 +1869,7 @@ struct ModuleNameSanitizer : OpReduction<firrtl::CircuitOp> {
         shouldReplacePorts = !oldPorts.empty();
         for (unsigned i = 0, e = fmodule.getNumPorts(); i != e; ++i) {
           auto port = oldPorts[i];
-          auto newName = firrtl::FIRRTLTypeSwitch<Type, StringRef>(port.type)
+          auto newName = llvm::TypeSwitch<Type, StringRef>(port.type)
                              .Case<firrtl::ClockType>(
                                  [&](auto a) { return ns.newName("clk"); })
                              .Case<firrtl::ResetType, firrtl::AsyncResetType>(

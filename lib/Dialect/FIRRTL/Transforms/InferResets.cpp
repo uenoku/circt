@@ -348,7 +348,7 @@ ResetSignal InferResetsPass::guessRoot(ResetNetwork net) {
 // the element type is uniform across all elements.
 
 static unsigned getMaxFieldID(FIRRTLBaseType type) {
-  return FIRRTLTypeSwitch<FIRRTLBaseType, unsigned>(type)
+  return llvm::TypeSwitch<FIRRTLBaseType, unsigned>(type)
       .Case<BundleType>([](auto type) {
         unsigned id = 0;
         for (auto e : type.getElements())
@@ -391,7 +391,7 @@ static bool isUselessVec(FIRRTLBaseType oldType, unsigned fieldID) {
   }
 
   // If this is a bundle type, recurse.
-  if (auto bundleType = type_dyn_cast<BundleType>(oldType)) {
+  if (auto bundleType = dyn_cast<BundleType>(oldType)) {
     unsigned index = getIndexForFieldID(bundleType, fieldID);
     return isUselessVec(bundleType.getElementType(index),
                         fieldID - getFieldID(bundleType, index));
@@ -399,7 +399,7 @@ static bool isUselessVec(FIRRTLBaseType oldType, unsigned fieldID) {
 
   // If this is a vector type, check if it is zero length.  Anything in a
   // zero-length vector is useless.
-  if (auto vectorType = type_dyn_cast<FVectorType>(oldType)) {
+  if (auto vectorType = dyn_cast<FVectorType>(oldType)) {
     if (vectorType.getNumElements() == 0)
       return true;
     return isUselessVec(vectorType.getElementType(),
@@ -411,9 +411,8 @@ static bool isUselessVec(FIRRTLBaseType oldType, unsigned fieldID) {
 
 // If a field is pointing to a child of a zero-length vector, it is useless.
 static bool isUselessVec(FieldRef field) {
-  return isUselessVec(
-      getBaseType(type_cast<FIRRTLType>(field.getValue().getType())),
-      field.getFieldID());
+  return isUselessVec(getBaseType(cast<FIRRTLType>(field.getValue().getType())),
+                      field.getFieldID());
 }
 
 static bool getDeclName(Value value, SmallString<32> &string) {
@@ -447,7 +446,7 @@ static bool getFieldName(const FieldRef &fieldRef, SmallString<32> &string) {
   auto type = value.getType();
   auto localID = fieldRef.getFieldID();
   while (localID) {
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       auto index = getIndexForFieldID(bundleType, localID);
       // Add the current field string, and recurse into a subfield.
       auto &element = bundleType.getElements()[index];
@@ -457,7 +456,7 @@ static bool getFieldName(const FieldRef &fieldRef, SmallString<32> &string) {
       // Recurse in to the element type.
       type = element.type;
       localID = localID - getFieldID(bundleType, index);
-    } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<FVectorType>(type)) {
       string += "[]";
       // Recurse in to the element type.
       type = vecType.getElementType();
@@ -662,8 +661,8 @@ void InferResetsPass::traceResets(Value dst, Value src, Location loc) {
 void InferResetsPass::traceResets(Type dstType, Value dst, unsigned dstID,
                                   Type srcType, Value src, unsigned srcID,
                                   Location loc) {
-  if (auto dstBundle = type_dyn_cast<BundleType>(dstType)) {
-    auto srcBundle = type_cast<BundleType>(srcType);
+  if (auto dstBundle = dyn_cast<BundleType>(dstType)) {
+    auto srcBundle = cast<BundleType>(srcType);
     for (unsigned dstIdx = 0, e = dstBundle.getNumElements(); dstIdx < e;
          ++dstIdx) {
       auto dstField = dstBundle.getElements()[dstIdx].name;
@@ -685,8 +684,8 @@ void InferResetsPass::traceResets(Type dstType, Value dst, unsigned dstID,
     return;
   }
 
-  if (auto dstVector = type_dyn_cast<FVectorType>(dstType)) {
-    auto srcVector = type_cast<FVectorType>(srcType);
+  if (auto dstVector = dyn_cast<FVectorType>(dstType)) {
+    auto srcVector = cast<FVectorType>(srcType);
     auto srcElType = srcVector.getElementType();
     auto dstElType = dstVector.getElementType();
     // Collapse all elements into one shared element. See comment in traceResets
@@ -707,18 +706,18 @@ void InferResetsPass::traceResets(Type dstType, Value dst, unsigned dstID,
   }
 
   // Handle connecting ref's.  Other uses trace using base type.
-  if (auto dstRef = type_dyn_cast<RefType>(dstType)) {
-    auto srcRef = type_cast<RefType>(srcType);
+  if (auto dstRef = dyn_cast<RefType>(dstType)) {
+    auto srcRef = cast<RefType>(srcType);
     return traceResets(dstRef.getType(), dst, dstID, srcRef.getType(), src,
                        srcID, loc);
   }
 
   // Handle reset connections.
-  auto dstBase = type_dyn_cast<FIRRTLBaseType>(dstType);
-  auto srcBase = type_dyn_cast<FIRRTLBaseType>(srcType);
+  auto dstBase = dyn_cast<FIRRTLBaseType>(dstType);
+  auto srcBase = dyn_cast<FIRRTLBaseType>(srcType);
   if (!dstBase || !srcBase)
     return;
-  if (!type_isa<ResetType>(dstBase) && !type_isa<ResetType>(srcBase))
+  if (!isa<ResetType>(dstBase) && !isa<ResetType>(srcBase))
     return;
 
   FieldRef dstField(dst, dstID);
@@ -795,9 +794,9 @@ FailureOr<ResetKind> InferResetsPass::inferReset(ResetNetwork net) {
   unsigned invalidDrives = 0;
   for (ResetSignal signal : net) {
     // Keep track of whether this signal contributes a vote for async or sync.
-    if (type_isa<AsyncResetType>(signal.type))
+    if (isa<AsyncResetType>(signal.type))
       ++asyncDrives;
-    else if (type_isa<UIntType>(signal.type))
+    else if (isa<UIntType>(signal.type))
       ++syncDrives;
     else if (isUselessVec(signal.field) ||
              isa_and_nonnull<InvalidValueOp>(
@@ -832,12 +831,12 @@ FailureOr<ResetKind> InferResetsPass::inferReset(ResetNetwork net) {
         << "majority of connections to this reset are "
         << (majorityAsync ? "async" : "sync");
     for (auto &drive : getResetDrives(net)) {
-      if ((type_isa<AsyncResetType>(drive.dst.type) && !majorityAsync) ||
-          (type_isa<AsyncResetType>(drive.src.type) && !majorityAsync) ||
-          (type_isa<UIntType>(drive.dst.type) && majorityAsync) ||
-          (type_isa<UIntType>(drive.src.type) && majorityAsync))
+      if ((isa<AsyncResetType>(drive.dst.type) && !majorityAsync) ||
+          (isa<AsyncResetType>(drive.src.type) && !majorityAsync) ||
+          (isa<UIntType>(drive.dst.type) && majorityAsync) ||
+          (isa<UIntType>(drive.src.type) && majorityAsync))
         diag.attachNote(drive.loc)
-            << (type_isa<AsyncResetType>(drive.src.type) ? "async" : "sync")
+            << (isa<AsyncResetType>(drive.src.type) ? "async" : "sync")
             << " drive here:";
     }
     return failure();
@@ -905,7 +904,7 @@ LogicalResult InferResetsPass::updateReset(ResetNetwork net, ResetKind kind) {
             // Remove `asReset` casts for sync resets, or replace them with an
             // `asAsyncReset` cast for async resets.
             Value result = op.getInput();
-            if (type_isa<AsyncResetType>(resetType)) {
+            if (isa<AsyncResetType>(resetType)) {
               ImplicitLocOpBuilder builder(op.getLoc(), op);
               result = AsAsyncResetPrimOp::create(builder, op.getInput());
             }
@@ -993,7 +992,7 @@ static FIRRTLBaseType updateType(FIRRTLBaseType oldType, unsigned fieldID,
   }
 
   // If this is a bundle type, update the corresponding field.
-  if (auto bundleType = type_dyn_cast<BundleType>(oldType)) {
+  if (auto bundleType = dyn_cast<BundleType>(oldType)) {
     unsigned index = getIndexForFieldID(bundleType, fieldID);
     SmallVector<BundleType::BundleElement> fields(bundleType.begin(),
                                                   bundleType.end());
@@ -1003,7 +1002,7 @@ static FIRRTLBaseType updateType(FIRRTLBaseType oldType, unsigned fieldID,
   }
 
   // If this is a vector type, update the element type.
-  if (auto vectorType = type_dyn_cast<FVectorType>(oldType)) {
+  if (auto vectorType = dyn_cast<FVectorType>(oldType)) {
     auto newType = updateType(vectorType.getElementType(),
                               fieldID - getFieldID(vectorType), fieldType);
     return FVectorType::get(newType, vectorType.getNumElements(),
@@ -1017,7 +1016,7 @@ static FIRRTLBaseType updateType(FIRRTLBaseType oldType, unsigned fieldID,
 /// Update the reset type of a specific field.
 bool InferResetsPass::updateReset(FieldRef field, FIRRTLBaseType resetType) {
   // Compute the updated type.
-  auto oldType = type_cast<FIRRTLType>(field.getValue().getType());
+  auto oldType = cast<FIRRTLType>(field.getValue().getType());
   FIRRTLType newType = mapBaseType(oldType, [&](auto base) {
     return updateType(base, field.getFieldID(), resetType);
   });

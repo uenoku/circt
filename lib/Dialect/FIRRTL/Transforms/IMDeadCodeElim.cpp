@@ -563,7 +563,7 @@ void IMDeadCodeElimPass::visitValue(Value value) {
       }
 
       // Any domain ports associated with non-domain ports are also alive.
-      if (!type_isa<DomainType>(blockArg.getType()))
+      if (!isa<DomainType>(blockArg.getType()))
         for (auto domain : cast<ArrayAttr>(
                  module.getDomainInfoAttrForPort(blockArg.getArgNumber())))
           markAlive(module.getArgument(

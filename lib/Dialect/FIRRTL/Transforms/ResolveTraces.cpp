@@ -170,7 +170,7 @@ private:
     assert(type && "expected a FIRRTLBaseType");
     auto targetFieldID = path.fieldIdx;
     while (targetFieldID) {
-      FIRRTLTypeSwitch<FIRRTLBaseType>(type)
+      llvm::TypeSwitch<FIRRTLBaseType>(type)
           .Case<FVectorType>([&](FVectorType vector) {
             auto index = vector.getIndexForFieldID(targetFieldID);
             newTarget.append("[");
@@ -224,7 +224,7 @@ private:
                                                 Annotation &anno,
                                                 unsigned portIdx,
                                                 hw::InnerRefAttr innerRef) {
-    auto type = getBaseType(type_cast<FIRRTLType>(module.getPortType(portIdx)));
+    auto type = getBaseType(cast<FIRRTLType>(module.getPortType(portIdx)));
     return updateTargetImpl(anno, module, type, innerRef,
                             PortAnnoTarget(module, portIdx));
   }
@@ -248,7 +248,7 @@ private:
       type = op->getResultTypes().front();
     }
 
-    auto baseType = getBaseType(type_cast<FIRRTLType>(type));
+    auto baseType = getBaseType(cast<FIRRTLType>(type));
     return updateTargetImpl(anno, module, baseType, innerRef, OpAnnoTarget(op));
   }
 

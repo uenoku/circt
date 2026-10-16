@@ -63,7 +63,7 @@ void AnnotateInputOnlyModulesPass::runOnOperation() {
     bool hasHardwareOutputPort =
         llvm::any_of(module.getPorts(), [&](auto port) {
           return port.direction == Direction::Out &&
-                 type_isa<FIRRTLBaseType>(port.type);
+                 isa<FIRRTLBaseType>(port.type);
         });
 
     // If the module has only input ports, add InlineAnnotation

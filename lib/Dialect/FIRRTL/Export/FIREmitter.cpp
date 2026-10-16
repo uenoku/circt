@@ -1180,8 +1180,7 @@ void Emitter::emitStatement(ConnectOp op) {
   } else {
     auto emitLHS = [&]() { emitExpression(op.getDest()); };
     if (op.getSrc().getDefiningOp<InvalidValueOp>()) {
-      emitAssignLike(
-          emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
+      emitAssignLike(emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
     } else {
       emitAssignLike(
           emitLHS, [&]() { emitExpression(op.getSrc()); }, PPExtString("<="));
@@ -1207,8 +1206,7 @@ void Emitter::emitStatement(MatchingConnectOp op) {
   } else {
     auto emitLHS = [&]() { emitExpression(op.getDest()); };
     if (op.getSrc().getDefiningOp<InvalidValueOp>()) {
-      emitAssignLike(
-          emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
+      emitAssignLike(emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
     } else {
       emitAssignLike(
           emitLHS, [&]() { emitExpression(op.getSrc()); }, PPExtString("<="));
@@ -1633,7 +1631,7 @@ void Emitter::emitExpression(SpecialConstantOp op) {
     ps << ")";
   };
   // TODO: Emit type decl for type alias.
-  FIRRTLTypeSwitch<FIRRTLType>(type_cast<FIRRTLType>(op.getType()))
+  llvm::TypeSwitch<FIRRTLType>(cast<FIRRTLType>(op.getType()))
       .Case<ClockType>([&](auto type) {
         ps << "asClock(";
         emitInner();
@@ -1703,7 +1701,7 @@ void Emitter::emitExpression(RefResolveOp op) {
 
 void Emitter::emitExpression(RefSubOp op) {
   emitExpression(op.getInput());
-  FIRRTLTypeSwitch<FIRRTLBaseType, void>(op.getInput().getType().getType())
+  llvm::TypeSwitch<FIRRTLBaseType, void>(op.getInput().getType().getType())
       .Case<FVectorType>([&](auto type) {
         ps << "[";
         ps.addAsString(op.getIndex());
@@ -1733,7 +1731,7 @@ void Emitter::emitExpression(RWProbeOp op) {
   auto fieldID = target.getField();
   auto type = base.getType();
   while (fieldID) {
-    FIRRTLTypeSwitch<Type, void>(type)
+    llvm::TypeSwitch<Type, void>(type)
         .Case<FVectorType, OpenVectorType>([&](auto vecTy) {
           auto index = vecTy.getIndexForFieldID(fieldID);
           ps << "[";
@@ -1925,7 +1923,7 @@ void Emitter::emitType(Type type, bool includeConst) {
     }
   };
   // TODO: Emit type decl for type alias.
-  FIRRTLTypeSwitch<Type>(type)
+  llvm::TypeSwitch<Type>(type)
       .Case<ClockType>([&](auto) { ps << "Clock"; })
       .Case<ResetType>([&](auto) { ps << "Reset"; })
       .Case<AsyncResetType>([&](auto) { ps << "AsyncReset"; })

@@ -70,11 +70,10 @@ void RegisterOptimizerPass::checkReg(mlir::DominanceInfo &dom,
     auto builder = OpBuilder(reg);
     Value replacement;
     if (auto initial = reg.getInitialAttr())
-      replacement =
-          ConstantOp::create(builder, reg.getLoc(),
-                             type_cast<IntType>(reg.getResult().getType()),
-                             initial.getValue())
-              .getResult();
+      replacement = ConstantOp::create(builder, reg.getLoc(),
+                                       cast<IntType>(reg.getResult().getType()),
+                                       initial.getValue())
+                        .getResult();
     else
       replacement = InvalidValueOp::create(builder, reg.getLoc(),
                                            reg.getResult().getType())

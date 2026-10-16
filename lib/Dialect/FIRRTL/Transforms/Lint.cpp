@@ -34,7 +34,7 @@ class Linter {
 public:
   Linter(FModuleOp fModule, InstanceInfo &instanceInfo,
          const LintOptions &options)
-      : fModule(fModule), instanceInfo(instanceInfo), options(options){};
+      : fModule(fModule), instanceInfo(instanceInfo), options(options) {};
 
   /// Lint the specified module.
   LogicalResult lint() {
@@ -85,8 +85,7 @@ private:
                << "constant defined here";
 
     if (auto reset = predicate.getDefiningOp<firrtl::AsUIntPrimOp>())
-      if (firrtl::type_isa<ResetType, AsyncResetType>(
-              reset.getInput().getType()))
+      if (isa<ResetType, AsyncResetType>(reset.getInput().getType()))
         return op->emitOpError("is guaranteed to fail simulation, as the "
                                "predicate is a reset signal")
                    .attachNote(reset.getInput().getLoc())

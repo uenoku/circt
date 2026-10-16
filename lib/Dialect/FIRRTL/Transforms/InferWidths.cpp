@@ -46,7 +46,7 @@ using namespace firrtl;
 
 static void diagnoseUninferredType(InFlightDiagnostic &diag, Type t,
                                    Twine str) {
-  auto basetype = type_dyn_cast<FIRRTLBaseType>(t);
+  auto basetype = dyn_cast<FIRRTLBaseType>(t);
   if (!basetype)
     return;
   if (!basetype.hasUninferredWidth())
@@ -54,9 +54,9 @@ static void diagnoseUninferredType(InFlightDiagnostic &diag, Type t,
 
   if (basetype.isGround())
     diag.attachNote() << "Field: \"" << str << "\"";
-  else if (auto vecType = type_dyn_cast<FVectorType>(basetype))
+  else if (auto vecType = dyn_cast<FVectorType>(basetype))
     diagnoseUninferredType(diag, vecType.getElementType(), str + "[]");
-  else if (auto bundleType = type_dyn_cast<BundleType>(basetype))
+  else if (auto bundleType = dyn_cast<BundleType>(basetype))
     for (auto &elem : bundleType.getElements())
       diagnoseUninferredType(diag, elem.type, str + "." + elem.name.getValue());
 }
@@ -1350,7 +1350,7 @@ bool InferenceMapping::allWidthsKnown(Operation *op) {
   return llvm::all_of(op->getResults(), [&](auto result) {
     // Only consider FIRRTL types for width constraints. Ignore any foreign
     // types as they don't participate in the width inference process.
-    if (auto type = type_dyn_cast<FIRRTLType>(result.getType()))
+    if (auto type = dyn_cast<FIRRTLType>(result.getType()))
       if (hasUninferredWidth(type))
         return false;
     return true;
@@ -1621,8 +1621,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
         // apply to the ports of the instantiated module.
         for (auto [result, arg] :
              llvm::zip(op->getResults(), module.getArguments()))
-          unifyTypes({result, 0}, {arg, 0},
-                     type_cast<FIRRTLType>(result.getType()));
+          unifyTypes({result, 0}, {arg, 0}, cast<FIRRTLType>(result.getType()));
       })
 
       // Handle memories.
@@ -1631,7 +1630,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
         unsigned nonDebugPort = 0;
         for (const auto &result : llvm::enumerate(op.getResults())) {
           declareVars(result.value());
-          if (!type_isa<RefType>(result.value().getType()))
+          if (!isa<RefType>(result.value().getType()))
             nonDebugPort = result.index();
         }
 
@@ -1660,7 +1659,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
             dataFieldIndices(op.getPortKind(nonDebugPort))[0];
         FieldRef firstData(
             op.getResult(nonDebugPort),
-            type_cast<BundleType>(op.getPortType(nonDebugPort).getPassiveType())
+            cast<BundleType>(op.getPortType(nonDebugPort).getPassiveType())
                 .getFieldID(firstFieldIndex));
         LLVM_DEBUG(llvm::dbgs() << "Adjusting memory port variables:\n");
 
@@ -1668,7 +1667,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
         auto dataType = op.getDataType();
         for (unsigned i = 0, e = op.getResults().size(); i < e; ++i) {
           auto result = op.getResult(i);
-          if (type_isa<RefType>(result.getType())) {
+          if (isa<RefType>(result.getType())) {
             // Debug ports are firrtl.ref<vector<data-type, depth>>
             // Use FieldRef of 1, to indicate the first vector element must be
             // of the dataType.
@@ -1676,8 +1675,7 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
             continue;
           }
 
-          auto portType =
-              type_cast<BundleType>(op.getPortType(i).getPassiveType());
+          auto portType = cast<BundleType>(op.getPortType(i).getPassiveType());
           for (auto fieldIndex : dataFieldIndices(op.getPortKind(i)))
             unifyTypes(FieldRef(result, portType.getFieldID(fieldIndex)),
                        firstData, dataType);
@@ -1710,14 +1708,14 @@ LogicalResult InferenceMapping::mapOperation(Operation *op) {
           return;
         }
         auto newFID = convertFieldIDToOurVersion(
-            ref.getFieldID(), type_cast<FIRRTLType>(ref.getValue().getType()));
+            ref.getFieldID(), cast<FIRRTLType>(ref.getValue().getType()));
         unifyTypes(FieldRef(op.getResult(), 0),
                    FieldRef(ref.getValue(), newFID), op.getType());
       })
       .Case<mlir::UnrealizedConversionCastOp>([&](auto op) {
         for (Value result : op.getResults()) {
           auto ty = result.getType();
-          if (type_isa<FIRRTLType>(ty))
+          if (isa<FIRRTLType>(ty))
             declareVars(result);
         }
       })
@@ -1753,12 +1751,12 @@ void InferenceMapping::declareVars(Value value, bool isDerived) {
       else
         setExpr(field, solver.var());
       fieldID++;
-    } else if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    } else if (auto bundleType = dyn_cast<BundleType>(type)) {
       // Bundle types recursively declare all bundle elements.
       fieldID++;
       for (auto &element : bundleType)
         declare(element.type);
-    } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<FVectorType>(type)) {
       fieldID++;
       auto save = fieldID;
       declare(vecType.getElementType());
@@ -1779,18 +1777,18 @@ void InferenceMapping::maximumOfTypes(Value result, Value rhs, Value lhs) {
   // Recurse to every leaf element and set larger >= smaller.
   auto fieldID = 0;
   std::function<void(FIRRTLBaseType)> maximize = [&](FIRRTLBaseType type) {
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       fieldID++;
       for (auto &element : bundleType.getElements())
         maximize(element.type);
-    } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<FVectorType>(type)) {
       fieldID++;
       auto save = fieldID;
       // Skip 0 length vectors.
       if (vecType.getNumElements() > 0)
         maximize(vecType.getElementType());
       fieldID = save + vecType.getMaxFieldID();
-    } else if (auto enumType = type_dyn_cast<FEnumType>(type)) {
+    } else if (auto enumType = dyn_cast<FEnumType>(type)) {
       auto *e = solver.max(getExpr(FieldRef(rhs, fieldID)),
                            getExpr(FieldRef(lhs, fieldID)));
       setExpr(FieldRef(result, fieldID), e);
@@ -1823,7 +1821,7 @@ void InferenceMapping::constrainTypes(Value larger, Value smaller, bool equal) {
   auto fieldID = 0;
   std::function<void(FIRRTLBaseType, Value, Value)> constrain =
       [&](FIRRTLBaseType type, Value larger, Value smaller) {
-        if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+        if (auto bundleType = dyn_cast<BundleType>(type)) {
           fieldID++;
           for (auto &element : bundleType.getElements()) {
             if (element.isFlip)
@@ -1831,7 +1829,7 @@ void InferenceMapping::constrainTypes(Value larger, Value smaller, bool equal) {
             else
               constrain(element.type, larger, smaller);
           }
-        } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+        } else if (auto vecType = dyn_cast<FVectorType>(type)) {
           fieldID++;
           auto save = fieldID;
           // Skip 0 length vectors.
@@ -1839,7 +1837,7 @@ void InferenceMapping::constrainTypes(Value larger, Value smaller, bool equal) {
             constrain(vecType.getElementType(), larger, smaller);
           }
           fieldID = save + vecType.getMaxFieldID();
-        } else if (auto enumType = type_dyn_cast<FEnumType>(type)) {
+        } else if (auto enumType = dyn_cast<FEnumType>(type)) {
           constrainTypes(getExpr(FieldRef(larger, fieldID)),
                          getExpr(FieldRef(smaller, fieldID)), false, equal);
           fieldID++;
@@ -1937,12 +1935,12 @@ void InferenceMapping::unifyTypes(FieldRef lhs, FieldRef rhs, FIRRTLType type) {
         solver.addGeqConstraint(var, solver.known(0));
       setExpr(lhsFieldRef, getExpr(rhsFieldRef));
       fieldID++;
-    } else if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    } else if (auto bundleType = dyn_cast<BundleType>(type)) {
       fieldID++;
       for (auto &element : bundleType) {
         unify(element.type);
       }
-    } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<FVectorType>(type)) {
       fieldID++;
       auto save = fieldID;
       // Skip 0 length vectors.
@@ -1950,7 +1948,7 @@ void InferenceMapping::unifyTypes(FieldRef lhs, FieldRef rhs, FIRRTLType type) {
         unify(vecType.getElementType());
       }
       fieldID = save + vecType.getMaxFieldID();
-    } else if (auto enumType = type_dyn_cast<FEnumType>(type)) {
+    } else if (auto enumType = dyn_cast<FEnumType>(type)) {
       FieldRef lhsFieldRef(lhs.getValue(), lhs.getFieldID() + fieldID);
       FieldRef rhsFieldRef(rhs.getValue(), rhs.getFieldID() + fieldID);
       LLVM_DEBUG(llvm::dbgs()
@@ -1968,7 +1966,7 @@ void InferenceMapping::unifyTypes(FieldRef lhs, FieldRef rhs, FIRRTLType type) {
 
 /// Get the constraint expression for a value.
 Expr *InferenceMapping::getExpr(Value value) const {
-  assert(type_cast<FIRRTLType>(getBaseType(value.getType())).isGround());
+  assert(cast<FIRRTLType>(getBaseType(value.getType())).isGround());
   // A field ID of 0 indicates the entire value.
   return getExpr(FieldRef(value, 0));
 }
@@ -1997,7 +1995,7 @@ Expr *InferenceMapping::getExprOrNull(FieldRef fieldRef) const {
 
 /// Associate a constraint expression with a value.
 void InferenceMapping::setExpr(Value value, Expr *expr) {
-  assert(type_cast<FIRRTLType>(getBaseType(value.getType())).isGround());
+  assert(cast<FIRRTLType>(getBaseType(value.getType())).isGround());
   // A field ID of 0 indicates the entire value.
   setExpr(FieldRef(value, 0), expr);
 }
@@ -2078,8 +2076,8 @@ FailureOr<bool> InferenceTypeUpdate::updateOperation(Operation *op) {
   if (auto con = dyn_cast<ConnectOp>(op)) {
     auto lhs = con.getDest();
     auto rhs = con.getSrc();
-    auto lhsType = type_dyn_cast<FIRRTLBaseType>(lhs.getType());
-    auto rhsType = type_dyn_cast<FIRRTLBaseType>(rhs.getType());
+    auto lhsType = dyn_cast<FIRRTLBaseType>(lhs.getType());
+    auto rhsType = dyn_cast<FIRRTLBaseType>(rhs.getType());
 
     // Nothing to do if not base types.
     if (!lhsType || !rhsType)
@@ -2094,7 +2092,7 @@ FailureOr<bool> InferenceTypeUpdate::updateOperation(Operation *op) {
       OpBuilder builder(op);
       auto trunc = builder.createOrFold<TailPrimOp>(con.getLoc(), con.getSrc(),
                                                     rhsWidth - lhsWidth);
-      if (type_isa<SIntType>(rhsType))
+      if (isa<SIntType>(rhsType))
         trunc =
             builder.createOrFold<AsSIntPrimOp>(con.getLoc(), lhsType, trunc);
 
@@ -2131,7 +2129,7 @@ FailureOr<bool> InferenceTypeUpdate::updateOperation(Operation *op) {
 /// Resize a `uint`, `sint`, or `analog` type to a specific width.
 static FIRRTLBaseType resizeType(FIRRTLBaseType type, uint32_t newWidth) {
   auto *context = type.getContext();
-  return FIRRTLTypeSwitch<FIRRTLBaseType, FIRRTLBaseType>(type)
+  return llvm::TypeSwitch<FIRRTLBaseType, FIRRTLBaseType>(type)
       .Case<UIntType>([&](auto type) {
         return UIntType::get(context, newWidth, type.isConst());
       })
@@ -2147,7 +2145,7 @@ static FIRRTLBaseType resizeType(FIRRTLBaseType type, uint32_t newWidth) {
 /// Update the type of a value.
 FailureOr<bool> InferenceTypeUpdate::updateValue(Value value) {
   // Check if the value has a type which we can update.
-  auto type = type_dyn_cast<FIRRTLType>(value.getType());
+  auto type = dyn_cast<FIRRTLType>(value.getType());
   if (!type)
     return false;
 
@@ -2193,7 +2191,7 @@ FailureOr<bool> InferenceTypeUpdate::updateValue(Value value) {
       fieldID++;
       return newType;
     }
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       // Bundle types recursively update all bundle elements.
       fieldID++;
       llvm::SmallVector<BundleType::BundleElement, 3> elements;
@@ -2205,7 +2203,7 @@ FailureOr<bool> InferenceTypeUpdate::updateValue(Value value) {
       }
       return BundleType::get(context, elements, bundleType.isConst());
     }
-    if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    if (auto vecType = dyn_cast<FVectorType>(type)) {
       fieldID++;
       auto save = fieldID;
       // TODO: this should recurse into the element type of 0 length vectors and

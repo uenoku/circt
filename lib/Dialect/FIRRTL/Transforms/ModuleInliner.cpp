@@ -1806,7 +1806,7 @@ void Inliner::mapPortsToWires(StringRef prefix, InliningLevel &il,
   auto portInfo = target.getPorts();
   for (unsigned i = 0, e = target.getNumPorts(); i < e; ++i) {
     auto arg = target.getArgument(i);
-    auto type = type_cast<FIRRTLType>(arg.getType());
+    auto type = cast<FIRRTLType>(arg.getType());
 
     auto oldSymAttr = portInfo[i].sym;
     auto newSymAttr =

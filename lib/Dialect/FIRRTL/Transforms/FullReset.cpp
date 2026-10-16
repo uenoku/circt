@@ -120,7 +120,7 @@ static Value createZeroValue(ImplicitLocOpBuilder &builder, FIRRTLBaseType type,
         cache);
   };
   auto value =
-      FIRRTLTypeSwitch<FIRRTLBaseType, Value>(type)
+      llvm::TypeSwitch<FIRRTLBaseType, Value>(type)
           .Case<ClockType>([&](auto type) {
             return AsClockPrimOp::create(builder, nullBit());
           })
@@ -328,7 +328,7 @@ struct MemToRegOfVecConverter {
   }
 
   Value getMask(ImplicitLocOpBuilder &builder, Value bundle) {
-    auto bType = type_cast<BundleType>(bundle.getType());
+    auto bType = cast<BundleType>(bundle.getType());
     if (bType.getElement("mask"))
       return SubfieldOp::create(builder, bundle, "mask");
     return SubfieldOp::create(builder, bundle, "wmask");
@@ -336,7 +336,7 @@ struct MemToRegOfVecConverter {
 
   Value getData(ImplicitLocOpBuilder &builder, Value bundle,
                 bool getWdata = false) {
-    auto bType = type_cast<BundleType>(bundle.getType());
+    auto bType = cast<BundleType>(bundle.getType());
     if (bType.getElement("data"))
       return SubfieldOp::create(builder, bundle, "data");
     if (bType.getElement("rdata") && !getWdata)
@@ -499,11 +499,11 @@ struct MemToRegOfVecConverter {
 
     // Check if the number of fields of mask and input type match.
     auto isValidMask = [&](FIRRTLType inType, FIRRTLType maskType) -> bool {
-      if (auto bundle = type_dyn_cast<BundleType>(inType)) {
-        if (auto mBundle = type_dyn_cast<BundleType>(maskType))
+      if (auto bundle = dyn_cast<BundleType>(inType)) {
+        if (auto mBundle = dyn_cast<BundleType>(maskType))
           return mBundle.getNumElements() == bundle.getNumElements();
-      } else if (auto vec = type_dyn_cast<FVectorType>(inType)) {
-        if (auto mVec = type_dyn_cast<FVectorType>(maskType))
+      } else if (auto vec = dyn_cast<FVectorType>(inType)) {
+        if (auto mVec = dyn_cast<FVectorType>(maskType))
           return mVec.getNumElements() == vec.getNumElements();
       } else
         return true;
@@ -512,12 +512,12 @@ struct MemToRegOfVecConverter {
 
     std::function<bool(Value, Value, Value)> flatAccess =
         [&](Value reg, Value input, Value mask) -> bool {
-      FIRRTLType inType = type_cast<FIRRTLType>(input.getType());
-      if (!isValidMask(inType, type_cast<FIRRTLType>(mask.getType()))) {
+      FIRRTLType inType = cast<FIRRTLType>(input.getType());
+      if (!isValidMask(inType, cast<FIRRTLType>(mask.getType()))) {
         input.getDefiningOp()->emitOpError("Mask type is not valid");
         return false;
       }
-      return FIRRTLTypeSwitch<FIRRTLType, bool>(inType)
+      return llvm::TypeSwitch<FIRRTLType, bool>(inType)
           .Case<BundleType>([&](BundleType bundle) {
             for (size_t i = 0, e = bundle.getNumElements(); i != e; ++i) {
               auto regField = SubfieldOp::create(builder, reg, i);
@@ -561,7 +561,7 @@ struct MemToRegOfVecConverter {
     for (size_t index = 0, rend = memOp.getNumResults(); index < rend;
          ++index) {
       auto result = memOp.getResult(index);
-      if (type_isa<RefType>(result.getType())) {
+      if (isa<RefType>(result.getType())) {
         debugPorts.push_back(result);
         continue;
       }
@@ -713,7 +713,7 @@ void FullResetRunner::convertMemsInAsyncDomains() {
     auto &domain = entries.back().first;
     if (!domain.rootReset)
       continue;
-    if (!type_isa<AsyncResetType>(domain.resetType))
+    if (!isa<AsyncResetType>(domain.resetType))
       continue;
     if (!instanceInfo->anyInstanceInEffectiveDesign(mod))
       continue;
@@ -1367,7 +1367,7 @@ LogicalResult FullResetRunner::implementFullReset(FInstanceLike inst,
   // into no-reset registers.
   if (!actualReset) {
     LLVM_DEBUG(llvm::dbgs() << "  - Tying off reset to constant 0\n");
-    if (type_isa<AsyncResetType>(domain.resetType))
+    if (isa<AsyncResetType>(domain.resetType))
       actualReset = SpecialConstantOp::create(builder, domain.resetType, false);
     else
       actualReset = ConstantOp::create(
@@ -1418,8 +1418,8 @@ LogicalResult FullResetRunner::implementFullReset(Operation *op,
   if (auto regOp = dyn_cast<RegResetOp>(op)) {
     // If the register already has an async reset or if the type of the added
     // reset is sync, leave it alone.
-    if (type_isa<AsyncResetType>(regOp.getResetSignal().getType()) ||
-        type_isa<UIntType>(actualReset.getType())) {
+    if (isa<AsyncResetType>(regOp.getResetSignal().getType()) ||
+        isa<UIntType>(actualReset.getType())) {
       LLVM_DEBUG(llvm::dbgs() << "- Skipping (has reset) " << regOp << "\n");
       // The following performs the logic of `CheckResets` in the original
       // Scala source code.

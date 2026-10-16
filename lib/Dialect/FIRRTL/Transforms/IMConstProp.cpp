@@ -61,7 +61,7 @@ static bool isDeletableWireOrRegOrNode(Operation *op) {
     return false;
 
   // Always allow deleting wires of probe-type.
-  if (type_isa<RefType>(op->getResult(0).getType()))
+  if (isa<RefType>(op->getResult(0).getType()))
     return true;
 
   // Otherwise, don't delete if has anything keeping it around or unknown.
@@ -202,8 +202,8 @@ struct IMConstPropPass
   // we mark all ground elements as overdefined.
   void markOverdefined(Value value) {
     FieldRef fieldRef = getOrCacheFieldRefFromValue(value);
-    auto firrtlType = type_dyn_cast<FIRRTLType>(value.getType());
-    if (!firrtlType || type_isa<PropertyType, DomainType>(firrtlType)) {
+    auto firrtlType = dyn_cast<FIRRTLType>(value.getType());
+    if (!firrtlType || isa<PropertyType, DomainType>(firrtlType)) {
       markOverdefined(fieldRef);
       return;
     }
@@ -260,12 +260,12 @@ struct IMConstPropPass
   void mergeLatticeValue(Value result, Value from) {
     FieldRef fieldRefFrom = getOrCacheFieldRefFromValue(from);
     FieldRef fieldRefResult = getOrCacheFieldRefFromValue(result);
-    if (!type_isa<FIRRTLType>(result.getType()))
+    if (!isa<FIRRTLType>(result.getType()))
       return mergeLatticeValue(fieldRefResult, fieldRefFrom);
     // Special-handle PropertyType's, walkGroundType's doesn't support.
-    if (type_isa<PropertyType, DomainType>(result.getType()))
+    if (isa<PropertyType, DomainType>(result.getType()))
       return mergeLatticeValue(fieldRefResult, fieldRefFrom);
-    walkGroundTypes(type_cast<FIRRTLType>(result.getType()),
+    walkGroundTypes(cast<FIRRTLType>(result.getType()),
                     [&](uint64_t fieldID, auto, auto) {
                       mergeLatticeValue(fieldRefResult.getSubField(fieldID),
                                         fieldRefFrom.getSubField(fieldID));
@@ -542,12 +542,12 @@ void IMConstPropPass::markBlockExecutable(Block *block) {
 
             bool hasAggregateOperand =
                 llvm::any_of(op.getOperandTypes(), [](Type type) {
-                  return type_isa<FVectorType, BundleType>(type);
+                  return isa<FVectorType, BundleType>(type);
                 });
 
             for (auto result : op.getResults())
               if (hasAggregateOperand ||
-                  type_isa<FVectorType, BundleType>(result.getType()))
+                  isa<FVectorType, BundleType>(result.getType()))
                 markOverdefined(result);
           }
         });
@@ -557,11 +557,11 @@ void IMConstPropPass::markBlockExecutable(Block *block) {
     if (!isAggregate(&op)) {
       for (auto operand : op.getOperands()) {
         auto fieldRef = getOrCacheFieldRefFromValue(operand);
-        auto firrtlType = type_dyn_cast<FIRRTLType>(operand.getType());
+        auto firrtlType = dyn_cast<FIRRTLType>(operand.getType());
         if (!firrtlType)
           continue;
         // Special-handle PropertyType's, walkGroundTypes doesn't support.
-        if (type_isa<PropertyType, DomainType>(firrtlType)) {
+        if (isa<PropertyType, DomainType>(firrtlType)) {
           fieldRefToUsers[fieldRef].push_back(&op);
           continue;
         }
@@ -575,7 +575,7 @@ void IMConstPropPass::markBlockExecutable(Block *block) {
 // NOLINTEND(misc-no-recursion)
 
 void IMConstPropPass::markWireOp(WireOp wire) {
-  auto type = type_dyn_cast<FIRRTLType>(wire.getResult().getType());
+  auto type = dyn_cast<FIRRTLType>(wire.getResult().getType());
   if (!type || hasDontTouch(wire.getResult()) || wire.isForceable()) {
     for (auto result : wire.getResults())
       markOverdefined(result);
@@ -678,7 +678,7 @@ void IMConstPropPass::markObjectOp(ObjectOp obj) {
 static std::optional<uint64_t>
 getFieldIDOffset(FieldRef changedFieldRef, Type connectionType,
                  FieldRef connectedValueFieldRef) {
-  assert(!type_isa<RefType>(connectionType));
+  assert(!isa<RefType>(connectionType));
   if (changedFieldRef.getValue() != connectedValueFieldRef.getValue())
     return {};
   if (changedFieldRef.getFieldID() >= connectedValueFieldRef.getFieldID() &&
@@ -694,7 +694,7 @@ void IMConstPropPass::mergeOnlyChangedLatticeValue(Value dest, Value src,
 
   // Operate on inner type for refs.
   auto destType = dest.getType();
-  if (auto refType = type_dyn_cast<RefType>(destType))
+  if (auto refType = dyn_cast<RefType>(destType))
     destType = refType.getType();
 
   if (!isa<FIRRTLType>(destType)) {
@@ -725,7 +725,7 @@ void IMConstPropPass::visitConnectLike(FConnectLike connect,
                                        FieldRef changedFieldRef) {
   // Operate on inner type for refs.
   auto destType = connect.getDest().getType();
-  if (auto refType = type_dyn_cast<RefType>(destType))
+  if (auto refType = dyn_cast<RefType>(destType))
     destType = refType.getType();
 
   // Mark foreign types as overdefined.
@@ -749,8 +749,8 @@ void IMConstPropPass::visitConnectLike(FConnectLike connect,
 
   auto propagateElementLattice = [&](uint64_t fieldID, FIRRTLType destType) {
     auto fieldRefDestConnected = fieldRefDest.getSubField(fieldID);
-    assert(!firrtl::type_isa<FIRRTLBaseType>(destType) ||
-           firrtl::type_cast<FIRRTLBaseType>(destType).isGround());
+    assert(!isa<FIRRTLBaseType>(destType) ||
+           cast<FIRRTLBaseType>(destType).isGround());
 
     // Handle implicit extensions.
     auto srcValue =
@@ -808,16 +808,14 @@ void IMConstPropPass::visitConnectLike(FConnectLike connect,
 
   if (auto srcOffset = getFieldIDOffset(changedFieldRef, destType, fieldRefSrc))
     propagateElementLattice(
-        *srcOffset,
-        firrtl::type_cast<FIRRTLType>(
-            hw::FieldIdImpl::getFinalTypeByFieldID(destType, *srcOffset)));
+        *srcOffset, cast<FIRRTLType>(hw::FieldIdImpl::getFinalTypeByFieldID(
+                        destType, *srcOffset)));
 
   if (auto relativeDest =
           getFieldIDOffset(changedFieldRef, destType, fieldRefDest))
     propagateElementLattice(
-        *relativeDest,
-        firrtl::type_cast<FIRRTLType>(
-            hw::FieldIdImpl::getFinalTypeByFieldID(destType, *relativeDest)));
+        *relativeDest, cast<FIRRTLType>(hw::FieldIdImpl::getFinalTypeByFieldID(
+                           destType, *relativeDest)));
 }
 
 void IMConstPropPass::visitRefSend(RefSendOp send, FieldRef changedFieldRef) {
@@ -1006,8 +1004,8 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
     // Materialize reftype "constants" by materializing the constant
     // and probing it.
     Operation *cst;
-    if (auto refType = type_dyn_cast<RefType>(type)) {
-      assert(!type_cast<RefType>(type).getForceable() &&
+    if (auto refType = dyn_cast<RefType>(type)) {
+      assert(!cast<RefType>(type).getForceable() &&
              "Attempting to materialize rwprobe of constant, shouldn't happen");
       auto inner = getConst(constantValue, refType.getType(), loc);
       assert(inner);
@@ -1042,7 +1040,7 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
     // Cannot materialize constants for certain types.
     // TODO: Let materializeConstant tell us what it supports instead of this.
     // Presently it asserts on unsupported combinations, so check this here.
-    if (!type_isa<FIRRTLBaseType, RefType, FIntegerType, StringType, BoolType>(
+    if (!isa<FIRRTLBaseType, RefType, FIntegerType, StringType, BoolType>(
             value.getType()))
       return false;
 
@@ -1100,10 +1098,10 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
             // constant, the aggregate value cannot be replaced. We can forward
             // the constant to its users, so IMDCE (or SV/HW canonicalizer)
             // should remove the aggregate if entire aggregate is dead.
-            auto type = type_dyn_cast<FIRRTLType>(connect.getDest().getType());
+            auto type = dyn_cast<FIRRTLType>(connect.getDest().getType());
             if (!type)
               return WalkResult::advance();
-            auto baseType = type_dyn_cast<FIRRTLBaseType>(type);
+            auto baseType = dyn_cast<FIRRTLBaseType>(type);
             if (baseType && !baseType.isGround())
               return WalkResult::advance();
             if (isDeletableWireOrRegOrNode(destOp) &&

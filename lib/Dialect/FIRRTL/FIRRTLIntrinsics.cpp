@@ -173,7 +173,7 @@ FailureOr<size_t> IntrinsicLowerings::lower(FModuleOp mod,
          Location loc) -> Value {
     if (inputs.size() != 1)
       return {};
-    auto inputType = type_dyn_cast<FIRRTLBaseType>(inputs.front().getType());
+    auto inputType = dyn_cast<FIRRTLBaseType>(inputs.front().getType());
     if (!inputType)
       return {};
 
@@ -959,7 +959,7 @@ public:
     // Check operands.
     for (auto idx : llvm::seq(gi.getNumInputs()))
       if (gi.checkInputType(idx, "must be ground type", [](auto ty) {
-            auto base = type_dyn_cast<FIRRTLBaseType>(ty);
+            auto base = dyn_cast<FIRRTLBaseType>(ty);
             return base && base.isGround();
           }))
         return failure();

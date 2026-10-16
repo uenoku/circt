@@ -276,7 +276,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
               return success();
             markForRemoval(connect);
             if (isZeroWidth(
-                    type_cast<RefType>(connect.getSrc().getType()).getType()))
+                    cast<RefType>(connect.getSrc().getType()).getType()))
               return success();
             // Merge the dataflow classes of destination into the source of the
             // Connect. This handles two cases:
@@ -327,7 +327,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
           })
           .Case<Forceable>([&](Forceable op) {
             // Handle declarations containing refs as "data".
-            if (type_isa<RefType>(op.getDataRaw().getType())) {
+            if (isa<RefType>(op.getDataRaw().getType())) {
               markForRemoval(op);
               return success();
             }
@@ -669,7 +669,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
       setPortToRemove(inst, portNum, numPorts);
       // Drop the dead-instance-ports.
       if (instanceResult.use_empty() ||
-          isZeroWidth(type_cast<RefType>(instanceResult.getType()).getType()))
+          isZeroWidth(cast<RefType>(instanceResult.getType()).getType()))
         continue;
       auto refModuleArg = refMod.getArgument(portNum);
       if (inst.getPortDirection(portNum) == Direction::Out) {
@@ -710,7 +710,7 @@ class LowerXMRPass : public circt::firrtl::impl::LowerXMRBase<LowerXMRPass> {
         ImplicitLocOpBuilder::atBlockBegin(module.getLoc(), body);
     for (size_t portIndex = 0, numPorts = module.getNumPorts();
          portIndex != numPorts; ++portIndex) {
-      auto refType = type_dyn_cast<RefType>(module.getPortType(portIndex));
+      auto refType = dyn_cast<RefType>(module.getPortType(portIndex));
       if (!refType || isZeroWidth(refType.getType()) ||
           module.getPortDirection(portIndex) != Direction::Out)
         continue;

@@ -308,7 +308,7 @@ ProbeVisitor::visitMemoryDebugPortOp(chirrtl::MemoryDebugPortOp op) {
   auto type = *conv;
   assert(type);
 
-  auto vectype = type_cast<FVectorType>(type);
+  auto vectype = cast<FVectorType>(type);
 
   // Just assert the chirrtl memory IR has the expected structure,
   // if it didn't many things break.

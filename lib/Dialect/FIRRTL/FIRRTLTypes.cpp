@@ -68,7 +68,7 @@ static LogicalResult customTypePrinter(Type type, AsmPrinter &os) {
         printWidthQualifier(analogType.getWidth());
       })
       .Case<BundleType, OpenBundleType>([&](auto bundleType) {
-        if (firrtl::type_isa<OpenBundleType>(bundleType))
+        if (isa<OpenBundleType>(bundleType))
           os << "open";
         os << "bundle<";
         llvm::interleaveComma(bundleType, os, [&](auto element) {
@@ -124,7 +124,7 @@ static LogicalResult customTypePrinter(Type type, AsmPrinter &os) {
         os << '>';
       })
       .Case<FVectorType, OpenVectorType>([&](auto vectorType) {
-        if (firrtl::type_isa<OpenVectorType>(vectorType))
+        if (isa<OpenVectorType>(vectorType))
           os << "open";
         os << "vector<";
         printNestedType(vectorType.getElementType(), os);
@@ -593,7 +593,7 @@ static ParseResult parseFIRRTLType(FIRRTLType &result, StringRef name,
   Type type;
   if (failed(parseType(type, name, parser)))
     return failure();
-  result = type_dyn_cast<FIRRTLType>(type);
+  result = dyn_cast<FIRRTLType>(type);
   if (result)
     return success();
   parser.emitError(parser.getNameLoc(), "unknown FIRRTL type: \"")
@@ -606,7 +606,7 @@ static ParseResult parseFIRRTLBaseType(FIRRTLBaseType &result, StringRef name,
   FIRRTLType type;
   if (failed(parseFIRRTLType(type, name, parser)))
     return failure();
-  if (auto base = type_dyn_cast<FIRRTLBaseType>(type)) {
+  if (auto base = dyn_cast<FIRRTLBaseType>(type)) {
     result = base;
     return success();
   }
@@ -619,7 +619,7 @@ static ParseResult parseFIRRTLPropertyType(PropertyType &result, StringRef name,
   FIRRTLType type;
   if (failed(parseFIRRTLType(type, name, parser)))
     return failure();
-  if (auto prop = type_dyn_cast<PropertyType>(type)) {
+  if (auto prop = dyn_cast<PropertyType>(type)) {
     result = prop;
     return success();
   }
@@ -745,8 +745,7 @@ RecursiveTypeProperties FIRRTLType::getRecursiveTypeProperties() const {
   return TypeSwitch<FIRRTLType, RecursiveTypeProperties>(*this)
       .Case<ClockType, ResetType, AsyncResetType>([](FIRRTLBaseType type) {
         return RecursiveTypeProperties{
-            true,           false, false,
-            type.isConst(), false, firrtl::type_isa<ResetType>(type)};
+            true, false, false, type.isConst(), false, isa<ResetType>(type)};
       })
       .Case<SIntType, UIntType>([](auto type) {
         return RecursiveTypeProperties{
@@ -921,7 +920,7 @@ bool firrtl::containsConst(Type type) {
 
 // NOLINTBEGIN(misc-no-recursion)
 bool firrtl::hasZeroBitWidth(FIRRTLType type) {
-  return FIRRTLTypeSwitch<FIRRTLType, bool>(type)
+  return llvm::TypeSwitch<FIRRTLType, bool>(type)
       .Case<BundleType>([&](auto bundle) {
         for (size_t i = 0, e = bundle.getNumElements(); i < e; ++i) {
           auto elt = bundle.getElement(i);
@@ -976,8 +975,8 @@ bool firrtl::areTypesEquivalent(FIRRTLType destFType, FIRRTLType srcFType,
                                 bool destOuterTypeIsConst,
                                 bool srcOuterTypeIsConst,
                                 bool requireSameWidths) {
-  auto destType = type_dyn_cast<FIRRTLBaseType>(destFType);
-  auto srcType = type_dyn_cast<FIRRTLBaseType>(srcFType);
+  auto destType = dyn_cast<FIRRTLBaseType>(destFType);
+  auto srcType = dyn_cast<FIRRTLBaseType>(srcFType);
 
   // For non-base types, only equivalent if identical.
   if (!destType || !srcType)
@@ -987,8 +986,8 @@ bool firrtl::areTypesEquivalent(FIRRTLType destFType, FIRRTLType srcFType,
   bool destIsConst = destOuterTypeIsConst || destFType.isConst();
 
   // Vector types can be connected if they have the same size and element type.
-  auto destVectorType = type_dyn_cast<FVectorType>(destType);
-  auto srcVectorType = type_dyn_cast<FVectorType>(srcType);
+  auto destVectorType = dyn_cast<FVectorType>(destType);
+  auto srcVectorType = dyn_cast<FVectorType>(srcType);
   if (destVectorType && srcVectorType)
     return destVectorType.getNumElements() == srcVectorType.getNumElements() &&
            areTypesEquivalent(destVectorType.getElementType(),
@@ -997,8 +996,8 @@ bool firrtl::areTypesEquivalent(FIRRTLType destFType, FIRRTLType srcFType,
 
   // Bundle types can be connected if they have the same size, element names,
   // and element types.
-  auto destBundleType = type_dyn_cast<BundleType>(destType);
-  auto srcBundleType = type_dyn_cast<BundleType>(srcType);
+  auto destBundleType = dyn_cast<BundleType>(destType);
+  auto srcBundleType = dyn_cast<BundleType>(srcType);
   if (destBundleType && srcBundleType) {
     auto destElements = destBundleType.getElements();
     auto srcElements = srcBundleType.getElements();
@@ -1018,8 +1017,8 @@ bool firrtl::areTypesEquivalent(FIRRTLType destFType, FIRRTLType srcFType,
 
   // Enum types can be connected if they have the same size, element names, and
   // element types.
-  auto dstEnumType = type_dyn_cast<FEnumType>(destType);
-  auto srcEnumType = type_dyn_cast<FEnumType>(srcType);
+  auto dstEnumType = dyn_cast<FEnumType>(destType);
+  auto srcEnumType = dyn_cast<FEnumType>(srcType);
 
   if (dstEnumType && srcEnumType) {
     if (dstEnumType.getNumElements() != srcEnumType.getNumElements())
@@ -1043,11 +1042,11 @@ bool firrtl::areTypesEquivalent(FIRRTLType destFType, FIRRTLType srcFType,
     return false;
 
   // Reset types can be driven by UInt<1>, AsyncReset, or Reset types.
-  if (firrtl::type_isa<ResetType>(destType))
+  if (isa<ResetType>(destType))
     return srcType.isResetType();
 
   // Reset types can drive UInt<1>, AsyncReset, or Reset types.
-  if (firrtl::type_isa<ResetType>(srcType))
+  if (isa<ResetType>(srcType))
     return destType.isResetType();
 
   // If we can implicitly truncate or extend the bitwidth, or either width is
@@ -1068,8 +1067,8 @@ bool firrtl::areTypesConstCastable(FIRRTLType destFType, FIRRTLType srcFType,
   if (destFType == srcFType)
     return true;
 
-  auto destType = type_dyn_cast<FIRRTLBaseType>(destFType);
-  auto srcType = type_dyn_cast<FIRRTLBaseType>(srcFType);
+  auto destType = dyn_cast<FIRRTLBaseType>(destFType);
+  auto srcType = dyn_cast<FIRRTLBaseType>(srcFType);
 
   // For non-base types, only castable if identical.
   if (!destType || !srcType)
@@ -1087,8 +1086,8 @@ bool firrtl::areTypesConstCastable(FIRRTLType destFType, FIRRTLType srcFType,
 
   // Vector types can be casted if they have the same size and castable element
   // type.
-  auto destVectorType = type_dyn_cast<FVectorType>(destType);
-  auto srcVectorType = type_dyn_cast<FVectorType>(srcType);
+  auto destVectorType = dyn_cast<FVectorType>(destType);
+  auto srcVectorType = dyn_cast<FVectorType>(srcType);
   if (destVectorType && srcVectorType)
     return destVectorType.getNumElements() == srcVectorType.getNumElements() &&
            areTypesConstCastable(destVectorType.getElementType(),
@@ -1098,8 +1097,8 @@ bool firrtl::areTypesConstCastable(FIRRTLType destFType, FIRRTLType srcFType,
 
   // Bundle types can be casted if they have the same size, element names,
   // and castable element types.
-  auto destBundleType = type_dyn_cast<BundleType>(destType);
-  auto srcBundleType = type_dyn_cast<BundleType>(srcType);
+  auto destBundleType = dyn_cast<BundleType>(destType);
+  auto srcBundleType = dyn_cast<BundleType>(srcType);
   if (destBundleType && srcBundleType) {
     auto destElements = destBundleType.getElements();
     auto srcElements = srcBundleType.getElements();
@@ -1124,8 +1123,8 @@ bool firrtl::areTypesConstCastable(FIRRTLType destFType, FIRRTLType srcFType,
 }
 
 bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
-  auto dstRefType = type_dyn_cast<RefType>(dstType);
-  auto srcRefType = type_dyn_cast<RefType>(srcType);
+  auto dstRefType = dyn_cast<RefType>(dstType);
+  auto srcRefType = dyn_cast<RefType>(srcType);
   if (!dstRefType || !srcRefType)
     return false;
   if (dstRefType == srcRefType)
@@ -1159,8 +1158,8 @@ bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
     // Recurse through aggregates to get the leaves, checking
     // structural equivalence re:element count + names.
 
-    if (auto destVectorType = type_dyn_cast<FVectorType>(dest)) {
-      auto srcVectorType = type_dyn_cast<FVectorType>(src);
+    if (auto destVectorType = dyn_cast<FVectorType>(dest)) {
+      auto srcVectorType = dyn_cast<FVectorType>(src);
       return srcVectorType &&
              destVectorType.getNumElements() ==
                  srcVectorType.getNumElements() &&
@@ -1168,8 +1167,8 @@ bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
                srcVectorType.getElementType(), srcIsConst);
     }
 
-    if (auto destBundleType = type_dyn_cast<BundleType>(dest)) {
-      auto srcBundleType = type_dyn_cast<BundleType>(src);
+    if (auto destBundleType = dyn_cast<BundleType>(dest)) {
+      auto srcBundleType = dyn_cast<BundleType>(src);
       if (!srcBundleType)
         return false;
       // (no need to check orientation, these are always passive)
@@ -1185,8 +1184,8 @@ bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
                  });
     }
 
-    if (auto destEnumType = type_dyn_cast<FEnumType>(dest)) {
-      auto srcEnumType = type_dyn_cast<FEnumType>(src);
+    if (auto destEnumType = dyn_cast<FEnumType>(dest)) {
+      auto srcEnumType = dyn_cast<FEnumType>(src);
       if (!srcEnumType)
         return false;
       auto destElements = destEnumType.getElements();
@@ -1202,7 +1201,7 @@ bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
     }
 
     // Reset types can be driven by UInt<1>, AsyncReset, or Reset types.
-    if (type_isa<ResetType>(dest))
+    if (isa<ResetType>(dest))
       return src.isResetType();
     // (but don't allow the other direction, can only become more general)
 
@@ -1225,7 +1224,7 @@ bool firrtl::areTypesRefCastable(Type dstType, Type srcType) {
 bool firrtl::isTypeLarger(FIRRTLBaseType dstType, FIRRTLBaseType srcType) {
   return TypeSwitch<FIRRTLBaseType, bool>(dstType)
       .Case<BundleType>([&](auto dstBundle) {
-        auto srcBundle = type_cast<BundleType>(srcType);
+        auto srcBundle = cast<BundleType>(srcType);
         for (size_t i = 0, n = dstBundle.getNumElements(); i < n; ++i) {
           auto srcElem = srcBundle.getElement(i);
           auto dstElem = dstBundle.getElement(i);
@@ -1241,7 +1240,7 @@ bool firrtl::isTypeLarger(FIRRTLBaseType dstType, FIRRTLBaseType srcType) {
       })
       .Case<FVectorType>([&](auto vector) {
         return isTypeLarger(vector.getElementType(),
-                            type_cast<FVectorType>(srcType).getElementType());
+                            cast<FVectorType>(srcType).getElementType());
       })
       .Default([&](auto dstGround) {
         int32_t destWidth = dstType.getPassiveType().getBitWidthOrSentinel();
@@ -1262,7 +1261,7 @@ bool firrtl::areTypesIdentical(mlir::Type lhs, mlir::Type rhs) {
 /// Return the passive version of a firrtl type
 /// top level for ODS constraint usage
 Type firrtl::getPassiveType(Type anyBaseFIRRTLType) {
-  return type_cast<FIRRTLBaseType>(anyBaseFIRRTLType).getPassiveType();
+  return cast<FIRRTLBaseType>(anyBaseFIRRTLType).getPassiveType();
 }
 
 bool firrtl::isTypeInOut(Type type) {
@@ -1303,9 +1302,9 @@ IntType IntType::get(MLIRContext *context, bool isSigned,
 }
 
 int32_t IntType::getWidthOrSentinel() const {
-  if (auto sintType = type_dyn_cast<SIntType>(*this))
+  if (auto sintType = dyn_cast<SIntType>(*this))
     return sintType.getWidthOrSentinel();
-  if (auto uintType = type_dyn_cast<UIntType>(*this))
+  if (auto uintType = dyn_cast<UIntType>(*this))
     return uintType.getWidthOrSentinel();
   return -1;
 }
@@ -1334,9 +1333,9 @@ struct circt::firrtl::detail::WidthTypeStorage : detail::FIRRTLBaseTypeStorage {
 
 IntType IntType::getConstType(bool isConst) const {
 
-  if (auto sIntType = type_dyn_cast<SIntType>(*this))
+  if (auto sIntType = dyn_cast<SIntType>(*this))
     return sIntType.getConstType(isConst);
-  return type_cast<UIntType>(*this).getConstType(isConst);
+  return cast<UIntType>(*this).getConstType(isConst);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1851,10 +1850,10 @@ OpenBundleType::verify(function_ref<InFlightDiagnostic()> emitErrorFn,
       return emitErrorFn()
              << "'const' bundle cannot have references, but element "
              << element.name << " has type " << element.type;
-    if (type_isa<LHSType>(element.type))
+    if (isa<LHSType>(element.type))
       return emitErrorFn() << "bundle element " << element.name
                            << " cannot have a left-hand side type";
-    if (type_isa<DomainType>(element.type))
+    if (isa<DomainType>(element.type))
       return emitErrorFn() << "bundle element " << element.name
                            << " cannot have a domain type";
   }
@@ -2112,9 +2111,9 @@ OpenVectorType::verify(function_ref<InFlightDiagnostic()> emitErrorFn,
                        bool isConst) {
   if (elementType.containsReference() && isConst)
     return emitErrorFn() << "vector cannot be const with references";
-  if (type_isa<LHSType>(elementType))
+  if (isa<LHSType>(elementType))
     return emitErrorFn() << "vector cannot have a left-hand side type";
-  if (type_isa<DomainType>(elementType))
+  if (isa<DomainType>(elementType))
     return emitErrorFn() << "vector cannot have a domain type";
   return success();
 }
@@ -2350,7 +2349,7 @@ LogicalResult LHSType::verify(function_ref<InFlightDiagnostic()> emitError,
     return emitError() << "lhs type cannot contain a non-passive type";
   if (type.containsReference())
     return emitError() << "lhs type cannot contain a reference";
-  if (type_isa<LHSType>(type))
+  if (isa<LHSType>(type))
     return emitError() << "lhs type cannot contain a lhs type";
 
   return success();

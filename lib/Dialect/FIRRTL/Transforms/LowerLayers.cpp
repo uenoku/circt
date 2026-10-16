@@ -449,7 +449,7 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
     //
     // TODO: Change this to recursively clone.  This will matter once FString
     // operations have operands.
-    if (type_isa<FStringType>(value.getType())) {
+    if (isa<FStringType>(value.getType())) {
       localBuilder.setInsertionPoint(user);
       replacement = localBuilder.clone(*value.getDefiningOp())->getResult(0);
       replacements.insert({value, replacement});
@@ -504,7 +504,7 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
     //
     // The handling of (2) and (3) is diffuse in the code below due to needing
     // to split things based on whether a value has a defining operation or not.
-    auto baseType = type_cast<FIRRTLBaseType>(value.getType());
+    auto baseType = cast<FIRRTLBaseType>(value.getType());
     if (baseType && baseType.getBitWidthOrSentinel() == 0) {
       OpBuilder::InsertionGuard guard(localBuilder);
       auto zeroUIntType = UIntType::get(localBuilder.getContext(), 0);
@@ -857,7 +857,7 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
           return WalkResult::advance();
 
         // Otherwise, capture the input operand, if possible.
-        if (firrtl::type_cast<FIRRTLBaseType>(input.getType()).isPassive()) {
+        if (cast<FIRRTLBaseType>(input.getType()).isPassive()) {
           subOp.getInputMutable().assign(getReplacement(subOp, input));
           return WalkResult::advance();
         }
@@ -888,7 +888,7 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
         }
 
         // Otherwise, capture the input operand, if possible.
-        if (firrtl::type_cast<FIRRTLBaseType>(input.getType()).isPassive()) {
+        if (cast<FIRRTLBaseType>(input.getType()).isPassive()) {
           subOp.getInputMutable().assign(getReplacement(subOp, input));
           if (!isAncestorOfValueOwner(layerBlock, index))
             subOp.getIndexMutable().assign(getReplacement(subOp, index));
@@ -1012,7 +1012,7 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
 
         // Domain-type operands have no XMR representation and need to have
         // input ports created.
-        if (type_isa<DomainType>(operand.getType())) {
+        if (isa<DomainType>(operand.getType())) {
           auto replacement = getOrCreateDomainInputPort(operand, op->getLoc());
           if (failed(replacement))
             return WalkResult::interrupt();

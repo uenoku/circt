@@ -126,16 +126,13 @@ struct InferReadWritePass
         return WalkResult::skip();
 
       rClock = wClock;
-      LLVM_DEBUG(
-          llvm::dbgs() << "\n read clock:" << rClock
-                       << " --- write clock:" << wClock;
-          llvm::dbgs() << "\n Read terms==>"; for (auto t
-                                                   : readTerms) llvm::dbgs()
-                                              << "\n term::" << t;
+      LLVM_DEBUG(llvm::dbgs() << "\n read clock:" << rClock
+                              << " --- write clock:" << wClock;
+                 llvm::dbgs() << "\n Read terms==>";
+                 for (auto t : readTerms) llvm::dbgs() << "\n term::" << t;
 
-          llvm::dbgs() << "\n Write terms==>"; for (auto t
-                                                    : writeTerms) llvm::dbgs()
-                                               << "\n term::" << t;
+                 llvm::dbgs() << "\n Write terms==>";
+                 for (auto t : writeTerms) llvm::dbgs() << "\n term::" << t;
 
       );
       // If the read and write clocks are the same, and if any of the write
@@ -350,8 +347,7 @@ private:
     // Cat the bits of both the operands.
     for (auto operand : defOp->getOperands()) {
       SmallVectorImpl<Value> &opBits = valueBitsSrc[operand];
-      size_t s =
-          getBitWidth(type_cast<FIRRTLBaseType>(operand.getType())).value();
+      size_t s = getBitWidth(cast<FIRRTLBaseType>(operand.getType())).value();
       assert(opBits.size() == s);
       for (long i = lastSize, e = lastSize + s; i != e; ++i)
         bits[i] = opBits[i - lastSize];
@@ -384,7 +380,7 @@ private:
         continue;
       }
 
-      auto size = getBitWidth(type_cast<FIRRTLBaseType>(val.getType()));
+      auto size = getBitWidth(cast<FIRRTLBaseType>(val.getType()));
       // Cannot analyze aggregate types.
       if (!size.has_value())
         return false;

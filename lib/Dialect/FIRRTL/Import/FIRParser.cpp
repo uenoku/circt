@@ -840,7 +840,7 @@ ParseResult FIRParser::parseEnumType(FIRRTLType &result) {
           FIRRTLType parsedType;
           if (parseType(parsedType, "expected enumeration type"))
             return failure();
-          type = type_dyn_cast<FIRRTLBaseType>(parsedType);
+          type = dyn_cast<FIRRTLBaseType>(parsedType);
           if (!type)
             return emitError(fieldLoc, "field must be a base type");
         } else {
@@ -904,7 +904,7 @@ ParseResult FIRParser::parsePropertyType(PropertyType &result,
   FIRRTLType type;
   if (parseType(type, message))
     return failure();
-  auto prop = type_dyn_cast<PropertyType>(type);
+  auto prop = dyn_cast<PropertyType>(type);
   if (!prop)
     return emitError(loc, "expected property type");
   result = prop;
@@ -1111,7 +1111,7 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
 
     bool forceable = kind == FIRToken::kw_RWProbe;
 
-    auto innerType = type_dyn_cast<FIRRTLBaseType>(type);
+    auto innerType = dyn_cast<FIRRTLBaseType>(type);
     if (!innerType)
       return emitError(loc, "invalid probe inner type, must be base-type");
 
@@ -1217,7 +1217,7 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
     if (failed(parseType(result, message)))
       return failure();
 
-    auto baseType = type_dyn_cast<FIRRTLBaseType>(result);
+    auto baseType = dyn_cast<FIRRTLBaseType>(result);
     if (!baseType)
       return emitError(loc, "only hardware types can be 'const'");
 
@@ -1310,7 +1310,7 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
     if (size < 0)
       return emitError(sizeLoc, "invalid size specifier"), failure();
 
-    auto baseType = type_dyn_cast<FIRRTLBaseType>(result);
+    auto baseType = dyn_cast<FIRRTLBaseType>(result);
     if (baseType)
       result = FVectorType::get(baseType, size);
     else {
@@ -2190,7 +2190,7 @@ private:
 /// Attach invalid values to every element of the value.
 // NOLINTNEXTLINE(misc-no-recursion)
 void FIRStmtParser::emitInvalidate(Value val, Flow flow) {
-  auto tpe = type_dyn_cast<FIRRTLBaseType>(val.getType());
+  auto tpe = dyn_cast<FIRRTLBaseType>(val.getType());
   // Invalidate does nothing for non-base types.
   // When aggregates-of-refs are supported, instead check 'containsReference'
   // below.
@@ -2530,7 +2530,7 @@ ParseResult FIRStmtParser::parseExpImpl(Value &result, const Twine &message,
   case FIRToken::lp_shr:
     // For FIRRTL versions earlier than 4.0.0, insert pad(_, 1) around any
     // unsigned shr This ensures the minimum width is 1 (but can be greater)
-    if (version < FIRVersion(4, 0, 0) && type_isa<UIntType>(result.getType()))
+    if (version < FIRVersion(4, 0, 0) && isa<UIntType>(result.getType()))
       result = PadPrimOp::create(builder, result, 1);
     break;
   default:
@@ -2620,15 +2620,15 @@ ParseResult FIRStmtParser::parsePostFixFieldId(Value &result) {
   for (auto fieldName : fields) {
     std::optional<unsigned> indexV;
     auto type = result.getType();
-    if (auto refTy = type_dyn_cast<RefType>(type))
+    if (auto refTy = dyn_cast<RefType>(type))
       type = refTy.getType();
-    if (auto bundle = type_dyn_cast<BundleType>(type))
+    if (auto bundle = dyn_cast<BundleType>(type))
       indexV = bundle.getElementIndex(fieldName);
-    else if (auto bundle = type_dyn_cast<OpenBundleType>(type))
+    else if (auto bundle = dyn_cast<OpenBundleType>(type))
       indexV = bundle.getElementIndex(fieldName);
-    else if (auto klass = type_dyn_cast<ClassType>(type))
+    else if (auto klass = dyn_cast<ClassType>(type))
       indexV = klass.getElementIndex(fieldName);
-    else if (auto domain = type_dyn_cast<DomainType>(type))
+    else if (auto domain = dyn_cast<DomainType>(type))
       indexV = domain.getFieldIndex(fieldName);
     else
       return emitError(loc,
@@ -2639,13 +2639,13 @@ ParseResult FIRStmtParser::parsePostFixFieldId(Value &result) {
     auto indexNo = *indexV;
 
     FailureOr<Value> subResult;
-    if (type_isa<RefType>(result.getType()))
+    if (isa<RefType>(result.getType()))
       subResult = emitCachedSubAccess<RefSubOp>(result, indexNo, loc);
-    else if (type_isa<ClassType>(type))
+    else if (isa<ClassType>(type))
       subResult = emitCachedSubAccess<ObjectSubfieldOp>(result, indexNo, loc);
-    else if (type_isa<DomainType>(type))
+    else if (isa<DomainType>(type))
       subResult = emitCachedSubAccess<DomainSubfieldOp>(result, indexNo, loc);
-    else if (type_isa<BundleType>(type))
+    else if (isa<BundleType>(type))
       subResult = emitCachedSubAccess<SubfieldOp>(result, indexNo, loc);
     else
       subResult = emitCachedSubAccess<OpenSubfieldOp>(result, indexNo, loc);
@@ -2672,9 +2672,9 @@ ParseResult FIRStmtParser::parsePostFixIntSubscript(Value &result) {
     return emitError(loc, "invalid index specifier"), failure();
 
   FailureOr<Value> subResult;
-  if (type_isa<RefType>(result.getType()))
+  if (isa<RefType>(result.getType()))
     subResult = emitCachedSubAccess<RefSubOp>(result, indexNo, loc);
-  else if (type_isa<FVectorType>(result.getType()))
+  else if (isa<FVectorType>(result.getType()))
     subResult = emitCachedSubAccess<SubindexOp>(result, indexNo, loc);
   else
     subResult = emitCachedSubAccess<OpenSubindexOp>(result, indexNo, loc);
@@ -2697,7 +2697,7 @@ ParseResult FIRStmtParser::parsePostFixDynamicSubscript(Value &result) {
     return failure();
 
   // If the index expression is a flip type, strip it off.
-  auto indexType = type_dyn_cast<FIRRTLBaseType>(index.getType());
+  auto indexType = dyn_cast<FIRRTLBaseType>(index.getType());
   if (!indexType)
     return emitError("expected base type for index expression");
   indexType = indexType.getPassiveType();
@@ -2839,12 +2839,12 @@ ParseResult FIRStmtParser::parseListConcatExp(Value &result) {
         if (parseExp(operand, "expected expression in List concat expression"))
           return failure();
 
-        if (!type_isa<ListType>(operand.getType()))
+        if (!isa<ListType>(operand.getType()))
           return emitError(loc, "unexpected expression of type ")
                  << operand.getType() << " in List concat expression";
 
         if (!type)
-          type = type_cast<ListType>(operand.getType());
+          type = cast<ListType>(operand.getType());
 
         if (operand.getType() != type)
           return emitError(loc, "unexpected expression of type ")
@@ -2877,15 +2877,15 @@ ParseResult FIRStmtParser::parseCatExp(Value &result) {
         auto operandLoc = getToken().getLoc();
         if (parseExp(operand, "expected expression in cat expression"))
           return failure();
-        if (!type_isa<IntType>(operand.getType())) {
+        if (!isa<IntType>(operand.getType())) {
           auto diag = emitError(loc, "all operands must be Int type");
           diag.attachNote(translateLocation(operandLoc))
               << "non-integer operand is here";
           return failure();
         }
         if (!isSigned)
-          isSigned = type_isa<SIntType>(operand.getType());
-        else if (type_isa<SIntType>(operand.getType()) != *isSigned) {
+          isSigned = isa<SIntType>(operand.getType());
+        else if (isa<SIntType>(operand.getType()) != *isSigned) {
           auto diag = emitError(loc, "all operands must have same signedness");
           diag.attachNote(translateLocation(operandLoc))
               << "operand with different signedness is here";
@@ -2919,7 +2919,7 @@ ParseResult FIRStmtParser::parseStringConcatExp(Value &result) {
         if (parseExp(operand,
                      "expected expression in string_concat expression"))
           return failure();
-        if (!type_isa<StringType>(operand.getType()))
+        if (!isa<StringType>(operand.getType()))
           return emitError(loc, "all operands must be String type");
         operands.push_back(operand);
         return success();
@@ -2949,8 +2949,7 @@ ParseResult FIRStmtParser::parsePropEqExp(Value &result) {
     return failure();
 
   auto isValidType = [](Type t) {
-    return type_isa<StringType>(t) || type_isa<BoolType>(t) ||
-           type_isa<FIntegerType>(t);
+    return isa<StringType>(t) || isa<BoolType>(t) || isa<FIntegerType>(t);
   };
   if (!isValidType(lhs.getType()))
     return emitError(loc,
@@ -3337,7 +3336,7 @@ ParseResult FIRStmtParser::parseMemPort(MemDirAttr direction) {
       parseExp(clock, "expected clock expression") || parseOptionalInfo())
     return failure();
 
-  auto memVType = type_dyn_cast<CMemoryType>(memory.getType());
+  auto memVType = dyn_cast<CMemoryType>(memory.getType());
   if (!memVType)
     return emitError(startLoc,
                      "memory port should have behavioral memory type");
@@ -3748,7 +3747,7 @@ ParseResult FIRStmtParser::parseEnumExp(Value &value) {
     return failure();
 
   // Check that the input type is a legal enumeration.
-  auto enumType = type_dyn_cast<FEnumType>(type);
+  auto enumType = dyn_cast<FEnumType>(type);
   if (!enumType)
     return emitError(startLoc,
                      "expected enumeration type in enumeration expression");
@@ -3794,7 +3793,7 @@ ParseResult FIRStmtParser::parseMatch(unsigned matchIndent) {
       parseOptionalInfo())
     return failure();
 
-  auto enumType = type_dyn_cast<FEnumType>(input.getType());
+  auto enumType = dyn_cast<FEnumType>(input.getType());
   if (!enumType)
     return mlir::emitError(
                input.getLoc(),
@@ -3895,7 +3894,7 @@ ParseResult FIRStmtParser::parseDomainExp(Value &result) {
     return failure();
 
   auto type = result.getType();
-  if (!type_isa<DomainType>(type))
+  if (!isa<DomainType>(type))
     return emitError(loc) << "expected domain-type expression, got " << type;
 
   return success();
@@ -4069,13 +4068,13 @@ ParseResult FIRStmtParser::parseRWProbeStaticRefExp(FieldRef &refResult,
       if (parseFieldIdSeq(fields, "expected field name"))
         return failure();
       for (auto fieldName : fields) {
-        if (auto bundle = type_dyn_cast<BundleType>(type)) {
+        if (auto bundle = dyn_cast<BundleType>(type)) {
           if (auto index = bundle.getElementIndex(fieldName)) {
             refResult = refResult.getSubField(bundle.getFieldID(*index));
             type = bundle.getElementTypePreservingConst(*index);
             continue;
           }
-        } else if (auto bundle = type_dyn_cast<OpenBundleType>(type)) {
+        } else if (auto bundle = dyn_cast<OpenBundleType>(type)) {
           if (auto index = bundle.getElementIndex(fieldName)) {
             refResult = refResult.getSubField(bundle.getFieldID(*index));
             type = bundle.getElementTypePreservingConst(*index);
@@ -4101,13 +4100,13 @@ ParseResult FIRStmtParser::parseRWProbeStaticRefExp(FieldRef &refResult,
       if (index < 0)
         return emitError(loc, "invalid index specifier");
 
-      if (auto vector = type_dyn_cast<FVectorType>(type)) {
+      if (auto vector = dyn_cast<FVectorType>(type)) {
         if ((unsigned)index < vector.getNumElements()) {
           refResult = refResult.getSubField(vector.getFieldID(index));
           type = vector.getElementTypePreservingConst();
           continue;
         }
-      } else if (auto vector = type_dyn_cast<OpenVectorType>(type)) {
+      } else if (auto vector = dyn_cast<OpenVectorType>(type)) {
         if ((unsigned)index < vector.getNumElements()) {
           refResult = refResult.getSubField(vector.getFieldID(index));
           type = vector.getElementTypePreservingConst();
@@ -4302,11 +4301,11 @@ ParseResult FIRStmtParser::parseRefDefine() {
     return failure();
 
   // Check reference expressions are of reference type.
-  if (!type_isa<RefType>(target.getType()))
+  if (!isa<RefType>(target.getType()))
     return emitError(startTok.getLoc(), "expected reference-type expression in "
                                         "'define' target (LHS), got ")
            << target.getType();
-  if (!type_isa<RefType>(src.getType()))
+  if (!isa<RefType>(src.getType()))
     return emitError(startTok.getLoc(), "expected reference-type expression in "
                                         "'define' source (RHS), got ")
            << src.getType();
@@ -4341,7 +4340,7 @@ ParseResult FIRStmtParser::parseRefRead(Value &result) {
   locationProcessor.setLoc(startTok.getLoc());
 
   // Check argument is a ref-type value.
-  if (!type_isa<RefType>(ref.getType()))
+  if (!isa<RefType>(ref.getType()))
     return emitError(startTok.getLoc(),
                      "expected reference-type expression in 'read', got ")
            << ref.getType();
@@ -4364,7 +4363,7 @@ ParseResult FIRStmtParser::parseProbe(Value &result) {
   locationProcessor.setLoc(startTok.getLoc());
 
   // Check probe expression is base-type.
-  if (!type_isa<FIRRTLBaseType>(staticRef.getType()))
+  if (!isa<FIRRTLBaseType>(staticRef.getType()))
     return emitError(startTok.getLoc(),
                      "expected base-type expression in 'probe', got ")
            << staticRef.getType();
@@ -4399,7 +4398,7 @@ ParseResult FIRStmtParser::parseRWProbe(Value &result) {
   // Not public port (verifier)
 
   // Check probe expression is base-type.
-  auto targetType = type_dyn_cast<FIRRTLBaseType>(parsedTargetType);
+  auto targetType = dyn_cast<FIRRTLBaseType>(parsedTargetType);
   if (!targetType)
     return emitError(startTok.getLoc(),
                      "expected base-type expression in 'rwprobe', got ")
@@ -4442,13 +4441,13 @@ ParseResult FIRStmtParser::parseRefForce() {
     return failure();
 
   // Check reference expression is of reference type.
-  auto ref = type_dyn_cast<RefType>(dest.getType());
+  auto ref = dyn_cast<RefType>(dest.getType());
   if (!ref || !ref.getForceable())
     return emitError(
                startTok.getLoc(),
                "expected rwprobe-type expression for force destination, got ")
            << dest.getType();
-  auto srcBaseType = type_dyn_cast<FIRRTLBaseType>(src.getType());
+  auto srcBaseType = dyn_cast<FIRRTLBaseType>(src.getType());
   if (!srcBaseType)
     return emitError(startTok.getLoc(),
                      "expected base-type for force source, got ")
@@ -4492,12 +4491,12 @@ ParseResult FIRStmtParser::parseRefForceInitial() {
     return failure();
 
   // Check reference expression is of reference type.
-  auto ref = type_dyn_cast<RefType>(dest.getType());
+  auto ref = dyn_cast<RefType>(dest.getType());
   if (!ref || !ref.getForceable())
     return emitError(startTok.getLoc(), "expected rwprobe-type expression for "
                                         "force_initial destination, got ")
            << dest.getType();
-  auto srcBaseType = type_dyn_cast<FIRRTLBaseType>(src.getType());
+  auto srcBaseType = dyn_cast<FIRRTLBaseType>(src.getType());
   if (!srcBaseType)
     return emitError(startTok.getLoc(),
                      "expected base-type expression for force_initial "
@@ -4552,8 +4551,7 @@ ParseResult FIRStmtParser::parseRefRelease() {
     return failure();
 
   // Check reference expression is of reference type.
-  if (auto ref = type_dyn_cast<RefType>(dest.getType());
-      !ref || !ref.getForceable())
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
     return emitError(
                startTok.getLoc(),
                "expected rwprobe-type expression for release destination, got ")
@@ -4579,8 +4577,7 @@ ParseResult FIRStmtParser::parseRefReleaseInitial() {
     return failure();
 
   // Check reference expression is of reference type.
-  if (auto ref = type_dyn_cast<RefType>(dest.getType());
-      !ref || !ref.getForceable())
+  if (auto ref = dyn_cast<RefType>(dest.getType()); !ref || !ref.getForceable())
     return emitError(startTok.getLoc(), "expected rwprobe-type expression for "
                                         "release_initial destination, got ")
            << dest.getType();
@@ -4610,8 +4607,8 @@ ParseResult FIRStmtParser::parseConnect() {
       parseExp(rhs, "expected connect expression") || parseOptionalInfo())
     return failure();
 
-  auto lhsType = type_dyn_cast<FIRRTLBaseType>(lhs.getType());
-  auto rhsType = type_dyn_cast<FIRRTLBaseType>(rhs.getType());
+  auto lhsType = dyn_cast<FIRRTLBaseType>(lhs.getType());
+  auto rhsType = dyn_cast<FIRRTLBaseType>(rhs.getType());
   if (!lhsType || !rhsType)
     return mlir::emitError(locationProcessor.getLoc(*this, loc),
                            "cannot connect reference or property types");
@@ -4676,7 +4673,7 @@ ParseResult FIRStmtParser::parsePropAssert() {
                      "propassert condition must be of boolean type");
 
   // Note: This is a dead check for FIRRTL < 7.0.0.
-  if (!type_isa<StringType>(message.getType()))
+  if (!isa<StringType>(message.getType()))
     return emitError(messageLoc, "propassert message must be a string type");
 
   if (parseOptionalInfo())
@@ -4698,8 +4695,8 @@ ParseResult FIRStmtParser::parsePropAssign() {
       parseExp(rhs, "expected propassign expression") || parseOptionalInfo())
     return failure();
 
-  auto lhsType = type_dyn_cast<PropertyType>(lhs.getType());
-  auto rhsType = type_dyn_cast<PropertyType>(rhs.getType());
+  auto lhsType = dyn_cast<PropertyType>(lhs.getType());
+  auto rhsType = dyn_cast<PropertyType>(rhs.getType());
   if (!lhsType || !rhsType)
     return emitError(loc, "can only propassign property types");
   locationProcessor.setLoc(loc);
@@ -4843,8 +4840,8 @@ ParseResult FIRStmtParser::parseLeadingExpStmt(Value lhs) {
 
   locationProcessor.setLoc(loc);
 
-  auto lhsType = type_dyn_cast<FIRRTLBaseType>(lhs.getType());
-  auto rhsType = type_dyn_cast<FIRRTLBaseType>(rhs.getType());
+  auto lhsType = dyn_cast<FIRRTLBaseType>(lhs.getType());
+  auto rhsType = dyn_cast<FIRRTLBaseType>(rhs.getType());
   if (!lhsType || !rhsType)
     return mlir::emitError(locationProcessor.getLoc(*this, loc),
                            "cannot connect reference or property types");
@@ -5078,7 +5075,7 @@ ParseResult FIRStmtParser::parseCombMem() {
   locationProcessor.setLoc(startTok.getLoc());
 
   // Transform the parsed vector type into a memory type.
-  auto vectorType = type_dyn_cast<FVectorType>(type);
+  auto vectorType = dyn_cast<FVectorType>(type);
   if (!vectorType)
     return emitError("cmem requires vector type");
 
@@ -5121,7 +5118,7 @@ ParseResult FIRStmtParser::parseSeqMem() {
   locationProcessor.setLoc(startTok.getLoc());
 
   // Transform the parsed vector type into a memory type.
-  auto vectorType = type_dyn_cast<FVectorType>(type);
+  auto vectorType = dyn_cast<FVectorType>(type);
   if (!vectorType)
     return emitError("smem requires vector type");
 
@@ -5218,7 +5215,7 @@ ParseResult FIRStmtParser::parseMem(unsigned memIndent) {
     StringRef portName;
     if (parseId(portName, "expected port name"))
       return failure();
-    auto baseType = type_dyn_cast<FIRRTLBaseType>(type);
+    auto baseType = dyn_cast<FIRRTLBaseType>(type);
     if (!baseType)
       return emitError("unexpected type, must be base type");
     ports.push_back({builder.getStringAttr(portName),
@@ -5303,10 +5300,9 @@ ParseResult FIRStmtParser::parseNode() {
   // this is added to align with the SFC. (2) is less restrictive than
   // the SFC to accomodate for situations where the node is something
   // weird like a module output or an instance input.
-  auto initializerType = type_cast<FIRRTLType>(initializer.getType());
-  auto initializerBaseType =
-      type_dyn_cast<FIRRTLBaseType>(initializer.getType());
-  if (type_isa<AnalogType>(initializerType) ||
+  auto initializerType = cast<FIRRTLType>(initializer.getType());
+  auto initializerBaseType = dyn_cast<FIRRTLBaseType>(initializer.getType());
+  if (isa<AnalogType>(initializerType) ||
       !(initializerBaseType && initializerBaseType.isPassive())) {
     emitError(startTok.getLoc())
         << "Node cannot be analog and must be passive or passive under a flip "
@@ -5424,7 +5420,7 @@ ParseResult FIRStmtParser::parseRegister(unsigned regIndent) {
       parseExp(clock, "expected expression for register clock"))
     return failure();
 
-  if (!type_isa<FIRRTLBaseType>(type))
+  if (!isa<FIRRTLBaseType>(type))
     return emitError(startTok.getLoc(), "register must have base type");
 
   // Parse the 'with' specifier if present.
@@ -5522,7 +5518,7 @@ ParseResult FIRStmtParser::parseRegisterWithReset() {
       parseOptionalInfo())
     return failure();
 
-  if (!type_isa<FIRRTLBaseType>(type))
+  if (!isa<FIRRTLBaseType>(type))
     return emitError(startTok.getLoc(), "register must have base type");
 
   locationProcessor.setLoc(startTok.getLoc());
@@ -6163,7 +6159,7 @@ ParseResult FIRCircuitParser::parseExtModule(CircuitOp circuit,
 
   if (version >= FIRVersion({4, 0, 0})) {
     for (auto [pi, loc] : llvm::zip_equal(portList, portLocs)) {
-      if (auto ftype = type_dyn_cast<FIRRTLType>(pi.type)) {
+      if (auto ftype = dyn_cast<FIRRTLType>(pi.type)) {
         if (ftype.hasUninferredWidth())
           return emitError(loc, "extmodule port must have known width");
       }
@@ -6247,7 +6243,7 @@ ParseResult FIRCircuitParser::parseModule(CircuitOp circuit, bool isPublic,
 
   if (isPublic && version >= FIRVersion({4, 0, 0})) {
     for (auto [pi, loc] : llvm::zip_equal(portList, portLocs)) {
-      if (auto ftype = type_dyn_cast<FIRRTLType>(pi.type)) {
+      if (auto ftype = dyn_cast<FIRRTLType>(pi.type)) {
         if (ftype.hasUninferredWidth())
           return emitError(loc, "public module port must have known width");
         if (ftype.hasUninferredReset())

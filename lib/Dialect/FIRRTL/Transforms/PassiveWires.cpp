@@ -33,7 +33,7 @@ using namespace circt;
 using namespace firrtl;
 
 static bool hasFlip(Type t) {
-  if (auto type = type_dyn_cast<FIRRTLBaseType>(t))
+  if (auto type = dyn_cast<FIRRTLBaseType>(t))
     return !type.isPassive();
   return false;
 }
@@ -86,6 +86,6 @@ void PassiveWiresPass::runOnOperation() {
     for (auto users : r.getUsers())
       worklist.push_back(users);
     // In-place updates is safe as consumers don't care about flip.
-    r.setType(type_cast<FIRRTLBaseType>(r.getType()).getPassiveType());
+    r.setType(cast<FIRRTLBaseType>(r.getType()).getPassiveType());
   }
 }

@@ -144,13 +144,13 @@ Visitor::Visitor(MLIRContext *context) : context(context) {}
 // NOLINTNEXTLINE(misc-no-recursion)
 FIRRTLBaseType Visitor::convertType(FIRRTLBaseType type,
                                     SmallVector<unsigned> &dimensions) {
-  if (auto vectorType = type_dyn_cast<FVectorType>(type); vectorType) {
+  if (auto vectorType = dyn_cast<FVectorType>(type); vectorType) {
     dimensions.push_back(vectorType.getNumElements());
     auto converted = convertType(vectorType.getElementType(), dimensions);
     dimensions.pop_back();
     return converted;
   }
-  if (auto bundleType = type_dyn_cast<BundleType>(type); bundleType) {
+  if (auto bundleType = dyn_cast<BundleType>(type); bundleType) {
     SmallVector<BundleType::BundleElement> elements;
     for (auto element : bundleType.getElements()) {
       elements.push_back(BundleType::BundleElement(
@@ -166,7 +166,7 @@ FIRRTLBaseType Visitor::convertType(FIRRTLBaseType type,
 FIRRTLBaseType Visitor::convertType(FIRRTLBaseType type) {
   auto cached = typeMap.lookup(type);
   if (cached)
-    return type_cast<FIRRTLBaseType>(cached);
+    return cast<FIRRTLBaseType>(cached);
 
   SmallVector<unsigned> dimensions;
   auto converted = convertType(type, dimensions);
@@ -178,7 +178,7 @@ FIRRTLBaseType Visitor::convertType(FIRRTLBaseType type) {
 RefType Visitor::convertType(RefType type) {
   auto cached = typeMap.lookup(type);
   if (cached)
-    return type_cast<RefType>(cached);
+    return cast<RefType>(cached);
   auto converted = RefType::get(convertType(type.getType()),
                                 type.getForceable(), type.getLayer());
   typeMap.insert({type, converted});
@@ -188,16 +188,16 @@ RefType Visitor::convertType(RefType type) {
 FIRRTLType Visitor::convertType(FIRRTLType type) {
   auto cached = typeMap.lookup(type);
   if (cached)
-    return type_cast<FIRRTLType>(cached);
-  if (auto baseType = type_dyn_cast<FIRRTLBaseType>(type))
+    return cast<FIRRTLType>(cached);
+  if (auto baseType = dyn_cast<FIRRTLBaseType>(type))
     return convertType(baseType);
-  if (auto refType = type_dyn_cast<RefType>(type))
+  if (auto refType = dyn_cast<RefType>(type))
     return convertType(refType);
   return type;
 }
 
 Type Visitor::convertType(Type type) {
-  if (auto firrtlType = type_dyn_cast<FIRRTLType>(type))
+  if (auto firrtlType = dyn_cast<FIRRTLType>(type))
     return convertType(firrtlType);
   return type;
 }
@@ -210,7 +210,7 @@ Type Visitor::convertType(Type type) {
 void Visitor::explodeFieldID(
     Type type, uint64_t fieldID,
     SmallVectorImpl<std::pair<Type, uint64_t>> &fields) {
-  if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+  if (auto bundleType = dyn_cast<BundleType>(type)) {
     for (size_t i = 0, e = bundleType.getNumElements(); i < e; ++i) {
       auto eltType = bundleType.getElementType(i);
       auto eltID = fieldID + bundleType.getFieldID(i);
@@ -236,14 +236,14 @@ void Visitor::fixAnnotation(Type oldType, Type newType, DictionaryAttr annoAttr,
   SmallVector<uint32_t> bundleAccesses;
   SmallVector<uint32_t> vectorAccesses;
   while (fieldID != 0) {
-    if (auto bundleType = type_dyn_cast<BundleType>(oldType)) {
+    if (auto bundleType = dyn_cast<BundleType>(oldType)) {
       auto [index, subID] = bundleType.getIndexAndSubfieldID(fieldID);
       bundleAccesses.push_back(index);
       oldType = bundleType.getElementType(index);
       fieldID = subID;
       continue;
     }
-    if (auto vectorType = type_dyn_cast<FVectorType>(oldType)) {
+    if (auto vectorType = dyn_cast<FVectorType>(oldType)) {
       auto [index, subID] = vectorType.getIndexAndSubfieldID(fieldID);
       vectorAccesses.push_back(index);
       oldType = vectorType.getElementType();
@@ -255,13 +255,13 @@ void Visitor::fixAnnotation(Type oldType, Type newType, DictionaryAttr annoAttr,
 
   uint64_t newID = 0;
   for (auto index : bundleAccesses) {
-    auto bundleType = type_cast<BundleType>(newType);
+    auto bundleType = cast<BundleType>(newType);
     newID += bundleType.getFieldID(index);
     newType = bundleType.getElementType(index);
   }
 
   SmallVector<std::pair<Type, uint64_t>> fields;
-  if (type_isa<BundleType>(newType) && !vectorAccesses.empty()) {
+  if (isa<BundleType>(newType) && !vectorAccesses.empty()) {
     explodeFieldID(newType, newID, fields);
   } else {
     fields.emplace_back(newType, newID);
@@ -270,7 +270,7 @@ void Visitor::fixAnnotation(Type oldType, Type newType, DictionaryAttr annoAttr,
   auto i64Type = IntegerType::get(context, 64);
   for (auto [type, fieldID] : fields) {
     for (auto index : vectorAccesses) {
-      auto vectorType = type_cast<FVectorType>(type);
+      auto vectorType = cast<FVectorType>(type);
       type = vectorType.getElementType();
       fieldID += vectorType.getFieldID(index);
     }
@@ -337,8 +337,8 @@ Value Visitor::getRefSub(Value input, unsigned index) {
 
 // NOLINTNEXTLINE(misc-no-recursion)
 void Visitor::explodeRef(Value value, SmallVectorImpl<Value> &output) {
-  auto underlyingType = type_cast<RefType>(value.getType()).getType();
-  if (auto bundleType = type_dyn_cast<BundleType>(underlyingType)) {
+  auto underlyingType = cast<RefType>(value.getType()).getType();
+  if (auto bundleType = dyn_cast<BundleType>(underlyingType)) {
     for (size_t i = 0, e = bundleType.getNumElements(); i < e; ++i) {
       OpBuilder builder(context);
       builder.setInsertionPointAfterValue(value);
@@ -361,10 +361,10 @@ std::pair<SmallVector<Value>, bool> Visitor::fixRefOperand(Value value) {
       break;
     if (auto refSubOp = dyn_cast<RefSubOp>(op)) {
       value = refSubOp.getInput();
-      auto type = type_cast<RefType>(value.getType()).getType();
-      if (type_isa<BundleType>(type))
+      auto type = cast<RefType>(value.getType()).getType();
+      if (isa<BundleType>(type))
         bundleAccesses.push_back(refSubOp.getIndex());
-      else if (type_isa<FVectorType>(type))
+      else if (isa<FVectorType>(type))
         vectorAccesses.push_back(refSubOp.getIndex());
       else
         refSubOp->emitError("unknown aggregate type");
@@ -389,7 +389,7 @@ std::pair<SmallVector<Value>, bool> Visitor::fixRefOperand(Value value) {
   // an arm of the sunken vector.
   SmallVector<Value> values;
   bool exploded = false;
-  if (type_isa<BundleType>(type_cast<RefType>(value.getType()).getType()) &&
+  if (isa<BundleType>(cast<RefType>(value.getType()).getType()) &&
       !vectorAccesses.empty()) {
     explodeRef(value, values);
     exploded = true;
@@ -415,7 +415,7 @@ std::pair<SmallVector<Value>, bool> Visitor::fixRefOperand(Value value) {
 // NOLINTNEXTLINE(misc-no-recursion)
 void Visitor::explode(Value value, SmallVectorImpl<Value> &output) {
   auto type = value.getType();
-  if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+  if (auto bundleType = dyn_cast<BundleType>(type)) {
     for (size_t i = 0, e = bundleType.getNumElements(); i < e; ++i) {
       auto field = getSubfield(value, i);
       explode(field, output);
@@ -437,7 +437,7 @@ std::pair<SmallVector<Value>, bool> Visitor::fixOperand(Value value) {
 
   // If the operand is a ref-type, we have a different mechanism for repairing
   // the path.
-  if (type_isa<RefType>(type))
+  if (isa<RefType>(type))
     return fixRefOperand(value);
 
   SmallVector<SubfieldOp> bundleAccesses;
@@ -484,7 +484,7 @@ std::pair<SmallVector<Value>, bool> Visitor::fixOperand(Value value) {
   SmallVector<Value> values;
   bool exploded = false;
 
-  if (type_isa<BundleType>(value.getType()) && !vectorAccesses.empty()) {
+  if (isa<BundleType>(value.getType()) && !vectorAccesses.empty()) {
     explode(value, values);
     exploded = true;
   } else {
@@ -621,7 +621,7 @@ void Visitor::emitExplodedConnect(ImplicitLocOpBuilder &builder, Type type,
   const auto *rhsIt = rhs.begin();
 
   auto explodeConnect = [&](auto self, Type type, bool flip = false) -> void {
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       for (auto &element : bundleType) {
         self(self, element.type, flip ^ element.isFlip);
       }
@@ -640,7 +640,7 @@ Value Visitor::emitBundleCreate(ImplicitLocOpBuilder &builder, Type type,
                                 ArrayRef<Value> values) {
   auto *it = values.begin();
   auto convert = [&](auto self, Type type) -> Value {
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       SmallVector<Value> fields;
       for (auto element : bundleType.getElements()) {
         fields.push_back(self(self, element.type));
@@ -658,7 +658,7 @@ void Visitor::handleConnect(Op op) {
   auto oldLhs = op.getDest();
   auto oldRhs = op.getSrc();
 
-  auto oldType = type_cast<FIRRTLType>(oldLhs.getType());
+  auto oldType = cast<FIRRTLType>(oldLhs.getType());
   auto type = convertType(oldType);
 
   auto [lhs, lhsExploded] = fixOperand(oldLhs);
@@ -675,7 +675,7 @@ void Visitor::handleConnect(Op op) {
     }
   } else {
     if (rhsExploded) {
-      if (auto baseType = type_dyn_cast<FIRRTLBaseType>(type);
+      if (auto baseType = dyn_cast<FIRRTLBaseType>(type);
           baseType && baseType.isPassive()) {
         Op::create(builder, lhs[0], emitBundleCreate(builder, type, rhs));
       } else {
@@ -729,7 +729,7 @@ Attribute Visitor::convertVectorConstant(FVectorType oldType,
   auto newElementType = convertType(oldElementType);
 
   if (oldElementType == newElementType)
-    if (auto bundleElementType = type_dyn_cast<BundleType>(oldElementType))
+    if (auto bundleElementType = dyn_cast<BundleType>(oldElementType))
       return convertBundleInVectorConstant(bundleElementType,
                                            oldElements.getValue());
 
@@ -738,7 +738,7 @@ Attribute Visitor::convertVectorConstant(FVectorType oldType,
     newElements.push_back(convertConstant(oldElementType, oldElement));
   }
 
-  auto bundleType = type_cast<BundleType>(newElementType);
+  auto bundleType = cast<BundleType>(newElementType);
   return convertBundleInVectorConstant(bundleType, newElements);
 }
 
@@ -754,10 +754,10 @@ Attribute Visitor::convertBundleConstant(BundleType type, ArrayAttr fields) {
 
 // NOLINTNEXTLINE(misc-no-recursion)
 Attribute Visitor::convertConstant(Type type, Attribute value) {
-  if (auto bundleType = type_dyn_cast<BundleType>(type))
+  if (auto bundleType = dyn_cast<BundleType>(type))
     return convertBundleConstant(bundleType, cast<ArrayAttr>(value));
 
-  if (auto vectorType = type_dyn_cast<FVectorType>(type))
+  if (auto vectorType = dyn_cast<FVectorType>(type))
     return convertVectorConstant(vectorType, cast<ArrayAttr>(value));
 
   return value;
@@ -794,7 +794,7 @@ Value Visitor::sinkVecDimIntoOperands(ImplicitLocOpBuilder &builder,
                                       FIRRTLBaseType type,
                                       const SmallVectorImpl<Value> &values) {
   auto length = values.size();
-  if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+  if (auto bundleType = dyn_cast<BundleType>(type)) {
     SmallVector<Value> newFields;
     SmallVector<BundleType::BundleElement> newElements;
     for (auto [i, elt] : llvm::enumerate(bundleType)) {
@@ -804,7 +804,7 @@ Value Visitor::sinkVecDimIntoOperands(ImplicitLocOpBuilder &builder,
       auto newField = sinkVecDimIntoOperands(builder, elt.type, subValues);
       newFields.push_back(newField);
       newElements.emplace_back(elt.name, /*isFlip=*/false,
-                               type_cast<FIRRTLBaseType>(newField.getType()));
+                               cast<FIRRTLBaseType>(newField.getType()));
     }
     auto newType = BundleType::get(builder.getContext(), newElements);
     auto newBundle = BundleCreateOp::create(builder, newType, newFields);
@@ -904,10 +904,9 @@ LogicalResult Visitor::visitExpr(RefResolveOp op) {
   auto type = convertType(op.getType());
   SmallVector<Value> values;
   for (auto ref : refs) {
-    values.push_back(
-        RefResolveOp::create(builder,
-                             type_cast<RefType>(ref.getType()).getType(), ref)
-            .getResult());
+    values.push_back(RefResolveOp::create(
+                         builder, cast<RefType>(ref.getType()).getType(), ref)
+                         .getResult());
   }
   auto value = emitBundleCreate(builder, type, values);
   valueMap[op.getResult()] = value;

@@ -160,7 +160,7 @@ LogicalResult walkMappings(
 namespace {
 class Visitor : public FIRRTLVisitor<Visitor, LogicalResult> {
 public:
-  explicit Visitor(MLIRContext *context) : context(context){};
+  explicit Visitor(MLIRContext *context) : context(context) {};
 
   /// Entrypoint.
   LogicalResult visit(FModuleLike mod);
@@ -426,7 +426,7 @@ LogicalResult Visitor::visitExpr(OpenSubfieldOp op) {
     // If has nonHW portion, RAUW to it.
     if (auto newResult = nonHWForResult->second) {
       assert(op.getResult().getType() == newResult.getType());
-      assert(!type_isa<FIRRTLBaseType>(newResult.getType()));
+      assert(!isa<FIRRTLBaseType>(newResult.getType()));
       op.getResult().replaceAllUsesWith(newResult);
     }
     return success();
@@ -437,7 +437,7 @@ LogicalResult Visitor::visitExpr(OpenSubfieldOp op) {
   auto newInput = hwOnlyAggMap[op.getInput()];
   assert(newInput);
 
-  auto bundleType = type_cast<BundleType>(newInput.getType());
+  auto bundleType = cast<BundleType>(newInput.getType());
 
   // Recompute the "actual" index for this field, it may have changed.
   auto fieldName = op.getFieldName();
@@ -451,7 +451,7 @@ LogicalResult Visitor::visitExpr(OpenSubfieldOp op) {
 
   hwOnlyAggMap[op.getResult()] = newOp;
 
-  if (type_isa<FIRRTLBaseType>(op.getType()))
+  if (isa<FIRRTLBaseType>(op.getType()))
     op.getResult().replaceAllUsesWith(newOp.getResult());
 
   return success();
@@ -473,7 +473,7 @@ LogicalResult Visitor::visitExpr(OpenSubindexOp op) {
     // If has nonHW portion, RAUW to it.
     if (auto newResult = nonHWForResult->second) {
       assert(op.getResult().getType() == newResult.getType());
-      assert(!type_isa<FIRRTLBaseType>(newResult.getType()));
+      assert(!isa<FIRRTLBaseType>(newResult.getType()));
       op.getResult().replaceAllUsesWith(newResult);
     }
     return success();
@@ -491,7 +491,7 @@ LogicalResult Visitor::visitExpr(OpenSubindexOp op) {
 
   hwOnlyAggMap[op.getResult()] = newOp;
 
-  if (type_isa<FIRRTLBaseType>(op.getType()))
+  if (isa<FIRRTLBaseType>(op.getType()))
     op.getResult().replaceAllUsesWith(newOp.getResult());
   return success();
 }
@@ -695,7 +695,7 @@ LogicalResult Visitor::visitDecl(WireOp op) {
 FailureOr<MappingInfo> Visitor::mapType(Type type, Location errorLoc,
                                         hw::InnerSymAttr sym) {
   MappingInfo pi{false, {}, {}, {}};
-  auto ftype = type_dyn_cast<FIRRTLType>(type);
+  auto ftype = dyn_cast<FIRRTLType>(type);
   // Anything that isn't an open aggregates is left alone.
   if (!ftype || !isa<OpenBundleType, OpenVectorType>(ftype)) {
     pi.identity = true;

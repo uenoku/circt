@@ -255,7 +255,7 @@ LogicalResult AddSeqMemPortsPass::processModule(FModuleOp moduleOp) {
         // Record the extra port.
         extraPorts.push_back(
             {firstPortIndex,
-             {portName, type_cast<FIRRTLType>(portType), portDirection}});
+             {portName, cast<FIRRTLType>(portType), portDirection}});
         // If this is the DUT, then add a DontTouchAnnotation to any added ports
         // to guarantee that it won't be removed.
         if (instanceInfo->isEffectiveDut(moduleOp))
@@ -443,7 +443,7 @@ void AddSeqMemPortsPass::runOnOperation() {
         StringAttr::get(context, "width"),
         IntegerAttr::get(
             ui32Type,
-            type_cast<FIRRTLBaseType>(userPort.type).getBitWidthOrSentinel()));
+            cast<FIRRTLBaseType>(userPort.type).getBitWidthOrSentinel()));
     extraPorts.push_back(DictionaryAttr::get(context, attrs));
   }
   extraPortsAttr = ArrayAttr::get(context, extraPorts);

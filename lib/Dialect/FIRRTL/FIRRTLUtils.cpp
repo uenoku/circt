@@ -58,10 +58,10 @@ connectIfAggregates(ImplicitLocOpBuilder &builder, Value dst,
                     FIRRTLType dstFType, Value src, FIRRTLType srcFType,
                     llvm::function_ref<Location()> getDiagLoc,
                     bool warnOnTruncation) {
-  auto dstAggTy = type_dyn_cast<ATy>(dstFType);
+  auto dstAggTy = dyn_cast<ATy>(dstFType);
   if (!dstAggTy)
     return failure();
-  auto srcAggTy = type_dyn_cast<ATy>(srcFType);
+  auto srcAggTy = dyn_cast<ATy>(srcFType);
   if (!srcAggTy)
     return failure();
 
@@ -92,23 +92,21 @@ void circt::firrtl::emitConnect(ImplicitLocOpBuilder &builder, Value dst,
                                 Value src,
                                 llvm::function_ref<Location()> getDiagLoc,
                                 bool warnOnTruncation) {
-  auto dstFType = type_cast<FIRRTLType>(dst.getType());
-  auto srcFType = type_cast<FIRRTLType>(src.getType());
-  auto dstType = type_dyn_cast<FIRRTLBaseType>(dstFType);
-  auto srcType = type_dyn_cast<FIRRTLBaseType>(srcFType);
+  auto dstFType = cast<FIRRTLType>(dst.getType());
+  auto srcFType = cast<FIRRTLType>(src.getType());
+  auto dstType = dyn_cast<FIRRTLBaseType>(dstFType);
+  auto srcType = dyn_cast<FIRRTLBaseType>(srcFType);
   // Special Connects (non-base, foreign):
   if (!dstType) {
     // References use ref.define.  Add cast if types don't match.
-    if (type_isa<RefType>(dstFType)) {
+    if (isa<RefType>(dstFType)) {
       if (dstFType != srcFType)
         src = RefCastOp::create(builder, dstFType, src);
       RefDefineOp::create(builder, dst, src);
-    } else if (type_isa<PropertyType>(dstFType) &&
-               type_isa<PropertyType>(srcFType)) {
+    } else if (isa<PropertyType>(dstFType) && isa<PropertyType>(srcFType)) {
       // Properties use propassign.
       PropAssignOp::create(builder, dst, src);
-    } else if (type_isa<DomainType>(dstFType) &&
-               type_isa<DomainType>(srcFType)) {
+    } else if (isa<DomainType>(dstFType) && isa<DomainType>(srcFType)) {
       DomainDefineOp::create(builder, dst, src);
     } else if (failed(connectIfAggregates<OpenBundleType, OpenSubfieldOp, true>(
                    builder, dst, dstFType, src, srcFType, getDiagLoc,
@@ -176,8 +174,7 @@ void circt::firrtl::emitConnect(ImplicitLocOpBuilder &builder, Value dst,
           << ", inserting implicit truncation";
 
     // firrtl.tail always returns uint even for sint operands.
-    IntType tmpType =
-        type_cast<IntType>(dstType).getConstType(srcType.isConst());
+    IntType tmpType = cast<IntType>(dstType).getConstType(srcType.isConst());
     bool isSignedDest = tmpType.isSigned();
     if (isSignedDest)
       tmpType =
@@ -192,7 +189,7 @@ void circt::firrtl::emitConnect(ImplicitLocOpBuilder &builder, Value dst,
     src = PadPrimOp::create(builder, src, dstWidth);
   }
 
-  if (auto srcType = type_cast<FIRRTLBaseType>(src.getType());
+  if (auto srcType = cast<FIRRTLBaseType>(src.getType());
       srcType && dstType != srcType &&
       areTypesConstCastable(dstType, srcType)) {
     src = ConstCastOp::create(builder, dstType, src);
@@ -208,7 +205,7 @@ void circt::firrtl::emitConnect(ImplicitLocOpBuilder &builder, Value dst,
 }
 
 IntegerAttr circt::firrtl::getIntAttr(Type type, const APInt &value) {
-  auto intType = type_cast<IntType>(type);
+  auto intType = cast<IntType>(type);
   assert((!intType.hasWidth() ||
           (unsigned)intType.getWidthOrSentinel() == value.getBitWidth()) &&
          "value / type width mismatch");
@@ -222,14 +219,14 @@ IntegerAttr circt::firrtl::getIntAttr(Type type, const APInt &value) {
 /// Return an IntegerAttr filled with zeros for the specified FIRRTL integer
 /// type. This handles both the known width and unknown width case.
 IntegerAttr circt::firrtl::getIntZerosAttr(Type type) {
-  int32_t width = abs(type_cast<IntType>(type).getWidthOrSentinel());
+  int32_t width = abs(cast<IntType>(type).getWidthOrSentinel());
   return getIntAttr(type, APInt(width, 0));
 }
 
 /// Return an IntegerAttr filled with ones for the specified FIRRTL integer
 /// type. This handles both the known width and unknown width case.
 IntegerAttr circt::firrtl::getIntOnesAttr(Type type) {
-  int32_t width = abs(type_cast<IntType>(type).getWidthOrSentinel());
+  int32_t width = abs(cast<IntType>(type).getWidthOrSentinel());
   return getIntAttr(
       type, APInt(width, -1, /*isSigned=*/false, /*implicitTrunc=*/true));
 }
@@ -659,10 +656,10 @@ circt::firrtl::getFieldName(const FieldRef &fieldRef, bool nameSafe) {
   auto localID = fieldRef.getFieldID();
   while (localID) {
     // Index directly into ref inner type.
-    if (auto refTy = type_dyn_cast<RefType>(type))
+    if (auto refTy = dyn_cast<RefType>(type))
       type = refTy.getType();
 
-    if (auto bundleType = type_dyn_cast<BundleType>(type)) {
+    if (auto bundleType = dyn_cast<BundleType>(type)) {
       auto index = bundleType.getIndexForFieldID(localID);
       // Add the current field string, and recurse into a subfield.
       auto &element = bundleType.getElements()[index];
@@ -672,7 +669,7 @@ circt::firrtl::getFieldName(const FieldRef &fieldRef, bool nameSafe) {
       // Recurse in to the element type.
       type = element.type;
       localID = localID - bundleType.getFieldID(index);
-    } else if (auto bundleType = type_dyn_cast<OpenBundleType>(type)) {
+    } else if (auto bundleType = dyn_cast<OpenBundleType>(type)) {
       auto index = bundleType.getIndexForFieldID(localID);
       // Add the current field string, and recurse into a subfield.
       auto &element = bundleType.getElements()[index];
@@ -682,7 +679,7 @@ circt::firrtl::getFieldName(const FieldRef &fieldRef, bool nameSafe) {
       // Recurse in to the element type.
       type = element.type;
       localID = localID - bundleType.getFieldID(index);
-    } else if (auto vecType = type_dyn_cast<FVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<FVectorType>(type)) {
       auto index = vecType.getIndexForFieldID(localID);
       name += nameSafe ? "_" : "[";
       name += std::to_string(index);
@@ -691,7 +688,7 @@ circt::firrtl::getFieldName(const FieldRef &fieldRef, bool nameSafe) {
       // Recurse in to the element type.
       type = vecType.getElementType();
       localID = localID - vecType.getFieldID(index);
-    } else if (auto vecType = type_dyn_cast<OpenVectorType>(type)) {
+    } else if (auto vecType = dyn_cast<OpenVectorType>(type)) {
       auto index = vecType.getIndexForFieldID(localID);
       name += nameSafe ? "_" : "[";
       name += std::to_string(index);
@@ -700,7 +697,7 @@ circt::firrtl::getFieldName(const FieldRef &fieldRef, bool nameSafe) {
       // Recurse in to the element type.
       type = vecType.getElementType();
       localID = localID - vecType.getFieldID(index);
-    } else if (auto classType = type_dyn_cast<ClassType>(type)) {
+    } else if (auto classType = dyn_cast<ClassType>(type)) {
       auto index = classType.getIndexForFieldID(localID);
       auto &element = classType.getElement(index);
       name += nameSafe ? "_" : ".";
@@ -727,7 +724,7 @@ Value circt::firrtl::getValueByFieldID(ImplicitLocOpBuilder builder,
                                        Value value, unsigned fieldID) {
   // When the fieldID hits 0, we've found the target value.
   while (fieldID != 0) {
-    FIRRTLTypeSwitch<Type, void>(value.getType())
+    llvm::TypeSwitch<Type, void>(value.getType())
         .Case<BundleType>([&](auto bundle) {
           auto index = bundle.getIndexForFieldID(fieldID);
           value = SubfieldOp::create(builder, value, index);
@@ -749,7 +746,7 @@ Value circt::firrtl::getValueByFieldID(ImplicitLocOpBuilder builder,
           fieldID -= vector.getFieldID(index);
         })
         .Case<RefType>([&](auto reftype) {
-          FIRRTLTypeSwitch<FIRRTLBaseType, void>(reftype.getType())
+          llvm::TypeSwitch<FIRRTLBaseType, void>(reftype.getType())
               .template Case<BundleType, FVectorType>([&](auto type) {
                 auto index = type.getIndexForFieldID(fieldID);
                 value = RefSubOp::create(builder, value, index);
@@ -787,7 +784,7 @@ void circt::firrtl::walkGroundTypes(
 
   uint64_t fieldID = 0;
   auto recurse = [&](auto &&f, FIRRTLBaseType type, bool isFlip) -> void {
-    FIRRTLTypeSwitch<FIRRTLBaseType>(type)
+    llvm::TypeSwitch<FIRRTLBaseType>(type)
         .Case<BundleType>([&](BundleType bundle) {
           for (size_t i = 0, e = bundle.getNumElements(); i < e; ++i) {
             fieldID++;
@@ -1049,14 +1046,14 @@ circt::firrtl::maybeStringToLocation(StringRef spelling, bool skipParsing,
 /// Non-FIRRTL types are simply passed through. This returns a null type if it
 /// cannot be lowered.
 Type circt::firrtl::lowerType(Type type) {
-  auto firType = type_dyn_cast<FIRRTLBaseType>(type);
+  auto firType = dyn_cast<FIRRTLBaseType>(type);
   if (!firType)
     return type;
 
   // Ignore flip types.
   firType = firType.getPassiveType();
 
-  if (auto bundle = type_dyn_cast<BundleType>(firType)) {
+  if (auto bundle = dyn_cast<BundleType>(firType)) {
     mlir::SmallVector<hw::StructType::FieldInfo, 8> hwfields;
     for (auto element : bundle) {
       Type etype = lowerType(element.type);
@@ -1066,13 +1063,13 @@ Type circt::firrtl::lowerType(Type type) {
     }
     return hw::StructType::get(type.getContext(), hwfields);
   }
-  if (auto vec = type_dyn_cast<FVectorType>(firType)) {
+  if (auto vec = dyn_cast<FVectorType>(firType)) {
     auto elemTy = lowerType(vec.getElementType());
     if (!elemTy)
       return {};
     return hw::ArrayType::get(elemTy, vec.getNumElements());
   }
-  if (auto fenum = type_dyn_cast<FEnumType>(firType)) {
+  if (auto fenum = dyn_cast<FEnumType>(firType)) {
     mlir::SmallVector<hw::UnionType::FieldInfo, 8> hwfields;
     bool simple = true;
     for (auto element : fenum) {
@@ -1092,7 +1089,7 @@ Type circt::firrtl::lowerType(Type type) {
         {StringAttr::get(type.getContext(), "body"), bodyTy}};
     return hw::StructType::get(type.getContext(), fields);
   }
-  if (type_isa<ClockType>(firType))
+  if (isa<ClockType>(firType))
     return seq::ClockType::get(firType.getContext());
 
   auto width = firType.getBitWidthOrSentinel();

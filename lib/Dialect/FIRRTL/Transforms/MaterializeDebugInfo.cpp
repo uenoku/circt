@@ -73,7 +73,7 @@ void MaterializeDebugInfoPass::materializeVariable(OpBuilder &builder,
 /// For example, converts a FIRRTL vector `v` into `dbg.array [v[0],v[1],...]`.
 Value MaterializeDebugInfoPass::convertToDebugAggregates(OpBuilder &builder,
                                                          Value value) {
-  return FIRRTLTypeSwitch<Type, Value>(value.getType())
+  return llvm::TypeSwitch<Type, Value>(value.getType())
       .Case<BundleType>([&](auto type) {
         SmallVector<Value> fields;
         SmallVector<Attribute> names;

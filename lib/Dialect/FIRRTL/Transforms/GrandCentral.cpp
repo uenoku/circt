@@ -220,7 +220,7 @@ struct MappingContextTraits<DescribedSignal, Context> {
       // with a blind cast because we generated this type in this pass (and we
       // therefore cannot fail this cast).
       assert(isa<IntegerType>(tpe));
-      width = type_cast<IntegerType>(tpe).getWidth();
+      width = cast<IntegerType>(tpe).getWidth();
     }
 
     /// A no-argument constructor is necessary to work with LLVM's YAML library.
@@ -1122,7 +1122,7 @@ parseAugmentedType(ApplyState &state, DictionaryAttr augmentedType,
     // the wiring problem solving, and later checked to be a Node.
     // This also ensures passive sink so works equally well w/ or w/o probes.
     auto sinkType = source->getType();
-    if (auto baseSinkType = type_dyn_cast<FIRRTLBaseType>(sinkType))
+    if (auto baseSinkType = dyn_cast<FIRRTLBaseType>(sinkType))
       sinkType = baseSinkType.getPassiveType();
     auto sink = WireOp::create(builder, sinkType, name);
     state.targetCaches.insertOp(sink);
@@ -1335,7 +1335,7 @@ bool GrandCentralPass::traverseField(
         igraph::ModuleOpInterface enclosing =
             getEnclosingModule(leafValue, sym);
 
-        auto tpe = type_cast<FIRRTLBaseType>(leafValue.getType());
+        auto tpe = cast<FIRRTLBaseType>(leafValue.getType());
 
         // If the type is zero-width then do not emit an XMR.
         if (!tpe.getBitWidthOrSentinel())
@@ -1471,7 +1471,7 @@ bool GrandCentralPass::traverseViewField(
         }
 
         auto val = view.getOperand(index);
-        auto tpe = type_cast<FIRRTLBaseType>(val.getType());
+        auto tpe = cast<FIRRTLBaseType>(val.getType());
 
         // If the type is zero-width then do not emit an XMR.
         if (!tpe.getBitWidthOrSentinel())
@@ -1570,9 +1570,9 @@ std::optional<TypeSum> GrandCentralPass::computeField(
             FieldRef fieldRef = leafMap.lookup(ground.getID()).field;
             auto value = fieldRef.getValue();
             auto fieldID = fieldRef.getFieldID();
-            auto tpe = firrtl::type_cast<FIRRTLBaseType>(
-                hw::FieldIdImpl::getFinalTypeByFieldID(value.getType(),
-                                                       fieldID));
+            auto tpe =
+                cast<FIRRTLBaseType>(hw::FieldIdImpl::getFinalTypeByFieldID(
+                    value.getType(), fieldID));
             if (!tpe.isGround()) {
               value.getDefiningOp()->emitOpError()
                   << "cannot be added to interface with id '"

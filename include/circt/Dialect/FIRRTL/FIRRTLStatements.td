@@ -411,8 +411,8 @@ def ForceOp : FIRRTLOp<"force", [SameTypeOperands]> {
 class ForceRefTypeConstraint<string ref, string base> : PredOpTrait<
         "reference type of " # ref # " should be RWProbe of " # base,
         CPred<[{
-          firrtl::type_cast<RefType>($}] # ref # [{.getType()).getType() ==
-          firrtl::type_cast<FIRRTLBaseType>($}] # base # [{.getType()).getAllConstDroppedType()
+          cast<RefType>($}] # ref # [{.getType()).getType() ==
+          cast<FIRRTLBaseType>($}] # base # [{.getType()).getAllConstDroppedType()
         }]>>;
 
 def RefForceOp : FIRRTLOp<"ref.force",[ForceRefTypeConstraint<"dest", "src">]> {

@@ -91,9 +91,7 @@ static bool isDriven(DomainValue port) {
 }
 
 /// True if a value of the given type could be associated with a domain.
-static bool isHardware(Type type) {
-  return type_isa<FIRRTLBaseType, RefType>(type);
-}
+static bool isHardware(Type type) { return isa<FIRRTLBaseType, RefType>(type); }
 
 /// True if the given value could be association with a domain.
 static bool isHardware(Value value) { return isHardware(value.getType()); }

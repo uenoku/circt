@@ -88,7 +88,7 @@ bool MergeConnection::peelConnect(MatchingConnectOp connect) {
   // partial connect. Also ignore non-passive connections or non-integer
   // connections.
   LLVM_DEBUG(llvm::dbgs() << "Visiting " << connect << "\n");
-  auto destTy = type_dyn_cast<FIRRTLBaseType>(connect.getDest().getType());
+  auto destTy = dyn_cast<FIRRTLBaseType>(connect.getDest().getType());
   if (!destTy || !destTy.isPassive() ||
       !firrtl::getBitWidth(destTy).has_value())
     return false;
@@ -118,9 +118,9 @@ bool MergeConnection::peelConnect(MatchingConnectOp connect) {
   // If it is the first time to visit the parent op, then allocate the vector
   // for subconnections.
   if (count == 0) {
-    if (auto bundle = type_dyn_cast<BundleType>(parent.getType()))
+    if (auto bundle = dyn_cast<BundleType>(parent.getType()))
       subConnections.resize(bundle.getNumElements());
-    if (auto vector = type_dyn_cast<FVectorType>(parent.getType()))
+    if (auto vector = dyn_cast<FVectorType>(parent.getType()))
       subConnections.resize(vector.getNumElements());
   }
   ++count;
@@ -131,7 +131,7 @@ bool MergeConnection::peelConnect(MatchingConnectOp connect) {
     return false;
 
   auto parentType = parent.getType();
-  auto parentBaseTy = type_dyn_cast<FIRRTLBaseType>(parentType);
+  auto parentBaseTy = dyn_cast<FIRRTLBaseType>(parentType);
 
   // Reject if not passive, we don't support aggregate constants for these.
   if (!parentBaseTy || !parentBaseTy.isPassive())
@@ -234,9 +234,9 @@ bool MergeConnection::peelConnect(MatchingConnectOp connect) {
   };
 
   Value merged;
-  if (auto bundle = type_dyn_cast<BundleType>(parentType))
+  if (auto bundle = dyn_cast<BundleType>(parentType))
     merged = getMergedValue(bundle);
-  if (auto vector = type_dyn_cast<FVectorType>(parentType))
+  if (auto vector = dyn_cast<FVectorType>(parentType))
     merged = getMergedValue(vector);
   if (!merged)
     return false;

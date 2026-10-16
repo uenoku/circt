@@ -276,7 +276,7 @@ MlirType firrtlTypeGetClass(MlirContext ctx, MlirAttribute name,
 }
 
 MlirType firrtlTypeGetMaskType(MlirType type) {
-  auto baseType = type_dyn_cast<FIRRTLBaseType>(unwrap(type));
+  auto baseType = dyn_cast<FIRRTLBaseType>(unwrap(type));
   assert(baseType && "unexpected type, must be base type");
   return wrap(baseType.getMaskType());
 }

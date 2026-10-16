@@ -75,8 +75,8 @@ Operation *FIRRTLDialect::materializeConstant(OpBuilder &builder,
           builder, loc, type,
           builder.getBoolAttr(attrValue.getValue().isAllOnes()));
 
-    assert((!type_cast<IntType>(type).hasWidth() ||
-            (unsigned)type_cast<IntType>(type).getWidthOrSentinel() ==
+    assert((!cast<IntType>(type).hasWidth() ||
+            (unsigned)cast<IntType>(type).getWidthOrSentinel() ==
                 attrValue.getValue().getBitWidth()) &&
            "type/value width mismatch materializing constant");
     return ConstantOp::create(builder, loc, type, attrValue);
@@ -90,7 +90,7 @@ Operation *FIRRTLDialect::materializeConstant(OpBuilder &builder,
 
   // String constants.
   if (auto stringAttr = dyn_cast<StringAttr>(value)) {
-    if (type_isa<StringType>(type))
+    if (isa<StringType>(type))
       return StringConstantOp::create(builder, loc, type, stringAttr);
   }
 

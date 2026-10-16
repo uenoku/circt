@@ -425,7 +425,7 @@ LogicalResult LowerModule::lowerModule() {
     // If the port is zero-width, then we don't need annotation trackers.
     // LowerToHW removes zero-width ports and it will error if there are inner
     // symbols on zero-width things it is trying to remove.
-    if (auto firrtlType = type_dyn_cast<FIRRTLType>(port.type))
+    if (auto firrtlType = dyn_cast<FIRRTLType>(port.type))
       if (hasZeroBitWidth(firrtlType)) {
         portAnnotations.push_back(port.annotations.getArrayAttr());
         continue;
@@ -651,7 +651,7 @@ LogicalResult LowerModule::lowerModule() {
       if (auto wireOp = dyn_cast<WireOp>(walkOp)) {
         // Handle domain-typed wires.
         if (auto domainType =
-                type_dyn_cast<DomainType>(wireOp.getResult().getType())) {
+                dyn_cast<DomainType>(wireOp.getResult().getType())) {
           OpBuilder builder(wireOp);
           auto classIn =
               domainToClasses.at(domainType.getName().getAttr()).input;
@@ -707,8 +707,7 @@ LogicalResult LowerModule::lowerModule() {
         // per-field connections.  A single prop.assign would fail because
         // ObjectOp results have source flow, not sink flow.
         if (dest.getOperand(0).getDefiningOp<ObjectOp>()) {
-          auto domainType =
-              firrtl::type_cast<DomainType>(defineOp.getDest().getType());
+          auto domainType = cast<DomainType>(defineOp.getDest().getType());
           auto numFields = domainType.getNumFields();
           for (size_t i = 0; i < numFields; ++i) {
             auto destIn = ObjectSubfieldOp::create(builder, defineOp.getLoc(),

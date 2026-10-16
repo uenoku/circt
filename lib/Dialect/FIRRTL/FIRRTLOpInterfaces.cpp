@@ -25,10 +25,10 @@ static LogicalResult verifyNoInputProbes(FModuleLike module) {
   // Helper to check for input-oriented refs.
   std::function<bool(Type, bool)> hasInputRef = [&](Type type,
                                                     bool output) -> bool {
-    auto ftype = type_dyn_cast<FIRRTLType>(type);
+    auto ftype = dyn_cast<FIRRTLType>(type);
     if (!ftype || !ftype.containsReference())
       return false;
-    return FIRRTLTypeSwitch<FIRRTLType, bool>(ftype)
+    return llvm::TypeSwitch<FIRRTLType, bool>(ftype)
         .Case<RefType>([&](auto reftype) { return !output; })
         .Case<OpenVectorType>([&](OpenVectorType ovt) {
           return hasInputRef(ovt.getElementType(), output);
@@ -181,7 +181,7 @@ LogicalResult circt::firrtl::verifyModuleLikeOpInterface(FModuleLike module) {
                << "has domain association " << associationIdx << " for port '"
                << module.getPortName(index) << "', but the module only has "
                << numPorts << " ports";
-      if (!type_isa<DomainType>(module.getPortType(associationIdx)))
+      if (!isa<DomainType>(module.getPortType(associationIdx)))
         return module.emitOpError()
                << "has port '" << module.getPortName(index)
                << "' which has a domain association with non-domain port '"
@@ -220,7 +220,7 @@ LogicalResult circt::firrtl::detail::verifyForceableOp(Forceable op) {
   if (!forceable)
     return success();
   auto data = op.getDataRaw();
-  auto baseType = type_dyn_cast<FIRRTLBaseType>(data.getType());
+  auto baseType = dyn_cast<FIRRTLBaseType>(data.getType());
   if (!baseType)
     return op.emitOpError("has data that is not a base type");
   if (baseType.containsConst())

@@ -29,12 +29,12 @@ TEST(TypesTest, TypeCast) {
   MLIRContext context;
   context.loadDialect<FIRRTLDialect>();
   AnalogType analog = AnalogType::get(&context);
-  EXPECT_FALSE(type_isa<FVectorType>(analog));
-  EXPECT_TRUE(type_isa<AnalogType>(analog));
-  EXPECT_TRUE((type_isa<AnalogType, StringType>(analog)));
-  EXPECT_EQ(type_cast<AnalogType>(analog), analog);
-  EXPECT_EQ(type_dyn_cast<AnalogType>(analog), analog);
-  EXPECT_FALSE(type_dyn_cast<FVectorType>(analog));
+  EXPECT_FALSE(isa<FVectorType>(analog));
+  EXPECT_TRUE(isa<AnalogType>(analog));
+  EXPECT_TRUE((isa<AnalogType, StringType>(analog)));
+  EXPECT_EQ(cast<AnalogType>(analog), analog);
+  EXPECT_EQ(dyn_cast<AnalogType>(analog), analog);
+  EXPECT_FALSE(dyn_cast<FVectorType>(analog));
 }
 
 //===----------------------------------------------------------------------===//

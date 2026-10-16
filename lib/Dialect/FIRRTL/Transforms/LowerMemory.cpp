@@ -507,7 +507,7 @@ LogicalResult LowerMemoryPass::runOnModule(FModuleOp moduleOp) {
 
   auto result = moduleOp.walk([&](MemOp op) {
     // Check that the memory has been properly lowered already.
-    if (!type_isa<UIntType>(op.getDataType())) {
+    if (!isa<UIntType>(op.getDataType())) {
       op->emitError("memories should be flattened before running LowerMemory");
       return WalkResult::interrupt();
     }

@@ -145,7 +145,7 @@ computeLoweringImpl(FModuleLike mod, PortConversion &newPorts, Convention conv,
                     const FieldIDSearch<hw::InnerSymAttr> &syms,
                     const FieldIDSearch<AnnotationSet> &annos) {
   auto *ctx = type.getContext();
-  return FIRRTLTypeSwitch<FIRRTLType, LogicalResult>(type)
+  return llvm::TypeSwitch<FIRRTLType, LogicalResult>(type)
       .Case<BundleType>([&](BundleType bundle) -> LogicalResult {
         // This should be enhanced to be able to handle bundle<all flips of
         // passive>, or this should be a canonicalizer
@@ -254,7 +254,7 @@ static LogicalResult computeLowering(FModuleLike mod, Convention conv,
   for (auto [idx, port] : llvm::enumerate(mod.getPorts())) {
     if (failed(computeLoweringImpl(
             mod, newPorts, conv, idx, port, port.direction == Direction::Out,
-            port.name.getValue(), type_cast<FIRRTLType>(port.type), 0,
+            port.name.getValue(), cast<FIRRTLType>(port.type), 0,
             FieldIDSearch<hw::InnerSymAttr>(port.sym),
             FieldIDSearch<AnnotationSet>(port.annotations))))
       return failure();
@@ -272,12 +272,12 @@ static LogicalResult lowerModuleSignature(FModuleLike module, Convention conv,
   // Update domain information now that all port expansions are fixed.
   DenseMap<size_t, size_t> domainMap;
   for (auto &newPort : newPorts) {
-    if (!type_isa<DomainType>(newPort.type))
+    if (!isa<DomainType>(newPort.type))
       continue;
     domainMap[newPort.portID] = newPort.resultID;
   }
   for (auto &newPort : newPorts) {
-    if (type_isa<DomainType>(newPort.type))
+    if (isa<DomainType>(newPort.type))
       continue;
     auto oldAssociations = dyn_cast_or_null<ArrayAttr>(newPort.domains);
     if (!oldAssociations)

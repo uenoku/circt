@@ -269,7 +269,7 @@ class BaseSubfieldOp<string name, Type btype, Type rtype> : FIRRTLExprOp<name> {
 
   let builders = [
     OpBuilder<(ins "Value":$input, "StringRef":$fieldName), [{
-      auto bundleType = firrtl::type_cast<}] # btype # [{>(input.getType());
+      auto bundleType = cast<}] # btype # [{>(input.getType());
       auto fieldIndex = bundleType.getElementIndex(fieldName);
       assert(fieldIndex.has_value() && "subfield operation to unknown field");
       return build($_builder, $_state, input, *fieldIndex);
@@ -300,13 +300,13 @@ class BaseSubfieldOp<string name, Type btype, Type rtype> : FIRRTLExprOp<name> {
 
     /// Return a `FieldRef` to the accessed field.
     FieldRef getAccessedField() {
-      return FieldRef(getInput(), firrtl::type_cast<InputType>(getInput().getType())
+      return FieldRef(getInput(), cast<InputType>(getInput().getType())
                                             .getFieldID(getFieldIndex()));
     }
 
     /// Return the name of the accessed field.
     StringRef getFieldName() {
-      return firrtl::type_cast<InputType>(getInput().getType()).getElementName(getFieldIndex());
+      return cast<InputType>(getInput().getType()).getElementName(getFieldIndex());
     }
   }];
 }
@@ -457,7 +457,7 @@ def IsTagOp : FIRRTLExprOp<"istag"> {
   let hasCustomAssemblyFormat = 1;
   let builders = [
     OpBuilder<(ins "Value":$input, "StringRef":$fieldName), [{
-      auto enumType = firrtl::type_cast<FEnumType>(input.getType());
+      auto enumType = cast<FEnumType>(input.getType());
       auto fieldIndex = enumType.getElementIndex(fieldName);
       assert(fieldIndex.has_value() && "subtag operation to unknown field");
       return build($_builder, $_state, input, *fieldIndex);
@@ -467,7 +467,7 @@ def IsTagOp : FIRRTLExprOp<"istag"> {
   let firrtlExtraClassDeclaration = [{
     /// Return the name of the accessed field.
     StringAttr getFieldNameAttr() {
-      return firrtl::type_cast<FEnumType>(getInput().getType())
+      return cast<FEnumType>(getInput().getType())
         .getElementNameAttr(getFieldIndex());
     }
 
@@ -495,7 +495,7 @@ def SubtagOp : FIRRTLExprOp<"subtag"> {
 
   let builders = [
     OpBuilder<(ins "Value":$input, "StringRef":$fieldName), [{
-      auto enumType = firrtl::type_cast<FEnumType>(input.getType());
+      auto enumType = cast<FEnumType>(input.getType());
       auto fieldIndex = enumType.getElementIndex(fieldName);
       assert(fieldIndex.has_value() && "subtag operation to unknown field");
       return build($_builder, $_state, input, *fieldIndex);
@@ -539,7 +539,7 @@ def TagExtractOp : FIRRTLExprOp<"tagextract", [InferTypeOpInterface]> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       return inferReturnType(input, loc);
     }
   }];
@@ -613,8 +613,8 @@ class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType, Type resultType,
                                       std::optional<Location> loc
                                       ) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      return inferReturnType(firrtl::type_cast<FIRRTLType>(adaptor.getLhs().getType()),
-                             firrtl::type_cast<FIRRTLType>(adaptor.getRhs().getType()),
+      return inferReturnType(cast<FIRRTLType>(adaptor.getLhs().getType()),
+                             cast<FIRRTLType>(adaptor.getRhs().getType()),
                              loc);
     }
   }];
@@ -745,7 +745,7 @@ class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
                                       std::optional<Location> loc
                                       ) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      return inferReturnType(firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType()),
+      return inferReturnType(cast<FIRRTLType>(adaptor.getInput().getType()),
                              loc);
     }
   }];
@@ -821,7 +821,7 @@ def BitsPrimOp : PrimOp<"bits"> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       auto high = adaptor.getHiAttr().getValue().getSExtValue();
       auto low = adaptor.getLoAttr().getValue().getSExtValue();
       return inferReturnType(input, high, low, loc);
@@ -847,7 +847,7 @@ def HeadPrimOp : PrimOp<"head"> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       auto amount = adaptor.getAmountAttr().getValue().getSExtValue();
       return inferReturnType(input, amount, loc);
     }
@@ -874,9 +874,9 @@ def MuxPrimOp : PrimOp<"mux"> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto sel = firrtl::type_cast<FIRRTLType>(adaptor.getSel().getType());
-      auto high = firrtl::type_cast<FIRRTLType>(adaptor.getHigh().getType());
-      auto low = firrtl::type_cast<FIRRTLType>(adaptor.getLow().getType());
+      auto sel = cast<FIRRTLType>(adaptor.getSel().getType());
+      auto high = cast<FIRRTLType>(adaptor.getHigh().getType());
+      auto low = cast<FIRRTLType>(adaptor.getLow().getType());
       return inferReturnType(sel, high, low, loc);
     }
   }];
@@ -907,7 +907,7 @@ def PadPrimOp : PrimOp<"pad"> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       auto amount = adaptor.getAmountAttr().getValue().getSExtValue();
       return inferReturnType(input, amount, loc);
     }
@@ -931,7 +931,7 @@ class ShiftPrimOp<string mnemonic> : PrimOp<mnemonic> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       auto amount = adaptor.getAmountAttr().getValue().getSExtValue();
       return inferReturnType(input, amount, loc);
     }
@@ -979,7 +979,7 @@ def TailPrimOp : PrimOp<"tail"> {
                                       mlir::RegionRange regions,
                                       std::optional<Location> loc) {
       Adaptor adaptor(operands, attrs, properties, regions);
-      auto input = firrtl::type_cast<FIRRTLType>(adaptor.getInput().getType());
+      auto input = cast<FIRRTLType>(adaptor.getInput().getType());
       auto amount = adaptor.getAmountAttr().getValue().getSExtValue();
       return inferReturnType(input, amount, loc);
     }

@@ -344,7 +344,7 @@ static void createRtlPorts(const RtlPortsInfo &rtlPortToCreate,
   SmallVector<Value> ports;
   for (unsigned i = 0, e = mod.getNumPorts(); i < e; ++i) {
     // Only process ports that are not zero-width.
-    auto portType = type_dyn_cast<FIRRTLBaseType>(mod.getPortType(i));
+    auto portType = dyn_cast<FIRRTLBaseType>(mod.getPortType(i));
     if (!portType || portType.getBitWidthOrSentinel() == 0)
       continue;
 
