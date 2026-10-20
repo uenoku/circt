@@ -1648,40 +1648,6 @@ static void fixupConnect(ImplicitLocOpBuilder &builder, Value dst, Value src) {
 static void
 fixupSymbolSensitiveOp(Operation *op, InstanceGraph &instanceGraph,
                        const DenseMap<Attribute, StringAttr> &dedupMap) {
-  // If this is an instance op, dedup may have subtly changed the port types.
-  // For example, structurally different bundles may still dedup. In this case
-  // we now have an instance op that produces result values of the old type, but
-  // the port info on the instantiated module already represents the new type.
-  // Fix this up by going through an intermediate wire.
-  if (auto instOp = dyn_cast<InstanceOp>(op)) {
-    ImplicitLocOpBuilder builder(instOp.getLoc(), instOp->getContext());
-    builder.setInsertionPointAfter(instOp);
-    auto module = instanceGraph.lookup(instOp.getModuleNameAttr().getAttr())
-                      ->getModule<FModuleLike>();
-    for (auto [index, result] : llvm::enumerate(instOp.getResults())) {
-      auto newType = module.getPortType(index);
-      auto oldType = result.getType();
-      // If the type has not changed, we don't have to fix up anything.
-      if (newType == oldType)
-        continue;
-      LLVM_DEBUG(llvm::dbgs()
-                 << "- Updating instance port \"" << instOp.getInstanceName()
-                 << "." << instOp.getPortName(index) << "\" from " << oldType
-                 << " to " << newType << "\n");
-
-      // If the type changed we transform it back to the old type with an
-      // intermediate wire.
-      auto wire = WireOp::create(builder, oldType, instOp.getPortName(index))
-                      .getResult();
-      result.replaceAllUsesWith(wire);
-      result.setType(newType);
-      if (instOp.getPortDirection(index) == Direction::Out)
-        fixupConnect(builder, wire, result);
-      else
-        fixupConnect(builder, result, wire);
-    }
-  }
-
   // Use an attribute/type replacer to look for references to old symbols that
   // need to be replaced with new symbols.
   mlir::AttrTypeReplacer replacer;
@@ -1707,9 +1673,45 @@ fixupSymbolSensitiveOp(Operation *op, InstanceGraph &instanceGraph,
       for (auto arg : block.getArguments())
         arg.setType(replacer.replace(arg.getType()));
 
-  // Update result types.
+  // Update result types before comparing instance ports. Class types whose
+  // symbols changed during dedup do not need an intermediate wire.
   for (auto result : op->getResults())
     result.setType(replacer.replace(result.getType()));
+
+  // If this is an instance op, dedup may have subtly changed the port types.
+  // For example, structurally different bundles may still dedup. In this case
+  // we now have an instance op that produces result values of the old type, but
+  // the port info on the instantiated module already represents the new type.
+  // Fix this up by going through an intermediate wire.
+  if (auto instOp = dyn_cast<InstanceOp>(op)) {
+    ImplicitLocOpBuilder builder(instOp.getLoc(), instOp->getContext());
+    builder.setInsertionPointAfter(instOp);
+    auto module = instanceGraph.lookup(instOp.getModuleNameAttr().getAttr())
+                      ->getModule<FModuleLike>();
+    for (auto [index, result] : llvm::enumerate(instOp.getResults())) {
+      // The target module may not have had its symbol references updated yet.
+      auto newType = replacer.replace(module.getPortType(index));
+      auto oldType = result.getType();
+      // If the type has not changed, we don't have to fix up anything.
+      if (newType == oldType)
+        continue;
+      LLVM_DEBUG(llvm::dbgs()
+                 << "- Updating instance port \"" << instOp.getInstanceName()
+                 << "." << instOp.getPortName(index) << "\" from " << oldType
+                 << " to " << newType << "\n");
+
+      // If the type changed we transform it back to the old type with an
+      // intermediate wire.
+      auto wire = WireOp::create(builder, oldType, instOp.getPortName(index))
+                      .getResult();
+      result.replaceAllUsesWith(wire);
+      result.setType(newType);
+      if (instOp.getPortDirection(index) == Direction::Out)
+        fixupConnect(builder, wire, result);
+      else
+        fixupConnect(builder, result, wire);
+    }
+  }
 }
 
 /// Adjust the symbol references in ops marked as sensitive to them. This
