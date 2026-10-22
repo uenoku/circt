@@ -56,29 +56,29 @@ firrtl.circuit "Partial" {
   // OM-LABEL: om.class @Expression_Class
   firrtl.module @Expression() {
     // CHECK-NEXT: %[[C:.*]] = firrtl.integer 5
-    // CHECK-NEXT: %obj = firrtl.object @Int
+    // CHECK-NEXT: %[[WIRE:.*]] = firrtl.wire : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     %obj = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
-    // CHECK-NEXT: %[[IN:.*]] = firrtl.object.subfield %obj[input]
     %in = firrtl.object.subfield %obj[input] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     %constant = firrtl.integer 5
     // CHECK-NEXT: %[[SUM:.*]] = firrtl.integer.add %[[C]], %[[C]]
     %sum = firrtl.integer.add %constant, %constant : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
-    // CHECK-NEXT: firrtl.propassign %[[IN]], %[[SUM]] : !firrtl.integer
+    // CHECK-NEXT: %obj = firrtl.object.create(%[[SUM]])
+    // CHECK-NEXT: firrtl.propassign %[[WIRE]], %obj : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     // CHECK-NEXT: }
     firrtl.propassign %in, %sum : !firrtl.integer
   }
 
-  // Cyclic inputs remain untouched, in both modules and classes.
+  // Cyclic inputs use wires in modules, but remain untouched in classes.
   // CHECK-LABEL: firrtl.module @SelfModule
   // OM-LABEL: om.class @SelfModule_Class
   firrtl.module @SelfModule() {
-    // CHECK-NEXT: %obj = firrtl.object @Int
+    // CHECK-NEXT: %[[WIRE:.*]] = firrtl.wire : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     %obj = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
-    // CHECK-NEXT: %[[IN:.*]] = firrtl.object.subfield %obj[input]
     %in = firrtl.object.subfield %obj[input] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
-    // CHECK-NEXT: %[[OUT:.*]] = firrtl.object.subfield %obj[output]
+    // CHECK-NEXT: %[[OUT:.*]] = firrtl.object.subfield %[[WIRE]][output]
     %out = firrtl.object.subfield %obj[output] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
-    // CHECK-NEXT: firrtl.propassign %[[IN]], %[[OUT]] : !firrtl.integer
+    // CHECK-NEXT: %obj = firrtl.object.create(%[[OUT]])
+    // CHECK-NEXT: firrtl.propassign %[[WIRE]], %obj : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     // CHECK-NEXT: }
     firrtl.propassign %in, %out : !firrtl.integer
   }

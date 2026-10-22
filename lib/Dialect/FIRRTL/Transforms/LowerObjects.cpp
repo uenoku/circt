@@ -9,7 +9,7 @@
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "mlir/IR/Builders.h"
-#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 namespace circt {
 namespace firrtl {
@@ -26,16 +26,21 @@ namespace {
 struct LowerObjectsPass
     : public circt::firrtl::impl::LowerObjectsBase<LowerObjectsPass> {
   void runOnOperation() override;
+
+private:
+  LogicalResult lowerObject(ObjectOp object);
 };
 } // namespace
+
+static bool isConstantLike(Value value) {
+  auto *def = value.getDefiningOp();
+  return def && def->hasTrait<OpTrait::ConstantLike>();
+}
 
 /// Collect input assignments before changing the IR. A field may have several
 /// subfield operations, so detect multiple drivers by field index rather than
 /// by the SSA value of an individual subfield.
-static LogicalResult lowerObject(ObjectOp object, bool &converted,
-                                 size_t &numAssignmentsRemoved,
-                                 size_t &numInputFieldsRemoved) {
-  converted = false;
+LogicalResult LowerObjectsPass::lowerObject(ObjectOp object) {
   auto type = object.getType();
   SmallVector<PropAssignOp> assignments(type.getNumElements());
   SmallVector<ObjectSubfieldOp> inputFields;
@@ -71,31 +76,47 @@ static LogicalResult lowerObject(ObjectOp object, bool &converted,
     inputs.push_back(assign.getSrc());
   }
 
-  // Leave objects with non-constant inputs in declaration form. Their input
-  // assignments may introduce dependencies that cannot be ordered in SSA.
-  if (!llvm::all_of(inputs, [](Value input) {
-        auto *def = input.getDefiningOp();
-        return def && def->hasTrait<OpTrait::ConstantLike>();
-      }))
+  // Classes cannot use wires to break object dependencies. Leave their objects
+  // with non-constant inputs in declaration form.
+  bool constantInputs = llvm::all_of(inputs, isConstantLike);
+  if (!constantInputs && !isa<FModuleOp>(object->getParentOp()))
     return success();
 
   OpBuilder builder(object);
+  WireOp wire;
+  if (!constantInputs) {
+    // Replace the declaration with one wire for the object itself, not its
+    // fields. Create the object at block end, where all its inputs are
+    // available. Earlier output accesses and cyclic references use the wire
+    // instead.
+    wire = WireOp::create(builder, object.getLoc(), type,
+                          (object.getName() + "_wire").str());
+    builder.setInsertionPointToEnd(object->getBlock());
+    ++numObjectWiresCreated;
+  }
   auto create = ObjectCreateOp::create(builder, object.getLoc(), type,
                                        object.getNameAttr(), inputs);
   // Preserve any discardable attributes attached to the declaration.
   create->setDiscardableAttrs(object->getDiscardableAttrDictionary());
-  numAssignmentsRemoved += llvm::count_if(assignments, [](PropAssignOp assign) {
-    return static_cast<bool>(assign);
-  });
+  Value replacement = create.getResult();
+  if (wire) {
+    PropAssignOp::create(builder, object.getLoc(), wire.getResult(),
+                         create.getResult());
+    replacement = wire.getResult();
+  }
+  numInputAssignmentsRemoved +=
+      llvm::count_if(assignments, [](PropAssignOp assign) {
+        return static_cast<bool>(assign);
+      });
   numInputFieldsRemoved += inputFields.size();
   for (auto assign : assignments)
     if (assign)
       assign.erase();
   for (auto field : inputFields)
     field.erase();
-  object.replaceAllUsesWith(create.getResult());
+  object.replaceAllUsesWith(replacement);
   object.erase();
-  converted = true;
+  ++numObjectsConverted;
   return success();
 }
 
@@ -106,13 +127,14 @@ static uint64_t countOperations(Operation *root) {
 }
 
 void LowerObjectsPass::runOnOperation() {
-  // This pass is scheduled under nestAny(), so it runs on each module and
-  // class independently. Ignore other operations nested directly in the
-  // circuit, such as external module declarations.
-  auto *container = getOperation();
-  if (!isa<FModuleOp, ClassOp>(container) || container->getRegion(0).empty())
+  // Only modules and classes have bodies containing object declarations.
+  auto module = getOperation();
+  auto *block =
+      TypeSwitch<Operation *, Block *>(module)
+          .Case<FModuleOp, ClassOp>([](auto op) { return op.getBodyBlock(); })
+          .Default([](auto) { return nullptr; });
+  if (!block)
     return;
-  auto *block = &container->getRegion(0).front();
 
   // Collect first since lowering erases the declarations and some of their
   // users. Do not touch blocks without objects: hoisting their constants would
@@ -123,7 +145,7 @@ void LowerObjectsPass::runOnOperation() {
   if (objects.empty())
     return;
 
-  const auto operationsBefore = countOperations(container);
+  const auto operationsBefore = countOperations(module.getOperation());
   numOperationsBefore += operationsBefore;
 
   // Make constant inputs available at every object declaration without
@@ -138,20 +160,11 @@ void LowerObjectsPass::runOnOperation() {
       op.moveBefore(block, insertionPoint);
   }
 
-  for (auto object : objects) {
-    bool converted;
-    size_t assignmentsRemoved = 0, inputFieldsRemoved = 0;
-    if (failed(lowerObject(object, converted, assignmentsRemoved,
-                           inputFieldsRemoved)))
+  for (auto object : objects)
+    if (failed(lowerObject(object)))
       return signalPassFailure();
-    if (!converted)
-      continue;
-    ++numObjectsConverted;
-    numInputAssignmentsRemoved += assignmentsRemoved;
-    numInputFieldsRemoved += inputFieldsRemoved;
-  }
 
-  const auto operationsAfter = countOperations(container);
+  const auto operationsAfter = countOperations(module.getOperation());
   numOperationsAfter += operationsAfter;
   numOperationsRemoved += operationsBefore - operationsAfter;
 }
