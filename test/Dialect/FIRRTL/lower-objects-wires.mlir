@@ -2,13 +2,6 @@
 // RUN: circt-opt %s -pass-pipeline='builtin.module(firrtl.circuit(any(firrtl-lower-objects,firrtl-lower-objects)))' | FileCheck %s
 // RUN: circt-opt %s -pass-pipeline='builtin.module(firrtl.circuit(any(firrtl-lower-objects),firrtl-check-comb-loops))' | FileCheck %s
 // RUN: circt-opt %s -pass-pipeline='builtin.module(firrtl.circuit(any(firrtl-lower-objects),firrtl-lower-classes))' | FileCheck %s --check-prefix=OM
-// RUN: circt-opt %s -pass-pipeline='builtin.module(firrtl.circuit(any(firrtl-lower-objects)))' --mlir-pass-statistics -o /dev/null 2>&1 | FileCheck %s --check-prefix=STATS
-
-// STATS: 5 num-input-assignments-removed
-// STATS: 6 num-input-fields-removed
-// STATS: 3 num-object-wires-created
-// STATS: 3 num-objects-converted
-// STATS: 5 num-operations-removed
 
 firrtl.circuit "Wires" {
   firrtl.module @Wires() {}

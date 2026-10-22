@@ -9,7 +9,6 @@
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
 #include "mlir/IR/Builders.h"
-#include "llvm/ADT/TypeSwitch.h"
 
 namespace circt {
 namespace firrtl {
@@ -104,67 +103,51 @@ LogicalResult LowerObjectsPass::lowerObject(ObjectOp object) {
                          create.getResult());
     replacement = wire.getResult();
   }
-  numInputAssignmentsRemoved +=
-      llvm::count_if(assignments, [](PropAssignOp assign) {
-        return static_cast<bool>(assign);
-      });
-  numInputFieldsRemoved += inputFields.size();
   for (auto assign : assignments)
-    if (assign)
+    if (assign) {
       assign.erase();
-  for (auto field : inputFields)
+      ++numInputAssignmentsRemoved;
+      ++numRemoved;
+    }
+  for (auto field : inputFields) {
     field.erase();
+    ++numInputFieldsRemoved;
+    ++numRemoved;
+  }
   object.replaceAllUsesWith(replacement);
   object.erase();
   ++numObjectsConverted;
+  ++numRemoved;
   return success();
 }
 
-static uint64_t countOperations(Operation *root) {
-  uint64_t count = 0;
-  root->walk([&](Operation *) { ++count; });
-  return count;
-}
-
 void LowerObjectsPass::runOnOperation() {
-  // Only modules and classes have bodies containing object declarations.
-  auto module = getOperation();
-  auto *block =
-      TypeSwitch<Operation *, Block *>(module)
-          .Case<FModuleOp, ClassOp>([](auto op) { return op.getBodyBlock(); })
-          .Default([](auto) { return nullptr; });
-  if (!block)
-    return;
+  auto result = getOperation()->walk([&](Block *block) {
+    // Do not touch blocks without objects: hoisting their constants would
+    // change unrelated operation ordering.
+    auto objects = block->getOps<ObjectOp>();
+    if (objects.empty())
+      return WalkResult::advance();
 
-  // Collect first since lowering erases the declarations and some of their
-  // users. Do not touch blocks without objects: hoisting their constants would
-  // change unrelated operation ordering.
-  SmallVector<ObjectOp> objects;
-  for (auto object : block->getOps<ObjectOp>())
-    objects.push_back(object);
-  if (objects.empty())
-    return;
+    // Make constant inputs available at every object declaration without
+    // reordering dependent operations. Preserve the relative order of
+    // constants.
+    auto insertionPoint = block->begin();
+    for (auto &op : llvm::make_early_inc_range(*block)) {
+      if (!op.hasTrait<OpTrait::ConstantLike>())
+        continue;
+      if (op.getIterator() == insertionPoint)
+        ++insertionPoint;
+      else
+        op.moveBefore(block, insertionPoint);
+    }
 
-  const auto operationsBefore = countOperations(module.getOperation());
-  numOperationsBefore += operationsBefore;
-
-  // Make constant inputs available at every object declaration without
-  // reordering dependent operations. Preserve the relative order of constants.
-  auto insertionPoint = block->begin();
-  for (auto &op : llvm::make_early_inc_range(*block)) {
-    if (!op.hasTrait<OpTrait::ConstantLike>())
-      continue;
-    if (op.getIterator() == insertionPoint)
-      ++insertionPoint;
-    else
-      op.moveBefore(block, insertionPoint);
-  }
-
-  for (auto object : objects)
-    if (failed(lowerObject(object)))
-      return signalPassFailure();
-
-  const auto operationsAfter = countOperations(module.getOperation());
-  numOperationsAfter += operationsAfter;
-  numOperationsRemoved += operationsBefore - operationsAfter;
+    // Advance to the next object before erasing this one and its users.
+    for (auto object : llvm::make_early_inc_range(objects))
+      if (failed(lowerObject(object)))
+        return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
+    signalPassFailure();
 }

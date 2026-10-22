@@ -759,9 +759,8 @@ def LowerObjects : InterfacePass<"firrtl-lower-objects", "firrtl::FModuleLike"> 
     all input assignments and input field accesses. Objects with non-constant
     inputs in classes remain in declaration form. Output field accesses and
     other uses of objects are preserved. Missing or multiply assigned inputs
-    are diagnosed. This pass
-    runs immediately after parsing in the firtool preprocessing pipeline;
-    the FIRRTL importer is unchanged.
+    are diagnosed. This pass runs immediately after parsing in the firtool
+    preprocessing pipeline; the FIRRTL importer is unchanged.
   }];
   let statistics = [
     Statistic<"numObjectsConverted", "num-objects-converted",
@@ -772,12 +771,7 @@ def LowerObjects : InterfacePass<"firrtl-lower-objects", "firrtl::FModuleLike"> 
               "Number of input assignments removed">,
     Statistic<"numInputFieldsRemoved", "num-input-fields-removed",
               "Number of input subfields removed">,
-    Statistic<"numOperationsBefore", "num-operations-before",
-              "Number of operations before lowering">,
-    Statistic<"numOperationsAfter", "num-operations-after",
-              "Number of operations after lowering">,
-    Statistic<"numOperationsRemoved", "num-operations-removed",
-              "Difference in operation count after lowering">
+    Statistic<"numRemoved", "num-removed", "Number of operations erased">
   ];
 }
 
