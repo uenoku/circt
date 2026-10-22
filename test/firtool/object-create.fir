@@ -1,6 +1,7 @@
 ; RUN: circt-translate -import-firrtl %s | FileCheck %s --check-prefix=PARSER
 ; RUN: firtool %s --parse-only | FileCheck %s --check-prefix=CREATE
 ; RUN: firtool %s --ir-hw | FileCheck %s --check-prefix=OM
+; RUN: env CIRCT_DISABLE_LOWER_OBJECTS=1 firtool %s --parse-only | FileCheck %s --check-prefix=DISABLED
 
 FIRRTL version 6.0.0
 circuit ObjectCreate:
@@ -20,6 +21,9 @@ circuit ObjectCreate:
     ; CREATE-NEXT: firrtl.propassign %result, %[[RESULT]] : !firrtl.string
     ; CREATE-NEXT: %obj = firrtl.object.create(%[[STR]]) : (!firrtl.string) -> !firrtl.class<@PassThrough(in str: !firrtl.string, out result: !firrtl.string)>
     ; CREATE-NEXT: firrtl.propassign %[[WIRE]], %obj : !firrtl.class<@PassThrough(in str: !firrtl.string, out result: !firrtl.string)>
+    ; DISABLED-LABEL: firrtl.module @ObjectCreate
+    ; DISABLED: %obj = firrtl.object @PassThrough
+    ; DISABLED: firrtl.propassign
     ; OM: om.class @ObjectCreate_Class
     ; OM: om.object @PassThrough
     object obj of PassThrough
