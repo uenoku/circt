@@ -746,21 +746,18 @@ def FinalizeIR : Pass<"firrtl-finalize-ir", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect", "sv::SVDialect"];
 }
 
-def LowerObjects : InterfacePass<"firrtl-lower-objects", "firrtl::FModuleLike"> {
+def LowerObjects : Pass<"firrtl-lower-objects", "firrtl::FModuleOp"> {
   let summary = "Convert object declarations to value-like object creation";
   let description = [{
-    Hoist constant-like operations to the beginning of blocks containing
-    `firrtl.object` declarations. Replace objects whose inputs are all
-    constant-like values, including objects without inputs, and their input
-    assignments with `firrtl.object.create`. Operands are supplied in input port
-    declaration order. In `firrtl.module` only, also replace objects with
-    non-constant inputs: replace each declaration with a class-typed wire and
-    create the object at block end, assigning its result to the wire. Remove
-    all input assignments and input field accesses. Objects with non-constant
-    inputs in classes remain in declaration form. Output field accesses and
-    other uses of objects are preserved. Missing or multiply assigned inputs
-    are diagnosed. This pass runs immediately after parsing in the firtool
-    preprocessing pipeline; the FIRRTL importer is unchanged.
+    In `firrtl.module`, replace each `firrtl.object` declaration with a
+    class-typed wire and create the object at block end with
+    `firrtl.object.create`, assigning its result to the wire. Operands are
+    supplied in input port declaration order. Remove all input assignments and
+    input field accesses. Objects in classes remain in declaration form.
+    Output field accesses and other uses of objects are preserved. Missing or
+    multiply assigned inputs are diagnosed. This pass runs immediately after
+    parsing in the firtool preprocessing pipeline; the FIRRTL importer is
+    unchanged.
   }];
   let statistics = [
     Statistic<"numObjectsConverted", "num-objects-converted",

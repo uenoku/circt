@@ -8,14 +8,16 @@ firrtl.circuit "Partial" {
     firrtl.propassign %output, %input : !firrtl.integer
   }
 
-  // Preserve the order of constants, including one already at block entry.
+  // Classes remain unchanged, even when all object inputs are constants.
   // CHECK-LABEL: firrtl.class @Hoisting
   // OM-LABEL: om.class @Hoisting
   firrtl.class @Hoisting() {
     // CHECK-NEXT: %[[BEFORE:.*]] = firrtl.integer 1
+    // CHECK-NEXT: %obj = firrtl.object @Int
+    // CHECK-NEXT: %[[IN:.*]] = firrtl.object.subfield %obj[input]
     // CHECK-NEXT: %[[AFTER:.*]] = firrtl.integer 2
     // CHECK-NEXT: %[[LAST:.*]] = firrtl.integer 3
-    // CHECK-NEXT: %obj = firrtl.object.create(%[[AFTER]])
+    // CHECK-NEXT: firrtl.propassign %[[IN]], %[[AFTER]] : !firrtl.integer
     // CHECK-NEXT: }
     %before = firrtl.integer 1
     %obj = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
@@ -25,12 +27,10 @@ firrtl.circuit "Partial" {
     firrtl.propassign %in, %after : !firrtl.integer
   }
 
-  // A constant-only object can be lowered while its dependent object stays in
-  // declaration form. Do not reorder the dependent object's output accesses.
+  // Both dependent and constant-input objects in classes remain untouched.
   // CHECK-LABEL: firrtl.class @Mixed
   // OM-LABEL: om.class @Mixed
   firrtl.class @Mixed(out %out: !firrtl.integer) {
-    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 4
     // CHECK-NEXT: %a = firrtl.object @Int
     %a = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
     // CHECK-NEXT: %[[AIN:.*]] = firrtl.object.subfield %a[input]
@@ -39,26 +39,29 @@ firrtl.circuit "Partial" {
     %a_out = firrtl.object.subfield %a[output] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     // CHECK-NEXT: firrtl.propassign %out, %[[AOUT]] : !firrtl.integer
     firrtl.propassign %out, %a_out : !firrtl.integer
-    // CHECK-NEXT: %b = firrtl.object.create(%[[C]])
+    // CHECK-NEXT: %b = firrtl.object @Int
     %b = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
+    // CHECK-NEXT: %[[BIN:.*]] = firrtl.object.subfield %b[input]
     %b_in = firrtl.object.subfield %b[input] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     // CHECK-NEXT: %[[BOUT:.*]] = firrtl.object.subfield %b[output]
     %b_out = firrtl.object.subfield %b[output] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
+    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 4
     %constant = firrtl.integer 4
     // CHECK-NEXT: firrtl.propassign %[[AIN]], %[[BOUT]] : !firrtl.integer
+    // CHECK-NEXT: firrtl.propassign %[[BIN]], %[[C]] : !firrtl.integer
     // CHECK-NEXT: }
     firrtl.propassign %a_in, %b_out : !firrtl.integer
     firrtl.propassign %b_in, %constant : !firrtl.integer
   }
 
-  // Even an expression computed only from constants is not constant-like.
+  // Module expressions and their constants remain in place.
   // CHECK-LABEL: firrtl.module @Expression
   // OM-LABEL: om.class @Expression_Class
   firrtl.module @Expression() {
-    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 5
     // CHECK-NEXT: %[[WIRE:.*]] = firrtl.wire : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
     %obj = firrtl.object @Int(in input: !firrtl.integer, out output: !firrtl.integer)
     %in = firrtl.object.subfield %obj[input] : !firrtl.class<@Int(in input: !firrtl.integer, out output: !firrtl.integer)>
+    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 5
     %constant = firrtl.integer 5
     // CHECK-NEXT: %[[SUM:.*]] = firrtl.integer.add %[[C]], %[[C]]
     %sum = firrtl.integer.add %constant, %constant : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer

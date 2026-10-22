@@ -11,13 +11,12 @@ firrtl.circuit "Wires" {
   firrtl.extclass private @Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)
   firrtl.extmodule @External(in arg: !firrtl.integer)
 
-  // A non-constant object needs one class-typed wire, not wires for its inputs.
+  // Each module object needs one class-typed wire, not wires for its inputs.
   // Preserve port order, output accesses, and object attributes. Remove all
   // input assignments and accesses, including unused duplicate accesses.
   // CHECK-LABEL: firrtl.module @MixedInputs
   // OM-LABEL: om.class @MixedInputs_Class
   firrtl.module @MixedInputs(in %arg: !firrtl.string, in %integer: !firrtl.integer, out %out: !firrtl.string) {
-    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 42
     // CHECK-NEXT: %[[WIRE:.*]] = firrtl.wire : !firrtl.class<@Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)>
     %obj = firrtl.object {test.attr = "preserved"} @Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)
     %first = firrtl.object.subfield %obj[first] : !firrtl.class<@Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)>
@@ -29,6 +28,7 @@ firrtl.circuit "Wires" {
     // CHECK-NEXT: firrtl.propassign %out, %[[RESULT]] : !firrtl.string
     firrtl.propassign %out, %result : !firrtl.string
     firrtl.propassign %last, %integer : !firrtl.integer
+    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 42
     %c = firrtl.integer 42
     firrtl.propassign %constant, %c : !firrtl.integer
     // CHECK-NEXT: %obj = firrtl.object.create(%arg, %[[C]], %integer) {test.attr = "preserved"}
@@ -64,11 +64,10 @@ firrtl.circuit "Wires" {
     firrtl.propassign %out, %a_ref : !firrtl.anyref
   }
 
-  // The same mixed-input object in a class must not produce wires.
+  // Classes remain unchanged, including the position of their constants.
   // CHECK-LABEL: firrtl.class @NoClassWires
   // OM-LABEL: om.class @NoClassWires
   firrtl.class @NoClassWires(in %arg: !firrtl.string, in %integer: !firrtl.integer) {
-    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 42
     // CHECK-NEXT: %obj = firrtl.object @Mixed
     %obj = firrtl.object @Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)
     // CHECK-NEXT: %[[FIRST:.*]] = firrtl.object.subfield %obj[first]
@@ -77,6 +76,7 @@ firrtl.circuit "Wires" {
     %constant = firrtl.object.subfield %obj[constant] : !firrtl.class<@Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)>
     // CHECK-NEXT: %[[LAST:.*]] = firrtl.object.subfield %obj[last]
     %last = firrtl.object.subfield %obj[last] : !firrtl.class<@Mixed(in first: !firrtl.string, out result: !firrtl.string, in constant: !firrtl.integer, in last: !firrtl.integer)>
+    // CHECK-NEXT: %[[C:.*]] = firrtl.integer 42
     %c = firrtl.integer 42
     // CHECK-NEXT: firrtl.propassign %[[FIRST]], %arg : !firrtl.string
     // CHECK-NEXT: firrtl.propassign %[[CONSTANT]], %[[C]] : !firrtl.integer
@@ -87,7 +87,7 @@ firrtl.circuit "Wires" {
     firrtl.propassign %last, %integer : !firrtl.integer
   }
 
-  // Modules without objects must not have their constants hoisted.
+  // Modules without objects remain unchanged.
   // CHECK-LABEL: firrtl.module @NoObjects
   firrtl.module @NoObjects(out %out: !firrtl.integer) {
     // CHECK-NEXT: %[[WIRE:.*]] = firrtl.wire {{.*}}: !firrtl.integer

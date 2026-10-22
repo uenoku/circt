@@ -31,11 +31,6 @@ private:
 };
 } // namespace
 
-static bool isConstantLike(Value value) {
-  auto *def = value.getDefiningOp();
-  return def && def->hasTrait<OpTrait::ConstantLike>();
-}
-
 /// Collect input assignments before changing the IR. A field may have several
 /// subfield operations, so detect multiple drivers by field index rather than
 /// by the SSA value of an individual subfield.
@@ -75,34 +70,20 @@ LogicalResult LowerObjectsPass::lowerObject(ObjectOp object) {
     inputs.push_back(assign.getSrc());
   }
 
-  // Classes cannot use wires to break object dependencies. Leave their objects
-  // with non-constant inputs in declaration form.
-  bool constantInputs = llvm::all_of(inputs, isConstantLike);
-  if (!constantInputs && !isa<FModuleOp>(object->getParentOp()))
-    return success();
-
+  // Replace the declaration with one wire for the object itself, not its
+  // fields. Create the object at block end, where all its inputs are available.
+  // Earlier output accesses and cyclic references use the wire instead.
   OpBuilder builder(object);
-  WireOp wire;
-  if (!constantInputs) {
-    // Replace the declaration with one wire for the object itself, not its
-    // fields. Create the object at block end, where all its inputs are
-    // available. Earlier output accesses and cyclic references use the wire
-    // instead.
-    wire = WireOp::create(builder, object.getLoc(), type,
-                          (object.getName() + "_wire").str());
-    builder.setInsertionPointToEnd(object->getBlock());
-    ++numObjectWiresCreated;
-  }
+  auto wire = WireOp::create(builder, object.getLoc(), type,
+                             (object.getName() + "_wire").str());
+  builder.setInsertionPointToEnd(object->getBlock());
+  ++numObjectWiresCreated;
   auto create = ObjectCreateOp::create(builder, object.getLoc(), type,
                                        object.getNameAttr(), inputs);
   // Preserve any discardable attributes attached to the declaration.
   create->setDiscardableAttrs(object->getDiscardableAttrDictionary());
-  Value replacement = create.getResult();
-  if (wire) {
-    PropAssignOp::create(builder, object.getLoc(), wire.getResult(),
-                         create.getResult());
-    replacement = wire.getResult();
-  }
+  PropAssignOp::create(builder, object.getLoc(), wire.getResult(),
+                       create.getResult());
   for (auto assign : assignments)
     if (assign) {
       assign.erase();
@@ -114,7 +95,7 @@ LogicalResult LowerObjectsPass::lowerObject(ObjectOp object) {
     ++numInputFieldsRemoved;
     ++numRemoved;
   }
-  object.replaceAllUsesWith(replacement);
+  object.replaceAllUsesWith(wire.getResult());
   object.erase();
   ++numObjectsConverted;
   ++numRemoved;
@@ -123,27 +104,8 @@ LogicalResult LowerObjectsPass::lowerObject(ObjectOp object) {
 
 void LowerObjectsPass::runOnOperation() {
   auto result = getOperation()->walk([&](Block *block) {
-    // Do not touch blocks without objects: hoisting their constants would
-    // change unrelated operation ordering.
-    auto objects = block->getOps<ObjectOp>();
-    if (objects.empty())
-      return WalkResult::advance();
-
-    // Make constant inputs available at every object declaration without
-    // reordering dependent operations. Preserve the relative order of
-    // constants.
-    auto insertionPoint = block->begin();
-    for (auto &op : llvm::make_early_inc_range(*block)) {
-      if (!op.hasTrait<OpTrait::ConstantLike>())
-        continue;
-      if (op.getIterator() == insertionPoint)
-        ++insertionPoint;
-      else
-        op.moveBefore(block, insertionPoint);
-    }
-
     // Advance to the next object before erasing this one and its users.
-    for (auto object : llvm::make_early_inc_range(objects))
+    for (auto object : llvm::make_early_inc_range(block->getOps<ObjectOp>()))
       if (failed(lowerObject(object)))
         return WalkResult::interrupt();
     return WalkResult::advance();
