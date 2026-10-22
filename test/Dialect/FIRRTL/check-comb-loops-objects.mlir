@@ -1,4 +1,4 @@
-// RUN: circt-opt %s -firrtl-lower-objects -firrtl-check-comb-loops | FileCheck %s
+// RUN: circt-opt %s -pass-pipeline='builtin.module(firrtl.circuit(any(firrtl-lower-objects),firrtl-check-comb-loops))' | FileCheck %s
 
 // Mutually referencing object-model nodes are not combinational hardware
 // loops. Creating an object reference does not eagerly evaluate its fields.
@@ -11,17 +11,13 @@ firrtl.circuit "ObjectGraph" {
     %a_ref = firrtl.wire : !firrtl.anyref
     %b_ref = firrtl.wire : !firrtl.anyref
     // CHECK: %a = firrtl.object.create(%{{.*}})
-    %a = firrtl.object @Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)
+    %a = firrtl.object.create(%b_ref) : (!firrtl.anyref) -> !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
     // CHECK: %b = firrtl.object.create(%{{.*}})
-    %b = firrtl.object @Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)
-    %a_in = firrtl.object.subfield %a[ref] : !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
-    %b_in = firrtl.object.subfield %b[ref] : !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
+    %b = firrtl.object.create(%a_ref) : (!firrtl.anyref) -> !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
     %a_cast = firrtl.object.anyref_cast %a : !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
     %b_cast = firrtl.object.anyref_cast %b : !firrtl.class<@Node(in ref: !firrtl.anyref, out next: !firrtl.anyref)>
     firrtl.propassign %a_ref, %a_cast : !firrtl.anyref
     firrtl.propassign %b_ref, %b_cast : !firrtl.anyref
-    firrtl.propassign %a_in, %b_ref : !firrtl.anyref
-    firrtl.propassign %b_in, %a_ref : !firrtl.anyref
     firrtl.propassign %out, %a_cast : !firrtl.anyref
   }
 }

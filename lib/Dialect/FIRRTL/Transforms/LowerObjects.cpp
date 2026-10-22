@@ -8,7 +8,6 @@
 
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
 #include "circt/Dialect/FIRRTL/Passes.h"
-#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/SetVector.h"
 
@@ -33,7 +32,10 @@ struct LowerObjectsPass
 /// Collect input assignments before changing the IR. A field may have several
 /// subfield operations, so detect multiple drivers by field index rather than
 /// by the SSA value of an individual subfield.
-static LogicalResult lowerObject(ObjectOp object) {
+static LogicalResult lowerObject(ObjectOp object, bool &converted,
+                                 size_t &numAssignmentsRemoved,
+                                 size_t &numInputFieldsRemoved) {
+  converted = false;
   auto type = object.getType();
   SmallVector<PropAssignOp> assignments(type.getNumElements());
   SmallVector<ObjectSubfieldOp> inputFields;
@@ -69,11 +71,23 @@ static LogicalResult lowerObject(ObjectOp object) {
     inputs.push_back(assign.getSrc());
   }
 
+  // Leave objects with non-constant inputs in declaration form. Their input
+  // assignments may introduce dependencies that cannot be ordered in SSA.
+  if (!llvm::all_of(inputs, [](Value input) {
+        auto *def = input.getDefiningOp();
+        return def && def->hasTrait<OpTrait::ConstantLike>();
+      }))
+    return success();
+
   OpBuilder builder(object);
   auto create = ObjectCreateOp::create(builder, object.getLoc(), type,
                                        object.getNameAttr(), inputs);
   // Preserve any discardable attributes attached to the declaration.
   create->setDiscardableAttrs(object->getDiscardableAttrDictionary());
+  numAssignmentsRemoved += llvm::count_if(assignments, [](PropAssignOp assign) {
+    return static_cast<bool>(assign);
+  });
+  numInputFieldsRemoved += inputFields.size();
   for (auto assign : assignments)
     if (assign)
       assign.erase();
@@ -81,27 +95,63 @@ static LogicalResult lowerObject(ObjectOp object) {
     field.erase();
   object.replaceAllUsesWith(create.getResult());
   object.erase();
+  converted = true;
   return success();
 }
 
+static uint64_t countOperations(Operation *root) {
+  uint64_t count = 0;
+  root->walk([&](Operation *) { ++count; });
+  return count;
+}
+
 void LowerObjectsPass::runOnOperation() {
+  // This pass is scheduled under nestAny(), so it runs on each module and
+  // class independently. Ignore other operations nested directly in the
+  // circuit, such as external module declarations.
+  auto *container = getOperation();
+  if (!isa<FModuleOp, ClassOp>(container) || container->getRegion(0).empty())
+    return;
+  auto *block = &container->getRegion(0).front();
+
   // Collect first since lowering erases the declarations and some of their
-  // users. Keep block order deterministic when restoring SSA dominance.
+  // users. Do not touch blocks without objects: hoisting their constants would
+  // change unrelated operation ordering.
   SmallVector<ObjectOp> objects;
-  getOperation().walk([&](ObjectOp object) { objects.push_back(object); });
-  llvm::SetVector<Block *> blocks;
-  for (auto object : objects) {
-    blocks.insert(object->getBlock());
-    if (failed(lowerObject(object)))
-      return signalPassFailure();
+  for (auto object : block->getOps<ObjectOp>())
+    objects.push_back(object);
+  if (objects.empty())
+    return;
+
+  const auto operationsBefore = countOperations(container);
+  numOperationsBefore += operationsBefore;
+
+  // Make constant inputs available at every object declaration without
+  // reordering dependent operations. Preserve the relative order of constants.
+  auto insertionPoint = block->begin();
+  for (auto &op : llvm::make_early_inc_range(*block)) {
+    if (!op.hasTrait<OpTrait::ConstantLike>())
+      continue;
+    if (op.getIterator() == insertionPoint)
+      ++insertionPoint;
+    else
+      op.moveBefore(block, insertionPoint);
   }
 
-  // Input assignments may follow both the object and its output accesses.
-  // Turning their sources into operands introduces forward references; sort
-  // the affected blocks to restore SSA dominance, including object chains.
-  for (auto *block : blocks)
-    if (!sortTopologically(block)) {
-      block->getParentOp()->emitError("cyclic object input dependencies");
+  for (auto object : objects) {
+    bool converted;
+    size_t assignmentsRemoved = 0, inputFieldsRemoved = 0;
+    if (failed(lowerObject(object, converted, assignmentsRemoved,
+                           inputFieldsRemoved)))
       return signalPassFailure();
-    }
+    if (!converted)
+      continue;
+    ++numObjectsConverted;
+    numInputAssignmentsRemoved += assignmentsRemoved;
+    numInputFieldsRemoved += inputFieldsRemoved;
+  }
+
+  const auto operationsAfter = countOperations(container);
+  numOperationsAfter += operationsAfter;
+  numOperationsRemoved += operationsBefore - operationsAfter;
 }

@@ -25,7 +25,7 @@ using namespace circt;
 
 LogicalResult firtool::populatePreprocessTransforms(mlir::PassManager &pm,
                                                     const FirtoolOptions &opt) {
-  pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerObjects());
+  pm.nest<firrtl::CircuitOp>().nestAny().addPass(firrtl::createLowerObjects());
   pm.nest<firrtl::CircuitOp>().addPass(
       firrtl::createCheckRecursiveInstantiation());
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createCheckLayers());
@@ -528,7 +528,7 @@ public:
               clEnumValN(circt::firrtl::PreserveAggregate::All, "all",
                          "Preserve vectors and bundles")),
           llvm::cl::init(circt::firrtl::PreserveAggregate::None),
-      };
+  };
 
   llvm::cl::opt<firrtl::PreserveValues::PreserveMode> preserveMode{
       "preserve-values",

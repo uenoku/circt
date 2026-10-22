@@ -746,16 +746,32 @@ def FinalizeIR : Pass<"firrtl-finalize-ir", "mlir::ModuleOp"> {
   let dependentDialects = ["hw::HWDialect", "sv::SVDialect"];
 }
 
-def LowerObjects : Pass<"firrtl-lower-objects", "firrtl::CircuitOp"> {
+def LowerObjects : Pass<"firrtl-lower-objects"> {
   let summary = "Convert object declarations to value-like object creation";
   let description = [{
-    Replace each `firrtl.object` and the assignments to its input ports with a
-    `firrtl.object.create` whose operands are the assigned values, in input port
-    declaration order. Output field accesses and other uses of the object are
-    preserved. Missing or multiply assigned inputs and cyclic object
-    dependencies are diagnosed. This pass runs immediately after parsing in
+    Hoist constant-like operations to the beginning of blocks containing
+    `firrtl.object` declarations. Replace objects whose inputs are all
+    constant-like values, including objects without inputs, and their input
+    assignments with `firrtl.object.create`. Operands are supplied in input port
+    declaration order. Other objects remain in declaration form. Output field
+    accesses and other uses of objects are preserved. Missing or multiply
+    assigned inputs are diagnosed. This pass runs immediately after parsing in
     the firtool preprocessing pipeline; the FIRRTL importer is unchanged.
   }];
+  let statistics = [
+    Statistic<"numObjectsConverted", "num-objects-converted",
+              "Number of object declarations converted to object.create">,
+    Statistic<"numInputAssignmentsRemoved", "num-input-assignments-removed",
+              "Number of input assignments removed">,
+    Statistic<"numInputFieldsRemoved", "num-input-fields-removed",
+              "Number of input subfields removed">,
+    Statistic<"numOperationsBefore", "num-operations-before",
+              "Number of operations before lowering">,
+    Statistic<"numOperationsAfter", "num-operations-after",
+              "Number of operations after lowering">,
+    Statistic<"numOperationsRemoved", "num-operations-removed",
+              "Difference in operation count after lowering">
+  ];
 }
 
 def LowerClasses : Pass<"firrtl-lower-classes", "firrtl::CircuitOp"> {
