@@ -60,6 +60,8 @@ struct Emitter {
   void emitModuleParameters(Operation *op, ArrayAttr parameters);
   void emitDeclaration(DomainOp op);
   void emitDeclaration(LayerOp op);
+  void emitDeclaration(ClassOp op);
+  void emitDeclaration(ExtClassOp op);
   void emitDeclaration(OptionOp op);
   void emitDeclaration(FormalOp op);
   void emitDeclaration(SimulationOp op);
@@ -96,6 +98,8 @@ struct Emitter {
   void emitStatement(PropAssignOp op);
   void emitStatement(InstanceOp op);
   void emitStatement(InstanceChoiceOp op);
+  void emitStatement(ObjectOp op);
+  void emitStatement(ObjectCreateOp op);
   void emitStatement(AttachOp op);
   void emitStatement(MemOp op);
   void emitStatement(InvalidValueOp op);
@@ -126,6 +130,8 @@ struct Emitter {
   void emitExpression(ConstantOp op);
   void emitExpression(SpecialConstantOp op);
   void emitExpression(SubfieldOp op);
+  void emitExpression(ObjectSubfieldOp op);
+  void emitExpression(ObjectAnyRefCastOp op);
   void emitExpression(SubindexOp op);
   void emitExpression(SubaccessOp op);
   void emitExpression(OpenSubfieldOp op);
@@ -342,6 +348,9 @@ struct Emitter {
     ps.end();
   }
 
+  void emitObjectDeclaration(Operation *op, StringAttr name,
+                             StringAttr className, Value result);
+
 private:
   /// Emit an error and remark that emission failed.
   InFlightDiagnostic emitError(Operation *op, const Twine &message) {
@@ -483,8 +492,8 @@ void Emitter::emitCircuit(CircuitOp op) {
             emitModule(op);
             ps << PP::newline;
           })
-          .Case<DomainOp, LayerOp, OptionOp, FormalOp, SimulationOp>(
-              [&](auto op) { emitDeclaration(op); })
+          .Case<DomainOp, LayerOp, ClassOp, ExtClassOp, OptionOp, FormalOp,
+                SimulationOp>([&](auto op) { emitDeclaration(op); })
           .Default([&](auto op) {
             emitOpError(op, "not supported for emission inside circuit");
           });
@@ -738,6 +747,42 @@ void Emitter::emitDeclaration(DomainOp op) {
   });
 }
 
+void Emitter::emitDeclaration(ClassOp op) {
+  if (failed(requireVersion({6, 0, 0}, op, "classes")))
+    return;
+  startStatement();
+  ps.cbox(4, IndentStyle::Block);
+  ps << "class " << PPExtString(legalize(op.getSymNameAttr())) << PP::nbsp
+     << ":" << PP::end;
+  emitLocation(op);
+
+  ps.scopedBox(PP::bbox2, [&]() {
+    setPendingNewline();
+    auto ports = op.getPorts();
+    emitModulePorts(ports, op.getArguments());
+    if (!ports.empty() && !op.getBodyBlock()->empty())
+      ps << PP::newline;
+    emitStatementsInBlock(*op.getBodyBlock());
+  });
+  valueNames.clear();
+  valueNamesStorage.clear();
+}
+
+void Emitter::emitDeclaration(ExtClassOp op) {
+  if (failed(requireVersion({6, 0, 0}, op, "classes")))
+    return;
+  startStatement();
+  ps.cbox(4, IndentStyle::Block);
+  ps << "extclass " << PPExtString(legalize(op.getSymNameAttr())) << PP::nbsp
+     << ":" << PP::end;
+  emitLocation(op);
+
+  ps.scopedBox(PP::bbox2, [&]() {
+    setPendingNewline();
+    emitModulePorts(op.getPorts());
+  });
+}
+
 /// Emit a layer definition.
 void Emitter::emitDeclaration(LayerOp op) {
   if (failed(requireVersion(FIRVersion(3, 3, 0), op, "layers")))
@@ -846,12 +891,13 @@ void Emitter::emitStatementsInBlock(Block &block) {
         .Case<WhenOp, WireOp, RegOp, RegResetOp, NodeOp, StopOp, SkipOp,
               PrintFOp, FPrintFOp, FFlushOp, AssertOp, AssumeOp, CoverOp,
               ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
-              InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
-              SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
-              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
-              RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
-              LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
-              DomainCreateOp>([&](auto op) { emitStatement(op); })
+              InstanceOp, InstanceChoiceOp, ObjectOp, ObjectCreateOp, AttachOp,
+              MemOp, InvalidValueOp, SeqMemOp, CombMemOp, MemoryPortOp,
+              MemoryDebugPortOp, MemoryPortAccessOp, DomainDefineOp,
+              RefDefineOp, RefForceOp, RefForceInitialOp, RefReleaseOp,
+              RefReleaseInitialOp, LayerBlockOp, GenericIntrinsicOp,
+              DomainCreateAnonOp, DomainCreateOp>(
+            [&](auto op) { emitStatement(op); })
         .Default([&](auto op) {
           startStatement();
           ps << "// operation " << PPExtString(op->getName().getStringRef());
@@ -1304,6 +1350,44 @@ void Emitter::emitStatement(InstanceChoiceOp op) {
   }
 }
 
+void Emitter::emitObjectDeclaration(Operation *op, StringAttr name,
+                                    StringAttr className, Value result) {
+  auto legalName = legalize(name);
+  addValueName(result, legalName);
+  startStatement();
+  ps << "object " << PPExtString(legalName) << " of "
+     << PPExtString(legalize(className));
+  emitLocationAndNewLine(op);
+}
+
+void Emitter::emitStatement(ObjectOp op) {
+  if (failed(requireVersion({6, 0, 0}, op, "object statements")))
+    return;
+  emitObjectDeclaration(op, op.getNameAttr(), op.getClassNameAttr(),
+                        op.getObjectResult());
+}
+
+void Emitter::emitStatement(ObjectCreateOp op) {
+  if (failed(requireVersion({6, 0, 0}, op, "object creation")))
+    return;
+  auto objectName = legalize(op.getNameAttr());
+  emitObjectDeclaration(op, op.getNameAttr(), op.getClassNameAttr(),
+                        op.getObjectResult());
+
+  unsigned inputIndex = 0;
+  for (auto element : op.getType().getElements()) {
+    if (element.direction != Direction::In)
+      continue;
+    startStatement();
+    ps.scopedBox(PP::ibox2, [&]() {
+      ps << "propassign" << PP::space << PPExtString(objectName) << "."
+         << PPExtString(legalize(element.name)) << "," << PP::space;
+      emitExpression(op.getInputs()[inputIndex++]);
+    });
+    emitLocationAndNewLine(op);
+  }
+}
+
 void Emitter::emitStatement(AttachOp op) {
   emitStatementFunctionOp(PPExtString("attach"), op);
 }
@@ -1587,8 +1671,9 @@ void Emitter::emitExpression(Value value) {
   TypeSwitch<Operation *>(op)
       .Case<
           // Basic expressions
-          ConstantOp, SpecialConstantOp, SubfieldOp, SubindexOp, SubaccessOp,
-          OpenSubfieldOp, OpenSubindexOp, DomainSubfieldOp,
+          ConstantOp, SpecialConstantOp, SubfieldOp, ObjectSubfieldOp,
+          ObjectAnyRefCastOp, SubindexOp, SubaccessOp, OpenSubfieldOp,
+          OpenSubindexOp, DomainSubfieldOp,
           // Binary
           AddPrimOp, SubPrimOp, MulPrimOp, DivPrimOp, RemPrimOp, AndPrimOp,
           OrPrimOp, XorPrimOp, LEQPrimOp, LTPrimOp, GEQPrimOp, GTPrimOp,
@@ -1652,6 +1737,16 @@ void Emitter::emitExpression(SubfieldOp op) {
   BundleType type = op.getInput().getType();
   emitExpression(op.getInput());
   ps << "." << legalize(type.getElementNameAttr(op.getFieldIndex()));
+}
+
+void Emitter::emitExpression(ObjectSubfieldOp op) {
+  auto type = op.getInput().getType();
+  emitExpression(op.getInput());
+  ps << "." << legalize(type.getElement(op.getIndex()).name);
+}
+
+void Emitter::emitExpression(ObjectAnyRefCastOp op) {
+  emitExpression(op.getInput());
 }
 
 // NOLINTNEXTLINE(misc-no-recursion)
