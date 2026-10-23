@@ -37,13 +37,20 @@ InnerSymbolTable::InnerSymbolTable(Operation *op) {
 }
 
 FailureOr<InnerSymbolTable> InnerSymbolTable::get(Operation *op) {
+  return get(op, nullptr);
+}
+
+FailureOr<InnerSymbolTable>
+InnerSymbolTable::get(Operation *op,
+                      SmallVectorImpl<Operation *> *innerRefUsers) {
   assert(op);
   if (!op->hasTrait<OpTrait::InnerSymbolTable>())
     return op->emitError("expected operation to have InnerSymbolTable trait");
 
   TableTy table;
   auto result = walkSymbols(
-      op, [&](StringAttr name, const InnerSymTarget &target) -> LogicalResult {
+      op,
+      [&](StringAttr name, const InnerSymTarget &target) -> LogicalResult {
         auto it = table.try_emplace(name, target);
         if (it.second)
           return success();
@@ -53,7 +60,8 @@ FailureOr<InnerSymbolTable> InnerSymbolTable::get(Operation *op) {
             .append("redefinition of inner symbol named '", name.strref(), "'")
             .attachNote(existing.getOp()->getLoc())
             .append("see existing inner symbol definition here");
-      });
+      },
+      innerRefUsers);
   if (failed(result))
     return failure();
   return InnerSymbolTable(op, std::move(table));
@@ -61,6 +69,12 @@ FailureOr<InnerSymbolTable> InnerSymbolTable::get(Operation *op) {
 
 LogicalResult InnerSymbolTable::walkSymbols(Operation *op,
                                             InnerSymCallbackFn callback) {
+  return walkSymbols(op, callback, nullptr);
+}
+
+LogicalResult
+InnerSymbolTable::walkSymbols(Operation *op, InnerSymCallbackFn callback,
+                              SmallVectorImpl<Operation *> *innerRefUsers) {
   auto walkSym = [&](StringAttr name, const InnerSymTarget &target) {
     assert(name && !name.getValue().empty());
     return callback(name, target);
@@ -88,15 +102,30 @@ LogicalResult InnerSymbolTable::walkSymbols(Operation *op,
   }
 
   // Walk the operation and add InnerSymbolTarget's to the table.
-  return success(
-      !op->walk<mlir::WalkOrder::PreOrder>([&](Operation *curOp) -> WalkResult {
-           if (auto symOp = dyn_cast<InnerSymbolOpInterface>(curOp))
-             if (auto symAttr = symOp.getInnerSymAttr())
-               if (failed(walkSyms(symAttr, InnerSymTarget(symOp))))
-                 return WalkResult::interrupt();
+  auto walkSymbolOp = [&](Operation *curOp) -> WalkResult {
+    if (auto symOp = dyn_cast<InnerSymbolOpInterface>(curOp))
+      if (auto symAttr = symOp.getInnerSymAttr())
+        if (failed(walkSyms(symAttr, InnerSymTarget(symOp))))
+          return WalkResult::interrupt();
+    return WalkResult::advance();
+  };
+  if (!innerRefUsers)
+    return success(
+        !op->walk<mlir::WalkOrder::PreOrder>(walkSymbolOp).wasInterrupted());
 
-           return WalkResult::advance();
-         }).wasInterrupted());
+  // Collect users while building the table, rather than walking the body again
+  // once all tables have been built. Keep the original visitation orders for
+  // both duplicate-symbol diagnostics and inner-reference verification.
+  return success(!op->walk([&](Operation *curOp,
+                               const mlir::WalkStage &stage) -> WalkResult {
+                      if (stage.isBeforeAllRegions() &&
+                          walkSymbolOp(curOp).wasInterrupted())
+                        return WalkResult::interrupt();
+                      if (stage.isAfterAllRegions() &&
+                          isa<InnerRefUserOpInterface>(curOp))
+                        innerRefUsers->push_back(curOp);
+                      return WalkResult::advance();
+                    }).wasInterrupted());
 }
 
 /// Look up a symbol with the specified name, returning empty InnerSymTarget if
@@ -167,6 +196,13 @@ InnerSymbolTableCollection::getInnerSymbolTable(Operation *op) {
 
 LogicalResult
 InnerSymbolTableCollection::populateAndVerifyTables(Operation *innerRefNSOp) {
+  return populateAndVerifyTables(innerRefNSOp, {});
+}
+
+LogicalResult InnerSymbolTableCollection::populateAndVerifyTables(
+    Operation *innerRefNSOp,
+    llvm::function_ref<void(Operation *, ArrayRef<Operation *>)>
+        collectInnerRefUsers) {
   // Gather top-level operations that have the InnerSymbolTable trait.
   SmallVector<Operation *> innerSymTableOps(llvm::make_filter_range(
       llvm::make_pointer_range(innerRefNSOp->getRegion(0).front()),
@@ -184,10 +220,14 @@ InnerSymbolTableCollection::populateAndVerifyTables(Operation *innerRefNSOp) {
         auto it = symbolTables.find(op);
         assert(it != symbolTables.end());
         if (!it->second) {
-          auto result = InnerSymbolTable::get(op);
+          SmallVector<Operation *> innerRefUsers;
+          auto result = InnerSymbolTable::get(
+              op, collectInnerRefUsers ? &innerRefUsers : nullptr);
           if (failed(result))
             return failure();
           it->second = std::make_unique<InnerSymbolTable>(std::move(*result));
+          if (collectInnerRefUsers)
+            collectInnerRefUsers(op, innerRefUsers);
           return success();
         }
         return failure();
@@ -221,36 +261,55 @@ Operation *InnerRefNamespace::lookupOp(hw::InnerRefAttr inner) const {
 namespace detail {
 
 LogicalResult verifyInnerRefNamespace(Operation *op) {
-  // Construct the symbol tables.
+  // Pre-populate entries so parallel table construction can collect users
+  // without inserting into a shared map.
+  DenseMap<Operation *, SmallVector<Operation *>> innerRefUsers;
+  SmallVector<Operation *> topLevelOps;
+  SmallVector<Operation *> leafOps;
+  for (auto &child : op->getRegion(0).front()) {
+    if (child.hasTrait<OpTrait::InnerSymbolTable>())
+      innerRefUsers.try_emplace(&child);
+    if (child.getNumRegions() != 0)
+      topLevelOps.push_back(&child);
+    else
+      leafOps.push_back(&child);
+  }
+
+  // Construct the symbol tables and collect their users in the same walk. All
+  // tables must be complete before verifying users, which may refer to symbols
+  // defined later in the body or in another module.
   InnerSymbolTableCollection innerSymTables;
-  if (failed(innerSymTables.populateAndVerifyTables(op)))
+  if (failed(innerSymTables.populateAndVerifyTables(
+          op, [&](Operation *tableOp, ArrayRef<Operation *> users) {
+            innerRefUsers.find(tableOp)->second.append(users.begin(),
+                                                       users.end());
+          })))
     return failure();
 
   SymbolTable symbolTable(op);
   InnerRefNamespace ns{symbolTable, innerSymTables};
 
-  // Conduct parallel walks of the top-level children of this
-  // InnerRefNamespace, verifying all InnerRefUserOp's discovered within.
+  // Verify collected users in parallel. Top-level children without an inner
+  // symbol table still need a walk to discover their users.
   auto verifySymbolUserFn = [&](Operation *op) -> WalkResult {
     if (auto user = dyn_cast<InnerRefUserOpInterface>(op))
       return WalkResult(user.verifyInnerRefs(ns));
     return WalkResult::advance();
   };
 
-  SmallVector<Operation *> topLevelOps;
-  for (auto &op : op->getRegion(0).front()) {
-    // Gather operations with regions for parallel processing.
-    if (op.getNumRegions() != 0) {
-      topLevelOps.push_back(&op);
-      continue;
-    }
-    // Otherwise, handle right now -- not worth the cost.
-    if (verifySymbolUserFn(&op).wasInterrupted())
+  // Handle regionless operations directly -- not worth parallelizing.
+  for (auto *leaf : leafOps)
+    if (verifySymbolUserFn(leaf).wasInterrupted())
       return failure();
-  }
   return mlir::failableParallelForEach(
       op->getContext(), topLevelOps, [&](Operation *op) {
-        return success(!op->walk(verifySymbolUserFn).wasInterrupted());
+        auto it = innerRefUsers.find(op);
+        if (it == innerRefUsers.end())
+          return success(!op->walk(verifySymbolUserFn).wasInterrupted());
+        for (auto *user : it->second)
+          if (failed(cast<InnerRefUserOpInterface>(user).verifyInnerRefs(ns)))
+            return failure();
+        return success();
       });
 }
 

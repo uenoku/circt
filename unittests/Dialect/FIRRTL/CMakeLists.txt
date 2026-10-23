@@ -1,5 +1,6 @@
 add_circt_unittest(CIRCTFIRRTLTests
   AttributesTest.cpp
+  PassiveWiresTest.cpp
   PortsTest.cpp
   TypesTest.cpp
 )
@@ -7,4 +8,7 @@ add_circt_unittest(CIRCTFIRRTLTests
 target_link_libraries(CIRCTFIRRTLTests
   PRIVATE
   CIRCTFIRRTL
+  CIRCTFIRRTLTransforms
+  MLIRParser
+  MLIRPass
 )

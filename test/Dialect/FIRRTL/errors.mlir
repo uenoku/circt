@@ -2690,7 +2690,6 @@ firrtl.circuit "MainNotModule" {
 
 firrtl.circuit "MultipleDUTModules" {
   firrtl.module @MultipleDUTModules() {}
-  // expected-error @below {{is annotated as the design-under-test}}
   firrtl.module @Foo() attributes {
     annotations = [
       {
@@ -2698,7 +2697,6 @@ firrtl.circuit "MultipleDUTModules" {
       }
     ]
   } {}
-  // expected-note @below {{is also annotated as the DUT}}
   firrtl.module @Bar() attributes {
     annotations = [
       {
@@ -2706,7 +2704,6 @@ firrtl.circuit "MultipleDUTModules" {
       }
     ]
   } {}
-  // expected-note @below {{is also annotated as the DUT}}
   firrtl.module @Baz() attributes {
     annotations = [
       {

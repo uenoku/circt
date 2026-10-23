@@ -468,16 +468,25 @@ LogicalResult CircuitOp::verifyRegions() {
     return failure();
   }
 
-  mlir::SymbolTable symtbl(getOperation());
+  // Collect symbols and external modules in one pass over the circuit body
+  // instead of constructing a symbol table and walking again.
+  DenseMap<StringAttr, Operation *> symbols;
+  SmallVector<FExtModuleOp> extModules;
+  for (auto &op : *getBodyBlock()) {
+    if (auto symbol = dyn_cast<mlir::SymbolOpInterface>(&op))
+      symbols.try_emplace(symbol.getNameAttr(), &op);
+    if (auto extModule = dyn_cast<FExtModuleOp>(op))
+      extModules.push_back(extModule);
+  }
 
-  auto *mainModule = symtbl.lookup(main);
+  auto *mainModule = symbols.lookup(getNameAttr());
   if (!mainModule)
     return emitOpError().append(
         "does not contain module with same name as circuit");
   if (!isa<FModuleLike>(mainModule))
     return mainModule->emitError(
         "entity with name of circuit must be a module");
-  if (symtbl.getSymbolVisibility(mainModule) !=
+  if (mlir::SymbolTable::getSymbolVisibility(mainModule) !=
       mlir::SymbolTable::Visibility::Public)
     return mainModule->emitError("main module must be public");
 
@@ -496,7 +505,8 @@ LogicalResult CircuitOp::verifyRegions() {
 
     // Check that this extmodule's defname does not conflict with
     // the symbol name of any module.
-    if (auto collidingModule = symtbl.lookup<FModuleOp>(defname.getValue()))
+    if (auto collidingModule =
+            dyn_cast_or_null<FModuleOp>(symbols.lookup(defname)))
       return extModule.emitOpError()
           .append("attribute 'defname' with value ", defname,
                   " conflicts with the name of another module in the circuit")
@@ -522,15 +532,15 @@ LogicalResult CircuitOp::verifyRegions() {
     }
 
     // Check that the number of ports is exactly the same.
-    SmallVector<PortInfo> ports = extModule.getPorts();
-    SmallVector<PortInfo> collidingPorts = collidingExtModule.getPorts();
+    auto numPorts = extModule.getNumPorts();
+    auto collidingNumPorts = collidingExtModule.getNumPorts();
 
-    if (ports.size() != collidingPorts.size())
+    if (numPorts != collidingNumPorts)
       return extModule.emitOpError()
-          .append("with 'defname' attribute ", defname, " has ", ports.size(),
+          .append("with 'defname' attribute ", defname, " has ", numPorts,
                   " ports which is different from a previously defined "
                   "extmodule with the same 'defname' which has ",
-                  collidingPorts.size(), " ports")
+                  collidingNumPorts, " ports")
           .attachNote(collidingExtModule.getLoc())
           .append("previous extmodule definition occurred here");
 
@@ -538,9 +548,13 @@ LogicalResult CircuitOp::verifyRegions() {
     // *might* affect widths, ignore widths if either module has
     // parameters. Note that this allows for misdetections, but
     // has zero false positives.
-    for (auto p : llvm::zip(ports, collidingPorts)) {
-      StringAttr aName = std::get<0>(p).name, bName = std::get<1>(p).name;
-      Type aType = std::get<0>(p).type, bType = std::get<1>(p).type;
+    bool ignoreWidths = !extModule.getParameters().empty() ||
+                        !collidingExtModule.getParameters().empty();
+    for (size_t i = 0; i < numPorts; ++i) {
+      auto aName = extModule.getPortNameAttr(i);
+      auto bName = collidingExtModule.getPortNameAttr(i);
+      auto aType = extModule.getPortType(i);
+      auto bType = collidingExtModule.getPortType(i);
 
       if (aName != bName)
         return extModule.emitOpError()
@@ -553,8 +567,7 @@ LogicalResult CircuitOp::verifyRegions() {
             .attachNote(collidingExtModule.getLoc())
             .append("previous extmodule definition occurred here");
 
-      if (!extModule.getParameters().empty() ||
-          !collidingExtModule.getParameters().empty()) {
+      if (ignoreWidths) {
         // Compare base types as widthless, others must match.
         if (auto base = type_dyn_cast<FIRRTLBaseType>(aType))
           aType = base.getWidthlessType();
@@ -576,31 +589,9 @@ LogicalResult CircuitOp::verifyRegions() {
     return success();
   };
 
-  SmallVector<FModuleOp, 1> dutModules;
-  for (auto &op : *getBodyBlock()) {
-    // Verify modules.
-    if (auto moduleOp = dyn_cast<FModuleOp>(op)) {
-      if (AnnotationSet(moduleOp).hasAnnotation(markDUTAnnoClass))
-        dutModules.push_back(moduleOp);
-      continue;
-    }
-
-    // Verify external modules.
-    if (auto extModule = dyn_cast<FExtModuleOp>(op)) {
-      if (verifyExtModule(extModule).failed())
-        return failure();
-    }
-  }
-
-  // Error if there is more than one design-under-test.
-  if (dutModules.size() > 1) {
-    auto diag = dutModules[0]->emitOpError()
-                << "is annotated as the design-under-test (DUT), but other "
-                   "modules are also annotated";
-    for (auto moduleOp : ArrayRef(dutModules).drop_front())
-      diag.attachNote(moduleOp.getLoc()) << "is also annotated as the DUT";
-    return failure();
-  }
+  for (auto extModule : extModules)
+    if (failed(verifyExtModule(extModule)))
+      return failure();
 
   return success();
 }

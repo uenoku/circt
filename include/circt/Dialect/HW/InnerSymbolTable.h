@@ -190,11 +190,20 @@ public:
   }
 
 private:
+  friend class InnerSymbolTableCollection;
+
+  /// Build a table and optionally collect inner-reference users in the same
+  /// walk. Symbols are visited in pre-order and users in post-order.
+  static FailureOr<InnerSymbolTable>
+  get(Operation *op, SmallVectorImpl<Operation *> *innerRefUsers);
+  static LogicalResult walkSymbols(Operation *op, InnerSymCallbackFn callback,
+                                   SmallVectorImpl<Operation *> *innerRefUsers);
+
   using TableTy = DenseMap<StringAttr, InnerSymTarget>;
   /// Construct an inner symbol table for the given operation,
   /// with pre-populated table contents.
   explicit InnerSymbolTable(Operation *op, TableTy &&table)
-      : innerSymTblOp(op), symbolTable(table) {}
+      : innerSymTblOp(op), symbolTable(std::move(table)) {}
 
   /// This is the operation this table is constructed for, which must have the
   /// InnerSymbolTable trait.
@@ -214,6 +223,15 @@ public:
   /// given InnerRefNamespace operation, verifying each and returning
   /// the verification result.
   LogicalResult populateAndVerifyTables(Operation *innerRefNSOp);
+
+  /// Like populateAndVerifyTables, but also collect inner-reference users in
+  /// post-order during table construction. The callback is called with each
+  /// table operation and its users, and may be invoked concurrently for
+  /// different table operations.
+  LogicalResult populateAndVerifyTables(
+      Operation *innerRefNSOp,
+      llvm::function_ref<void(Operation *, ArrayRef<Operation *>)>
+          collectInnerRefUsers);
 
   explicit InnerSymbolTableCollection() = default;
   explicit InnerSymbolTableCollection(Operation *innerRefNSOp) {
