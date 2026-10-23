@@ -12,15 +12,15 @@ firrtl.circuit "Objects" {
   // OM-LABEL: om.class @Objects_Class
   firrtl.module @Objects(out %out: !firrtl.string, out %ref: !firrtl.anyref) {
     // The values are defined after the object, and assignments are in reverse
-    // input order. Keep constants in place and create the object at block end.
-    // CHECK-NEXT: %[[PAIR:.*]] = firrtl.wire : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
-    // CHECK-NEXT: %[[RESULT:.*]] = firrtl.object.subfield %[[PAIR]][result]
+    // input order. Hoist constants and create the object at its declaration.
+    // CHECK-NEXT: %[[S:.*]] = firrtl.string "hello"
+    // CHECK-NEXT: %[[I:.*]] = firrtl.integer 42
+    // CHECK-NEXT: %pair = firrtl.object.create(%[[S]], %[[I]]) {test.attr = "preserved"} : (!firrtl.string, !firrtl.integer) -> !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
+    // CHECK-NEXT: %[[RESULT:.*]] = firrtl.object.subfield %pair[result]
     %pair = firrtl.object {test.attr = "preserved"} @Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)
     %first = firrtl.object.subfield %pair[first] : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
     %result = firrtl.object.subfield %pair[result] : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
     %second = firrtl.object.subfield %pair[second] : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
-    // CHECK: %[[S:.*]] = firrtl.string "hello"
-    // CHECK-NEXT: %[[I:.*]] = firrtl.integer 42
     // OM: %[[S:.*]] = om.constant "hello"
     // OM: %[[I:.*]] = om.constant #om.integer<42
     // OM: om.object @Pair(%{{.*}}, %[[S]], %[[I]])
@@ -30,15 +30,11 @@ firrtl.circuit "Objects" {
     firrtl.propassign %first, %str : !firrtl.string
     // CHECK: firrtl.propassign %out, %[[RESULT]] : !firrtl.string
     firrtl.propassign %out, %result : !firrtl.string
-    // CHECK: %[[REF:.*]] = firrtl.object.anyref_cast %[[PAIR]]
+    // CHECK: %[[REF:.*]] = firrtl.object.anyref_cast %pair
     %cast = firrtl.object.anyref_cast %pair : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
     firrtl.propassign %ref, %cast : !firrtl.anyref
-    // No-input objects also use a wire; there is no constant-input fast path.
-    // CHECK: %[[EMPTY:.*]] = firrtl.wire : !firrtl.class<@Empty()>
-    // CHECK-NEXT: %pair = firrtl.object.create(%[[S]], %[[I]]) {test.attr = "preserved"} : (!firrtl.string, !firrtl.integer) -> !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
-    // CHECK-NEXT: firrtl.propassign %[[PAIR]], %pair : !firrtl.class<@Pair(in first: !firrtl.string, out result: !firrtl.string, in second: !firrtl.integer)>
-    // CHECK-NEXT: %empty = firrtl.object.create() : () -> !firrtl.class<@Empty()>
-    // CHECK-NEXT: firrtl.propassign %[[EMPTY]], %empty : !firrtl.class<@Empty()>
+    // No-input objects can be replaced directly as well.
+    // CHECK: %empty = firrtl.object.create() : () -> !firrtl.class<@Empty()>
     // CHECK-NEXT: }
     %empty = firrtl.object @Empty()
   }

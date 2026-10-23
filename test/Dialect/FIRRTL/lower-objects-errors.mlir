@@ -10,6 +10,37 @@ firrtl.circuit "Missing" {
 
 // -----
 
+// Reading an input through an expression is diagnosed before considering
+// whether the object can be lowered.
+firrtl.circuit "Misuse" {
+  firrtl.class @Class(in %input: !firrtl.integer) {}
+  firrtl.module @Misuse() {
+    %obj = firrtl.object @Class(in input: !firrtl.integer)
+    // expected-error @below {{input port may only be used as an assignment destination}}
+    %in = firrtl.object.subfield %obj[input] : !firrtl.class<@Class(in input: !firrtl.integer)>
+    %sum = firrtl.integer.add %in, %in : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %in, %sum : !firrtl.integer
+  }
+}
+
+// -----
+
+// Missing inputs are still diagnosed on an object with a cyclic driver.
+firrtl.circuit "CyclicMissing" {
+  firrtl.class @Class(in %input: !firrtl.integer, in %missing: !firrtl.integer, out %output: !firrtl.integer) {
+    firrtl.propassign %output, %input : !firrtl.integer
+  }
+  firrtl.module @CyclicMissing() {
+    // expected-error @below {{uninitialized input port "missing"}}
+    %obj = firrtl.object @Class(in input: !firrtl.integer, in missing: !firrtl.integer, out output: !firrtl.integer)
+    %in = firrtl.object.subfield %obj[input] : !firrtl.class<@Class(in input: !firrtl.integer, in missing: !firrtl.integer, out output: !firrtl.integer)>
+    %out = firrtl.object.subfield %obj[output] : !firrtl.class<@Class(in input: !firrtl.integer, in missing: !firrtl.integer, out output: !firrtl.integer)>
+    firrtl.propassign %in, %out : !firrtl.integer
+  }
+}
+
+// -----
+
 // Separate projections of the same input must not hide multiple assignments.
 firrtl.circuit "Multiple" {
   firrtl.class @Class(in %input: !firrtl.string) {}

@@ -15,12 +15,11 @@ circuit ObjectCreate:
     ; PARSER: firrtl.object @PassThrough
     ; PARSER: firrtl.propassign
     ; CREATE-LABEL: firrtl.module @ObjectCreate
-    ; CREATE-NEXT: %[[WIRE:.*]] = firrtl.wire : !firrtl.class<@PassThrough(in str: !firrtl.string, out result: !firrtl.string)>
-    ; CREATE-NEXT: %[[RESULT:.*]] = firrtl.object.subfield %[[WIRE]][result]
     ; CREATE-NEXT: %[[STR:.*]] = firrtl.string "hello"
-    ; CREATE-NEXT: firrtl.propassign %result, %[[RESULT]] : !firrtl.string
     ; CREATE-NEXT: %obj = firrtl.object.create(%[[STR]]) : (!firrtl.string) -> !firrtl.class<@PassThrough(in str: !firrtl.string, out result: !firrtl.string)>
-    ; CREATE-NEXT: firrtl.propassign %[[WIRE]], %obj : !firrtl.class<@PassThrough(in str: !firrtl.string, out result: !firrtl.string)>
+    ; CREATE-NEXT: %[[RESULT:.*]] = firrtl.object.subfield %obj[result]
+    ; CREATE-NEXT: firrtl.propassign %result, %[[RESULT]] : !firrtl.string
+    ; CREATE-NEXT: }
     ; DISABLED-LABEL: firrtl.module @ObjectCreate
     ; DISABLED: %obj = firrtl.object @PassThrough
     ; DISABLED: firrtl.propassign

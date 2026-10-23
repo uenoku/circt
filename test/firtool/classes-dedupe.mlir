@@ -14,14 +14,14 @@ firrtl.circuit "ClassDedup" {
 
   // CHECK: @ClassDedup(
   firrtl.module @ClassDedup(out %a: !firrtl.anyref, out %b: !firrtl.anyref) {
-    // CHECK-NEXT: %[[WIRE1:.*]] = firrtl.wire : !firrtl.class<@Foo()>
-    // CHECK-OFF-NEXT: %[[WIRE2:.*]] = firrtl.wire : !firrtl.class<@Bar()>
-    // CHECK-ON-NEXT: %[[WIRE2:.*]] = firrtl.wire : !firrtl.class<@Foo()>
-    // CHECK: %[[OBJ1:.*]] = firrtl.object.create() : () -> !firrtl.class<@Foo()>
-    // CHECK-NEXT: firrtl.propassign %[[WIRE1]], %[[OBJ1]] : !firrtl.class<@Foo()>
+    // CHECK-NEXT: %[[OBJ1:.*]] = firrtl.object.create() : () -> !firrtl.class<@Foo()>
     // CHECK-OFF-NEXT: %[[OBJ2:.*]] = firrtl.object.create() : () -> !firrtl.class<@Bar()>
     // CHECK-ON-NEXT: %[[OBJ2:.*]] = firrtl.object.create() : () -> !firrtl.class<@Foo()>
-    // CHECK-NEXT: firrtl.propassign %[[WIRE2]], %[[OBJ2]] : !firrtl.class
+    // CHECK-NEXT: %[[REF1:.*]] = firrtl.object.anyref_cast %[[OBJ1]]
+    // CHECK-NEXT: %[[REF2:.*]] = firrtl.object.anyref_cast %[[OBJ2]]
+    // CHECK-NEXT: firrtl.propassign %a, %[[REF1]]
+    // CHECK-NEXT: firrtl.propassign %b, %[[REF2]]
+    // CHECK-NEXT: }
     %obj1 = firrtl.object @Foo()
     %obj2 = firrtl.object @Bar()
     // Keep the value-like objects live through optimization.

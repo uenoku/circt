@@ -749,21 +749,23 @@ def FinalizeIR : Pass<"firrtl-finalize-ir", "mlir::ModuleOp"> {
 def LowerObjects : Pass<"firrtl-lower-objects", "firrtl::FModuleOp"> {
   let summary = "Convert object declarations to value-like object creation";
   let description = [{
-    In `firrtl.module`, replace each `firrtl.object` declaration with a
-    class-typed wire and create the object at block end with
-    `firrtl.object.create`, assigning its result to the wire. Operands are
-    supplied in input port declaration order. Remove all input assignments and
-    input field accesses. Objects in classes remain in declaration form.
-    Output field accesses and other uses of objects are preserved. Missing or
-    multiply assigned inputs are diagnosed. This pass runs immediately after
+    In `firrtl.module`, convert `firrtl.object` declarations to
+    `firrtl.object.create` without temporary object wires. Operands are supplied
+    in input port declaration order. Hoist regionless input dependencies within
+    the block, converting dependent objects as needed, without requiring
+    producers to be pure. If an object's dependencies are cyclic or cannot be
+    hoisted with valid SSA dominance, leave its declaration
+    and input assignments intact and continue lowering other objects.
+    Remove converted objects' input assignments and input field accesses.
+    Objects in classes remain in declaration form. Output field accesses and
+    other uses of objects are preserved. Missing or multiply assigned inputs
+    and misuses of input fields are diagnosed. This pass runs immediately after
     parsing in the firtool preprocessing pipeline; the FIRRTL importer is
     unchanged.
   }];
   let statistics = [
     Statistic<"numObjectsConverted", "num-objects-converted",
               "Number of object declarations converted to object.create">,
-    Statistic<"numObjectWiresCreated", "num-object-wires-created",
-              "Number of class-typed object wires created">,
     Statistic<"numInputAssignmentsRemoved", "num-input-assignments-removed",
               "Number of input assignments removed">,
     Statistic<"numInputFieldsRemoved", "num-input-fields-removed",
