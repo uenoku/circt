@@ -20,7 +20,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
-#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <memory>
@@ -40,6 +40,7 @@ namespace {
 // A map from a pair of enclosing module op and old symbol to a new symbol.
 using SymMappingTy =
     llvm::DenseMap<std::pair<ModuleOp, StringAttr>, StringAttr>;
+using ClassMap = llvm::MapVector<StringAttr, SmallVector<ClassLike>>;
 
 struct ModuleInfo {
   ModuleInfo(mlir::ModuleOp module) : module(module) {
@@ -136,7 +137,10 @@ void ModuleInfo::postProcess(const SymMappingTy &symMapping,
 // Attributes (including parameter names and visibility), argument types, and
 // the argument supplying each field must match exactly.
 static bool haveEquivalentDefinitions(ClassOp lhs, ClassOp rhs) {
-  if (lhs->getAttrDictionary() != rhs->getAttrDictionary() ||
+  if (!lhs.isPublic() || !rhs.isPublic() ||
+      !llvm::hasSingleElement(lhs.getBodyBlock()->getOperations()) ||
+      !llvm::hasSingleElement(rhs.getBodyBlock()->getOperations()) ||
+      lhs->getAttrDictionary() != rhs->getAttrDictionary() ||
       !llvm::equal(lhs.getBodyBlock()->getArgumentTypes(),
                    rhs.getBodyBlock()->getArgumentTypes()) ||
       lhs.getFieldsOp()->getAttrDictionary() !=
@@ -149,83 +153,60 @@ static bool haveEquivalentDefinitions(ClassOp lhs, ClassOp rhs) {
                           });
 }
 
-// Find names which will resolve to one definition: either a unique definition,
-// or equivalent public field-only definitions. For the latter, referenced class
-// types must also resolve consistently. Starting with all candidates and
-// removing invalid ones handles recursive references.
-static DenseSet<StringAttr>
-findEquivalentClasses(const llvm::MapVector<StringAttr, SmallVector<ClassLike>>
-                          &symbolToClasses) {
-  DenseSet<StringAttr> equivalentClasses;
-  llvm::MapVector<StringAttr, llvm::SetVector<StringAttr>> dependents;
-  SmallVector<StringAttr> worklist;
-  for (const auto &[name, classes] : symbolToClasses) {
-    SmallVector<ClassOp> definitions;
-    for (auto classLike : classes)
-      if (auto classOp = dyn_cast<ClassOp>(classLike.getOperation()))
-        definitions.push_back(classOp);
-    // References to a unique definition already resolve to the same entity,
-    // regardless of its visibility or the structure of its constructor.
-    if (definitions.size() == 1) {
-      equivalentClasses.insert(name);
-      continue;
-    }
-    if (definitions.empty() || !llvm::all_of(definitions, [&](ClassOp classOp) {
-          return classOp.isPublic() &&
-                 llvm::hasSingleElement(
-                     classOp.getBodyBlock()->getOperations()) &&
-                 (classOp == definitions.front() ||
-                  haveEquivalentDefinitions(definitions.front(), classOp));
-        })) {
-      worklist.push_back(name);
-      continue;
-    }
+// Check referenced class types on demand. Each name is checked at most once per
+// resolution query, including cycles. A unique definition already denotes one
+// entity; multiple definitions must also be equivalent before we can share
+// users.
+static bool haveCompatibleClassTypes(ClassOp classOp,
+                                     const ClassMap &symbolToClasses,
+                                     DenseSet<StringAttr> &visited) {
+  if (!visited.insert(classOp.getSymNameAttr()).second)
+    return true;
 
-    bool resolvable = true;
-    AttrTypeWalker walker;
-    // Other symbol references are conservatively excluded. Non-OM symbols
-    // remain in their original compilation units.
-    walker.addWalk([&](hw::InnerRefAttr) { resolvable = false; });
-    walker.addWalk([&](mlir::SymbolRefAttr) { resolvable = false; });
-    walker.addWalk([&, name = name](ClassType type) {
-      dependents[type.getClassName().getAttr()].insert(name);
-      // Don't visit the class name as an arbitrary symbol reference.
+  bool compatible = true;
+  AttrTypeWalker walker;
+  // Non-OM symbols remain in their original compilation units.
+  walker.addWalk([&](hw::InnerRefAttr) { compatible = false; });
+  walker.addWalk([&](mlir::SymbolRefAttr) { compatible = false; });
+  walker.addWalk([&](ClassType type) {
+    if (!compatible)
       return WalkResult::skip();
-    });
-    // The definitions have identical attributes and types, so inspecting one
-    // is sufficient. Field types are included in the class attributes.
-    auto classOp = definitions.front();
-    walker.walk<WalkOrder::PreOrder>(classOp->getAttrDictionary());
-    walker.walk<WalkOrder::PreOrder>(
-        classOp.getFieldsOp()->getAttrDictionary());
-    for (auto type : classOp.getBodyBlock()->getArgumentTypes())
-      walker.walk<WalkOrder::PreOrder>(type);
-    if (resolvable)
-      equivalentClasses.insert(name);
-    else
-      worklist.push_back(name);
-  }
-  for (const auto &[name, users] : dependents)
-    if (!symbolToClasses.contains(name))
-      worklist.push_back(name);
-  while (!worklist.empty()) {
-    auto name = worklist.pop_back_val();
-    auto it = dependents.find(name);
-    if (it == dependents.end())
-      continue;
-    for (auto user : it->second)
-      if (equivalentClasses.erase(user))
-        worklist.push_back(user);
-  }
-  return equivalentClasses;
+    auto it = symbolToClasses.find(type.getClassName().getAttr());
+    if (it == symbolToClasses.end()) {
+      compatible = false;
+      return WalkResult::skip();
+    }
+    SmallVector<ClassOp> definitions;
+    for (auto op : it->second)
+      if (auto definition = dyn_cast<ClassOp>(op.getOperation()))
+        definitions.push_back(definition);
+    compatible = !definitions.empty();
+    if (definitions.size() > 1)
+      compatible = llvm::all_of(definitions,
+                                [&](ClassOp definition) {
+                                  return haveEquivalentDefinitions(
+                                      definitions.front(), definition);
+                                }) &&
+                   haveCompatibleClassTypes(definitions.front(),
+                                            symbolToClasses, visited);
+    // Don't visit the class name as an arbitrary symbol reference.
+    return WalkResult::skip();
+  });
+  walker.walk<WalkOrder::PreOrder>(classOp->getAttrDictionary());
+  walker.walk<WalkOrder::PreOrder>(classOp.getFieldsOp()->getAttrDictionary());
+  for (auto type : classOp.getBodyBlock()->getArgumentTypes())
+    walker.walk<WalkOrder::PreOrder>(type);
+  return compatible;
 }
 
-// Return a failure if classes cannot be resolved. Return true if
-// it's necessary to rename symbols.
+// Return a failure if classes cannot be resolved. Otherwise record equivalent
+// duplicate definitions and return whether the symbols need to be renamed.
 static FailureOr<bool> resolveClasses(StringAttr name,
                                       ArrayRef<ClassLike> classes,
-                                      bool hasEquivalentDefinitions) {
+                                      const ClassMap &symbolToClasses,
+                                      DenseSet<Operation *> &duplicateClasses) {
   bool existExternalClass = false;
+  bool canCoalesce = true;
   size_t countDefinition = 0;
   ClassOp classOp;
 
@@ -233,17 +214,23 @@ static FailureOr<bool> resolveClasses(StringAttr name,
     if (isa<ClassExternOp>(op))
       existExternalClass = true;
     else {
-      if (!classOp)
-        classOp = cast<ClassOp>(op);
+      auto definition = cast<ClassOp>(op);
+      if (classOp)
+        canCoalesce &= haveEquivalentDefinitions(classOp, definition);
+      else
+        classOp = definition;
       ++countDefinition;
     }
+  }
+  if (countDefinition > 1 && canCoalesce) {
+    DenseSet<StringAttr> visited;
+    canCoalesce = haveCompatibleClassTypes(classOp, symbolToClasses, visited);
   }
 
   // There must be exactly one definition if the symbol was referred by an
   // external class, unless the definitions are structurally equivalent.
   if (existExternalClass &&
-      (countDefinition == 0 ||
-       (countDefinition != 1 && !hasEquivalentDefinitions))) {
+      (countDefinition == 0 || (countDefinition != 1 && !canCoalesce))) {
     SmallVector<Location> classExternLocs;
     SmallVector<Location> classLocs;
     for (auto op : classes)
@@ -265,10 +252,7 @@ static FailureOr<bool> resolveClasses(StringAttr name,
     return failure();
   }
 
-  if (!existExternalClass)
-    return countDefinition != 1 && !hasEquivalentDefinitions;
-
-  assert(classOp && (countDefinition == 1 || hasEquivalentDefinitions));
+  assert(classOp);
 
   // Raise errors if linked external modules are not compatible with the
   // definition.
@@ -328,7 +312,11 @@ static FailureOr<bool> resolveClasses(StringAttr name,
         return emitError(op) << "definition has a field " << fieldName
                              << " but not found in this declaration";
   }
-  return false;
+  if (canCoalesce)
+    for (auto op : classes)
+      if (isa<ClassOp>(op) && op != classOp)
+        duplicateClasses.insert(op.getOperation());
+  return !existExternalClass && countDefinition != 1 && !canCoalesce;
 }
 
 void LinkModulesPass::runOnOperation() {
@@ -361,7 +349,7 @@ void LinkModulesPass::runOnOperation() {
   SymMappingTy symMapping;
 
   // Construct a global map from symbols to class operations.
-  llvm::MapVector<StringAttr, SmallVector<ClassLike>> symbolToClasses;
+  ClassMap symbolToClasses;
   for (const auto &info : modules)
     for (auto &[name, op] : info.symbolToClasses) {
       symbolToClasses[name].push_back(op);
@@ -369,31 +357,14 @@ void LinkModulesPass::runOnOperation() {
       (void)nameSpace.newName(name.getValue());
     }
 
-  // Equivalent public field-only definitions can be shared across compilation
-  // units. Other symbols used as external classes must have exactly one
-  // definition.
-  auto equivalentClasses = findEquivalentClasses(symbolToClasses);
   DenseSet<Operation *> duplicateClasses;
   for (auto &[name, classes] : symbolToClasses) {
     // Check if it's legal to link classes. `resolveClasses` returns true if
     // it's necessary to rename symbols.
     auto result =
-        resolveClasses(name, classes, equivalentClasses.contains(name));
+        resolveClasses(name, classes, symbolToClasses, duplicateClasses);
     if (failed(result))
       return signalPassFailure();
-
-    // Keep just the first of the equivalent definitions. All references retain
-    // the original name, so both constructor calls and class types resolve to
-    // the same definition after flattening.
-    if (equivalentClasses.contains(name)) {
-      bool foundDefinition = false;
-      for (auto op : classes)
-        if (isa<ClassOp>(op)) {
-          if (foundDefinition)
-            duplicateClasses.insert(op.getOperation());
-          foundDefinition = true;
-        }
-    }
 
     // We can resolve symbol collision for symbols not referred by external
     // classes. Create a new name using `om.namespace` attributes as a

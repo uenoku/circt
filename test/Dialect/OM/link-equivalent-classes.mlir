@@ -29,33 +29,39 @@ module {
 // -----
 
 // Different parameter names, visibility, or field mappings prevent coalescing.
-// Private collisions also prevent coalescing dependent class types.
+// Private collisions also prevent coalescing recursive dependent class types.
 // CHECK-LABEL: om.class @Names_A
 // CHECK-LABEL: om.class public @Visibility_A
 // CHECK-LABEL: om.class @Mapping_A
 // CHECK-LABEL: om.class private @Leaf_A
 // CHECK-LABEL: om.class @List_A
 // CHECK-SAME: !om.list<!om.class.type<@Leaf_A>>
+// CHECK-LABEL: om.class @Cycle_A
+// CHECK-SAME: !om.class.type<@List_A>
 // CHECK-LABEL: om.class @Names_B
 // CHECK-LABEL: om.class @Visibility_B
 // CHECK-LABEL: om.class @Mapping_B
 // CHECK-LABEL: om.class private @Leaf_B
 // CHECK-LABEL: om.class @List_B
 // CHECK-SAME: !om.list<!om.class.type<@Leaf_B>>
+// CHECK-LABEL: om.class @Cycle_B
+// CHECK-SAME: !om.class.type<@List_B>
 module {
   module attributes {om.namespace = "A"} {
     om.class @Names(%x: i1) -> (x: i1) { om.class.fields %x : i1 }
     om.class public @Visibility() { om.class.fields }
     om.class @Mapping(%x: i1, %y: i1) -> (value: i1) { om.class.fields %x : i1 }
     om.class private @Leaf(%x: i1) -> (x: i1) { om.class.fields %x : i1 }
-    om.class @List(%items: !om.list<!om.class.type<@Leaf>>) { om.class.fields }
+    om.class @List(%cycle: !om.class.type<@Cycle>, %items: !om.list<!om.class.type<@Leaf>>) { om.class.fields }
+    om.class @Cycle(%list: !om.class.type<@List>) { om.class.fields }
   }
   module attributes {om.namespace = "B"} {
     om.class @Names(%y: i1) -> (x: i1) { om.class.fields %y : i1 }
     om.class @Visibility() { om.class.fields }
     om.class @Mapping(%x: i1, %y: i1) -> (value: i1) { om.class.fields %y : i1 }
     om.class private @Leaf(%x: i1) -> (x: i1) { om.class.fields %x : i1 }
-    om.class @List(%items: !om.list<!om.class.type<@Leaf>>) { om.class.fields }
+    om.class @List(%cycle: !om.class.type<@Cycle>, %items: !om.list<!om.class.type<@Leaf>>) { om.class.fields }
+    om.class @Cycle(%list: !om.class.type<@List>) { om.class.fields }
   }
 }
 
