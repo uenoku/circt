@@ -34,7 +34,7 @@ module {
   module {
     // expected-note @+1 {{class "A" is defined here}}
     om.class @A() -> (a: i1) {
-      %0 = om.constant false
+      %0 = om.constant true
       om.class.fields %0 : i1
     }
   }
