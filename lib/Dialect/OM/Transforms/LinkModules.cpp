@@ -162,36 +162,42 @@ static bool haveCompatibleClassTypes(ClassOp classOp,
   if (!visited.insert(classOp.getSymNameAttr()).second)
     return true;
 
-  bool compatible = true;
   AttrTypeWalker walker;
   walker.addWalk([&](ClassType type) {
-    if (!compatible)
-      return WalkResult::skip();
     auto it = symbolToClasses.find(type.getClassName().getAttr());
-    if (it == symbolToClasses.end()) {
-      compatible = false;
-      return WalkResult::skip();
+    if (it == symbolToClasses.end())
+      return WalkResult::interrupt();
+
+    ClassOp definition;
+    unsigned countDefinition = 0;
+    for (auto op : it->second) {
+      auto next = dyn_cast<ClassOp>(op.getOperation());
+      if (!next)
+        continue;
+      if (definition && !haveEquivalentDefinitions(definition, next))
+        return WalkResult::interrupt();
+      if (!definition)
+        definition = next;
+      ++countDefinition;
     }
-    SmallVector<ClassOp> definitions;
-    for (auto op : it->second)
-      if (auto definition = dyn_cast<ClassOp>(op.getOperation()))
-        definitions.push_back(definition);
-    compatible = !definitions.empty();
-    if (definitions.size() > 1)
-      compatible = llvm::all_of(definitions,
-                                [&](ClassOp definition) {
-                                  return haveEquivalentDefinitions(
-                                      definitions.front(), definition);
-                                }) &&
-                   haveCompatibleClassTypes(definitions.front(),
-                                            symbolToClasses, visited);
-    return WalkResult::skip();
+    if (!definition ||
+        (countDefinition > 1 &&
+         !haveCompatibleClassTypes(definition, symbolToClasses, visited)))
+      return WalkResult::interrupt();
+    return WalkResult::advance();
   });
-  walker.walk<WalkOrder::PreOrder>(classOp->getAttrDictionary());
-  walker.walk<WalkOrder::PreOrder>(classOp.getFieldsOp()->getAttrDictionary());
-  for (auto type : classOp.getBodyBlock()->getArgumentTypes())
-    walker.walk<WalkOrder::PreOrder>(type);
-  return compatible;
+
+  auto walkAttributes = [&](Operation *op) {
+    return walker.walk(op->getAttrDictionary());
+  };
+  auto walkArgumentTypes = [&](Block *block) {
+    for (auto type : block->getArgumentTypes())
+      if (walker.walk(type).wasInterrupted())
+        return WalkResult::interrupt();
+    return WalkResult::advance();
+  };
+  return !classOp.walk(walkAttributes).wasInterrupted() &&
+         !classOp.walk(walkArgumentTypes).wasInterrupted();
 }
 
 // Return a failure if classes cannot be resolved. Otherwise record equivalent
