@@ -19,6 +19,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <memory>
@@ -47,8 +48,10 @@ struct ModuleInfo {
   // Populate `symbolToClasses`.
   LogicalResult initialize();
 
-  // Update symbols based on the mapping and erase external classes.
-  void postProcess(const SymMappingTy &symMapping);
+  // Update symbols based on the mapping and erase external and duplicate
+  // classes.
+  void postProcess(const SymMappingTy &symMapping,
+                   const DenseSet<Operation *> &duplicateClasses);
 
   // A map from symbols to classes.
   llvm::DenseMap<StringAttr, ClassLike> symbolToClasses;
@@ -80,7 +83,8 @@ LogicalResult ModuleInfo::initialize() {
   return success();
 }
 
-void ModuleInfo::postProcess(const SymMappingTy &symMapping) {
+void ModuleInfo::postProcess(const SymMappingTy &symMapping,
+                             const DenseSet<Operation *> &duplicateClasses) {
   AttrTypeReplacer replacer;
   replacer.addReplacement(
       // Update class types when their symbols were renamed.
@@ -95,10 +99,9 @@ void ModuleInfo::postProcess(const SymMappingTy &symMapping) {
       });
 
   module.walk<WalkOrder::PreOrder>([&](Operation *op) {
-    // External modules must be erased.
-    if (isa<ClassExternOp>(op)) {
+    // External classes and redundant schema definitions must be erased.
+    if (isa<ClassExternOp>(op) || duplicateClasses.contains(op)) {
       op->erase();
-      // ClassExternFieldOp will be deleted as well.
       return WalkResult::skip();
     }
 
@@ -128,10 +131,97 @@ void ModuleInfo::postProcess(const SymMappingTy &symMapping) {
   });
 }
 
+// A schema only forwards constructor arguments to fields. In particular, an
+// unused base path argument (as emitted by domain lowering) is allowed.
+static bool isSchema(ClassOp classOp) {
+  return classOp.isPublic() &&
+         llvm::hasSingleElement(classOp.getBodyBlock()->getOperations());
+}
+
+// Check the schema's signature and which arguments supply its fields. Argument
+// names and source locations do not affect compatibility, but field order does:
+// om.elaborated_object supplies field values in that order.
+static bool haveSameSchema(ClassOp lhs, ClassOp rhs) {
+  auto getSchemaAttrs = [](ClassOp classOp) {
+    NamedAttrList attrs(classOp->getAttrs());
+    attrs.erase("formalParamNames");
+    attrs.erase("sym_visibility");
+    return attrs.getDictionary(classOp.getContext());
+  };
+  if (!llvm::equal(lhs.getBodyBlock()->getArgumentTypes(),
+                   rhs.getBodyBlock()->getArgumentTypes()) ||
+      getSchemaAttrs(lhs) != getSchemaAttrs(rhs))
+    return false;
+
+  return llvm::all_of(
+      llvm::zip(lhs.getFieldsOp().getFields(), rhs.getFieldsOp().getFields()),
+      [](auto fields) {
+        return cast<BlockArgument>(std::get<0>(fields)).getArgNumber() ==
+               cast<BlockArgument>(std::get<1>(fields)).getArgNumber();
+      });
+}
+
+// Find names with compatible public schema definitions, then recursively
+// require that all class types in their signatures also name compatible
+// schemas. Starting with all candidates and removing invalid ones handles
+// mutually recursive schemas without depending on the order in which classes
+// are visited.
+static DenseSet<StringAttr>
+findSchemas(const llvm::MapVector<StringAttr, SmallVector<ClassLike>>
+                &symbolToClasses) {
+  DenseSet<StringAttr> schemas;
+  llvm::MapVector<StringAttr, llvm::SetVector<StringAttr>> dependents;
+  SmallVector<StringAttr> worklist;
+  for (const auto &[name, classes] : symbolToClasses) {
+    ClassOp schema;
+    bool compatible = true;
+    for (auto classLike : classes) {
+      auto classOp = dyn_cast<ClassOp>(classLike.getOperation());
+      if (!classOp)
+        continue;
+      if (!isSchema(classOp) || (schema && !haveSameSchema(schema, classOp))) {
+        compatible = false;
+        break;
+      }
+      schema = classOp;
+    }
+    if (!compatible || !schema) {
+      worklist.push_back(name);
+      continue;
+    }
+    schemas.insert(name);
+    auto collectDependencies = [&, name = name](Type type) {
+      type.walk([&](ClassType classType) {
+        dependents[classType.getClassName().getAttr()].insert(name);
+      });
+    };
+    for (auto type : schema.getBodyBlock()->getArgumentTypes())
+      collectDependencies(type);
+    for (auto type : schema.getFieldsOp().getOperandTypes())
+      collectDependencies(type);
+  }
+  // Types need not have a local declaration, so reject unresolved dependencies
+  // as well as classes which were not schema candidates.
+  for (const auto &[name, users] : dependents)
+    if (!symbolToClasses.contains(name))
+      worklist.push_back(name);
+  while (!worklist.empty()) {
+    auto name = worklist.pop_back_val();
+    auto it = dependents.find(name);
+    if (it == dependents.end())
+      continue;
+    for (auto user : it->second)
+      if (schemas.erase(user))
+        worklist.push_back(user);
+  }
+  return schemas;
+}
+
 // Return a failure if classes cannot be resolved. Return true if
 // it's necessary to rename symbols.
 static FailureOr<bool> resolveClasses(StringAttr name,
-                                      ArrayRef<ClassLike> classes) {
+                                      ArrayRef<ClassLike> classes,
+                                      bool isSharedSchema) {
   bool existExternalClass = false;
   size_t countDefinition = 0;
   ClassOp classOp;
@@ -140,14 +230,16 @@ static FailureOr<bool> resolveClasses(StringAttr name,
     if (isa<ClassExternOp>(op))
       existExternalClass = true;
     else {
-      classOp = cast<ClassOp>(op);
+      if (!classOp)
+        classOp = cast<ClassOp>(op);
       ++countDefinition;
     }
   }
 
   // There must be exactly one definition if the symbol was referred by an
-  // external class.
-  if (existExternalClass && countDefinition != 1) {
+  // external class, unless the definitions are compatible schemas.
+  if (existExternalClass &&
+      (countDefinition == 0 || (countDefinition != 1 && !isSharedSchema))) {
     SmallVector<Location> classExternLocs;
     SmallVector<Location> classLocs;
     for (auto op : classes)
@@ -170,9 +262,9 @@ static FailureOr<bool> resolveClasses(StringAttr name,
   }
 
   if (!existExternalClass)
-    return countDefinition != 1;
+    return countDefinition != 1 && !isSharedSchema;
 
-  assert(classOp && countDefinition == 1);
+  assert(classOp && (countDefinition == 1 || isSharedSchema));
 
   // Raise errors if linked external modules are not compatible with the
   // definition.
@@ -185,7 +277,7 @@ static FailureOr<bool> resolveClasses(StringAttr name,
   };
 
   for (auto op : classes) {
-    if (op == classOp)
+    if (isa<ClassOp>(op))
       continue;
 
     if (classOp.getBodyBlock()->getNumArguments() !=
@@ -256,8 +348,8 @@ void LinkModulesPass::runOnOperation() {
       })))
     return signalPassFailure();
 
-  // 2. Symbol resolution. Check that there is exactly single definition for
-  //    public symbols and rename private symbols if necessary.
+  // 2. Symbol resolution. Share compatible schemas, resolve external symbols,
+  //    and rename other colliding symbols if necessary.
 
   // Global namespace to get unique names to symbols.
   Namespace nameSpace;
@@ -273,16 +365,30 @@ void LinkModulesPass::runOnOperation() {
       (void)nameSpace.newName(name.getValue());
     }
 
-  // Resolve symbols. We consider a symbol used as an external module to be
-  // "public" thus we cannot rename such symbols when there is collision. We
-  // require a public symbol to have exactly one definition so otherwise raise
-  // an error.
+  // Compatible public schemas can be shared across compilation units, including
+  // when used by an external class's signature. Other symbols used as external
+  // classes must have exactly one definition.
+  auto schemas = findSchemas(symbolToClasses);
+  DenseSet<Operation *> duplicateClasses;
   for (auto &[name, classes] : symbolToClasses) {
     // Check if it's legal to link classes. `resolveClasses` returns true if
     // it's necessary to rename symbols.
-    auto result = resolveClasses(name, classes);
+    auto result = resolveClasses(name, classes, schemas.contains(name));
     if (failed(result))
       return signalPassFailure();
+
+    // Keep just the first definition of a shared schema. All references retain
+    // the original name, so both constructor calls and class types resolve to
+    // the same definition after flattening.
+    if (schemas.contains(name)) {
+      bool foundDefinition = false;
+      for (auto op : classes)
+        if (isa<ClassOp>(op)) {
+          if (foundDefinition)
+            duplicateClasses.insert(op.getOperation());
+          foundDefinition = true;
+        }
+    }
 
     // We can resolve symbol collision for symbols not referred by external
     // classes. Create a new name using `om.namespace` attributes as a
@@ -298,11 +404,11 @@ void LinkModulesPass::runOnOperation() {
       }
   }
 
-  // 3. Post-processing. Update class names and erase external classes.
-
-  // Rename private symbols and remove external classes.
-  parallelForEach(&getContext(), modules,
-                  [&](auto &info) { info.postProcess(symMapping); });
+  // 3. Post-processing. Update class names and erase external and duplicate
+  //    classes.
+  parallelForEach(&getContext(), modules, [&](auto &info) {
+    info.postProcess(symMapping, duplicateClasses);
+  });
 
   // Finally move operations to the toplevel module.
   auto *block = toplevelModule.getBody();
