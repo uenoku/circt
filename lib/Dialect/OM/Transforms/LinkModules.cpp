@@ -132,9 +132,7 @@ void ModuleInfo::postProcess(const SymMappingTy &symMapping,
   });
 }
 
-// Only deduplicate definitions which forward constructor arguments to fields.
-// Attributes (including parameter names and visibility), argument types, and
-// the argument supplying each field must match exactly.
+// Only compare public classes with no body operations except om.class.fields.
 static bool haveEquivalentDefinitions(ClassOp lhs, ClassOp rhs) {
   if (!lhs.isPublic() || !rhs.isPublic() ||
       !llvm::hasSingleElement(lhs.getBodyBlock()->getOperations()) ||
@@ -152,10 +150,7 @@ static bool haveEquivalentDefinitions(ClassOp lhs, ClassOp rhs) {
                           });
 }
 
-// Check referenced class types on demand. Each name is checked at most once per
-// resolution query, including cycles. A unique definition already denotes one
-// entity; multiple definitions must also be equivalent before we can share
-// users.
+// Check that referenced class types resolve to equivalent definitions.
 static bool haveCompatibleClassTypes(ClassOp classOp,
                                      const ClassMap &symbolToClasses,
                                      DenseSet<StringAttr> &visited) {
