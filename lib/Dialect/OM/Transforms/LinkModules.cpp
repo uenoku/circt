@@ -10,7 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "circt/Dialect/HW/HWAttributes.h"
 #include "circt/Dialect/OM/OMOps.h"
 #include "circt/Dialect/OM/OMPasses.h"
 #include "circt/Support/Namespace.h"
@@ -165,9 +164,6 @@ static bool haveCompatibleClassTypes(ClassOp classOp,
 
   bool compatible = true;
   AttrTypeWalker walker;
-  // Non-OM symbols remain in their original compilation units.
-  walker.addWalk([&](hw::InnerRefAttr) { compatible = false; });
-  walker.addWalk([&](mlir::SymbolRefAttr) { compatible = false; });
   walker.addWalk([&](ClassType type) {
     if (!compatible)
       return WalkResult::skip();
@@ -189,7 +185,6 @@ static bool haveCompatibleClassTypes(ClassOp classOp,
                                 }) &&
                    haveCompatibleClassTypes(definitions.front(),
                                             symbolToClasses, visited);
-    // Don't visit the class name as an arbitrary symbol reference.
     return WalkResult::skip();
   });
   walker.walk<WalkOrder::PreOrder>(classOp->getAttrDictionary());
