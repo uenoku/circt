@@ -109,7 +109,7 @@ module {
 
 // -----
 
-// Coalescing equivalent definitions must still check external declarations.
+// Deduplicated definitions must still match external declarations.
 module {
   module {
     // expected-error @+1 {{failed to link class "C" since declaration doesn't match the definition: 0-th argument type is not equal, 'i1' vs 'i2'}}

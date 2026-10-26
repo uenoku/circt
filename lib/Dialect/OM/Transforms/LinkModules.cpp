@@ -132,7 +132,7 @@ void ModuleInfo::postProcess(const SymMappingTy &symMapping,
   });
 }
 
-// Only coalesce definitions which forward constructor arguments to fields.
+// Only deduplicate definitions which forward constructor arguments to fields.
 // Attributes (including parameter names and visibility), argument types, and
 // the argument supplying each field must match exactly.
 static bool haveEquivalentDefinitions(ClassOp lhs, ClassOp rhs) {
@@ -207,7 +207,7 @@ static FailureOr<bool> resolveClasses(StringAttr name,
                                       const ClassMap &symbolToClasses,
                                       DenseSet<Operation *> &duplicateClasses) {
   bool existExternalClass = false;
-  bool canCoalesce = true;
+  bool canDeduplicate = true;
   size_t countDefinition = 0;
   ClassOp classOp;
 
@@ -217,21 +217,22 @@ static FailureOr<bool> resolveClasses(StringAttr name,
     else {
       auto definition = cast<ClassOp>(op);
       if (classOp)
-        canCoalesce &= haveEquivalentDefinitions(classOp, definition);
+        canDeduplicate &= haveEquivalentDefinitions(classOp, definition);
       else
         classOp = definition;
       ++countDefinition;
     }
   }
-  if (countDefinition > 1 && canCoalesce) {
+  if (countDefinition > 1 && canDeduplicate) {
     DenseSet<StringAttr> visited;
-    canCoalesce = haveCompatibleClassTypes(classOp, symbolToClasses, visited);
+    canDeduplicate =
+        haveCompatibleClassTypes(classOp, symbolToClasses, visited);
   }
 
   // There must be exactly one definition if the symbol was referred by an
   // external class, unless the definitions are structurally equivalent.
   if (existExternalClass &&
-      (countDefinition == 0 || (countDefinition != 1 && !canCoalesce))) {
+      (countDefinition == 0 || (countDefinition != 1 && !canDeduplicate))) {
     SmallVector<Location> classExternLocs;
     SmallVector<Location> classLocs;
     for (auto op : classes)
@@ -313,11 +314,11 @@ static FailureOr<bool> resolveClasses(StringAttr name,
         return emitError(op) << "definition has a field " << fieldName
                              << " but not found in this declaration";
   }
-  if (canCoalesce)
+  if (canDeduplicate)
     for (auto op : classes)
       if (isa<ClassOp>(op) && op != classOp)
         duplicateClasses.insert(op.getOperation());
-  return !existExternalClass && countDefinition != 1 && !canCoalesce;
+  return !existExternalClass && countDefinition != 1 && !canDeduplicate;
 }
 
 void LinkModulesPass::runOnOperation() {
@@ -341,7 +342,8 @@ void LinkModulesPass::runOnOperation() {
       })))
     return signalPassFailure();
 
-  // 2. Symbol resolution. Coalesce equivalent field-only definitions, resolve
+  // 2. Symbol resolution. Deduplicate equivalent field-only definitions,
+  // resolve
   //    external symbols, and rename other colliding symbols if necessary.
 
   // Global namespace to get unique names to symbols.
