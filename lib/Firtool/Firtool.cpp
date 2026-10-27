@@ -25,6 +25,9 @@ using namespace circt;
 
 LogicalResult firtool::populatePreprocessTransforms(mlir::PassManager &pm,
                                                     const FirtoolOptions &opt) {
+  if (!opt.shouldDisableObjectPromotion())
+    pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>().addPass(
+        firrtl::createPromoteObjects());
   pm.nest<firrtl::CircuitOp>().addPass(
       firrtl::createCheckRecursiveInstantiation());
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createCheckLayers());
@@ -566,6 +569,12 @@ public:
       llvm::cl::desc("Disable optimizations"),
   };
 
+  llvm::cl::opt<bool> disableObjectPromotion{
+      "disable-object-promotion",
+      llvm::cl::desc("Disable promotion of object declarations to value-like "
+                     "object creation"),
+      llvm::cl::init(false)};
+
   llvm::cl::opt<bool> vbToBV{
       "vb-to-bv",
       llvm::cl::desc("Transform vectors of bundles to bundles of vectors"),
@@ -864,14 +873,14 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
       preserveAggregate(firrtl::PreserveAggregate::None),
       preserveMode(firrtl::PreserveValues::None), enableDebugInfo(false),
       buildMode(BuildModeRelease), disableLayerSink(false),
-      disableOptimization(false), vbToBV(false), noDedup(false),
-      dedupClasses(true), companionMode(firrtl::CompanionMode::Bind),
-      noViews(false), disableAggressiveMergeConnections(false),
-      lowerMemories(false), blackBoxRootPath(""), replSeqMem(false),
-      replSeqMemFile(""), ignoreReadEnableMem(false),
-      disableRandom(RandomKind::None), outputAnnotationFilename(""),
-      enableAnnotationWarning(false), warnOnTruncation(false),
-      lowerToCore(false), addMuxPragmas(false),
+      disableOptimization(false), disableObjectPromotion(false), vbToBV(false),
+      noDedup(false), dedupClasses(true),
+      companionMode(firrtl::CompanionMode::Bind), noViews(false),
+      disableAggressiveMergeConnections(false), lowerMemories(false),
+      blackBoxRootPath(""), replSeqMem(false), replSeqMemFile(""),
+      ignoreReadEnableMem(false), disableRandom(RandomKind::None),
+      outputAnnotationFilename(""), enableAnnotationWarning(false),
+      warnOnTruncation(false), lowerToCore(false), addMuxPragmas(false),
       verificationFlavor(firrtl::VerificationFlavor::None),
       emitSeparateAlwaysBlocks(false),
       addVivadoRAMAddressConflictSynthesisBugWorkaround(false),
@@ -898,6 +907,7 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
   buildMode = clOptions->buildMode;
   disableLayerSink = clOptions->disableLayerSink;
   disableOptimization = clOptions->disableOptimization;
+  disableObjectPromotion = clOptions->disableObjectPromotion;
   vbToBV = clOptions->vbToBV;
   noDedup = clOptions->noDedup;
   dedupClasses = clOptions->dedupClasses;
