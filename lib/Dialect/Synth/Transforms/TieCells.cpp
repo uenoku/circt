@@ -59,7 +59,7 @@ static void considerTieCandidate(Operation *moduleOp,
   if (!eligible)
     return;
   for (const auto &port : ports)
-    if (port.isInput() || port.isInOut())
+    if (port.isInput())
       return;
   unsigned outputIdx = 0;
   for (const auto &port : ports) {

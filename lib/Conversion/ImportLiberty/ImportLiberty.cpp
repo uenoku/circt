@@ -1113,6 +1113,7 @@ LogicalResult LibertyParser::collectPorts(
     bool threeStateExist = false;
 
     // Track if this pin has a "function" attribute (only relevant for outputs).
+    bool isInOut = false;
     for (const auto &attr : sub->attrs) {
       if (attr.name == "direction") {
         auto val = dyn_cast<StringAttr>(attr.value);
@@ -1122,9 +1123,10 @@ LogicalResult LibertyParser::collectPorts(
           dir = hw::ModulePort::Direction::Input;
         else if (val.getValue() == "output")
           dir = hw::ModulePort::Direction::Output;
-        else if (val.getValue() == "inout")
-          dir = hw::ModulePort::Direction::InOut;
-        else if (val.getValue() == "internal")
+        else if (val.getValue() == "inout") {
+          dir = hw::ModulePort::Direction::Input;
+          isInOut = true;
+        } else if (val.getValue() == "internal")
           internalPin = true;
         else
           return emitError(sub->loc,
@@ -1172,10 +1174,13 @@ LogicalResult LibertyParser::collectPorts(
     auto libertyAttrs = builder.getDictionaryAttr(pinAttrs);
     auto attrs = builder.getDictionaryAttr(
         builder.getNamedAttr("synth.liberty.pin", libertyAttrs));
+    mlir::Type portType = builder.getI1Type();
+    if (isInOut)
+      portType = hw::InOutType::get(portType);
 
     hw::PortInfo port;
     port.name = pinName;
-    port.type = builder.getI1Type();
+    port.type = portType;
     port.dir = *dir;
     port.attrs = attrs;
     ports.push_back(port);
@@ -1968,7 +1973,7 @@ ParseResult LibertyParser::lowerCell(
   }
   bool hasSequentialModel = numFF + numLatch > 0 || hasStatetable;
   bool hasInOutPort = llvm::any_of(ports, [](const hw::PortInfo &port) {
-    return port.dir == hw::ModulePort::Direction::InOut;
+    return isa<hw::InOutType>(port.type);
   });
   // Integrated clock gates are claimed by pin/cell attributes (not by
   // output functions, which a clock-gate output may not even have). The

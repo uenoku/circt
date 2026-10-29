@@ -10,8 +10,8 @@ builtin.unrealized_conversion_cast to !llhd.ref<!llhd.time>
 // CHECK-LABEL: @basic
 // CHECK-SAME: (in [[IN0:%.+]] : i32, out out0 : i32)
 hw.module @basic(in %in0 : i32, out out0 : i32) {
-  // CHECK: %{{.*}} = llhd.delay [[IN0]] by <0ns, 1d, 0e> : i32
-  %0 = llhd.delay %in0 by <0ns, 1d, 0e> : i32
+  // CHECK: %{{.*}} = llhd.delay [[IN0]] by <0ns, 1d> : i32
+  %0 = llhd.delay %in0 by <0ns, 1d> : i32
   hw.output %0 : i32
 }
 
@@ -49,22 +49,25 @@ hw.module @sigUnionExtract(in %arg0 : !llhd.ref<!hw.union<foo: i1, bar: i2, baz:
 hw.module @checkSigInst() {
   // CHECK: %[[CI1:.*]] = hw.constant
   %cI1 = hw.constant 0 : i1
-  // CHECK-NEXT: %sigI1 = llhd.sig %[[CI1]] : i1
-  %sigI1 = llhd.sig %cI1 : i1
+  // CHECK-NEXT: %sigI1 = llhd.sig %[[CI1]] : <i1>
+  %sigI1 = llhd.sig %cI1 : <i1>
   // CHECK-NEXT: %[[CI64:.*]] = hw.constant
   %cI64 = hw.constant 0 : i64
-  // CHECK-NEXT: %sigI64 = llhd.sig %[[CI64]] : i64
-  %sigI64 = llhd.sig %cI64 : i64
+  // CHECK-NEXT: %sigI64 = llhd.sig %[[CI64]] : <i64>
+  %sigI64 = llhd.sig %cI64 : <i64>
 
   // CHECK-NEXT: %[[TUP:.*]] = hw.struct_create
   %tup = hw.struct_create (%cI1, %cI64) : !hw.struct<foo: i1, bar: i64>
-  // CHECK-NEXT: %sigTup = llhd.sig %[[TUP]] : !hw.struct<foo: i1, bar: i64>
-  %sigTup = llhd.sig %tup : !hw.struct<foo: i1, bar: i64>
+  // CHECK-NEXT: %sigTup = llhd.sig %[[TUP]] : <!hw.struct<foo: i1, bar: i64>>
+  %sigTup = llhd.sig %tup : <!hw.struct<foo: i1, bar: i64>>
 
   // CHECK-NEXT: %[[ARRAY:.*]] = hw.array_create
   %array = hw.array_create %cI1, %cI1 : i1
-  // CHECK-NEXT: %sigArray = llhd.sig %[[ARRAY]] : !hw.array<2xi1>
-  %sigArray = llhd.sig %array : !hw.array<2xi1>
+  // CHECK-NEXT: %sigArray = llhd.sig %[[ARRAY]] : <!hw.array<2xi1>>
+  %sigArray = llhd.sig %array : <!hw.array<2xi1>>
+
+  // CHECK-NEXT: %uninit = llhd.sig : <i8>
+  %uninit = llhd.sig : <i8>
 }
 
 // CHECK-LABEL: @checkPrb
@@ -86,7 +89,7 @@ hw.module @checkPrb(
 
 // CHECK-LABEL: @checkOutput
 hw.module @checkOutput(in %arg0 : i32) {
-  %t = llhd.constant_time <0ns, 1d, 0e>
+  %t = llhd.constant_time <0ns, 1d>
   // CHECK: %{{.+}} = llhd.output %arg0 after %{{.*}} : i32
   %0 = llhd.output %arg0 after %t : i32
   // CHECK-NEXT: %{{.+}} = llhd.output "sigName" %arg0 after %{{.*}} : i32
@@ -104,13 +107,17 @@ hw.module @checkDrv(
   in %arg7 : !hw.array<3xi8>,
   in %arg8 : !hw.struct<foo: i1, bar: i2, baz: i4>
 ) {
-  %t = llhd.constant_time <0ns, 1d, 0e>
+  %t = llhd.constant_time <0ns, 1d>
   // CHECK: llhd.drv %arg0, %arg2 after %{{.*}} : i1
   llhd.drv %arg0, %arg2 after %t : i1
   // CHECK-NEXT: llhd.drv %arg1, %arg3 after %{{.*}} : i64
   llhd.drv %arg1, %arg3 after %t : i64
   // CHECK-NEXT: llhd.drv %arg1, %arg3 after %{{.*}} if %arg2 : i64
   llhd.drv %arg1, %arg3 after %t if %arg2 : i64
+  // CHECK-NEXT: llhd.assign %arg0, %arg2 : i1
+  llhd.assign %arg0, %arg2 : i1
+  // CHECK-NEXT: llhd.assign %arg1, %arg3 if %arg2 : i64
+  llhd.assign %arg1, %arg3 if %arg2 : i64
   // CHECK-NEXT: llhd.drv %arg5, %arg7 after %{{.*}} : !hw.array<3xi8>
   llhd.drv %arg5, %arg7 after %t : !hw.array<3xi8>
   // CHECK-NEXT: llhd.drv %arg6, %arg8 after %{{.*}} : !hw.struct<foo: i1, bar: i2, baz: i4>
@@ -134,7 +141,7 @@ hw.module @check_wait_1() {
   // CHECK-NEXT: llhd.process
   llhd.process {
     // CHECK-NEXT: %[[TIME:.*]] = llhd.constant_time
-    %time = llhd.constant_time #llhd.time<0ns, 0d, 0e>
+    %time = llhd.constant_time #llhd.time<0ns, 0d>
     // CHECK-NEXT: llhd.wait delay %[[TIME]], ^[[BB:.*]](%[[TIME]] : !llhd.time)
     llhd.wait delay %time, ^bb1(%time: !llhd.time)
     // CHECK-NEXT: ^[[BB]](%[[T:.*]]: !llhd.time):
@@ -168,7 +175,7 @@ hw.module @check_wait_3(in %arg0 : !llhd.ref<i64>, in %arg1 : !llhd.ref<i1>) {
   // CHECK-NEXT: llhd.process
   llhd.process {
     // CHECK-NEXT: %[[TIME:.*]] = llhd.constant_time
-    %time = llhd.constant_time #llhd.time<0ns, 0d, 0e>
+    %time = llhd.constant_time #llhd.time<0ns, 0d>
     // CHECK-NEXT: llhd.wait delay %[[TIME]], ([[PRB0]], [[PRB1]] : i64, i1), ^[[BB:.*]](%arg1, %arg0 : !llhd.ref<i1>, !llhd.ref<i64>)
     llhd.wait delay %time, (%prb0, %prb1 : i64, i1), ^bb1(%arg1, %arg0 : !llhd.ref<i1>, !llhd.ref<i64>)
     // CHECK: ^[[BB]](%[[A:.*]]: !llhd.ref<i1>, %[[B:.*]]: !llhd.ref<i64>):

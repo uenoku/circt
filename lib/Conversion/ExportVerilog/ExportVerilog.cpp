@@ -293,6 +293,10 @@ static void getTypeDims(
 
   if (auto inout = hw::type_dyn_cast<InOutType>(type))
     return getTypeDims(dims, inout.getElementType(), loc, errorHandler);
+  if (auto net = dyn_cast<sv::NetType>(type))
+    return getTypeDims(dims, net.getElementType(), loc, errorHandler);
+  if (auto var = dyn_cast<sv::VarType>(type))
+    return getTypeDims(dims, var.getElementType(), loc, errorHandler);
   if (auto uarray = hw::type_dyn_cast<hw::UnpackedArrayType>(type))
     return getTypeDims(dims, uarray.getElementType(), loc, errorHandler);
   if (auto uarray = hw::type_dyn_cast<sv::UnpackedOpenArrayType>(type))
@@ -324,6 +328,8 @@ bool ExportVerilog::isZeroBitType(Type type) {
     return intType.getWidth() == 0;
   if (auto inout = dyn_cast<hw::InOutType>(type))
     return isZeroBitType(inout.getElementType());
+  if (auto net = dyn_cast<sv::NetType>(type))
+    return isZeroBitType(net.getElementType());
   if (auto var = dyn_cast<sv::VarType>(type))
     return isZeroBitType(var.getElementType());
   if (auto uarray = dyn_cast<hw::UnpackedArrayType>(type))
@@ -350,7 +356,7 @@ bool ExportVerilog::isZeroBitType(Type type) {
 // NOLINTBEGIN(misc-no-recursion)
 static Type stripUnpackedTypes(Type type) {
   return TypeSwitch<Type, Type>(type)
-      .Case<InOutType, VarType>([](auto valueType) {
+      .Case<InOutType, NetType, VarType>([](auto valueType) {
         return stripUnpackedTypes(valueType.getElementType());
       })
       .Case<UnpackedArrayType, sv::UnpackedOpenArrayType>([](auto arrayType) {
@@ -361,8 +367,8 @@ static Type stripUnpackedTypes(Type type) {
 
 /// Return true if the type has a leading unpacked type.
 static bool hasLeadingUnpackedType(Type type) {
-  assert(isa<hw::InOutType>(type) && "inout type is expected");
-  auto elementType = cast<hw::InOutType>(type).getElementType();
+  auto elementType = sv::getHandleElementType(type);
+  assert(elementType && "inout or SV handle type is expected");
   return stripUnpackedTypes(elementType) != elementType;
 }
 
@@ -1783,8 +1789,8 @@ static bool printPackedTypeImpl(Type type, raw_ostream &os, Location loc,
                                    emitter, /*optionalAliasType=*/{},
                                    emitAsTwoStateType);
       })
-      .Case<InOutType>([&](InOutType inoutType) {
-        return printPackedTypeImpl(inoutType.getElementType(), os, loc, dims,
+      .Case<InOutType, sv::NetType, sv::VarType>([&](auto handleType) {
+        return printPackedTypeImpl(handleType.getElementType(), os, loc, dims,
                                    implicitIntType, singleBitDefaultType,
                                    emitter, /*optionalAliasType=*/{},
                                    emitAsTwoStateType);
@@ -1956,7 +1962,7 @@ bool ModuleEmitter::printPackedType(Type type, raw_ostream &os, Location loc,
 // NOLINTBEGIN(misc-no-recursion)
 void ModuleEmitter::printUnpackedTypePostfix(Type type, raw_ostream &os) {
   TypeSwitch<Type, void>(type)
-      .Case<InOutType, VarType>([&](auto valueType) {
+      .Case<InOutType, NetType, VarType>([&](auto valueType) {
         printUnpackedTypePostfix(valueType.getElementType(), os);
       })
       .Case<UnpackedArrayType>([&](UnpackedArrayType arrayType) {
@@ -4218,6 +4224,7 @@ private:
                       PPExtString postSyntax = PPExtString(";"),
                       std::optional<PPExtString> wordBeforeLHS = std::nullopt);
   LogicalResult visitSV(AssignOp op);
+  LogicalResult visitSV(VarAssignOp op);
   LogicalResult visitSV(BPAssignOp op);
   LogicalResult visitSV(PAssignOp op);
   LogicalResult visitSV(ForceOp op);
@@ -4430,6 +4437,13 @@ LogicalResult StmtEmitter::visitSV(AssignOp op) {
   if (emitter.assignsInlined.count(op))
     return success();
 
+  // Emit SV attributes. See Spec 12.3.
+  emitSVAttributes(op);
+
+  return emitAssignLike(op, PPExtString("="), PPExtString("assign"));
+}
+
+LogicalResult StmtEmitter::visitSV(VarAssignOp op) {
   // Emit SV attributes. See Spec 12.3.
   emitSVAttributes(op);
 
@@ -6760,27 +6774,42 @@ void ModuleEmitter::emitPortList(Operation *module,
       }
 
       // Emit the port direction and optional wire keyword.
-      auto thisPortDirection = portInfo.at(portIdx).dir;
-      size_t startOfNamePos = (hasOutputs ? 7 : 6) +
-                              (state.options.emitWireInPorts ? 5 : 0) +
-                              maxTypeWidth;
+      auto thisPortInfo = portInfo.at(portIdx);
+      auto thisPortDirection = thisPortInfo.dir;
+      bool isInOut = isa<InOutType, sv::NetType>(portType);
+      StringRef direction;
+      if (isInOut) {
+        direction = hasOutputs ? "inout  " : "inout ";
+      } else {
+        switch (thisPortDirection) {
+        case ModulePort::Direction::Output:
+          direction = "output ";
+          break;
+        case ModulePort::Direction::Input:
+          direction = hasOutputs ? "input  " : "input ";
+          break;
+        }
+      }
+      StringRef portDecl;
+      switch (state.options.emitPortType) {
+      case circt::LoweringOptions::EmitPortType::emitWire:
+        portDecl = "wire ";
+        break;
+      case circt::LoweringOptions::EmitPortType::emitVarLogic:
+        if (!hasExplicitDataType(portType))
+          portDecl = emitAsTwoStateType ? "var " : "var logic ";
+        break;
+      case circt::LoweringOptions::EmitPortType::emitNone:
+        break;
+      }
+      size_t startOfNamePos = direction.size() + portDecl.size() + maxTypeWidth;
       // Modport-typed ports (e.g., MyBundle.sink) already encode their
       // direction in the interface modport definition, so we suppress the
       // direction and wire keywords for them.
       if (!isa<ModportType>(portType)) {
-        switch (thisPortDirection) {
-        case ModulePort::Direction::Output:
-          ps << "output ";
-          break;
-        case ModulePort::Direction::Input:
-          ps << (hasOutputs ? "input  " : "input ");
-          break;
-        case ModulePort::Direction::InOut:
-          ps << (hasOutputs ? "inout  " : "inout ");
-          break;
-        }
-        if (state.options.emitWireInPorts)
-          ps << "wire ";
+        ps << direction;
+        if (!portDecl.empty())
+          ps << portDecl;
         if (!portTypeStrings[portIdx].empty())
           ps << portTypeStrings[portIdx];
         if (portTypeStrings[portIdx].size() < maxTypeWidth)
@@ -6819,11 +6848,16 @@ void ModuleEmitter::emitPortList(Operation *module,
 
       ++portIdx;
 
-      // If we have any more ports with the same types and the same
-      // direction, emit them in a list one per line. Optionally skip this
-      // behavior when requested by user.
+      // If we have any more ports with the same types, the same direction,
+      // and the same emitted kind (plain/net), emit them in a list one
+      // per line. Optionally skip this behavior when requested by user. This
+      // kind of check is important because two ports can share a direction and
+      // an (unwrapped) element type, emitting completely different keywords.
+      // Thus we must ensure they are not folded into one shared declaration.
       if (!state.options.disallowPortDeclSharing) {
         while (portIdx != e && portInfo.at(portIdx).dir == thisPortDirection &&
+               isInOut ==
+                   isa<InOutType, sv::NetType>(portInfo.at(portIdx).type) &&
                stripUnpackedTypes(portType) ==
                    stripUnpackedTypes(portInfo.at(portIdx).type)) {
           auto port = portInfo.at(portIdx);

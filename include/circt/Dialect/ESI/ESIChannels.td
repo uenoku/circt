@@ -60,6 +60,7 @@ def ChannelTypeImpl : ESI_Type<"Channel", [
 
     Parameters:
       signaling: the style of the control signals (valid/ready vs FIFO).
+      Always required in the assembly format.
       dataDelay: the number of cycles data takes to arrive after the control
       indicates a transaction has occured. For instance, on a FIFO without read
       ahead, this would be 1. Defaults to 0.
@@ -67,21 +68,19 @@ def ChannelTypeImpl : ESI_Type<"Channel", [
     Example:
 
     ```mlir
-    hw.module.extern @Sender() -> (%x: !esi.channel<i1>)
-    hw.module @Reciever(%a: !esi.channel<hw.array<5xi16>>) { }
+    hw.module.extern @Sender(out x: !esi.channel<i1, ValidReady>)
+    hw.module.extern @Reciever(in %a: !esi.channel<!hw.array<5xi16>, FIFO(1)>)
     ```
   }];
 
   let mnemonic = "channel";
   let parameters = (ins
       "Type":$inner,
-      DefaultValuedParameter<
-        "::circt::esi::ChannelSignaling",
-        "::circt::esi::ChannelSignaling::ValidReady">:$signaling,
+      "::circt::esi::ChannelSignaling":$signaling,
       DefaultValuedParameter<"uint64_t", "0">:$dataDelay);
 
   let assemblyFormat = [{
-    `<` $inner (`,` $signaling^ ( `(` $dataDelay^ `)` )? )? `>`
+    `<` $inner `,` $signaling ( `(` $dataDelay^ `)` )? `>`
   }];
 
   let builders = [
@@ -299,48 +298,6 @@ def UnwrapValidOnlyOp : ESI_Op<"unwrap.vo", [
     static LogicalResult mergeAndErase(UnwrapValidOnlyOp, WrapValidOnlyOp,
                                        PatternRewriter&);
   }];
-}
-
-def ModportType:
-  Type<CPred<"llvm::isa<::circt::sv::ModportType>($_self)">, "sv.interface">;
-
-def WrapSVInterfaceOp: ESI_Op<"wrap.iface", [
-    DeclareOpInterfaceMethods<ChannelOpInterface>
-  ]> {
-  let summary = "Wrap an SV interface into an ESI port";
-  let description = [{
-    Wrap a SystemVerilog interface into an ESI channel. Interface MUST look
-    like an interface produced by ESI meaning it MUST contain valid, ready,
-    and data signals. Any other signals will be discarded.
-  }];
-
-  let arguments = (ins ModportType:$interfaceSink);
-  let results = (outs ChannelType:$output);
-
-  let assemblyFormat = [{
-    $interfaceSink attr-dict `:` qualified(type($interfaceSink)) `->` qualified(type($output))
-  }];
-
-  let hasVerifier = 1;
-}
-
-def UnwrapSVInterfaceOp : ESI_Op<"unwrap.iface", [
-    DeclareOpInterfaceMethods<ChannelOpInterface>
-  ]> {
-  let summary = "Unwrap an SV interface from an ESI port";
-  let description = [{
-    Unwrap an ESI channel into a SystemVerilog interface containing valid,
-    ready, and data signals.
-  }];
-
-  let arguments = (ins ChannelType:$chanInput, ModportType:$interfaceSource);
-  let results = (outs);
-
-  let assemblyFormat = [{
-    $chanInput `into` $interfaceSource attr-dict `:` `(` qualified(type($chanInput)) `,` qualified(type($interfaceSource)) `)`
-  }];
-
-  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -627,10 +584,10 @@ def ChannelBufferOp : ESI_Abstract_Op<"buffer", [
     Example:
 
     ```mlir
-    %esiChan = hw.instance "sender" @Sender () : () -> (!esi.channel<i1>)
+    %esiChan = hw.instance "sender" @Sender () : () -> (!esi.channel<i1, ValidReady>)
     // Allow automatic selection of options.
     %bufferedChan = esi.buffer %esiChan : i1
-    hw.instance "recv" @Reciever (%bufferedChan) : (!esi.channel<i1>) -> ()
+    hw.instance "recv" @Reciever (%bufferedChan) : (!esi.channel<i1, ValidReady>) -> ()
 
     // Alternatively, specify the number of stages.
     %fourStageBufferedChan = esi.buffer %esiChan { stages = 4 } : i1
