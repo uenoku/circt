@@ -880,8 +880,8 @@ LogicalResult LowerCircuit::lowerDomain(DomainOp op) {
   // nominal type. Carry their ODR contract through FIRRTL class lowering so
   // the OM linker coalesces both the domain information and association
   // classes.
-  classIn.setLinkage(ClassLinkage::LinkOnceODR);
-  classOut.setLinkage(ClassLinkage::LinkOnceODR);
+  classIn.setLinkonceOdr(true);
+  classOut.setLinkonceOdr(true);
 
   classes.insert({name, {classIn, classOut}});
   instanceGraph.addModule(classIn);

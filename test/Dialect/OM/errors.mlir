@@ -1,14 +1,14 @@
 // RUN: circt-opt %s -verify-diagnostics -split-input-file
 
-// expected-error @+1 {{linkonce_odr linkage requires public visibility}}
-om.class private @Private() attributes {linkage = #om.linkage<linkonce_odr>} {
+// expected-error @+1 {{linkonce_odr requires public visibility}}
+om.class private @Private() attributes {linkonce_odr} {
   om.class.fields
 }
 
 // -----
 
-// expected-error @+1 {{linkonce_odr linkage requires public visibility}}
-om.class nested @Nested() attributes {linkage = #om.linkage<linkonce_odr>} {
+// expected-error @+1 {{linkonce_odr requires public visibility}}
+om.class nested @Nested() attributes {linkonce_odr} {
   om.class.fields
 }
 

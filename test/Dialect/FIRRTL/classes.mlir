@@ -1,4 +1,4 @@
-// RUN: circt-opt %s | FileCheck %s
+// RUN: circt-opt %s | circt-opt | FileCheck %s
 
 firrtl.circuit "Classes" {
   firrtl.module @Classes() {}
@@ -19,7 +19,8 @@ firrtl.circuit "Classes" {
   firrtl.module @ModuleWithObjectPort(in %in: !firrtl.class<@StringPassThru(in in_str: !firrtl.string, out out_str: !firrtl.string)>) {}
 
   // CHECK-LABEL: firrtl.class @EmptyClass()
-  firrtl.class @EmptyClass() {}
+  // CHECK-SAME: attributes {linkonce_odr}
+  firrtl.class @EmptyClass() attributes {linkonce_odr} {}
 
   // CHECK-LABEL: firrtl.module @ModuleWithOutputObject(out %out: !firrtl.class<@EmptyClass()>)
   firrtl.module @ModuleWithOutputObject(out %out: !firrtl.class<@EmptyClass()>) {

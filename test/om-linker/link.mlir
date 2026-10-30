@@ -18,7 +18,7 @@
 // CHECK-NEXT:   om.class @A(%arg: i1) {
 // CHECK-NEXT:     om.class.fields
 // CHECK-NEXT:   }
-// CHECK-NEXT:   om.class private @Conflict_a() {
+// CHECK-NEXT:   om.class @Conflict_a() {
 // CHECK-NEXT:     om.class.fields
 // CHECK-NEXT:   }
 // CHECK-NEXT:   om.class @B(%arg: i2) {

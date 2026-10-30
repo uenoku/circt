@@ -1206,17 +1206,10 @@ om::ClassLike LowerClassesPass::createClass(FModuleLike moduleLike,
   } else {
     loweredClassOp = convertClass(moduleLike, builder, className + suffix,
                                   formalParamNames, hasContainingModule);
-    // Preserve the inherent FIRRTL class linkage when lowering to OM.
-    if (auto classOp = dyn_cast<firrtl::ClassOp>(moduleLike.getOperation())) {
-      switch (classOp.getLinkage()) {
-      case ClassLinkage::External:
-        break;
-      case ClassLinkage::LinkOnceODR:
-        cast<om::ClassOp>(loweredClassOp.getOperation())
-            .setLinkage(om::Linkage::LinkOnceODR);
-        break;
-      }
-    }
+    // Preserve the FIRRTL class ODR contract when lowering to OM.
+    if (auto classOp = dyn_cast<firrtl::ClassOp>(moduleLike.getOperation()))
+      if (classOp.getLinkonceOdr())
+        cast<om::ClassOp>(loweredClassOp.getOperation()).setLinkonceOdr(true);
   }
 
   SymbolTable::setSymbolVisibility(

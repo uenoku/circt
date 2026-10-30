@@ -111,10 +111,10 @@ module {
   }
   module {
     // expected-note @+1 {{definition is here}}
-    om.class @C(%x: i1) -> (x: i1) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %x : i1 }
+    om.class @C(%x: i1) -> (x: i1) attributes {linkonce_odr} { om.class.fields %x : i1 }
   }
   module {
-    om.class @C(%x: i1) -> (x: i1) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %x : i1 }
+    om.class @C(%x: i1) -> (x: i1) attributes {linkonce_odr} { om.class.fields %x : i1 }
   }
 }
 
@@ -123,10 +123,10 @@ module {
 module {
   module {
     // expected-note @+1 {{previous definition is here}}
-    om.class @Mixed() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class @Mixed() attributes {linkonce_odr} { om.class.fields }
   }
   module {
-    // expected-error @+1 {{cannot link class "Mixed" with different linkage}}
+    // expected-error @+1 {{cannot link class "Mixed" with inconsistent linkonce_odr attributes}}
     om.class @Mixed() { om.class.fields }
   }
 }

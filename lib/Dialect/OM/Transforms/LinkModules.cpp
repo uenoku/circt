@@ -149,9 +149,10 @@ static FailureOr<bool> resolveClasses(StringAttr name,
     auto definition = cast<ClassOp>(op);
     if (!classOp)
       classOp = definition;
-    else if (classOp.getLinkage() != definition.getLinkage()) {
+    else if (classOp.getLinkonceOdr() != definition.getLinkonceOdr()) {
       auto diag = definition.emitError()
-                  << "cannot link class " << name << " with different linkage";
+                  << "cannot link class " << name
+                  << " with inconsistent linkonce_odr attributes";
       diag.attachNote(classOp.getLoc()) << "previous definition is here";
       return failure();
     }
@@ -159,11 +160,11 @@ static FailureOr<bool> resolveClasses(StringAttr name,
   }
 
   // linkonce_odr is a producer contract, not a structural equivalence test.
-  // Definitions with this linkage must have public visibility.
-  bool canDeduplicate = classOp && classOp.getLinkage() == Linkage::LinkOnceODR;
+  // Definitions with this attribute must have public visibility.
+  bool canDeduplicate = classOp && classOp.getLinkonceOdr();
 
   // There must be exactly one definition if the symbol was referred to by an
-  // external class, unless all definitions have linkonce_odr linkage.
+  // external class, unless all definitions have the linkonce_odr attribute.
   if (existExternalClass &&
       (countDefinition == 0 || (countDefinition != 1 && !canDeduplicate))) {
     SmallVector<Location> classExternLocs;

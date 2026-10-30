@@ -2163,10 +2163,6 @@ static void printClassLike(OpAsmPrinter &p, ClassLike op) {
   // block arguments.
   if (!needPortNamesAttr)
     omittedAttrs.push_back("portNames");
-  if constexpr (std::is_same_v<ClassTy, ClassOp>)
-    if (auto linkage = op->getAttrOfType<ClassLinkageAttr>("linkage"))
-      if (linkage.getValue() == ClassLinkage::External)
-        omittedAttrs.push_back("linkage");
 
   p.printOptionalAttrDictWithKeyword(op->getAttrs(), omittedAttrs);
 
@@ -2237,9 +2233,8 @@ ParseResult ClassOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 LogicalResult ClassOp::verify() {
-  if (getLinkage() == ClassLinkage::LinkOnceODR &&
-      getVisibility() != SymbolTable::Visibility::Public)
-    return emitOpError("linkonce_odr linkage requires public visibility");
+  if (getLinkonceOdr() && getVisibility() != SymbolTable::Visibility::Public)
+    return emitOpError("linkonce_odr requires public visibility");
 
   for (auto operand : getBodyBlock()->getArguments()) {
     auto type = operand.getType();

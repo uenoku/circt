@@ -19,17 +19,6 @@ include "mlir/IR/EnumAttr.td"
 let cppNamespace = "::circt::om" in {
 
 //===----------------------------------------------------------------------===//
-// Class Linkage
-//===----------------------------------------------------------------------===//
-
-def Linkage : I32EnumAttr<"Linkage", "object model class linkage", [
-  I32EnumAttrCase<"External", 0, "external">,
-  I32EnumAttrCase<"LinkOnceODR", 1, "linkonce_odr">
-]> {
-  let genSpecializedAttr = 0;
-}
-
-//===----------------------------------------------------------------------===//
 // Target Kinds
 //===----------------------------------------------------------------------===//
 

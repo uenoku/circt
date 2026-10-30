@@ -9,8 +9,8 @@
 
 ; CHECK-DAG: om.class @Parent_Class(%{{.*}}: !om.frozenbasepath) -> (d_out: !om.class.type<@ResetDomain_out>)
 ; CHECK-DAG: om.class @Child_Class(%{{.*}}: !om.frozenbasepath, %{{.*}}: !om.class.type<@ResetDomain>) -> (d_out: !om.class.type<@ResetDomain_out>)
-; CHECK-DAG: om.class @ResetDomain(%{{.*}}: !om.frozenbasepath, %{{.*}}: i1) -> (isColdReset_out: i1) attributes {linkage = #om.linkage<linkonce_odr>}
-; CHECK-DAG: om.class @ResetDomain_out(%{{.*}}: !om.frozenbasepath, %{{.*}}: !om.class.type<@ResetDomain>, %{{.*}}: !om.list<!om.frozenpath>) -> (domainInfo_out: !om.class.type<@ResetDomain>, associations_out: !om.list<!om.frozenpath>) attributes {linkage = #om.linkage<linkonce_odr>}
+; CHECK-DAG: om.class @ResetDomain(%{{.*}}: !om.frozenbasepath, %{{.*}}: i1) -> (isColdReset_out: i1) attributes {linkonce_odr}
+; CHECK-DAG: om.class @ResetDomain_out(%{{.*}}: !om.frozenbasepath, %{{.*}}: !om.class.type<@ResetDomain>, %{{.*}}: !om.list<!om.frozenpath>) -> (domainInfo_out: !om.class.type<@ResetDomain>, associations_out: !om.list<!om.frozenpath>) attributes {linkonce_odr}
 ; CHECK-DAG: %[[COLD:.+]] = om.object.field %{{.+}}["isColdReset_out"] : (!om.class.type<@ResetDomain>) -> i1
 ; CHECK-DAG: om.property_assert %[[COLD]], %{{.+}} : i1
 

@@ -237,10 +237,6 @@ static void printClassLike(ClassLike classLike, OpAsmPrinter &printer) {
   SmallVector<StringRef> elidedAttrs{
       classLike.getSymNameAttrName(), classLike.getFormalParamNamesAttrName(),
       visibilityAttrName, "fieldTypes", "fieldNames"};
-  if (isa<ClassOp>(classLike.getOperation()))
-    if (auto linkage = classLike->getAttrOfType<LinkageAttr>("linkage"))
-      if (linkage.getValue() == Linkage::External)
-        elidedAttrs.push_back("linkage");
   printer.printOptionalAttrDictWithKeyword(classLike.getOperation()->getAttrs(),
                                            elidedAttrs);
 
@@ -350,8 +346,8 @@ void circt::om::ClassOp::print(OpAsmPrinter &printer) {
 }
 
 LogicalResult circt::om::ClassOp::verify() {
-  if (getLinkage() == Linkage::LinkOnceODR && !isPublic())
-    return emitOpError("linkonce_odr linkage requires public visibility");
+  if (getLinkonceOdr() && !isPublic())
+    return emitOpError("linkonce_odr requires public visibility");
   return verifyClassLike(*this);
 }
 

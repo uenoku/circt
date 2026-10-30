@@ -57,8 +57,8 @@ om.class @ElaboratedWidget() -> (widget: !om.class.type<@Widget>, blue: i8) {
 }
 
 // CHECK-LABEL: om.class @LinkOnce
-// CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
-om.class @LinkOnce() attributes {linkage = #om.linkage<linkonce_odr>} {
+// CHECK-SAME: attributes {linkonce_odr}
+om.class @LinkOnce() attributes {linkonce_odr} {
   om.class.fields
 }
 

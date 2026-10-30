@@ -114,20 +114,20 @@ def ClassOp : OMClassLike<"class", [
     StrArrayAttr:$formalParamNames,
     ArrayAttr:$fieldNames,
     DictionaryAttr:$fieldTypes,
-    DefaultValuedAttr<LinkageAttr, "Linkage::External">:$linkage
+    UnitAttr:$linkonce_odr
   );
 
   let summary = "An object model class definition";
   let description = [{
     A class defines formal parameters, fields, and the computation of its fields.
 
-    With `external` linkage (the default), a definition may have any symbol
-    visibility. The linker resolves external declarations to a unique definition
-    regardless of its visibility, and renames colliding definitions if there are
-    no external declarations.
+    Without `linkonce_odr`, a definition may have any symbol visibility. The
+    linker resolves external declarations to a unique definition regardless of
+    its visibility, and renames colliding definitions if there are no external
+    declarations.
 
-    `linkonce_odr` linkage requires public visibility. All same-named
-    definitions must have this linkage and be interchangeable, including the
+    The `linkonce_odr` attribute requires public visibility. All same-named
+    definitions must have this attribute and be interchangeable, including the
     meaning of referenced symbols. The linker retains one definition without
     comparing bodies. Violating this ODR contract is invalid IR. External
     declarations are still checked against the retained definition.

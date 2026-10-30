@@ -14,13 +14,8 @@
 #define CIRCT_DIALECT_OM_OMATTRIBUTES_TD
 
 include "circt/Dialect/OM/OMDialect.td"
-include "circt/Dialect/OM/OMEnums.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
-
-def LinkageAttr : EnumAttr<OMDialect, Linkage, "linkage"> {
-  let assemblyFormat = "`<` $value `>`";
-}
 
 def ReferenceAttr : AttrDef<OMDialect, "Reference", [TypedAttrInterface]> {
   let summary = "An attribute that wraps a #hw.innerNameRef with !om.ref type";

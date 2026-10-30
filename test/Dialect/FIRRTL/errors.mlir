@@ -2,16 +2,16 @@
 
 firrtl.circuit "Top" {
   firrtl.module @Top() {}
-  // expected-error @+1 {{linkonce_odr linkage requires public visibility}}
-  firrtl.class private @Private() attributes {linkage = #firrtl.class_linkage<linkonce_odr>} {}
+  // expected-error @+1 {{linkonce_odr requires public visibility}}
+  firrtl.class private @Private() attributes {linkonce_odr} {}
 }
 
 // -----
 
 firrtl.circuit "Top" {
   firrtl.module @Top() {}
-  // expected-error @+1 {{linkonce_odr linkage requires public visibility}}
-  firrtl.class nested @Nested() attributes {linkage = #firrtl.class_linkage<linkonce_odr>} {}
+  // expected-error @+1 {{linkonce_odr requires public visibility}}
+  firrtl.class nested @Nested() attributes {linkonce_odr} {}
 }
 
 // -----

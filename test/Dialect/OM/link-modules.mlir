@@ -91,18 +91,18 @@ module {
 
 // Coalescing relies on the ODR contract, not structural equivalence.
 // CHECK-LABEL: om.class @Compute
-// CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
+// CHECK-SAME: attributes {linkonce_odr}
 // CHECK-NEXT: om.class.fields %x : !om.integer
 // CHECK-NOT: om.class @Compute
 // CHECK-NOT: om.integer.add
 module {
   module {
-    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkage = #om.linkage<linkonce_odr>} {
+    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkonce_odr} {
       om.class.fields %x : !om.integer
     }
   }
   module {
-    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkage = #om.linkage<linkonce_odr>} {
+    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkonce_odr} {
       %zero = om.constant #om.integer<0>
       %result = om.integer.add %x, %zero : !om.integer
       om.class.fields %result : !om.integer
@@ -116,26 +116,26 @@ module {
 // -----
 
 // Public linkonce_odr classes coalesce without external declarations, while
-// private classes with external linkage are renamed on collision.
+// private classes without the attribute are renamed on collision.
 // CHECK-LABEL: om.class @Shared()
-// CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
+// CHECK-SAME: attributes {linkonce_odr}
 // CHECK-LABEL: om.class private @Local_A()
 // CHECK-LABEL: om.class private @Local_B()
 // CHECK-NOT: om.class{{[ ]}}
 module {
   module attributes {om.namespace = "A"} {
-    om.class @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class @Shared() attributes {linkonce_odr} { om.class.fields }
     om.class private @Local() { om.class.fields }
   }
   module attributes {om.namespace = "B"} {
-    om.class @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class @Shared() attributes {linkonce_odr} { om.class.fields }
     om.class private @Local() { om.class.fields }
   }
 }
 
 // -----
 
-// A private definition with external linkage can resolve an external class.
+// A private definition without linkonce_odr can resolve an external class.
 // CHECK-LABEL: om.class @Caller()
 // CHECK-NEXT: om.object @PrivateDefinition()
 // CHECK-LABEL: om.class private @PrivateDefinition()
