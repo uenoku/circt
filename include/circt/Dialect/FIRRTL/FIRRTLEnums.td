@@ -37,6 +37,21 @@ def NameKindAttr: EnumAttr<FIRRTLDialect, NameKindEnumImpl, "name_kind"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Class Linkage
+//===----------------------------------------------------------------------===//
+
+def FIRRTL_ClassLinkage : I32EnumAttr<"ClassLinkage", "class linkage", [
+  I32EnumAttrCase<"External", 0, "external">,
+  I32EnumAttrCase<"LinkOnceODR", 1, "linkonce_odr">
+]> {
+  let genSpecializedAttr = 0;
+}
+
+def ClassLinkageAttr : EnumAttr<FIRRTLDialect, FIRRTL_ClassLinkage, "class_linkage"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+//===----------------------------------------------------------------------===//
 // Module Instantiation Conventions
 //===----------------------------------------------------------------------===//
 

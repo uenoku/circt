@@ -89,7 +89,7 @@ module {
 
 // -----
 
-// Deduplicate equivalent definitions, including recursive container types.
+// Coalesce linkonce_odr definitions, including recursive container types.
 // CHECK-LABEL: om.class @A(
 // CHECK-SAME: !om.list<!om.class.type<@B>>
 // CHECK-LABEL: om.class @B(
@@ -97,16 +97,16 @@ module {
 // CHECK-NOT: om.class @
 module {
   module {
-    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) {
+    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) attributes {linkage = #om.linkage<linkonce_odr>} {
       om.class.fields %b : !om.list<!om.class.type<@B>>
     }
-    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) { om.class.fields %a : !om.class.type<@A> }
+    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %a : !om.class.type<@A> }
   }
   module {
-    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) {
+    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) attributes {linkage = #om.linkage<linkonce_odr>} {
       om.class.fields %b : !om.list<!om.class.type<@B>>
     }
-    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) { om.class.fields %a : !om.class.type<@A> }
+    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %a : !om.class.type<@A> }
   }
   module {
     om.class.extern @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) {}
@@ -115,7 +115,8 @@ module {
 
 // -----
 
-// Keep different field mappings and their users separate.
+// Default linkage does not coalesce definitions, even structurally identical
+// users. Keep the field mappings and their users separate.
 // CHECK-LABEL: om.class @Mapping_A
 // CHECK-LABEL: om.class @User_A
 // CHECK-SAME: !om.class.type<@Mapping_A>
@@ -139,18 +140,18 @@ module {
 
 // -----
 
-// Classes referencing a unique computational definition can be deduplicated.
+// linkonce_odr classes can reference a unique computational definition.
 // CHECK-LABEL: om.class @Holder(
 // CHECK-SAME: !om.class.type<@Helper>
 // CHECK-LABEL: om.class private @Helper()
 // CHECK-NOT: om.class @Holder
 module {
   module {
-    om.class @Holder(%obj: !om.class.type<@Helper>) { om.class.fields }
+    om.class @Holder(%obj: !om.class.type<@Helper>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
     om.class private @Helper() -> (x: i1) { %x = om.constant false om.class.fields %x : i1 }
   }
   module {
     om.class.extern private @Helper() -> (x: i1) {}
-    om.class @Holder(%obj: !om.class.type<@Helper>) { om.class.fields }
+    om.class @Holder(%obj: !om.class.type<@Helper>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
   }
 }

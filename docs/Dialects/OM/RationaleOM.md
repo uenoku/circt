@@ -114,6 +114,37 @@ This modeling of Classes might be most similar to Java classes, which define
 public constructors and members. The proposed modeling of Classes is restricted
 to data members, and there is no such things as a method for Classes.
 
+### Class Linkage and Symbol Visibility
+
+Class linkage specifies the contract for linking same-named definitions from
+separate modules. `om.class` has an optional `linkage` attribute:
+
+* `#om.linkage<external>` is the default. External declarations must resolve to
+  a unique definition. If there are no external declarations, colliding
+  definitions are renamed to keep them separate.
+* `#om.linkage<linkonce_odr>` permits repeated definitions of the same class.
+  All definitions of that name must have this linkage, and the linker retains
+  one definition without comparing their bodies. The producer guarantees that
+  every definition is interchangeable, including the meaning of symbols it
+  references. Violating this one-definition-rule (ODR) contract is invalid IR.
+  External declarations are still checked against the retained definition.
+
+This contract is independent of MLIR's `sym_visibility`, which controls where
+symbols may be referenced within the IR. Public visibility does not imply that
+same-named definitions may be coalesced, and private or nested visibility does
+not preclude explicit `linkonce_odr` linkage. Visibility is preserved from the
+retained definition. Producers must ensure that choosing any definition,
+including its visibility, is valid for all users after linking.
+
+FIRRTL domain lowering marks both generated classes (domain information and
+associations) with the inherent FIRRTL `linkage` attribute,
+`#firrtl.class_linkage<linkonce_odr>`. FIRRTL class lowering converts this to the
+inherent OM class linkage. Separately compiled artifacts using the same domain
+name must agree on the domain's definition. Ordinary FIRRTL classes default to
+external linkage unless explicitly marked, and classes generated from hardware
+modules retain external linkage. This does not require FIRRTL structural class
+deduplication.
+
 ### Fields
 
 Fields are how arbitrary data can be exposed by each Object, according to the

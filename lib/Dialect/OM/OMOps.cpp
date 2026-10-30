@@ -237,6 +237,10 @@ static void printClassLike(ClassLike classLike, OpAsmPrinter &printer) {
   SmallVector<StringRef> elidedAttrs{
       classLike.getSymNameAttrName(), classLike.getFormalParamNamesAttrName(),
       visibilityAttrName, "fieldTypes", "fieldNames"};
+  if (isa<ClassOp>(classLike.getOperation()))
+    if (auto linkage = classLike->getAttrOfType<LinkageAttr>("linkage"))
+      if (linkage.getValue() == Linkage::External)
+        elidedAttrs.push_back("linkage");
   printer.printOptionalAttrDictWithKeyword(classLike.getOperation()->getAttrs(),
                                            elidedAttrs);
 

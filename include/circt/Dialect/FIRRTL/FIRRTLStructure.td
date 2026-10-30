@@ -343,13 +343,24 @@ def ClassOp : FIRRTLModuleLike<"class", [
 
     A class may only have property ports, and its body may only be ops that act
     on properties, such as propassign ops.
+
+    The optional inherent `linkage` attribute defaults to
+    `#firrtl.class_linkage<external>`. `#firrtl.class_linkage<linkonce_odr>`
+    promises that same-named class definitions in separately compiled artifacts
+    are interchangeable. This ODR contract is preserved when lowering to OM
+    classes, allowing the OM linker to retain one definition without comparing
+    bodies. Linkage is independent of symbol visibility. Domain lowering sets
+    `linkonce_odr` on the classes it generates; ordinary classes retain the
+    default unless explicitly marked.
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        DenseBoolArrayAttr:$portDirections,
                        ArrayRefAttr:$portNames, ArrayRefAttr:$portTypes,
                        ArrayRefAttr:$portSymbols, ArrayRefAttr:$portLocations,
-                       DefaultValuedAttr<ArrayRefAttr, "{}">:$domainInfo);
+                       DefaultValuedAttr<ArrayRefAttr, "{}">:$domainInfo,
+                       DefaultValuedAttr<ClassLinkageAttr,
+                                         "ClassLinkage::External">:$linkage);
   let results = (outs);
   let regions = (region SizedRegion<1>:$body);
 

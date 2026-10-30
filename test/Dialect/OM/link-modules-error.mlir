@@ -26,17 +26,11 @@ module {
   }
   module {
     // expected-note @+1 {{class "A" is defined here}}
-    om.class @A() -> (a: i1) {
-      %0 = om.constant false
-      om.class.fields %0 : i1
-    }
+    om.class @A() { om.class.fields }
   }
   module {
     // expected-note @+1 {{class "A" is defined here}}
-    om.class @A() -> (a: i1) {
-      %0 = om.constant true
-      om.class.fields %0 : i1
-    }
+    om.class @A() { om.class.fields }
   }
 }
 
@@ -117,9 +111,9 @@ module {
   }
   module {
     // expected-note @+1 {{definition is here}}
-    om.class @C(%x: i1) -> (x: i1) { om.class.fields %x : i1 }
+    om.class @C(%x: i1) -> (x: i1) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %x : i1 }
   }
   module {
-    om.class @C(%x: i1) -> (x: i1) { om.class.fields %x : i1 }
+    om.class @C(%x: i1) -> (x: i1) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %x : i1 }
   }
 }
