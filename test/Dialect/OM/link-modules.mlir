@@ -115,19 +115,39 @@ module {
 
 // -----
 
-// Linkage is independent of visibility and works without external declarations.
-// CHECK-LABEL: om.class private @Shared()
+// Public linkonce_odr classes coalesce without external declarations, while
+// private classes with external linkage are renamed on collision.
+// CHECK-LABEL: om.class @Shared()
 // CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
 // CHECK-LABEL: om.class private @Local_A()
 // CHECK-LABEL: om.class private @Local_B()
 // CHECK-NOT: om.class{{[ ]}}
 module {
   module attributes {om.namespace = "A"} {
-    om.class private @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
     om.class private @Local() { om.class.fields }
   }
   module attributes {om.namespace = "B"} {
-    om.class private @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
     om.class private @Local() { om.class.fields }
+  }
+}
+
+// -----
+
+// A private definition with external linkage can resolve an external class.
+// CHECK-LABEL: om.class @Caller()
+// CHECK-NEXT: om.object @PrivateDefinition()
+// CHECK-LABEL: om.class private @PrivateDefinition()
+module {
+  module {
+    om.class.extern @PrivateDefinition() {}
+    om.class @Caller() {
+      %0 = om.object @PrivateDefinition() : () -> !om.class.type<@PrivateDefinition>
+      om.class.fields
+    }
+  }
+  module {
+    om.class private @PrivateDefinition() { om.class.fields }
   }
 }

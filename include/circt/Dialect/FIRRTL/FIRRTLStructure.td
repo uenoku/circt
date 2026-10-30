@@ -345,8 +345,8 @@ def ClassOp : FIRRTLModuleLike<"class", [
     on properties, such as propassign ops.
 
     The `linkage` attribute defaults to `#firrtl.class_linkage<external>`.
-    `#firrtl.class_linkage<linkonce_odr>` promises interchangeable same-named
-    definitions, independently of symbol visibility. Linkage is preserved when
+    `#firrtl.class_linkage<linkonce_odr>` requires public visibility and
+    promises interchangeable same-named definitions. Linkage is preserved when
     lowering to OM; domain lowering marks its generated classes `linkonce_odr`.
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,

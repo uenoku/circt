@@ -2237,6 +2237,10 @@ ParseResult ClassOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 LogicalResult ClassOp::verify() {
+  if (getLinkage() == ClassLinkage::LinkOnceODR &&
+      getVisibility() != SymbolTable::Visibility::Public)
+    return emitOpError("linkonce_odr linkage requires public visibility");
+
   for (auto operand : getBodyBlock()->getArguments()) {
     auto type = operand.getType();
     if (!isa<PropertyType>(type)) {

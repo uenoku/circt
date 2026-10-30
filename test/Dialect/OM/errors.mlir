@@ -1,5 +1,19 @@
 // RUN: circt-opt %s -verify-diagnostics -split-input-file
 
+// expected-error @+1 {{linkonce_odr linkage requires public visibility}}
+om.class private @Private() attributes {linkage = #om.linkage<linkonce_odr>} {
+  om.class.fields
+}
+
+// -----
+
+// expected-error @+1 {{linkonce_odr linkage requires public visibility}}
+om.class nested @Nested() attributes {linkage = #om.linkage<linkonce_odr>} {
+  om.class.fields
+}
+
+// -----
+
 om.class @Class() {
   // expected-error @+1 {{'om.object' op result type ("Bar") does not match referred to class ("Foo")}}
   %0 = om.object @Foo() : () -> !om.class.type<@Bar>

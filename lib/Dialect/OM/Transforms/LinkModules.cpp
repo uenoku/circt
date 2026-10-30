@@ -159,8 +159,7 @@ static FailureOr<bool> resolveClasses(StringAttr name,
   }
 
   // linkonce_odr is a producer contract, not a structural equivalence test.
-  // In particular, neither visibility nor the contents of a body determine
-  // whether definitions can be coalesced.
+  // Definitions with this linkage must have public visibility.
   bool canDeduplicate = classOp && classOp.getLinkage() == Linkage::LinkOnceODR;
 
   // There must be exactly one definition if the symbol was referred to by an
