@@ -148,51 +148,51 @@ struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
   const FieldIndex &fieldIndexes;
 };
 
-/// Resolve contributions as initial elements of the collection's allocation.
-/// Both operations belong to the same class body, so each instantiation of
-/// the class performs the allocation and every contribution exactly once.
-struct FoldCollectionContributions : OpRewritePattern<CollectionCreateOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(CollectionCreateOp op,
-                                PatternRewriter &rewriter) const override {
-    // Membership is unordered, but collect pushes in IR block order for
-    // deterministic output. This effect resolution belongs to elaboration,
-    // not generic canonicalization.
-    SmallVector<CollectionPushOp> pushes;
-    for (auto *user : op.getResult().getUsers())
-      if (auto push = dyn_cast<CollectionPushOp>(user))
-        if (push.getCollection() == op.getResult())
-          pushes.push_back(push);
-    if (pushes.empty())
-      return failure();
-    llvm::sort(pushes, [](CollectionPushOp a, CollectionPushOp b) {
-      return a->isBeforeInBlock(b);
-    });
-
-    SmallVector<Value> elements(op.getElements());
-    for (auto push : pushes)
-      elements.push_back(push.getElement());
-    rewriter.modifyOpInPlace(op,
-                             [&] { op.getElementsMutable().assign(elements); });
-    for (auto push : pushes)
-      rewriter.eraseOp(push);
-    return success();
-  }
-};
-
-/// Contributions to an unknown collection are unobservable during elaboration.
-struct EraseUnknownCollectionPush : OpRewritePattern<CollectionPushOp> {
+/// Resolve each contribution as soon as elaboration exposes its destination.
+/// Appending directly avoids rescanning users or rebuilding the operand list;
+/// ordering is deferred until the greedy rewriter has finished.
+struct FoldCollectionContributions : OpRewritePattern<CollectionPushOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(CollectionPushOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.getCollection().getDefiningOp<UnknownValueOp>())
+    auto destination = op.getCollection();
+    if (auto allocation = destination.getDefiningOp<CollectionCreateOp>()) {
+      rewriter.modifyOpInPlace(allocation, [&] {
+        allocation.getElementsMutable().append(op.getElement());
+      });
+    } else if (!destination.getDefiningOp<UnknownValueOp>()) {
       return failure();
+    }
     rewriter.eraseOp(op);
     return success();
   }
 };
+
+/// Order collection operands once using the final IR order of their values.
+/// The block's operation order is now stable, so isBeforeInBlock can reuse its
+/// order cache. Arguments precede operation results.
+void sortCollectionElements(ClassOp classOp) {
+  for (auto allocation : classOp.getOps<CollectionCreateOp>()) {
+    SmallVector<Value> elements(allocation.getElements());
+    llvm::sort(elements, [](Value lhs, Value rhs) {
+      if (lhs == rhs)
+        return false;
+      if (auto lhsArg = dyn_cast<BlockArgument>(lhs)) {
+        auto rhsArg = dyn_cast<BlockArgument>(rhs);
+        return !rhsArg || lhsArg.getArgNumber() < rhsArg.getArgNumber();
+      }
+      if (isa<BlockArgument>(rhs))
+        return false;
+      auto lhsResult = cast<OpResult>(lhs);
+      auto rhsResult = cast<OpResult>(rhs);
+      if (lhsResult.getOwner() == rhsResult.getOwner())
+        return lhsResult.getResultNumber() < rhsResult.getResultNumber();
+      return lhsResult.getOwner()->isBeforeInBlock(rhsResult.getOwner());
+    });
+    allocation.getElementsMutable().assign(elements);
+  }
+}
 
 /// Pattern to propagate UnknownValueOp through pure OM operations.
 /// If any operand is unknown, all results become unknown.
@@ -330,15 +330,17 @@ struct ElaborateObjectPass
                                           !allowUnevaluated);
     patterns.add<EvaluateObjectField>(classOp.getContext(), symTable,
                                       fieldIndexes);
-    patterns.add<UnknownPropagationPattern, FoldCollectionContributions,
-                 EraseUnknownCollectionPush>(classOp.getContext());
+    patterns.add<UnknownPropagationPattern, FoldCollectionContributions>(
+        classOp.getContext());
     GreedyRewriteConfig config;
     // Disable iteration limit to allow full recursive inlining.
     config.setMaxIterations(GreedyRewriteConfig::kNoLimit);
     if (failed(applyPatternsGreedily(classOp, std::move(patterns), config)))
       return failure();
 
-    // Check if elaboration succeeded after saturation.
+    sortCollectionElements(classOp);
+
+    // Check if elaboration succeeded after saturation and operand ordering.
     return verifyResult(classOp, allowUnevaluated);
   }
 

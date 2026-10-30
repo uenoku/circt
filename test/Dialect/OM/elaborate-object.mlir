@@ -203,8 +203,10 @@ om.class private @CollectionWriter(%items: !items, %value: !om.integer) {
 }
 
 // COLLECTION-LABEL: om.class @CollectionTop()
-// COLLECTION: %[[ONE:.+]] = om.constant #om.integer<1 : si8>
-// COLLECTION-NEXT: %[[ITEMS:.+]] = om.collection %[[ONE]], %[[ONE]], %[[ONE]] : !om.collection<!om.integer>
+// Constant folding can change definition order; sort by the final order.
+// COLLECTION: %[[TWO:.+]] = om.constant #om.integer<2 : si8>
+// COLLECTION-NEXT: %[[ONE:.+]] = om.constant #om.integer<1 : si8>
+// COLLECTION-NEXT: %[[ITEMS:.+]] = om.collection %[[TWO]], %[[TWO]], %[[ONE]] : !om.collection<!om.integer>
 // COLLECTION-NEXT: %[[OTHER:.+]] = om.collection : !om.collection<!om.integer>
 // COLLECTION-NOT: om.collection_push
 // COLLECTION-NOT: om.object @CollectionWriter
@@ -215,18 +217,20 @@ om.class @CollectionTop() -> (items: !items, independent: !items) {
   %other = om.object @CollectionOwner() : () -> !om.class.type<@CollectionOwner>
   %independent = om.object.field %other["items"] : (!om.class.type<@CollectionOwner>) -> !items
   %one = om.constant #om.integer<1 : si8> : !om.integer
-  %a = om.object @CollectionWriter(%items, %one) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
+  %two = om.constant #om.integer<2 : si8> : !om.integer
+  %a = om.object @CollectionWriter(%items, %two) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
   %b = om.object @CollectionWriter(%items, %one) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
-  om.collection_push %items, %one : !items, !om.integer
+  om.collection_push %items, %two : !items, !om.integer
   om.class.fields %items, %independent : !items, !items
 }
 
-// Fold forward/backward contributions in block order, preserving initial
-// elements, duplicates, attributes, and distinct allocation identities.
+// Fold contributions during inlining, then sort all operands by final IR value
+// order. Arguments follow declaration order, irrespective of push visitation.
+// Preserve initial elements, duplicates, attributes, and allocation identity.
 // FOLD-LABEL: om.class @CollectionContributions
 // FOLD-NOT: om.collection_push
-// FOLD: %[[FIRST:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
-// FOLD-NEXT: %[[OTHER:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
+// FOLD: %[[FIRST:.+]] = om.collection %seed, %first, %second, %second {test = "keep"}
+// FOLD-NEXT: %[[OTHER:.+]] = om.collection %seed, %first, %second, %second {test = "keep"}
 // FOLD-NEXT: %[[EMPTY:.+]] = om.collection : !om.collection<!om.integer>
 // FOLD-NOT: om.collection_push
 // FOLD: om.class.fields %[[FIRST]], %[[OTHER]], %[[EMPTY]]
@@ -239,7 +243,7 @@ om.class @CollectionContributions(%seed: !om.integer, %first: !om.integer, %seco
   %items = om.collection %seed {test = "keep"} : !om.collection<!om.integer>
   %other = om.collection %seed, %second, %first, %second {test = "keep"} : !om.collection<!om.integer>
   %empty = om.collection : !om.collection<!om.integer>
-  om.collection_push %items, %first : !om.collection<!om.integer>, !om.integer
+  %writer = om.object @CollectionWriter(%items, %first) : (!om.collection<!om.integer>, !om.integer) -> !om.class.type<@CollectionWriter>
   om.collection_push %items, %second : !om.collection<!om.integer>, !om.integer
   om.class.fields %items, %other, %empty : !om.collection<!om.integer>, !om.collection<!om.integer>, !om.collection<!om.integer>
 }

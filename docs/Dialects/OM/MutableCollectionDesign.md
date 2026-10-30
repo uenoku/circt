@@ -137,14 +137,21 @@ per-instance base paths; collections are never flattened into lists in IR.
 
 [`ElaborateObject.cpp`](../../../lib/Dialect/OM/Transforms/ElaborateObject.cpp)
 clones constructor bodies, substitutes parameters, folds field accesses, and runs
-greedy rewrites. Pass-local collection patterns gather pushes in IR block order,
-append their element operands, and erase them. Each instantiated push becomes
-one operand exactly once. Folding never crosses a class boundary. Generic
-canonicalization preserves contributions instead of resolving these effects.
+greedy rewrites. A pass-local push pattern appends one element to a known
+allocation and erases the push, without scanning the allocation's users or
+rebuilding its operand list for each push. Each instantiated push becomes one operand exactly once.
+Resolution never crosses a class boundary. Generic canonicalization preserves
+contributions instead of resolving these effects.
+
+After greedy rewriting finishes, each collection's operands are sorted once by
+the final IR order of their SSA values: arguments in declaration order, followed
+by operation results in block/result order. `isBeforeInBlock` can reuse its order
+cache because no more operations are inserted or erased. Initial elements and
+contributions participate in this ordering together; multiplicity is preserved.
 
 Allocation and push are not pure, so unknown propagation does not turn a known
-collection into unknown membership. Another pass-local pattern erases pushes
-to unknown destinations. Effects whose destination depends on a class parameter
+collection into unknown membership. The push pattern erases contributions to
+unknown destinations. Effects whose destination depends on a class parameter
 (including through field access) remain until elaboration exposes an allocation
 or unknown destination. firtool and `om-linker` can therefore elaborate public
 classes ahead of evaluation without requiring concrete inputs.

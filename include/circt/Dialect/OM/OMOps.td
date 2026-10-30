@@ -324,8 +324,9 @@ def CollectionPushOp : OMOp<"collection_push", [MemoryEffects<[MemWrite]>,
     Contributes an element reference exactly once per instantiated operation.
     Contributions are unordered and preserve duplicates. During object
     elaboration, pushes into a collection allocated in the same class are
-    folded into the allocation's initial elements in IR block order. Pushes
-    into unknown collections are dropped by elaboration. Pushes whose
+    appended to the allocation's elements. After greedy rewriting finishes,
+    all collection operands are sorted by their SSA values' final IR order.
+    Pushes into unknown collections are dropped by elaboration. Pushes whose
     destination depends on a class parameter remain until elaboration exposes
     an allocation or unknown destination.
   }];
