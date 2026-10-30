@@ -89,69 +89,45 @@ module {
 
 // -----
 
-// Coalesce linkonce_odr definitions, including recursive container types.
-// CHECK-LABEL: om.class @A(
-// CHECK-SAME: !om.list<!om.class.type<@B>>
-// CHECK-LABEL: om.class @B(
-// CHECK-SAME: !om.class.type<@A>
-// CHECK-NOT: om.class @
+// Coalescing relies on the ODR contract, not structural equivalence.
+// CHECK-LABEL: om.class @Compute
+// CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
+// CHECK-NEXT: om.class.fields %x : !om.integer
+// CHECK-NOT: om.class @Compute
+// CHECK-NOT: om.integer.add
 module {
   module {
-    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) attributes {linkage = #om.linkage<linkonce_odr>} {
-      om.class.fields %b : !om.list<!om.class.type<@B>>
+    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkage = #om.linkage<linkonce_odr>} {
+      om.class.fields %x : !om.integer
     }
-    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %a : !om.class.type<@A> }
   }
   module {
-    om.class @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) attributes {linkage = #om.linkage<linkonce_odr>} {
-      om.class.fields %b : !om.list<!om.class.type<@B>>
+    om.class @Compute(%x: !om.integer) -> (value: !om.integer) attributes {linkage = #om.linkage<linkonce_odr>} {
+      %zero = om.constant #om.integer<0>
+      %result = om.integer.add %x, %zero : !om.integer
+      om.class.fields %result : !om.integer
     }
-    om.class @B(%a: !om.class.type<@A>) -> (a: !om.class.type<@A>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %a : !om.class.type<@A> }
   }
   module {
-    om.class.extern @A(%b: !om.list<!om.class.type<@B>>) -> (b: !om.list<!om.class.type<@B>>) {}
+    om.class.extern @Compute(%x: !om.integer) -> (value: !om.integer) {}
   }
 }
 
 // -----
 
-// Default linkage does not coalesce definitions, even structurally identical
-// users. Keep the field mappings and their users separate.
-// CHECK-LABEL: om.class @Mapping_A
-// CHECK-LABEL: om.class @User_A
-// CHECK-SAME: !om.class.type<@Mapping_A>
-// CHECK-LABEL: om.class @Mapping_B
-// CHECK-LABEL: om.class @User_B
-// CHECK-SAME: !om.class.type<@Mapping_B>
+// Linkage is independent of visibility and works without external declarations.
+// CHECK-LABEL: om.class private @Shared()
+// CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
+// CHECK-LABEL: om.class private @Local_A()
+// CHECK-LABEL: om.class private @Local_B()
+// CHECK-NOT: om.class{{[ ]}}
 module {
   module attributes {om.namespace = "A"} {
-    om.class @Mapping(%x: i1, %y: i1) -> (value: i1) { om.class.fields %x : i1 }
-    om.class @User(%obj: !om.class.type<@Mapping>) -> (obj: !om.class.type<@Mapping>) {
-      om.class.fields %obj : !om.class.type<@Mapping>
-    }
+    om.class private @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class private @Local() { om.class.fields }
   }
   module attributes {om.namespace = "B"} {
-    om.class @Mapping(%x: i1, %y: i1) -> (value: i1) { om.class.fields %y : i1 }
-    om.class @User(%obj: !om.class.type<@Mapping>) -> (obj: !om.class.type<@Mapping>) {
-      om.class.fields %obj : !om.class.type<@Mapping>
-    }
-  }
-}
-
-// -----
-
-// linkonce_odr classes can reference a unique computational definition.
-// CHECK-LABEL: om.class @Holder(
-// CHECK-SAME: !om.class.type<@Helper>
-// CHECK-LABEL: om.class private @Helper()
-// CHECK-NOT: om.class @Holder
-module {
-  module {
-    om.class @Holder(%obj: !om.class.type<@Helper>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
-    om.class private @Helper() -> (x: i1) { %x = om.constant false om.class.fields %x : i1 }
-  }
-  module {
-    om.class.extern private @Helper() -> (x: i1) {}
-    om.class @Holder(%obj: !om.class.type<@Helper>) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class private @Shared() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+    om.class private @Local() { om.class.fields }
   }
 }

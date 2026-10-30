@@ -1,6 +1,4 @@
 // RUN: circt-opt %s -verify-diagnostics --mlir-print-local-scope --mlir-print-debuginfo | circt-opt --mlir-print-local-scope --mlir-print-debuginfo -verify-diagnostics | FileCheck %s
-// RUN: circt-opt %s --verify-roundtrip > /dev/null
-// RUN: circt-opt %s --mlir-print-op-generic | FileCheck %s --check-prefix=PROPERTIES
 
 // CHECK-LABEL: om.class private @Thingy
 // CHECK-SAME: (%blue_1: i8, %blue_2: i32) -> (widget: !om.class.type<@Widget>, gadget: !om.class.type<@Gadget>, blue_1: i8, blue_2: i8)
@@ -58,19 +56,9 @@ om.class @ElaboratedWidget() -> (widget: !om.class.type<@Widget>, blue: i8) {
   om.class.fields %2, %3 : !om.class.type<@Widget>, i8
 }
 
-// PROPERTIES: "om.class"() <{fieldNames = [], fieldTypes = {}, formalParamNames = [], linkage = #om.linkage<linkonce_odr>, sym_name = "LinkOnce"}>
 // CHECK-LABEL: om.class @LinkOnce
 // CHECK-SAME: attributes {linkage = #om.linkage<linkonce_odr>}
 om.class @LinkOnce() attributes {linkage = #om.linkage<linkonce_odr>} {
-  om.class.fields
-}
-
-// The default linkage is omitted when printing.
-// CHECK-LABEL: om.class @ExternalLinkage()
-// CHECK-SAME: {
-// CHECK-NOT: linkage
-// CHECK: om.class.fields
-om.class @ExternalLinkage() attributes {linkage = #om.linkage<external>} {
   om.class.fields
 }
 

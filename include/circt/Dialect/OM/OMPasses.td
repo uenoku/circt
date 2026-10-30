@@ -21,10 +21,8 @@ def FreezePaths: Pass<"om-freeze-paths", "mlir::ModuleOp"> {
 def LinkModules: Pass<"om-link-modules", "mlir::ModuleOp"> {
   let summary = "Link separated OM modules into a single module";
   let description = [{
-    Flatten nested modules and resolve external classes. Coalesce same-named
-    classes with `linkonce_odr` linkage without checking their equivalence.
-    External declarations are checked against the retained definition. Colliding
-    classes with default linkage and no external declarations are renamed.
+    Flatten nested modules, resolve external classes, and coalesce `linkonce_odr`
+    definitions. Rename other collisions when there are no external declarations.
   }];
 }
 

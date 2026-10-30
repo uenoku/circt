@@ -117,3 +117,16 @@ module {
     om.class @C(%x: i1) -> (x: i1) attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields %x : i1 }
   }
 }
+
+// -----
+
+module {
+  module {
+    // expected-note @+1 {{previous definition is here}}
+    om.class @Mixed() attributes {linkage = #om.linkage<linkonce_odr>} { om.class.fields }
+  }
+  module {
+    // expected-error @+1 {{cannot link class "Mixed" with different linkage}}
+    om.class @Mixed() { om.class.fields }
+  }
+}

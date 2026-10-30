@@ -121,21 +121,13 @@ def ClassOp : OMClassLike<"class", [
   let description = [{
     A class defines formal parameters, fields, and the computation of its fields.
 
-    The optional `linkage` attribute controls how same-named definitions in
-    separate modules are linked. With `external` linkage (the default), external
-    declarations require a unique definition; otherwise colliding definitions
-    are renamed. With `linkonce_odr` linkage, all definitions of the same name
-    must have `linkonce_odr` linkage and the linker retains one definition.
-    The producer guarantees that any definition may be used, including the
-    meaning of referenced symbols. Violating this one-definition-rule (ODR)
-    contract is invalid IR; the linker does not compare definitions for
-    equivalence. External declarations are still checked against the retained
-    definition.
-
-    Linkage is independent of `sym_visibility`. Visibility controls symbol
-    reachability in the IR, while linkage controls resolution across modules.
-    A private or nested class may also have `linkonce_odr` linkage. Visibility
-    does not imply that definitions are interchangeable.
+    With `external` linkage (the default), external declarations require a
+    unique definition; otherwise colliding definitions are renamed.
+    With `linkonce_odr` linkage, all same-named definitions must have this
+    linkage and be interchangeable, including the meaning of referenced symbols.
+    The linker retains one definition without comparing bodies. Violating this
+    ODR contract is invalid IR. External declarations are still checked against
+    the retained definition. Linkage is independent of `sym_visibility`.
   }];
   let extraClassDeclaration = [{
     mlir::Block *getBodyBlock() { return &getBody().front(); }
