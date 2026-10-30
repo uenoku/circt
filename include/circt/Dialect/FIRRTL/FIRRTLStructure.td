@@ -344,9 +344,8 @@ def ClassOp : FIRRTLModuleLike<"class", [
     A class may only have property ports, and its body may only be ops that act
     on properties, such as propassign ops.
 
-    The `linkonce_odr` attribute requires public visibility and promises
-    interchangeable same-named definitions. It is preserved when lowering to
-    OM; domain lowering marks its generated classes `linkonce_odr`.
+    The `linkonce_odr` attribute marks public classes with interchangeable
+    same-named definitions for coalescing by the OM linker.
   }];
   let arguments = (ins SymbolNameAttr:$sym_name,
                        OptionalAttr<StrAttr>:$sym_visibility,

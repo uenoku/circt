@@ -22,7 +22,7 @@ def LinkModules: Pass<"om-link-modules", "mlir::ModuleOp"> {
   let summary = "Link separated OM modules into a single module";
   let description = [{
     Flatten nested modules, resolve external classes, and coalesce `linkonce_odr`
-    definitions. Rename other collisions when there are no external declarations.
+    definitions.
   }];
 }
 

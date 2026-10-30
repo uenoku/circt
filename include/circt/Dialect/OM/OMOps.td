@@ -119,18 +119,9 @@ def ClassOp : OMClassLike<"class", [
 
   let summary = "An object model class definition";
   let description = [{
-    A class defines formal parameters, fields, and the computation of its fields.
-
-    Without `linkonce_odr`, a definition may have any symbol visibility. The
-    linker resolves external declarations to a unique definition regardless of
-    its visibility, and renames colliding definitions if there are no external
-    declarations.
-
-    The `linkonce_odr` attribute requires public visibility. All same-named
-    definitions must have this attribute and be interchangeable, including the
-    meaning of referenced symbols. The linker retains one definition without
-    comparing bodies. Violating this ODR contract is invalid IR. External
-    declarations are still checked against the retained definition.
+    Classes marked `linkonce_odr` must be public. All same-named definitions
+    must also be marked and interchangeable, including their referenced symbols.
+    The linker keeps one definition without comparing them.
   }];
   let extraClassDeclaration = [{
     mlir::Block *getBodyBlock() { return &getBody().front(); }
