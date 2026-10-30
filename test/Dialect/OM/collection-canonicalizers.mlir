@@ -72,6 +72,19 @@ om.class @SelfReference() -> (items: !om.collection<!om.any>) {
   om.class.fields %items : !om.collection<!om.any>
 }
 
+// An unobservable allocation can be removed after its contributions are folded.
+// CHECK-LABEL: om.class @Unused
+// CHECK-NOT: om.collection
+// CHECK-NOT: om.constant
+// CHECK: om.class.fields
+om.class @Unused() {
+  %empty = om.collection : !om.collection<!om.integer>
+  %items = om.collection : !om.collection<!om.integer>
+  %one = om.constant #om.integer<1 : si8> : !om.integer
+  om.collection_push %items, %one : !om.collection<!om.integer>, !om.integer
+  om.class.fields
+}
+
 // Parameter contributions cannot be folded until an allocation is available.
 // CHECK-LABEL: om.class @Parameter
 // CHECK: om.collection_push %items, %value

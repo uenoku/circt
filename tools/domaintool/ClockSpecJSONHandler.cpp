@@ -105,37 +105,13 @@ public:
       auto source = *sourceValue;
       auto relationship = *relationshipValue;
 
-      // Read the registry from the returned domain, not the input domain:
-      // evaluation imports collections as fresh contents and leaves inputs
-      // unchanged. Collections are exposed as ordinary lists by the evaluator.
-      std::optional<SmallVector<StringAttr>> clockGates;
-      auto gatesIt = objectValue->getFields().find(
-          StringAttr::get(objectValue->getContext(), "clockGates_out"));
-      if (gatesIt != objectValue->getFields().end()) {
-        auto *gates = dyn_cast<om::evaluator::ListValue>(gatesIt->second.get());
-        if (!gates || gates->isUnknown()) {
-          emitError(gatesIt->second->getLoc())
-              << "expected clockGates_out to be a known list of paths";
-          failed = true;
-          continue;
-        }
-        clockGates.emplace();
-        for (auto &gate : gates->getElements()) {
-          auto *path = dyn_cast<om::evaluator::PathValue>(gate.get());
-          if (!path || path->isUnknown()) {
-            emitError(gate->getLoc()) << "expected clockGates_out element to "
-                                         "be a known path, but got "
-                                      << gate->getType();
-            failed = true;
-            continue;
-          }
-          clockGates->push_back(path->getAsString());
-        }
-        // Collection order is unspecified. Sort for stable collateral, while
-        // preserving duplicate contributions.
-        llvm::sort(*clockGates, [](StringAttr lhs, StringAttr rhs) {
-          return lhs.getValue() < rhs.getValue();
-        });
+      // Read the populated registry from the returned domain; evaluation
+      // imports collections as fresh contents and leaves input domains
+      // unchanged.
+      auto clockGates = getClockGates(objectValue);
+      if (mlir::failed(clockGates)) {
+        failed = true;
+        continue;
       }
 
       // Insert this domain into its own equivalence class.  Then, if this
@@ -202,7 +178,7 @@ public:
       // populate the associations.
       clocks.push_back({/*namePattern=*/name,
                         /*relationships=*/{},
-                        /*clockGates=*/std::move(clockGates)});
+                        /*clockGates=*/std::move(*clockGates)});
 
       for (auto &association : associations) {
         if (auto *p = dyn_cast<om::evaluator::PathValue>(association.get())) {
@@ -294,6 +270,42 @@ public:
   };
 
 private:
+  /// Read optional clock-gate paths, preserving absence and sorting the
+  /// unordered collection for stable output without removing duplicate
+  /// contributions.
+  static FailureOr<std::optional<SmallVector<StringAttr>>>
+  getClockGates(om::evaluator::ObjectValue *object) {
+    auto it = object->getFields().find(
+        StringAttr::get(object->getContext(), "clockGates_out"));
+    if (it == object->getFields().end())
+      return std::optional<SmallVector<StringAttr>>{};
+
+    auto *gates = dyn_cast<om::evaluator::ListValue>(it->second.get());
+    if (!gates || gates->isUnknown())
+      return emitError(it->second->getLoc())
+             << "expected clockGates_out to be a known list of paths";
+
+    SmallVector<StringAttr> paths;
+    bool failed = false;
+    for (auto &gate : gates->getElements()) {
+      auto *path = dyn_cast<om::evaluator::PathValue>(gate.get());
+      if (!path || path->isUnknown()) {
+        emitError(gate->getLoc()) << "expected clockGates_out element to "
+                                     "be a known path, but got "
+                                  << gate->getType();
+        failed = true;
+        continue;
+      }
+      paths.push_back(path->getAsString());
+    }
+    if (failed)
+      return failure();
+    llvm::sort(paths, [](StringAttr lhs, StringAttr rhs) {
+      return lhs.getValue() < rhs.getValue();
+    });
+    return std::optional<SmallVector<StringAttr>>(std::move(paths));
+  }
+
   /// Read a string field, defaulting an absent optional field to empty.
   static FailureOr<StringAttr>
   getStringField(om::evaluator::ObjectValue *object, StringRef field,

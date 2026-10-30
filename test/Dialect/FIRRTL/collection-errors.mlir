@@ -2,7 +2,7 @@
 
 firrtl.circuit "Mismatch" {
   firrtl.module @Mismatch(in %items: !firrtl.mutable_collection<integer>, in %value: !firrtl.string) {
-    // expected-error @+1 {{element type '!firrtl.string' does not match collection element type '!firrtl.integer'}}
+    // expected-error @+1 {{element type must match the collection element type}}
     firrtl.prop.push %items, %value : !firrtl.mutable_collection<integer>, !firrtl.string
   }
 }

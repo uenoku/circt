@@ -289,12 +289,11 @@ def ConstantOp : OMOp<"constant",
   let hasFolder = true;
 }
 
-def CollectionCreateOp : OMOp<"collection", [MemoryEffects<[MemAlloc]>,
-    HasParent<"ClassOp">,
-    PredOpTrait<"element types must match the collection element type",
-      CPred<"::llvm::all_of($elements.getTypes(), [&](::mlir::Type type) { "
-            "return type == ::llvm::cast<CollectionType>($result.getType())"
-            ".getElementType(); })">>]> {
+def CollectionCreateOp : OMOp<"collection", [HasParent<"ClassOp">,
+    TypesMatchWith<"element types must match the collection element type",
+      "result", "elements", "::llvm::cast<CollectionType>($_self).getElementType()",
+      "[](mlir::Type type, auto types) { return llvm::all_of(types, "
+      "[type](mlir::Type elementType) { return type == elementType; }); }">]> {
   let summary = "Allocate a fresh collection";
   let description = [{
     Allocates a collection with fresh identity for each object instantiation,
@@ -307,33 +306,35 @@ def CollectionCreateOp : OMOp<"collection", [MemoryEffects<[MemAlloc]>,
     ```
   }];
   let arguments = (ins Variadic<AnyType>:$elements);
-  let results = (outs CollectionType:$result);
+  let results = (outs Res<CollectionType, "", [MemAlloc]>:$result);
   let builders = [
     OpBuilder<(ins "CollectionType":$type), [{
       build($_builder, $_state, type, ::mlir::ValueRange());
     }]>
   ];
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "($elements^)? attr-dict `:` qualified(type($result))";
   let hasCanonicalizer = 1;
 }
 
 def CollectionPushOp : OMOp<"collection_push", [MemoryEffects<[MemWrite]>,
-    HasParent<"ClassOp">]> {
+    HasParent<"ClassOp">,
+    TypesMatchWith<"element type must match the collection element type",
+      "collection", "element",
+      "::llvm::cast<CollectionType>($_self).getElementType()">]> {
   let summary = "Contribute one element to a collection";
   let description = [{
     Contributes an element reference exactly once per instantiated operation.
     Contributions are unordered and preserve duplicates. A push into a
     collection allocated in the same class is canonicalized into the
     allocation's initial elements, and a push into an unknown collection is
-    dropped. After object elaboration every contribution is therefore part of
-    an `om.collection` operation unless the collection is a class parameter.
+    dropped. Pushes whose destination depends on a class parameter remain
+    until elaboration exposes an allocation or unknown destination.
   }];
   let arguments = (ins CollectionType:$collection, AnyType:$element);
   let assemblyFormat = [{
     $collection `,` $element attr-dict `:` qualified(type($collection)) `,`
       qualified(type($element))
   }];
-  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 

@@ -1,7 +1,7 @@
 // RUN: circt-opt %s --verify-diagnostics --split-input-file
 
 om.class @Mismatch(%items: !om.collection<!om.integer>, %value: !om.string) {
-  // expected-error @+1 {{element type '!om.string' does not match collection element type '!om.integer'}}
+  // expected-error @+1 {{element type must match the collection element type}}
   om.collection_push %items, %value : !om.collection<!om.integer>, !om.string
   om.class.fields
 }

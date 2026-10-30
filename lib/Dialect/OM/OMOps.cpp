@@ -716,28 +716,6 @@ OpFoldResult circt::om::ConstantOp::fold(FoldAdaptor adaptor) {
 // CollectionCreateOp
 //===----------------------------------------------------------------------===//
 
-void circt::om::CollectionCreateOp::print(OpAsmPrinter &p) {
-  if (!getElements().empty()) {
-    p << " ";
-    p.printOperands(getElements());
-  }
-  p.printOptionalAttrDict((*this)->getAttrs());
-  p << " : " << getType();
-}
-
-ParseResult circt::om::CollectionCreateOp::parse(OpAsmParser &parser,
-                                                 OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 16> operands;
-  CollectionType type;
-  if (parser.parseOperandList(operands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseType(type))
-    return failure();
-  result.addTypes(type);
-  return parser.resolveOperands(operands, type.getElementType(),
-                                result.operands);
-}
-
 namespace {
 /// Rewrite contributions as initial elements of the collection's allocation.
 /// Both operations belong to the same class body, so each instantiation of
@@ -780,15 +758,6 @@ void CollectionCreateOp::getCanonicalizationPatterns(RewritePatternSet &results,
 //===----------------------------------------------------------------------===//
 // CollectionPushOp
 //===----------------------------------------------------------------------===//
-
-LogicalResult circt::om::CollectionPushOp::verify() {
-  auto elementType = getCollection().getType().getElementType();
-  if (getElement().getType() != elementType)
-    return emitOpError("element type ")
-           << getElement().getType()
-           << " does not match collection element type " << elementType;
-  return success();
-}
 
 namespace {
 /// Contributions to an unknown collection are unobservable and are dropped.

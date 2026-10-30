@@ -371,7 +371,10 @@ def PropAssignOp : FIRRTLOp<"propassign", [FConnectLike, SameTypeOperands,
 }
 
 def CollectionPushOp : FIRRTLOp<"prop.push", [MemoryEffects<[MemWrite]>,
-    ParentOneOf<["FModuleOp", "ClassOp"]>]> {
+    ParentOneOf<["FModuleOp", "ClassOp"]>,
+    TypesMatchWith<"element type must match the collection element type",
+      "collection", "element",
+      "::llvm::cast<MutableCollectionType>($_self).getElementType()">]> {
   let summary = "Contribute an element to a mutable collection";
   let description = [{
     Contributes one element reference to the shared collection. Contributions

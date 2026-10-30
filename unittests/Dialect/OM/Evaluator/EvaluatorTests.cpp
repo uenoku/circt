@@ -1158,6 +1158,39 @@ TEST_F(EvaluatorTests, CollectionAcceptsListInput) {
   EXPECT_EQ(getCollectionIntegers(input), (SmallVector<int64_t>{2}));
 }
 
+TEST_F(EvaluatorTests, CollectionUnknownAndPartialInputs) {
+  auto mod = parseModule(R"MLIR(
+    om.class @Use(%items: !om.collection<!om.integer>) -> (items: !om.collection<!om.integer>) {
+      %one = om.constant #om.integer<1 : si8> : !om.integer
+      om.collection_push %items, %one : !om.collection<!om.integer>, !om.integer
+      om.class.fields %items : !om.collection<!om.integer>
+    }
+  )MLIR");
+  ASSERT_TRUE(mod);
+  Evaluator evaluator(*mod);
+  auto listType = ListType::get(OMIntegerType::get(&context));
+  auto unknown = evaluator::AttributeValue::get(
+      CollectionType::get(OMIntegerType::get(&context)),
+      UnknownLoc::get(&context));
+  EXPECT_EQ(unknown->getType(), listType);
+  unknown->markUnknown();
+  auto result =
+      evaluator.instantiate(StringAttr::get(&context, "Use"), {unknown});
+  ASSERT_TRUE(succeeded(result));
+  EXPECT_TRUE(getField(*result, "items")->isUnknown());
+  EXPECT_EQ(getField(*result, "items")->getType(), listType);
+
+  auto partial = std::make_shared<evaluator::ListValue>(
+      listType, UnknownLoc::get(&context));
+  SmallVector<std::string> diagnostics;
+  ScopedDiagnosticHandler handler(
+      &context, [&](Diagnostic &diag) { diagnostics.push_back(diag.str()); });
+  EXPECT_TRUE(failed(
+      evaluator.instantiate(StringAttr::get(&context, "Use"), {partial})));
+  ASSERT_EQ(diagnostics.size(), 1u);
+  EXPECT_EQ(diagnostics[0], "cannot import partially evaluated OM list value");
+}
+
 // A collection referring back to itself is a cyclic input, which is rejected
 // like other mutually referential inputs.
 TEST_F(EvaluatorTests, CollectionRejectsCyclicInput) {

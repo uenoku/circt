@@ -5024,11 +5024,6 @@ LogicalResult CollectionPushOp::verify() {
   if (!isValidSrc(foldFlow(getCollection())))
     return emitOpError("collection has ") << toString(foldFlow(getCollection()))
                                           << ", expected source or duplex flow";
-  auto elementType = getCollection().getType().getElementType();
-  if (getElement().getType() != elementType)
-    return emitOpError("element type ")
-           << getElement().getType()
-           << " does not match collection element type " << elementType;
   return success();
 }
 

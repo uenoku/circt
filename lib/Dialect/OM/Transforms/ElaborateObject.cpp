@@ -195,7 +195,7 @@ bool isFullyEvaluated(Operation *op) {
       FrozenBasePathCreateOp, FrozenPathCreateOp, FrozenEmptyPathOp,
       // List.
       ListCreateOp, ListConcatOp,
-      // Collection. Pushes remain only when they target a class parameter.
+      // Collection. Pushes may still depend on class parameters.
       CollectionCreateOp, CollectionPushOp>(op);
 }
 
