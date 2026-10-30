@@ -1,6 +1,7 @@
 // RUN: circt-opt -om-elaborate-object='target-class=Top' %s | FileCheck %s --check-prefix=TOP
 // RUN: circt-opt -om-elaborate-object='target-class=UseExtern' %s | FileCheck %s --check-prefix=STRICT-EXTERN
-// RUN: circt-opt -om-elaborate-object='all-public-classes=true allow-unevaluated=true' %s | FileCheck %s --check-prefixes=CHECK,PUBLIC
+// RUN: circt-opt -om-elaborate-object='all-public-classes=true allow-unevaluated=true' %s | FileCheck %s --check-prefixes=CHECK,PUBLIC,COLLECTION
+// RUN: circt-opt -om-elaborate-object='target-class=CollectionTop' %s | FileCheck %s --check-prefix=COLLECTION
 
 // CHECK-LABEL: om.class @StringOps() -> (str: !om.string, concat: !om.string) {
 // CHECK-DAG:   %[[HELLO:.+]] = om.constant "hello" : !om.string
@@ -185,4 +186,37 @@ om.class private @PrivateModeTop() -> (value: !om.integer) {
   %helper = om.object @PublicModeHelper() : () -> !om.class.type<@PublicModeHelper>
   %value = om.object.field %helper["value"] : (!om.class.type<@PublicModeHelper>) -> !om.integer
   om.class.fields %value : !om.integer
+}
+
+!items = !om.collection<!om.integer>
+
+om.class private @CollectionOwner() -> (items: !items) {
+  %items = om.collection : !items
+  om.class.fields %items : !items
+}
+
+// A parameter contribution remains until inlining exposes the allocation.
+// The writer's unused result must not discard its contribution.
+om.class private @CollectionWriter(%items: !items, %value: !om.integer) {
+  om.collection_push %items, %value : !items, !om.integer
+  om.class.fields
+}
+
+// COLLECTION-LABEL: om.class @CollectionTop()
+// COLLECTION: %[[ONE:.+]] = om.constant #om.integer<1 : si8>
+// COLLECTION-NEXT: %[[ITEMS:.+]] = om.collection %[[ONE]], %[[ONE]], %[[ONE]] : !om.collection<!om.integer>
+// COLLECTION-NEXT: %[[OTHER:.+]] = om.collection : !om.collection<!om.integer>
+// COLLECTION-NOT: om.collection_push
+// COLLECTION-NOT: om.object @CollectionWriter
+// COLLECTION: om.class.fields %[[ITEMS]], %[[OTHER]]
+om.class @CollectionTop() -> (items: !items, independent: !items) {
+  %owner = om.object @CollectionOwner() : () -> !om.class.type<@CollectionOwner>
+  %items = om.object.field %owner["items"] : (!om.class.type<@CollectionOwner>) -> !items
+  %other = om.object @CollectionOwner() : () -> !om.class.type<@CollectionOwner>
+  %independent = om.object.field %other["items"] : (!om.class.type<@CollectionOwner>) -> !items
+  %one = om.constant #om.integer<1 : si8> : !om.integer
+  %a = om.object @CollectionWriter(%items, %one) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
+  %b = om.object @CollectionWriter(%items, %one) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
+  om.collection_push %items, %one : !items, !om.integer
+  om.class.fields %items, %independent : !items, !items
 }

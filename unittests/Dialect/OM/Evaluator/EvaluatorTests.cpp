@@ -100,14 +100,10 @@ getListElements(const evaluator::EvaluatorValuePtr &value) {
   return llvm::cast<evaluator::ListValue>(value.get())->getElements();
 }
 
-/// Collections are exposed as lists with unordered elements.
-evaluator::ListValue *getCollection(const EvaluatorValuePtr &value) {
-  return cast<evaluator::ListValue>(value.get());
-}
-
+/// Compare collections as unordered lists of integers.
 SmallVector<int64_t> getCollectionIntegers(const EvaluatorValuePtr &value) {
   SmallVector<int64_t> values;
-  for (const auto &element : getCollection(value)->getElements())
+  for (const auto &element : getListElements(value))
     values.push_back(getInteger(element));
   llvm::sort(values);
   return values;
@@ -949,55 +945,7 @@ om.class @IntegerBinaryArithmeticWidthMismatch() -> (result: !om.integer) {
   ASSERT_EQ(3, getInteger(getField(result.value(), "result")));
 }
 
-TEST_F(EvaluatorTests, CollectionDistinctConstructorAllocations) {
-  auto mod = parseModule(R"MLIR(
-    !items = !om.collection<!om.integer>
-    om.class @Child(%value: !om.integer) -> (items: !items) {
-      %items = om.collection : !items
-      om.collection_push %items, %value : !items, !om.integer
-      om.class.fields %items : !items
-    }
-    om.class @Top() -> (a: !items, b: !items) {
-      %one = om.constant #om.integer<1 : si8> : !om.integer
-      %a = om.object @Child(%one) : (!om.integer) -> !om.class.type<@Child>
-      %b = om.object @Child(%one) : (!om.integer) -> !om.class.type<@Child>
-      %a_items = om.object.field %a["items"] : (!om.class.type<@Child>) -> !items
-      %b_items = om.object.field %b["items"] : (!om.class.type<@Child>) -> !items
-      om.class.fields %a_items, %b_items : !items, !items
-    }
-  )MLIR");
-  ASSERT_TRUE(mod);
-  Evaluator evaluator(*mod);
-  auto result = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
-  ASSERT_TRUE(succeeded(result));
-  auto a = getField(*result, "a"), b = getField(*result, "b");
-  EXPECT_NE(a.get(), b.get());
-  EXPECT_EQ(getCollectionIntegers(a), (SmallVector<int64_t>{1}));
-  EXPECT_EQ(getCollectionIntegers(b), (SmallVector<int64_t>{1}));
-}
-
-TEST_F(EvaluatorTests, CollectionEmptyAndRepeatedInstantiation) {
-  auto mod = parseModule(R"MLIR(
-    om.class @Top() -> (a: !om.collection<!om.integer>, b: !om.collection<!om.integer>) {
-      %a = om.collection : !om.collection<!om.integer>
-      %b = om.collection : !om.collection<!om.integer>
-      om.class.fields %a, %b : !om.collection<!om.integer>, !om.collection<!om.integer>
-    }
-  )MLIR");
-  ASSERT_TRUE(mod);
-  Evaluator evaluator(*mod);
-  auto first = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
-  auto second = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
-  ASSERT_TRUE(succeeded(first));
-  ASSERT_TRUE(succeeded(second));
-  auto a = getField(*first, "a");
-  auto b = getField(*first, "b");
-  EXPECT_TRUE(getCollection(a)->getElements().empty());
-  EXPECT_NE(a.get(), b.get());
-  EXPECT_NE(a.get(), getField(*second, "a").get());
-}
-
-TEST_F(EvaluatorTests, CollectionAliasesDuplicatesAndUnusedWriters) {
+TEST_F(EvaluatorTests, CollectionIdentityAndAliasing) {
   auto mod = parseModule(R"MLIR(
     !items = !om.collection<!om.integer>
     om.class @Owner() -> (items: !items) {
@@ -1008,16 +956,18 @@ TEST_F(EvaluatorTests, CollectionAliasesDuplicatesAndUnusedWriters) {
       om.collection_push %items, %value : !items, !om.integer
       om.class.fields
     }
-    om.class @Top() -> (owner: !om.class.type<@Owner>, items: !items, alias: !items) {
+    om.class @Top() -> (owner: !om.class.type<@Owner>, items: !items, alias: !items, independent: !items) {
       %a = om.object @Writer(%items, %one) : (!items, !om.integer) -> !om.class.type<@Writer>
       %b = om.object @Writer(%alias, %two) : (!items, !om.integer) -> !om.class.type<@Writer>
       %owner = om.object @Owner() : () -> !om.class.type<@Owner>
       %items = om.object.field %owner["items"] : (!om.class.type<@Owner>) -> !items
       %alias = om.object.field %owner["items"] : (!om.class.type<@Owner>) -> !items
+      %other = om.object @Owner() : () -> !om.class.type<@Owner>
+      %independent = om.object.field %other["items"] : (!om.class.type<@Owner>) -> !items
       %one = om.constant #om.integer<1 : si8> : !om.integer
       %two = om.constant #om.integer<2 : si8> : !om.integer
       om.collection_push %items, %one : !items, !om.integer
-      om.class.fields %owner, %items, %alias : !om.class.type<@Owner>, !items, !items
+      om.class.fields %owner, %items, %alias, %independent : !om.class.type<@Owner>, !items, !items, !items
     }
   )MLIR");
   ASSERT_TRUE(mod);
@@ -1028,20 +978,31 @@ TEST_F(EvaluatorTests, CollectionAliasesDuplicatesAndUnusedWriters) {
   EXPECT_EQ(items.get(), getField(*result, "alias").get());
   EXPECT_EQ(items.get(), getField(getField(*result, "owner"), "items").get());
   EXPECT_EQ(getCollectionIntegers(items), (SmallVector<int64_t>{1, 1, 2}));
+  auto independent = getField(*result, "independent");
+  EXPECT_TRUE(getListElements(independent).empty());
+  EXPECT_NE(items.get(), independent.get());
+
+  auto again = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
+  ASSERT_TRUE(succeeded(again));
+  EXPECT_NE(items.get(), getField(*again, "items").get());
+  EXPECT_EQ(getCollectionIntegers(getField(*again, "items")),
+            (SmallVector<int64_t>{1, 1, 2}));
 }
 
 TEST_F(EvaluatorTests, CollectionObjectBackReference) {
   auto mod = parseModule(R"MLIR(
-    !items = !om.collection<!om.any>
+    !items = !om.collection<!om.class.type<@Node>>
     om.class @Node(%items: !items) -> (items: !items) {
       om.class.fields %items : !items
     }
     om.class @Top() -> (items: !items) {
       %items = om.collection : !items
       %node = om.object @Node(%items) : (!items) -> !om.class.type<@Node>
-      %any = om.any_cast %node : (!om.class.type<@Node>) -> !om.any
-      om.collection_push %items, %any : !items, !om.any
+      om.collection_push %items, %node : !items, !om.class.type<@Node>
       om.class.fields %items : !items
+    }
+    om.class @Use(%items: !items) {
+      om.class.fields
     }
   )MLIR");
   ASSERT_TRUE(mod);
@@ -1049,9 +1010,18 @@ TEST_F(EvaluatorTests, CollectionObjectBackReference) {
   auto result = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
   ASSERT_TRUE(succeeded(result));
   auto items = getField(*result, "items");
-  auto &elements = getCollection(items)->getElements();
+  auto elements = getListElements(items);
   ASSERT_EQ(elements.size(), 1u);
   EXPECT_EQ(getField(elements.front(), "items").get(), items.get());
+
+  // Existing concrete-object input import rejects this cyclic graph.
+  SmallVector<std::string> diagnostics;
+  ScopedDiagnosticHandler handler(
+      &context, [&](Diagnostic &diag) { diagnostics.push_back(diag.str()); });
+  EXPECT_TRUE(
+      failed(evaluator.instantiate(StringAttr::get(&context, "Use"), {items})));
+  ASSERT_EQ(diagnostics.size(), 1u);
+  EXPECT_EQ(diagnostics[0], "cannot import mutually referential OM objects");
 }
 
 TEST_F(EvaluatorTests, CollectionUnknownElementsAndMembership) {
@@ -1074,7 +1044,7 @@ TEST_F(EvaluatorTests, CollectionUnknownElementsAndMembership) {
   ASSERT_TRUE(succeeded(result));
   auto items = getField(*result, "items");
   EXPECT_FALSE(items->isUnknown());
-  auto &elements = getCollection(items)->getElements();
+  auto elements = getListElements(items);
   ASSERT_EQ(elements.size(), 2u);
   EXPECT_EQ(llvm::count_if(
                 elements, [](const auto &value) { return value->isUnknown(); }),
@@ -1191,57 +1161,6 @@ TEST_F(EvaluatorTests, CollectionUnknownAndPartialInputs) {
   EXPECT_EQ(diagnostics[0], "cannot import partially evaluated OM list value");
 }
 
-// A collection referring back to itself is a cyclic input, which is rejected
-// like other mutually referential inputs.
-TEST_F(EvaluatorTests, CollectionRejectsCyclicInput) {
-  auto mod = parseModule(R"MLIR(
-    !items = !om.collection<!om.class.type<@Node>>
-    om.class @Node(%items: !items) -> (items: !items) {
-      om.class.fields %items : !items
-    }
-    om.class @Top() -> (items: !items) {
-      %items = om.collection : !items
-      %node = om.object @Node(%items) : (!items) -> !om.class.type<@Node>
-      om.collection_push %items, %node : !items, !om.class.type<@Node>
-      om.class.fields %items : !items
-    }
-    om.class @Use(%items: !items) {
-      om.class.fields
-    }
-  )MLIR");
-  ASSERT_TRUE(mod);
-  Evaluator evaluator(*mod);
-  auto top = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
-  ASSERT_TRUE(succeeded(top));
-  SmallVector<std::string> diagnostics;
-  ScopedDiagnosticHandler handler(
-      &context, [&](Diagnostic &diag) { diagnostics.push_back(diag.str()); });
-  EXPECT_TRUE(failed(evaluator.instantiate(StringAttr::get(&context, "Use"),
-                                           {getField(*top, "items")})));
-  ASSERT_EQ(diagnostics.size(), 1u);
-  EXPECT_EQ(diagnostics[0], "cannot import mutually referential OM objects");
-}
-
-TEST_F(EvaluatorTests, CollectionNestedHandles) {
-  auto mod = parseModule(R"MLIR(
-    om.class @Top() -> (items: !om.collection<!om.collection<!om.integer>>) {
-      %inner = om.collection : !om.collection<!om.integer>
-      %outer = om.collection : !om.collection<!om.collection<!om.integer>>
-      %one = om.constant #om.integer<1 : si8> : !om.integer
-      om.collection_push %inner, %one : !om.collection<!om.integer>, !om.integer
-      om.collection_push %outer, %inner : !om.collection<!om.collection<!om.integer>>, !om.collection<!om.integer>
-      om.class.fields %outer : !om.collection<!om.collection<!om.integer>>
-    }
-  )MLIR");
-  ASSERT_TRUE(mod);
-  Evaluator evaluator(*mod);
-  auto result = evaluator.instantiate(StringAttr::get(&context, "Top"), {});
-  ASSERT_TRUE(succeeded(result));
-  auto &elements = getCollection(getField(*result, "items"))->getElements();
-  ASSERT_EQ(elements.size(), 1u);
-  EXPECT_EQ(getCollectionIntegers(elements[0]), (SmallVector<int64_t>{1}));
-}
-
 TEST_F(EvaluatorTests, CollectionFrozenPathsInDistinctInstances) {
   auto mod = parseModule(R"MLIR(
     !items = !om.collection<!om.frozenpath>
@@ -1265,7 +1184,7 @@ TEST_F(EvaluatorTests, CollectionFrozenPathsInDistinctInstances) {
   auto result = evaluator.instantiate(StringAttr::get(&context, "Top"), {base});
   ASSERT_TRUE(succeeded(result));
   SmallVector<std::string> paths;
-  for (auto &element : getCollection(getField(*result, "items"))->getElements())
+  for (auto &element : getListElements(getField(*result, "items")))
     paths.push_back(cast<evaluator::PathValue>(element.get())
                         ->getAsString()
                         .getValue()

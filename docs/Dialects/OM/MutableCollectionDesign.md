@@ -223,7 +223,7 @@ contributions into its copied collection. Read the populated domain from
 Collection constructor arguments can be supplied through the evaluator API as
 typed lists. `domaintool` retains its integer/string CLI arguments and does not
 insert collection defaults or accept collection arguments. Its
-[collection regression](../../../test/Tools/domaintool/collections.mlir) allocates
+[Clock Spec JSON regression](../../../test/Tools/domaintool/clock-spec-json.mlir) allocates
 the collection inside the OM domain class instead.
 
 Clock Spec JSON reads `clockGates_out` from the returned domain, validates known
@@ -264,7 +264,11 @@ allocation removal, unused writers, shared handles and field transport, graph
 forward/back-references, unknown elements/membership, seed-value import isolation,
 cyclic-input rejection, frozen paths (including unknown nested containers),
 parser/emitter and bytecode preservation, and end-to-end domain collateral.
-Compare membership as a multiset, not a guaranteed order.
+Compare membership as a multiset, not a guaranteed order. Lit cases live in the
+existing parser, verifier, round-trip, canonicalization, lowering, elaboration,
+path-freezing, and Clock Spec JSON files. Runtime behavior is covered in
+`unittests/Dialect/OM/Evaluator/EvaluatorTests.cpp`, and Python list/unknown wrapping
+is exercised by `collection_class.py` above.
 
 Run `ninja -C build check-circt`; Python integration tests require bindings.
 Persistent cross-call mutation, alias-preserving collection import, unknown

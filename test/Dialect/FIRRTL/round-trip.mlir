@@ -506,4 +506,15 @@ firrtl.module @RegInitial(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>,
   firrtl.matchingconnect %q, %r : !firrtl.uint<8>
 }
 
+// CHECK-LABEL: firrtl.module @MutableCollections
+firrtl.module @MutableCollections(in %items: !firrtl.mutable_collection<integer>) {
+  // CHECK: %[[LOCAL:.*]] = firrtl.prop.collection {test = "keep"} : !firrtl.mutable_collection<integer>
+  %local = firrtl.prop.collection {test = "keep"} : !firrtl.mutable_collection<integer>
+  %one = firrtl.integer 1
+  // CHECK: firrtl.prop.push %items,
+  firrtl.prop.push %items, %one : !firrtl.mutable_collection<integer>, !firrtl.integer
+  // CHECK: firrtl.prop.push %[[LOCAL]],
+  firrtl.prop.push %local, %one : !firrtl.mutable_collection<integer>, !firrtl.integer
+}
+
 }

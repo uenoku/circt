@@ -1154,4 +1154,21 @@ firrtl.circuit "Foo" {
     firrtl.domain.define %foo_A, %my_clock : !firrtl.domain<@ClockDomain()>
   }
 
+  // Shared allocation identity requires a binding instead of literal duplication.
+  // CHECK-LABEL: module MutableCollections :
+  // CHECK-NEXT:    input items : MutableCollection<Integer>
+  // CHECK-NEXT:    output result : MutableCollection<Integer>
+  firrtl.module @MutableCollections(in %items: !firrtl.mutable_collection<integer>, out %result: !firrtl.mutable_collection<integer>) {
+    // CHECK: wire [[LOCAL:_collection[0-9_]*]] : MutableCollection<Integer>
+    // CHECK-NEXT: propassign [[LOCAL]], MutableCollection<Integer>()
+    %local = firrtl.prop.collection : !firrtl.mutable_collection<integer>
+    %one = firrtl.integer 1
+    // CHECK: push items, Integer(1)
+    firrtl.prop.push %items, %one : !firrtl.mutable_collection<integer>, !firrtl.integer
+    // CHECK: push [[LOCAL]], Integer(1)
+    firrtl.prop.push %local, %one : !firrtl.mutable_collection<integer>, !firrtl.integer
+    // CHECK: propassign result, [[LOCAL]]
+    firrtl.propassign %result, %local : !firrtl.mutable_collection<integer>
+  }
+
 }

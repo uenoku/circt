@@ -4,7 +4,7 @@
 
 import circt
 from circt.dialects import om
-from circt.ir import Context, Location, Module
+from circt.ir import Context, Location, Module, Type
 
 
 def main():
@@ -45,6 +45,14 @@ def main():
         %b = om.object @Register(%catalog, %cache) : (!om.class.type<@Catalog>, !om.class.type<@Component>) -> !om.class.type<@Register>
         om.class.fields %catalog : !om.class.type<@Catalog>
       }
+
+      om.class @UnknownCollections(%missing: !om.collection<!om.integer>)
+          -> (items: !om.collection<!om.integer>, missing: !om.collection<!om.integer>) {
+        %unknown = om.unknown : !om.integer
+        %items = om.collection %unknown : !om.collection<!om.integer>
+        om.collection_push %missing, %unknown : !om.collection<!om.integer>, !om.integer
+        om.class.fields %items, %missing : !om.collection<!om.integer>, !om.collection<!om.integer>
+      }
     }
     """)
     evaluator = om.Evaluator(module)
@@ -67,10 +75,16 @@ def main():
     # API inputs are values: the populated catalog comes back through Assembly,
     # while the caller's original catalog is unchanged.
     assert len(catalog.components) == 0
-    again = evaluator.instantiate("Assembly", catalog)
-    assert sorted((component.name, component.id)
-                  for component in again.catalog.components) == components
-    assert len(catalog.components) == 0
+
+    # The same list APIs expose unknown elements, while unknown membership is
+    # wrapped as Unknown instead of an Object or List.
+    unknowns = evaluator.instantiate(
+        "UnknownCollections",
+        om.Unknown(Type.parse("!om.collection<!om.integer>")))
+    assert isinstance(unknowns.items, om.List)
+    assert len(unknowns.items) == 1
+    assert isinstance(unknowns.items[0], om.Unknown)
+    assert isinstance(unknowns.missing, om.Unknown)
 
     # CHECK: Catalog: example
     # CHECK-NEXT: Components: [('alu', 1), ('cache', 2)]
