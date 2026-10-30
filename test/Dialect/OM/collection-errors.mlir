@@ -42,11 +42,3 @@ om.class @ListIsNotCollection(%items: !om.list<!om.integer>, %value: !om.integer
 
 // expected-error @+1 {{expects parent op 'om.class'}}
 %items = om.collection : !om.collection<!om.integer>
-
-// -----
-
-om.class @ConstantHandle() -> (items: !om.collection<!om.integer>) {
-  // expected-error @+1 {{collection handles cannot be constants}}
-  %items = om.constant "not a handle" : !om.collection<!om.integer>
-  om.class.fields %items : !om.collection<!om.integer>
-}

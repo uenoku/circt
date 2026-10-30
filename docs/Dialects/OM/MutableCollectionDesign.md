@@ -106,7 +106,7 @@ FIRRTL allocations are initially empty. OM allocations accept variadic initial
 operands whose types exactly match the collection element type. Push likewise
 requires exact element-type agreement; existing `AnyRef`/`Any` casts provide
 upcasts. ODS expresses these type constraints and the OM allocation's assembly
-format. Collection handles, including nested handles, cannot be constants.
+format.
 
 Allocation has a result-associated allocation effect and is not pure or
 constant-like. Push has a conservative write effect. CSE must not merge distinct

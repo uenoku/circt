@@ -285,7 +285,6 @@ def ConstantOp : OMOp<"constant",
     $value attr-dict
   }];
 
-  let hasVerifier = 1;
   let hasFolder = true;
 }
 
