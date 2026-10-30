@@ -1,4 +1,4 @@
-// RUN: circt-opt --cse --canonicalize --cse %s | FileCheck %s
+// RUN: circt-opt --cse --canonicalize %s | FileCheck %s
 
 om.class @Foo() {
   om.class.fields
@@ -325,70 +325,22 @@ om.class @ListConcatFold(
       !om.list<!om.string>, !om.list<!om.string>, !om.list<!om.string>
 }
 
-// Fold forward/backward contributions into initial elements, preserving
-// duplicates, attributes, and distinct allocation identities under CSE.
-// CHECK-LABEL: om.class @CollectionContributions
-// CHECK-NOT: om.collection_push
-// CHECK: %[[FIRST:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
-// CHECK-NEXT: %[[OTHER:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
-// CHECK-NEXT: %[[EMPTY:.+]] = om.collection : !om.collection<!om.integer>
-// CHECK-NOT: om.collection_push
-// CHECK: om.class.fields %[[FIRST]], %[[OTHER]], %[[EMPTY]]
-om.class @CollectionContributions(%seed: !om.integer, %first: !om.integer, %second: !om.integer) -> (
-  items: !om.collection<!om.integer>,
-  other: !om.collection<!om.integer>,
-  empty: !om.collection<!om.integer>
-) {
-  om.collection_push %items, %second : !om.collection<!om.integer>, !om.integer
-  %items = om.collection %seed {test = "keep"} : !om.collection<!om.integer>
-  %other = om.collection %seed, %second, %first, %second {test = "keep"} : !om.collection<!om.integer>
-  %empty = om.collection : !om.collection<!om.integer>
-  om.collection_push %items, %first : !om.collection<!om.integer>, !om.integer
-  om.collection_push %items, %second : !om.collection<!om.integer>, !om.integer
-  om.class.fields %items, %other, %empty : !om.collection<!om.integer>, !om.collection<!om.integer>, !om.collection<!om.integer>
-}
-
-// Unknown elements remain contributions; unknown destinations are discarded.
-// CHECK-LABEL: om.class @CollectionUnknowns
-// CHECK: %[[UNKNOWN:.+]] = om.unknown : !om.integer
-// CHECK: %[[ITEMS:.+]] = om.collection %value, %[[UNKNOWN]]
-// CHECK: %[[MISSING:.+]] = om.unknown : !om.collection<!om.integer>
-// CHECK-NOT: om.collection_push
-// CHECK: om.class.fields %[[ITEMS]], %[[MISSING]]
-om.class @CollectionUnknowns(%value: !om.integer) -> (
-  items: !om.collection<!om.integer>, missing: !om.collection<!om.integer>
-) {
-  %unknown = om.unknown : !om.integer
-  %items = om.collection %value : !om.collection<!om.integer>
+// Canonicalization/CSE preserve allocation identity and all pushes, including
+// pushes to unknown destinations. Only elaboration resolves contributions.
+// CHECK-LABEL: om.class @CollectionEffects
+// CHECK: %[[FIRST:.+]] = om.collection %value : !om.collection<!om.integer>
+// CHECK-NEXT: %[[SECOND:.+]] = om.collection %value : !om.collection<!om.integer>
+// CHECK-NEXT: %[[MISSING:.+]] = om.unknown : !om.collection<!om.integer>
+// CHECK-NEXT: om.collection_push %[[FIRST]], %value
+// CHECK-NEXT: om.collection_push %[[FIRST]], %value
+// CHECK-NEXT: om.collection_push %[[MISSING]], %value
+// CHECK-NEXT: om.class.fields %[[FIRST]], %[[SECOND]]
+om.class @CollectionEffects(%value: !om.integer) -> (a: !om.collection<!om.integer>, b: !om.collection<!om.integer>) {
+  %first = om.collection %value : !om.collection<!om.integer>
+  %second = om.collection %value : !om.collection<!om.integer>
   %missing = om.unknown : !om.collection<!om.integer>
-  om.collection_push %items, %unknown : !om.collection<!om.integer>, !om.integer
+  om.collection_push %first, %value : !om.collection<!om.integer>, !om.integer
+  om.collection_push %first, %value : !om.collection<!om.integer>, !om.integer
   om.collection_push %missing, %value : !om.collection<!om.integer>, !om.integer
-  om.class.fields %items, %missing : !om.collection<!om.integer>, !om.collection<!om.integer>
-}
-
-// A collection used as an element is not that push's destination.
-// CHECK-LABEL: om.class @CollectionNested
-// CHECK: %[[INNER:.+]] = om.collection %value : !om.collection<!om.integer>
-// CHECK-NEXT: %[[OUTER:.+]] = om.collection %[[INNER]] : !om.collection<!om.collection<!om.integer>>
-// CHECK-NOT: om.collection_push
-// CHECK: om.class.fields %[[OUTER]]
-om.class @CollectionNested(%value: !om.integer) -> (items: !om.collection<!om.collection<!om.integer>>) {
-  %inner = om.collection : !om.collection<!om.integer>
-  %outer = om.collection : !om.collection<!om.collection<!om.integer>>
-  om.collection_push %inner, %value : !om.collection<!om.integer>, !om.integer
-  om.collection_push %outer, %inner : !om.collection<!om.collection<!om.integer>>, !om.collection<!om.integer>
-  om.class.fields %outer : !om.collection<!om.collection<!om.integer>>
-}
-
-// Remove unobservable allocations after folding their contributions.
-// CHECK-LABEL: om.class @CollectionUnused
-// CHECK-NOT: om.collection
-// CHECK-NOT: om.constant
-// CHECK: om.class.fields
-om.class @CollectionUnused() {
-  %empty = om.collection : !om.collection<!om.integer>
-  %items = om.collection : !om.collection<!om.integer>
-  %one = om.constant #om.integer<1 : si8> : !om.integer
-  om.collection_push %items, %one : !om.collection<!om.integer>, !om.integer
-  om.class.fields
+  om.class.fields %first, %second : !om.collection<!om.integer>, !om.collection<!om.integer>
 }

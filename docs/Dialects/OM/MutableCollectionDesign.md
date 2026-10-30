@@ -52,7 +52,7 @@ Unknown elements and unknown membership are different:
   Other elements and multiplicity remain visible. Unlike `om.list_create`, an
   unknown element does not make the whole collection unknown.
 - An unknown collection has unknown membership, not empty membership. A push to
-  it cannot identify concrete storage and is erased by canonicalization.
+  it cannot identify concrete storage and is erased during object elaboration.
 - At the consumer boundary, unknown membership is an unknown list (`Unknown` in
   Python); unknown elements remain individually visible.
 
@@ -98,7 +98,7 @@ firrtl.prop.push %items, %value : !firrtl.mutable_collection<string>, !firrtl.st
 %items = om.collection : !om.collection<!om.string>
 om.collection_push %items, %value : !om.collection<!om.string>, !om.string
 
-// Canonical form of the OM allocation and push above.
+// After object elaboration folds the push into its allocation.
 %items = om.collection %value : !om.collection<!om.string>
 ```
 
@@ -137,12 +137,13 @@ per-instance base paths; collections are never flattened into lists in IR.
 
 [`ElaborateObject.cpp`](../../../lib/Dialect/OM/Transforms/ElaborateObject.cpp)
 clones constructor bodies, substitutes parameters, folds field accesses, and runs
-greedy rewrites. The collection allocation canonicalizer gathers its pushes,
-appends their element operands, and erases them. Each instantiated push becomes
-one operand exactly once. Folding never crosses a class boundary.
+greedy rewrites. Pass-local collection patterns gather pushes in IR block order,
+append their element operands, and erase them. Each instantiated push becomes
+one operand exactly once. Folding never crosses a class boundary. Generic
+canonicalization preserves contributions instead of resolving these effects.
 
 Allocation and push are not pure, so unknown propagation does not turn a known
-collection into unknown membership. A separate push canonicalizer erases pushes
+collection into unknown membership. Another pass-local pattern erases pushes
 to unknown destinations. Effects whose destination depends on a class parameter
 (including through field access) remain until elaboration exposes an allocation
 or unknown destination. firtool and `om-linker` can therefore elaborate public

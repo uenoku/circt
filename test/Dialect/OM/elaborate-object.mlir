@@ -1,6 +1,6 @@
 // RUN: circt-opt -om-elaborate-object='target-class=Top' %s | FileCheck %s --check-prefix=TOP
 // RUN: circt-opt -om-elaborate-object='target-class=UseExtern' %s | FileCheck %s --check-prefix=STRICT-EXTERN
-// RUN: circt-opt -om-elaborate-object='all-public-classes=true allow-unevaluated=true' %s | FileCheck %s --check-prefixes=CHECK,PUBLIC,COLLECTION
+// RUN: circt-opt -om-elaborate-object='all-public-classes=true allow-unevaluated=true' %s | FileCheck %s --check-prefixes=CHECK,PUBLIC,COLLECTION,FOLD
 // RUN: circt-opt -om-elaborate-object='target-class=CollectionTop' %s | FileCheck %s --check-prefix=COLLECTION
 
 // CHECK-LABEL: om.class @StringOps() -> (str: !om.string, concat: !om.string) {
@@ -219,4 +219,72 @@ om.class @CollectionTop() -> (items: !items, independent: !items) {
   %b = om.object @CollectionWriter(%items, %one) : (!items, !om.integer) -> !om.class.type<@CollectionWriter>
   om.collection_push %items, %one : !items, !om.integer
   om.class.fields %items, %independent : !items, !items
+}
+
+// Fold forward/backward contributions in block order, preserving initial
+// elements, duplicates, attributes, and distinct allocation identities.
+// FOLD-LABEL: om.class @CollectionContributions
+// FOLD-NOT: om.collection_push
+// FOLD: %[[FIRST:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
+// FOLD-NEXT: %[[OTHER:.+]] = om.collection %seed, %second, %first, %second {test = "keep"}
+// FOLD-NEXT: %[[EMPTY:.+]] = om.collection : !om.collection<!om.integer>
+// FOLD-NOT: om.collection_push
+// FOLD: om.class.fields %[[FIRST]], %[[OTHER]], %[[EMPTY]]
+om.class @CollectionContributions(%seed: !om.integer, %first: !om.integer, %second: !om.integer) -> (
+  items: !om.collection<!om.integer>,
+  other: !om.collection<!om.integer>,
+  empty: !om.collection<!om.integer>
+) {
+  om.collection_push %items, %second : !om.collection<!om.integer>, !om.integer
+  %items = om.collection %seed {test = "keep"} : !om.collection<!om.integer>
+  %other = om.collection %seed, %second, %first, %second {test = "keep"} : !om.collection<!om.integer>
+  %empty = om.collection : !om.collection<!om.integer>
+  om.collection_push %items, %first : !om.collection<!om.integer>, !om.integer
+  om.collection_push %items, %second : !om.collection<!om.integer>, !om.integer
+  om.class.fields %items, %other, %empty : !om.collection<!om.integer>, !om.collection<!om.integer>, !om.collection<!om.integer>
+}
+
+// Unknown elements remain contributions; unknown destinations are discarded.
+// FOLD-LABEL: om.class @CollectionUnknowns
+// FOLD: %[[UNKNOWN:.+]] = om.unknown : !om.integer
+// FOLD: %[[ITEMS:.+]] = om.collection %value, %[[UNKNOWN]]
+// FOLD: %[[MISSING:.+]] = om.unknown : !om.collection<!om.integer>
+// FOLD-NOT: om.collection_push
+// FOLD: om.class.fields %[[ITEMS]], %[[MISSING]]
+om.class @CollectionUnknowns(%value: !om.integer) -> (
+  items: !om.collection<!om.integer>, missing: !om.collection<!om.integer>
+) {
+  %unknown = om.unknown : !om.integer
+  %items = om.collection %value : !om.collection<!om.integer>
+  %missing = om.unknown : !om.collection<!om.integer>
+  om.collection_push %items, %unknown : !om.collection<!om.integer>, !om.integer
+  om.collection_push %missing, %value : !om.collection<!om.integer>, !om.integer
+  om.class.fields %items, %missing : !om.collection<!om.integer>, !om.collection<!om.integer>
+}
+
+// A collection used as an element is not that push's destination.
+// FOLD-LABEL: om.class @CollectionNested
+// FOLD: %[[INNER:.+]] = om.collection %value : !om.collection<!om.integer>
+// FOLD-NEXT: %[[OUTER:.+]] = om.collection %[[INNER]] : !om.collection<!om.collection<!om.integer>>
+// FOLD-NOT: om.collection_push
+// FOLD: om.class.fields %[[OUTER]]
+om.class @CollectionNested(%value: !om.integer) -> (items: !om.collection<!om.collection<!om.integer>>) {
+  %inner = om.collection : !om.collection<!om.integer>
+  %outer = om.collection : !om.collection<!om.collection<!om.integer>>
+  om.collection_push %inner, %value : !om.collection<!om.integer>, !om.integer
+  om.collection_push %outer, %inner : !om.collection<!om.collection<!om.integer>>, !om.collection<!om.integer>
+  om.class.fields %outer : !om.collection<!om.collection<!om.integer>>
+}
+
+// Remove unobservable allocations after folding their contributions.
+// FOLD-LABEL: om.class @CollectionUnused
+// FOLD-NOT: om.collection
+// FOLD-NOT: om.constant
+// FOLD: om.class.fields
+om.class @CollectionUnused() {
+  %empty = om.collection : !om.collection<!om.integer>
+  %items = om.collection : !om.collection<!om.integer>
+  %one = om.constant #om.integer<1 : si8> : !om.integer
+  om.collection_push %items, %one : !om.collection<!om.integer>, !om.integer
+  om.class.fields
 }

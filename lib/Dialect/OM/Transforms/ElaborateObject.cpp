@@ -148,6 +148,52 @@ struct EvaluateObjectField : OpRewritePattern<ObjectFieldOp> {
   const FieldIndex &fieldIndexes;
 };
 
+/// Resolve contributions as initial elements of the collection's allocation.
+/// Both operations belong to the same class body, so each instantiation of
+/// the class performs the allocation and every contribution exactly once.
+struct FoldCollectionContributions : OpRewritePattern<CollectionCreateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CollectionCreateOp op,
+                                PatternRewriter &rewriter) const override {
+    // Membership is unordered, but collect pushes in IR block order for
+    // deterministic output. This effect resolution belongs to elaboration,
+    // not generic canonicalization.
+    SmallVector<CollectionPushOp> pushes;
+    for (auto *user : op.getResult().getUsers())
+      if (auto push = dyn_cast<CollectionPushOp>(user))
+        if (push.getCollection() == op.getResult())
+          pushes.push_back(push);
+    if (pushes.empty())
+      return failure();
+    llvm::sort(pushes, [](CollectionPushOp a, CollectionPushOp b) {
+      return a->isBeforeInBlock(b);
+    });
+
+    SmallVector<Value> elements(op.getElements());
+    for (auto push : pushes)
+      elements.push_back(push.getElement());
+    rewriter.modifyOpInPlace(op,
+                             [&] { op.getElementsMutable().assign(elements); });
+    for (auto push : pushes)
+      rewriter.eraseOp(push);
+    return success();
+  }
+};
+
+/// Contributions to an unknown collection are unobservable during elaboration.
+struct EraseUnknownCollectionPush : OpRewritePattern<CollectionPushOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CollectionPushOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op.getCollection().getDefiningOp<UnknownValueOp>())
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 /// Pattern to propagate UnknownValueOp through pure OM operations.
 /// If any operand is unknown, all results become unknown.
 struct UnknownPropagationPattern : RewritePattern {
@@ -284,11 +330,8 @@ struct ElaborateObjectPass
                                           !allowUnevaluated);
     patterns.add<EvaluateObjectField>(classOp.getContext(), symTable,
                                       fieldIndexes);
-    patterns.add<UnknownPropagationPattern>(classOp.getContext());
-    CollectionCreateOp::getCanonicalizationPatterns(patterns,
-                                                    classOp.getContext());
-    CollectionPushOp::getCanonicalizationPatterns(patterns,
-                                                  classOp.getContext());
+    patterns.add<UnknownPropagationPattern, FoldCollectionContributions,
+                 EraseUnknownCollectionPush>(classOp.getContext());
     GreedyRewriteConfig config;
     // Disable iteration limit to allow full recursive inlining.
     config.setMaxIterations(GreedyRewriteConfig::kNoLimit);

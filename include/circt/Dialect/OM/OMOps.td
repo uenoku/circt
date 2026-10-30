@@ -312,7 +312,6 @@ def CollectionCreateOp : OMOp<"collection", [HasParent<"ClassOp">,
     }]>
   ];
   let assemblyFormat = "($elements^)? attr-dict `:` qualified(type($result))";
-  let hasCanonicalizer = 1;
 }
 
 def CollectionPushOp : OMOp<"collection_push", [MemoryEffects<[MemWrite]>,
@@ -323,18 +322,18 @@ def CollectionPushOp : OMOp<"collection_push", [MemoryEffects<[MemWrite]>,
   let summary = "Contribute one element to a collection";
   let description = [{
     Contributes an element reference exactly once per instantiated operation.
-    Contributions are unordered and preserve duplicates. A push into a
-    collection allocated in the same class is canonicalized into the
-    allocation's initial elements, and a push into an unknown collection is
-    dropped. Pushes whose destination depends on a class parameter remain
-    until elaboration exposes an allocation or unknown destination.
+    Contributions are unordered and preserve duplicates. During object
+    elaboration, pushes into a collection allocated in the same class are
+    folded into the allocation's initial elements in IR block order. Pushes
+    into unknown collections are dropped by elaboration. Pushes whose
+    destination depends on a class parameter remain until elaboration exposes
+    an allocation or unknown destination.
   }];
   let arguments = (ins CollectionType:$collection, AnyType:$element);
   let assemblyFormat = [{
     $collection `,` $element attr-dict `:` qualified(type($collection)) `,`
       qualified(type($element))
   }];
-  let hasCanonicalizer = 1;
 }
 
 def ListCreateOp : OMOp<"list_create", [Pure, SameTypeOperands]> {
