@@ -2,27 +2,22 @@
 // RUN: not domaintool --module Foo --domain ClockDomain,A,42,A --assign 0 %s 2>&1 | FileCheck %s --check-prefix=MISSING
 // RUN: not domaintool --module Foo --domain ClockDomain,A,42,A,synchronous,extra --assign 0 %s 2>&1 | FileCheck %s --check-prefix=EXCESS
 
-// Collection fields do not consume command-line arguments, even when they are
-// interspersed with scalar fields or have element types other than paths.
+// Collections are allocated in IR, not supplied or initialized by the CLI.
 om.class @ClockDomain(
   %basepath: !om.frozenbasepath,
-  %tags_in: !om.collection<!om.string>,
   %name_in: !om.string,
-  %clockGates_in: !om.collection<!om.frozenpath>,
   %period_in: !om.integer,
   %source_in: !om.string,
-  %relationship_in: !om.string,
-  %flags_in: !om.collection<!om.integer>
+  %relationship_in: !om.string
 ) -> (
-  tags_out: !om.collection<!om.string>,
   name_out: !om.string,
   clockGates_out: !om.collection<!om.frozenpath>,
   period_out: !om.integer,
   source_out: !om.string,
-  relationship_out: !om.string,
-  flags_out: !om.collection<!om.integer>
+  relationship_out: !om.string
 ) {
-  om.class.fields %tags_in, %name_in, %clockGates_in, %period_in, %source_in, %relationship_in, %flags_in : !om.collection<!om.string>, !om.string, !om.collection<!om.frozenpath>, !om.integer, !om.string, !om.string, !om.collection<!om.integer>
+  %gates = om.collection : !om.collection<!om.frozenpath>
+  om.class.fields %name_in, %gates, %period_in, %source_in, %relationship_in : !om.string, !om.collection<!om.frozenpath>, !om.integer, !om.string, !om.string
 }
 
 om.class @ClockDomain_out(
@@ -80,5 +75,5 @@ om.class @Foo_Class(
 // CHECK-NEXT:   "clock"
 // CHECK-NEXT: ]
 
-// MISSING: actual parameter list length (7) does not match formal parameter list length (8)
-// EXCESS: actual parameter list length (9) does not match formal parameter list length (8)
+// MISSING: actual parameter list length (4) does not match formal parameter list length (5)
+// EXCESS: actual parameter list length (6) does not match formal parameter list length (5)

@@ -220,14 +220,11 @@ concatenation are needed. After importing a concrete domain, evaluation folds al
 contributions into its copied collection. Read the populated domain from
 `top.A_out.domainInfo_out`, not the unchanged input domain.
 
-`domaintool` initializes collection constructor parameters to typed empty lists
-without consuming command-line arguments:
-
-```sh
-firtool test/firtool/domain-collections.fir -output-final-mlir - -o /dev/null \
-  -domain-mode=check -strip-domain=false |
-  domaintool --module Top --domain ClockDomain,A --assign 0
-```
+Collection constructor arguments can be supplied through the evaluator API as
+typed lists. `domaintool` retains its integer/string CLI arguments and does not
+insert collection defaults or accept collection arguments. Its
+[collection regression](../../../test/Tools/domaintool/collections.mlir) allocates
+the collection inside the OM domain class instead.
 
 Clock Spec JSON reads `clockGates_out` from the returned domain, validates known
 paths, and sorts full OM reference-target strings while preserving duplicates.
