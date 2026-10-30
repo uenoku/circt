@@ -504,7 +504,8 @@ top.A_out.domainInfo_out.clockGates_out
 ```
 
 The input `A` itself is unchanged; the populated domain is reported through the
-existing `ClockDomain_out` object (unit test `CollectionDomainRegistry`).
+existing `ClockDomain_out` object. The end-to-end firtool and domaintool test
+checks both paths, while `CollectionInputsAreValues` tests input isolation.
 `domaintool` initializes collection constructor fields to typed empty lists;
 these fields do not consume command-line arguments. For example, the FIRRTL
 above can be evaluated and emitted as Clock Spec JSON with:
