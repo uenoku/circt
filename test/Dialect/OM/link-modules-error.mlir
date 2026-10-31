@@ -26,11 +26,15 @@ module {
   }
   module {
     // expected-note @+1 {{class "A" is defined here}}
-    om.class @A() { om.class.fields }
+    om.class @A() {
+      om.class.fields
+    }
   }
   module {
     // expected-note @+1 {{class "A" is defined here}}
-    om.class @A() { om.class.fields }
+    om.class @A() {
+      om.class.fields
+    }
   }
 }
 

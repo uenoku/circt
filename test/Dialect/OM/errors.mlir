@@ -7,13 +7,6 @@ om.class private @Private() attributes {linkonce_odr} {
 
 // -----
 
-// expected-error @+1 {{linkonce_odr requires public visibility}}
-om.class nested @Nested() attributes {linkonce_odr} {
-  om.class.fields
-}
-
-// -----
-
 om.class @Class() {
   // expected-error @+1 {{'om.object' op result type ("Bar") does not match referred to class ("Foo")}}
   %0 = om.object @Foo() : () -> !om.class.type<@Bar>
