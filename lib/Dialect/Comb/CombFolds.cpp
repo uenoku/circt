@@ -898,23 +898,24 @@ OpFoldResult AndOp::fold(FoldAdaptor adaptor) {
       return getIntAttr(value, getContext());
   }
 
-  // and(x, -1) -> x.
+  // and(x, -1) -> x. (2-state only: Z&-1=X)
   if (inputs.size() == 2)
     if (auto intAttr = dyn_cast_or_null<IntegerAttr>(inputs[1]))
-      if (intAttr.getValue().isAllOnes())
+      if (intAttr.getValue().isAllOnes() && getTwoState())
         return getInputs()[0];
 
   // and(x, x, x) -> x.  This also handles and(x) -> x.
-  if (llvm::all_of(getInputs(),
+  // 2-state (and X-only) safe, but Z&Z=X so require twoState for full 4-state.
+  if (getTwoState() && llvm::all_of(getInputs(),
                    [&](auto in) { return in == this->getInputs()[0]; }))
     return getInputs()[0];
 
-  // and(..., x, ..., ~x, ...) -> 0
+  // and(..., x, ..., ~x, ...) -> 0 (2-state only: X&~X=X)
   for (Value arg : getInputs()) {
     Value subExpr;
     if (matchPattern(arg, m_Complement(m_Any(&subExpr)))) {
       for (Value arg2 : getInputs())
-        if (arg2 == subExpr)
+        if (arg2 == subExpr && getTwoState())
           return getIntAttr(
               APInt::getZero(cast<IntegerType>(getType()).getWidth()),
               getContext());
@@ -1211,23 +1212,24 @@ OpFoldResult OrOp::fold(FoldAdaptor adaptor) {
       return getIntAttr(value, getContext());
   }
 
-  // or(x, 0) -> x
+  // or(x, 0) -> x (2-state only: Z|0=X)
   if (inputs.size() == 2)
     if (auto intAttr = dyn_cast_or_null<IntegerAttr>(inputs[1]))
-      if (intAttr.getValue().isZero())
+      if (intAttr.getValue().isZero() && getTwoState())
         return getInputs()[0];
 
   // or(x, x, x) -> x.  This also handles or(x) -> x
-  if (llvm::all_of(getInputs(),
+  // 2-state (and X-only) safe, but Z|Z=X so require twoState.
+  if (getTwoState() && llvm::all_of(getInputs(),
                    [&](auto in) { return in == this->getInputs()[0]; }))
     return getInputs()[0];
 
-  // or(..., x, ..., ~x, ...) -> -1
+  // or(..., x, ..., ~x, ...) -> -1 (2-state only: X|~X=X)
   for (Value arg : getInputs()) {
     Value subExpr;
     if (matchPattern(arg, m_Complement(m_Any(&subExpr)))) {
       for (Value arg2 : getInputs())
-        if (arg2 == subExpr)
+        if (arg2 == subExpr && getTwoState())
           return getIntAttr(
               APInt::getAllOnes(cast<IntegerType>(getType()).getWidth()),
               getContext());
@@ -1506,8 +1508,8 @@ OpFoldResult SubOp::fold(FoldAdaptor adaptor) {
   if (isOpTriviallyRecursive(*this))
     return {};
 
-  // sub(x - x) -> 0
-  if (getRhs() == getLhs())
+  // sub(x - x) -> 0 (2-state only: X-X=X)
+  if (getRhs() == getLhs() && getTwoState())
     return getIntAttr(
         APInt::getZero(getLhs().getType().getIntOrFloatBitWidth()),
         getContext());
@@ -1525,9 +1527,9 @@ OpFoldResult SubOp::fold(FoldAdaptor adaptor) {
                                     cast<TypedAttr>(adaptor.getLhs()), rhsNeg);
     }
 
-    // sub(x - 0) -> x
+    // sub(x - 0) -> x (2-state only: partial-X makes it all-X)
     if (auto rhsC = dyn_cast<IntegerAttr>(adaptor.getRhs())) {
-      if (rhsC.getValue().isZero())
+      if (rhsC.getValue().isZero() && getTwoState())
         return getLhs();
     }
   }
