@@ -376,6 +376,10 @@ OpFoldResult ShlOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult ShlOp::canonicalize(ShlOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -420,6 +424,10 @@ OpFoldResult ShrUOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult ShrUOp::canonicalize(ShrUOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -459,6 +467,10 @@ OpFoldResult ShrSOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult ShrSOp::canonicalize(ShrSOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -616,6 +628,7 @@ static bool extractFromReplicate(ExtractOp op, ReplicateOp replicate,
 }
 
 LogicalResult ExtractOp::canonicalize(ExtractOp op, PatternRewriter &rewriter) {
+
   if (isOpTriviallyRecursive(op))
     return failure();
   auto *inputOp = op.getInput().getDefiningOp();
@@ -995,6 +1008,10 @@ static bool canonicalizeIdempotentInputs(Op op, PatternRewriter &rewriter) {
 }
 
 LogicalResult AndOp::canonicalize(AndOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -1215,6 +1232,10 @@ OpFoldResult OrOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult OrOp::canonicalize(OrOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -1364,6 +1385,10 @@ static void canonicalizeXorIcmpTrue(XorOp op, unsigned icmpOperand,
 }
 
 LogicalResult XorOp::canonicalize(XorOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -1496,6 +1521,10 @@ OpFoldResult SubOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult SubOp::canonicalize(SubOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -1531,6 +1560,10 @@ OpFoldResult AddOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult AddOp::canonicalize(AddOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -1666,6 +1699,10 @@ OpFoldResult MulOp::fold(FoldAdaptor adaptor) {
 }
 
 LogicalResult MulOp::canonicalize(MulOp op, PatternRewriter &rewriter) {
+  // 4-state: require bin (see Mux/ICmp rationale).
+  if (!op.getTwoState())
+    return failure();
+
   if (isOpTriviallyRecursive(op))
     return failure();
 
@@ -2558,6 +2595,11 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
                                            PatternRewriter &rewriter) const {
   if (isOpTriviallyRecursive(op))
     return failure();
+  // 4-state: mux canonicalizations (const folding, flattening, narrowing)
+  // assume 2-state X-propagation (agreement vs X/Z collapse, all-X arithmetic
+  // interactions). Require bin flag; safe folds (mux(c,b,b)->b etc.) live in fold().
+  if (!op.getTwoState())
+    return failure();
 
   bool isSignlessInt = false;
   if (auto intType = dyn_cast<IntegerType>(op.getType()))
@@ -3233,6 +3275,9 @@ static void combineEqualityICmpWithXorOfConstant(ICmpOp cmpOp, XorOp xorOp,
 }
 
 LogicalResult ICmpOp::canonicalize(ICmpOp op, PatternRewriter &rewriter) {
+  // 4-state: all icmp strength-reduction assumes 2-state (X==X is X).
+  if (!op.getTwoState())
+    return failure();
   if (isOpTriviallyRecursive(op))
     return failure();
   APInt lhs, rhs;
