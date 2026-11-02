@@ -575,13 +575,40 @@ struct FourStateIcmpOpConversion : OpConversionPattern<ICmpOp> {
       rewriter.replaceOp(op, fourState::makePair(rewriter, loc, valOut, zero1));
       return success();
     }
+    // Precise Verilog ==/!= : known bits already deciding => 0/1, else X if any X.
+    // (Ordered compares stay pessimistic any-X -> X, matching iverilog for tested cases.)
+    if (pred == ICmpPredicate::eq || pred == ICmpPredicate::ne) {
+      Value notAP = fourState::bvNot(rewriter, loc, aPoison);
+      Value notBP = fourState::bvNot(rewriter, loc, bPoison);
+      Value diffVal = fourState::bvXor(rewriter, loc, aVal, bVal);
+      Value knownDifferMask = fourState::bvAnd(
+          rewriter, loc, fourState::bvAnd(rewriter, loc, notAP, notBP), diffVal);
+      Value zeroW = fourState::bvZero(rewriter, loc, w);
+      Value hasDiffer =
+          smt::DistinctOp::create(rewriter, loc, knownDifferMask, zeroW);
+      Value aHasX = fourState::hasUnknown(rewriter, loc, aPoison);
+      Value bHasX = fourState::hasUnknown(rewriter, loc, bPoison);
+      Value hasX = smt::OrOp::create(rewriter, loc, aHasX, bHasX);
+      bool isEq = (pred == ICmpPredicate::eq);
+      // val: differ ? (eq?0:1) : (hasX?0 : (eq?1:0)); pois: differ?0 : (hasX?1:0)
+      Value valIfDiffer = isEq ? zero1 : one1;
+      Value valIfKnownEq = isEq ? one1 : zero1;
+      Value valOut = smt::IteOp::create(
+          rewriter, loc, hasDiffer, valIfDiffer,
+          smt::IteOp::create(rewriter, loc, hasX, zero1, valIfKnownEq));
+      Value poisOut = smt::IteOp::create(
+          rewriter, loc, hasDiffer, zero1,
+          smt::IteOp::create(rewriter, loc, hasX, one1, zero1));
+      rewriter.replaceOp(op, fourState::makePair(rewriter, loc, valOut, poisOut));
+      return success();
+    }
     Value aHasX = fourState::hasUnknown(rewriter, loc, aPoison);
     Value bHasX = fourState::hasUnknown(rewriter, loc, bPoison);
     Value hasX = smt::OrOp::create(rewriter, loc, aHasX, bHasX);
     Value poisOut = smt::IteOp::create(rewriter, loc, hasX, one1, zero1);
     Value cmpBool;
-    if (pred == ICmpPredicate::eq) cmpBool = smt::EqOp::create(rewriter, loc, aVal, bVal);
-    else if (pred == ICmpPredicate::ne) cmpBool = smt::DistinctOp::create(rewriter, loc, aVal, bVal);
+    if (false) cmpBool = smt::EqOp::create(rewriter, loc, aVal, bVal);
+    else if (false) cmpBool = smt::DistinctOp::create(rewriter, loc, aVal, bVal);
     else {
       smt::BVCmpPredicate bvPred;
       switch (pred) {
