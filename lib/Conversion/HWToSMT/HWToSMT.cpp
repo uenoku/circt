@@ -28,9 +28,13 @@ using namespace hw;
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// Lower a hw::ConstantOp operation to smt::BVConstantOp
+/// Lower a hw::ConstantOp operation to smt::BVConstantOp.
+/// In four-state mode the constant is encoded as concat(poison=0, value).
 struct HWConstantOpConversion : OpConversionPattern<ConstantOp> {
-  using OpConversionPattern<ConstantOp>::OpConversionPattern;
+  HWConstantOpConversion(TypeConverter &converter, MLIRContext *context,
+                         bool fourState = false)
+      : OpConversionPattern<ConstantOp>(converter, context),
+        fourState(fourState) {}
 
   LogicalResult
   matchAndRewrite(ConstantOp op, OpAdaptor adaptor,
@@ -38,10 +42,21 @@ struct HWConstantOpConversion : OpConversionPattern<ConstantOp> {
     if (adaptor.getValue().getBitWidth() < 1)
       return rewriter.notifyMatchFailure(op.getLoc(),
                                          "0-bit constants not supported");
-    rewriter.replaceOpWithNewOp<mlir::smt::BVConstantOp>(op,
-                                                         adaptor.getValue());
+    if (!fourState) {
+      rewriter.replaceOpWithNewOp<mlir::smt::BVConstantOp>(op,
+                                                           adaptor.getValue());
+      return success();
+    }
+    Location loc = op.getLoc();
+    unsigned width = adaptor.getValue().getBitWidth();
+    Value val = mlir::smt::BVConstantOp::create(rewriter, loc,
+                                                 adaptor.getValue());
+    Value poison =
+        mlir::smt::BVConstantOp::create(rewriter, loc, APInt(width, 0));
+    rewriter.replaceOpWithNewOp<mlir::smt::ConcatOp>(op, poison, val);
     return success();
   }
+  bool fourState;
 };
 
 /// Lower a hw::HWModuleOp operation to func::FuncOp.
@@ -146,11 +161,17 @@ struct InstanceOpConversion : OpConversionPattern<InstanceOp> {
 /// Lower a hw::ArrayCreateOp operation to smt::DeclareFun and an
 /// smt::ArrayStoreOp for each operand.
 struct ArrayCreateOpConversion : OpConversionPattern<ArrayCreateOp> {
-  using OpConversionPattern<ArrayCreateOp>::OpConversionPattern;
+  ArrayCreateOpConversion(TypeConverter &converter, MLIRContext *context,
+                          bool fourState = false)
+      : OpConversionPattern<ArrayCreateOp>(converter, context),
+        fourState(fourState) {}
 
   LogicalResult
   matchAndRewrite(ArrayCreateOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (fourState)
+      return rewriter.notifyMatchFailure(
+          op, "array ops not supported in four-state mode yet");
     Location loc = op.getLoc();
     Type arrTy = typeConverter->convertType(op.getType());
     if (!arrTy)
@@ -168,15 +189,22 @@ struct ArrayCreateOpConversion : OpConversionPattern<ArrayCreateOp> {
     rewriter.replaceOp(op, arr);
     return success();
   }
+  bool fourState;
 };
 
 /// Lower a hw::ArrayGetOp operation to smt::ArraySelectOp
 struct ArrayGetOpConversion : OpConversionPattern<ArrayGetOp> {
-  using OpConversionPattern<ArrayGetOp>::OpConversionPattern;
+  ArrayGetOpConversion(TypeConverter &converter, MLIRContext *context,
+                       bool fourState = false)
+      : OpConversionPattern<ArrayGetOp>(converter, context),
+        fourState(fourState) {}
 
   LogicalResult
   matchAndRewrite(ArrayGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (fourState)
+      return rewriter.notifyMatchFailure(
+          op, "array ops not supported in four-state mode yet");
     Location loc = op.getLoc();
     unsigned numElements =
         cast<hw::ArrayType>(op.getInput().getType()).getNumElements();
@@ -198,15 +226,22 @@ struct ArrayGetOpConversion : OpConversionPattern<ArrayGetOp> {
                                                   oobVal);
     return success();
   }
+  bool fourState;
 };
 
 /// Lower a hw::ArrayInjectOp operation to smt::ArrayStoreOp.
 struct ArrayInjectOpConversion : OpConversionPattern<ArrayInjectOp> {
-  using OpConversionPattern<ArrayInjectOp>::OpConversionPattern;
+  ArrayInjectOpConversion(TypeConverter &converter, MLIRContext *context,
+                          bool fourState = false)
+      : OpConversionPattern<ArrayInjectOp>(converter, context),
+        fourState(fourState) {}
 
   LogicalResult
   matchAndRewrite(ArrayInjectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (fourState)
+      return rewriter.notifyMatchFailure(
+          op, "array ops not supported in four-state mode yet");
     Location loc = op.getLoc();
     unsigned numElements =
         cast<hw::ArrayType>(op.getInput().getType()).getNumElements();
@@ -232,6 +267,7 @@ struct ArrayInjectOpConversion : OpConversionPattern<ArrayInjectOp> {
     rewriter.replaceOpWithNewOp<mlir::smt::IteOp>(op, inBounds, stored, oobVal);
     return success();
   }
+  bool fourState;
 };
 
 /// Remove redundant (seq::FromClock and seq::ToClock) ops.
@@ -262,21 +298,29 @@ struct ConvertHWToSMTPass
 };
 } // namespace
 
-void circt::populateHWToSMTTypeConverter(TypeConverter &converter) {
+void circt::populateHWToSMTTypeConverter(TypeConverter &converter,
+                                       bool fourState) {
   // The semantics of the builtin integer at the CIRCT core level is currently
   // not very well defined. It is used for two-valued, four-valued, and possible
-  // other multi-valued logic. Here, we interpret it as two-valued for now.
+  // other multi-valued logic. By default, we interpret it as two-valued.
+  // With `fourState`, each N-bit integer is encoded as a 2*N-bit vector
+  // (low N bits = value, high N bits = poison) to model 4-state logic:
+  // (poison,value) = 00->0, 01->1, 10->X, 11->Z.
   // From a formal perspective, CIRCT would ideally define its own types for
   // two-valued, four-valued, nine-valued (etc.) logic each. In MLIR upstream
   // the integer type also carries poison information (which we don't have in
   // CIRCT?).
-  converter.addConversion([](IntegerType type) -> std::optional<Type> {
+  converter.addConversion([fourState](IntegerType type) -> std::optional<Type> {
     if (type.getWidth() <= 0)
       return std::nullopt;
-    return mlir::smt::BitVectorType::get(type.getContext(), type.getWidth());
+    unsigned width = type.getWidth();
+    if (fourState)
+      width *= 2;
+    return mlir::smt::BitVectorType::get(type.getContext(), width);
   });
-  converter.addConversion([](seq::ClockType type) -> std::optional<Type> {
-    return mlir::smt::BitVectorType::get(type.getContext(), 1);
+  converter.addConversion([fourState](seq::ClockType type) -> std::optional<Type> {
+    return mlir::smt::BitVectorType::get(type.getContext(),
+                                          fourState ? 2 : 1);
   });
   converter.addConversion([&](ArrayType type) -> std::optional<Type> {
     auto rangeType = converter.convertType(type.getElementType());
@@ -369,12 +413,16 @@ void circt::populateHWToSMTTypeConverter(TypeConverter &converter) {
 
 void circt::populateHWToSMTConversionPatterns(TypeConverter &converter,
                                               RewritePatternSet &patterns,
-                                              bool forSMTLIBExport) {
-  patterns.add<HWConstantOpConversion, InstanceOpConversion,
-               ReplaceWithInput<seq::ToClockOp>,
-               ReplaceWithInput<seq::FromClockOp>, ArrayCreateOpConversion,
-               ArrayGetOpConversion, ArrayInjectOpConversion>(
-      converter, patterns.getContext());
+                                              bool forSMTLIBExport,
+                                              bool fourState) {
+  patterns.add<HWConstantOpConversion>(converter, patterns.getContext(),
+                                       fourState);
+  patterns.add<InstanceOpConversion, ReplaceWithInput<seq::ToClockOp>,
+               ReplaceWithInput<seq::FromClockOp>>(converter,
+                                                   patterns.getContext());
+  patterns.add<ArrayCreateOpConversion, ArrayGetOpConversion,
+               ArrayInjectOpConversion>(converter, patterns.getContext(),
+                                        fourState);
   patterns.add<OutputOpConversion, HWModuleOpConversion>(
       converter, patterns.getContext(), forSMTLIBExport);
 }
@@ -413,8 +461,9 @@ void ConvertHWToSMTPass::runOnOperation() {
 
   RewritePatternSet patterns(&getContext());
   TypeConverter converter;
-  populateHWToSMTTypeConverter(converter);
-  populateHWToSMTConversionPatterns(converter, patterns, forSMTLIBExport);
+  populateHWToSMTTypeConverter(converter, fourState);
+  populateHWToSMTConversionPatterns(converter, patterns, forSMTLIBExport,
+                                    fourState);
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
                                           std::move(patterns))))

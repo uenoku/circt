@@ -104,6 +104,13 @@ static cl::opt<bool>
                           cl::desc("Log executions of toplevel module passes"),
                           cl::init(false), cl::cat(mainCategory));
 
+static cl::opt<bool> fourState(
+    "four-state",
+    cl::desc("Use 4-state (0,1,X,Z) logic encoding for translation validation. "
+             "Each N-bit value is encoded as 2*N-bit dual-rail (value+poison) "
+             "with Verilog-like X-propagation."),
+    cl::init(false), cl::cat(mainCategory));
+
 #ifdef CIRCT_LEC_ENABLE_JIT
 
 enum OutputFormat { OutputMLIR, OutputLLVM, OutputSMTLIB, OutputRunJIT };
@@ -242,10 +249,31 @@ static LogicalResult executeLEC(MLIRContext &context) {
   }
   pm.addPass(createConvertSynthToComb());
   pm.addPass(comb::createLowerComb());
-  pm.addPass(createConvertHWToSMT());
+  if (fourState) {
+    // In 4-state mode convert comb first: HWToSMT's type conversion can
+    // trigger 2-state-only comb folders (e.g. xor a,a -> 0) which are
+    // incorrect under 4-state (X^X = X). Converting comb away first preserves
+    // X-propagation.
+    ConvertCombToSMTOptions combOptsEarly;
+    combOptsEarly.fourState = true;
+    pm.addPass(createConvertCombToSMT(combOptsEarly));
+  }
+  {
+    ConvertHWToSMTOptions hwOpts;
+    hwOpts.fourState = fourState;
+    pm.addPass(createConvertHWToSMT(hwOpts));
+  }
   pm.addPass(createConvertDatapathToSMT());
-  pm.addPass(createConvertCombToSMT());
-  pm.addPass(createConvertVerifToSMT());
+  {
+    ConvertCombToSMTOptions combOpts;
+    combOpts.fourState = fourState;
+    pm.addPass(createConvertCombToSMT(combOpts));
+  }
+  {
+    ConvertVerifToSMTOptions verifOpts;
+    verifOpts.fourState = fourState;
+    pm.addPass(createConvertVerifToSMT(verifOpts));
+  }
   pm.addPass(createSimpleCanonicalizerPass());
 
   if (outputFormat != OutputMLIR && outputFormat != OutputSMTLIB) {

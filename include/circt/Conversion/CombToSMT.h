@@ -15,8 +15,11 @@
 namespace circt {
 
 /// Get the HW to SMT conversion patterns.
+/// When `fourState` is true, use the dual-rail 4-state encoding (see
+/// populateHWToSMTTypeConverter) and Verilog-like X-propagation semantics.
 void populateCombToSMTConversionPatterns(TypeConverter &converter,
-                                         RewritePatternSet &patterns);
+                                         RewritePatternSet &patterns,
+                                         bool fourState = false);
 
 #define GEN_PASS_DECL_CONVERTCOMBTOSMT
 #include "circt/Conversion/Passes.h.inc"

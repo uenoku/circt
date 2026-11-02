@@ -21,7 +21,8 @@ class Namespace;
 /// Get the Verif to SMT conversion patterns.
 void populateVerifToSMTConversionPatterns(
     TypeConverter &converter, RewritePatternSet &patterns, Namespace &names,
-    bool risingClocksOnly, SmallVectorImpl<Operation *> &propertylessBMCOps);
+    bool risingClocksOnly, SmallVectorImpl<Operation *> &propertylessBMCOps,
+    bool fourState = false);
 
 } // namespace circt
 

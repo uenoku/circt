@@ -749,6 +749,11 @@ def ConvertCombToArith : Pass<"convert-comb-to-arith"> {
 
 def ConvertCombToSMT : Pass<"convert-comb-to-smt"> {
   let summary = "Convert combinational ops and constants to SMT ops";
+  let options = [
+    Option<"fourState", "four-state", "bool", /*default=*/"false",
+           "Encode comb values with 4-state (0,1,X,Z) logic using a "
+           "dual-rail bit-vector encoding to validate X-propagation.">,
+  ];
   // Need to depend on HWDialect because some 'comb' canonicalization patterns
   // build 'hw.constant' operations.
   let dependentDialects = [
@@ -769,6 +774,9 @@ def ConvertHWToSMT : Pass<"convert-hw-to-smt", "mlir::ModuleOp"> {
            "Produce output for SMTLIB export - this will replace hw.module"
            "operations with smt.solver operations and assert the equivalence"
            "of each module output with a symbolic constant.">,
+    Option<"fourState", "four-state", "bool", /*default=*/"false",
+           "Encode values with 4-state (0,1,X,Z) logic using a dual-rail "
+           "bit-vector encoding to validate X-propagation.">,
   ];
 }
 
@@ -790,6 +798,9 @@ def ConvertVerifToSMT : Pass<"convert-verif-to-smt", "mlir::ModuleOp"> {
            /*default=*/"false",
            "When lowering verif.bmc ops, only consider the circuit and property"
            "on rising clock edges.">,
+    Option<"fourState", "four-state", "bool", /*default=*/"false",
+           "Encode values with 4-state (0,1,X,Z) logic using a dual-rail "
+           "bit-vector encoding to validate X-propagation.">,
   ];
 }
 

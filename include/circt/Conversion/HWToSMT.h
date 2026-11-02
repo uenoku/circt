@@ -20,10 +20,15 @@ namespace circt {
 /// Get the HW to SMT conversion patterns.
 void populateHWToSMTConversionPatterns(TypeConverter &converter,
                                        RewritePatternSet &patterns,
-                                       bool forSMTLIBExport);
+                                       bool forSMTLIBExport,
+                                       bool fourState = false);
 
 /// Get the HW to SMT type conversions.
-void populateHWToSMTTypeConverter(TypeConverter &converter);
+/// When `fourState` is true, each N-bit integer is encoded as a 2*N-bit
+/// bit-vector (low N bits = value, high N bits = poison/X-mask) to model
+/// 4-state (0,1,X,Z) logic: (poison,value) = 00->0, 01->1, 10->X, 11->Z.
+void populateHWToSMTTypeConverter(TypeConverter &converter,
+                                  bool fourState = false);
 
 } // namespace circt
 

@@ -750,7 +750,8 @@ struct ConvertVerifToSMTPass
 
 void circt::populateVerifToSMTConversionPatterns(
     TypeConverter &converter, RewritePatternSet &patterns, Namespace &names,
-    bool risingClocksOnly, SmallVectorImpl<Operation *> &propertylessBMCOps) {
+    bool risingClocksOnly, SmallVectorImpl<Operation *> &propertylessBMCOps,
+    bool fourState) {
   patterns.add<VerifAssertOpConversion, VerifAssumeOpConversion,
                LogicEquivalenceCheckingOpConversion,
                RefinementCheckingOpConversion>(converter,
@@ -853,7 +854,7 @@ void ConvertVerifToSMTPass::runOnOperation() {
     return signalPassFailure();
   RewritePatternSet patterns(&getContext());
   TypeConverter converter;
-  populateHWToSMTTypeConverter(converter);
+  populateHWToSMTTypeConverter(converter, fourState);
 
   SymbolCache symCache;
   symCache.addDefinitions(getOperation());
@@ -861,7 +862,8 @@ void ConvertVerifToSMTPass::runOnOperation() {
   names.add(symCache);
 
   populateVerifToSMTConversionPatterns(converter, patterns, names,
-                                       risingClocksOnly, propertylessBMCOps);
+                                       risingClocksOnly, propertylessBMCOps,
+                                       fourState);
 
   if (failed(mlir::applyPartialConversion(getOperation(), target,
                                           std::move(patterns))))
