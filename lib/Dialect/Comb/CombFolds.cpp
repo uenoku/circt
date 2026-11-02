@@ -666,8 +666,19 @@ LogicalResult ExtractOp::canonicalize(ExtractOp op, PatternRewriter &rewriter) {
 
   // `extract(and(a, cst))` -> `extract(a)` when the relevant bits of the
   // and/or/xor are not modifying the extracted bits.
+  // 4-state: producer must be twoState (bin) since and/or/xor collapse Z->X.
   if (inputOp && inputOp->getNumOperands() == 2 &&
       isa<AndOp, OrOp, XorOp>(inputOp)) {
+    if (auto andOp = dyn_cast<AndOp>(inputOp)) {
+      if (!andOp.getTwoState())
+        goto skip_extract_logic;
+    } else if (auto orOp = dyn_cast<OrOp>(inputOp)) {
+      if (!orOp.getTwoState())
+        goto skip_extract_logic;
+    } else if (auto xorOp = dyn_cast<XorOp>(inputOp)) {
+      if (!xorOp.getTwoState())
+        goto skip_extract_logic;
+    }
     if (auto cstRHS = inputOp->getOperand(1).getDefiningOp<hw::ConstantOp>()) {
       auto extractedCst = cstRHS.getValue().extractBits(
           cast<IntegerType>(op.getType()).getWidth(), op.getLowBit());
@@ -706,10 +717,14 @@ LogicalResult ExtractOp::canonicalize(ExtractOp op, PatternRewriter &rewriter) {
     }
   }
 
+  skip_extract_logic:;
   // `extract(lowBit, shl(1, x))` -> `x == lowBit` when a single bit is
   // extracted.
   if (cast<IntegerType>(op.getType()).getWidth() == 1 && inputOp)
     if (auto shlOp = dyn_cast<ShlOp>(inputOp)) {
+      // 4-state: shl with X amount gives all-X; require bin.
+      if (!shlOp.getTwoState())
+        return failure();
       // Don't canonicalize if the shift is multiply used.
       if (shlOp->hasOneUse())
         if (auto lhsCst = shlOp.getLhs().getDefiningOp<hw::ConstantOp>())
