@@ -1319,8 +1319,8 @@ OpFoldResult XorOp::fold(FoldAdaptor adaptor) {
   if (size == 1)
     return getInputs()[0];
 
-  // xor(x, x) -> 0 -- idempotent
-  if (size == 2 && getInputs()[0] == getInputs()[1])
+  // xor(x, x) -> 0 -- idempotent (2-state only: X^X=X)
+  if (size == 2 && getInputs()[0] == getInputs()[1] && getTwoState())
     return IntegerAttr::get(getType(), 0);
 
   // xor(x, 0) -> x
@@ -1509,7 +1509,8 @@ LogicalResult SubOp::canonicalize(SubOp op, PatternRewriter &rewriter) {
   }
 
   // extracts only of sub(...) -> sub(extract()...)
-  if (narrowOperationWidth(op, false, rewriter))
+  // 4-state: requires twoState (high-X makes full op all-X).
+  if (op.getTwoState() && narrowOperationWidth(op, false, rewriter))
     return success();
 
   return failure();
@@ -1613,7 +1614,8 @@ LogicalResult AddOp::canonicalize(AddOp op, PatternRewriter &rewriter) {
     return success();
 
   // extracts only of add(...) -> add(extract()...)
-  if (narrowOperationWidth(op, false, rewriter))
+  // 4-state: requires twoState (high-X makes full op all-X).
+  if (op.getTwoState() && narrowOperationWidth(op, false, rewriter))
     return success();
 
   // add(add(x, c1), c2) -> add(x, c1 + c2)
@@ -1709,7 +1711,8 @@ LogicalResult MulOp::canonicalize(MulOp op, PatternRewriter &rewriter) {
     return success();
 
   // extracts only of mul(...) -> mul(extract()...)
-  if (narrowOperationWidth(op, false, rewriter))
+  // 4-state: requires twoState (high-X makes full op all-X).
+  if (op.getTwoState() && narrowOperationWidth(op, false, rewriter))
     return success();
 
   return failure();
@@ -2701,8 +2704,10 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
   if (auto falseMux = op.getFalseValue().getDefiningOp<MuxOp>();
       falseMux && falseMux != op) {
     // mux(selector, x, mux(selector, y, z) = mux(selector, x, z)
+    // 4-state: requires twoState (X-select agreement is not associative,
+    // and Z-select collapses disagreement to X).
     if (op.getCond() == falseMux.getCond() &&
-        falseMux.getFalseValue() != falseMux) {
+        falseMux.getFalseValue() != falseMux && op.getTwoState()) {
       replaceOpWithNewOpAndCopyNamehint<MuxOp>(
           rewriter, op, op.getCond(), op.getTrueValue(),
           falseMux.getFalseValue(), op.getTwoStateAttr());
@@ -2718,7 +2723,8 @@ LogicalResult MuxRewriter::matchAndRewrite(MuxOp op,
   if (auto trueMux = op.getTrueValue().getDefiningOp<MuxOp>();
       trueMux && trueMux != op) {
     // mux(selector, mux(selector, a, b), c) = mux(selector, a, c)
-    if (op.getCond() == trueMux.getCond()) {
+    // 4-state: requires twoState (see above).
+    if (op.getCond() == trueMux.getCond() && op.getTwoState()) {
       replaceOpWithNewOpAndCopyNamehint<MuxOp>(
           rewriter, op, op.getCond(), trueMux.getTrueValue(),
           op.getFalseValue(), op.getTwoStateAttr());
@@ -2950,7 +2956,8 @@ static bool applyCmpPredicateToEqualOperands(ICmpPredicate predicate) {
 OpFoldResult ICmpOp::fold(FoldAdaptor adaptor) {
   // gt a, a -> false
   // gte a, a -> true
-  if (getLhs() == getRhs()) {
+  // NOTE: 4-state: X==X is X, not true/false. Only fold when twoState (bin).
+  if (getLhs() == getRhs() && getTwoState()) {
     auto val = applyCmpPredicateToEqualOperands(getPredicate());
     return IntegerAttr::get(getType(), val);
   }
@@ -3029,6 +3036,9 @@ static LogicalResult matchAndRewriteCompareConcat(ICmpOp op, Operation *lhs,
     return success();
   };
 
+  // 4-state: cat(a,b,c)==cat(a,b,c)->1 is invalid (X==X is X). Require twoState.
+  if (!op.getTwoState())
+    return failure();
   size_t commonPrefixLength =
       computeCommonPrefixLength(lhsOperands, rhsOperands);
   if (commonPrefixLength == lhsOperands.size()) {
