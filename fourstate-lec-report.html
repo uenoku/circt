@@ -19,16 +19,6 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace}
 <header><h1>comb canonicalizations incorrect under 4-state logic — with outputs</h1>
 <p>Tool: <code>circt-lec --four-state</code> (dual-rail <code>iN → bv 2N</code>, <code>high=poison low=val</code>, Verilog X-propagation). Method: strip <code>bin</code> (2-state-only) from <code>test/Dialect/Comb/canonicalization.mlir</code>, compare <code>before</code> vs <code>-canonicalize</code> with 2-state (equiv) vs 4-state (inequiv). Commit <code>d31836919</code>.</p>
 <p><b>Result: 23 / 112 modules invalid under 4-state</b> (19 unknown: <code>hw.wire/bitcast/array_get</code>, <code>hwarith</code>, <code>i0</code>, <code>test.*</code> not yet in 4-state encoder). Each card now shows <b>inputs + outputs of both sides</b> under the Z3 counterexample.</p></header>
-<div class="simbox"><h2>Can this be cross-checked with Verilator / iverilog?</h2>
-<p><b>Verilator: no (2-state only).</b> Verilator is a 2-state simulator — <code>X/Z</code> are converted to <code>0</code> (see Verilator docs “Unknown values”: <i>Verilator does not model X/Z; X is treated as 0</i>). So <code>mux(Z,10,00)</code> etc. all simulate as 2-state and would report <i>equiv</i>, hiding the bugs. Useful only to confirm 2-state equiv.</p>
-<p><b>Icarus Verilog (iverilog + vvp): yes, 4-state.</b> Icarus implements full Verilog 4-state (<code>0/1/x/z</code>) with LRM truth tables (<code>0&amp;x=0</code>, <code>1|x=1</code>, <code>mux(x,a,b)=agree-else-x</code>, arithmetic with <code>x→x</code>), matching our SMT encoding. Example for <code>muxConstantInputs</code>:</p>
-<pre>module c1(input c, output [1:0] o); assign o = c ? 2'b10 : 2'b00; endmodule
-module c2(input c, output [1:0] o); assign o = &#123;c, 1'b0&#125;; endmodule
-module tb; reg c; wire [1:0] o1,o2; c1 i1(c,o1); c2 i2(c,o2);
-initial begin c=1'bz; #1; $display("c=z o1=%b o2=%b %s",o1,o2,(o1===o2)?"EQ":"DIFF"); end endmodule</pre>
-<pre># iverilog -o sim sim.v &amp;&amp; vvp sim
-# c=z o1=x0 o2=z0 DIFF   &lt;- matches our card: Before X0 vs After Z0</pre>
-<p>Not installed in this container (<code>iverilog: command not found</code>), but the testbench above reproduces every card: drive inputs with the <code>X/Z</code> values from the counterexample table (e.g. <code>1'bz</code>, <code>4'b00X0</code>), compare with case-equality <code>===</code> (exact 4-state, like our <code>distinct</code> on <code>2N</code> bits). Yosys <code>sim</code> is also 4-state at RTLIL level (<code>Sx/Sz</code> bits) but its stimulus flow (clock/FST/witness) is awkward for pure comb; iverilog/VCS/Questa are the idiomatic 4-state checks. Our Python int-based evaluator in <code>/tmp/eval4.py + run_outputs2.py</code> implements the same LRM tables and agrees with iverilog semantics.</p></div>
 <h2>Index (23)</h2><ul class="toc"><li><a href='#muxConstantInputs'>muxConstantInputs</a></li><li><a href='#muxSingleBitConstantInputs'>muxSingleBitConstantInputs</a></li><li><a href='#muxSingleBitConstantInputs2'>muxSingleBitConstantInputs2</a></li><li><a href='#muxSingleBitConstantInputs3'>muxSingleBitConstantInputs3</a></li><li><a href='#muxSingleBitConstantInputs4'>muxSingleBitConstantInputs4</a></li><li><a href='#flattenMuxTrue'>flattenMuxTrue</a></li><li><a href='#flattenMuxFalse'>flattenMuxFalse</a></li><li><a href='#flattenMuxMixed'>flattenMuxMixed</a></li><li><a href='#compareStrengthSignedCommonPrefix'>compareStrengthSignedCommonPrefix</a></li><li><a href='#compareStrengthSignedCommonPrefixNoExtract'>compareStrengthSignedCommonPrefixNoExtract</a></li><li><a href='#compareConcatEliminationTrueCases'>compareConcatEliminationTrueCases</a></li><li><a href='#compareConcatEliminationFalseCases'>compareConcatEliminationFalseCases</a></li><li><a href='#compareExtractFold'>compareExtractFold</a></li><li><a href='#narrowAdditionSingleExtractUse'>narrowAdditionSingleExtractUse</a></li><li><a href='#narrowAdditionToWidestExtract'>narrowAdditionToWidestExtract</a></li><li><a href='#narrowAdditionExtractFromNoneZero'>narrowAdditionExtractFromNoneZero</a></li><li><a href='#narrowSubExtractFromNoneZero'>narrowSubExtractFromNoneZero</a></li><li><a href='#narrowMulExtractFromNoneZero'>narrowMulExtractFromNoneZero</a></li><li><a href='#narrow_extract_from_and'>narrow_extract_from_and</a></li><li><a href='#extractShift'>extractShift</a></li><li><a href='#muxConstantsFold'>muxConstantsFold</a></li><li><a href='#flatten_multi_use_and'>flatten_multi_use_and</a></li><li><a href='#Issue5531'>Issue5531</a></li></ul>
 
 <section class="card" id="muxConstantInputs">
@@ -60,7 +50,37 @@ hw.module @c2(in %cond : i1, out o : i2) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i2</td><td class='four'>X0</td><td class='four'>Z0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X0</code> <span class='sub'>(i2)</span><br>After outputs: <code class='four'>Z0</code> <span class='sub'>(i2)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpkc79zd1s.mlir:1:1
+  input        cond,	// /tmp/tmpkc79zd1s.mlir:1:18
+  output [1:0] o	// /tmp/tmpkc79zd1s.mlir:1:33
+);
+
+  assign o = cond ? 2&#x27;h2 : 2&#x27;h0;	// /tmp/tmpkc79zd1s.mlir:4:9, :5:9, :6:8, :7:3
+endmodule
+
+module c2(	// /tmp/tmpx3ngl89n.mlir:1:1
+  input        cond,	// /tmp/tmpx3ngl89n.mlir:1:18
+  output [1:0] o	// /tmp/tmpx3ngl89n.mlir:1:34
+);
+
+  assign o = {cond, 1&#x27;h0};	// /tmp/tmpx3ngl89n.mlir:2:14, :3:10, :4:5
+endmodule
+
+module tb;
+reg cond;
+wire [1:0] b_o; wire [1:0] a_o;
+c1 i1(.cond(cond), .o(b_o));
+c2 i2(.cond(cond), .o(a_o));
+initial begin
+  cond = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="muxSingleBitConstantInputs">
 <h2>muxSingleBitConstantInputs</h2>
@@ -94,7 +114,41 @@ hw.module @c2(in %a : i1, in %b : i1, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>Z</td><td class='four'>X</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>Z</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>X</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpodyf1wu4.mlir:1:1
+  input  a,	// /tmp/tmpodyf1wu4.mlir:1:18
+         b,	// /tmp/tmpodyf1wu4.mlir:1:29
+  output o	// /tmp/tmpodyf1wu4.mlir:1:41
+);
+
+  assign o = a ? 1&#x27;h0 : b;	// /tmp/tmpodyf1wu4.mlir:6:9, :7:8, :8:3
+endmodule
+
+module c2(	// /tmp/tmp7rrqw0cm.mlir:1:1
+  input  a,	// /tmp/tmp7rrqw0cm.mlir:1:18
+         b,	// /tmp/tmp7rrqw0cm.mlir:1:30
+  output o	// /tmp/tmp7rrqw0cm.mlir:1:43
+);
+
+  assign o = ~a &amp; b;	// /tmp/tmp7rrqw0cm.mlir:3:10, :4:10, :5:5
+endmodule
+
+module tb;
+reg a;
+reg b;
+wire b_o; wire a_o;
+c1 i1(.a(a), .b(b), .o(b_o));
+c2 i2(.a(a), .b(b), .o(a_o));
+initial begin
+  a = 1&#x27;b0;
+  b = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="muxSingleBitConstantInputs2">
 <h2>muxSingleBitConstantInputs2</h2>
@@ -124,7 +178,41 @@ hw.module @c2(in %a : i1, in %b : i1, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>Z</td><td class='four'>X</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>Z</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>X</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpww1qeg04.mlir:1:1
+  input  a,	// /tmp/tmpww1qeg04.mlir:1:18
+         b,	// /tmp/tmpww1qeg04.mlir:1:29
+  output o	// /tmp/tmpww1qeg04.mlir:1:41
+);
+
+  assign o = a ? 1&#x27;h1 : b;	// /tmp/tmpww1qeg04.mlir:4:9, :5:8, :6:3
+endmodule
+
+module c2(	// /tmp/tmpa99ez1ig.mlir:1:1
+  input  a,	// /tmp/tmpa99ez1ig.mlir:1:18
+         b,	// /tmp/tmpa99ez1ig.mlir:1:30
+  output o	// /tmp/tmpa99ez1ig.mlir:1:43
+);
+
+  assign o = a | b;	// /tmp/tmpa99ez1ig.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg a;
+reg b;
+wire b_o; wire a_o;
+c1 i1(.a(a), .b(b), .o(b_o));
+c2 i2(.a(a), .b(b), .o(a_o));
+initial begin
+  a = 1&#x27;b0;
+  b = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="muxSingleBitConstantInputs3">
 <h2>muxSingleBitConstantInputs3</h2>
@@ -154,7 +242,41 @@ hw.module @c2(in %a : i1, in %b : i1, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>Z</td><td class='four'>X</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>Z</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>X</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmprx34dp_j.mlir:1:1
+  input  a,	// /tmp/tmprx34dp_j.mlir:1:18
+         b,	// /tmp/tmprx34dp_j.mlir:1:29
+  output o	// /tmp/tmprx34dp_j.mlir:1:41
+);
+
+  assign o = a ? b : 1&#x27;h0;	// /tmp/tmprx34dp_j.mlir:4:9, :5:8, :6:3
+endmodule
+
+module c2(	// /tmp/tmpfnru9wiq.mlir:1:1
+  input  a,	// /tmp/tmpfnru9wiq.mlir:1:18
+         b,	// /tmp/tmpfnru9wiq.mlir:1:30
+  output o	// /tmp/tmpfnru9wiq.mlir:1:43
+);
+
+  assign o = a &amp; b;	// /tmp/tmpfnru9wiq.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg a;
+reg b;
+wire b_o; wire a_o;
+c1 i1(.a(a), .b(b), .o(b_o));
+c2 i2(.a(a), .b(b), .o(a_o));
+initial begin
+  a = 1&#x27;b1;
+  b = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="muxSingleBitConstantInputs4">
 <h2>muxSingleBitConstantInputs4</h2>
@@ -188,7 +310,41 @@ hw.module @c2(in %cond : i1, in %arg0 : i1, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>Z</td><td class='four'>X</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>Z</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>X</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmp2xuqwqw5.mlir:1:1
+  input  cond,	// /tmp/tmp2xuqwqw5.mlir:1:18
+         arg0,	// /tmp/tmp2xuqwqw5.mlir:1:32
+  output o	// /tmp/tmp2xuqwqw5.mlir:1:48
+);
+
+  assign o = cond ? arg0 : 1&#x27;h1;	// /tmp/tmp2xuqwqw5.mlir:6:9, :7:8, :8:3
+endmodule
+
+module c2(	// /tmp/tmpmegcyhoy.mlir:1:1
+  input  cond,	// /tmp/tmpmegcyhoy.mlir:1:18
+         arg0,	// /tmp/tmpmegcyhoy.mlir:1:33
+  output o	// /tmp/tmpmegcyhoy.mlir:1:49
+);
+
+  assign o = ~cond | arg0;	// /tmp/tmpmegcyhoy.mlir:3:10, :4:10, :5:5
+endmodule
+
+module tb;
+reg cond;
+reg arg0;
+wire b_o; wire a_o;
+c1 i1(.cond(cond), .arg0(arg0), .o(b_o));
+c2 i2(.cond(cond), .arg0(arg0), .o(a_o));
+initial begin
+  cond = 1&#x27;b1;
+  arg0 = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="flattenMuxTrue">
 <h2>flattenMuxTrue</h2>
@@ -218,7 +374,53 @@ hw.module @c2(in %arg0 : i1, in %arg1 : i8, in %arg2 : i8, in %arg3 : i8, in %ar
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i8</td><td class='four'>X1XXXXXX</td><td class='four'>X11X111X</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X1XXXXXX</code> <span class='sub'>(i8)</span><br>After outputs: <code class='four'>X11X111X</code> <span class='sub'>(i8)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpxdp1ihte.mlir:1:1
+  input        arg0,	// /tmp/tmpxdp1ihte.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmpxdp1ihte.mlir:1:33
+               arg2,	// /tmp/tmpxdp1ihte.mlir:1:48
+               arg3,	// /tmp/tmpxdp1ihte.mlir:1:62
+               arg4,	// /tmp/tmpxdp1ihte.mlir:1:76
+  output [7:0] o1	// /tmp/tmpxdp1ihte.mlir:1:92
+);
+
+  assign o1 = arg0 ? (arg0 ? (arg0 ? arg1 : arg2) : arg3) : arg4;	// /tmp/tmpxdp1ihte.mlir:4:8, :5:8, :6:8, :7:3
+endmodule
+
+module c2(	// /tmp/tmpie7g6g3j.mlir:1:1
+  input        arg0,	// /tmp/tmpie7g6g3j.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmpie7g6g3j.mlir:1:33
+               arg2,	// /tmp/tmpie7g6g3j.mlir:1:48
+               arg3,	// /tmp/tmpie7g6g3j.mlir:1:63
+               arg4,	// /tmp/tmpie7g6g3j.mlir:1:78
+  output [7:0] o1	// /tmp/tmpie7g6g3j.mlir:1:94
+);
+
+  assign o1 = arg0 ? arg1 : arg4;	// /tmp/tmpie7g6g3j.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg arg0;
+reg [7:0] arg1;
+reg [7:0] arg2;
+reg [7:0] arg3;
+reg [7:0] arg4;
+wire [7:0] b_o1; wire [7:0] a_o1;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(b_o1));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(a_o1));
+initial begin
+  arg0 = 1&#x27;bx;
+  arg1 = 8&#x27;b111x1110;
+  arg2 = 8&#x27;b11101110;
+  arg3 = 8&#x27;b11zz0zz0;
+  arg4 = 8&#x27;b011x111x;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="flattenMuxFalse">
 <h2>flattenMuxFalse</h2>
@@ -248,7 +450,53 @@ hw.module @c2(in %arg0 : i1, in %arg1 : i8, in %arg2 : i8, in %arg3 : i8, in %ar
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i8</td><td class='four'>XXXZXXXX</td><td class='four'>XZ1Z1XX0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXZXXXX</code> <span class='sub'>(i8)</span><br>After outputs: <code class='four'>XZ1Z1XX0</code> <span class='sub'>(i8)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmp4rj80z_z.mlir:1:1
+  input        arg0,	// /tmp/tmp4rj80z_z.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmp4rj80z_z.mlir:1:33
+               arg2,	// /tmp/tmp4rj80z_z.mlir:1:48
+               arg3,	// /tmp/tmp4rj80z_z.mlir:1:62
+               arg4,	// /tmp/tmp4rj80z_z.mlir:1:76
+  output [7:0] o1	// /tmp/tmp4rj80z_z.mlir:1:92
+);
+
+  assign o1 = arg0 ? arg4 : arg0 ? arg3 : arg0 ? arg1 : arg2;	// /tmp/tmp4rj80z_z.mlir:4:8, :5:8, :6:8, :7:3
+endmodule
+
+module c2(	// /tmp/tmp9pethwwf.mlir:1:1
+  input        arg0,	// /tmp/tmp9pethwwf.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmp9pethwwf.mlir:1:33
+               arg2,	// /tmp/tmp9pethwwf.mlir:1:48
+               arg3,	// /tmp/tmp9pethwwf.mlir:1:63
+               arg4,	// /tmp/tmp9pethwwf.mlir:1:78
+  output [7:0] o1	// /tmp/tmp9pethwwf.mlir:1:94
+);
+
+  assign o1 = arg0 ? arg4 : arg2;	// /tmp/tmp9pethwwf.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg arg0;
+reg [7:0] arg1;
+reg [7:0] arg2;
+reg [7:0] arg3;
+reg [7:0] arg4;
+wire [7:0] b_o1; wire [7:0] a_o1;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(b_o1));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(a_o1));
+initial begin
+  arg0 = 1&#x27;bz;
+  arg1 = 8&#x27;bzz1z101z;
+  arg2 = 8&#x27;bzz1z10z0;
+  arg3 = 8&#x27;bz1xz0x11;
+  arg4 = 8&#x27;b1z1z1x10;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="flattenMuxMixed">
 <h2>flattenMuxMixed</h2>
@@ -278,7 +526,53 @@ hw.module @c2(in %arg0 : i1, in %arg1 : i8, in %arg2 : i8, in %arg3 : i8, in %ar
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i8</td><td class='four'>XXXXXXXX</td><td class='four'>XZZ10ZZ0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXXXXXX</code> <span class='sub'>(i8)</span><br>After outputs: <code class='four'>XZZ10ZZ0</code> <span class='sub'>(i8)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpazlpcq6h.mlir:1:1
+  input        arg0,	// /tmp/tmpazlpcq6h.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmpazlpcq6h.mlir:1:33
+               arg2,	// /tmp/tmpazlpcq6h.mlir:1:48
+               arg3,	// /tmp/tmpazlpcq6h.mlir:1:62
+               arg4,	// /tmp/tmpazlpcq6h.mlir:1:76
+  output [7:0] o1	// /tmp/tmpazlpcq6h.mlir:1:92
+);
+
+  assign o1 = arg0 ? (arg0 ? arg1 : arg2) : arg0 ? arg3 : arg4;	// /tmp/tmpazlpcq6h.mlir:4:8, :5:8, :6:8, :7:3
+endmodule
+
+module c2(	// /tmp/tmpl47q7y0k.mlir:1:1
+  input        arg0,	// /tmp/tmpl47q7y0k.mlir:1:18
+  input  [7:0] arg1,	// /tmp/tmpl47q7y0k.mlir:1:33
+               arg2,	// /tmp/tmpl47q7y0k.mlir:1:48
+               arg3,	// /tmp/tmpl47q7y0k.mlir:1:63
+               arg4,	// /tmp/tmpl47q7y0k.mlir:1:78
+  output [7:0] o1	// /tmp/tmpl47q7y0k.mlir:1:94
+);
+
+  assign o1 = arg0 ? arg1 : arg4;	// /tmp/tmpl47q7y0k.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg arg0;
+reg [7:0] arg1;
+reg [7:0] arg2;
+reg [7:0] arg3;
+reg [7:0] arg4;
+wire [7:0] b_o1; wire [7:0] a_o1;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(b_o1));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .arg4(arg4), .o1(a_o1));
+initial begin
+  arg0 = 1&#x27;bz;
+  arg1 = 8&#x27;b0zz10zz0;
+  arg2 = 8&#x27;b0xzz01zx;
+  arg3 = 8&#x27;b0z1x1z1x;
+  arg4 = 8&#x27;bzzz10zz0;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="compareStrengthSignedCommonPrefix">
 <h2>compareStrengthSignedCommonPrefix</h2>
@@ -315,7 +609,45 @@ hw.module @c2(in %arg0 : i3, in %arg1 : i9, in %arg2 : i9, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>0</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpsoghjum3.mlir:1:1
+  input  [2:0] arg0,	// /tmp/tmpsoghjum3.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmpsoghjum3.mlir:1:33
+               arg2,	// /tmp/tmpsoghjum3.mlir:1:48
+  output       o	// /tmp/tmpsoghjum3.mlir:1:63
+);
+
+  assign o = $signed({arg0, arg1}) &gt;= $signed({arg0, arg2});	// /tmp/tmpsoghjum3.mlir:2:8, :3:8, :4:8, :5:3
+endmodule
+
+module c2(	// /tmp/tmpn_2dmjf_.mlir:1:1
+  input  [2:0] arg0,	// /tmp/tmpn_2dmjf_.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmpn_2dmjf_.mlir:1:33
+               arg2,	// /tmp/tmpn_2dmjf_.mlir:1:48
+  output       o	// /tmp/tmpn_2dmjf_.mlir:1:64
+);
+
+  assign o = $signed({arg0[2], arg1}) &gt;= $signed({arg0[2], arg2});	// /tmp/tmpn_2dmjf_.mlir:2:10, :3:10, :4:10, :5:10, :6:5
+endmodule
+
+module tb;
+reg [2:0] arg0;
+reg [8:0] arg1;
+reg [8:0] arg2;
+wire b_o; wire a_o;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(b_o));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(a_o));
+initial begin
+  arg0 = 3&#x27;b00x;
+  arg1 = 9&#x27;b000111110;
+  arg2 = 9&#x27;b001000000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="compareStrengthSignedCommonPrefixNoExtract">
 <h2>compareStrengthSignedCommonPrefixNoExtract</h2>
@@ -349,7 +681,49 @@ hw.module @c2(in %arg0 : i1, in %arg1 : i3, in %arg2 : i9, in %arg3 : i9, out o 
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>0</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpsh3pdo2t.mlir:1:1
+  input        arg0,	// /tmp/tmpsh3pdo2t.mlir:1:18
+  input  [2:0] arg1,	// /tmp/tmpsh3pdo2t.mlir:1:33
+  input  [8:0] arg2,	// /tmp/tmpsh3pdo2t.mlir:1:48
+               arg3,	// /tmp/tmpsh3pdo2t.mlir:1:62
+  output       o	// /tmp/tmpsh3pdo2t.mlir:1:77
+);
+
+  assign o = $signed({arg0, arg1, arg2}) &gt;= $signed({arg0, arg1, arg3});	// /tmp/tmpsh3pdo2t.mlir:2:8, :3:8, :4:8, :5:3
+endmodule
+
+module c2(	// /tmp/tmpj3vognev.mlir:1:1
+  input        arg0,	// /tmp/tmpj3vognev.mlir:1:18
+  input  [2:0] arg1,	// /tmp/tmpj3vognev.mlir:1:33
+  input  [8:0] arg2,	// /tmp/tmpj3vognev.mlir:1:48
+               arg3,	// /tmp/tmpj3vognev.mlir:1:63
+  output       o	// /tmp/tmpj3vognev.mlir:1:79
+);
+
+  assign o = $signed({arg0, arg2}) &gt;= $signed({arg0, arg3});	// /tmp/tmpj3vognev.mlir:2:10, :3:10, :4:10, :5:5
+endmodule
+
+module tb;
+reg arg0;
+reg [2:0] arg1;
+reg [8:0] arg2;
+reg [8:0] arg3;
+wire b_o; wire a_o;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .o(b_o));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .arg3(arg3), .o(a_o));
+initial begin
+  arg0 = 1&#x27;b0;
+  arg1 = 3&#x27;bx00;
+  arg2 = 9&#x27;b000000000;
+  arg3 = 9&#x27;b000000001;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="compareConcatEliminationTrueCases">
 <h2>compareConcatEliminationTrueCases</h2>
@@ -386,7 +760,49 @@ hw.module @c2(in %arg0 : i4, in %arg1 : i9, in %arg2 : i7, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>1</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>1</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpagr4n4a3.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmpagr4n4a3.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmpagr4n4a3.mlir:1:33
+  input  [6:0] arg2,	// /tmp/tmpagr4n4a3.mlir:1:48
+  output       o	// /tmp/tmpagr4n4a3.mlir:1:63
+);
+
+  wire [19:0] _GEN = {arg0, arg1, arg2};	// /tmp/tmpagr4n4a3.mlir:2:8
+  wire [19:0] _GEN_0 = {arg0, arg1, arg2};	// /tmp/tmpagr4n4a3.mlir:3:8
+  assign o =
+    $signed(_GEN) &lt;= $signed(_GEN_0) &amp; $signed(_GEN) &gt;= $signed(_GEN_0) &amp; _GEN &lt;= _GEN_0
+    &amp; _GEN &gt;= _GEN_0 &amp; _GEN == _GEN_0;	// /tmp/tmpagr4n4a3.mlir:2:8, :3:8, :4:8, :5:8, :6:8, :7:8, :8:8, :9:8, :10:3
+endmodule
+
+module c2(	// /tmp/tmp34s7r2so.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmp34s7r2so.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmp34s7r2so.mlir:1:33
+  input  [6:0] arg2,	// /tmp/tmp34s7r2so.mlir:1:48
+  output       o	// /tmp/tmp34s7r2so.mlir:1:64
+);
+
+  assign o = 1&#x27;h1;	// /tmp/tmp34s7r2so.mlir:2:13, :3:5
+endmodule
+
+module tb;
+reg [3:0] arg0;
+reg [8:0] arg1;
+reg [6:0] arg2;
+wire b_o; wire a_o;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(b_o));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(a_o));
+initial begin
+  arg0 = 4&#x27;b0000;
+  arg1 = 9&#x27;b000000000;
+  arg2 = 7&#x27;bxxxxxxx;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="compareConcatEliminationFalseCases">
 <h2>compareConcatEliminationFalseCases</h2>
@@ -419,7 +835,49 @@ hw.module @c2(in %arg0 : i4, in %arg1 : i9, in %arg2 : i7, out o : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>0</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>0</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpuz5_5yjm.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmpuz5_5yjm.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmpuz5_5yjm.mlir:1:33
+  input  [6:0] arg2,	// /tmp/tmpuz5_5yjm.mlir:1:48
+  output       o	// /tmp/tmpuz5_5yjm.mlir:1:63
+);
+
+  wire [19:0] _GEN = {arg0, arg1, arg2};	// /tmp/tmpuz5_5yjm.mlir:2:8
+  wire [19:0] _GEN_0 = {arg0, arg1, arg2};	// /tmp/tmpuz5_5yjm.mlir:3:8
+  assign o =
+    $signed(_GEN) &lt; $signed(_GEN_0) | $signed(_GEN) &gt; $signed(_GEN_0) | _GEN &lt; _GEN_0
+    | _GEN &gt; _GEN_0 | _GEN != _GEN_0;	// /tmp/tmpuz5_5yjm.mlir:2:8, :3:8, :4:8, :5:8, :6:8, :7:8, :8:8, :9:8, :10:3
+endmodule
+
+module c2(	// /tmp/tmpcnuw89nq.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmpcnuw89nq.mlir:1:18
+  input  [8:0] arg1,	// /tmp/tmpcnuw89nq.mlir:1:33
+  input  [6:0] arg2,	// /tmp/tmpcnuw89nq.mlir:1:48
+  output       o	// /tmp/tmpcnuw89nq.mlir:1:64
+);
+
+  assign o = 1&#x27;h0;	// /tmp/tmpcnuw89nq.mlir:2:14, :3:5
+endmodule
+
+module tb;
+reg [3:0] arg0;
+reg [8:0] arg1;
+reg [6:0] arg2;
+wire b_o; wire a_o;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(b_o));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o(a_o));
+initial begin
+  arg0 = 4&#x27;b0000;
+  arg1 = 9&#x27;b000000000;
+  arg2 = 7&#x27;bxxxxxxx;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="compareExtractFold">
 <h2>compareExtractFold</h2>
@@ -472,7 +930,49 @@ hw.module @c2(in %arg0 : i8, out o1 : i1, out o2 : i1, out o3 : i1) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>X</td><td>same</td></tr><tr><td>out1</td><td>i1</td><td class='four'>X</td><td class='four'>X</td><td>same</td></tr><tr><td>out2</td><td>i1</td><td class='four'>X</td><td class='four'>1</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>1</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmp7f2snxne.mlir:1:1
+  input  [7:0] arg0,	// /tmp/tmp7f2snxne.mlir:1:18
+  output       o1,	// /tmp/tmp7f2snxne.mlir:1:34
+               o2,	// /tmp/tmp7f2snxne.mlir:1:46
+               o3	// /tmp/tmp7f2snxne.mlir:1:58
+);
+
+  assign o1 = arg0 &gt; 8&#x27;h3;	// /tmp/tmp7f2snxne.mlir:3:12, :4:8, :21:3
+  assign o2 = arg0 &lt; 8&#x27;hC0;	// /tmp/tmp7f2snxne.mlir:9:14, :10:8, :21:3
+  assign o3 = {2&#x27;h0, arg0} &lt; 10&#x27;h300;	// /tmp/tmp7f2snxne.mlir:15:12, :16:8, :17:15, :18:8, :21:3
+endmodule
+
+module c2(	// /tmp/tmpao2xnbzi.mlir:1:1
+  input  [7:0] arg0,	// /tmp/tmpao2xnbzi.mlir:1:18
+  output       o1,	// /tmp/tmpao2xnbzi.mlir:1:34
+               o2,	// /tmp/tmpao2xnbzi.mlir:1:47
+               o3	// /tmp/tmpao2xnbzi.mlir:1:60
+);
+
+  assign o1 = |(arg0[7:2]);	// /tmp/tmpao2xnbzi.mlir:5:10, :6:10, :9:5
+  assign o2 = arg0[7:6] != 2&#x27;h3;	// /tmp/tmpao2xnbzi.mlir:3:15, :7:10, :8:10, :9:5
+  assign o3 = 1&#x27;h1;	// /tmp/tmpao2xnbzi.mlir:2:13, :9:5
+endmodule
+
+module tb;
+reg [7:0] arg0;
+wire b_o1; wire a_o1;
+wire b_o2; wire a_o2;
+wire b_o3; wire a_o3;
+c1 i1(.arg0(arg0), .o1(b_o1), .o2(b_o2), .o3(b_o3));
+c2 i2(.arg0(arg0), .o1(a_o1), .o2(a_o2), .o3(a_o3));
+initial begin
+  arg0 = 8&#x27;bxz00zz0x;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1) &amp;&amp; (b_o2===a_o2) &amp;&amp; (b_o3===a_o3))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $display(&quot;  o2 before=%b after=%b&quot;, b_o2, a_o2);
+  $display(&quot;  o3 before=%b after=%b&quot;, b_o3, a_o3);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrowAdditionSingleExtractUse">
 <h2>narrowAdditionSingleExtractUse</h2>
@@ -511,7 +1011,42 @@ hw.module @c2(in %x : i8, in %y : i8, out z1 : i6) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i6</td><td class='four'>XXXXXX</td><td class='four'>111000</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXXXX</code> <span class='sub'>(i6)</span><br>After outputs: <code class='four'>111000</code> <span class='sub'>(i6)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpc3tq744p.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpc3tq744p.mlir:1:18
+               y,	// /tmp/tmpc3tq744p.mlir:1:29
+  output [5:0] z1	// /tmp/tmpc3tq744p.mlir:1:41
+);
+
+  wire [8:0] _GEN = {1&#x27;h0, x} + {1&#x27;h0, y};	// /tmp/tmpc3tq744p.mlir:7:12, :8:8, :9:8, :10:8
+  assign z1 = _GEN[5:0];	// /tmp/tmpc3tq744p.mlir:10:8, :11:8, :12:3
+endmodule
+
+module c2(	// /tmp/tmp7oaj09r_.mlir:1:1
+  input  [7:0] x,	// /tmp/tmp7oaj09r_.mlir:1:18
+               y,	// /tmp/tmp7oaj09r_.mlir:1:30
+  output [5:0] z1	// /tmp/tmp7oaj09r_.mlir:1:43
+);
+
+  assign z1 = x[5:0] + y[5:0];	// /tmp/tmp7oaj09r_.mlir:2:10, :3:10, :4:10, :5:5
+endmodule
+
+module tb;
+reg [7:0] x;
+reg [7:0] y;
+wire [5:0] b_z1; wire [5:0] a_z1;
+c1 i1(.x(x), .y(y), .z1(b_z1));
+c2 i2(.x(x), .y(y), .z1(a_z1));
+initial begin
+  x = 8&#x27;b00000000;
+  y = 8&#x27;bxx111000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_z1===a_z1))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  z1 before=%b after=%b&quot;, b_z1, a_z1);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrowAdditionToWidestExtract">
 <h2>narrowAdditionToWidestExtract</h2>
@@ -551,7 +1086,49 @@ hw.module @c2(in %x : i8, in %y : i8, out z1 : i3, out z2 : i4) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i3</td><td class='four'>XXX</td><td class='four'>101</td><td>✗ differ</td></tr><tr><td>out1</td><td>i4</td><td class='four'>XXXX</td><td class='four'>1101</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXX</code> <span class='sub'>(i3)</span>, <code class='four'>XXXX</code> <span class='sub'>(i4)</span><br>After outputs: <code class='four'>101</code> <span class='sub'>(i3)</span>, <code class='four'>1101</code> <span class='sub'>(i4)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpks5xawp9.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpks5xawp9.mlir:1:18
+               y,	// /tmp/tmpks5xawp9.mlir:1:29
+  output [2:0] z1,	// /tmp/tmpks5xawp9.mlir:1:41
+  output [3:0] z2	// /tmp/tmpks5xawp9.mlir:1:53
+);
+
+  wire [15:0] _GEN = {x, x} + {y, y};	// /tmp/tmpks5xawp9.mlir:8:8, :9:8, :10:8
+  assign z1 = _GEN[2:0];	// /tmp/tmpks5xawp9.mlir:10:8, :11:8, :13:3
+  assign z2 = _GEN[3:0];	// /tmp/tmpks5xawp9.mlir:10:8, :12:8, :13:3
+endmodule
+
+module c2(	// /tmp/tmp0yxg51uf.mlir:1:1
+  input  [7:0] x,	// /tmp/tmp0yxg51uf.mlir:1:18
+               y,	// /tmp/tmp0yxg51uf.mlir:1:30
+  output [2:0] z1,	// /tmp/tmp0yxg51uf.mlir:1:43
+  output [3:0] z2	// /tmp/tmp0yxg51uf.mlir:1:56
+);
+
+  wire [3:0] _GEN = x[3:0] + y[3:0];	// /tmp/tmp0yxg51uf.mlir:2:10, :3:10, :4:10
+  assign z1 = _GEN[2:0];	// /tmp/tmp0yxg51uf.mlir:4:10, :5:10, :6:5
+  assign z2 = _GEN;	// /tmp/tmp0yxg51uf.mlir:4:10, :6:5
+endmodule
+
+module tb;
+reg [7:0] x;
+reg [7:0] y;
+wire [2:0] b_z1; wire [2:0] a_z1;
+wire [3:0] b_z2; wire [3:0] a_z2;
+c1 i1(.x(x), .y(y), .z1(b_z1), .z2(b_z2));
+c2 i2(.x(x), .y(y), .z1(a_z1), .z2(a_z2));
+initial begin
+  x = 8&#x27;bxx000101;
+  y = 8&#x27;bx0xx1000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_z1===a_z1) &amp;&amp; (b_z2===a_z2))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  z1 before=%b after=%b&quot;, b_z1, a_z1);
+  $display(&quot;  z2 before=%b after=%b&quot;, b_z2, a_z2);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrowAdditionExtractFromNoneZero">
 <h2>narrowAdditionExtractFromNoneZero</h2>
@@ -589,7 +1166,43 @@ hw.module @c2(in %x : i8, in %y : i8, out z0 : i4) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i4</td><td class='four'>XXXX</td><td class='four'>1101</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXX</code> <span class='sub'>(i4)</span><br>After outputs: <code class='four'>1101</code> <span class='sub'>(i4)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmplwx4v5gk.mlir:1:1
+  input  [7:0] x,	// /tmp/tmplwx4v5gk.mlir:1:18
+               y,	// /tmp/tmplwx4v5gk.mlir:1:29
+  output [3:0] z0	// /tmp/tmplwx4v5gk.mlir:1:41
+);
+
+  wire [7:0] _GEN = x + y;	// /tmp/tmplwx4v5gk.mlir:8:8
+  assign z0 = _GEN[4:1];	// /tmp/tmplwx4v5gk.mlir:8:8, :9:8, :10:3
+endmodule
+
+module c2(	// /tmp/tmpo5v2ca9d.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpo5v2ca9d.mlir:1:18
+               y,	// /tmp/tmpo5v2ca9d.mlir:1:30
+  output [3:0] z0	// /tmp/tmpo5v2ca9d.mlir:1:43
+);
+
+  wire [4:0] _GEN = x[4:0] + y[4:0];	// /tmp/tmpo5v2ca9d.mlir:2:10, :3:10, :4:10
+  assign z0 = _GEN[4:1];	// /tmp/tmpo5v2ca9d.mlir:4:10, :5:10, :6:5
+endmodule
+
+module tb;
+reg [7:0] x;
+reg [7:0] y;
+wire [3:0] b_z0; wire [3:0] a_z0;
+c1 i1(.x(x), .y(y), .z0(b_z0));
+c2 i2(.x(x), .y(y), .z0(a_z0));
+initial begin
+  x = 8&#x27;bxxx01010;
+  y = 8&#x27;bx0x10000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_z0===a_z0))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  z0 before=%b after=%b&quot;, b_z0, a_z0);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrowSubExtractFromNoneZero">
 <h2>narrowSubExtractFromNoneZero</h2>
@@ -627,7 +1240,43 @@ hw.module @c2(in %x : i8, in %y : i8, out z0 : i4) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i4</td><td class='four'>XXXX</td><td class='four'>1010</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXX</code> <span class='sub'>(i4)</span><br>After outputs: <code class='four'>1010</code> <span class='sub'>(i4)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpsf_wxrjp.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpsf_wxrjp.mlir:1:18
+               y,	// /tmp/tmpsf_wxrjp.mlir:1:29
+  output [3:0] z0	// /tmp/tmpsf_wxrjp.mlir:1:41
+);
+
+  wire [7:0] _GEN = x - y;	// /tmp/tmpsf_wxrjp.mlir:8:8
+  assign z0 = _GEN[4:1];	// /tmp/tmpsf_wxrjp.mlir:8:8, :9:8, :10:3
+endmodule
+
+module c2(	// /tmp/tmp3fy3w4dc.mlir:1:1
+  input  [7:0] x,	// /tmp/tmp3fy3w4dc.mlir:1:18
+               y,	// /tmp/tmp3fy3w4dc.mlir:1:30
+  output [3:0] z0	// /tmp/tmp3fy3w4dc.mlir:1:43
+);
+
+  wire [4:0] _GEN = x[4:0] - y[4:0];	// /tmp/tmp3fy3w4dc.mlir:2:10, :3:10, :4:10
+  assign z0 = _GEN[4:1];	// /tmp/tmp3fy3w4dc.mlir:4:10, :5:10, :6:5
+endmodule
+
+module tb;
+reg [7:0] x;
+reg [7:0] y;
+wire [3:0] b_z0; wire [3:0] a_z0;
+c1 i1(.x(x), .y(y), .z0(b_z0));
+c2 i2(.x(x), .y(y), .z0(a_z0));
+initial begin
+  x = 8&#x27;b0x000100;
+  y = 8&#x27;b0x010000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_z0===a_z0))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  z0 before=%b after=%b&quot;, b_z0, a_z0);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrowMulExtractFromNoneZero">
 <h2>narrowMulExtractFromNoneZero</h2>
@@ -665,7 +1314,43 @@ hw.module @c2(in %x : i8, in %y : i8, out z0 : i4) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i4</td><td class='four'>XXXX</td><td class='four'>0000</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXX</code> <span class='sub'>(i4)</span><br>After outputs: <code class='four'>0000</code> <span class='sub'>(i4)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpxfkv8fct.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpxfkv8fct.mlir:1:18
+               y,	// /tmp/tmpxfkv8fct.mlir:1:29
+  output [3:0] z0	// /tmp/tmpxfkv8fct.mlir:1:41
+);
+
+  wire [7:0] _GEN = x * y;	// /tmp/tmpxfkv8fct.mlir:8:8
+  assign z0 = _GEN[4:1];	// /tmp/tmpxfkv8fct.mlir:8:8, :9:8, :10:3
+endmodule
+
+module c2(	// /tmp/tmpqb39wg2l.mlir:1:1
+  input  [7:0] x,	// /tmp/tmpqb39wg2l.mlir:1:18
+               y,	// /tmp/tmpqb39wg2l.mlir:1:30
+  output [3:0] z0	// /tmp/tmpqb39wg2l.mlir:1:43
+);
+
+  wire [4:0] _GEN = x[4:0] * y[4:0];	// /tmp/tmpqb39wg2l.mlir:2:10, :3:10, :4:10
+  assign z0 = _GEN[4:1];	// /tmp/tmpqb39wg2l.mlir:4:10, :5:10, :6:5
+endmodule
+
+module tb;
+reg [7:0] x;
+reg [7:0] y;
+wire [3:0] b_z0; wire [3:0] a_z0;
+c1 i1(.x(x), .y(y), .z0(b_z0));
+c2 i2(.x(x), .y(y), .z0(a_z0));
+initial begin
+  x = 8&#x27;b00010101;
+  y = 8&#x27;b0xx11101;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_z0===a_z0))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  z0 before=%b after=%b&quot;, b_z0, a_z0);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="narrow_extract_from_and">
 <h2>narrow_extract_from_and</h2>
@@ -727,7 +1412,57 @@ hw.module @c2(in %arg0 : i32, out o1 : i8, out o2 : i14, out o3 : i8, out o4 : i
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i8</td><td class='four'>000XXXX0</td><td class='four'>000ZZZZ0</td><td>✗ differ</td></tr><tr><td>out1</td><td>i14</td><td class='four'>00000000XXXX00</td><td class='four'>00000000ZZZZ00</td><td>✗ differ</td></tr><tr><td>out2</td><td>i8</td><td class='four'>000X0000</td><td class='four'>000X0000</td><td>same</td></tr><tr><td>out3</td><td>i8</td><td class='four'>00000X00</td><td class='four'>00000Z00</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>000XXXX0</code> <span class='sub'>(i8)</span>, <code class='four'>00000000XXXX00</code> <span class='sub'>(i14)</span>, <code class='four'>000X0000</code> <span class='sub'>(i8)</span>, <code class='four'>00000X00</code> <span class='sub'>(i8)</span><br>After outputs: <code class='four'>000ZZZZ0</code> <span class='sub'>(i8)</span>, <code class='four'>00000000ZZZZ00</code> <span class='sub'>(i14)</span>, <code class='four'>000X0000</code> <span class='sub'>(i8)</span>, <code class='four'>00000Z00</code> <span class='sub'>(i8)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmp5xcr08v3.mlir:1:1
+  input  [31:0] arg0,	// /tmp/tmp5xcr08v3.mlir:1:18
+  output [7:0]  o1,	// /tmp/tmp5xcr08v3.mlir:1:35
+  output [13:0] o2,	// /tmp/tmp5xcr08v3.mlir:1:47
+  output [7:0]  o3,	// /tmp/tmp5xcr08v3.mlir:1:60
+                o4	// /tmp/tmp5xcr08v3.mlir:1:72
+);
+
+  wire [31:0] _GEN = arg0 &amp; 32&#x27;hF0;	// /tmp/tmp5xcr08v3.mlir:2:15, :3:8
+  wire [31:0] _GEN_0 = arg0 &amp; 32&#x27;h2A;	// /tmp/tmp5xcr08v3.mlir:12:14, :13:8
+  assign o1 = _GEN[10:3];	// /tmp/tmp5xcr08v3.mlir:3:8, :4:8, :25:3
+  assign o2 = _GEN[15:2];	// /tmp/tmp5xcr08v3.mlir:3:8, :6:8, :25:3
+  assign o3 = _GEN_0[8:1];	// /tmp/tmp5xcr08v3.mlir:13:8, :14:8, :25:3
+  assign o4 = arg0[30:23] &amp; 8&#x27;hC;	// /tmp/tmp5xcr08v3.mlir:19:13, :20:8, :21:8, :25:3
+endmodule
+
+module c2(	// /tmp/tmpc77s96mk.mlir:1:1
+  input  [31:0] arg0,	// /tmp/tmpc77s96mk.mlir:1:18
+  output [7:0]  o1,	// /tmp/tmpc77s96mk.mlir:1:35
+  output [13:0] o2,	// /tmp/tmpc77s96mk.mlir:1:48
+  output [7:0]  o3,	// /tmp/tmpc77s96mk.mlir:1:62
+                o4	// /tmp/tmpc77s96mk.mlir:1:75
+);
+
+  assign o1 = {3&#x27;h0, arg0[7:4], 1&#x27;h0};	// /tmp/tmpc77s96mk.mlir:6:14, :7:14, :8:10, :9:10, :16:5
+  assign o2 = {8&#x27;h0, arg0[7:4], 2&#x27;h0};	// /tmp/tmpc77s96mk.mlir:4:14, :5:14, :8:10, :10:10, :16:5
+  assign o3 = {3&#x27;h0, arg0[5:1] &amp; 5&#x27;h15};	// /tmp/tmpc77s96mk.mlir:3:16, :6:14, :11:10, :12:10, :13:10, :16:5
+  assign o4 = {4&#x27;h0, arg0[26:25], 2&#x27;h0};	// /tmp/tmpc77s96mk.mlir:2:14, :5:14, :14:10, :15:10, :16:5
+endmodule
+
+module tb;
+reg [31:0] arg0;
+wire [7:0] b_o1; wire [7:0] a_o1;
+wire [13:0] b_o2; wire [13:0] a_o2;
+wire [7:0] b_o3; wire [7:0] a_o3;
+wire [7:0] b_o4; wire [7:0] a_o4;
+c1 i1(.arg0(arg0), .o1(b_o1), .o2(b_o2), .o3(b_o3), .o4(b_o4));
+c2 i2(.arg0(arg0), .o1(a_o1), .o2(a_o2), .o3(a_o3), .o4(a_o4));
+initial begin
+  arg0 = 32&#x27;b000000z00000000000000000zzzz0000;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1) &amp;&amp; (b_o2===a_o2) &amp;&amp; (b_o3===a_o3) &amp;&amp; (b_o4===a_o4))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $display(&quot;  o2 before=%b after=%b&quot;, b_o2, a_o2);
+  $display(&quot;  o3 before=%b after=%b&quot;, b_o3, a_o3);
+  $display(&quot;  o4 before=%b after=%b&quot;, b_o4, a_o4);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="extractShift">
 <h2>extractShift</h2>
@@ -777,7 +1512,59 @@ hw.module @c2(in %arg0 : i4, out o1 : i1, out o2 : i1, out o3 : i1, out o4 : i1)
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i1</td><td class='four'>X</td><td class='four'>0</td><td>✗ differ</td></tr><tr><td>out1</td><td>i1</td><td class='four'>X</td><td class='four'>0</td><td>✗ differ</td></tr><tr><td>out2</td><td>i1</td><td class='four'>X</td><td class='four'>X</td><td>same</td></tr><tr><td>out3</td><td>i1</td><td class='four'>X</td><td class='four'>X</td><td>same</td></tr></table>
 <p class="io">Before outputs: <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span><br>After outputs: <code class='four'>0</code> <span class='sub'>(i1)</span>, <code class='four'>0</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span>, <code class='four'>X</code> <span class='sub'>(i1)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpkl7yn2vt.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmpkl7yn2vt.mlir:1:18
+  output       o1,	// /tmp/tmpkl7yn2vt.mlir:1:34
+               o2,	// /tmp/tmpkl7yn2vt.mlir:1:47
+               o3,	// /tmp/tmpkl7yn2vt.mlir:1:59
+               o4	// /tmp/tmpkl7yn2vt.mlir:1:71
+);
+
+  wire [3:0] _GEN = 4&#x27;h1 &lt;&lt; arg0;	// /tmp/tmpkl7yn2vt.mlir:2:9, :3:8
+  wire [3:0] _GEN_0 = 4&#x27;h1 &lt;&lt; arg0;	// /tmp/tmpkl7yn2vt.mlir:2:9, :4:8
+  wire [3:0] _GEN_1 = 4&#x27;h1 &lt;&lt; arg0;	// /tmp/tmpkl7yn2vt.mlir:2:9, :5:8
+  assign o1 = _GEN[0];	// /tmp/tmpkl7yn2vt.mlir:3:8, :8:8, :20:3
+  assign o2 = _GEN_0[2];	// /tmp/tmpkl7yn2vt.mlir:4:8, :11:8, :20:3
+  assign o3 = _GEN_1[2];	// /tmp/tmpkl7yn2vt.mlir:5:8, :14:8, :20:3
+  assign o4 = _GEN_1[2];	// /tmp/tmpkl7yn2vt.mlir:5:8, :17:8, :20:3
+endmodule
+
+module c2(	// /tmp/tmplhaj0a6m.mlir:1:1
+  input  [3:0] arg0,	// /tmp/tmplhaj0a6m.mlir:1:18
+  output       o1,	// /tmp/tmplhaj0a6m.mlir:1:34
+               o2,	// /tmp/tmplhaj0a6m.mlir:1:47
+               o3,	// /tmp/tmplhaj0a6m.mlir:1:60
+               o4	// /tmp/tmplhaj0a6m.mlir:1:73
+);
+
+  wire [3:0] _GEN = 4&#x27;h1 &lt;&lt; arg0;	// /tmp/tmplhaj0a6m.mlir:4:14, :5:10
+  assign o1 = arg0 == 4&#x27;h0;	// /tmp/tmplhaj0a6m.mlir:3:14, :6:10, :10:5
+  assign o2 = arg0 == 4&#x27;h2;	// /tmp/tmplhaj0a6m.mlir:2:14, :7:10, :10:5
+  assign o3 = _GEN[2];	// /tmp/tmplhaj0a6m.mlir:5:10, :8:10, :10:5
+  assign o4 = _GEN[2];	// /tmp/tmplhaj0a6m.mlir:5:10, :9:10, :10:5
+endmodule
+
+module tb;
+reg [3:0] arg0;
+wire b_o1; wire a_o1;
+wire b_o2; wire a_o2;
+wire b_o3; wire a_o3;
+wire b_o4; wire a_o4;
+c1 i1(.arg0(arg0), .o1(b_o1), .o2(b_o2), .o3(b_o3), .o4(b_o4));
+c2 i2(.arg0(arg0), .o1(a_o1), .o2(a_o2), .o3(a_o3), .o4(a_o4));
+initial begin
+  arg0 = 4&#x27;b01xz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1) &amp;&amp; (b_o2===a_o2) &amp;&amp; (b_o3===a_o3) &amp;&amp; (b_o4===a_o4))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $display(&quot;  o2 before=%b after=%b&quot;, b_o2, a_o2);
+  $display(&quot;  o3 before=%b after=%b&quot;, b_o3, a_o3);
+  $display(&quot;  o4 before=%b after=%b&quot;, b_o4, a_o4);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="muxConstantsFold">
 <h2>muxConstantsFold</h2>
@@ -808,7 +1595,37 @@ hw.module @c2(in %cond : i1, out o : i25) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i25</td><td class='four'>XXXXXXXXXXXXXXXXXXXXXXXXX</td><td class='four'>ZZZZZZZZZZZZZZZZZZZZZZZZZ</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXXXXXXXXXXXXXXXXXXXXXXX</code> <span class='sub'>(i25)</span><br>After outputs: <code class='four'>ZZZZZZZZZZZZZZZZZZZZZZZZZ</code> <span class='sub'>(i25)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmp1vp_e90n.mlir:1:1
+  input         cond,	// /tmp/tmp1vp_e90n.mlir:1:18
+  output [24:0] o	// /tmp/tmp1vp_e90n.mlir:1:33
+);
+
+  assign o = cond ? 25&#x27;h1FFFFFF : 25&#x27;h0;	// /tmp/tmp1vp_e90n.mlir:3:13, :4:14, :5:8, :7:3
+endmodule
+
+module c2(	// /tmp/tmpii755cf7.mlir:1:1
+  input         cond,	// /tmp/tmpii755cf7.mlir:1:18
+  output [24:0] o	// /tmp/tmpii755cf7.mlir:1:34
+);
+
+  assign o = {25{cond}};	// /tmp/tmpii755cf7.mlir:2:10, :3:5
+endmodule
+
+module tb;
+reg cond;
+wire [24:0] b_o; wire [24:0] a_o;
+c1 i1(.cond(cond), .o(b_o));
+c2 i2(.cond(cond), .o(a_o));
+initial begin
+  cond = 1&#x27;bz;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o===a_o))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o before=%b after=%b&quot;, b_o, a_o);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="flatten_multi_use_and">
 <h2>flatten_multi_use_and</h2>
@@ -862,7 +1679,52 @@ hw.module @c2(in %arg0 : i8, in %arg1 : i8, in %arg2 : i8, out o1 : i8, out o2 :
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i8</td><td class='four'>0000XXXX</td><td class='four'>0000ZZZZ</td><td>✗ differ</td></tr><tr><td>out1</td><td>i8</td><td class='four'>00000X00</td><td class='four'>00000X00</td><td>same</td></tr></table>
 <p class="io">Before outputs: <code class='four'>0000XXXX</code> <span class='sub'>(i8)</span>, <code class='four'>00000X00</code> <span class='sub'>(i8)</span><br>After outputs: <code class='four'>0000ZZZZ</code> <span class='sub'>(i8)</span>, <code class='four'>00000X00</code> <span class='sub'>(i8)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmplu6u3237.mlir:1:1
+  input  [7:0] arg0,	// /tmp/tmplu6u3237.mlir:2:6
+               arg1,	// /tmp/tmplu6u3237.mlir:2:20
+               arg2,	// /tmp/tmplu6u3237.mlir:2:34
+  output [7:0] o1,	// /tmp/tmplu6u3237.mlir:3:7
+               o2	// /tmp/tmplu6u3237.mlir:3:19
+);
+
+  wire [7:0] _GEN = arg0 &amp; 8&#x27;hF;	// /tmp/tmplu6u3237.mlir:8:13, :9:8
+  assign o1 = _GEN;	// /tmp/tmplu6u3237.mlir:9:8, :22:3
+  assign o2 = arg1 &amp; _GEN &amp; arg2 &amp; 8&#x27;h7;	// /tmp/tmplu6u3237.mlir:9:8, :13:12, :14:8, :22:3
+endmodule
+
+module c2(	// /tmp/tmpjcm8xw7n.mlir:1:1
+  input  [7:0] arg0,	// /tmp/tmpjcm8xw7n.mlir:1:18
+               arg1,	// /tmp/tmpjcm8xw7n.mlir:1:33
+               arg2,	// /tmp/tmpjcm8xw7n.mlir:1:48
+  output [7:0] o1,	// /tmp/tmpjcm8xw7n.mlir:1:64
+               o2	// /tmp/tmpjcm8xw7n.mlir:1:77
+);
+
+  assign o1 = {4&#x27;h0, arg0[3:0]};	// /tmp/tmpjcm8xw7n.mlir:3:14, :4:10, :5:10, :11:5
+  assign o2 = {5&#x27;h0, arg1[2:0] &amp; arg0[2:0] &amp; arg2[2:0]};	// /tmp/tmpjcm8xw7n.mlir:2:14, :6:10, :7:10, :8:10, :9:10, :10:10, :11:5
+endmodule
+
+module tb;
+reg [7:0] arg0;
+reg [7:0] arg1;
+reg [7:0] arg2;
+wire [7:0] b_o1; wire [7:0] a_o1;
+wire [7:0] b_o2; wire [7:0] a_o2;
+c1 i1(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o1(b_o1), .o2(b_o2));
+c2 i2(.arg0(arg0), .arg1(arg1), .arg2(arg2), .o1(a_o1), .o2(a_o2));
+initial begin
+  arg0 = 8&#x27;b0000zzzz;
+  arg1 = 8&#x27;b00000100;
+  arg2 = 8&#x27;b00000x01;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_o1===a_o1) &amp;&amp; (b_o2===a_o2))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  o1 before=%b after=%b&quot;, b_o1, a_o1);
+  $display(&quot;  o2 before=%b after=%b&quot;, b_o2, a_o2);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <section class="card" id="Issue5531">
 <h2>Issue5531</h2>
@@ -896,7 +1758,42 @@ hw.module @c2(in %arg0 : i64, in %arg1 : i64, out out : i32) {
 <h3>Outputs under counterexample <span class="sub">(evaluated with Verilog-like 4-state semantics — same as SMT encoding)</span></h3>
 <table><tr><th>port</th><th>type</th><th>before</th><th>after</th><th></th></tr><tr><td>out0</td><td>i32</td><td class='four'>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</td><td class='four'>11101011100100001011010100100011</td><td>✗ differ</td></tr></table>
 <p class="io">Before outputs: <code class='four'>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code> <span class='sub'>(i32)</span><br>After outputs: <code class='four'>11101011100100001011010100100011</code> <span class='sub'>(i32)</span></p>
-<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>icmp/arith</code> any-X→X).</p>
+<p class="note">Model: free 4-state inputs (X and Z allowed) where <code>distinct(out_before,out_after)</code> is SAT. <code>val&amp;pois</code> per bit decodes to <code>00=0,01=1,10=X,11=Z</code>. Outputs differ as full <code>2*N</code>-bit vectors (val and poison both compared). Computed with int-based 4-state interpreter matching the SMT encoding (<code>and/or</code> Kleene, <code>mux</code> agreement-else-X, <code>eq/ne</code> precise known-differ else X, ordered <code>any-X→X</code>).</p>
+<details><summary>Executable Verilog reproducer (hidden) — save as <code>repro.v</code>, run <code>iverilog -o sim repro.v && vvp sim</code></summary><pre>module c1(	// /tmp/tmpn17pk0aw.mlir:1:1
+  input  [63:0] arg0,	// /tmp/tmpn17pk0aw.mlir:1:18
+                arg1,	// /tmp/tmpn17pk0aw.mlir:1:34
+  output [31:0] out	// /tmp/tmpn17pk0aw.mlir:1:51
+);
+
+  wire [63:0] hint = arg0 * arg1;	// /tmp/tmpn17pk0aw.mlir:3:8
+  assign out = hint[31:0];	// /tmp/tmpn17pk0aw.mlir:3:8, :4:8, :5:3
+endmodule
+
+module c2(	// /tmp/tmpd76sd7hn.mlir:1:1
+  input  [63:0] arg0,	// /tmp/tmpd76sd7hn.mlir:1:18
+                arg1,	// /tmp/tmpd76sd7hn.mlir:1:34
+  output [31:0] out	// /tmp/tmpd76sd7hn.mlir:1:51
+);
+
+  assign out = arg0[31:0] * arg1[31:0];	// /tmp/tmpd76sd7hn.mlir:2:10, :3:10, :4:10, :5:5
+endmodule
+
+module tb;
+reg [63:0] arg0;
+reg [63:0] arg1;
+wire [31:0] b_out; wire [31:0] a_out;
+c1 i1(.arg0(arg0), .arg1(arg1), .out(b_out));
+c2 i2(.arg0(arg0), .arg1(arg1), .out(a_out));
+initial begin
+  arg0 = 64&#x27;b000000000000000x000000000000000011000110010110000000100001100101;
+  arg1 = 64&#x27;b0000000000000000000000000000000010111101000011010111101011100111;
+  #1;
+  $display(&quot;RESULT %s&quot;, ((b_out===a_out))?&quot;EQ&quot;:&quot;DIFF&quot;);
+  $display(&quot;  out before=%b after=%b&quot;, b_out, a_out);
+  $finish;
+end
+endmodule
+</pre></details>
 </section>
 <footer><p>Encoding recap: <code>and/or</code> Kleene (<code>0&amp;X=0,1|X=1</code> else X, never Z); <code>xor</code> any-X→X; <code>mux</code> X-select = per-bit agreement else X (Z-select disagreement → X, hence X-vs-Z mismatches); <code>icmp/arith</code> any-X→all-X; <code>ceq/cne</code> exact (distinguishes X/Z), <code>weq/wne</code> wildcard. Arithmetic all-X makes narrowing (<code>extract(add)→add(extract)</code>) unsound.</p></footer>
 </body></html>
