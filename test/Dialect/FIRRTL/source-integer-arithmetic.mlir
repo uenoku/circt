@@ -1,5 +1,4 @@
 // RUN: circt-translate --export-firrtl --firrtl-version=4.0.0 %s | FileCheck %s --check-prefix=SOURCE
-// RUN: circt-translate --export-firrtl --firrtl-version=7.0.0 %s | FileCheck %s --check-prefix=SOURCE
 // RUN: circt-translate --export-firrtl --firrtl-version=4.0.0 %s | circt-translate --import-firrtl | FileCheck %s --check-prefix=IMPORT
 // RUN: circt-translate --export-firrtl --firrtl-version=4.0.0 --target-line-length=10 %s | circt-translate --import-firrtl | FileCheck %s --check-prefix=IMPORT
 

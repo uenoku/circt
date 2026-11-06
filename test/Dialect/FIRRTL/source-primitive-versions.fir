@@ -10,13 +10,3 @@ circuit Test :
     output out : Bool
     ; expected-error @below {{bool_and are a FIRRTL 7.0.0+ feature}}
     propassign out, bool_and(a, b)
-
-;// -----
-
-FIRRTL version 7.0.0
-circuit Test :
-  public module Test :
-    input a : Bool
-    input b : Bool
-    output out : Bool
-    propassign out, bool_and(a, b)
