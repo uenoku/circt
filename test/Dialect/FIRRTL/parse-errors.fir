@@ -1062,7 +1062,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integer arithmetic expressions are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
+    ; expected-error @below {{integer_add are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
     propassign c, integer_add(a, b)
 
 ;// -----
@@ -1073,7 +1073,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integer arithmetic expressions are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
+    ; expected-error @below {{integer_mul are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
     propassign c, integer_mul(a, b)
 
 ;// -----
@@ -1084,7 +1084,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integer arithmetic expressions are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
+    ; expected-error @below {{integer_shr are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
     propassign c, integer_shr(a, b)
 
 ;// -----
@@ -1095,7 +1095,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integer arithmetic expressions are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
+    ; expected-error @below {{integer_shl are a FIRRTL 4.0.0+ feature, but the specified FIRRTL version was 3.1.0}}
     propassign c, integer_shl(a, b)
 
 ;// -----
@@ -1106,7 +1106,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integers are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
+    ; expected-error @below {{integer_and are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
     propassign c, integer_and(a, b)
 
 ;// -----
@@ -1117,7 +1117,7 @@ circuit Top:
     input a : Integer
     input b : Integer
     output c : Integer
-    ; expected-error @below {{Integers are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
+    ; expected-error @below {{integer_or are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
     propassign c, integer_or(a, b)
 
 ;// -----
@@ -1127,7 +1127,7 @@ circuit Top:
   public module Top:
     input a : Integer
     output c : Integer
-    ; expected-error @below {{Integers are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
+    ; expected-error @below {{integer_not are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
     propassign c, integer_not(a)
 
 ;// -----
@@ -2156,7 +2156,7 @@ FIRRTL version 5.0.0
 circuit AsResetVersion:
   public module AsResetVersion:
     input in: UInt<1>
-    ; expected-error @below {{reset casts are a FIRRTL 7.0.0+ feature}}
+    ; expected-error @below {{asReset are a FIRRTL 7.0.0+ feature}}
     node x = asReset(in)
 
 ;// -----

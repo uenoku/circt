@@ -6,7 +6,7 @@
 firrtl.circuit "IntegerAnd" {
   firrtl.module @IntegerAnd(in %a : !firrtl.integer, in %b : !firrtl.integer,
                             out %out : !firrtl.integer) {
-    // expected-error @below {{'firrtl.integer.and' op integer and requires FIRRTL 7.0.0}}
+    // expected-error @below {{'firrtl.integer.and' op integer_and requires FIRRTL 7.0.0}}
     %0 = firrtl.integer.and %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
     firrtl.propassign %out, %0 : !firrtl.integer
   }

@@ -2,7 +2,7 @@ add_circt_translation_library(CIRCTExportFIRRTL
   FIREmitter.cpp
 
   DEPENDS
-  CIRCTFIRRTLPrimitiveIncGen
+  CIRCTFIRRTLSourceIncGen
 
   LINK_LIBS PUBLIC
   CIRCTFIRRTL

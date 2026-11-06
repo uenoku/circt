@@ -14,6 +14,7 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLSTATEMENTS_TD
 
 include "circt/Dialect/FIRRTL/FIRRTLDialect.td"
+include "circt/Dialect/FIRRTL/FIRRTLSource.td"
 include "circt/Dialect/FIRRTL/FIRRTLEnums.td"
 include "circt/Dialect/FIRRTL/FIRRTLOpInterfaces.td"
 include "circt/Dialect/FIRRTL/FIRRTLTypes.td"
@@ -22,7 +23,8 @@ include "circt/Dialect/HW/HWTypes.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-def AttachOp : FIRRTLOp<"attach"> {
+def AttachOp : FIRRTLOp<"attach">,
+               FIRRTLSourceStatement<"attach", "parseAttach"> {
   let summary = "Analog Attach Statement";
 
   let arguments = (ins Variadic<AnalogType>:$attached);
@@ -135,7 +137,8 @@ def DomainDefineOp
   }];
 }
 
-def PrintFOp : FIRRTLOp<"printf"> {
+def PrintFOp : FIRRTLOp<"printf">,
+               FIRRTLSourceStatement<"printf", "parsePrintf", 1> {
   let summary = "Formatted Print Statement";
 
   let arguments = (ins ClockType:$clock, UInt1Type:$cond, StrAttr:$formatString,
@@ -148,7 +151,8 @@ def PrintFOp : FIRRTLOp<"printf"> {
   }];
 }
 
-def FPrintFOp : FIRRTLOp<"fprintf", [AttrSizedOperandSegments]> {
+def FPrintFOp : FIRRTLOp<"fprintf", [AttrSizedOperandSegments]>,
+                FIRRTLSourceStatement<"fprintf", "parseFPrintf", 1> {
   let summary = "Formatted File Print Statement";
 
   let description = [{
@@ -164,7 +168,8 @@ def FPrintFOp : FIRRTLOp<"fprintf", [AttrSizedOperandSegments]> {
   let hasCustomAssemblyFormat = 1;
 }
 
-def FFlushOp : FIRRTLOp<"fflush"> {
+def FFlushOp : FIRRTLOp<"fflush">,
+               FIRRTLSourceStatement<"fflush", "parseFFlush", 1> {
   let summary = "FFlush statement";
   let description = [{
     This operation flushes the output buffer of the specified file descriptor. If
@@ -190,7 +195,8 @@ def FFlushOp : FIRRTLOp<"fflush"> {
   ];
 }
 
-def SkipOp : FIRRTLOp<"skip", [Pure]> {
+def SkipOp : FIRRTLOp<"skip", [Pure]>,
+             FIRRTLSourceStatement<"skip", "parseSkip"> {
   let summary = "Skip statement";
   let description = [{
     Skip Statement:
@@ -207,7 +213,8 @@ def SkipOp : FIRRTLOp<"skip", [Pure]> {
   let assemblyFormat = "attr-dict";
 }
 
-def StopOp : FIRRTLOp<"stop"> {
+def StopOp : FIRRTLOp<"stop">,
+             FIRRTLSourceStatement<"stop", "parseStop", 1> {
   let summary = "Stop Statement";
 
   let arguments = (ins ClockType:$clock, UInt1Type:$cond, I32Attr:$exitCode,

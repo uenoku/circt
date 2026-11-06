@@ -1,4 +1,4 @@
-//===- FIRRTLPrimitiveGen.cpp - FIRRTL source primitive glue -------------===//
+//===- FIRRTLSourceGen.cpp - FIRRTL source syntax glue ------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -20,6 +20,12 @@ using namespace mlir;
 using namespace mlir::tblgen;
 
 namespace {
+bool isTokenIdentifier(StringRef name) {
+  return !name.empty() && (isAlpha(name.front()) || name.front() == '_') &&
+         all_of(name.drop_front(),
+                [](char c) { return isAlnum(c) || c == '_'; });
+}
+
 struct Version {
   bool unspecified = false;
   int64_t major = 0, minor = 0, patch = 0;
@@ -53,6 +59,16 @@ struct Version {
   }
 };
 
+// Most primitives have one version. Split versions preserve the few existing
+// import/export asymmetries without separate metadata fields on every op.
+const Record *getPrimitiveVersion(const Record *def, bool forImport) {
+  auto *version = def->getValueAsDef("firrtlVersion");
+  if (version->isSubClassOf("FIRRTLSplitVersion"))
+    return version->getValueAsDef(forImport ? "importVersion"
+                                            : "exportVersion");
+  return version;
+}
+
 void emitString(raw_ostream &os, StringRef str) {
   os << '"';
   os.write_escaped(str);
@@ -62,21 +78,21 @@ void emitString(raw_ostream &os, StringRef str) {
 struct Primitive {
   Operator op;
   StringRef spelling;
+  bool hasImport, hasExport;
   Version importVersion, exportVersion;
-  StringRef importFeature, exportFeature;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
 
   explicit Primitive(const Record *def)
       : op(def), spelling(def->getValueAsString("firrtlSpelling")),
-        importVersion(def->getValueAsDef("firrtlImportVersion")),
-        exportVersion(def->getValueAsDef("firrtlExportVersion")),
-        importFeature(def->getValueAsString("firrtlImportFeature")),
-        exportFeature(def->getValueAsString("firrtlExportFeature")) {
-    if (spelling.empty() ||
-        !(isAlpha(spelling.front()) || spelling.front() == '_') ||
-        !all_of(spelling.drop_front(),
-                [](char c) { return isAlnum(c) || c == '_'; }))
+        hasImport(def->getValueAsBit("firrtlHasImport")),
+        hasExport(def->getValueAsBit("firrtlHasExport")),
+        importVersion(getPrimitiveVersion(def, /*forImport=*/true)),
+        exportVersion(getPrimitiveVersion(def, /*forImport=*/false)) {
+    if (!hasImport && !hasExport)
+      PrintFatalError(def->getLoc(),
+                      "primitive must enable import, export, or both");
+    if (!isTokenIdentifier(spelling))
       PrintFatalError(
           def->getLoc(),
           "primitive spelling must be a lexer and C++ token identifier");
@@ -124,22 +140,26 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
+    if (!p.hasImport)
+      continue;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
     p.importVersion.emit(os);
     os << ", ";
-    emitString(os, p.importFeature);
+    emitString(os, p.spelling);
     os << ")\n";
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_EMITTERS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
+    if (!p.hasExport)
+      continue;
     os << "void emitExpression(" << p.op.getCppClassName() << " op) {\n";
     if (!p.exportVersion.isBase()) {
       os << "  if (failed(requireVersion(";
       p.exportVersion.emit(os);
       os << ", op, ";
-      emitString(os, p.exportFeature);
+      emitString(os, p.spelling);
       os << "))) return;\n";
     }
     os << "  emitPrimExpr(";
@@ -159,10 +179,56 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_DISPATCH\n";
   for (const auto &p : primitives)
-    os << p->op.getCppClassName() << ",\n";
+    if (p->hasExport)
+      os << p->op.getCppClassName() << ",\n";
   os << "#endif\n";
   return false;
 }
+
+// Statement handlers retain all syntax, version checks and semantic logic.
+// TableGen only registers existing parser callbacks and emitter dispatch.
+static bool emitStatements(const RecordKeeper &records, raw_ostream &os) {
+  struct Statement {
+    std::string token, cppClass;
+    StringRef parser;
+  };
+  SmallVector<Statement> statements;
+  llvm::StringSet<> tokens;
+  for (const Record *def :
+       records.getAllDerivedDefinitions("FIRRTLSourceStatement")) {
+    if (!def->isSubClassOf("Op"))
+      PrintFatalError(def->getLoc(),
+                      "FIRRTLSourceStatement must be an operation");
+    auto spelling = def->getValueAsString("firrtlStatementSpelling");
+    auto parser = def->getValueAsString("firrtlStatementParser");
+    if (!isTokenIdentifier(spelling) || !isTokenIdentifier(parser))
+      PrintFatalError(
+          def->getLoc(),
+          "statement spelling and parser must be token identifiers");
+    std::string token =
+        (def->getValueAsBit("firrtlStatementLeftParen") ? "lp_" : "kw_") +
+        spelling.str();
+    if (!tokens.insert(token).second)
+      PrintFatalError(def->getLoc(), "duplicate FIRRTL statement token '" +
+                                         Twine(token) + "'");
+    statements.push_back(
+        {std::move(token), Operator(def).getCppClassName().str(), parser});
+  }
+
+  os << "// Generated by circt-tblgen; do not edit.\n\n";
+  os << "#ifdef GET_FIRRTL_STATEMENT_PARSERS\n";
+  for (const auto &s : statements)
+    os << "case FIRToken::" << s.token << ": return " << s.parser << "();\n";
+  os << "#endif\n\n#ifdef GET_FIRRTL_STATEMENT_DISPATCH\n";
+  for (const auto &s : statements)
+    os << s.cppClass << ",\n";
+  os << "#endif\n";
+  return false;
+}
+
+static GenRegistration
+    genStatements("firrtl-source-statements",
+                  "Generate FIRRTL source statement dispatch", emitStatements);
 
 static GenRegistration genPrimitives("firrtl-primitives",
                                      "Generate FIRRTL source primitive glue",

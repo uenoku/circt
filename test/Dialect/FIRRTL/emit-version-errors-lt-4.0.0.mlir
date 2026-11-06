@@ -2,6 +2,51 @@
 // RUN: circt-translate --export-firrtl --firrtl-version=3.3.0 \
 // RUN:   --verify-diagnostics --split-input-file %s
 
+// Integer arithmetic expressions require >= 4.0.0.
+firrtl.circuit "IntegerAdd" {
+  firrtl.module @IntegerAdd(in %a : !firrtl.integer, in %b : !firrtl.integer,
+                            out %out : !firrtl.integer) {
+    // expected-error @below {{'firrtl.integer.add' op integer_add requires FIRRTL 4.0.0}}
+    %0 = firrtl.integer.add %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %out, %0 : !firrtl.integer
+  }
+}
+
+// -----
+
+firrtl.circuit "IntegerMul" {
+  firrtl.module @IntegerMul(in %a : !firrtl.integer, in %b : !firrtl.integer,
+                            out %out : !firrtl.integer) {
+    // expected-error @below {{'firrtl.integer.mul' op integer_mul requires FIRRTL 4.0.0}}
+    %0 = firrtl.integer.mul %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %out, %0 : !firrtl.integer
+  }
+}
+
+// -----
+
+firrtl.circuit "IntegerShl" {
+  firrtl.module @IntegerShl(in %a : !firrtl.integer, in %b : !firrtl.integer,
+                            out %out : !firrtl.integer) {
+    // expected-error @below {{'firrtl.integer.shl' op integer_shl requires FIRRTL 4.0.0}}
+    %0 = firrtl.integer.shl %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %out, %0 : !firrtl.integer
+  }
+}
+
+// -----
+
+firrtl.circuit "IntegerShr" {
+  firrtl.module @IntegerShr(in %a : !firrtl.integer, in %b : !firrtl.integer,
+                            out %out : !firrtl.integer) {
+    // expected-error @below {{'firrtl.integer.shr' op integer_shr requires FIRRTL 4.0.0}}
+    %0 = firrtl.integer.shr %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %out, %0 : !firrtl.integer
+  }
+}
+
+// -----
+
 // enabled layers on a module require >= 4.0.0
 firrtl.circuit "EnabledLayers" {
   firrtl.layer @A bind {}

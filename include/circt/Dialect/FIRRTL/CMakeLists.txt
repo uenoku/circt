@@ -42,10 +42,11 @@ add_circt_doc(FIRRTLTypes Dialects/FIRRTLTypes -gen-typedef-doc -dialect=firrtl)
 add_circt_doc(FIRRTLTypesImpl Dialects/FIRRTLTypesImpl -gen-typedef-doc -dialect=firrtl)
 add_circt_doc(FIRRTLOpInterfaces Dialects/FIRRTLOpInterfaces -gen-op-interface-docs -dialect=firrtl)
 
-# Generate .fir primitive registrations and emitter glue.
+# Generate .fir source syntax registrations and emitter dispatch.
 set(LLVM_TARGET_DEFINITIONS FIRRTL.td)
 circt_tablegen(CIRCT FIRRTLPrimitive.inc --firrtl-primitives)
-add_public_tablegen_target(CIRCTFIRRTLPrimitiveIncGen)
+circt_tablegen(CIRCT FIRRTLSourceStatements.inc --firrtl-source-statements)
+add_public_tablegen_target(CIRCTFIRRTLSourceIncGen)
 
 # Generate FIRRTL Annotations classes and documentation.
 set(LLVM_TARGET_DEFINITIONS FIRRTLAnnotations.td)

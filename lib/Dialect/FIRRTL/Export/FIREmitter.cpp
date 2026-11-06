@@ -771,15 +771,18 @@ void Emitter::emitStatementsInBlock(Block &block) {
     if (isEmittedInline(&bodyOp))
       continue;
     TypeSwitch<Operation *>(&bodyOp)
-        .Case<WhenOp, WireOp, RegOp, RegResetOp, NodeOp, StopOp, SkipOp,
-              PrintFOp, FPrintFOp, FFlushOp, AssertOp, AssumeOp, CoverOp,
-              ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
-              InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
-              SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
-              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
-              RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
-              LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
-              DomainCreateOp>([&](auto op) { emitStatement(op); })
+        .Case<
+#define GET_FIRRTL_STATEMENT_DISPATCH
+#include "circt/Dialect/FIRRTL/FIRRTLSourceStatements.inc"
+#undef GET_FIRRTL_STATEMENT_DISPATCH
+            WhenOp, WireOp, RegOp, RegResetOp, NodeOp, AssertOp, AssumeOp,
+            CoverOp, ConnectOp, MatchingConnectOp, PropertyAssertOp,
+            PropAssignOp, InstanceOp, InstanceChoiceOp, MemOp, InvalidValueOp,
+            SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
+            MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
+            RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp, LayerBlockOp,
+            GenericIntrinsicOp, DomainCreateAnonOp, DomainCreateOp>(
+            [&](auto op) { emitStatement(op); })
         .Default([&](auto op) {
           startStatement();
           ps << "// operation " << PPExtString(op->getName().getStringRef());

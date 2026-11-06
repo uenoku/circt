@@ -6,7 +6,7 @@ add_circt_translation_library(CIRCTImportFIRFile
   ADDITIONAL_HEADER_DIRS
 
   DEPENDS
-  CIRCTFIRRTLPrimitiveIncGen
+  CIRCTFIRRTLSourceIncGen
 
   LINK_LIBS PUBLIC
   CIRCTFIRRTL

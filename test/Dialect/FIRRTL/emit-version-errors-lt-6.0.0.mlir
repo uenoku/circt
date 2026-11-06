@@ -84,7 +84,7 @@ firrtl.circuit "PropEq" {
 firrtl.circuit "BoolAnd" {
   firrtl.module @BoolAnd(in %a : !firrtl.bool, in %b : !firrtl.bool,
                          out %out : !firrtl.bool) {
-    // expected-error @below {{'firrtl.bool.and' op boolean and requires FIRRTL 6.0.0}}
+    // expected-error @below {{'firrtl.bool.and' op bool_and requires FIRRTL 6.0.0}}
     %0 = firrtl.bool.and %a, %b
     firrtl.propassign %out, %0 : !firrtl.bool
   }
@@ -96,7 +96,7 @@ firrtl.circuit "BoolAnd" {
 firrtl.circuit "BoolOr" {
   firrtl.module @BoolOr(in %a : !firrtl.bool, in %b : !firrtl.bool,
                         out %out : !firrtl.bool) {
-    // expected-error @below {{'firrtl.bool.or' op boolean or requires FIRRTL 6.0.0}}
+    // expected-error @below {{'firrtl.bool.or' op bool_or requires FIRRTL 6.0.0}}
     %0 = firrtl.bool.or %a, %b
     firrtl.propassign %out, %0 : !firrtl.bool
   }
@@ -108,7 +108,7 @@ firrtl.circuit "BoolOr" {
 firrtl.circuit "BoolXor" {
   firrtl.module @BoolXor(in %a : !firrtl.bool, in %b : !firrtl.bool,
                          out %out : !firrtl.bool) {
-    // expected-error @below {{'firrtl.bool.xor' op boolean xor requires FIRRTL 6.0.0}}
+    // expected-error @below {{'firrtl.bool.xor' op bool_xor requires FIRRTL 6.0.0}}
     %0 = firrtl.bool.xor %a, %b
     firrtl.propassign %out, %0 : !firrtl.bool
   }

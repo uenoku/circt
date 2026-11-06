@@ -7,7 +7,7 @@ add_tablegen(circt-tblgen CIRCT
   circt-tblgen.cpp
   FIRRTLAnnotationsGen.cpp
   FIRRTLIntrinsicsGen.cpp
-  FIRRTLPrimitiveGen.cpp
+  FIRRTLSourceGen.cpp
   RTGInstructionFormat.cpp
   RTGInstructionMethodsGen.cpp
   RTGInstructionPythonWrappers.cpp

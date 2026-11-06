@@ -8,7 +8,7 @@ circuit Test :
     input a : Bool
     input b : Bool
     output out : Bool
-    ; expected-error @below {{Boolean and are a FIRRTL 7.0.0+ feature}}
+    ; expected-error @below {{bool_and are a FIRRTL 7.0.0+ feature}}
     propassign out, bool_and(a, b)
 
 ;// -----
@@ -19,7 +19,7 @@ circuit Test :
     input a : Integer
     input b : Integer
     output out : Integer
-    ; expected-error @below {{Integers are a FIRRTL 7.0.0+ feature}}
+    ; expected-error @below {{integer_and are a FIRRTL 7.0.0+ feature}}
     propassign out, integer_and(a, b)
 
 ;// -----

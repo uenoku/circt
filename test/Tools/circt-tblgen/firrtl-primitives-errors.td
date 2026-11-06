@@ -11,6 +11,15 @@ def NotAnOp : FIRRTLPrimitive<"not_an_op">;
 // NOT_OP: error: FIRRTLPrimitive must be an operation
 #endif
 
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNO_DIRECTION 2>&1 | FileCheck %s --check-prefix=NO_DIRECTION
+#ifdef NO_DIRECTION
+def BadOp : TestPrimitive<"bad"> {
+  let firrtlHasImport = 0;
+  let firrtlHasExport = 0;
+}
+// NO_DIRECTION: error: primitive must enable import, export, or both
+#endif
+
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_NAME 2>&1 | FileCheck %s --check-prefix=NAME
 #ifdef BAD_NAME
 def BadOp : TestPrimitive<"bad-name">;
@@ -78,6 +87,23 @@ def BadOp : TestPrimitive<"bad"> { let arguments = (ins IntType:$input, DefaultV
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_VERSION 2>&1 | FileCheck %s --check-prefix=VERSION
 #ifdef BAD_VERSION
-def BadOp : TestPrimitive<"bad"> { let firrtlExportVersion = FIRRTLReleasedVersion<65536, 0, 0>; }
+def BadOp : TestPrimitive<"bad"> { let firrtlVersion = FIRRTLReleasedVersion<65536, 0, 0>; }
 // VERSION: error: FIRRTL version components must fit in uint16_t
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_SPLIT 2>&1 | FileCheck %s --check-prefix=VERSION
+#ifdef BAD_SPLIT
+def BadOp : TestPrimitive<"bad"> {
+  let firrtlVersion = FIRRTLSplitVersion<FIRRTLBaseVersion,
+                                         FIRRTLReleasedVersion<65536, 0, 0>>;
+}
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNESTED_SPLIT 2>&1 | FileCheck %s --check-prefix=NESTED
+#ifdef NESTED_SPLIT
+def BadOp : TestPrimitive<"bad"> {
+  let firrtlVersion = FIRRTLSplitVersion<FIRRTLBaseVersion,
+      FIRRTLSplitVersion<FIRRTLBaseVersion, FIRRTLUnspecifiedVersion>>;
+}
+// NESTED: error: expected a released or unspecified FIRRTL source version
 #endif
