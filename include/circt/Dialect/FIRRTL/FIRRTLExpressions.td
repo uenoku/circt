@@ -1076,7 +1076,7 @@ class SameGroundTypeOperandConstness<string a, string b>
       "operand constness must match",
       CPred<"isConst($" # a # ".getType()) == isConst($" # b # ".getType())">>;
 
-def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]> {
+def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]>, FIRRTLSourceTransparent {
   let description = [{
     Cast between reset types.  This is used to enable matchingconnects early in
     the pipeline by isolating all uninferred reset connections to a single op.
@@ -1088,7 +1088,7 @@ def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameG
     "$input attr-dict `:` functional-type($input, $result)";
 }
 
-def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]> {
+def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]>, FIRRTLSourceTransparent {
   let description = [{
     Cast from a 'const' to a non-'const' type.
     ```
@@ -1201,7 +1201,7 @@ def ObjectAnyRefCastOp : FIRRTLOp<"object.anyref_cast", [Pure]> {
      "$input attr-dict `:` type($input)";
 }
 
-def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]> {
+def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]>, FIRRTLSourceTransparent {
   let summary = "Cast domain reference to anyref.";
   let description = [{
     Cast a domain reference to AnyRef type.  This is primarily used for allowing
@@ -1683,7 +1683,7 @@ def UnknownValueOp : FIRRTLOp<"unknown", [
 def RefCastOp : FIRRTLOp<"ref.cast",
     [HasCustomSSAName,
      Pure,
-     CompatibleRefTypes<"result","input">]> {
+     CompatibleRefTypes<"result","input">]>, FIRRTLSourceTransparent {
   let summary = "Cast between compatible reference types";
   let description = [{
     Losslessly cast between compatible reference types.

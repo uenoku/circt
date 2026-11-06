@@ -131,12 +131,8 @@ struct Emitter {
   void emitExpression(OpenSubfieldOp op);
   void emitExpression(DomainSubfieldOp op);
   void emitExpression(OpenSubindexOp op);
-  void emitExpression(DomainAnyRefCastOp op);
   void emitExpression(RefSubOp op);
   void emitExpression(RWProbeOp op);
-  void emitExpression(RefCastOp op);
-  void emitExpression(UninferredResetCastOp op);
-  void emitExpression(ConstCastOp op);
   void emitExpression(StringConstantOp op);
   void emitExpression(FIntegerConstantOp op);
   void emitExpression(BoolConstantOp op);
@@ -1496,7 +1492,7 @@ void Emitter::emitExpression(Value value) {
 
   auto op = value.getDefiningOp();
   assert(op && "value must either be a block arg or the result of an op");
-  // Generated source calls share the same boxing as special expressions.
+  // Generated expressions share the same boxing as special expressions.
   TypeSwitch<Operation *>(op)
       .Case<
 #define GET_FIRRTL_PRIMITIVE_DISPATCH
@@ -1506,12 +1502,11 @@ void Emitter::emitExpression(Value value) {
           ConstantOp, SpecialConstantOp, SubfieldOp, SubindexOp, SubaccessOp,
           OpenSubfieldOp, OpenSubindexOp, DomainSubfieldOp,
           // Miscellaneous
-          UninferredResetCastOp, ConstCastOp, StringConstantOp,
-          FIntegerConstantOp, BoolConstantOp, DoubleConstantOp, ListCreateOp,
-          UnresolvedPathOp, GenericIntrinsicOp, CatPrimOp, DomainAnyRefCastOp,
-          UnknownValueOp,
+          StringConstantOp, FIntegerConstantOp, BoolConstantOp,
+          DoubleConstantOp, ListCreateOp, UnresolvedPathOp, GenericIntrinsicOp,
+          CatPrimOp, UnknownValueOp,
           // Reference expressions
-          RefSubOp, RWProbeOp, RefCastOp,
+          RefSubOp, RWProbeOp,
           // Format String expressions
           TimeOp>([&](auto op) {
         ps.scopedBox(PP::ibox0, [&]() { emitExpression(op); });
@@ -1595,10 +1590,6 @@ void Emitter::emitExpression(OpenSubindexOp op) {
   ps << "]";
 }
 
-void Emitter::emitExpression(DomainAnyRefCastOp op) {
-  emitExpression(op.getInput());
-}
-
 void Emitter::emitExpression(RefSubOp op) {
   emitExpression(op.getInput());
   FIRRTLTypeSwitch<FIRRTLBaseType, void>(op.getInput().getType().getType())
@@ -1650,12 +1641,6 @@ void Emitter::emitExpression(RWProbeOp op) {
         });
   }
   ps << ")";
-}
-
-void Emitter::emitExpression(RefCastOp op) { emitExpression(op.getInput()); }
-
-void Emitter::emitExpression(UninferredResetCastOp op) {
-  emitExpression(op.getInput());
 }
 
 void Emitter::emitExpression(FIntegerConstantOp op) {
@@ -1713,8 +1698,6 @@ void Emitter::emitExpression(GenericIntrinsicOp op) {
     return;
   emitGenericIntrinsic(op);
 }
-
-void Emitter::emitExpression(ConstCastOp op) { emitExpression(op.getInput()); }
 
 void Emitter::emitPrimExpr(StringRef mnemonic, Operation *op,
                            ArrayRef<uint32_t> attrs) {

@@ -59,4 +59,9 @@ class FIRRTLSourceCall<string spelling, FIRRTLSourceVersion version,
   FIRRTLSourceCallStyle firrtlCallStyle = style;
 }
 
+// Export the single operand directly, without a corresponding source token.
+// The operation must have exactly one fixed operand and result, with no
+// attributes, properties, regions, or successors.
+class FIRRTLSourceTransparent;
+
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLSOURCE_TD

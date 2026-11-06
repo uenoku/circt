@@ -96,6 +96,14 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(UnsafeDomainCastOp op) {
 // CHECK-NEXT: if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast"))) return;
 // CHECK-NEXT: emitUnboxedCall("unsafe_domain_cast", op);
+// CHECK: void emitExpression(ConstCastOp op) {
+// CHECK-NEXT: emitExpression(op->getOperand(0));
+// CHECK: void emitExpression(DomainAnyRefCastOp op) {
+// CHECK-NEXT: emitExpression(op->getOperand(0));
+// CHECK: void emitExpression(RefCastOp op) {
+// CHECK-NEXT: emitExpression(op->getOperand(0));
+// CHECK: void emitExpression(UninferredResetCastOp op) {
+// CHECK-NEXT: emitExpression(op->getOperand(0));
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
 // CHECK: AlternateAmountOp,
@@ -120,6 +128,10 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: RefSendOp,
 // CHECK: StringConcatOp,
 // CHECK: UnsafeDomainCastOp,
+// CHECK: ConstCastOp,
+// CHECK: DomainAnyRefCastOp,
+// CHECK: RefCastOp,
+// CHECK: UninferredResetCastOp,
 
 // The MLIR mnemonic can differ from the FIRRTL source spelling. Real ops such
 // as AddPrimOp exercise the default source spelling instead.

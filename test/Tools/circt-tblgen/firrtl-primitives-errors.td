@@ -152,3 +152,49 @@ def BadOp : FIRRTLOp<"bad">,
 }
 // CALL_STYLE: error: unknown source call style
 #endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_NOT_OP 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_NOT_OP
+#ifdef TRANSPARENT_NOT_OP
+def NotAnOp : FIRRTLSourceTransparent;
+// TRANSPARENT_NOT_OP: error: FIRRTLSourceTransparent must be an operation
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_PRIMITIVE 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_BOTH
+#ifdef TRANSPARENT_PRIMITIVE
+def BadOp : TestPrimitive<"bad">, FIRRTLSourceTransparent;
+// TRANSPARENT_BOTH: error: transparent operation cannot also be a primitive or source call
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_CALL 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_BOTH
+#ifdef TRANSPARENT_CALL
+def BadOp : FIRRTLOp<"bad">, FIRRTLSourceTransparent,
+            FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall> {
+  let arguments = (ins IntType:$input);
+  let results = (outs IntType:$result);
+}
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_OPTIONAL 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_SHAPE
+#ifdef TRANSPARENT_OPTIONAL
+def BadOp : FIRRTLOp<"bad">, FIRRTLSourceTransparent {
+  let arguments = (ins Optional<IntType>:$input);
+  let results = (outs IntType:$result);
+}
+// TRANSPARENT_SHAPE: error: transparent operation must have one fixed operand and result, and no attributes, properties, regions or successors
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_ATTR 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_SHAPE
+#ifdef TRANSPARENT_ATTR
+def BadOp : FIRRTLOp<"bad">, FIRRTLSourceTransparent {
+  let arguments = (ins IntType:$input, I32Attr:$attr);
+  let results = (outs IntType:$result);
+}
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_RESULT 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_SHAPE
+#ifdef TRANSPARENT_RESULT
+def BadOp : FIRRTLOp<"bad">, FIRRTLSourceTransparent {
+  let arguments = (ins IntType:$input);
+  let results = (outs IntType:$first, IntType:$second);
+}
+#endif
