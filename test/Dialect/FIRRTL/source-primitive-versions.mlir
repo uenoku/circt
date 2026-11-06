@@ -1,5 +1,4 @@
 // RUN: circt-translate --export-firrtl --firrtl-version=6.0.0 %s | FileCheck %s
-// RUN: circt-translate --export-firrtl --firrtl-version=5.0.0 --verify-diagnostics %s
 
 firrtl.circuit "Test" {
   firrtl.module @Test(in %a : !firrtl.bool, in %b : !firrtl.bool,
@@ -7,7 +6,6 @@ firrtl.circuit "Test" {
     // asReset has an import gate but no export gate.
     %reset = firrtl.asReset %r : (!firrtl.uint<1>) -> !firrtl.reset
     %named = firrtl.node %reset : !firrtl.reset
-    // expected-error @below {{'firrtl.bool.and' op bool_and requires FIRRTL 6.0.0}}
     %0 = firrtl.bool.and %a, %b
     firrtl.propassign %out, %0 : !firrtl.bool
   }

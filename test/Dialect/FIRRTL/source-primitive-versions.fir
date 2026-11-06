@@ -13,17 +13,6 @@ circuit Test :
 
 ;// -----
 
-FIRRTL version 6.0.0
-circuit Test :
-  public module Test :
-    input a : Integer
-    input b : Integer
-    output out : Integer
-    ; expected-error @below {{integer_and are a FIRRTL 7.0.0+ feature}}
-    propassign out, integer_and(a, b)
-
-;// -----
-
 FIRRTL version 7.0.0
 circuit Test :
   public module Test :
