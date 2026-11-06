@@ -583,9 +583,10 @@ class PrimOp<string mnemonic, list<Trait> traits = []> :
 // Binary Operations
 //===----------------------------------------------------------------------===//
 
-// Base class for binary primitive operators.
-class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType, Type resultType,
-                   list<Trait> traits = []> : PrimOp<mnemonic, traits> {
+// Common binary operation machinery, also used by dialect-only operations.
+class BinaryPrimOpBase<string mnemonic, Type lhsType, Type rhsType,
+                       Type resultType, list<Trait> traits = []> :
+    PrimOp<mnemonic, traits> {
   let arguments = (ins lhsType:$lhs, rhsType:$rhs);
   let results = (outs resultType:$result);
 
@@ -624,19 +625,19 @@ class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType, Type resultType,
   }];
 }
 
-// Opt in only the binary operations with ordinary .fir source syntax.
-class SourceBinaryPrimOp<string mnemonic, Type lhsType, Type rhsType,
-                         Type resultType, list<Trait> traits = []> :
-    BinaryPrimOp<mnemonic, lhsType, rhsType, resultType, traits>,
-    FIRRTLPrimitive<mnemonic>;
+// Binary operations with ordinary .fir source syntax. The source spelling
+// defaults to the MLIR mnemonic but may be overridden.
+class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType, Type resultType,
+                   list<Trait> traits = [], string sourceSpelling = mnemonic> :
+    BinaryPrimOpBase<mnemonic, lhsType, rhsType, resultType, traits>,
+    FIRRTLPrimitive<sourceSpelling>;
 
 // A FIRRTL source binary operation on integer-typed arguments of the same kind.
 // The source spelling defaults to the MLIR mnemonic but may be overridden.
 class IntBinaryPrimOp<string mnemonic, Type resultType,
                       list<Trait> traits = [], string sourceSpelling = mnemonic> :
    BinaryPrimOp<mnemonic, IntType, IntType, resultType,
-                traits # [SameOperandsIntTypeKind]>,
-   FIRRTLPrimitive<sourceSpelling>;
+                traits # [SameOperandsIntTypeKind], sourceSpelling>;
 
 let inferType = "impl::inferAddSubResult" in {
   let hasCanonicalizer = true in {
@@ -672,11 +673,11 @@ let inferType = "impl::inferBitwiseResult" in {
 // a same type. Apply bitwise operation to each element.
 let inferType = "impl::inferElementwiseResult" in
 let hasFolder = 0 in {
-  def ElementwiseAndPrimOp : BinaryPrimOp<"elementwise_and", 1DVecIntType,
+  def ElementwiseAndPrimOp : BinaryPrimOpBase<"elementwise_and", 1DVecIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
-  def ElementwiseOrPrimOp  : BinaryPrimOp<"elementwise_or", 1DVecIntType,
+  def ElementwiseOrPrimOp  : BinaryPrimOpBase<"elementwise_or", 1DVecIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
-  def ElementwiseXorPrimOp : BinaryPrimOp<"elementwise_xor", 1DVecUIntType,
+  def ElementwiseXorPrimOp : BinaryPrimOpBase<"elementwise_xor", 1DVecUIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
 }
 
@@ -704,20 +705,20 @@ def CatPrimOp : FIRRTLExprOp<"cat"> {
   let hasCanonicalizer = 1;
 }
 
-def DShlPrimOp : SourceBinaryPrimOp<"dshl", IntType, UIntType, IntType> {
+def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType> {
   let description = [{
     A dynamic shift left operation. The width of `$result` is expanded to
     `width($lhs) + 1 << width($rhs) - 1`.
   }];
   let hasCanonicalizer = true;
 }
-def DShlwPrimOp : SourceBinaryPrimOp<"dshlw", IntType, UIntType, IntType> {
+def DShlwPrimOp : BinaryPrimOp<"dshlw", IntType, UIntType, IntType> {
   let description = [{
     A dynamic shift left operation same as 'dshl' but with different width rule.
     The width of `$result` is equal to `$lhs`.
   }];
 }
-def DShrPrimOp : SourceBinaryPrimOp<"dshr", IntType, UIntType, IntType> {
+def DShrPrimOp : BinaryPrimOp<"dshr", IntType, UIntType, IntType> {
   let hasCanonicalizer = true;
 }
 
@@ -1441,7 +1442,7 @@ def DoubleConstantOp : FIRRTLOp<"double", [Pure, ConstantLike]> {
 }
 
 class IntegerBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
-   BinaryPrimOp<mnemonic, FIntegerType, FIntegerType, FIntegerType,
+   BinaryPrimOpBase<mnemonic, FIntegerType, FIntegerType, FIntegerType,
                 [Pure, SameOperandsAndResultType] # traits> {
   // We use the standard inferReturnTypes from SameOperandsAndResultType.
   let inferReturnTypesDecl = "";
@@ -1630,7 +1631,7 @@ def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]> {
 }
 
 class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
-    BinaryPrimOp<mnemonic, BoolType, BoolType, BoolType,
+    BinaryPrimOpBase<mnemonic, BoolType, BoolType, BoolType,
                  [Pure, SameOperandsAndResultType] # traits> {
   // We use the standard inferReturnTypes from SameOperandsAndResultType.
   let inferReturnTypesDecl = "";

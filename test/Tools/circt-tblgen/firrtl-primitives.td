@@ -1,10 +1,11 @@
-// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp
+// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp
 // RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --check-prefix=FILTER
 
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
 // CHECK: TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
+// CHECK: TOK_LPKEYWORD_PRIM(binary_source, AlternateBinaryOp, 2, 0, FIRVersion(0, 0, 0), "binary_source")
 // CHECK: TOK_LPKEYWORD_PRIM(source_spelling, AlternateSpellingOp, 2, 0, FIRVersion(0, 0, 0), "source_spelling")
 // CHECK: TOK_LPKEYWORD_PRIM(unary_source, AlternateUnaryOp, 1, 0, FIRVersion(0, 0, 0), "unary_source")
 // CHECK: TOK_LPKEYWORD_PRIM(asReset, AsResetPrimOp, 1, 0, missingSpecFIRVersion, "asReset")
@@ -24,6 +25,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
 // CHECK: void emitExpression(AddPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("add", op);
+// CHECK: void emitExpression(AlternateBinaryOp op) {
+// CHECK-NEXT: emitPrimExpr("binary_source", op);
 // CHECK: void emitExpression(AlternateSpellingOp op) {
 // CHECK-NEXT: emitPrimExpr("source_spelling", op);
 // CHECK: void emitExpression(AlternateUnaryOp op) {
@@ -62,6 +65,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK-NEXT: emitPrimExpr("example", op, op.getExampleAmount());
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
+// CHECK: AlternateBinaryOp,
 // CHECK: AlternateSpellingOp,
 // CHECK: AlternateUnaryOp,
 // CHECK: BitsPrimOp,
@@ -88,6 +92,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
 // The MLIR mnemonic can differ from the FIRRTL source spelling. Real ops such
 // as AddPrimOp exercise the default source spelling instead.
+def AlternateBinaryOp : BinaryPrimOp<"binary.mlir", IntType, UIntType, IntType,
+                                      [], "binary_source">;
 def AlternateSpellingOp : IntBinaryPrimOp<"mlir_mnemonic", IntType, [],
                                           "source_spelling">;
 def AlternateUnaryOp : UnaryPrimOp<"unary.mlir", IntType, UIntType, [],
