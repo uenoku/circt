@@ -1,4 +1,4 @@
-// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp
+// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp --implicit-check-not='TOK_LPKEYWORD_PRIM(list_contains,' --implicit-check-not='TOK_LPKEYWORD_PRIM(prop_eq,' --implicit-check-not='TOK_LPKEYWORD_PRIM(read,' --implicit-check-not='TOK_LPKEYWORD_PRIM(probe,' --implicit-check-not='TOK_LPKEYWORD_PRIM(string_concat,' --implicit-check-not='TOK_LPKEYWORD_PRIM(unsafe_domain_cast,'
 
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
@@ -81,6 +81,21 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(VersionedOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "example"))) return;
 // CHECK-NEXT: emitPrimExpr("example", op, op.getExampleAmount());
+// CHECK: void emitExpression(ListContainsOp op) {
+// CHECK-NEXT: if (failed(requireVersion(missingSpecFIRVersion, op, "list contains"))) return;
+// CHECK-NEXT: emitPrimExpr("list_contains", op);
+// CHECK: void emitExpression(PropEqOp op) {
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "property equality"))) return;
+// CHECK-NEXT: emitPrimExpr("prop_eq", op);
+// CHECK: void emitExpression(RefResolveOp op) {
+// CHECK-NEXT: emitUnaryCall("read", op);
+// CHECK: void emitExpression(RefSendOp op) {
+// CHECK-NEXT: emitUnaryCall("probe", op);
+// CHECK: void emitExpression(StringConcatOp op) {
+// CHECK-NEXT: emitPrimExpr("string_concat", op);
+// CHECK: void emitExpression(UnsafeDomainCastOp op) {
+// CHECK-NEXT: if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast"))) return;
+// CHECK-NEXT: emitUnboxedCall("unsafe_domain_cast", op);
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
 // CHECK: AlternateAmountOp,
@@ -99,6 +114,12 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: ShlPrimOp,
 // CHECK: ShrPrimOp,
 // CHECK: VersionedOp,
+// CHECK: ListContainsOp,
+// CHECK: PropEqOp,
+// CHECK: RefResolveOp,
+// CHECK: RefSendOp,
+// CHECK: StringConcatOp,
+// CHECK: UnsafeDomainCastOp,
 
 // The MLIR mnemonic can differ from the FIRRTL source spelling. Real ops such
 // as AddPrimOp exercise the default source spelling instead.

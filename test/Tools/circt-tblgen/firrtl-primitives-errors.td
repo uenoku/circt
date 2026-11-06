@@ -96,5 +96,59 @@ def BadOp : TestPrimitive<"bad"> {
   let firrtlVersion = FIRRTLSplitVersion<FIRRTLBaseVersion,
       FIRRTLSplitVersion<FIRRTLBaseVersion, FIRRTLUnspecifiedVersion>>;
 }
-// NESTED: error: expected a released or unspecified FIRRTL source version
+// NESTED: error: expected a released, unspecified, or next FIRRTL source version
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_NOT_OP 2>&1 | FileCheck %s --check-prefix=CALL_NOT_OP
+#ifdef CALL_NOT_OP
+def NotAnOp : FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall>;
+// CALL_NOT_OP: error: FIRRTLSourceCall must be an operation
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_BOTH 2>&1 | FileCheck %s --check-prefix=CALL_BOTH
+#ifdef CALL_BOTH
+def BadOp : TestPrimitive<"bad">,
+            FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall>;
+// CALL_BOTH: error: operation cannot be both a primitive and a source call
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_ATTR 2>&1 | FileCheck %s --check-prefix=CALL_ATTR
+#ifdef CALL_ATTR
+def BadOp : FIRRTLOp<"bad">,
+            FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLPrimitiveCall> {
+  let arguments = (ins IntType:$input, I32Attr:$amount);
+  let results = (outs IntType:$result);
+}
+// CALL_ATTR: error: source call arguments must be operands
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_UNARY 2>&1 | FileCheck %s --check-prefix=CALL_UNARY
+#ifdef CALL_UNARY
+def BadOp : FIRRTLOp<"bad">,
+            FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall> {
+  let arguments = (ins Variadic<IntType>:$inputs);
+  let results = (outs IntType:$result);
+}
+// CALL_UNARY: error: unary source call must have one fixed operand
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_DUP 2>&1 | FileCheck %s --check-prefix=CALL_DUP
+#ifdef CALL_DUP
+def BadOp : FIRRTLOp<"bad">,
+            FIRRTLSourceCall<"add", FIRRTLBaseVersion, "add", FIRRTLUnaryCall> {
+  let arguments = (ins IntType:$input);
+  let results = (outs IntType:$result);
+}
+// CALL_DUP: error: duplicate FIRRTL source spelling 'add'
+#endif
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_STYLE 2>&1 | FileCheck %s --check-prefix=CALL_STYLE
+#ifdef CALL_STYLE
+def OtherStyle : FIRRTLSourceCallStyle;
+def BadOp : FIRRTLOp<"bad">,
+            FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", OtherStyle> {
+  let arguments = (ins IntType:$input);
+  let results = (outs IntType:$result);
+}
+// CALL_STYLE: error: unknown source call style
 #endif

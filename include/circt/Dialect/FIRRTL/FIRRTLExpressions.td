@@ -1326,7 +1326,9 @@ def ListConcatOp : FIRRTLOp<"list.concat", [Pure, SameOperandsAndResultType]> {
 def ListContainsOp : FIRRTLOp<"list.contains", [Pure,
     TypesMatchWith<"list element type should match search element type",
                    "list", "element",
-                   "type_cast<ListType>($_self).getElementType()">]> {
+                   "type_cast<ListType>($_self).getElementType()">]>,
+    FIRRTLSourceCall<"list_contains", FIRRTLUnspecifiedVersion, "list contains",
+                     FIRRTLPrimitiveCall> {
   let summary = "Test whether a list contains a property value";
   let description = [{
     Returns true if the list contains an element equal to the specified value.
@@ -1522,7 +1524,9 @@ def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
   }];
 }
 
-def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]> {
+def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]>,
+    FIRRTLSourceCall<"string_concat", FIRRTLBaseVersion, "string_concat",
+                     FIRRTLPrimitiveCall> {
   let summary = "Concatenate multiple string values";
   let description = [{
     Produces a value of string type by concatenating multiple string operands.
@@ -1542,7 +1546,9 @@ def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]
   let hasCanonicalizer = 1;
 }
 
-def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]> {
+def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]>,
+    FIRRTLSourceCall<"prop_eq", FIRRTLReleasedVersion<6, 0, 0>,
+                     "property equality", FIRRTLPrimitiveCall> {
   let summary = "Compare two property values for equality";
   let description = [{
     Compares two property values (String, Bool, or Integer) of the same type
@@ -1699,7 +1705,8 @@ def RefCastOp : FIRRTLOp<"ref.cast",
 }
 
 def RefResolveOp: FIRRTLExprOp<"ref.resolve",
-                              [RefTypeConstraint<"ref","result">]> {
+                              [RefTypeConstraint<"ref","result">]>,
+    FIRRTLSourceCall<"read", FIRRTLBaseVersion, "read", FIRRTLUnaryCall> {
   let summary = "FIRRTL Resolve a Reference";
   let description = [{
     Resolve a remote reference for reading a remote value.
@@ -1716,7 +1723,8 @@ def RefResolveOp: FIRRTLExprOp<"ref.resolve",
   let assemblyFormat = "$ref attr-dict `:` qualified(type($ref))";
 }
 
-def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]> {
+def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]>,
+    FIRRTLSourceCall<"probe", FIRRTLBaseVersion, "probe", FIRRTLUnaryCall> {
   let summary = "FIRRTL Send through Reference";
   let description = [{
     Endpoint of a remote reference. Send a value through a reference
@@ -1981,7 +1989,8 @@ def UnsafeDomainCastOp :
   FIRRTLOp<"unsafe_domain_cast", [
     AllTypesMatch<["input", "result"]>,
     Pure
-  ]> {
+  ]>, FIRRTLSourceCall<"unsafe_domain_cast", FIRRTLNextVersion,
+                       "unsafe_domain_cast", FIRRTLUnboxedCall> {
   let summary = "cast an operand from one domain to another";
   let description = [{
     This operation is used to _unsafely_ convert from the domain of an operand

@@ -19,6 +19,8 @@ class FIRRTLReleasedVersion<int major, int minor, int patch>
 }
 def FIRRTLBaseVersion : FIRRTLReleasedVersion<0, 0, 0>;
 def FIRRTLUnspecifiedVersion : FIRRTLSourceVersion;
+// The next version is distinct from syntax missing from the current spec.
+def FIRRTLNextVersion : FIRRTLSourceVersion;
 
 // For existing syntax whose import and export gates differ. New primitives
 // should normally use a single released or unspecified version.
@@ -37,6 +39,24 @@ class FIRRTLSplitVersion<FIRRTLSourceVersion importGate,
 class FIRRTLPrimitive<string spelling> {
   string firrtlSpelling = spelling;
   FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
+}
+
+// Export-only calls retain their handwritten import parsers. The styles
+// preserve the existing pretty-printing behavior of each call.
+class FIRRTLSourceCallStyle;
+def FIRRTLPrimitiveCall : FIRRTLSourceCallStyle; // Box each operand.
+def FIRRTLUnboxedCall : FIRRTLSourceCallStyle;  // Box the call, not operands.
+def FIRRTLUnaryCall : FIRRTLSourceCallStyle;    // No additional boxes.
+
+// Calls must have one fixed result, no regions or successors, and only
+// operands (which may be variadic). Unary calls require one fixed operand.
+
+class FIRRTLSourceCall<string spelling, FIRRTLSourceVersion version,
+                       string feature, FIRRTLSourceCallStyle style> {
+  string firrtlCallSpelling = spelling;
+  FIRRTLSourceVersion firrtlCallVersion = version;
+  string firrtlCallFeature = feature;
+  FIRRTLSourceCallStyle firrtlCallStyle = style;
 }
 
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLSOURCE_TD

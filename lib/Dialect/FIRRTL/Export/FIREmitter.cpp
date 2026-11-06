@@ -132,8 +132,6 @@ struct Emitter {
   void emitExpression(DomainSubfieldOp op);
   void emitExpression(OpenSubindexOp op);
   void emitExpression(DomainAnyRefCastOp op);
-  void emitExpression(RefResolveOp op);
-  void emitExpression(RefSendOp op);
   void emitExpression(RefSubOp op);
   void emitExpression(RWProbeOp op);
   void emitExpression(RefCastOp op);
@@ -147,30 +145,18 @@ struct Emitter {
   void emitExpression(UnresolvedPathOp op);
   void emitExpression(GenericIntrinsicOp op);
   void emitExpression(CatPrimOp op);
-  void emitExpression(UnsafeDomainCastOp op);
   void emitExpression(UnknownValueOp op);
 
   void emitPrimExpr(StringRef mnemonic, Operation *op,
                     ArrayRef<uint32_t> attrs = {});
+  void emitUnboxedCall(StringRef mnemonic, Operation *op);
+  void emitUnaryCall(StringRef mnemonic, Operation *op);
 
 #define GET_FIRRTL_PRIMITIVE_EMITTERS
 #include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
 #undef GET_FIRRTL_PRIMITIVE_EMITTERS
 
   void emitExpression(TimeOp op) {}
-  void emitExpression(StringConcatOp op) { emitPrimExpr("string_concat", op); }
-
-  void emitExpression(PropEqOp op) {
-    if (failed(requireVersion({6, 0, 0}, op, "property equality")))
-      return;
-    emitPrimExpr("prop_eq", op);
-  }
-
-  void emitExpression(ListContainsOp op) {
-    if (failed(requireVersion(missingSpecFIRVersion, op, "list contains")))
-      return;
-    emitPrimExpr("list_contains", op);
-  }
 
   // Attributes
   void emitAttribute(MemDirAttr attr);
@@ -1108,8 +1094,7 @@ void Emitter::emitStatement(ConnectOp op) {
   } else {
     auto emitLHS = [&]() { emitExpression(op.getDest()); };
     if (op.getSrc().getDefiningOp<InvalidValueOp>()) {
-      emitAssignLike(
-          emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
+      emitAssignLike(emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
     } else {
       emitAssignLike(
           emitLHS, [&]() { emitExpression(op.getSrc()); }, PPExtString("<="));
@@ -1135,8 +1120,7 @@ void Emitter::emitStatement(MatchingConnectOp op) {
   } else {
     auto emitLHS = [&]() { emitExpression(op.getDest()); };
     if (op.getSrc().getDefiningOp<InvalidValueOp>()) {
-      emitAssignLike(
-          emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
+      emitAssignLike(emitLHS, [&]() { ps << "invalid"; }, PPExtString("is"));
     } else {
       emitAssignLike(
           emitLHS, [&]() { emitExpression(op.getSrc()); }, PPExtString("<="));
@@ -1512,7 +1496,7 @@ void Emitter::emitExpression(Value value) {
 
   auto op = value.getDefiningOp();
   assert(op && "value must either be a block arg or the result of an op");
-  // Generated primitives share the same boxing as special expressions.
+  // Generated source calls share the same boxing as special expressions.
   TypeSwitch<Operation *>(op)
       .Case<
 #define GET_FIRRTL_PRIMITIVE_DISPATCH
@@ -1524,11 +1508,10 @@ void Emitter::emitExpression(Value value) {
           // Miscellaneous
           UninferredResetCastOp, ConstCastOp, StringConstantOp,
           FIntegerConstantOp, BoolConstantOp, DoubleConstantOp, ListCreateOp,
-          UnresolvedPathOp, GenericIntrinsicOp, CatPrimOp, UnsafeDomainCastOp,
-          DomainAnyRefCastOp, UnknownValueOp, StringConcatOp, PropEqOp,
-          ListContainsOp,
+          UnresolvedPathOp, GenericIntrinsicOp, CatPrimOp, DomainAnyRefCastOp,
+          UnknownValueOp,
           // Reference expressions
-          RefSendOp, RefResolveOp, RefSubOp, RWProbeOp, RefCastOp,
+          RefSubOp, RWProbeOp, RefCastOp,
           // Format String expressions
           TimeOp>([&](auto op) {
         ps.scopedBox(PP::ibox0, [&]() { emitExpression(op); });
@@ -1614,18 +1597,6 @@ void Emitter::emitExpression(OpenSubindexOp op) {
 
 void Emitter::emitExpression(DomainAnyRefCastOp op) {
   emitExpression(op.getInput());
-}
-
-void Emitter::emitExpression(RefSendOp op) {
-  ps << "probe(";
-  emitExpression(op.getBase());
-  ps << ")";
-}
-
-void Emitter::emitExpression(RefResolveOp op) {
-  ps << "read(";
-  emitExpression(op.getRef());
-  ps << ")";
 }
 
 void Emitter::emitExpression(RefSubOp op) {
@@ -1755,6 +1726,19 @@ void Emitter::emitPrimExpr(StringRef mnemonic, Operation *op,
   ps << ")" << PP::end;
 }
 
+void Emitter::emitUnboxedCall(StringRef mnemonic, Operation *op) {
+  ps << mnemonic << "(" << PP::ibox0;
+  interleaveComma(op->getOperands(),
+                  [&](Value operand) { emitExpression(operand); });
+  ps << ")" << PP::end;
+}
+
+void Emitter::emitUnaryCall(StringRef mnemonic, Operation *op) {
+  ps << mnemonic << "(";
+  emitExpression(op->getOperand(0));
+  ps << ")";
+}
+
 void Emitter::emitExpression(CatPrimOp op) {
   size_t numOperands = op.getNumOperands();
   switch (numOperands) {
@@ -1789,15 +1773,6 @@ void Emitter::emitExpression(CatPrimOp op) {
       ps << ")" << PP::end;
     return;
   }
-}
-
-void Emitter::emitExpression(UnsafeDomainCastOp op) {
-  if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast")))
-    return;
-  ps << "unsafe_domain_cast(" << PP::ibox0;
-  interleaveComma(op.getOperands(),
-                  [&](Value operand) { emitExpression(operand); });
-  ps << ")" << PP::end;
 }
 
 void Emitter::emitExpression(UnknownValueOp op) {
