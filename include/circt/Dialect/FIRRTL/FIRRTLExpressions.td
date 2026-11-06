@@ -725,9 +725,9 @@ def DShrPrimOp : SourceBinaryPrimOp<"dshr", IntType, UIntType, IntType> {
 // Unary Operations
 //===----------------------------------------------------------------------===//
 
-// Base class for binary primitive operators.
-class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
-                  list<Trait> traits = []> : PrimOp<mnemonic, traits> {
+// Common unary operation machinery, also used by dialect-only intrinsics.
+class UnaryPrimOpBase<string mnemonic, Type srcType, Type resultType,
+                      list<Trait> traits = []> : PrimOp<mnemonic, traits> {
   let arguments = (ins srcType:$input);
   let results = (outs resultType:$result);
 
@@ -764,47 +764,48 @@ class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
 
 }
 
-// The shared UnaryPrimOp also serves intrinsics; only this source-specific
-// subclass opts operations in and uses the mnemonic as the .fir spelling.
-class SourceUnaryPrimOp<string mnemonic, Type srcType, Type resultType,
-                        list<Trait> traits = []> :
-    UnaryPrimOp<mnemonic, srcType, resultType, traits>, FIRRTLPrimitive<mnemonic>;
+// Unary operations with ordinary .fir source syntax. The source spelling
+// defaults to the MLIR mnemonic but may be overridden.
+class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
+                  list<Trait> traits = [], string sourceSpelling = mnemonic> :
+    UnaryPrimOpBase<mnemonic, srcType, resultType, traits>,
+    FIRRTLPrimitive<sourceSpelling>;
 
-def SizeOfIntrinsicOp : UnaryPrimOp<"int.sizeof", FIRRTLBaseType, UInt32Type>;
+def SizeOfIntrinsicOp : UnaryPrimOpBase<"int.sizeof", FIRRTLBaseType, UInt32Type>;
 
 let hasCanonicalizer=1 in {
-  def AsSIntPrimOp : SourceUnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType>;
-  def AsUIntPrimOp : SourceUnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType>;
-  def CvtPrimOp : SourceUnaryPrimOp<"cvt", IntType, SIntType>;
+  def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType>;
+  def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType>;
+  def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType>;
 }
 def AsAsyncResetPrimOp
-  : SourceUnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType>;
-def AsResetPrimOp : SourceUnaryPrimOp<"asReset", UInt1Type, ResetType> {
+  : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType>;
+def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType> {
   let firrtlVersion = FIRRTLSplitVersion<FIRRTLUnspecifiedVersion,
                                          FIRRTLBaseVersion>;
 }
-def AsClockPrimOp : SourceUnaryPrimOp<"asClock", OneBitCastableType, ClockType>;
-def NegPrimOp : SourceUnaryPrimOp<"neg", IntType, SIntType>;
+def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType>;
+def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType>;
 let hasCanonicalizer = true in
-def NotPrimOp : SourceUnaryPrimOp<"not", IntType, UIntType>;
+def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType>;
 
 let inferType = "impl::inferReductionResult" in {
   let hasCanonicalizer = 1 in {
-    def AndRPrimOp : SourceUnaryPrimOp<"andr", IntType, UInt1Type> {
+    def AndRPrimOp : UnaryPrimOp<"andr", IntType, UInt1Type> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'and' operation to merge
         bits.  `andr(x)` is equivalent to `concat(x, 1b1) == ~0`.  As such, it
         returns 1 for zero-bit-wide operands.
       }];
     }
-    def OrRPrimOp : SourceUnaryPrimOp<"orr", IntType, UInt1Type> {
+    def OrRPrimOp : UnaryPrimOp<"orr", IntType, UInt1Type> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'or' operation to merge
         bits.  `orr(x)` is equivalent to `concat(x, 1b0) != 0`.  As such, it
         returns 0 for zero-bit-wide operands.
       }];
     }
-    def XorRPrimOp : SourceUnaryPrimOp<"xorr", IntType, UInt1Type> {
+    def XorRPrimOp : UnaryPrimOp<"xorr", IntType, UInt1Type> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'xor' operation to merge
         bits.  `xorr(x)` is equivalent to `popcount(concat(x, 1b0)) & 1`.  As
@@ -1561,7 +1562,7 @@ def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]>,
 
 class IntegerUnaryPrimOp<string mnemonic> :
     UnaryPrimOp<mnemonic, FIntegerType, FIntegerType,
-                [Pure, SameOperandsAndResultType]> {
+                [Pure, SameOperandsAndResultType], !subst(".", "_", mnemonic)> {
   let inferReturnTypesDecl = "";
   let inferType = "getFIntegerType";
 
@@ -1573,8 +1574,7 @@ class IntegerUnaryPrimOp<string mnemonic> :
   }];
 }
 
-def IntegerNotOp : IntegerUnaryPrimOp<"integer.not">,
-                   FIRRTLPrimitive<"integer_not"> {
+def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise complement of an FIntegerType value";
   let description = [{

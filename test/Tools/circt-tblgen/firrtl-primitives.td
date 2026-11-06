@@ -6,6 +6,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
 // CHECK: TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
 // CHECK: TOK_LPKEYWORD_PRIM(source_spelling, AlternateSpellingOp, 2, 0, FIRVersion(0, 0, 0), "source_spelling")
+// CHECK: TOK_LPKEYWORD_PRIM(unary_source, AlternateUnaryOp, 1, 0, FIRVersion(0, 0, 0), "unary_source")
 // CHECK: TOK_LPKEYWORD_PRIM(asReset, AsResetPrimOp, 1, 0, missingSpecFIRVersion, "asReset")
 // CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
 // CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, missingSpecFIRVersion, "bool_and")
@@ -13,6 +14,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: TOK_LPKEYWORD_PRIM(integer_add, IntegerAddOp, 2, 0, FIRVersion(4, 0, 0), "integer_add")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_and, IntegerAndOp, 2, 0, missingSpecFIRVersion, "integer_and")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_mul, IntegerMulOp, 2, 0, FIRVersion(4, 0, 0), "integer_mul")
+// CHECK: TOK_LPKEYWORD_PRIM(integer_not, IntegerNotOp, 1, 0, missingSpecFIRVersion, "integer_not")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_shl, IntegerShlOp, 2, 0, FIRVersion(4, 0, 0), "integer_shl")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_shr, IntegerShrOp, 2, 0, FIRVersion(4, 0, 0), "integer_shr")
 // CHECK: TOK_LPKEYWORD_PRIM(shl, ShlPrimOp, 1, 1, FIRVersion(0, 0, 0), "shl")
@@ -24,6 +26,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK-NEXT: emitPrimExpr("add", op);
 // CHECK: void emitExpression(AlternateSpellingOp op) {
 // CHECK-NEXT: emitPrimExpr("source_spelling", op);
+// CHECK: void emitExpression(AlternateUnaryOp op) {
+// CHECK-NEXT: emitPrimExpr("unary_source", op);
 // CHECK: void emitExpression(AsResetPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("asReset", op);
 // CHECK: void emitExpression(BitsPrimOp op) {
@@ -42,6 +46,9 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(IntegerMulOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "integer_mul"))) return;
 // CHECK-NEXT: emitPrimExpr("integer_mul", op);
+// CHECK: void emitExpression(IntegerNotOp op) {
+// CHECK-NEXT: if (failed(requireVersion(missingSpecFIRVersion, op, "integer_not"))) return;
+// CHECK-NEXT: emitPrimExpr("integer_not", op);
 // CHECK: void emitExpression(IntegerShlOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "integer_shl"))) return;
 // CHECK-NEXT: emitPrimExpr("integer_shl", op);
@@ -56,6 +63,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
 // CHECK: AlternateSpellingOp,
+// CHECK: AlternateUnaryOp,
 // CHECK: BitsPrimOp,
 // CHECK: ExportOnlyOp,
 // CHECK: IntegerAddOp,
@@ -82,6 +90,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // as AddPrimOp exercise the default source spelling instead.
 def AlternateSpellingOp : IntBinaryPrimOp<"mlir_mnemonic", IntType, [],
                                           "source_spelling">;
+def AlternateUnaryOp : UnaryPrimOp<"unary.mlir", IntType, UIntType, [],
+                                   "unary_source">;
 
 def ExportOnlyOp : FIRRTLOp<"export_only">, FIRRTLPrimitive<"export_only"> {
   let arguments = (ins IntType:$input);
