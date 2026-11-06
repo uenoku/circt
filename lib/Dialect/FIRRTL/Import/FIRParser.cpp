@@ -3169,12 +3169,10 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
   default:
     break;
   };
-  // Generated registrations still call their handwritten parsing helpers.
   switch (kind) {
-#define GET_FIRRTL_STATEMENT_PARSERS
-#include "circt/Dialect/FIRRTL/FIRRTLSourceStatements.inc"
-#undef GET_FIRRTL_STATEMENT_PARSERS
   // Statements.
+  case FIRToken::kw_attach:
+    return parseAttach();
   case FIRToken::kw_infer:
     return parseMemPort(MemDirAttr::Infer);
   case FIRToken::kw_read:
@@ -3195,6 +3193,16 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parsePropAssign();
   case FIRToken::kw_invalidate:
     return parseInvalidate();
+  case FIRToken::lp_printf:
+    return parsePrintf();
+  case FIRToken::lp_fprintf:
+    return parseFPrintf();
+  case FIRToken::lp_fflush:
+    return parseFFlush();
+  case FIRToken::kw_skip:
+    return parseSkip();
+  case FIRToken::lp_stop:
+    return parseStop();
   case FIRToken::lp_assert:
     return parseAssert();
   case FIRToken::lp_assume:

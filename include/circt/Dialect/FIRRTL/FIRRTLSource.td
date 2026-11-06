@@ -39,14 +39,4 @@ class FIRRTLPrimitive<string spelling> {
   FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
 }
 
-// Register a statement's existing parser and emitter handlers. These handlers
-// retain responsibility for source syntax, version checks, and diagnostics.
-// `leftParen` selects an existing lp_ token instead of a kw_ token. This does
-// not define a lexer keyword: the token must already exist in FIRTokenKinds.def.
-class FIRRTLSourceStatement<string spelling, string parser, bit leftParen = 0> {
-  string firrtlStatementSpelling = spelling;
-  string firrtlStatementParser = parser;
-  bit firrtlStatementLeftParen = leftParen;
-}
-
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLSOURCE_TD
