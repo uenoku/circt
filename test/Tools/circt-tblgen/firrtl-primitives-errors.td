@@ -11,15 +11,6 @@ def NotAnOp : FIRRTLPrimitive<"not_an_op">;
 // NOT_OP: error: FIRRTLPrimitive must be an operation
 #endif
 
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNO_DIRECTION 2>&1 | FileCheck %s --check-prefix=NO_DIRECTION
-#ifdef NO_DIRECTION
-def BadOp : TestPrimitive<"bad"> {
-  let firrtlHasImport = 0;
-  let firrtlHasExport = 0;
-}
-// NO_DIRECTION: error: primitive must enable import, export, or both
-#endif
-
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_NAME 2>&1 | FileCheck %s --check-prefix=NAME
 #ifdef BAD_NAME
 def BadOp : TestPrimitive<"bad-name">;

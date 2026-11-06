@@ -78,20 +78,14 @@ void emitString(raw_ostream &os, StringRef str) {
 struct Primitive {
   Operator op;
   StringRef spelling;
-  bool hasImport, hasExport;
   Version importVersion, exportVersion;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
 
   explicit Primitive(const Record *def)
       : op(def), spelling(def->getValueAsString("firrtlSpelling")),
-        hasImport(def->getValueAsBit("firrtlHasImport")),
-        hasExport(def->getValueAsBit("firrtlHasExport")),
         importVersion(getPrimitiveVersion(def, /*forImport=*/true)),
         exportVersion(getPrimitiveVersion(def, /*forImport=*/false)) {
-    if (!hasImport && !hasExport)
-      PrintFatalError(def->getLoc(),
-                      "primitive must enable import, export, or both");
     if (!isTokenIdentifier(spelling))
       PrintFatalError(
           def->getLoc(),
@@ -140,8 +134,6 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
-    if (!p.hasImport)
-      continue;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
     p.importVersion.emit(os);
@@ -152,8 +144,6 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_EMITTERS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
-    if (!p.hasExport)
-      continue;
     os << "void emitExpression(" << p.op.getCppClassName() << " op) {\n";
     if (!p.exportVersion.isBase()) {
       os << "  if (failed(requireVersion(";
@@ -179,8 +169,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_DISPATCH\n";
   for (const auto &p : primitives)
-    if (p->hasExport)
-      os << p->op.getCppClassName() << ",\n";
+    os << p->op.getCppClassName() << ",\n";
   os << "#endif\n";
   return false;
 }

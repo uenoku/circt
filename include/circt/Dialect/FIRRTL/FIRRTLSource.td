@@ -31,13 +31,11 @@ class FIRRTLSplitVersion<FIRRTLSourceVersion importGate,
 
 // Opt in to ordinary spelling(expression..., integer...) syntax. The op must
 // have one fixed result and fixed operands followed by required I32Attr
-// arguments. Importable ops must provide the narrow inferReturnType and builder
-// signatures used by the FIRRTL source parser; C++ compilation checks these.
+// arguments. Ops must provide the narrow inferReturnType and builder signatures
+// used by the FIRRTL source parser; C++ compilation checks these.
 // The spelling is also used as the feature name in version diagnostics.
 class FIRRTLPrimitive<string spelling> {
   string firrtlSpelling = spelling;
-  bit firrtlHasImport = 1;
-  bit firrtlHasExport = 1;
   FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
 }
 
