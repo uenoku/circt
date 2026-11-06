@@ -630,25 +630,23 @@ class SourceBinaryPrimOp<string mnemonic, Type lhsType, Type rhsType,
     BinaryPrimOp<mnemonic, lhsType, rhsType, resultType, traits>,
     FIRRTLPrimitive<mnemonic>;
 
-// A binary operation on two integer-typed arguments of the same kind.
+// A FIRRTL source binary operation on integer-typed arguments of the same kind.
+// The source spelling defaults to the MLIR mnemonic but may be overridden.
 class IntBinaryPrimOp<string mnemonic, Type resultType,
-                      list<Trait> traits = []> :
+                      list<Trait> traits = [], string sourceSpelling = mnemonic> :
    BinaryPrimOp<mnemonic, IntType, IntType, resultType,
-                traits # [SameOperandsIntTypeKind]>;
-
-class SourceIntBinaryPrimOp<string mnemonic, Type resultType,
-                            list<Trait> traits = []> :
-    IntBinaryPrimOp<mnemonic, resultType, traits>, FIRRTLPrimitive<mnemonic>;
+                traits # [SameOperandsIntTypeKind]>,
+   FIRRTLPrimitive<sourceSpelling>;
 
 let inferType = "impl::inferAddSubResult" in {
   let hasCanonicalizer = true in {
-    def AddPrimOp : SourceIntBinaryPrimOp<"add", IntType, [Commutative]>;
-    def SubPrimOp : SourceIntBinaryPrimOp<"sub", IntType>;
+    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]>;
+    def SubPrimOp : IntBinaryPrimOp<"sub", IntType>;
   }
 }
 
-def MulPrimOp : SourceIntBinaryPrimOp<"mul", IntType, [Commutative]>;
-def DivPrimOp : SourceIntBinaryPrimOp<"div", IntType> {
+def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]>;
+def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
   let description = [{
     Divides the first argument (the numerator) by the second argument
     (the denominator) truncating the result (rounding towards zero).
@@ -661,12 +659,12 @@ def DivPrimOp : SourceIntBinaryPrimOp<"div", IntType> {
     optimized FIRRTL dialects that are separately converted to Verilog.
   }];
 }
-def RemPrimOp : SourceIntBinaryPrimOp<"rem", IntType>;
+def RemPrimOp : IntBinaryPrimOp<"rem", IntType>;
 let inferType = "impl::inferBitwiseResult" in {
   let hasCanonicalizer = true in {
-    def AndPrimOp : SourceIntBinaryPrimOp<"and", UIntType, [Commutative]>;
-    def OrPrimOp  : SourceIntBinaryPrimOp<"or", UIntType, [Commutative]>;
-    def XorPrimOp : SourceIntBinaryPrimOp<"xor", UIntType, [Commutative]>;
+    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]>;
+    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]>;
+    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]>;
   }
 }
 
@@ -685,14 +683,14 @@ let hasFolder = 0 in {
 // Comparison Operations
 let inferType = "impl::inferComparisonResult" in {
   let hasCanonicalizer = true in {
-    def LEQPrimOp : SourceIntBinaryPrimOp<"leq", UInt1Type>;
-    def LTPrimOp  : SourceIntBinaryPrimOp<"lt", UInt1Type>;
-    def GEQPrimOp : SourceIntBinaryPrimOp<"geq", UInt1Type>;
-    def GTPrimOp  : SourceIntBinaryPrimOp<"gt", UInt1Type>;
+    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type>;
+    def LTPrimOp  : IntBinaryPrimOp<"lt", UInt1Type>;
+    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type>;
+    def GTPrimOp  : IntBinaryPrimOp<"gt", UInt1Type>;
   }
   let hasCanonicalizeMethod = true in {
-    def EQPrimOp  : SourceIntBinaryPrimOp<"eq", UInt1Type, [Commutative]>;
-    def NEQPrimOp : SourceIntBinaryPrimOp<"neq", UInt1Type, [Commutative]>;
+    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]>;
+    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]>;
   }
 }
 

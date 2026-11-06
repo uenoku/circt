@@ -5,6 +5,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
 // CHECK: TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
+// CHECK: TOK_LPKEYWORD_PRIM(source_spelling, AlternateSpellingOp, 2, 0, FIRVersion(0, 0, 0), "source_spelling")
 // CHECK: TOK_LPKEYWORD_PRIM(asReset, AsResetPrimOp, 1, 0, missingSpecFIRVersion, "asReset")
 // CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
 // CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, missingSpecFIRVersion, "bool_and")
@@ -21,6 +22,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
 // CHECK: void emitExpression(AddPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("add", op);
+// CHECK: void emitExpression(AlternateSpellingOp op) {
+// CHECK-NEXT: emitPrimExpr("source_spelling", op);
 // CHECK: void emitExpression(AsResetPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("asReset", op);
 // CHECK: void emitExpression(BitsPrimOp op) {
@@ -52,6 +55,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK-NEXT: emitPrimExpr("example", op, op.getExampleAmount());
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
+// CHECK: AlternateSpellingOp,
 // CHECK: BitsPrimOp,
 // CHECK: ExportOnlyOp,
 // CHECK: IntegerAddOp,
@@ -73,6 +77,11 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // FILTER-NOT: ImportOnlyOp
 // FILTER-NOT: TagExtractOp
 // FILTER: #endif
+
+// The MLIR mnemonic can differ from the FIRRTL source spelling. Real ops such
+// as AddPrimOp exercise the default source spelling instead.
+def AlternateSpellingOp : IntBinaryPrimOp<"mlir_mnemonic", IntType, [],
+                                          "source_spelling">;
 
 def ExportOnlyOp : FIRRTLOp<"export_only">, FIRRTLPrimitive<"export_only"> {
   let arguments = (ins IntType:$input);
