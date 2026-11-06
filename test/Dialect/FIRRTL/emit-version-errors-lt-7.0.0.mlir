@@ -2,6 +2,18 @@
 // RUN: circt-translate --export-firrtl --firrtl-version=6.0.0 \
 // RUN:   --verify-diagnostics --split-input-file %s
 
+// Integer bitwise expressions require >= 7.0.0.
+firrtl.circuit "IntegerAnd" {
+  firrtl.module @IntegerAnd(in %a : !firrtl.integer, in %b : !firrtl.integer,
+                            out %out : !firrtl.integer) {
+    // expected-error @below {{'firrtl.integer.and' op integer and requires FIRRTL 7.0.0}}
+    %0 = firrtl.integer.and %a, %b : (!firrtl.integer, !firrtl.integer) -> !firrtl.integer
+    firrtl.propassign %out, %0 : !firrtl.integer
+  }
+}
+
+// -----
+
 // Unknown property expression requires >= 7.0.0.
 firrtl.circuit "UnknownValue" {
   firrtl.module @UnknownValue(out %v : !firrtl.integer) {

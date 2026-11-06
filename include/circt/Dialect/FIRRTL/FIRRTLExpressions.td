@@ -14,6 +14,7 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLEXPRESSIONS_TD
 
 include "circt/Dialect/FIRRTL/FIRRTLDialect.td"
+include "circt/Dialect/FIRRTL/FIRRTLSource.td"
 include "circt/Dialect/FIRRTL/FIRRTLTypes.td"
 include "circt/Dialect/FIRRTL/FIRRTLEnums.td"
 include "circt/Dialect/HW/HWAttributesNaming.td"
@@ -628,13 +629,15 @@ class IntBinaryPrimOp<string mnemonic, Type resultType,
 
 let inferType = "impl::inferAddSubResult" in {
   let hasCanonicalizer = true in {
-    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]>;
-    def SubPrimOp : IntBinaryPrimOp<"sub", IntType>;
+    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]>,
+                    FIRRTLPrimitive<"add">;
+    def SubPrimOp : IntBinaryPrimOp<"sub", IntType>, FIRRTLPrimitive<"sub">;
   }
 }
 
-def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]>;
-def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
+def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]>,
+                FIRRTLPrimitive<"mul">;
+def DivPrimOp : IntBinaryPrimOp<"div", IntType>, FIRRTLPrimitive<"div"> {
   let description = [{
     Divides the first argument (the numerator) by the second argument
     (the denominator) truncating the result (rounding towards zero).
@@ -647,12 +650,15 @@ def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
     optimized FIRRTL dialects that are separately converted to Verilog.
   }];
 }
-def RemPrimOp : IntBinaryPrimOp<"rem", IntType>;
+def RemPrimOp : IntBinaryPrimOp<"rem", IntType>, FIRRTLPrimitive<"rem">;
 let inferType = "impl::inferBitwiseResult" in {
   let hasCanonicalizer = true in {
-    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]>;
-    def OrPrimOp  : IntBinaryPrimOp<"or",  UIntType, [Commutative]>;
-    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]>;
+    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]>,
+                    FIRRTLPrimitive<"and">;
+    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]>,
+                    FIRRTLPrimitive<"or">;
+    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]>,
+                    FIRRTLPrimitive<"xor">;
   }
 }
 
@@ -671,14 +677,16 @@ let hasFolder = 0 in {
 // Comparison Operations
 let inferType = "impl::inferComparisonResult" in {
   let hasCanonicalizer = true in {
-    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type>;
-    def LTPrimOp  : IntBinaryPrimOp<"lt",  UInt1Type>;
-    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type>;
-    def GTPrimOp  : IntBinaryPrimOp<"gt",  UInt1Type>;
+    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type>, FIRRTLPrimitive<"leq">;
+    def LTPrimOp  : IntBinaryPrimOp<"lt",  UInt1Type>, FIRRTLPrimitive<"lt">;
+    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type>, FIRRTLPrimitive<"geq">;
+    def GTPrimOp  : IntBinaryPrimOp<"gt",  UInt1Type>, FIRRTLPrimitive<"gt">;
   }
   let hasCanonicalizeMethod = true in {
-    def EQPrimOp  : IntBinaryPrimOp<"eq",  UInt1Type, [Commutative]>;
-    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]>;
+    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]>,
+                    FIRRTLPrimitive<"eq">;
+    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]>,
+                    FIRRTLPrimitive<"neq">;
   }
 }
 
@@ -692,20 +700,23 @@ def CatPrimOp : FIRRTLExprOp<"cat"> {
   let hasCanonicalizer = 1;
 }
 
-def DShlPrimOp  : BinaryPrimOp<"dshl", IntType, UIntType, IntType>  {
+def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType>,
+                 FIRRTLPrimitive<"dshl"> {
   let description = [{
     A dynamic shift left operation. The width of `$result` is expanded to
     `width($lhs) + 1 << width($rhs) - 1`.
   }];
   let hasCanonicalizer = true;
 }
-def DShlwPrimOp : BinaryPrimOp<"dshlw", IntType, UIntType, IntType> {
+def DShlwPrimOp : BinaryPrimOp<"dshlw", IntType, UIntType, IntType>,
+                  FIRRTLPrimitive<"dshlw"> {
   let description = [{
     A dynamic shift left operation same as 'dshl' but with different width rule.
     The width of `$result` is equal to `$lhs`.
   }];
 }
-def DShrPrimOp  : BinaryPrimOp<"dshr", IntType, UIntType, IntType> {
+def DShrPrimOp : BinaryPrimOp<"dshr", IntType, UIntType, IntType>,
+                 FIRRTLPrimitive<"dshr"> {
   let hasCanonicalizer = true;
 }
 
@@ -755,35 +766,46 @@ class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
 def SizeOfIntrinsicOp : UnaryPrimOp<"int.sizeof", FIRRTLBaseType, UInt32Type>;
 
 let hasCanonicalizer=1 in {
-  def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType>;
-  def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType>;
-  def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType>;
+  def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType>,
+                     FIRRTLPrimitive<"asSInt">;
+  def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType>,
+                     FIRRTLPrimitive<"asUInt">;
+  def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType>, FIRRTLPrimitive<"cvt">;
 }
 def AsAsyncResetPrimOp
-  : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType>;
-def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType>;
-def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType>;
-def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType>;
+  : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType>,
+    FIRRTLPrimitive<"asAsyncReset">;
+def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType>,
+                    FIRRTLPrimitive<"asReset"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "reset casts";
+}
+def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType>,
+                    FIRRTLPrimitive<"asClock">;
+def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType>, FIRRTLPrimitive<"neg">;
 let hasCanonicalizer = true in
-def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType>;
+def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType>, FIRRTLPrimitive<"not">;
 
 let inferType = "impl::inferReductionResult" in {
   let hasCanonicalizer = 1 in {
-    def AndRPrimOp : UnaryPrimOp<"andr", IntType, UInt1Type> {
+    def AndRPrimOp : UnaryPrimOp<"andr", IntType, UInt1Type>,
+                     FIRRTLPrimitive<"andr"> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'and' operation to merge
         bits.  `andr(x)` is equivalent to `concat(x, 1b1) == ~0`.  As such, it
         returns 1 for zero-bit-wide operands.
       }];
     }
-    def OrRPrimOp : UnaryPrimOp<"orr", IntType, UInt1Type> {
+    def OrRPrimOp : UnaryPrimOp<"orr", IntType, UInt1Type>,
+                    FIRRTLPrimitive<"orr"> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'or' operation to merge
         bits.  `orr(x)` is equivalent to `concat(x, 1b0) != 0`.  As such, it
         returns 0 for zero-bit-wide operands.
       }];
     }
-    def XorRPrimOp : UnaryPrimOp<"xorr", IntType, UInt1Type> {
+    def XorRPrimOp : UnaryPrimOp<"xorr", IntType, UInt1Type>,
+                     FIRRTLPrimitive<"xorr"> {
       let description = [{
         Horizontally reduce a value to one bit, using the 'xor' operation to merge
         bits.  `xorr(x)` is equivalent to `popcount(concat(x, 1b0)) & 1`.  As
@@ -797,7 +819,7 @@ let inferType = "impl::inferReductionResult" in {
 // Other Operations
 //===----------------------------------------------------------------------===//
 
-def BitsPrimOp : PrimOp<"bits"> {
+def BitsPrimOp : PrimOp<"bits">, FIRRTLPrimitive<"bits"> {
   let arguments = (ins IntType:$input, I32Attr:$hi, I32Attr:$lo);
   let results = (outs UIntType:$result);
 
@@ -830,7 +852,7 @@ def BitsPrimOp : PrimOp<"bits"> {
   let hasCanonicalizer = true;
 }
 
-def HeadPrimOp : PrimOp<"head"> {
+def HeadPrimOp : PrimOp<"head">, FIRRTLPrimitive<"head"> {
   let arguments = (ins IntType:$input, I32Attr:$amount);
   let results = (outs UIntType:$result);
 
@@ -856,7 +878,7 @@ def HeadPrimOp : PrimOp<"head"> {
   let hasCanonicalizeMethod = true;
 }
 
-def MuxPrimOp : PrimOp<"mux"> {
+def MuxPrimOp : PrimOp<"mux">, FIRRTLPrimitive<"mux"> {
   let arguments = (ins UIntLTE1OrUnsizedType:$sel, PassiveType:$high,
                        PassiveType:$low);
   let results = (outs PassiveType:$result);
@@ -884,7 +906,7 @@ def MuxPrimOp : PrimOp<"mux"> {
   let hasCanonicalizer = true;
 }
 
-def PadPrimOp : PrimOp<"pad"> {
+def PadPrimOp : PrimOp<"pad">, FIRRTLPrimitive<"pad"> {
   let arguments = (ins IntType:$input, I32Attr:$amount);
   let results = (outs IntType:$result);
 
@@ -938,14 +960,14 @@ class ShiftPrimOp<string mnemonic> : PrimOp<mnemonic> {
   }];
 }
 
-def ShlPrimOp : ShiftPrimOp<"shl"> {
+def ShlPrimOp : ShiftPrimOp<"shl">, FIRRTLPrimitive<"shl"> {
   let description = [{
     The `shl` operation concatenates `amount` zero bits to the least significant
     end of `input`. `amount` must be non-negative.
   }];
 }
 
-def ShrPrimOp : ShiftPrimOp<"shr"> {
+def ShrPrimOp : ShiftPrimOp<"shr">, FIRRTLPrimitive<"shr"> {
   let description = [{
     The `shr` operation truncates least significant `amount` bits from `input`.
     If `amount` is greater than of equal to `width(input)`, the value will be
@@ -956,7 +978,7 @@ def ShrPrimOp : ShiftPrimOp<"shr"> {
   let hasCanonicalizeMethod = true;
 }
 
-def TailPrimOp : PrimOp<"tail"> {
+def TailPrimOp : PrimOp<"tail">, FIRRTLPrimitive<"tail"> {
   let arguments = (ins IntType:$input, I32Attr:$amount);
   let results = (outs UIntType:$result);
 
@@ -1495,7 +1517,12 @@ def IntegerShlOp : IntegerBinaryPrimOp<"integer.shl"> {
   }];
 }
 
-def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
+def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]>,
+                   FIRRTLPrimitive<"integer_and"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Integers";
+  let firrtlExportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlExportFeature = "integer and";
   let summary = "Bitwise AND of two FIntegerType values";
   let description = [{
     Computes the bitwise AND of two arbitrary precision signed integer values.
@@ -1511,7 +1538,12 @@ def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
   }];
 }
 
-def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]> {
+def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]>,
+                  FIRRTLPrimitive<"integer_or"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Integers";
+  let firrtlExportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlExportFeature = "integer or";
   let summary = "Bitwise OR of two FIntegerType values";
   let description = [{
     Computes the bitwise OR of two arbitrary precision signed integer values.
@@ -1541,7 +1573,12 @@ class IntegerUnaryPrimOp<string mnemonic> :
   }];
 }
 
-def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
+def IntegerNotOp : IntegerUnaryPrimOp<"integer.not">,
+                   FIRRTLPrimitive<"integer_not"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Integers";
+  let firrtlExportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlExportFeature = "integer not";
   let summary = "Bitwise complement of an FIntegerType value";
   let description = [{
     Computes the bitwise complement of an arbitrary precision signed integer
@@ -1620,7 +1657,12 @@ class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
   let hasFolder = 1;
 }
 
-def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
+def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]>,
+                FIRRTLPrimitive<"bool_and"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Boolean and";
+  let firrtlExportVersion = FIRRTLReleasedVersion<6, 0, 0>;
+  let firrtlExportFeature = "boolean and";
   let summary = "Bitwise AND of two boolean property values";
   let description = [{
     Computes the bitwise AND of two boolean property values, returning a boolean
@@ -1633,7 +1675,12 @@ def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
   }];
 }
 
-def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
+def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]>,
+               FIRRTLPrimitive<"bool_or"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Boolean or";
+  let firrtlExportVersion = FIRRTLReleasedVersion<6, 0, 0>;
+  let firrtlExportFeature = "boolean or";
   let summary = "Bitwise OR of two boolean property values";
   let description = [{
     Computes the bitwise OR of two boolean property values, returning a boolean
@@ -1646,7 +1693,12 @@ def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
   }];
 }
 
-def BoolXorOp : BoolBinaryPrimOp<"bool.xor", [Commutative]> {
+def BoolXorOp : BoolBinaryPrimOp<"bool.xor", [Commutative]>,
+                FIRRTLPrimitive<"bool_xor"> {
+  let firrtlImportVersion = FIRRTLUnspecifiedVersion;
+  let firrtlImportFeature = "Boolean xor";
+  let firrtlExportVersion = FIRRTLReleasedVersion<6, 0, 0>;
+  let firrtlExportFeature = "boolean xor";
   let summary = "Bitwise XOR of two boolean property values";
   let description = [{
     Computes the bitwise XOR of two boolean property values, returning a boolean

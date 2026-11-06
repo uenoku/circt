@@ -5,6 +5,9 @@ add_circt_translation_library(CIRCTImportFIRFile
 
   ADDITIONAL_HEADER_DIRS
 
+  DEPENDS
+  CIRCTFIRRTLPrimitiveIncGen
+
   LINK_LIBS PUBLIC
   CIRCTFIRRTL
   CIRCTFIRRTLTransforms

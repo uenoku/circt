@@ -153,55 +153,12 @@ struct Emitter {
   void emitPrimExpr(StringRef mnemonic, Operation *op,
                     ArrayRef<uint32_t> attrs = {});
 
-  void emitExpression(BitsPrimOp op) {
-    emitPrimExpr("bits", op, {op.getHi(), op.getLo()});
-  }
-  void emitExpression(HeadPrimOp op) {
-    emitPrimExpr("head", op, op.getAmount());
-  }
-  void emitExpression(TailPrimOp op) {
-    emitPrimExpr("tail", op, op.getAmount());
-  }
-  void emitExpression(PadPrimOp op) { emitPrimExpr("pad", op, op.getAmount()); }
-  void emitExpression(ShlPrimOp op) { emitPrimExpr("shl", op, op.getAmount()); }
-  void emitExpression(ShrPrimOp op) { emitPrimExpr("shr", op, op.getAmount()); }
+#define GET_FIRRTL_PRIMITIVE_EMITTERS
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_PRIMITIVE_EMITTERS
 
   void emitExpression(TimeOp op) {}
-
-  // Funnel all ops without attrs into `emitPrimExpr`.
-#define HANDLE(OPTYPE, MNEMONIC)                                               \
-  void emitExpression(OPTYPE op) { emitPrimExpr(MNEMONIC, op); }
-  HANDLE(AddPrimOp, "add");
-  HANDLE(SubPrimOp, "sub");
-  HANDLE(MulPrimOp, "mul");
-  HANDLE(DivPrimOp, "div");
-  HANDLE(RemPrimOp, "rem");
-  HANDLE(AndPrimOp, "and");
-  HANDLE(OrPrimOp, "or");
-  HANDLE(XorPrimOp, "xor");
-  HANDLE(LEQPrimOp, "leq");
-  HANDLE(LTPrimOp, "lt");
-  HANDLE(GEQPrimOp, "geq");
-  HANDLE(GTPrimOp, "gt");
-  HANDLE(EQPrimOp, "eq");
-  HANDLE(NEQPrimOp, "neq");
-  HANDLE(DShlPrimOp, "dshl");
-  HANDLE(DShlwPrimOp, "dshlw");
-  HANDLE(DShrPrimOp, "dshr");
-  HANDLE(MuxPrimOp, "mux");
-  HANDLE(AsSIntPrimOp, "asSInt");
-  HANDLE(AsUIntPrimOp, "asUInt");
-  HANDLE(AsAsyncResetPrimOp, "asAsyncReset");
-  HANDLE(AsResetPrimOp, "asReset");
-  HANDLE(AsClockPrimOp, "asClock");
-  HANDLE(CvtPrimOp, "cvt");
-  HANDLE(NegPrimOp, "neg");
-  HANDLE(NotPrimOp, "not");
-  HANDLE(AndRPrimOp, "andr");
-  HANDLE(OrRPrimOp, "orr");
-  HANDLE(XorRPrimOp, "xorr");
-  HANDLE(StringConcatOp, "string_concat");
-#undef HANDLE
+  void emitExpression(StringConcatOp op) { emitPrimExpr("string_concat", op); }
 
   void emitExpression(PropEqOp op) {
     if (failed(requireVersion({6, 0, 0}, op, "property equality")))
@@ -213,42 +170,6 @@ struct Emitter {
     if (failed(requireVersion(missingSpecFIRVersion, op, "list contains")))
       return;
     emitPrimExpr("list_contains", op);
-  }
-
-  void emitExpression(BoolAndOp op) {
-    if (failed(requireVersion({6, 0, 0}, op, "boolean and")))
-      return;
-    emitPrimExpr("bool_and", op);
-  }
-
-  void emitExpression(BoolOrOp op) {
-    if (failed(requireVersion({6, 0, 0}, op, "boolean or")))
-      return;
-    emitPrimExpr("bool_or", op);
-  }
-
-  void emitExpression(BoolXorOp op) {
-    if (failed(requireVersion({6, 0, 0}, op, "boolean xor")))
-      return;
-    emitPrimExpr("bool_xor", op);
-  }
-
-  void emitExpression(IntegerAndOp op) {
-    if (failed(requireVersion(missingSpecFIRVersion, op, "integer and")))
-      return;
-    emitPrimExpr("integer_and", op);
-  }
-
-  void emitExpression(IntegerOrOp op) {
-    if (failed(requireVersion(missingSpecFIRVersion, op, "integer or")))
-      return;
-    emitPrimExpr("integer_or", op);
-  }
-
-  void emitExpression(IntegerNotOp op) {
-    if (failed(requireVersion(missingSpecFIRVersion, op, "integer not")))
-      return;
-    emitPrimExpr("integer_not", op);
   }
 
   // Attributes
@@ -1591,27 +1512,21 @@ void Emitter::emitExpression(Value value) {
 
   auto op = value.getDefiningOp();
   assert(op && "value must either be a block arg or the result of an op");
+  // Generated primitives share the same boxing as special expressions.
   TypeSwitch<Operation *>(op)
       .Case<
+#define GET_FIRRTL_PRIMITIVE_DISPATCH
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_PRIMITIVE_DISPATCH
           // Basic expressions
           ConstantOp, SpecialConstantOp, SubfieldOp, SubindexOp, SubaccessOp,
           OpenSubfieldOp, OpenSubindexOp, DomainSubfieldOp,
-          // Binary
-          AddPrimOp, SubPrimOp, MulPrimOp, DivPrimOp, RemPrimOp, AndPrimOp,
-          OrPrimOp, XorPrimOp, LEQPrimOp, LTPrimOp, GEQPrimOp, GTPrimOp,
-          EQPrimOp, NEQPrimOp, DShlPrimOp, DShlwPrimOp, DShrPrimOp,
-          // Unary
-          AsSIntPrimOp, AsUIntPrimOp, AsAsyncResetPrimOp, AsResetPrimOp,
-          AsClockPrimOp, CvtPrimOp, NegPrimOp, NotPrimOp, AndRPrimOp, OrRPrimOp,
-          XorRPrimOp,
           // Miscellaneous
-          BitsPrimOp, HeadPrimOp, TailPrimOp, PadPrimOp, MuxPrimOp, ShlPrimOp,
-          ShrPrimOp, UninferredResetCastOp, ConstCastOp, StringConstantOp,
+          UninferredResetCastOp, ConstCastOp, StringConstantOp,
           FIntegerConstantOp, BoolConstantOp, DoubleConstantOp, ListCreateOp,
           UnresolvedPathOp, GenericIntrinsicOp, CatPrimOp, UnsafeDomainCastOp,
-          DomainAnyRefCastOp, UnknownValueOp, IntegerAndOp, IntegerOrOp,
-          IntegerNotOp, StringConcatOp, PropEqOp, ListContainsOp, BoolAndOp,
-          BoolOrOp, BoolXorOp,
+          DomainAnyRefCastOp, UnknownValueOp, StringConcatOp, PropEqOp,
+          ListContainsOp,
           // Reference expressions
           RefSendOp, RefResolveOp, RefSubOp, RWProbeOp, RefCastOp,
           // Format String expressions
