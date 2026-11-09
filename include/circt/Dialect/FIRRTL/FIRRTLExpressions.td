@@ -1415,7 +1415,6 @@ class IntegerBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
 
 def IntegerAddOp : IntegerBinaryPrimOp<"integer.add", [Commutative]> {
   let firrtlFormat = "`integer_add` `(` operands `)`";
-  let firrtlFeature = "integer_add";
   let summary = "Add two FIntegerType values";
   let description = [{
     The add operation result is the arbitrary precision signed integer
@@ -1431,7 +1430,6 @@ def IntegerAddOp : IntegerBinaryPrimOp<"integer.add", [Commutative]> {
 
 def IntegerMulOp : IntegerBinaryPrimOp<"integer.mul", [Commutative]> {
   let firrtlFormat = "`integer_mul` `(` operands `)`";
-  let firrtlFeature = "integer_mul";
   let summary = "Multiply two FIntegerType values";
   let description = [{
     The multiply operation result is the arbitrary precision signed integer
@@ -1447,7 +1445,6 @@ def IntegerMulOp : IntegerBinaryPrimOp<"integer.mul", [Commutative]> {
 
 def IntegerShrOp : IntegerBinaryPrimOp<"integer.shr"> {
   let firrtlFormat = "`integer_shr` `(` operands `)`";
-  let firrtlFeature = "integer_shr";
   let summary = "Shift an FIntegerType value right by an FIntegerType value";
   let description = [{
     The shift right operation result is the arbitrary precision signed integer
@@ -1464,7 +1461,6 @@ def IntegerShrOp : IntegerBinaryPrimOp<"integer.shr"> {
 
 def IntegerShlOp : IntegerBinaryPrimOp<"integer.shl"> {
   let firrtlFormat = "`integer_shl` `(` operands `)`";
-  let firrtlFeature = "integer_shl";
   let summary = "Shift an FIntegerType value left by an FIntegerType value";
   let description = [{
     The shift left operation result is the arbitrary precision signed integer
@@ -1481,7 +1477,6 @@ def IntegerShlOp : IntegerBinaryPrimOp<"integer.shl"> {
 
 def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
   let firrtlFormat = "`integer_and` `(` operands `)`";
-  let firrtlFeature = "integer_and";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise AND of two FIntegerType values";
   let description = [{
@@ -1500,7 +1495,6 @@ def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
 
 def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]> {
   let firrtlFormat = "`integer_or` `(` operands `)`";
-  let firrtlFeature = "integer_or";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise OR of two FIntegerType values";
   let description = [{
@@ -1533,7 +1527,6 @@ class IntegerUnaryPrimOp<string mnemonic> :
 
 def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
   let firrtlFormat = "`integer_not` `(` operands `)`";
-  let firrtlFeature = "integer_not";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise complement of an FIntegerType value";
   let description = [{
@@ -1619,7 +1612,6 @@ class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
 
 def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
   let firrtlFormat = "`bool_and` `(` operands `)`";
-  let firrtlFeature = "boolean and";
   let summary = "Bitwise AND of two boolean property values";
   let description = [{
     Computes the bitwise AND of two boolean property values, returning a boolean
@@ -1634,7 +1626,6 @@ def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
 
 def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
   let firrtlFormat = "`bool_or` `(` operands `)`";
-  let firrtlFeature = "boolean or";
   let summary = "Bitwise OR of two boolean property values";
   let description = [{
     Computes the bitwise OR of two boolean property values, returning a boolean
@@ -1649,7 +1640,6 @@ def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
 
 def BoolXorOp : BoolBinaryPrimOp<"bool.xor", [Commutative]> {
   let firrtlFormat = "`bool_xor` `(` operands `)`";
-  let firrtlFeature = "boolean xor";
   let summary = "Bitwise XOR of two boolean property values";
   let description = [{
     Computes the bitwise XOR of two boolean property values, returning a boolean

@@ -18,7 +18,6 @@ def FormatExampleOp : FIRRTLOp<"different.mnemonic"> {
   let results = (outs IntType:$result);
   let firrtlFormat = "`format_example` `(` $input `,` $upper `,` $lower `)`";
   let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
-  let firrtlFeature = "Example feature";
 }
 
 def NextFormatOp : FIRRTLOp<"next.format"> {
@@ -26,7 +25,6 @@ def NextFormatOp : FIRRTLOp<"next.format"> {
   let results = (outs IntType:$result);
   let firrtlFormat = "`next_format` `(` $input `)`";
   let firrtlVersion = FIRRTLNextVersion;
-  let firrtlFeature = "next feature";
 }
 
 // The shared integer binary class constructs its format from the mnemonic.
@@ -44,7 +42,6 @@ def ShortVersionedOp : FIRRTLOp<"short_versioned"> {
   let results = (outs IntType:$result);
   let firrtlFormat = "`" # opName # "` `(` operands `)`";
   let firrtlVersion = FIRRTLReleasedVersion<4, 0, 0>;
-  let firrtlFeature = "short feature";
 }
 
 def EmptyFormatOp : FIRRTLOp<"empty.format"> {
@@ -52,29 +49,29 @@ def EmptyFormatOp : FIRRTLOp<"empty.format"> {
   let results = (outs IntType:$result);
 }
 
-// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "Base")
-// CHECK: TOK_LPKEYWORD_PRIM(directive, DirectiveOp, 2, 2, FIRVersion(0, 0, 0), "Base")
-// CHECK: TOK_LPKEYWORD_PRIM(format_example, FormatExampleOp, 1, 2, FIRVersion(6, 0, 0), "Example feature")
-// CHECK: TOK_LPKEYWORD_PRIM(inherited_format, InheritedFormatOp, 2, 0, FIRVersion(0, 0, 0), "Base")
-// CHECK: TOK_LPKEYWORD_PRIM(next_format, NextFormatOp, 1, 0, nextFIRVersion, "next feature")
-// CHECK: TOK_LPKEYWORD_PRIM(override_format, OverrideFormatOp, 2, 0, FIRVersion(0, 0, 0), "Base")
-// CHECK: TOK_LPKEYWORD_PRIM(short_versioned, ShortVersionedOp, 2, 0, FIRVersion(4, 0, 0), "short feature")
+// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
+// CHECK: TOK_LPKEYWORD_PRIM(directive, DirectiveOp, 2, 2, FIRVersion(0, 0, 0), "directive")
+// CHECK: TOK_LPKEYWORD_PRIM(format_example, FormatExampleOp, 1, 2, FIRVersion(6, 0, 0), "format_example")
+// CHECK: TOK_LPKEYWORD_PRIM(inherited_format, InheritedFormatOp, 2, 0, FIRVersion(0, 0, 0), "inherited_format")
+// CHECK: TOK_LPKEYWORD_PRIM(next_format, NextFormatOp, 1, 0, nextFIRVersion, "next_format")
+// CHECK: TOK_LPKEYWORD_PRIM(override_format, OverrideFormatOp, 2, 0, FIRVersion(0, 0, 0), "override_format")
+// CHECK: TOK_LPKEYWORD_PRIM(short_versioned, ShortVersionedOp, 2, 0, FIRVersion(4, 0, 0), "short_versioned")
 // CHECK-NOT: EmptyFormatOp
 // CHECK-NOT: EmptyInheritedOp
 // CHECK: void emitExpression(DirectiveOp op) {
 // CHECK-NEXT: emitPrimExpr("directive", op, {op.getFirst(), op.getSecond()});
 // CHECK: void emitExpression(FormatExampleOp op) {
-// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "Example feature"))) return;
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "format_example"))) return;
 // CHECK-NEXT: emitPrimExpr("format_example", op, {op.getUpper(), op.getLower()});
 // CHECK: void emitExpression(InheritedFormatOp op) {
 // CHECK-NEXT: emitPrimExpr("inherited_format", op);
 // CHECK: void emitExpression(NextFormatOp op) {
-// CHECK-NEXT: if (failed(requireVersion(nextFIRVersion, op, "next feature"))) return;
+// CHECK-NEXT: if (failed(requireVersion(nextFIRVersion, op, "next_format"))) return;
 // CHECK-NEXT: emitPrimExpr("next_format", op);
 // CHECK: void emitExpression(OverrideFormatOp op) {
 // CHECK-NEXT: emitPrimExpr("override_format", op);
 // CHECK: void emitExpression(ShortVersionedOp op) {
-// CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "short feature"))) return;
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "short_versioned"))) return;
 // CHECK-NEXT: emitPrimExpr("short_versioned", op);
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: DirectiveOp,

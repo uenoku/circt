@@ -63,7 +63,6 @@ class FIRRTLOp<string mnemonic, list<Trait> traits = []> :
   // A bare operand format is implicitly emitter-only.
   bit firrtlEmitOnly = 0;
   FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
-  string firrtlFeature = "Base";
 }
 
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLDIALECT_TD

@@ -119,14 +119,12 @@ other calls use the existing primitive emitter. The handwritten importer and
 lexer registration, if any, remain responsible for source semantics and
 version checks.
 
-## Version and Feature Metadata
+## Version Metadata
 
-Each `FIRRTLOp` has one version and one diagnostic feature name, shared by the
-importer and exporter:
+Each `FIRRTLOp` has one version shared by the importer and exporter:
 
 ```tablegen
 FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
-string firrtlFeature = "Base";
 ```
 
 For example, `BoolAndOp` declares:
@@ -134,12 +132,12 @@ For example, `BoolAndOp` declares:
 ```tablegen
 let firrtlFormat = "`bool_and` `(` operands `)`";
 let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
-let firrtlFeature = "boolean and";
 ```
 
 A version may be shared by operations through a TableGen `let` block or base
-class. Feature names are explicit and need not match the source spelling. The
-version records map to existing C++ values:
+class. Version diagnostics use the FIRRTL source spelling from the format; for
+a bare operand format, they use the operation's MLIR mnemonic. The version
+records map to existing C++ values:
 
 | TableGen metadata | Generated C++ |
 | --- | --- |
@@ -163,8 +161,8 @@ both directions; integer bitwise operations use the unspecified-version gate.
 The backend emits registrations such as:
 
 ```cpp
-TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "Base")
-TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "Base")
+TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
+TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
 ```
 
 The existing token consumers generate lexer entries and expression-parser switch

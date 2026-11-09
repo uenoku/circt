@@ -5,7 +5,7 @@ FIRRTL version 5.0.0
 circuit Test :
   public module Test :
     input a : UInt<1>
-    ; expected-error @below {{boolean and are a FIRRTL 6.0.0+ feature}}
+    ; expected-error @below {{bool_and are a FIRRTL 6.0.0+ feature}}
     node x = bool_and(a, a)
 
 ;// -----

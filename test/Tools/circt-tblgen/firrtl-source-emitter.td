@@ -8,7 +8,6 @@ def EmitOnlyCallOp : FIRRTLOp<"other.call"> {
   let firrtlFormat = "`custom_only` `(` operands `)`";
   let firrtlEmitOnly = 1;
   let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
-  let firrtlFeature = "custom feature";
 }
 
 def EmitOnlyCastOp : FIRRTLOp<"other.cast"> {
@@ -16,6 +15,7 @@ def EmitOnlyCastOp : FIRRTLOp<"other.cast"> {
   let results = (outs IntType:$result);
   // A bare operand is implicitly emitter-only.
   let firrtlFormat = "$value";
+  let firrtlVersion = FIRRTLReleasedVersion<4, 0, 0>;
 }
 
 def EmitOnlySingleGroupOp : FIRRTLOp<"other.single"> {
@@ -36,9 +36,10 @@ def EmitOnlyUnaryOp : FIRRTLOp<"other.unary"> {
 // CHECK-NOT: EmitOnlyCastOp
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
 // CHECK: void emitExpression(EmitOnlyCallOp op) {
-// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "custom feature"))) return;
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "custom_only"))) return;
 // CHECK-NEXT: emitPrimExpr("custom_only", op);
 // CHECK: void emitExpression(EmitOnlyCastOp op) {
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "other.cast"))) return;
 // CHECK-NEXT: emitExpression(op.getValue());
 // CHECK: void emitExpression(EmitOnlySingleGroupOp op) {
 // CHECK-NEXT: ps << "custom_single(";

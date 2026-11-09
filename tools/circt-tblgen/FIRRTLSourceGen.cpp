@@ -73,7 +73,7 @@ void emitString(raw_ostream &os, StringRef str) {
 
 struct Primitive {
   Operator op;
-  StringRef spelling, feature;
+  StringRef spelling;
   Version version;
   bool emitOnly, transparent = false, usesOperandDirective = false;
   unsigned numOperands = 0;
@@ -81,8 +81,7 @@ struct Primitive {
   std::string operandGetter;
 
   explicit Primitive(const Record *def)
-      : op(def), feature(def->getValueAsString("firrtlFeature")),
-        version(def->getValueAsDef("firrtlVersion")),
+      : op(def), version(def->getValueAsDef("firrtlVersion")),
         emitOnly(def->getValueAsBit("firrtlEmitOnly")) {
     parseFormat(def);
     if (!transparent && !isTokenIdentifier(spelling))
@@ -227,7 +226,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
     p.version.emit(os);
     os << ", ";
-    emitString(os, p.feature);
+    emitString(os, p.spelling);
     os << ")\n";
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_EMITTERS\n";
@@ -238,7 +237,8 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
       os << "  if (failed(requireVersion(";
       p.version.emit(os);
       os << ", op, ";
-      emitString(os, p.feature);
+      emitString(os, p.transparent ? p.op.getDef().getValueAsString("opName")
+                                   : p.spelling);
       os << "))) return;\n";
     }
     if (p.transparent) {
