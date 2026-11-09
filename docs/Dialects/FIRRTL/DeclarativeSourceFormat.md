@@ -7,8 +7,8 @@
 FIRRTL operations can declare their `.fir` source syntax with `firrtlFormat`.
 This is independent of MLIR's `assemblyFormat`: the latter describes MLIR text,
 not FIRRTL source. The `circt-tblgen --firrtl-primitives` backend validates the
-format and generates importer token registrations and exporter dispatch and
-wrappers. Both directions use the existing parser and emitter helpers.
+format and generates importer tokens, parsing code, and exporter dispatch and
+wrappers. Generated code uses the existing parser and emitter helpers.
 
 An empty `firrtlFormat` (the default) does not generate source handling. A
 nonempty format opts into both import and export. An operation can set the
@@ -54,9 +54,9 @@ source spelling `integer_add` differs from the MLIR mnemonic `integer.add`
 and is declared explicitly. The `bits` MLIR assembly format uses `to`, independently of the
 commas in its FIRRTL format.
 
-## Supported Language
+## Expression Formats
 
-The initial format language supports fixed-arity primitive calls:
+The expression format language supports fixed-arity primitive calls:
 
 ```text
 call-format := name-literal "`(`" operand-group ("`,`" attribute)* "`)`"
@@ -87,6 +87,35 @@ left-parenthesis keywords are also caught by duplicate token enum definitions at
 C++ compile time. The backend cannot validate arbitrary C++ declarations: each
 operation must provide the narrow `inferReturnType` overload and builder
 signatures used by `parsePrimExp`.
+
+## Statement Formats
+
+Two simple statement forms are supported for operations with no results,
+regions, or successors:
+
+```tablegen
+// A keyword statement without arguments.
+let firrtlFormat = "`skip` info";
+
+// A call with fixed operands, integer arguments, and an optional name.
+let firrtlFormat = "`stop` `(` operands `,` $exitCode `)` optionalName($name) info";
+```
+
+`info` represents optional FIRRTL source information; it is not an ODS
+argument. `optionalName($name)` represents an optional source name after the
+closing parenthesis. Its reference must name the final ODS argument, a required
+`StrAttr`; an absent name is represented by the existing empty-name convention.
+Before that attribute, call statements require at least one fixed operand,
+followed by zero or more named, required `I32Attr` arguments. As with primitive
+calls, `operands` covers all operands and integer arguments are explicit.
+The builder must accept the operands, integer attributes, and name in that
+order. C++ compilation checks the builder signature.
+
+The generator emits tokens, statement parser cases, emitter members, and
+statement dispatch. Keyword statements preserve the parser's check for a
+keyword used as the start of an expression, and all generated statements use
+`info` to parse and emit source locations. Other statement shapes, including
+variadic arguments and optional attributes, are not yet supported.
 
 ## Version and Feature Metadata
 
@@ -164,7 +193,7 @@ The fixed-call format does not describe all FIRRTL syntax. Variadic `cat` has
 version-dependent arity and is exported as a binary tree. Reference operations
 have special semantic checks and construction paths. Property and variadic
 calls, transparent casts, import-only `tagExtract`, literals, generic intrinsics,
-and statements also need specialized handling. Dialect-only operations leave
+and most statements also need specialized handling. Dialect-only operations leave
 their format empty.
 
 The existing export-only call and transparent-cast mixins continue to generate

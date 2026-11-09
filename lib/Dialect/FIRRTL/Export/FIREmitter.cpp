@@ -81,8 +81,9 @@ struct Emitter {
   void emitStatement(RegOp op);
   void emitStatement(RegResetOp op);
   void emitStatement(NodeOp op);
-  void emitStatement(StopOp op);
-  void emitStatement(SkipOp op);
+#define GET_FIRRTL_STATEMENT_EMITTERS
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_STATEMENT_EMITTERS
   void emitFormatString(Operation *op, StringRef formatString, OperandRange ops,
                         llvm::SmallVectorImpl<Value> &substitutions);
   template <class T>
@@ -753,15 +754,18 @@ void Emitter::emitStatementsInBlock(Block &block) {
     if (isEmittedInline(&bodyOp))
       continue;
     TypeSwitch<Operation *>(&bodyOp)
-        .Case<WhenOp, WireOp, RegOp, RegResetOp, NodeOp, StopOp, SkipOp,
-              PrintFOp, FPrintFOp, FFlushOp, AssertOp, AssumeOp, CoverOp,
-              ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
-              InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
-              SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
-              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
-              RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
-              LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
-              DomainCreateOp>([&](auto op) { emitStatement(op); })
+        .Case<
+#define GET_FIRRTL_STATEMENT_DISPATCH
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_STATEMENT_DISPATCH
+            WhenOp, WireOp, RegOp, RegResetOp, NodeOp, PrintFOp, FPrintFOp,
+            FFlushOp, AssertOp, AssumeOp, CoverOp, ConnectOp, MatchingConnectOp,
+            PropertyAssertOp, PropAssignOp, InstanceOp, InstanceChoiceOp,
+            AttachOp, MemOp, InvalidValueOp, SeqMemOp, CombMemOp, MemoryPortOp,
+            MemoryDebugPortOp, MemoryPortAccessOp, DomainDefineOp, RefDefineOp,
+            RefForceOp, RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
+            LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
+            DomainCreateOp>([&](auto op) { emitStatement(op); })
         .Default([&](auto op) {
           startStatement();
           ps << "// operation " << PPExtString(op->getName().getStringRef());
@@ -878,29 +882,6 @@ void Emitter::emitStatement(NodeOp op) {
   startStatement();
   emitAssignLike([&]() { ps << "node " << PPExtString(legalName); },
                  [&]() { emitExpression(op.getInput()); });
-  emitLocationAndNewLine(op);
-}
-
-void Emitter::emitStatement(StopOp op) {
-  startStatement();
-  ps.scopedBox(PP::ibox2, [&]() {
-    ps << "stop(" << PP::ibox0;
-    emitExpression(op.getClock());
-    ps << "," << PP::space;
-    emitExpression(op.getCond());
-    ps << "," << PP::space;
-    ps.addAsString(op.getExitCode());
-    ps << ")" << PP::end;
-    if (!op.getName().empty()) {
-      ps << PP::space << ": " << PPExtString(legalize(op.getNameAttr()));
-    }
-  });
-  emitLocationAndNewLine(op);
-}
-
-void Emitter::emitStatement(SkipOp op) {
-  startStatement();
-  ps << "skip";
   emitLocationAndNewLine(op);
 }
 

@@ -165,7 +165,6 @@ TOK_KEYWORD(requires)
 TOK_KEYWORD(regreset)
 TOK_KEYWORD(reset)
 TOK_KEYWORD(simulation)
-TOK_KEYWORD(skip)
 TOK_KEYWORD(smem)
 TOK_KEYWORD(symbolic)
 TOK_KEYWORD(true)
@@ -182,7 +181,6 @@ TOK_KEYWORD(write)
 TOK_LPKEYWORD(printf)
 TOK_LPKEYWORD(fprintf)
 TOK_LPKEYWORD(fflush)
-TOK_LPKEYWORD(stop)
 TOK_LPKEYWORD(assert)
 TOK_LPKEYWORD(assume)
 TOK_LPKEYWORD(cover)
@@ -228,7 +226,11 @@ TOK_LPKEYWORD(list_contains)
 TOK_LPKEYWORD_PRIM(tagExtract, TagExtractOp, 1, 0, missingSpecFIRVersion,
                    "tagExtract")
 
-// Duplicate lp_ enum members diagnose collisions with handwritten LP keywords.
+// Duplicate enum members diagnose collisions with handwritten keywords.
+#define GET_FIRRTL_STATEMENT_TOKENS
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_STATEMENT_TOKENS
+
 #define GET_FIRRTL_PRIMITIVE_TOKENS
 #include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
 #undef GET_FIRRTL_PRIMITIVE_TOKENS

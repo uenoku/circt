@@ -2141,8 +2141,6 @@ private:
   ParseResult parsePrintf();
   ParseResult parseFPrintf();
   ParseResult parseFFlush();
-  ParseResult parseSkip();
-  ParseResult parseStop();
   ParseResult parseAssert();
   ParseResult parseAssume();
   ParseResult parseCover();
@@ -3199,10 +3197,9 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parseFPrintf();
   case FIRToken::lp_fflush:
     return parseFFlush();
-  case FIRToken::kw_skip:
-    return parseSkip();
-  case FIRToken::lp_stop:
-    return parseStop();
+#define GET_FIRRTL_STATEMENT_PARSERS
+#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
+#undef GET_FIRRTL_STATEMENT_PARSERS
   case FIRToken::lp_assert:
     return parseAssert();
   case FIRToken::lp_assume:
@@ -3574,45 +3571,6 @@ ParseResult FIRStmtParser::parseFFlush() {
 
   FFlushOp::create(builder, clock, condition, outputFileNameStrUnescaped,
                    outputFileOperands);
-  return success();
-}
-
-/// skip ::= 'skip' info?
-ParseResult FIRStmtParser::parseSkip() {
-  auto startTok = consumeToken(FIRToken::kw_skip);
-
-  // If this was actually the start of a connect or something else handle
-  // that.
-  if (auto isExpr = parseExpWithLeadingKeyword(startTok))
-    return *isExpr;
-
-  if (parseOptionalInfo())
-    return failure();
-
-  locationProcessor.setLoc(startTok.getLoc());
-  SkipOp::create(builder);
-  return success();
-}
-
-/// stop ::= 'stop(' exp exp intLit ')' info?
-ParseResult FIRStmtParser::parseStop() {
-  auto startTok = consumeToken(FIRToken::lp_stop);
-
-  Value clock, condition;
-  int64_t exitCode;
-  StringAttr name;
-  if (parseExp(clock, "expected clock expression in 'stop'") ||
-      parseToken(FIRToken::comma, "expected ','") ||
-      parseExp(condition, "expected condition in 'stop'") ||
-      parseToken(FIRToken::comma, "expected ','") ||
-      parseIntLit(exitCode, "expected exit code in 'stop'") ||
-      parseToken(FIRToken::r_paren, "expected ')' in 'stop'") ||
-      parseOptionalName(name) || parseOptionalInfo())
-    return failure();
-
-  locationProcessor.setLoc(startTok.getLoc());
-  StopOp::create(builder, clock, condition, builder.getI32IntegerAttr(exitCode),
-                 name);
   return success();
 }
 

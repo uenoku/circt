@@ -171,6 +171,121 @@ struct Primitive {
   }
 };
 
+// Simple statements are either a keyword followed by source info, or a call
+// with fixed operands and integer attributes, followed by a name and info.
+struct Statement {
+  Operator op;
+  StringRef spelling, feature;
+  Version version;
+  bool isCall = false;
+  unsigned numOperands = 0;
+  SmallVector<std::string> getters;
+  std::string nameGetter;
+
+  explicit Statement(const Record *def)
+      : op(def), feature(def->getValueAsString("firrtlFeature")),
+        version(def->getValueAsDef("firrtlVersion")) {
+    if (op.getNumResults() || op.getNumRegions() || op.getNumSuccessors())
+      PrintFatalError(def->getLoc(),
+                      "statement must have no results, regions, or successors");
+    StringRef remaining = def->getValueAsString("firrtlFormat");
+    auto fail = [&]() {
+      PrintFatalError(def->getLoc(), "invalid statement firrtlFormat");
+    };
+    auto literal = [&]() -> StringRef {
+      remaining = remaining.ltrim();
+      if (!remaining.consume_front("`"))
+        fail();
+      auto end = remaining.find('`');
+      if (end == StringRef::npos)
+        fail();
+      StringRef value = remaining.take_front(end);
+      remaining = remaining.drop_front(end + 1);
+      return value;
+    };
+    auto reference = [&](StringRef name) {
+      remaining = remaining.ltrim();
+      if (name.empty() || !remaining.consume_front("$") ||
+          !remaining.consume_front(name) ||
+          (!remaining.empty() &&
+           (isAlnum(remaining.front()) || remaining.front() == '_')))
+        fail();
+    };
+    spelling = literal();
+    if (!isTokenIdentifier(spelling))
+      PrintFatalError(
+          def->getLoc(),
+          "statement spelling must be a lexer and C++ token identifier");
+    remaining = remaining.ltrim();
+    if (remaining == "info") {
+      if (op.getNumArgs())
+        PrintFatalError(def->getLoc(),
+                        "keyword statement must have no arguments");
+      return;
+    }
+    isCall = true;
+    if (literal() != "(" || op.getNumArgs() < 2)
+      fail();
+    auto *name = dyn_cast<NamedAttribute *>(op.getArg(op.getNumArgs() - 1));
+    if (!name || name->attr.getDef().getName() != "StrAttr" ||
+        name->attr.isOptional() || name->attr.hasDefaultValue() ||
+        name->name.empty())
+      PrintFatalError(
+          def->getLoc(),
+          "statement name must be a named, required StrAttr argument");
+    nameGetter = op.getGetterName(name->name);
+
+    for (int i = 0, e = op.getNumArgs() - 1; i < e; ++i) {
+      auto arg = op.getArg(i);
+      if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg)) {
+        if (!getters.empty() || operand->isVariableLength() ||
+            operand->name.empty())
+          PrintFatalError(def->getLoc(),
+                          "statement operands must be named, fixed, and "
+                          "precede integer attributes");
+        ++numOperands;
+      } else if (auto *attr = dyn_cast<NamedAttribute *>(arg)) {
+        if (attr->attr.getDef().getName() != "I32Attr" ||
+            attr->attr.isOptional() || attr->attr.hasDefaultValue() ||
+            attr->name.empty())
+          PrintFatalError(
+              def->getLoc(),
+              "statement attributes must be named, required I32Attr arguments");
+        getters.push_back(op.getGetterName(attr->name));
+      } else {
+        PrintFatalError(def->getLoc(),
+                        "statement properties are not supported");
+      }
+    }
+    if (!numOperands)
+      PrintFatalError(def->getLoc(),
+                      "call statement must have an expression operand");
+
+    int argIndex = 0;
+    remaining = remaining.ltrim();
+    if (remaining.consume_front("operands"))
+      argIndex = numOperands;
+    for (int e = op.getNumArgs() - 1; argIndex < e; ++argIndex) {
+      if (argIndex && literal() != ",")
+        fail();
+      auto arg = op.getArg(argIndex);
+      if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg))
+        reference(operand->name);
+      else
+        reference(cast<NamedAttribute *>(arg)->name);
+    }
+    if (literal() != ")")
+      fail();
+    remaining = remaining.ltrim();
+    if (!remaining.consume_front("optionalName("))
+      fail();
+    reference(name->name);
+    remaining = remaining.ltrim();
+    if (!remaining.consume_front(")") || remaining.trim() != "info")
+      fail();
+  }
+};
+
 // Export-only calls have handwritten parsers and may have variadic operands.
 struct SourceCall {
   Operator op;
@@ -206,6 +321,7 @@ struct SourceCall {
 
 static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   SmallVector<std::unique_ptr<Primitive>> primitives;
+  SmallVector<std::unique_ptr<Statement>> statements;
   llvm::StringSet<> spellings;
   for (const Record *def : records.getAllDerivedDefinitions("FIRRTLOp")) {
     if (def->getValueAsString("firrtlFormat").empty())
@@ -214,12 +330,22 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
         def->isSubClassOf("FIRRTLSourceTransparent"))
       PrintFatalError(def->getLoc(), "firrtlFormat cannot be combined with "
                                      "source call or transparent mixins");
-    primitives.push_back(std::make_unique<Primitive>(def));
-    if (!spellings.insert(primitives.back()->spelling).second)
-      PrintFatalError(def->getLoc(), "duplicate FIRRTL primitive spelling '" +
-                                         primitives.back()->spelling + "'");
+    if (Operator(def).getNumResults() == 0) {
+      statements.push_back(std::make_unique<Statement>(def));
+      if (!spellings.insert(statements.back()->spelling).second)
+        PrintFatalError(def->getLoc(), "duplicate FIRRTL source spelling '" +
+                                           statements.back()->spelling + "'");
+    } else {
+      primitives.push_back(std::make_unique<Primitive>(def));
+      if (!spellings.insert(primitives.back()->spelling).second)
+        PrintFatalError(def->getLoc(), "duplicate FIRRTL primitive spelling '" +
+                                           primitives.back()->spelling + "'");
+    }
   }
   llvm::sort(primitives, [](const auto &a, const auto &b) {
+    return a->op.getDef().getName() < b->op.getDef().getName();
+  });
+  llvm::sort(statements, [](const auto &a, const auto &b) {
     return a->op.getDef().getName() < b->op.getDef().getName();
   });
 
@@ -262,7 +388,103 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   }
 
   os << "// Generated by circt-tblgen; do not edit.\n\n";
-  os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
+  os << "#ifdef GET_FIRRTL_STATEMENT_TOKENS\n";
+  for (const auto &statement : statements)
+    os << (statement->isCall ? "TOK_LPKEYWORD(" : "TOK_KEYWORD(")
+       << statement->spelling << ")\n";
+  os << "#endif\n\n#ifdef GET_FIRRTL_STATEMENT_PARSERS\n";
+  for (const auto &statement : statements) {
+    const auto &s = *statement;
+    os << "case FIRToken::" << (s.isCall ? "lp_" : "kw_") << s.spelling
+       << ": {\n";
+    os << "  auto startTok = consumeToken();\n";
+    if (!s.isCall)
+      os << "  if (auto isExpr = parseExpWithLeadingKeyword(startTok)) return "
+            "*isExpr;\n";
+    os << "  if (requireFeature(";
+    s.version.emit(os);
+    os << ", ";
+    emitString(os, s.feature);
+    os << ", startTok.getLoc())) return failure();\n";
+    if (!s.isCall) {
+      os << "  if (parseOptionalInfo()) return failure();\n"
+            "  locationProcessor.setLoc(startTok.getLoc());\n"
+         << "  " << s.op.getCppClassName()
+         << "::create(builder);\n"
+            "  return success();\n}\n";
+      continue;
+    }
+    for (unsigned i = 0; i < s.numOperands; ++i) {
+      os << "  Value operand" << i << ";\n";
+      if (i)
+        os << "  if (parseToken(FIRToken::comma, \"expected ','\")) return "
+              "failure();\n";
+      os << "  if (parseExp(operand" << i << ", ";
+      emitString(os,
+                 (Twine("expected expression in '") + s.spelling + "'").str());
+      os << ")) return failure();\n";
+    }
+    for (size_t i = 0; i < s.getters.size(); ++i) {
+      os << "  int64_t integer" << i
+         << ";\n"
+            "  if (parseToken(FIRToken::comma, \"expected ','\")) return "
+            "failure();\n"
+         << "  if (parseIntLit(integer" << i << ", ";
+      emitString(os, (Twine("expected integer in '") + s.spelling + "'").str());
+      os << ")) return failure();\n";
+    }
+    os << "  StringAttr name;\n"
+          "  if (parseToken(FIRToken::r_paren, \"expected ')'\") ||\n"
+          "      parseOptionalName(name) || parseOptionalInfo()) return "
+          "failure();\n"
+          "  locationProcessor.setLoc(startTok.getLoc());\n"
+       << "  " << s.op.getCppClassName() << "::create(builder";
+    for (unsigned i = 0; i < s.numOperands; ++i)
+      os << ", operand" << i;
+    for (size_t i = 0; i < s.getters.size(); ++i)
+      os << ", builder.getI32IntegerAttr(integer" << i << ")";
+    os << ", name);\n  return success();\n}\n";
+  }
+  os << "#endif\n\n#ifdef GET_FIRRTL_STATEMENT_EMITTERS\n";
+  for (const auto &statement : statements) {
+    const auto &s = *statement;
+    os << "void emitStatement(" << s.op.getCppClassName() << " op) {\n";
+    if (!s.version.isBase()) {
+      os << "  if (failed(requireVersion(";
+      s.version.emit(os);
+      os << ", op, ";
+      emitString(os, s.feature);
+      os << "))) return;\n";
+    }
+    os << "  startStatement();\n";
+    if (!s.isCall) {
+      os << "  ps << ";
+      emitString(os, s.spelling);
+      os << ";\n  emitLocationAndNewLine(op);\n}\n";
+      continue;
+    }
+    os << "  ps.scopedBox(PP::ibox2, [&]() {\n    ps << ";
+    emitString(os, (s.spelling + "(").str());
+    os << " << PP::ibox0;\n";
+    for (unsigned i = 0; i < s.numOperands; ++i) {
+      if (i)
+        os << "    ps << \",\" << PP::space;\n";
+      os << "    emitExpression(op->getOperand(" << i << "));\n";
+    }
+    for (const auto &getter : s.getters)
+      os << "    ps << \",\" << PP::space;\n    ps.addAsString(op." << getter
+         << "());\n";
+    os << "    ps << \")\" << PP::end;\n"
+       << "    if (!op." << s.nameGetter << "().empty())\n"
+       << "      ps << PP::space << \": \" << PPExtString(legalize(op."
+       << s.nameGetter
+       << "Attr()));\n"
+          "  });\n  emitLocationAndNewLine(op);\n}\n";
+  }
+  os << "#endif\n\n#ifdef GET_FIRRTL_STATEMENT_DISPATCH\n";
+  for (const auto &statement : statements)
+    os << statement->op.getCppClassName() << ",\n";
+  os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()

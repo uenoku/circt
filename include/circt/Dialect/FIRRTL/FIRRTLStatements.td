@@ -191,6 +191,7 @@ def FFlushOp : FIRRTLOp<"fflush"> {
 }
 
 def SkipOp : FIRRTLOp<"skip", [Pure]> {
+  let firrtlFormat = "`skip` info";
   let summary = "Skip statement";
   let description = [{
     Skip Statement:
@@ -208,6 +209,7 @@ def SkipOp : FIRRTLOp<"skip", [Pure]> {
 }
 
 def StopOp : FIRRTLOp<"stop"> {
+  let firrtlFormat = "`stop` `(` operands `,` $exitCode `)` optionalName($name) info";
   let summary = "Stop Statement";
 
   let arguments = (ins ClockType:$clock, UInt1Type:$cond, I32Attr:$exitCode,
