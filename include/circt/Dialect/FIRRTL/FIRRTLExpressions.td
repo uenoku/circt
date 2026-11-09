@@ -621,28 +621,24 @@ class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType,
   }];
 }
 
-// A binary operation on integer-typed arguments of the same kind.
+// A binary operation on integer-typed arguments of the same kind. These use
+// their mnemonic as the FIRRTL source spelling unless explicitly overridden.
 class IntBinaryPrimOp<string mnemonic, Type resultType,
                       list<Trait> traits = []> :
    BinaryPrimOp<mnemonic, IntType, IntType, resultType,
-                traits # [SameOperandsIntTypeKind]>;
+                traits # [SameOperandsIntTypeKind]> {
+  let firrtlFormat = "`" # mnemonic # "` `(` operands `)`";
+}
 
 let inferType = "impl::inferAddSubResult" in {
   let hasCanonicalizer = true in {
-    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]> {
-      let firrtlFormat = "call";
-    }
-    def SubPrimOp : IntBinaryPrimOp<"sub", IntType> {
-      let firrtlFormat = "call";
-    }
+    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]>;
+    def SubPrimOp : IntBinaryPrimOp<"sub", IntType>;
   }
 }
 
-def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]> {
-  let firrtlFormat = "call";
-}
+def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]>;
 def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
-  let firrtlFormat = "call";
   let description = [{
     Divides the first argument (the numerator) by the second argument
     (the denominator) truncating the result (rounding towards zero).
@@ -655,20 +651,12 @@ def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
     optimized FIRRTL dialects that are separately converted to Verilog.
   }];
 }
-def RemPrimOp : IntBinaryPrimOp<"rem", IntType> {
-  let firrtlFormat = "call";
-}
+def RemPrimOp : IntBinaryPrimOp<"rem", IntType>;
 let inferType = "impl::inferBitwiseResult" in {
   let hasCanonicalizer = true in {
-    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]> {
-      let firrtlFormat = "call";
-    }
-    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]> {
-      let firrtlFormat = "call";
-    }
-    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]> {
-      let firrtlFormat = "call";
-    }
+    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]>;
+    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]>;
+    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]>;
   }
 }
 
@@ -687,26 +675,14 @@ let hasFolder = 0 in {
 // Comparison Operations
 let inferType = "impl::inferComparisonResult" in {
   let hasCanonicalizer = true in {
-    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type> {
-      let firrtlFormat = "call";
-    }
-    def LTPrimOp  : IntBinaryPrimOp<"lt", UInt1Type> {
-      let firrtlFormat = "call";
-    }
-    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type> {
-      let firrtlFormat = "call";
-    }
-    def GTPrimOp  : IntBinaryPrimOp<"gt", UInt1Type> {
-      let firrtlFormat = "call";
-    }
+    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type>;
+    def LTPrimOp  : IntBinaryPrimOp<"lt", UInt1Type>;
+    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type>;
+    def GTPrimOp  : IntBinaryPrimOp<"gt", UInt1Type>;
   }
   let hasCanonicalizeMethod = true in {
-    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]> {
-      let firrtlFormat = "call";
-    }
-    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]> {
-      let firrtlFormat = "call";
-    }
+    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]>;
+    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]>;
   }
 }
 
@@ -721,7 +697,7 @@ def CatPrimOp : FIRRTLExprOp<"cat"> {
 }
 
 def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`dshl` `(` operands `)`";
   let description = [{
     A dynamic shift left operation. The width of `$result` is expanded to
     `width($lhs) + 1 << width($rhs) - 1`.
@@ -729,14 +705,14 @@ def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType> {
   let hasCanonicalizer = true;
 }
 def DShlwPrimOp : BinaryPrimOp<"dshlw", IntType, UIntType, IntType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`dshlw` `(` operands `)`";
   let description = [{
     A dynamic shift left operation same as 'dshl' but with different width rule.
     The width of `$result` is equal to `$lhs`.
   }];
 }
 def DShrPrimOp : BinaryPrimOp<"dshr", IntType, UIntType, IntType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`dshr` `(` operands `)`";
   let hasCanonicalizer = true;
 }
 
@@ -787,37 +763,37 @@ def SizeOfIntrinsicOp : UnaryPrimOp<"int.sizeof", FIRRTLBaseType, UInt32Type>;
 
 let hasCanonicalizer=1 in {
   def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType> {
-    let firrtlFormat = "call";
+    let firrtlFormat = "`asSInt` `(` operands `)`";
   }
   def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType> {
-    let firrtlFormat = "call";
+    let firrtlFormat = "`asUInt` `(` operands `)`";
   }
   def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType> {
-    let firrtlFormat = "call";
+    let firrtlFormat = "`cvt` `(` operands `)`";
   }
 }
 def AsAsyncResetPrimOp
   : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`asAsyncReset` `(` operands `)`";
 }
 def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`asReset` `(` operands `)`";
 }
 def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`asClock` `(` operands `)`";
 }
 def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`neg` `(` operands `)`";
 }
 let hasCanonicalizer = true in
 def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`not` `(` operands `)`";
 }
 
 let inferType = "impl::inferReductionResult" in {
   let hasCanonicalizer = 1 in {
     def AndRPrimOp : UnaryPrimOp<"andr", IntType, UInt1Type> {
-      let firrtlFormat = "call";
+      let firrtlFormat = "`andr` `(` operands `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'and' operation to merge
         bits.  `andr(x)` is equivalent to `concat(x, 1b1) == ~0`.  As such, it
@@ -825,7 +801,7 @@ let inferType = "impl::inferReductionResult" in {
       }];
     }
     def OrRPrimOp : UnaryPrimOp<"orr", IntType, UInt1Type> {
-      let firrtlFormat = "call";
+      let firrtlFormat = "`orr` `(` operands `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'or' operation to merge
         bits.  `orr(x)` is equivalent to `concat(x, 1b0) != 0`.  As such, it
@@ -833,7 +809,7 @@ let inferType = "impl::inferReductionResult" in {
       }];
     }
     def XorRPrimOp : UnaryPrimOp<"xorr", IntType, UInt1Type> {
-      let firrtlFormat = "call";
+      let firrtlFormat = "`xorr` `(` operands `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'xor' operation to merge
         bits.  `xorr(x)` is equivalent to `popcount(concat(x, 1b0)) & 1`.  As
@@ -912,7 +888,7 @@ def HeadPrimOp : AmountPrimOp<"head", UIntType> {
 }
 
 def MuxPrimOp : PrimOp<"mux"> {
-  let firrtlFormat = "call";
+  let firrtlFormat = "`mux` `(` operands `)`";
   let arguments = (ins UIntLTE1OrUnsizedType:$sel, PassiveType:$high,
                        PassiveType:$low);
   let results = (outs PassiveType:$result);

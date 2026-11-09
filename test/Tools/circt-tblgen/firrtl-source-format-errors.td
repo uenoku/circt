@@ -60,43 +60,16 @@ def BadOp : FIRRTLOp<"bad"> {
 #endif
 // FORMAT: error: invalid firrtlFormat: expected a call with all ODS arguments in order
 
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_ATTRIBUTE 2>&1 | FileCheck %s --check-prefix=CALL_ATTRIBUTE
-#ifdef CALL_ATTRIBUTE
+// A format must describe the syntax, not just name an implementation category.
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_DIRECTIVE 2>&1 | FileCheck %s --check-prefix=FORMAT
+#ifdef CALL_DIRECTIVE
 def BadOp : TestFormat<"call">;
-// CALL_ATTRIBUTE: error: call shorthand requires only operands
 #endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_MNEMONIC 2>&1 | FileCheck %s --check-prefix=CALL_MNEMONIC
-#ifdef CALL_MNEMONIC
-def BadOp : FIRRTLOp<"bad.mnemonic"> {
-  let arguments = (ins IntType:$input);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "call";
-}
-// CALL_MNEMONIC: error: call shorthand requires a lexer-compatible MLIR mnemonic
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_VARIADIC 2>&1 | FileCheck %s --check-prefix=OPERANDS
-#ifdef CALL_VARIADIC
-def BadOp : FIRRTLOp<"bad"> {
-  let arguments = (ins Variadic<IntType>:$inputs);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "call";
-}
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_DUPLICATE 2>&1 | FileCheck %s --check-prefix=DUP
-#ifdef CALL_DUPLICATE
-def BadOp : FIRRTLOp<"add"> {
-  let arguments = (ins IntType:$input);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "call";
-}
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_NO_OPERAND 2>&1 | FileCheck %s --check-prefix=NO_OPERAND
-#ifdef CALL_NO_OPERAND
-def BadOp : FIRRTLOp<"bad"> {
-  let arguments = (ins);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "call";
-}
+
+// Mnemonics used in an inherited format must still be valid source spellings.
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DINHERITED_NAME 2>&1 | FileCheck %s --check-prefix=NAME
+#ifdef INHERITED_NAME
+def BadOp : IntBinaryPrimOp<"bad.mnemonic", IntType>;
 #endif
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNAME 2>&1 | FileCheck %s --check-prefix=NAME
 #ifdef NAME

@@ -117,18 +117,6 @@ struct Primitive {
 
   void parseFormat(const Record *def) {
     StringRef remaining = def->getValueAsString("firrtlFormat");
-    if (remaining.trim() == "call") {
-      for (auto arg : op.getArgs())
-        if (!isa<NamedTypeConstraint *>(arg))
-          PrintFatalError(def->getLoc(),
-                          "call shorthand requires only operands");
-      spelling = def->getValueAsString("opName");
-      if (!isTokenIdentifier(spelling))
-        PrintFatalError(def->getLoc(),
-                        "call shorthand requires a lexer-compatible "
-                        "MLIR mnemonic");
-      return;
-    }
     auto fail = [&]() {
       PrintFatalError(def->getLoc(),
                       "invalid firrtlFormat: expected a call with "
