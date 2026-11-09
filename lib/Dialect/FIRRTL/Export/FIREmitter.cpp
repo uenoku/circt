@@ -146,23 +146,6 @@ struct Emitter {
   void emitPrimExpr(StringRef mnemonic, Operation *op,
                     ArrayRef<uint32_t> attrs = {});
 
-  void emitExpression(DomainAnyRefCastOp op) { emitExpression(op.getInput()); }
-  void emitExpression(RefCastOp op) { emitExpression(op.getInput()); }
-  void emitExpression(UninferredResetCastOp op) {
-    emitExpression(op.getInput());
-  }
-  void emitExpression(ConstCastOp op) { emitExpression(op.getInput()); }
-  void emitExpression(RefResolveOp op) {
-    ps << "read(";
-    emitExpression(op.getRef());
-    ps << ")";
-  }
-  void emitExpression(RefSendOp op) {
-    ps << "probe(";
-    emitExpression(op.getBase());
-    ps << ")";
-  }
-  void emitExpression(StringConcatOp op) { emitPrimExpr("string_concat", op); }
   void emitExpression(PropEqOp op) {
     if (failed(requireVersion({6, 0, 0}, op, "property equality")))
       return;
@@ -1538,11 +1521,10 @@ void Emitter::emitExpression(Value value) {
           // Miscellaneous
           StringConstantOp, FIntegerConstantOp, BoolConstantOp,
           DoubleConstantOp, ListCreateOp, UnresolvedPathOp, GenericIntrinsicOp,
-          CatPrimOp, UnknownValueOp, StringConcatOp, PropEqOp, ListContainsOp,
-          UnsafeDomainCastOp, DomainAnyRefCastOp, UninferredResetCastOp,
-          ConstCastOp,
+          CatPrimOp, UnknownValueOp, PropEqOp, ListContainsOp,
+          UnsafeDomainCastOp,
           // Reference expressions
-          RefSendOp, RefResolveOp, RefSubOp, RWProbeOp, RefCastOp,
+          RefSubOp, RWProbeOp,
           // Format String expressions
           TimeOp>([&](auto op) {
         ps.scopedBox(PP::ibox0, [&]() { emitExpression(op); });

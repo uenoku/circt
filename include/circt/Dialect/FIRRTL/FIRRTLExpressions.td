@@ -1087,6 +1087,8 @@ class SameGroundTypeOperandConstness<string a, string b>
       CPred<"isConst($" # a # ".getType()) == isConst($" # b # ".getType())">>;
 
 def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]> {
+  let firrtlFormat = "$input";
+  let firrtlEmitOnly = 1;
   let description = [{
     Cast between reset types.  This is used to enable matchingconnects early in
     the pipeline by isolating all uninferred reset connections to a single op.
@@ -1099,6 +1101,8 @@ def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameG
 }
 
 def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]> {
+  let firrtlFormat = "$input";
+  let firrtlEmitOnly = 1;
   let description = [{
     Cast from a 'const' to a non-'const' type.
     ```
@@ -1212,6 +1216,8 @@ def ObjectAnyRefCastOp : FIRRTLOp<"object.anyref_cast", [Pure]> {
 }
 
 def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]> {
+  let firrtlFormat = "$input";
+  let firrtlEmitOnly = 1;
   let summary = "Cast domain reference to anyref.";
   let description = [{
     Cast a domain reference to AnyRef type.  This is primarily used for allowing
@@ -1545,6 +1551,8 @@ def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
 }
 
 def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]> {
+  let firrtlFormat = "`string_concat` `(` operands `)`";
+  let firrtlEmitOnly = 1;
   let summary = "Concatenate multiple string values";
   let description = [{
     Produces a value of string type by concatenating multiple string operands.
@@ -1703,6 +1711,8 @@ def RefCastOp : FIRRTLOp<"ref.cast",
     [HasCustomSSAName,
      Pure,
      CompatibleRefTypes<"result","input">]> {
+  let firrtlFormat = "$input";
+  let firrtlEmitOnly = 1;
   let summary = "Cast between compatible reference types";
   let description = [{
     Losslessly cast between compatible reference types.
@@ -1725,6 +1735,8 @@ def RefCastOp : FIRRTLOp<"ref.cast",
 
 def RefResolveOp: FIRRTLExprOp<"ref.resolve",
                               [RefTypeConstraint<"ref","result">]> {
+  let firrtlFormat = "`read` `(` $ref `)`";
+  let firrtlEmitOnly = 1;
   let summary = "FIRRTL Resolve a Reference";
   let description = [{
     Resolve a remote reference for reading a remote value.
@@ -1742,6 +1754,8 @@ def RefResolveOp: FIRRTLExprOp<"ref.resolve",
 }
 
 def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]> {
+  let firrtlFormat = "`probe` `(` $base `)`";
+  let firrtlEmitOnly = 1;
   let summary = "FIRRTL Send through Reference";
   let description = [{
     Endpoint of a remote reference. Send a value through a reference

@@ -11,8 +11,10 @@ format and generates importer token registrations and exporter dispatch and
 wrappers. Both directions use the existing parser and emitter helpers.
 
 An empty `firrtlFormat` (the default) does not generate source handling. A
-nonempty format opts into both import and export. An operation can set the
-format directly or inherit it from a shared TableGen class.
+nonempty format normally opts into both import and export. Operations with a
+handwritten importer or no source representation for import can explicitly set
+`firrtlEmitOnly = 1`. An operation can set the format directly or inherit it
+from a shared TableGen class.
 
 ## Declaring a Format
 
@@ -73,9 +75,9 @@ does not include integer attributes; those must be referenced individually.
 There must be at least one fixed expression operand, followed by zero or more
 named, required `I32Attr` arguments. Participating operations
 must have exactly one fixed result and no regions or successors. Properties,
-optional or variadic operands, default-valued attributes, reordered or repeated
-arguments, optional groups, type directives, and custom directives are not
-supported. An unsupported nonempty format is an error, not a request for
+optional operands, default-valued attributes, reordered or repeated arguments,
+optional groups, type directives, and custom directives are not supported.
+Variadic operands are supported only in emitter-only formats using `operands`. An unsupported nonempty format is an error, not a request for
 handwritten fallback.
 
 Whitespace between format elements does not prescribe source whitespace or line
@@ -84,9 +86,38 @@ combined token; the emitter does not put whitespace between them.
 
 The backend rejects duplicate generated spellings. Collisions with handwritten
 left-parenthesis keywords are also caught by duplicate token enum definitions at
-C++ compile time. The backend cannot validate arbitrary C++ declarations: each
-operation must provide the narrow `inferReturnType` overload and builder
-signatures used by `parsePrimExp`.
+C++ compile time. The backend cannot validate arbitrary C++ declarations:
+operations with generated importers must provide the narrow `inferReturnType`
+overload and builder signatures used by `parsePrimExp`. Emitter-only formats do
+not require those import signatures.
+
+## Emitter-Only Formats
+
+Set `firrtlEmitOnly = 1` when the source importer needs a specialized parser or
+cannot reconstruct the operation from its emitted expression. The format then
+generates only an emitter and its dispatch entry, not an importer registration.
+For example:
+
+```tablegen
+// Transparent cast: there is no source syntax that reconstructs the cast.
+let firrtlFormat = "$input";
+let firrtlEmitOnly = 1;
+
+// The importer handles reference semantics separately.
+let firrtlFormat = "`read` `(` $ref `)`";
+let firrtlEmitOnly = 1;
+
+// The importer handles the variadic call and its type checks separately.
+let firrtlFormat = "`string_concat` `(` operands `)`";
+let firrtlEmitOnly = 1;
+```
+
+A transparent format must reference exactly one fixed operand and have no
+attributes. It prints that operand directly. An emitter-only call may use a
+variadic operand through `operands`; fixed unary calls print directly, while
+other calls use the existing primitive emitter. The handwritten importer and
+lexer registration, if any, remain responsible for source semantics and
+version checks.
 
 ## Version and Feature Metadata
 
@@ -155,19 +186,19 @@ void emitExpression(BitsPrimOp op) {
 
 A non-base version generates a `requireVersion` check. The emitter retains the
 existing expression boxes, comma handling, integer printing, and line-breaking
-policies. The generated file and its dependencies are wired into the FIRRTL
-importer and exporter builds.
+policies. For an emitter-only format, the version applies to emission; any
+handwritten importer supplies its own version check. The generated file and its
+dependencies are wired into the FIRRTL importer and exporter builds.
 
 ## Handwritten and Special Cases
 
-The fixed-call format does not describe all FIRRTL syntax. Variadic `cat` has
-version-dependent arity and is exported as a binary tree. Reference operations
-have special semantic checks and construction paths. Property and variadic
-calls, transparent casts, import-only `tagExtract`, literals, generic intrinsics,
-and statements also need specialized handling. Dialect-only operations leave
-their format empty.
+The format does not describe all FIRRTL syntax. Variadic `cat` has
+version-dependent arity and is exported as a binary tree. Reference and
+property operations may have special semantic checks and construction paths.
+Import-only `tagExtract`, literals, generic intrinsics, and statements also
+need specialized handling. Dialect-only operations leave their format empty.
 
-These special cases use handwritten parsing and emission rather than the
-bidirectional `firrtlFormat` generator. Extensions such as custom directives,
-explicit directionality, or variadic arguments need a construction and semantic
+Some of these cases use handwritten parsing and emission; others use an
+emitter-only format with a handwritten importer. Extensions such as custom
+directives or bidirectional variadic parsing need a construction and semantic
 design before they can be supported.

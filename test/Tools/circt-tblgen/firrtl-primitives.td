@@ -1,4 +1,4 @@
-// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp --implicit-check-not=ListContainsOp --implicit-check-not=PropEqOp --implicit-check-not=RefResolveOp --implicit-check-not=RefSendOp --implicit-check-not=StringConcatOp --implicit-check-not=UnsafeDomainCastOp --implicit-check-not=ConstCastOp --implicit-check-not=RefCastOp --implicit-check-not=DomainAnyRefCastOp --implicit-check-not=UninferredResetCastOp
+// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp --implicit-check-not=ListContainsOp --implicit-check-not=PropEqOp --implicit-check-not=UnsafeDomainCastOp --implicit-check-not='TOK_LPKEYWORD_PRIM(read,' --implicit-check-not='TOK_LPKEYWORD_PRIM(probe,' --implicit-check-not='TOK_LPKEYWORD_PRIM(string_concat,'
 
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
@@ -20,17 +20,42 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(BoolAndOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "boolean and"))) return;
 // CHECK-NEXT: emitPrimExpr("bool_and", op);
+// CHECK: void emitExpression(ConstCastOp op) {
+// CHECK-NEXT: emitExpression(op.getInput());
+// CHECK: void emitExpression(DomainAnyRefCastOp op) {
+// CHECK-NEXT: emitExpression(op.getInput());
 // CHECK: void emitExpression(IntegerAddOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "integer_add"))) return;
 // CHECK-NEXT: emitPrimExpr("integer_add", op);
 // CHECK: void emitExpression(MuxPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("mux", op);
+// CHECK: void emitExpression(RefCastOp op) {
+// CHECK-NEXT: emitExpression(op.getInput());
+// CHECK: void emitExpression(RefResolveOp op) {
+// CHECK-NEXT: ps << "read(";
+// CHECK-NEXT: emitExpression(op.getRef());
+// CHECK-NEXT: ps << ")";
+// CHECK: void emitExpression(RefSendOp op) {
+// CHECK-NEXT: ps << "probe(";
+// CHECK-NEXT: emitExpression(op.getBase());
+// CHECK-NEXT: ps << ")";
 // CHECK: void emitExpression(ShlPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("shl", op, op.getAmount());
 // CHECK: void emitExpression(ShrPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("shr", op, op.getAmount());
+// CHECK: void emitExpression(StringConcatOp op) {
+// CHECK-NEXT: emitPrimExpr("string_concat", op);
+// CHECK: void emitExpression(UninferredResetCastOp op) {
+// CHECK-NEXT: emitExpression(op.getInput());
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
 // CHECK: BitsPrimOp,
+// CHECK: ConstCastOp,
+// CHECK: DomainAnyRefCastOp,
+// CHECK: RefCastOp,
+// CHECK: RefResolveOp,
+// CHECK: RefSendOp,
 // CHECK: ShlPrimOp,
 // CHECK: ShrPrimOp,
+// CHECK: StringConcatOp,
+// CHECK: UninferredResetCastOp,

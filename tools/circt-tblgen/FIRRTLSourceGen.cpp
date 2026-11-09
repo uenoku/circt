@@ -75,14 +75,17 @@ struct Primitive {
   Operator op;
   StringRef spelling, feature;
   Version version;
+  bool emitOnly, transparent = false, usesOperandDirective = false;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
+  std::string operandGetter;
 
   explicit Primitive(const Record *def)
       : op(def), feature(def->getValueAsString("firrtlFeature")),
-        version(def->getValueAsDef("firrtlVersion")) {
+        version(def->getValueAsDef("firrtlVersion")),
+        emitOnly(def->getValueAsBit("firrtlEmitOnly")) {
     parseFormat(def);
-    if (!isTokenIdentifier(spelling))
+    if (!transparent && !isTokenIdentifier(spelling))
       PrintFatalError(
           def->getLoc(),
           "primitive spelling must be a lexer and C++ token identifier");
@@ -92,11 +95,14 @@ struct Primitive {
                                      "result and no regions or successors");
     for (auto arg : op.getArgs()) {
       if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg)) {
-        if (!getters.empty() || operand->isVariableLength() ||
+        if (!getters.empty() || operand->isOptional() ||
+            (operand->isVariadic() && !(emitOnly && usesOperandDirective)) ||
             operand->name.empty())
           PrintFatalError(def->getLoc(), "primitive operands must be fixed and "
                                          "precede integer attributes");
         ++numOperands;
+        if (numOperands == 1)
+          operandGetter = op.getGetterName(operand->name);
       } else if (auto *attr = dyn_cast<NamedAttribute *>(arg)) {
         if (attr->attr.getDef().getName() != "I32Attr" ||
             attr->attr.isOptional() || attr->attr.hasDefaultValue() ||
@@ -113,10 +119,32 @@ struct Primitive {
     if (numOperands == 0)
       PrintFatalError(def->getLoc(),
                       "primitive must have an expression operand");
+    if (transparent && (numOperands != 1 || !getters.empty()))
+      PrintFatalError(
+          def->getLoc(),
+          "transparent format must have one fixed operand and no attributes");
   }
 
   void parseFormat(const Record *def) {
-    StringRef remaining = def->getValueAsString("firrtlFormat");
+    StringRef remaining = def->getValueAsString("firrtlFormat").trim();
+    if (remaining.starts_with("$")) {
+      if (!emitOnly)
+        PrintFatalError(def->getLoc(),
+                        "transparent format requires firrtlEmitOnly");
+      if (op.getNumArgs() != 1)
+        PrintFatalError(
+            def->getLoc(),
+            "transparent format must have one fixed operand and no attributes");
+      auto *operand = dyn_cast<NamedTypeConstraint *>(op.getArg(0));
+      if (!operand || operand->isVariableLength() || operand->name.empty() ||
+          !remaining.consume_front("$") ||
+          !remaining.consume_front(operand->name) || !remaining.trim().empty())
+        PrintFatalError(
+            def->getLoc(),
+            "transparent format must reference its single fixed operand");
+      transparent = true;
+      return;
+    }
     auto fail = [&]() {
       PrintFatalError(def->getLoc(),
                       "invalid firrtlFormat: expected a call with "
@@ -141,6 +169,7 @@ struct Primitive {
     int argIndex = 0;
     remaining = remaining.ltrim();
     if (remaining.consume_front("operands")) {
+      usesOperandDirective = true;
       while (argIndex < op.getNumArgs() &&
              isa<NamedTypeConstraint *>(op.getArg(argIndex)))
         ++argIndex;
@@ -180,7 +209,8 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
     if (def->getValueAsString("firrtlFormat").empty())
       continue;
     primitives.push_back(std::make_unique<Primitive>(def));
-    if (!spellings.insert(primitives.back()->spelling).second)
+    if (!primitives.back()->transparent &&
+        !spellings.insert(primitives.back()->spelling).second)
       PrintFatalError(def->getLoc(), "duplicate FIRRTL primitive spelling '" +
                                          primitives.back()->spelling + "'");
   }
@@ -192,6 +222,8 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
+    if (p.emitOnly)
+      continue;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
     p.version.emit(os);
@@ -209,6 +241,19 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
       os << ", op, ";
       emitString(os, p.feature);
       os << "))) return;\n";
+    }
+    if (p.transparent) {
+      os << "  emitExpression(op." << p.operandGetter << "());\n}\n";
+      continue;
+    }
+    // A fixed unary call has no additional call or operand boxes.
+    if (p.emitOnly && p.numOperands == 1 && p.getters.empty() &&
+        !p.op.getOperand(0).isVariableLength()) {
+      os << "  ps << ";
+      emitString(os, (p.spelling + "(").str());
+      os << ";\n  emitExpression(op." << p.operandGetter
+         << "());\n  ps << \")\";\n}\n";
+      continue;
     }
     os << "  emitPrimExpr(";
     emitString(os, p.spelling);
