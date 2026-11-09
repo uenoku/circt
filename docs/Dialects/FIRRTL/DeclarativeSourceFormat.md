@@ -73,7 +73,7 @@ usable by the token macros. An operand group is either the `operands` directive
 or explicit operand references, not a mixture. References must name every ODS
 argument exactly once in ODS order. The directive expands to all operands and
 does not include integer attributes; those must be referenced individually.
-There must be at least one fixed expression operand, followed by zero or more
+There must be at least one expression operand group, followed by zero or more
 named, required `I32Attr` arguments. Participating operations
 must have exactly one fixed result and no regions or successors. Properties,
 optional operands, default-valued attributes, reordered or repeated arguments,
@@ -167,8 +167,8 @@ both directions; integer bitwise operations use the unspecified-version gate.
 The backend emits registrations such as:
 
 ```cpp
-TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
-TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
+TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0))
+TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0))
 ```
 
 The existing token consumers generate lexer entries and expression-parser switch

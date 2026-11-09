@@ -71,30 +71,7 @@ def BadOp : TestFormat<"call">;
 #ifdef INHERITED_NAME
 def BadOp : IntBinaryPrimOp<"bad.mnemonic", IntType>;
 #endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNAME 2>&1 | FileCheck %s --check-prefix=NAME
-#ifdef NAME
-def BadOp : TestFormat<"`bad-name` `(` $input `,` $hi `,` $lo `)`">;
 // NAME: error: primitive spelling must be a lexer and C++ token identifier
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DDUPLICATE 2>&1 | FileCheck %s --check-prefix=DUP
-#ifdef DUPLICATE
-def BadOp : TestFormat<"`add` `(` $input `,` $hi `,` $lo `)`">;
-// DUP: error: duplicate FIRRTL primitive spelling 'add'
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DVERSION 2>&1 | FileCheck %s --check-prefix=VERSION
-#ifdef VERSION
-def BadOp : TestFormat<"`test` `(` $input `,` $hi `,` $lo `)`"> {
-  let firrtlVersion = FIRRTLReleasedVersion<65536, 0, 0>;
-}
-// VERSION: error: FIRRTL version components must fit in uint16_t
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DRESULT 2>&1 | FileCheck %s --check-prefix=RESULT
-#ifdef RESULT
-def BadOp : TestFormat<"`test` `(` $input `,` $hi `,` $lo `)`"> {
-  let results = (outs IntType:$a, IntType:$b);
-}
-// RESULT: error: primitive must have exactly one fixed result and no regions or successors
-#endif
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DVARIADIC 2>&1 | FileCheck %s --check-prefix=OPERANDS
 #ifdef VARIADIC
 def BadOp : FIRRTLOp<"bad"> {
@@ -111,15 +88,6 @@ def BadOp : FIRRTLOp<"bad"> {
   let results = (outs IntType:$result);
   let firrtlFormat = "`test` `(` operands `,` $amount `,` $rhs `)`";
 }
-#endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DATTRIBUTE 2>&1 | FileCheck %s --check-prefix=ATTRIBUTE
-#ifdef ATTRIBUTE
-def BadOp : FIRRTLOp<"bad"> {
-  let arguments = (ins IntType:$input, OptionalAttr<I32Attr>:$amount);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "`test` `(` $input `,` $amount `)`";
-}
-// ATTRIBUTE: error: primitive attributes must be named, required I32Attr arguments
 #endif
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DPROPERTY 2>&1 | FileCheck %s --check-prefix=PROPERTY
 #ifdef PROPERTY

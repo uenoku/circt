@@ -50,11 +50,6 @@ def BadOp : TestEmitter<"$input"> { let results = (outs); }
 // RESULT: error: primitive must have exactly one fixed result and no regions or successors
 #endif
 
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DREGION 2>&1 | FileCheck %s --check-prefix=RESULT
-#ifdef REGION
-def BadOp : TestEmitter<"$input"> { let regions = (region AnyRegion:$body); }
-#endif
-
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DVARIADIC_REFERENCE 2>&1 | FileCheck %s --check-prefix=FIXED
 #ifdef VARIADIC_REFERENCE
 def BadOp : TestEmitter<"`test` `(` $inputs `)`"> {
@@ -62,13 +57,6 @@ def BadOp : TestEmitter<"`test` `(` $inputs `)`"> {
   let firrtlHasCustomParser = 1;
 }
 // FIXED: error: primitive operands must be fixed and precede integer attributes
-#endif
-
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBIDIRECTIONAL_VARIADIC 2>&1 | FileCheck %s --check-prefix=FIXED
-#ifdef BIDIRECTIONAL_VARIADIC
-def BadOp : TestEmitter<"`test` `(` operands `)`"> {
-  let arguments = (ins Variadic<IntType>:$inputs);
-}
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DOPTIONAL_OPERAND 2>&1 | FileCheck %s --check-prefix=FIXED

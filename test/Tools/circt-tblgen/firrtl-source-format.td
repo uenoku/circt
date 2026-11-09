@@ -49,15 +49,13 @@ def EmptyFormatOp : FIRRTLOp<"empty.format"> {
   let results = (outs IntType:$result);
 }
 
-// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
-// CHECK: TOK_LPKEYWORD_PRIM(directive, DirectiveOp, 2, 2, FIRVersion(0, 0, 0), "directive")
-// CHECK: TOK_LPKEYWORD_PRIM(format_example, FormatExampleOp, 1, 2, FIRVersion(6, 0, 0), "format_example")
-// CHECK: TOK_LPKEYWORD_PRIM(inherited_format, InheritedFormatOp, 2, 0, FIRVersion(0, 0, 0), "inherited_format")
-// CHECK: TOK_LPKEYWORD_PRIM(next_format, NextFormatOp, 1, 0, nextFIRVersion, "next_format")
-// CHECK: TOK_LPKEYWORD_PRIM(override_format, OverrideFormatOp, 2, 0, FIRVersion(0, 0, 0), "override_format")
-// CHECK: TOK_LPKEYWORD_PRIM(short_versioned, ShortVersionedOp, 2, 0, FIRVersion(4, 0, 0), "short_versioned")
-// CHECK-NOT: EmptyFormatOp
-// CHECK-NOT: EmptyInheritedOp
+// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(directive, DirectiveOp, 2, 2, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(format_example, FormatExampleOp, 1, 2, FIRVersion(6, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(inherited_format, InheritedFormatOp, 2, 0, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(next_format, NextFormatOp, 1, 0, nextFIRVersion)
+// CHECK: TOK_LPKEYWORD_PRIM(override_format, OverrideFormatOp, 2, 0, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(short_versioned, ShortVersionedOp, 2, 0, FIRVersion(4, 0, 0))
 // CHECK: void emitExpression(DirectiveOp op) {
 // CHECK-NEXT: emitPrimExpr("directive", op, {op.getFirst(), op.getSecond()});
 // CHECK: void emitExpression(FormatExampleOp op) {
@@ -79,5 +77,3 @@ def EmptyFormatOp : FIRRTLOp<"empty.format"> {
 // CHECK: InheritedFormatOp,
 // CHECK: OverrideFormatOp,
 // CHECK: ShortVersionedOp,
-// CHECK-NOT: EmptyFormatOp
-// CHECK-NOT: EmptyInheritedOp

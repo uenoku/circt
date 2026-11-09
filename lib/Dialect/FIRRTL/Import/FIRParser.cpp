@@ -2286,11 +2286,11 @@ ParseResult FIRStmtParser::parseExpImpl(Value &result, const Twine &message,
   auto token = getToken();
   auto kind = token.getKind();
   switch (kind) {
-    // Handle all primitive's.
+    // Handle all primitives.
 #define TOK_LPKEYWORD_PRIM(SPELLING, CLASS, NUMOPERANDS, NUMATTRIBUTES,        \
-                           VERSION, FEATURE)                                   \
+                           VERSION)                                            \
   case FIRToken::lp_##SPELLING:                                                \
-    if (requireFeature(VERSION, FEATURE))                                      \
+    if (requireFeature(VERSION, #SPELLING))                                    \
       return failure();                                                        \
     if (parsePrimExp<CLASS, NUMOPERANDS, NUMATTRIBUTES>(result))               \
       return failure();                                                        \

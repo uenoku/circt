@@ -859,6 +859,7 @@ def BitsPrimOp : PrimOp<"bits"> {
 
 // An integer primitive with one expression and one integer argument.
 class AmountPrimOp<string mnemonic, Type resultType> : PrimOp<mnemonic> {
+  let firrtlFormat = "`" # mnemonic # "` `(` operands `,` $amount `)`";
   let arguments = (ins IntType:$input, I32Attr:$amount);
   let results = (outs resultType:$result);
 
@@ -883,7 +884,6 @@ class AmountPrimOp<string mnemonic, Type resultType> : PrimOp<mnemonic> {
 }
 
 def HeadPrimOp : AmountPrimOp<"head", UIntType> {
-  let firrtlFormat = "`head` `(` operands `,` $amount `)`";
   let hasCanonicalizeMethod = true;
 }
 
@@ -917,7 +917,6 @@ def MuxPrimOp : PrimOp<"mux"> {
 }
 
 def PadPrimOp : AmountPrimOp<"pad", IntType> {
-  let firrtlFormat = "`pad` `(` operands `,` $amount `)`";
   let description = [{
     Pad the input out to an `amount` wide integer, sign extending or zero
     extending according to `input`s type.  If `amount` is less than the existing
@@ -925,18 +924,14 @@ def PadPrimOp : AmountPrimOp<"pad", IntType> {
   }];
 }
 
-class ShiftPrimOp<string mnemonic> : AmountPrimOp<mnemonic, IntType>;
-
-def ShlPrimOp : ShiftPrimOp<"shl"> {
-  let firrtlFormat = "`shl` `(` operands `,` $amount `)`";
+def ShlPrimOp : AmountPrimOp<"shl", IntType> {
   let description = [{
     The `shl` operation concatenates `amount` zero bits to the least significant
     end of `input`. `amount` must be non-negative.
   }];
 }
 
-def ShrPrimOp : ShiftPrimOp<"shr"> {
-  let firrtlFormat = "`shr` `(` operands `,` $amount `)`";
+def ShrPrimOp : AmountPrimOp<"shr", IntType> {
   let description = [{
     The `shr` operation truncates least significant `amount` bits from `input`.
     If `amount` is greater than of equal to `width(input)`, the value will be
@@ -948,7 +943,6 @@ def ShrPrimOp : ShiftPrimOp<"shr"> {
 }
 
 def TailPrimOp : AmountPrimOp<"tail", UIntType> {
-  let firrtlFormat = "`tail` `(` operands `,` $amount `)`";
   let description = [{
     The `tail` operation truncates the `amount` most significant bits from
     `input`.  `amount` must be non-negative and less than or equal to the bit

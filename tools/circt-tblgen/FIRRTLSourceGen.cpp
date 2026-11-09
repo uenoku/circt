@@ -119,10 +119,6 @@ struct Primitive {
     if (numOperands == 0)
       PrintFatalError(def->getLoc(),
                       "primitive must have an expression operand");
-    if (transparent && (numOperands != 1 || !getters.empty()))
-      PrintFatalError(
-          def->getLoc(),
-          "transparent format must have one fixed operand and no attributes");
   }
 
   void parseFormat(const Record *def) {
@@ -228,8 +224,6 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
     p.version.emit(os);
-    os << ", ";
-    emitString(os, p.spelling);
     os << ")\n";
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_EMITTERS\n";

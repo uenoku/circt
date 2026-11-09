@@ -3,17 +3,17 @@
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
-// CHECK: TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0), "add")
-// CHECK: TOK_LPKEYWORD_PRIM(asReset, AsResetPrimOp, 1, 0, FIRVersion(0, 0, 0), "asReset")
-// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0), "bits")
-// CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, FIRVersion(6, 0, 0), "bool_and")
-// CHECK: TOK_LPKEYWORD_PRIM(integer_add, IntegerAddOp, 2, 0, FIRVersion(4, 0, 0), "integer_add")
-// CHECK: TOK_LPKEYWORD_PRIM(integer_and, IntegerAndOp, 2, 0, missingSpecFIRVersion, "integer_and")
-// CHECK: TOK_LPKEYWORD_PRIM(list_contains, ListContainsOp, 2, 0, missingSpecFIRVersion, "list_contains")
-// CHECK: TOK_LPKEYWORD_PRIM(mux, MuxPrimOp, 3, 0, FIRVersion(0, 0, 0), "mux")
-// CHECK: TOK_LPKEYWORD_PRIM(prop_eq, PropEqOp, 2, 0, FIRVersion(6, 0, 0), "prop_eq")
-// CHECK: TOK_LPKEYWORD_PRIM(shl, ShlPrimOp, 1, 1, FIRVersion(0, 0, 0), "shl")
-// CHECK: TOK_LPKEYWORD_PRIM(shr, ShrPrimOp, 1, 1, FIRVersion(0, 0, 0), "shr")
+// CHECK: TOK_LPKEYWORD_PRIM(add, AddPrimOp, 2, 0, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(asReset, AsResetPrimOp, 1, 0, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(bits, BitsPrimOp, 1, 2, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, FIRVersion(6, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(integer_add, IntegerAddOp, 2, 0, FIRVersion(4, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(integer_and, IntegerAndOp, 2, 0, missingSpecFIRVersion)
+// CHECK: TOK_LPKEYWORD_PRIM(list_contains, ListContainsOp, 2, 0, missingSpecFIRVersion)
+// CHECK: TOK_LPKEYWORD_PRIM(mux, MuxPrimOp, 3, 0, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(prop_eq, PropEqOp, 2, 0, FIRVersion(6, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(shl, ShlPrimOp, 1, 1, FIRVersion(0, 0, 0))
+// CHECK: TOK_LPKEYWORD_PRIM(shr, ShrPrimOp, 1, 1, FIRVersion(0, 0, 0))
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
 // CHECK: void emitExpression(AddPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("add", op);
