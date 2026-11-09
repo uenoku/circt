@@ -117,6 +117,18 @@ struct Primitive {
 
   void parseFormat(const Record *def) {
     StringRef remaining = def->getValueAsString("firrtlFormat");
+    if (remaining.trim() == "call") {
+      for (auto arg : op.getArgs())
+        if (!isa<NamedTypeConstraint *>(arg))
+          PrintFatalError(def->getLoc(),
+                          "call shorthand requires only operands");
+      spelling = def->getValueAsString("opName");
+      if (!isTokenIdentifier(spelling))
+        PrintFatalError(def->getLoc(),
+                        "call shorthand requires a lexer-compatible "
+                        "MLIR mnemonic");
+      return;
+    }
     auto fail = [&]() {
       PrintFatalError(def->getLoc(),
                       "invalid firrtlFormat: expected a call with "
@@ -136,11 +148,21 @@ struct Primitive {
     spelling = literal();
     if (literal() != "(")
       fail();
-    bool first = true;
-    for (auto arg : op.getArgs()) {
-      if (!first && literal() != ",")
+    // The operands directive represents the entire leading operand group,
+    // including its internal commas. Attributes remain explicit.
+    int argIndex = 0;
+    remaining = remaining.ltrim();
+    if (remaining.consume_front("operands")) {
+      while (argIndex < op.getNumArgs() &&
+             isa<NamedTypeConstraint *>(op.getArg(argIndex)))
+        ++argIndex;
+      if (argIndex == 0)
         fail();
-      first = false;
+    }
+    for (; argIndex < op.getNumArgs(); ++argIndex) {
+      if (argIndex != 0 && literal() != ",")
+        fail();
+      auto arg = op.getArg(argIndex);
       StringRef name;
       if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg))
         name = operand->name;

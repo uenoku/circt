@@ -11,33 +11,41 @@ format and generates importer token registrations and exporter dispatch and
 wrappers. Both directions use the existing parser and emitter helpers.
 
 An empty `firrtlFormat` (the default) does not generate source handling. A
-nonempty format opts into both import and export. There is no implicit source
-spelling based on the MLIR mnemonic or operation base class.
+nonempty format opts into both import and export; operation base classes do not
+implicitly enable it. The `call` shorthand uses the MLIR mnemonic as the source
+spelling.
 
 ## Declaring a Format
 
-For an ordinary binary primitive:
+For an ordinary primitive without attributes, use `call` to specify a call
+with the MLIR mnemonic and all operands:
 
 ```tablegen
 def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]> {
-  let firrtlFormat = "`add` `(` $lhs `,` $rhs `)`";
+  let firrtlFormat = "call";
 }
 ```
+
+This describes `add(lhs, rhs)`. It is equivalent to the explicit format
+``"`add` `(` operands `)`"``. The shorthand requires a lexer-compatible
+mnemonic; use an explicit spelling when the FIRRTL name differs.
 
 For a primitive with integer arguments:
 
 ```tablegen
 def BitsPrimOp : PrimOp<"bits"> {
-  let firrtlFormat = "`bits` `(` $input `,` $hi `,` $lo `)`";
+  let firrtlFormat = "`bits` `(` operands `,` $hi `,` $lo `)`";
   let arguments = (ins IntType:$input, I32Attr:$hi, I32Attr:$lo);
   // ...
 }
 ```
 
 ODS provides the operand and attribute kinds, counts, and getter names. The
-format gives the source spelling and argument order. For example, the FIRRTL
-source spelling `integer_add` is independent of the MLIR mnemonic
-`integer.add`. The `bits` MLIR assembly format uses `to`, independently of the
+`operands` directive represents all expression operands in ODS order, separated
+by commas. Integer attributes are listed explicitly. The format gives the
+source spelling and argument order. For example, the FIRRTL
+source spelling `integer_add` differs from the MLIR mnemonic `integer.add`
+and is declared explicitly. The `bits` MLIR assembly format uses `to`, independently of the
 commas in its FIRRTL format.
 
 ## Supported Language
@@ -45,14 +53,21 @@ commas in its FIRRTL format.
 The initial format language supports fixed-arity primitive calls:
 
 ```text
-call-format := name-literal "`(`" argument ("`,`" argument)* "`)`"
-argument    := "$" ods-argument-name
+call-format := "call" | name-literal "`(`" operand-group ("`,`" attribute)* "`)`"
+operand-group := "operands" | operand ("`,`" operand)*
+operand       := "$" ods-operand-name
+attribute     := "$" ods-attribute-name
 ```
 
-The name is a backtick-enclosed identifier recognized by the FIRRTL lexer and
-usable by the token macros. References must name every ODS argument exactly
-once in ODS order. There must be at least one fixed expression operand, followed
-by zero or more named, required `I32Attr` arguments. Participating operations
+The `call` shorthand requires at least one fixed operand and no attributes or
+properties, and uses the operation mnemonic as the source name. In the explicit
+form, the name is a backtick-enclosed identifier. Both names must be recognized
+by the FIRRTL lexer and usable by the token macros. An operand group is either the `operands` directive
+or explicit operand references, not a mixture. References must name every ODS
+argument exactly once in ODS order. The directive expands to all operands and
+does not include integer attributes; those must be referenced individually.
+There must be at least one fixed expression operand, followed by zero or more
+named, required `I32Attr` arguments. Participating operations
 must have exactly one fixed result and no regions or successors. Properties,
 optional or variadic operands, default-valued attributes, reordered or repeated
 arguments, optional groups, type directives, and custom directives are not
@@ -82,7 +97,7 @@ string firrtlFeature = "Base";
 For example, `BoolAndOp` declares:
 
 ```tablegen
-let firrtlFormat = "`bool_and` `(` $lhs `,` $rhs `)`";
+let firrtlFormat = "`bool_and` `(` operands `)`";
 let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
 let firrtlFeature = "boolean and";
 ```

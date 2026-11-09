@@ -9,6 +9,7 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, FIRVersion(6, 0, 0), "boolean and")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_add, IntegerAddOp, 2, 0, FIRVersion(4, 0, 0), "integer_add")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_and, IntegerAndOp, 2, 0, missingSpecFIRVersion, "integer_and")
+// CHECK: TOK_LPKEYWORD_PRIM(mux, MuxPrimOp, 3, 0, FIRVersion(0, 0, 0), "Base")
 // CHECK: TOK_LPKEYWORD_PRIM(shl, ShlPrimOp, 1, 1, FIRVersion(0, 0, 0), "Base")
 // CHECK: TOK_LPKEYWORD_PRIM(shr, ShrPrimOp, 1, 1, FIRVersion(0, 0, 0), "Base")
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
@@ -22,6 +23,8 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(IntegerAddOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "integer_add"))) return;
 // CHECK-NEXT: emitPrimExpr("integer_add", op);
+// CHECK: void emitExpression(MuxPrimOp op) {
+// CHECK-NEXT: emitPrimExpr("mux", op);
 // CHECK: void emitExpression(ShlPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("shl", op, op.getAmount());
 // CHECK: void emitExpression(ShrPrimOp op) {
