@@ -65,16 +65,6 @@ struct Version {
   }
 };
 
-// Most primitives have one version. Split versions preserve the few existing
-// import/export asymmetries without separate metadata fields on every op.
-const Record *getPrimitiveVersion(const Record *def, bool forImport) {
-  auto *version = def->getValueAsDef("firrtlVersion");
-  if (version->isSubClassOf("FIRRTLSplitVersion"))
-    return version->getValueAsDef(forImport ? "importVersion"
-                                            : "exportVersion");
-  return version;
-}
-
 void emitString(raw_ostream &os, StringRef str) {
   os << '"';
   os.write_escaped(str);
@@ -83,15 +73,15 @@ void emitString(raw_ostream &os, StringRef str) {
 
 struct Primitive {
   Operator op;
-  StringRef spelling;
-  Version importVersion, exportVersion;
+  StringRef spelling, feature;
+  Version version;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
 
   explicit Primitive(const Record *def)
-      : op(def), spelling(def->getValueAsString("firrtlSpelling")),
-        importVersion(getPrimitiveVersion(def, /*forImport=*/true)),
-        exportVersion(getPrimitiveVersion(def, /*forImport=*/false)) {
+      : op(def), feature(def->getValueAsString("firrtlFeature")),
+        version(def->getValueAsDef("firrtlVersion")) {
+    parseFormat(def);
     if (!isTokenIdentifier(spelling))
       PrintFatalError(
           def->getLoc(),
@@ -102,7 +92,8 @@ struct Primitive {
                                      "result and no regions or successors");
     for (auto arg : op.getArgs()) {
       if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg)) {
-        if (!getters.empty() || operand->isVariableLength())
+        if (!getters.empty() || operand->isVariableLength() ||
+            operand->name.empty())
           PrintFatalError(def->getLoc(), "primitive operands must be fixed and "
                                          "precede integer attributes");
         ++numOperands;
@@ -119,6 +110,54 @@ struct Primitive {
                         "primitive properties are not supported");
       }
     }
+    if (numOperands == 0)
+      PrintFatalError(def->getLoc(),
+                      "primitive must have an expression operand");
+  }
+
+  void parseFormat(const Record *def) {
+    StringRef remaining = def->getValueAsString("firrtlFormat");
+    auto fail = [&]() {
+      PrintFatalError(def->getLoc(),
+                      "invalid firrtlFormat: expected a call with "
+                      "all ODS arguments in order");
+    };
+    auto literal = [&]() -> StringRef {
+      remaining = remaining.ltrim();
+      if (!remaining.consume_front("`"))
+        fail();
+      auto end = remaining.find('`');
+      if (end == StringRef::npos)
+        fail();
+      StringRef value = remaining.take_front(end);
+      remaining = remaining.drop_front(end + 1);
+      return value;
+    };
+    spelling = literal();
+    if (literal() != "(")
+      fail();
+    bool first = true;
+    for (auto arg : op.getArgs()) {
+      if (!first && literal() != ",")
+        fail();
+      first = false;
+      StringRef name;
+      if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg))
+        name = operand->name;
+      else if (auto *attr = dyn_cast<NamedAttribute *>(arg))
+        name = attr->name;
+      else
+        PrintFatalError(def->getLoc(),
+                        "primitive properties are not supported");
+      remaining = remaining.ltrim();
+      if (name.empty() || !remaining.consume_front("$") ||
+          !remaining.consume_front(name) ||
+          (!remaining.empty() &&
+           (isAlnum(remaining.front()) || remaining.front() == '_')))
+        fail();
+    }
+    if (literal() != ")" || !remaining.trim().empty())
+      fail();
   }
 };
 
@@ -158,22 +197,29 @@ struct SourceCall {
 static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   SmallVector<std::unique_ptr<Primitive>> primitives;
   llvm::StringSet<> spellings;
-  for (const Record *def :
-       records.getAllDerivedDefinitions("FIRRTLPrimitive")) {
-    if (!def->isSubClassOf("Op"))
-      PrintFatalError(def->getLoc(), "FIRRTLPrimitive must be an operation");
+  for (const Record *def : records.getAllDerivedDefinitions("FIRRTLOp")) {
+    if (def->getValueAsString("firrtlFormat").empty())
+      continue;
+    if (def->isSubClassOf("FIRRTLSourceCall") ||
+        def->isSubClassOf("FIRRTLSourceTransparent"))
+      PrintFatalError(def->getLoc(), "firrtlFormat cannot be combined with "
+                                     "source call or transparent mixins");
     primitives.push_back(std::make_unique<Primitive>(def));
     if (!spellings.insert(primitives.back()->spelling).second)
       PrintFatalError(def->getLoc(), "duplicate FIRRTL primitive spelling '" +
                                          primitives.back()->spelling + "'");
   }
+  llvm::sort(primitives, [](const auto &a, const auto &b) {
+    return a->op.getDef().getName() < b->op.getDef().getName();
+  });
 
   SmallVector<std::unique_ptr<SourceCall>> calls;
   for (const Record *def :
        records.getAllDerivedDefinitions("FIRRTLSourceCall")) {
     if (!def->isSubClassOf("Op"))
       PrintFatalError(def->getLoc(), "FIRRTLSourceCall must be an operation");
-    if (def->isSubClassOf("FIRRTLPrimitive"))
+    if (def->isSubClassOf("FIRRTLOp") &&
+        !def->getValueAsString("firrtlFormat").empty())
       PrintFatalError(def->getLoc(),
                       "operation cannot be both a primitive and a source call");
     calls.push_back(std::make_unique<SourceCall>(def));
@@ -188,7 +234,8 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
     if (!def->isSubClassOf("Op"))
       PrintFatalError(def->getLoc(),
                       "FIRRTLSourceTransparent must be an operation");
-    if (def->isSubClassOf("FIRRTLPrimitive") ||
+    if ((def->isSubClassOf("FIRRTLOp") &&
+         !def->getValueAsString("firrtlFormat").empty()) ||
         def->isSubClassOf("FIRRTLSourceCall"))
       PrintFatalError(def->getLoc(), "transparent operation cannot also be a "
                                      "primitive or source call");
@@ -210,20 +257,20 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
     const auto &p = *primitive;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
-    p.importVersion.emit(os);
+    p.version.emit(os);
     os << ", ";
-    emitString(os, p.spelling);
+    emitString(os, p.feature);
     os << ")\n";
   }
   os << "#endif\n\n#ifdef GET_FIRRTL_PRIMITIVE_EMITTERS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
     os << "void emitExpression(" << p.op.getCppClassName() << " op) {\n";
-    if (!p.exportVersion.isBase()) {
+    if (!p.version.isBase()) {
       os << "  if (failed(requireVersion(";
-      p.exportVersion.emit(os);
+      p.version.emit(os);
       os << ", op, ";
-      emitString(os, p.spelling);
+      emitString(os, p.feature);
       os << "))) return;\n";
     }
     os << "  emitPrimExpr(";

@@ -3,7 +3,7 @@
 firrtl.circuit "Test" {
   firrtl.module @Test(in %a : !firrtl.bool, in %b : !firrtl.bool,
                       in %r : !firrtl.uint<1>, out %out : !firrtl.bool) {
-    // asReset has an import gate but no export gate.
+    // asReset is supported at the base version in both directions.
     %reset = firrtl.asReset %r : (!firrtl.uint<1>) -> !firrtl.reset
     %named = firrtl.node %reset : !firrtl.reset
     %0 = firrtl.bool.and %a, %b

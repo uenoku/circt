@@ -6,6 +6,10 @@ page](https://github.com/freechipsproject/firrtl).
 
 [TOC]
 
+## Source Format
+
+- [Declarative FIRRTL Source Formats](DeclarativeSourceFormat.md)
+
 ## Operation Definitions -- Structure
 
 [include "Dialects/FIRRTLStructureOps.md"]

@@ -15,6 +15,7 @@
 
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/OpBase.td"
+include "circt/Dialect/FIRRTL/FIRRTLSource.td"
 
 def HasCustomSSAName : DeclareOpInterfaceMethods<OpAsmOpInterface,
                          ["getAsmResultNames"]>;
@@ -55,6 +56,11 @@ def FIRRTLDialect : Dialect {
 
 // Base class for the operation in this dialect.
 class FIRRTLOp<string mnemonic, list<Trait> traits = []> :
-    Op<FIRRTLDialect, mnemonic, traits>;
+    Op<FIRRTLDialect, mnemonic, traits> {
+  // FIRRTL source syntax, independent of the MLIR assembly format.
+  string firrtlFormat = "";
+  FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
+  string firrtlFeature = "Base";
+}
 
 #endif // CIRCT_DIALECT_FIRRTL_FIRRTLDIALECT_TD

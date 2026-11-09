@@ -1,15 +1,10 @@
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
-class TestPrimitive<string name> : FIRRTLOp<name>, FIRRTLPrimitive<name> {
+class TestPrimitive<string name> : FIRRTLOp<name> {
+  let firrtlFormat = "`" # name # "` `(` $input `)`";
   let arguments = (ins IntType:$input);
   let results = (outs IntType:$result);
 }
-
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNOT_OP 2>&1 | FileCheck %s --check-prefix=NOT_OP
-#ifdef NOT_OP
-def NotAnOp : FIRRTLPrimitive<"not_an_op">;
-// NOT_OP: error: FIRRTLPrimitive must be an operation
-#endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_NAME 2>&1 | FileCheck %s --check-prefix=NAME
 #ifdef BAD_NAME
@@ -46,7 +41,10 @@ def BadOp : TestPrimitive<"bad"> { let successors = (successor AnySuccessor:$des
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DVARIADIC 2>&1 | FileCheck %s --check-prefix=OPERANDS
 #ifdef VARIADIC
-def BadOp : TestPrimitive<"bad"> { let arguments = (ins Variadic<IntType>:$inputs); }
+def BadOp : TestPrimitive<"bad"> {
+  let arguments = (ins Variadic<IntType>:$inputs);
+  let firrtlFormat = "`bad` `(` $inputs `)`";
+}
 // OPERANDS: error: primitive operands must be fixed and precede integer attributes
 #endif
 
@@ -57,46 +55,41 @@ def BadOp : TestPrimitive<"bad"> { let arguments = (ins Optional<IntType>:$input
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DINTERLEAVED 2>&1 | FileCheck %s --check-prefix=OPERANDS
 #ifdef INTERLEAVED
-def BadOp : TestPrimitive<"bad"> { let arguments = (ins I32Attr:$n, IntType:$input); }
+def BadOp : TestPrimitive<"bad"> {
+  let arguments = (ins I32Attr:$n, IntType:$input);
+  let firrtlFormat = "`bad` `(` $n `,` $input `)`";
+}
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DWRONG_ATTR 2>&1 | FileCheck %s --check-prefix=ATTR
 #ifdef WRONG_ATTR
-def BadOp : TestPrimitive<"bad"> { let arguments = (ins IntType:$input, I64Attr:$n); }
+def BadOp : TestPrimitive<"bad"> {
+  let arguments = (ins IntType:$input, I64Attr:$n);
+  let firrtlFormat = "`bad` `(` $input `,` $n `)`";
+}
 // ATTR: error: primitive attributes must be named, required I32Attr arguments
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DOPTIONAL_ATTR 2>&1 | FileCheck %s --check-prefix=ATTR
 #ifdef OPTIONAL_ATTR
-def BadOp : TestPrimitive<"bad"> { let arguments = (ins IntType:$input, OptionalAttr<I32Attr>:$n); }
+def BadOp : TestPrimitive<"bad"> {
+  let arguments = (ins IntType:$input, OptionalAttr<I32Attr>:$n);
+  let firrtlFormat = "`bad` `(` $input `,` $n `)`";
+}
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DDEFAULT_ATTR 2>&1 | FileCheck %s --check-prefix=ATTR
 #ifdef DEFAULT_ATTR
-def BadOp : TestPrimitive<"bad"> { let arguments = (ins IntType:$input, DefaultValuedAttr<I32Attr, "1">:$n); }
+def BadOp : TestPrimitive<"bad"> {
+  let arguments = (ins IntType:$input, DefaultValuedAttr<I32Attr, "1">:$n);
+  let firrtlFormat = "`bad` `(` $input `,` $n `)`";
+}
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_VERSION 2>&1 | FileCheck %s --check-prefix=VERSION
 #ifdef BAD_VERSION
 def BadOp : TestPrimitive<"bad"> { let firrtlVersion = FIRRTLReleasedVersion<65536, 0, 0>; }
 // VERSION: error: FIRRTL version components must fit in uint16_t
-#endif
-
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBAD_SPLIT 2>&1 | FileCheck %s --check-prefix=VERSION
-#ifdef BAD_SPLIT
-def BadOp : TestPrimitive<"bad"> {
-  let firrtlVersion = FIRRTLSplitVersion<FIRRTLBaseVersion,
-                                         FIRRTLReleasedVersion<65536, 0, 0>>;
-}
-#endif
-
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DNESTED_SPLIT 2>&1 | FileCheck %s --check-prefix=NESTED
-#ifdef NESTED_SPLIT
-def BadOp : TestPrimitive<"bad"> {
-  let firrtlVersion = FIRRTLSplitVersion<FIRRTLBaseVersion,
-      FIRRTLSplitVersion<FIRRTLBaseVersion, FIRRTLUnspecifiedVersion>>;
-}
-// NESTED: error: expected a released, unspecified, or next FIRRTL source version
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_NOT_OP 2>&1 | FileCheck %s --check-prefix=CALL_NOT_OP
@@ -109,7 +102,7 @@ def NotAnOp : FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryC
 #ifdef CALL_BOTH
 def BadOp : TestPrimitive<"bad">,
             FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall>;
-// CALL_BOTH: error: operation cannot be both a primitive and a source call
+// CALL_BOTH: error: firrtlFormat cannot be combined with source call or transparent mixins
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DCALL_ATTR 2>&1 | FileCheck %s --check-prefix=CALL_ATTR
@@ -162,16 +155,17 @@ def NotAnOp : FIRRTLSourceTransparent;
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_PRIMITIVE 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_BOTH
 #ifdef TRANSPARENT_PRIMITIVE
 def BadOp : TestPrimitive<"bad">, FIRRTLSourceTransparent;
-// TRANSPARENT_BOTH: error: transparent operation cannot also be a primitive or source call
+// TRANSPARENT_BOTH: error: firrtlFormat cannot be combined with source call or transparent mixins
 #endif
 
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_CALL 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_BOTH
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_CALL 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_CALL
 #ifdef TRANSPARENT_CALL
 def BadOp : FIRRTLOp<"bad">, FIRRTLSourceTransparent,
             FIRRTLSourceCall<"other", FIRRTLBaseVersion, "other", FIRRTLUnaryCall> {
   let arguments = (ins IntType:$input);
   let results = (outs IntType:$result);
 }
+// TRANSPARENT_CALL: error: transparent operation cannot also be a primitive or source call
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_OPTIONAL 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_SHAPE

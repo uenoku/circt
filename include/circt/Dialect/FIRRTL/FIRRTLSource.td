@@ -22,25 +22,6 @@ def FIRRTLUnspecifiedVersion : FIRRTLSourceVersion;
 // The next version is distinct from syntax missing from the current spec.
 def FIRRTLNextVersion : FIRRTLSourceVersion;
 
-// For existing syntax whose import and export gates differ. New primitives
-// should normally use a single released or unspecified version.
-class FIRRTLSplitVersion<FIRRTLSourceVersion importGate,
-                         FIRRTLSourceVersion exportGate>
-    : FIRRTLSourceVersion {
-  FIRRTLSourceVersion importVersion = importGate;
-  FIRRTLSourceVersion exportVersion = exportGate;
-}
-
-// Opt in to ordinary spelling(expression..., integer...) syntax. The op must
-// have one fixed result and fixed operands followed by required I32Attr
-// arguments. Ops must provide the narrow inferReturnType and builder signatures
-// used by the FIRRTL source parser; C++ compilation checks these.
-// The spelling is also used as the feature name in version diagnostics.
-class FIRRTLPrimitive<string spelling> {
-  string firrtlSpelling = spelling;
-  FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
-}
-
 // Export-only calls retain their handwritten import parsers. The styles
 // preserve the existing pretty-printing behavior of each call.
 class FIRRTLSourceCallStyle;

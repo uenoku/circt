@@ -14,7 +14,6 @@
 #define CIRCT_DIALECT_FIRRTL_FIRRTLEXPRESSIONS_TD
 
 include "circt/Dialect/FIRRTL/FIRRTLDialect.td"
-include "circt/Dialect/FIRRTL/FIRRTLSource.td"
 include "circt/Dialect/FIRRTL/FIRRTLTypes.td"
 include "circt/Dialect/FIRRTL/FIRRTLEnums.td"
 include "circt/Dialect/HW/HWAttributesNaming.td"
@@ -581,8 +580,8 @@ class PrimOp<string mnemonic, list<Trait> traits = []> :
 //===----------------------------------------------------------------------===//
 
 // Common binary operation machinery, also used by dialect-only operations.
-class BinaryPrimOpBase<string mnemonic, Type lhsType, Type rhsType,
-                       Type resultType, list<Trait> traits = []> :
+class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType,
+                   Type resultType, list<Trait> traits = []> :
     PrimOp<mnemonic, traits> {
   let arguments = (ins lhsType:$lhs, rhsType:$rhs);
   let results = (outs resultType:$result);
@@ -622,29 +621,28 @@ class BinaryPrimOpBase<string mnemonic, Type lhsType, Type rhsType,
   }];
 }
 
-// Binary operations with ordinary .fir source syntax. The source spelling
-// defaults to the MLIR mnemonic but may be overridden.
-class BinaryPrimOp<string mnemonic, Type lhsType, Type rhsType, Type resultType,
-                   list<Trait> traits = [], string sourceSpelling = mnemonic> :
-    BinaryPrimOpBase<mnemonic, lhsType, rhsType, resultType, traits>,
-    FIRRTLPrimitive<sourceSpelling>;
-
-// A FIRRTL source binary operation on integer-typed arguments of the same kind.
-// The source spelling defaults to the MLIR mnemonic but may be overridden.
+// A binary operation on integer-typed arguments of the same kind.
 class IntBinaryPrimOp<string mnemonic, Type resultType,
-                      list<Trait> traits = [], string sourceSpelling = mnemonic> :
+                      list<Trait> traits = []> :
    BinaryPrimOp<mnemonic, IntType, IntType, resultType,
-                traits # [SameOperandsIntTypeKind], sourceSpelling>;
+                traits # [SameOperandsIntTypeKind]>;
 
 let inferType = "impl::inferAddSubResult" in {
   let hasCanonicalizer = true in {
-    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]>;
-    def SubPrimOp : IntBinaryPrimOp<"sub", IntType>;
+    def AddPrimOp : IntBinaryPrimOp<"add", IntType, [Commutative]> {
+      let firrtlFormat = "`add` `(` $lhs `,` $rhs `)`";
+    }
+    def SubPrimOp : IntBinaryPrimOp<"sub", IntType> {
+      let firrtlFormat = "`sub` `(` $lhs `,` $rhs `)`";
+    }
   }
 }
 
-def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]>;
+def MulPrimOp : IntBinaryPrimOp<"mul", IntType, [Commutative]> {
+  let firrtlFormat = "`mul` `(` $lhs `,` $rhs `)`";
+}
 def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
+  let firrtlFormat = "`div` `(` $lhs `,` $rhs `)`";
   let description = [{
     Divides the first argument (the numerator) by the second argument
     (the denominator) truncating the result (rounding towards zero).
@@ -657,12 +655,20 @@ def DivPrimOp : IntBinaryPrimOp<"div", IntType> {
     optimized FIRRTL dialects that are separately converted to Verilog.
   }];
 }
-def RemPrimOp : IntBinaryPrimOp<"rem", IntType>;
+def RemPrimOp : IntBinaryPrimOp<"rem", IntType> {
+  let firrtlFormat = "`rem` `(` $lhs `,` $rhs `)`";
+}
 let inferType = "impl::inferBitwiseResult" in {
   let hasCanonicalizer = true in {
-    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]>;
-    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]>;
-    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]>;
+    def AndPrimOp : IntBinaryPrimOp<"and", UIntType, [Commutative]> {
+      let firrtlFormat = "`and` `(` $lhs `,` $rhs `)`";
+    }
+    def OrPrimOp  : IntBinaryPrimOp<"or", UIntType, [Commutative]> {
+      let firrtlFormat = "`or` `(` $lhs `,` $rhs `)`";
+    }
+    def XorPrimOp : IntBinaryPrimOp<"xor", UIntType, [Commutative]> {
+      let firrtlFormat = "`xor` `(` $lhs `,` $rhs `)`";
+    }
   }
 }
 
@@ -670,25 +676,37 @@ let inferType = "impl::inferBitwiseResult" in {
 // a same type. Apply bitwise operation to each element.
 let inferType = "impl::inferElementwiseResult" in
 let hasFolder = 0 in {
-  def ElementwiseAndPrimOp : BinaryPrimOpBase<"elementwise_and", 1DVecIntType,
+  def ElementwiseAndPrimOp : BinaryPrimOp<"elementwise_and", 1DVecIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
-  def ElementwiseOrPrimOp  : BinaryPrimOpBase<"elementwise_or", 1DVecIntType,
+  def ElementwiseOrPrimOp  : BinaryPrimOp<"elementwise_or", 1DVecIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
-  def ElementwiseXorPrimOp : BinaryPrimOpBase<"elementwise_xor", 1DVecUIntType,
+  def ElementwiseXorPrimOp : BinaryPrimOp<"elementwise_xor", 1DVecUIntType,
                                 1DVecIntType, 1DVecUIntType, [Commutative]>;
 }
 
 // Comparison Operations
 let inferType = "impl::inferComparisonResult" in {
   let hasCanonicalizer = true in {
-    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type>;
-    def LTPrimOp  : IntBinaryPrimOp<"lt", UInt1Type>;
-    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type>;
-    def GTPrimOp  : IntBinaryPrimOp<"gt", UInt1Type>;
+    def LEQPrimOp : IntBinaryPrimOp<"leq", UInt1Type> {
+      let firrtlFormat = "`leq` `(` $lhs `,` $rhs `)`";
+    }
+    def LTPrimOp  : IntBinaryPrimOp<"lt", UInt1Type> {
+      let firrtlFormat = "`lt` `(` $lhs `,` $rhs `)`";
+    }
+    def GEQPrimOp : IntBinaryPrimOp<"geq", UInt1Type> {
+      let firrtlFormat = "`geq` `(` $lhs `,` $rhs `)`";
+    }
+    def GTPrimOp  : IntBinaryPrimOp<"gt", UInt1Type> {
+      let firrtlFormat = "`gt` `(` $lhs `,` $rhs `)`";
+    }
   }
   let hasCanonicalizeMethod = true in {
-    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]>;
-    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]>;
+    def EQPrimOp  : IntBinaryPrimOp<"eq", UInt1Type, [Commutative]> {
+      let firrtlFormat = "`eq` `(` $lhs `,` $rhs `)`";
+    }
+    def NEQPrimOp : IntBinaryPrimOp<"neq", UInt1Type, [Commutative]> {
+      let firrtlFormat = "`neq` `(` $lhs `,` $rhs `)`";
+    }
   }
 }
 
@@ -703,6 +721,7 @@ def CatPrimOp : FIRRTLExprOp<"cat"> {
 }
 
 def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType> {
+  let firrtlFormat = "`dshl` `(` $lhs `,` $rhs `)`";
   let description = [{
     A dynamic shift left operation. The width of `$result` is expanded to
     `width($lhs) + 1 << width($rhs) - 1`.
@@ -710,12 +729,14 @@ def DShlPrimOp : BinaryPrimOp<"dshl", IntType, UIntType, IntType> {
   let hasCanonicalizer = true;
 }
 def DShlwPrimOp : BinaryPrimOp<"dshlw", IntType, UIntType, IntType> {
+  let firrtlFormat = "`dshlw` `(` $lhs `,` $rhs `)`";
   let description = [{
     A dynamic shift left operation same as 'dshl' but with different width rule.
     The width of `$result` is equal to `$lhs`.
   }];
 }
 def DShrPrimOp : BinaryPrimOp<"dshr", IntType, UIntType, IntType> {
+  let firrtlFormat = "`dshr` `(` $lhs `,` $rhs `)`";
   let hasCanonicalizer = true;
 }
 
@@ -724,8 +745,8 @@ def DShrPrimOp : BinaryPrimOp<"dshr", IntType, UIntType, IntType> {
 //===----------------------------------------------------------------------===//
 
 // Common unary operation machinery, also used by dialect-only intrinsics.
-class UnaryPrimOpBase<string mnemonic, Type srcType, Type resultType,
-                      list<Trait> traits = []> : PrimOp<mnemonic, traits> {
+class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
+                  list<Trait> traits = []> : PrimOp<mnemonic, traits> {
   let arguments = (ins srcType:$input);
   let results = (outs resultType:$result);
 
@@ -762,34 +783,41 @@ class UnaryPrimOpBase<string mnemonic, Type srcType, Type resultType,
 
 }
 
-// Unary operations with ordinary .fir source syntax. The source spelling
-// defaults to the MLIR mnemonic but may be overridden.
-class UnaryPrimOp<string mnemonic, Type srcType, Type resultType,
-                  list<Trait> traits = [], string sourceSpelling = mnemonic> :
-    UnaryPrimOpBase<mnemonic, srcType, resultType, traits>,
-    FIRRTLPrimitive<sourceSpelling>;
-
-def SizeOfIntrinsicOp : UnaryPrimOpBase<"int.sizeof", FIRRTLBaseType, UInt32Type>;
+def SizeOfIntrinsicOp : UnaryPrimOp<"int.sizeof", FIRRTLBaseType, UInt32Type>;
 
 let hasCanonicalizer=1 in {
-  def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType>;
-  def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType>;
-  def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType>;
+  def AsSIntPrimOp : UnaryPrimOp<"asSInt", FIRRTLBaseType, SIntType> {
+    let firrtlFormat = "`asSInt` `(` $input `)`";
+  }
+  def AsUIntPrimOp : UnaryPrimOp<"asUInt", FIRRTLBaseType, UIntType> {
+    let firrtlFormat = "`asUInt` `(` $input `)`";
+  }
+  def CvtPrimOp : UnaryPrimOp<"cvt", IntType, SIntType> {
+    let firrtlFormat = "`cvt` `(` $input `)`";
+  }
 }
 def AsAsyncResetPrimOp
-  : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType>;
-def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType> {
-  let firrtlVersion = FIRRTLSplitVersion<FIRRTLUnspecifiedVersion,
-                                         FIRRTLBaseVersion>;
+  : UnaryPrimOp<"asAsyncReset", OneBitCastableType, AsyncResetType> {
+  let firrtlFormat = "`asAsyncReset` `(` $input `)`";
 }
-def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType>;
-def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType>;
+def AsResetPrimOp : UnaryPrimOp<"asReset", UInt1Type, ResetType> {
+  let firrtlFormat = "`asReset` `(` $input `)`";
+}
+def AsClockPrimOp : UnaryPrimOp<"asClock", OneBitCastableType, ClockType> {
+  let firrtlFormat = "`asClock` `(` $input `)`";
+}
+def NegPrimOp : UnaryPrimOp<"neg", IntType, SIntType> {
+  let firrtlFormat = "`neg` `(` $input `)`";
+}
 let hasCanonicalizer = true in
-def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType>;
+def NotPrimOp : UnaryPrimOp<"not", IntType, UIntType> {
+  let firrtlFormat = "`not` `(` $input `)`";
+}
 
 let inferType = "impl::inferReductionResult" in {
   let hasCanonicalizer = 1 in {
     def AndRPrimOp : UnaryPrimOp<"andr", IntType, UInt1Type> {
+      let firrtlFormat = "`andr` `(` $input `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'and' operation to merge
         bits.  `andr(x)` is equivalent to `concat(x, 1b1) == ~0`.  As such, it
@@ -797,6 +825,7 @@ let inferType = "impl::inferReductionResult" in {
       }];
     }
     def OrRPrimOp : UnaryPrimOp<"orr", IntType, UInt1Type> {
+      let firrtlFormat = "`orr` `(` $input `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'or' operation to merge
         bits.  `orr(x)` is equivalent to `concat(x, 1b0) != 0`.  As such, it
@@ -804,6 +833,7 @@ let inferType = "impl::inferReductionResult" in {
       }];
     }
     def XorRPrimOp : UnaryPrimOp<"xorr", IntType, UInt1Type> {
+      let firrtlFormat = "`xorr` `(` $input `)`";
       let description = [{
         Horizontally reduce a value to one bit, using the 'xor' operation to merge
         bits.  `xorr(x)` is equivalent to `popcount(concat(x, 1b0)) & 1`.  As
@@ -817,7 +847,8 @@ let inferType = "impl::inferReductionResult" in {
 // Other Operations
 //===----------------------------------------------------------------------===//
 
-def BitsPrimOp : PrimOp<"bits">, FIRRTLPrimitive<"bits"> {
+def BitsPrimOp : PrimOp<"bits"> {
+  let firrtlFormat = "`bits` `(` $input `,` $hi `,` $lo `)`";
   let arguments = (ins IntType:$input, I32Attr:$hi, I32Attr:$lo);
   let results = (outs UIntType:$result);
 
@@ -850,10 +881,8 @@ def BitsPrimOp : PrimOp<"bits">, FIRRTLPrimitive<"bits"> {
   let hasCanonicalizer = true;
 }
 
-// An integer source primitive with one expression and one integer argument.
-class AmountPrimOp<string mnemonic, Type resultType,
-                   string sourceSpelling = mnemonic> :
-    PrimOp<mnemonic>, FIRRTLPrimitive<sourceSpelling> {
+// An integer primitive with one expression and one integer argument.
+class AmountPrimOp<string mnemonic, Type resultType> : PrimOp<mnemonic> {
   let arguments = (ins IntType:$input, I32Attr:$amount);
   let results = (outs resultType:$result);
 
@@ -878,10 +907,12 @@ class AmountPrimOp<string mnemonic, Type resultType,
 }
 
 def HeadPrimOp : AmountPrimOp<"head", UIntType> {
+  let firrtlFormat = "`head` `(` $input `,` $amount `)`";
   let hasCanonicalizeMethod = true;
 }
 
-def MuxPrimOp : PrimOp<"mux">, FIRRTLPrimitive<"mux"> {
+def MuxPrimOp : PrimOp<"mux"> {
+  let firrtlFormat = "`mux` `(` $sel `,` $high `,` $low `)`";
   let arguments = (ins UIntLTE1OrUnsizedType:$sel, PassiveType:$high,
                        PassiveType:$low);
   let results = (outs PassiveType:$result);
@@ -910,6 +941,7 @@ def MuxPrimOp : PrimOp<"mux">, FIRRTLPrimitive<"mux"> {
 }
 
 def PadPrimOp : AmountPrimOp<"pad", IntType> {
+  let firrtlFormat = "`pad` `(` $input `,` $amount `)`";
   let description = [{
     Pad the input out to an `amount` wide integer, sign extending or zero
     extending according to `input`s type.  If `amount` is less than the existing
@@ -917,10 +949,10 @@ def PadPrimOp : AmountPrimOp<"pad", IntType> {
   }];
 }
 
-class ShiftPrimOp<string mnemonic, string sourceSpelling = mnemonic> :
-    AmountPrimOp<mnemonic, IntType, sourceSpelling>;
+class ShiftPrimOp<string mnemonic> : AmountPrimOp<mnemonic, IntType>;
 
 def ShlPrimOp : ShiftPrimOp<"shl"> {
+  let firrtlFormat = "`shl` `(` $input `,` $amount `)`";
   let description = [{
     The `shl` operation concatenates `amount` zero bits to the least significant
     end of `input`. `amount` must be non-negative.
@@ -928,6 +960,7 @@ def ShlPrimOp : ShiftPrimOp<"shl"> {
 }
 
 def ShrPrimOp : ShiftPrimOp<"shr"> {
+  let firrtlFormat = "`shr` `(` $input `,` $amount `)`";
   let description = [{
     The `shr` operation truncates least significant `amount` bits from `input`.
     If `amount` is greater than of equal to `width(input)`, the value will be
@@ -939,6 +972,7 @@ def ShrPrimOp : ShiftPrimOp<"shr"> {
 }
 
 def TailPrimOp : AmountPrimOp<"tail", UIntType> {
+  let firrtlFormat = "`tail` `(` $input `,` $amount `)`";
   let description = [{
     The `tail` operation truncates the `amount` most significant bits from
     `input`.  `amount` must be non-negative and less than or equal to the bit
@@ -1380,10 +1414,9 @@ def DoubleConstantOp : FIRRTLOp<"double", [Pure, ConstantLike]> {
   let assemblyFormat = "$value attr-dict";
 }
 
-class IntegerBinaryPrimOp<string mnemonic, list<Trait> traits = [],
-                          string sourceSpelling = !subst(".", "_", mnemonic)> :
+class IntegerBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
    BinaryPrimOp<mnemonic, FIntegerType, FIntegerType, FIntegerType,
-                [Pure, SameOperandsAndResultType] # traits, sourceSpelling> {
+                [Pure, SameOperandsAndResultType] # traits> {
   // Integer arithmetic expressions require FIRRTL 4.0.0.
   let firrtlVersion = FIRRTLReleasedVersion<4, 0, 0>;
 
@@ -1404,6 +1437,8 @@ class IntegerBinaryPrimOp<string mnemonic, list<Trait> traits = [],
 }
 
 def IntegerAddOp : IntegerBinaryPrimOp<"integer.add", [Commutative]> {
+  let firrtlFormat = "`integer_add` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_add";
   let summary = "Add two FIntegerType values";
   let description = [{
     The add operation result is the arbitrary precision signed integer
@@ -1418,6 +1453,8 @@ def IntegerAddOp : IntegerBinaryPrimOp<"integer.add", [Commutative]> {
 }
 
 def IntegerMulOp : IntegerBinaryPrimOp<"integer.mul", [Commutative]> {
+  let firrtlFormat = "`integer_mul` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_mul";
   let summary = "Multiply two FIntegerType values";
   let description = [{
     The multiply operation result is the arbitrary precision signed integer
@@ -1432,6 +1469,8 @@ def IntegerMulOp : IntegerBinaryPrimOp<"integer.mul", [Commutative]> {
 }
 
 def IntegerShrOp : IntegerBinaryPrimOp<"integer.shr"> {
+  let firrtlFormat = "`integer_shr` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_shr";
   let summary = "Shift an FIntegerType value right by an FIntegerType value";
   let description = [{
     The shift right operation result is the arbitrary precision signed integer
@@ -1447,6 +1486,8 @@ def IntegerShrOp : IntegerBinaryPrimOp<"integer.shr"> {
 }
 
 def IntegerShlOp : IntegerBinaryPrimOp<"integer.shl"> {
+  let firrtlFormat = "`integer_shl` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_shl";
   let summary = "Shift an FIntegerType value left by an FIntegerType value";
   let description = [{
     The shift left operation result is the arbitrary precision signed integer
@@ -1462,6 +1503,8 @@ def IntegerShlOp : IntegerBinaryPrimOp<"integer.shl"> {
 }
 
 def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
+  let firrtlFormat = "`integer_and` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_and";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise AND of two FIntegerType values";
   let description = [{
@@ -1479,6 +1522,8 @@ def IntegerAndOp : IntegerBinaryPrimOp<"integer.and", [Commutative]> {
 }
 
 def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]> {
+  let firrtlFormat = "`integer_or` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "integer_or";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise OR of two FIntegerType values";
   let description = [{
@@ -1495,10 +1540,9 @@ def IntegerOrOp : IntegerBinaryPrimOp<"integer.or", [Commutative]> {
   }];
 }
 
-class IntegerUnaryPrimOp<string mnemonic,
-                         string sourceSpelling = !subst(".", "_", mnemonic)> :
+class IntegerUnaryPrimOp<string mnemonic> :
     UnaryPrimOp<mnemonic, FIntegerType, FIntegerType,
-                [Pure, SameOperandsAndResultType], sourceSpelling> {
+                [Pure, SameOperandsAndResultType]> {
   let inferReturnTypesDecl = "";
   let inferType = "getFIntegerType";
 
@@ -1511,6 +1555,8 @@ class IntegerUnaryPrimOp<string mnemonic,
 }
 
 def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
+  let firrtlFormat = "`integer_not` `(` $input `)`";
+  let firrtlFeature = "integer_not";
   let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Bitwise complement of an FIntegerType value";
   let description = [{
@@ -1569,13 +1615,10 @@ def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]>,
   let hasFolder = 1;
 }
 
-class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = [],
-                       string sourceSpelling = !subst(".", "_", mnemonic)> :
+class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = []> :
     BinaryPrimOp<mnemonic, BoolType, BoolType, BoolType,
-                 [Pure, SameOperandsAndResultType] # traits, sourceSpelling> {
-  // Import requires the unspecified version, while export supports 6.0.0.
-  let firrtlVersion = FIRRTLSplitVersion<FIRRTLUnspecifiedVersion,
-                                         FIRRTLReleasedVersion<6, 0, 0>>;
+                 [Pure, SameOperandsAndResultType] # traits> {
+  let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
 
   // We use the standard inferReturnTypes from SameOperandsAndResultType.
   let inferReturnTypesDecl = "";
@@ -1600,6 +1643,8 @@ class BoolBinaryPrimOp<string mnemonic, list<Trait> traits = [],
 }
 
 def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
+  let firrtlFormat = "`bool_and` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "boolean and";
   let summary = "Bitwise AND of two boolean property values";
   let description = [{
     Computes the bitwise AND of two boolean property values, returning a boolean
@@ -1613,6 +1658,8 @@ def BoolAndOp : BoolBinaryPrimOp<"bool.and", [Commutative]> {
 }
 
 def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
+  let firrtlFormat = "`bool_or` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "boolean or";
   let summary = "Bitwise OR of two boolean property values";
   let description = [{
     Computes the bitwise OR of two boolean property values, returning a boolean
@@ -1626,6 +1673,8 @@ def BoolOrOp : BoolBinaryPrimOp<"bool.or", [Commutative]> {
 }
 
 def BoolXorOp : BoolBinaryPrimOp<"bool.xor", [Commutative]> {
+  let firrtlFormat = "`bool_xor` `(` $lhs `,` $rhs `)`";
+  let firrtlFeature = "boolean xor";
   let summary = "Bitwise XOR of two boolean property values";
   let description = [{
     Computes the bitwise XOR of two boolean property values, returning a boolean

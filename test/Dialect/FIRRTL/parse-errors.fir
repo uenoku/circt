@@ -2152,15 +2152,6 @@ circuit Foo:
 
 ;// -----
 
-FIRRTL version 5.0.0
-circuit AsResetVersion:
-  public module AsResetVersion:
-    input in: UInt<1>
-    ; expected-error @below {{asReset are a FIRRTL 7.0.0+ feature}}
-    node x = asReset(in)
-
-;// -----
-
 FIRRTL version 6.0.0
 circuit OOBFormatString:
   public module Oops:

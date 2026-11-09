@@ -22,5 +22,24 @@ FIRRTL version 3.0.0
 circuit test :
   module test :
     input x : UInt<8>
+    ; Preserve the current integer-literal conversion diagnostic.
+    ; expected-error @below {{high must be equal or greater than low, but got high = 4, low = 4294967295}}
+    node a = bits(x, 4, -1)
+
+;// -----
+
+FIRRTL version 3.0.0
+circuit test :
+  module test :
+    input x : UInt<8>
+    ; expected-error @below {{high must be smaller than the width of input, but got high = 4294967296, width = 8}}
+    node a = bits(x, 4294967296, 0)
+
+;// -----
+
+FIRRTL version 3.0.0
+circuit test :
+  module test :
+    input x : UInt<8>
     ; expected-error @below {{expected ')'}}
     node a = shl(x, 1, 2)
