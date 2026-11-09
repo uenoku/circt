@@ -1199,7 +1199,7 @@ FIRRTL version 7.0.0
 
 circuit ListContainsNoOperands:
   public module ListContainsNoOperands:
-    ; expected-error @below {{expected list expression in list_contains expression}}
+    ; expected-error @below {{expected expression in primitive operand}}
     propassert list_contains(), "missing operands"
 
 ;// -----
@@ -1207,7 +1207,7 @@ FIRRTL version 7.0.0
 
 circuit ListContainsMissingFirst:
   public module ListContainsMissingFirst:
-    ; expected-error @below {{expected list expression in list_contains expression}}
+    ; expected-error @below {{expected expression in primitive operand}}
     propassert list_contains(, Integer(1)), "missing list"
 
 ;// -----
@@ -1215,7 +1215,7 @@ FIRRTL version 7.0.0
 
 circuit ListContainsMissingSecond:
   public module ListContainsMissingSecond:
-    ; expected-error @below {{expected element expression in list_contains expression}}
+    ; expected-error @below {{expected expression in primitive operand}}
     propassert list_contains(List<Integer>(Integer(1)), ), "missing element"
 
 ;// -----
@@ -1249,7 +1249,7 @@ circuit ListContainsVersionError:
   public module ListContainsVersionError:
     input values : List<Integer>
     input value : Integer
-    ; expected-error @below {{list contains are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
+    ; expected-error @below {{list_contains are a FIRRTL 7.0.0+ feature, but the specified FIRRTL version was 6.0.0}}
     propassert list_contains(values, value), "version gate"
 
 ;// -----

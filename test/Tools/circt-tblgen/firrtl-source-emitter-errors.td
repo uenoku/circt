@@ -4,8 +4,13 @@ class TestEmitter<string format> : FIRRTLOp<"test.emitter"> {
   let arguments = (ins IntType:$input);
   let results = (outs IntType:$result);
   let firrtlFormat = format;
-  let firrtlEmitOnly = 1;
 }
+
+// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DTRANSPARENT_PARSER 2>&1 | FileCheck %s --check-prefix=TRANSPARENT_PARSER
+#ifdef TRANSPARENT_PARSER
+def BadOp : TestEmitter<"$input"> { let firrtlHasCustomParser = 1; }
+// TRANSPARENT_PARSER: error: transparent format cannot have a custom parser
+#endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DWRONG_REF 2>&1 | FileCheck %s --check-prefix=REFERENCE
 #ifdef WRONG_REF
@@ -54,6 +59,7 @@ def BadOp : TestEmitter<"$input"> { let regions = (region AnyRegion:$body); }
 #ifdef VARIADIC_REFERENCE
 def BadOp : TestEmitter<"`test` `(` $inputs `)`"> {
   let arguments = (ins Variadic<IntType>:$inputs);
+  let firrtlHasCustomParser = 1;
 }
 // FIXED: error: primitive operands must be fixed and precede integer attributes
 #endif
@@ -62,7 +68,6 @@ def BadOp : TestEmitter<"`test` `(` $inputs `)`"> {
 #ifdef BIDIRECTIONAL_VARIADIC
 def BadOp : TestEmitter<"`test` `(` operands `)`"> {
   let arguments = (ins Variadic<IntType>:$inputs);
-  let firrtlEmitOnly = 0;
 }
 #endif
 
@@ -70,11 +75,14 @@ def BadOp : TestEmitter<"`test` `(` operands `)`"> {
 #ifdef OPTIONAL_OPERAND
 def BadOp : TestEmitter<"`test` `(` operands `)`"> {
   let arguments = (ins Optional<IntType>:$input);
+  let firrtlHasCustomParser = 1;
 }
 #endif
 
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DDUPLICATE 2>&1 | FileCheck %s --check-prefix=DUP
 #ifdef DUPLICATE
-def BadOp : TestEmitter<"`add` `(` operands `)`">;
+def BadOp : TestEmitter<"`add` `(` operands `)`"> {
+  let firrtlHasCustomParser = 1;
+}
 // DUP: error: duplicate FIRRTL primitive spelling 'add'
 #endif

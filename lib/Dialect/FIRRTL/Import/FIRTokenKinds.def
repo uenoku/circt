@@ -221,8 +221,6 @@ TOK_LESSKEYWORD(List)
 TOK_LESSKEYWORD(Registry)
 
 TOK_LPKEYWORD(string_concat)
-TOK_LPKEYWORD(prop_eq)
-TOK_LPKEYWORD(list_contains)
 
 // Tag extraction is import-only until enum source emission is supported.
 TOK_LPKEYWORD_PRIM(tagExtract, TagExtractOp, 1, 0, missingSpecFIRVersion,

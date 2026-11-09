@@ -2,55 +2,55 @@
 
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
-def EmitOnlyCallOp : FIRRTLOp<"other.call"> {
+def CustomParserCallOp : FIRRTLOp<"other.call"> {
   let arguments = (ins Variadic<IntType>:$inputs);
   let results = (outs IntType:$result);
   let firrtlFormat = "`custom_only` `(` operands `)`";
-  let firrtlEmitOnly = 1;
+  let firrtlHasCustomParser = 1;
   let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
 }
 
-def EmitOnlyCastOp : FIRRTLOp<"other.cast"> {
+def CustomParserSingleGroupOp : FIRRTLOp<"other.single"> {
   let arguments = (ins IntType:$value);
   let results = (outs IntType:$result);
-  // A bare operand is implicitly emitter-only.
+  let firrtlFormat = "`custom_single` `(` operands `)`";
+  let firrtlHasCustomParser = 1;
+}
+
+def CustomParserUnaryOp : FIRRTLOp<"other.unary"> {
+  let arguments = (ins IntType:$value);
+  let results = (outs IntType:$result);
+  let firrtlFormat = "`custom_unary` `(` $value `)`";
+  let firrtlHasCustomParser = 1;
+}
+
+def TransparentCastOp : FIRRTLOp<"other.cast"> {
+  let arguments = (ins IntType:$value);
+  let results = (outs IntType:$result);
+  // A bare operand has no source syntax for reconstructing the cast.
   let firrtlFormat = "$value";
   let firrtlVersion = FIRRTLReleasedVersion<4, 0, 0>;
 }
 
-def EmitOnlySingleGroupOp : FIRRTLOp<"other.single"> {
-  let arguments = (ins IntType:$value);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "`custom_single` `(` operands `)`";
-  let firrtlEmitOnly = 1;
-}
-
-def EmitOnlyUnaryOp : FIRRTLOp<"other.unary"> {
-  let arguments = (ins IntType:$value);
-  let results = (outs IntType:$result);
-  let firrtlFormat = "`custom_unary` `(` $value `)`";
-  let firrtlEmitOnly = 1;
-}
-
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
-// CHECK-NOT: EmitOnlyCastOp
+// CHECK-NOT: TransparentCastOp
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
-// CHECK: void emitExpression(EmitOnlyCallOp op) {
+// CHECK: void emitExpression(CustomParserCallOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "custom_only"))) return;
 // CHECK-NEXT: emitPrimExpr("custom_only", op);
-// CHECK: void emitExpression(EmitOnlyCastOp op) {
-// CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "other.cast"))) return;
-// CHECK-NEXT: emitExpression(op.getValue());
-// CHECK: void emitExpression(EmitOnlySingleGroupOp op) {
+// CHECK: void emitExpression(CustomParserSingleGroupOp op) {
 // CHECK-NEXT: ps << "custom_single(";
 // CHECK-NEXT: emitExpression(op.getValue());
 // CHECK-NEXT: ps << ")";
-// CHECK: void emitExpression(EmitOnlyUnaryOp op) {
+// CHECK: void emitExpression(CustomParserUnaryOp op) {
 // CHECK-NEXT: ps << "custom_unary(";
 // CHECK-NEXT: emitExpression(op.getValue());
 // CHECK-NEXT: ps << ")";
+// CHECK: void emitExpression(TransparentCastOp op) {
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "other.cast"))) return;
+// CHECK-NEXT: emitExpression(op.getValue());
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
-// CHECK: EmitOnlyCallOp,
-// CHECK: EmitOnlyCastOp,
-// CHECK: EmitOnlySingleGroupOp,
-// CHECK: EmitOnlyUnaryOp,
+// CHECK: CustomParserCallOp,
+// CHECK: CustomParserSingleGroupOp,
+// CHECK: CustomParserUnaryOp,
+// CHECK: TransparentCastOp,

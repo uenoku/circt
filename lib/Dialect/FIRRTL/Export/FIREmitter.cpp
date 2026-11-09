@@ -146,25 +146,6 @@ struct Emitter {
   void emitPrimExpr(StringRef mnemonic, Operation *op,
                     ArrayRef<uint32_t> attrs = {});
 
-  void emitExpression(PropEqOp op) {
-    if (failed(requireVersion({6, 0, 0}, op, "property equality")))
-      return;
-    emitPrimExpr("prop_eq", op);
-  }
-  void emitExpression(ListContainsOp op) {
-    if (failed(requireVersion(missingSpecFIRVersion, op, "list contains")))
-      return;
-    emitPrimExpr("list_contains", op);
-  }
-  void emitExpression(UnsafeDomainCastOp op) {
-    if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast")))
-      return;
-    ps << "unsafe_domain_cast(" << PP::ibox0;
-    interleaveComma(op.getOperands(),
-                    [&](Value operand) { emitExpression(operand); });
-    ps << ")" << PP::end;
-  }
-
 #define GET_FIRRTL_PRIMITIVE_EMITTERS
 #include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
 #undef GET_FIRRTL_PRIMITIVE_EMITTERS
@@ -1521,8 +1502,7 @@ void Emitter::emitExpression(Value value) {
           // Miscellaneous
           StringConstantOp, FIntegerConstantOp, BoolConstantOp,
           DoubleConstantOp, ListCreateOp, UnresolvedPathOp, GenericIntrinsicOp,
-          CatPrimOp, UnknownValueOp, PropEqOp, ListContainsOp,
-          UnsafeDomainCastOp,
+          CatPrimOp, UnknownValueOp,
           // Reference expressions
           RefSubOp, RWProbeOp,
           // Format String expressions

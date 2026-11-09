@@ -1340,6 +1340,8 @@ def ListContainsOp : FIRRTLOp<"list.contains", [Pure,
     TypesMatchWith<"list element type should match search element type",
                    "list", "element",
                    "type_cast<ListType>($_self).getElementType()">]> {
+  let firrtlFormat = "`list_contains` `(` operands `)`";
+  let firrtlVersion = FIRRTLUnspecifiedVersion;
   let summary = "Test whether a list contains a property value";
   let description = [{
     Returns true if the list contains an element equal to the specified value.
@@ -1357,6 +1359,10 @@ def ListContainsOp : FIRRTLOp<"list.contains", [Pure,
   let results = (outs BoolType:$result);
 
   let assemblyFormat = "$list `,` $element attr-dict `:` type($list)";
+  let extraClassDeclaration = [{
+    static FIRRTLType inferReturnType(FIRRTLType list, FIRRTLType element,
+                                      std::optional<Location> loc);
+  }];
 }
 
 def BoolConstantOp : FIRRTLOp<"bool", [Pure, ConstantLike]> {
@@ -1542,7 +1548,7 @@ def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
 
 def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]> {
   let firrtlFormat = "`string_concat` `(` operands `)`";
-  let firrtlEmitOnly = 1;
+  let firrtlHasCustomParser = 1;
   let summary = "Concatenate multiple string values";
   let description = [{
     Produces a value of string type by concatenating multiple string operands.
@@ -1563,6 +1569,8 @@ def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]
 }
 
 def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]> {
+  let firrtlFormat = "`prop_eq` `(` operands `)`";
+  let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
   let summary = "Compare two property values for equality";
   let description = [{
     Compares two property values (String, Bool, or Integer) of the same type
@@ -1580,6 +1588,10 @@ def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]> {
 
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 
+  let extraClassDeclaration = [{
+    static FIRRTLType inferReturnType(FIRRTLType lhs, FIRRTLType rhs,
+                                      std::optional<Location> loc);
+  }];
   let hasFolder = 1;
 }
 
@@ -1722,7 +1734,7 @@ def RefCastOp : FIRRTLOp<"ref.cast",
 def RefResolveOp: FIRRTLExprOp<"ref.resolve",
                               [RefTypeConstraint<"ref","result">]> {
   let firrtlFormat = "`read` `(` $ref `)`";
-  let firrtlEmitOnly = 1;
+  let firrtlHasCustomParser = 1;
   let summary = "FIRRTL Resolve a Reference";
   let description = [{
     Resolve a remote reference for reading a remote value.
@@ -1741,7 +1753,7 @@ def RefResolveOp: FIRRTLExprOp<"ref.resolve",
 
 def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]> {
   let firrtlFormat = "`probe` `(` $base `)`";
-  let firrtlEmitOnly = 1;
+  let firrtlHasCustomParser = 1;
   let summary = "FIRRTL Send through Reference";
   let description = [{
     Endpoint of a remote reference. Send a value through a reference
@@ -2007,6 +2019,9 @@ def UnsafeDomainCastOp :
     AllTypesMatch<["input", "result"]>,
     Pure
   ]> {
+  let firrtlFormat = "`unsafe_domain_cast` `(` operands `)`";
+  let firrtlHasCustomParser = 1;
+  let firrtlVersion = FIRRTLNextVersion;
   let summary = "cast an operand from one domain to another";
   let description = [{
     This operation is used to _unsafely_ convert from the domain of an operand

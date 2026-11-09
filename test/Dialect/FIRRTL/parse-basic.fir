@@ -1785,7 +1785,7 @@ circuit PropEqVersionError :
     input b : String
     output c : String
 
-    ; expected-error @+1 {{property equality are a FIRRTL 6.0.0+ feature, but the specified FIRRTL version was 5.0.0}}
+    ; expected-error @+1 {{prop_eq are a FIRRTL 6.0.0+ feature, but the specified FIRRTL version was 5.0.0}}
     propassign c, prop_eq(a, b)
 
 ;// -----

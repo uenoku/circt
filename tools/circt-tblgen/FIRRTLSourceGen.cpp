@@ -75,14 +75,14 @@ struct Primitive {
   Operator op;
   StringRef spelling;
   Version version;
-  bool emitOnly, transparent = false, usesOperandDirective = false;
+  bool hasCustomParser, transparent = false, usesOperandDirective = false;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
   std::string operandGetter;
 
   explicit Primitive(const Record *def)
       : op(def), version(def->getValueAsDef("firrtlVersion")),
-        emitOnly(def->getValueAsBit("firrtlEmitOnly")) {
+        hasCustomParser(def->getValueAsBit("firrtlHasCustomParser")) {
     parseFormat(def);
     if (!transparent && !isTokenIdentifier(spelling))
       PrintFatalError(
@@ -95,7 +95,8 @@ struct Primitive {
     for (auto arg : op.getArgs()) {
       if (auto *operand = dyn_cast<NamedTypeConstraint *>(arg)) {
         if (!getters.empty() || operand->isOptional() ||
-            (operand->isVariadic() && !(emitOnly && usesOperandDirective)) ||
+            (operand->isVariadic() &&
+             !(hasCustomParser && usesOperandDirective)) ||
             operand->name.empty())
           PrintFatalError(def->getLoc(), "primitive operands must be fixed and "
                                          "precede integer attributes");
@@ -128,7 +129,9 @@ struct Primitive {
     StringRef remaining = def->getValueAsString("firrtlFormat").trim();
     if (remaining.starts_with("$")) {
       // A bare operand cannot reconstruct the operation during import.
-      emitOnly = true;
+      if (hasCustomParser)
+        PrintFatalError(def->getLoc(),
+                        "transparent format cannot have a custom parser");
       if (op.getNumArgs() != 1)
         PrintFatalError(
             def->getLoc(),
@@ -220,7 +223,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
-    if (p.emitOnly)
+    if (p.transparent || p.hasCustomParser)
       continue;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
@@ -246,7 +249,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
       continue;
     }
     // A fixed unary call has no additional call or operand boxes.
-    if (p.emitOnly && p.numOperands == 1 && p.getters.empty() &&
+    if (p.hasCustomParser && p.numOperands == 1 && p.getters.empty() &&
         !p.op.getOperand(0).isVariableLength()) {
       os << "  ps << ";
       emitString(os, (p.spelling + "(").str());

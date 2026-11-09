@@ -11,11 +11,11 @@ format and generates importer token registrations and exporter dispatch and
 wrappers. Both directions use the existing parser and emitter helpers.
 
 An empty `firrtlFormat` (the default) does not generate source handling. A
-nonempty call format normally opts into both import and export. Operations with
-a handwritten importer can explicitly set `firrtlEmitOnly = 1`. A bare operand
-format is implicitly emitter-only because it cannot reconstruct the operation.
-An operation can set the format directly or inherit it from a shared TableGen
-class.
+nonempty call format describes both import and export. Operations with a
+handwritten importer set `firrtlHasCustomParser = 1`; the generator then leaves
+import handling to that parser. A bare operand format describes only emission
+because it cannot reconstruct the operation. An operation can set the format
+directly or inherit it from a shared TableGen class.
 
 ## Declaring a Format
 
@@ -78,26 +78,28 @@ named, required `I32Attr` arguments. Participating operations
 must have exactly one fixed result and no regions or successors. Properties,
 optional operands, default-valued attributes, reordered or repeated arguments,
 optional groups, type directives, and custom directives are not supported.
-Variadic operands are supported only in emitter-only formats using `operands`. An unsupported nonempty format is an error, not a request for
+Variadic operands are supported only in formats using `operands` with a
+handwritten parser. An unsupported nonempty format is an error, not a request for
 handwritten fallback.
 
 Whitespace between format elements does not prescribe source whitespace or line
 breaking. The existing lexer recognizes the name and opening parenthesis as a
 combined token; the emitter does not put whitespace between them.
 
-The backend rejects duplicate generated spellings. Collisions with handwritten
-left-parenthesis keywords are also caught by duplicate token enum definitions at
-C++ compile time. The backend cannot validate arbitrary C++ declarations:
+The backend rejects duplicate generated spellings. Collisions between generated
+import tokens and handwritten left-parenthesis keywords are also caught by
+duplicate token enum definitions at C++ compile time. The backend cannot validate arbitrary C++ declarations:
 operations with generated importers must provide the narrow `inferReturnType`
 overload and builder signatures used by `parsePrimExp`. Emitter-only formats do
 not require those import signatures.
 
-## Emitter-Only Formats
+## Custom Parsers and Transparent Formats
 
-Set `firrtlEmitOnly = 1` on a call format when the source importer needs a
-specialized parser. A bare operand format is automatically emitter-only. These
-formats generate only an emitter and its dispatch entry, not an importer
-registration. For example:
+Set `firrtlHasCustomParser = 1` when a source call needs a handwritten parser.
+The call remains supported in both directions: the generator emits its printer
+and dispatch entry, while the existing lexer token and parser handle import.
+A bare operand format is different: it describes only emission, since importing
+an operand cannot reconstruct the cast. For example:
 
 ```tablegen
 // Transparent cast: there is no source syntax that reconstructs the cast.
@@ -105,23 +107,27 @@ let firrtlFormat = "$input";
 
 // The importer handles reference semantics separately.
 let firrtlFormat = "`read` `(` $ref `)`";
-let firrtlEmitOnly = 1;
+let firrtlHasCustomParser = 1;
 
 // The importer handles the variadic call and its type checks separately.
 let firrtlFormat = "`string_concat` `(` operands `)`";
-let firrtlEmitOnly = 1;
+let firrtlHasCustomParser = 1;
+
+// Fixed and variadic operands can also be combined.
+let firrtlFormat = "`unsafe_domain_cast` `(` operands `)`";
+let firrtlHasCustomParser = 1;
+let firrtlVersion = FIRRTLNextVersion;
 ```
 
 A bare operand format must reference exactly one fixed operand and have no
-attributes. It prints that operand directly. An emitter-only call may use a
-variadic operand through `operands`; fixed unary calls print directly, while
+attributes. It prints that operand directly. A call with a custom parser may use
+a variadic operand through `operands`; fixed unary calls print directly, while
 other calls use the existing primitive emitter. The handwritten importer and
-lexer registration, if any, remain responsible for source semantics and
-version checks.
+lexer registration remain responsible for source semantics and version checks.
 
 ## Version Metadata
 
-Each `FIRRTLOp` has one version shared by the importer and exporter:
+Each `FIRRTLOp` has one version used by generated import and export code:
 
 ```tablegen
 FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
@@ -184,19 +190,22 @@ void emitExpression(BitsPrimOp op) {
 
 A non-base version generates a `requireVersion` check. The emitter retains the
 existing expression boxes, comma handling, integer printing, and line-breaking
-policies. For an emitter-only format, the version applies to emission; any
-handwritten importer supplies its own version check. The generated file and its
-dependencies are wired into the FIRRTL importer and exporter builds.
+policies. For a format with a custom parser, the version applies to generated
+emission; the handwritten importer supplies its own version check, which must
+remain consistent. The generated file and its dependencies are wired into the
+FIRRTL importer and exporter builds.
 
 ## Handwritten and Special Cases
 
 The format does not describe all FIRRTL syntax. Variadic `cat` has
 version-dependent arity and is exported as a binary tree. Reference and
 property operations may have special semantic checks and construction paths.
-Import-only `tagExtract`, literals, generic intrinsics, and statements also
-need specialized handling. Dialect-only operations leave their format empty.
+The fixed-arity `prop_eq` and `list_contains` operations use generated parsing
+and validate their operand types during result-type inference. Variadic
+`unsafe_domain_cast`, import-only `tagExtract`, literals, generic intrinsics,
+and statements still need specialized handling. Dialect-only operations leave their format empty.
 
-Some of these cases use handwritten parsing and emission; others use an
-emitter-only format with a handwritten importer. Extensions such as custom
-directives or bidirectional variadic parsing need a construction and semantic
-design before they can be supported.
+Some of these cases use handwritten parsing and emission; others use a format
+with a handwritten importer. Extensions such as generated bidirectional
+variadic parsing need a construction and semantic design before they can be
+supported.

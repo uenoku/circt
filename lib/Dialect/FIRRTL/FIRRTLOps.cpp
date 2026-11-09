@@ -5046,6 +5046,41 @@ LogicalResult ListCreateOp::verify() {
   return success();
 }
 
+FIRRTLType ListContainsOp::inferReturnType(FIRRTLType list, FIRRTLType element,
+                                           std::optional<Location> loc) {
+  auto listType = dyn_cast<ListType>(list);
+  if (!listType)
+    return emitInferRetTypeError(
+        loc, "first operand of list_contains must be a List");
+
+  auto elementType = listType.getElementType();
+  if (element != elementType)
+    return emitInferRetTypeError(loc, "list_contains element type ", element,
+                                 " does not match list element type ",
+                                 elementType);
+  if (!isa<StringType, FIntegerType, BoolType>(elementType))
+    return emitInferRetTypeError(
+        loc, "list_contains does not support elements of type ", elementType);
+  return BoolType::get(list.getContext());
+}
+
+FIRRTLType PropEqOp::inferReturnType(FIRRTLType lhs, FIRRTLType rhs,
+                                     std::optional<Location> loc) {
+  auto isValidType = [](Type type) {
+    return type_isa<StringType, BoolType, FIntegerType>(type);
+  };
+  if (!isValidType(lhs))
+    return emitInferRetTypeError(
+        loc, "lhs of prop_eq must be String, Bool, or Integer type");
+  if (!isValidType(rhs))
+    return emitInferRetTypeError(
+        loc, "rhs of prop_eq must be String, Bool, or Integer type");
+  if (lhs != rhs)
+    return emitInferRetTypeError(loc,
+                                 "prop_eq operands must have the same type");
+  return BoolType::get(lhs.getContext());
+}
+
 LogicalResult BundleCreateOp::verify() {
   BundleType resultType = getType();
   if (resultType.getNumElements() != getFields().size())

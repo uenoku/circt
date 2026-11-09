@@ -1,4 +1,4 @@
-// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp --implicit-check-not=ListContainsOp --implicit-check-not=PropEqOp --implicit-check-not=UnsafeDomainCastOp --implicit-check-not='TOK_LPKEYWORD_PRIM(read,' --implicit-check-not='TOK_LPKEYWORD_PRIM(probe,' --implicit-check-not='TOK_LPKEYWORD_PRIM(string_concat,'
+// RUN: circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s | FileCheck %s --implicit-check-not=CatPrimOp --implicit-check-not=TagExtractOp --implicit-check-not=SizeOfIntrinsicOp --implicit-check-not=ElementwiseAndPrimOp --implicit-check-not=ElementwiseOrPrimOp --implicit-check-not=ElementwiseXorPrimOp --implicit-check-not=Mux2CellIntrinsicOp --implicit-check-not=Mux4CellIntrinsicOp --implicit-check-not='TOK_LPKEYWORD_PRIM(unsafe_domain_cast,' --implicit-check-not='TOK_LPKEYWORD_PRIM(read,' --implicit-check-not='TOK_LPKEYWORD_PRIM(probe,' --implicit-check-not='TOK_LPKEYWORD_PRIM(string_concat,'
 
 include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 
@@ -9,7 +9,9 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: TOK_LPKEYWORD_PRIM(bool_and, BoolAndOp, 2, 0, FIRVersion(6, 0, 0), "bool_and")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_add, IntegerAddOp, 2, 0, FIRVersion(4, 0, 0), "integer_add")
 // CHECK: TOK_LPKEYWORD_PRIM(integer_and, IntegerAndOp, 2, 0, missingSpecFIRVersion, "integer_and")
+// CHECK: TOK_LPKEYWORD_PRIM(list_contains, ListContainsOp, 2, 0, missingSpecFIRVersion, "list_contains")
 // CHECK: TOK_LPKEYWORD_PRIM(mux, MuxPrimOp, 3, 0, FIRVersion(0, 0, 0), "mux")
+// CHECK: TOK_LPKEYWORD_PRIM(prop_eq, PropEqOp, 2, 0, FIRVersion(6, 0, 0), "prop_eq")
 // CHECK: TOK_LPKEYWORD_PRIM(shl, ShlPrimOp, 1, 1, FIRVersion(0, 0, 0), "shl")
 // CHECK: TOK_LPKEYWORD_PRIM(shr, ShrPrimOp, 1, 1, FIRVersion(0, 0, 0), "shr")
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
@@ -27,8 +29,14 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: void emitExpression(IntegerAddOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(4, 0, 0), op, "integer_add"))) return;
 // CHECK-NEXT: emitPrimExpr("integer_add", op);
+// CHECK: void emitExpression(ListContainsOp op) {
+// CHECK-NEXT: if (failed(requireVersion(missingSpecFIRVersion, op, "list_contains"))) return;
+// CHECK-NEXT: emitPrimExpr("list_contains", op);
 // CHECK: void emitExpression(MuxPrimOp op) {
 // CHECK-NEXT: emitPrimExpr("mux", op);
+// CHECK: void emitExpression(PropEqOp op) {
+// CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "prop_eq"))) return;
+// CHECK-NEXT: emitPrimExpr("prop_eq", op);
 // CHECK: void emitExpression(RefCastOp op) {
 // CHECK-NEXT: emitExpression(op.getInput());
 // CHECK: void emitExpression(RefResolveOp op) {
@@ -47,11 +55,16 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK-NEXT: emitPrimExpr("string_concat", op);
 // CHECK: void emitExpression(UninferredResetCastOp op) {
 // CHECK-NEXT: emitExpression(op.getInput());
+// CHECK: void emitExpression(UnsafeDomainCastOp op) {
+// CHECK-NEXT: if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast"))) return;
+// CHECK-NEXT: emitPrimExpr("unsafe_domain_cast", op);
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_DISPATCH
 // CHECK: AddPrimOp,
 // CHECK: BitsPrimOp,
 // CHECK: ConstCastOp,
 // CHECK: DomainAnyRefCastOp,
+// CHECK: ListContainsOp,
+// CHECK: PropEqOp,
 // CHECK: RefCastOp,
 // CHECK: RefResolveOp,
 // CHECK: RefSendOp,
@@ -59,3 +72,4 @@ include "circt/Dialect/FIRRTL/FIRRTLExpressions.td"
 // CHECK: ShrPrimOp,
 // CHECK: StringConcatOp,
 // CHECK: UninferredResetCastOp,
+// CHECK: UnsafeDomainCastOp,

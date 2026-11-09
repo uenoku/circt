@@ -72,7 +72,7 @@ firrtl.circuit "KnownLayers" {
 firrtl.circuit "PropEq" {
   firrtl.module @PropEq(in %a : !firrtl.string, in %b : !firrtl.string,
                         out %eq : !firrtl.bool) {
-    // expected-error @below {{'firrtl.prop.eq' op property equality requires FIRRTL 6.0.0}}
+    // expected-error @below {{'firrtl.prop.eq' op prop_eq requires FIRRTL 6.0.0}}
     %0 = firrtl.prop.eq %a, %b : !firrtl.string
     firrtl.propassign %eq, %0 : !firrtl.bool
   }
