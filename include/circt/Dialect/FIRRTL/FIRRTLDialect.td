@@ -59,7 +59,8 @@ class FIRRTLOp<string mnemonic, list<Trait> traits = []> :
     Op<FIRRTLDialect, mnemonic, traits> {
   // FIRRTL source syntax, independent of the MLIR assembly format.
   string firrtlFormat = "";
-  // Use the format only for emission; import remains handwritten or unsupported.
+  // Use a call format only for emission; import remains handwritten.
+  // A bare operand format is implicitly emitter-only.
   bit firrtlEmitOnly = 0;
   FIRRTLSourceVersion firrtlVersion = FIRRTLBaseVersion;
   string firrtlFeature = "Base";

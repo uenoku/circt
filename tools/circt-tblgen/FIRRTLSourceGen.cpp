@@ -128,9 +128,8 @@ struct Primitive {
   void parseFormat(const Record *def) {
     StringRef remaining = def->getValueAsString("firrtlFormat").trim();
     if (remaining.starts_with("$")) {
-      if (!emitOnly)
-        PrintFatalError(def->getLoc(),
-                        "transparent format requires firrtlEmitOnly");
+      // A bare operand cannot reconstruct the operation during import.
+      emitOnly = true;
       if (op.getNumArgs() != 1)
         PrintFatalError(
             def->getLoc(),

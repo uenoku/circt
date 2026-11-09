@@ -11,10 +11,11 @@ format and generates importer token registrations and exporter dispatch and
 wrappers. Both directions use the existing parser and emitter helpers.
 
 An empty `firrtlFormat` (the default) does not generate source handling. A
-nonempty format normally opts into both import and export. Operations with a
-handwritten importer or no source representation for import can explicitly set
-`firrtlEmitOnly = 1`. An operation can set the format directly or inherit it
-from a shared TableGen class.
+nonempty call format normally opts into both import and export. Operations with
+a handwritten importer can explicitly set `firrtlEmitOnly = 1`. A bare operand
+format is implicitly emitter-only because it cannot reconstruct the operation.
+An operation can set the format directly or inherit it from a shared TableGen
+class.
 
 ## Declaring a Format
 
@@ -93,15 +94,14 @@ not require those import signatures.
 
 ## Emitter-Only Formats
 
-Set `firrtlEmitOnly = 1` when the source importer needs a specialized parser or
-cannot reconstruct the operation from its emitted expression. The format then
-generates only an emitter and its dispatch entry, not an importer registration.
-For example:
+Set `firrtlEmitOnly = 1` on a call format when the source importer needs a
+specialized parser. A bare operand format is automatically emitter-only. These
+formats generate only an emitter and its dispatch entry, not an importer
+registration. For example:
 
 ```tablegen
 // Transparent cast: there is no source syntax that reconstructs the cast.
 let firrtlFormat = "$input";
-let firrtlEmitOnly = 1;
 
 // The importer handles reference semantics separately.
 let firrtlFormat = "`read` `(` $ref `)`";
@@ -112,7 +112,7 @@ let firrtlFormat = "`string_concat` `(` operands `)`";
 let firrtlEmitOnly = 1;
 ```
 
-A transparent format must reference exactly one fixed operand and have no
+A bare operand format must reference exactly one fixed operand and have no
 attributes. It prints that operand directly. An emitter-only call may use a
 variadic operand through `operands`; fixed unary calls print directly, while
 other calls use the existing primitive emitter. The handwritten importer and

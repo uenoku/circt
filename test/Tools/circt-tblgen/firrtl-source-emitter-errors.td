@@ -7,12 +7,6 @@ class TestEmitter<string format> : FIRRTLOp<"test.emitter"> {
   let firrtlEmitOnly = 1;
 }
 
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DBIDIRECTIONAL_CAST 2>&1 | FileCheck %s --check-prefix=BIDIRECTIONAL
-#ifdef BIDIRECTIONAL_CAST
-def BadOp : TestEmitter<"$input"> { let firrtlEmitOnly = 0; }
-// BIDIRECTIONAL: error: transparent format requires firrtlEmitOnly
-#endif
-
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DWRONG_REF 2>&1 | FileCheck %s --check-prefix=REFERENCE
 #ifdef WRONG_REF
 def BadOp : TestEmitter<"$unknown">;

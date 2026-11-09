@@ -1088,7 +1088,6 @@ class SameGroundTypeOperandConstness<string a, string b>
 
 def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]> {
   let firrtlFormat = "$input";
-  let firrtlEmitOnly = 1;
   let description = [{
     Cast between reset types.  This is used to enable matchingconnects early in
     the pipeline by isolating all uninferred reset connections to a single op.
@@ -1102,7 +1101,6 @@ def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameG
 
 def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]> {
   let firrtlFormat = "$input";
-  let firrtlEmitOnly = 1;
   let description = [{
     Cast from a 'const' to a non-'const' type.
     ```
@@ -1217,7 +1215,6 @@ def ObjectAnyRefCastOp : FIRRTLOp<"object.anyref_cast", [Pure]> {
 
 def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]> {
   let firrtlFormat = "$input";
-  let firrtlEmitOnly = 1;
   let summary = "Cast domain reference to anyref.";
   let description = [{
     Cast a domain reference to AnyRef type.  This is primarily used for allowing
@@ -1712,7 +1709,6 @@ def RefCastOp : FIRRTLOp<"ref.cast",
      Pure,
      CompatibleRefTypes<"result","input">]> {
   let firrtlFormat = "$input";
-  let firrtlEmitOnly = 1;
   let summary = "Cast between compatible reference types";
   let description = [{
     Losslessly cast between compatible reference types.

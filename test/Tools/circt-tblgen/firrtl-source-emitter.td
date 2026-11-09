@@ -14,8 +14,8 @@ def EmitOnlyCallOp : FIRRTLOp<"other.call"> {
 def EmitOnlyCastOp : FIRRTLOp<"other.cast"> {
   let arguments = (ins IntType:$value);
   let results = (outs IntType:$result);
+  // A bare operand is implicitly emitter-only.
   let firrtlFormat = "$value";
-  let firrtlEmitOnly = 1;
 }
 
 def EmitOnlySingleGroupOp : FIRRTLOp<"other.single"> {
@@ -32,6 +32,8 @@ def EmitOnlyUnaryOp : FIRRTLOp<"other.unary"> {
   let firrtlEmitOnly = 1;
 }
 
+// CHECK: #ifdef GET_FIRRTL_PRIMITIVE_TOKENS
+// CHECK-NOT: EmitOnlyCastOp
 // CHECK: #ifdef GET_FIRRTL_PRIMITIVE_EMITTERS
 // CHECK: void emitExpression(EmitOnlyCallOp op) {
 // CHECK-NEXT: if (failed(requireVersion(FIRVersion(6, 0, 0), op, "custom feature"))) return;
