@@ -75,7 +75,9 @@ struct Primitive {
   Operator op;
   StringRef spelling;
   Version version;
-  bool hasCustomParser, transparent = false, usesOperandDirective = false;
+  enum class Format { Call, Transparent, Field, Index };
+  Format format = Format::Call;
+  bool hasCustomParser, usesOperandDirective = false;
   unsigned numOperands = 0;
   SmallVector<std::string> getters;
   std::string operandGetter;
@@ -84,7 +86,7 @@ struct Primitive {
       : op(def), version(def->getValueAsDef("firrtlVersion")),
         hasCustomParser(def->getValueAsBit("firrtlHasCustomParser")) {
     parseFormat(def);
-    if (!transparent && !isTokenIdentifier(spelling))
+    if (format == Format::Call && !isTokenIdentifier(spelling))
       PrintFatalError(
           def->getLoc(),
           "primitive spelling must be a lexer and C++ token identifier");
@@ -123,6 +125,11 @@ struct Primitive {
 
   void parseFormat(const Record *def) {
     StringRef remaining = def->getValueAsString("firrtlFormat").trim();
+    if (remaining.starts_with("$") &&
+        (remaining.contains("`.`") || remaining.contains("`[`"))) {
+      parsePostfixFormat(def, remaining);
+      return;
+    }
     if (remaining.starts_with("$")) {
       // A bare operand cannot reconstruct the operation during import.
       if (hasCustomParser)
@@ -139,7 +146,7 @@ struct Primitive {
         PrintFatalError(
             def->getLoc(),
             "transparent format must reference its single fixed operand");
-      transparent = true;
+      format = Format::Transparent;
       return;
     }
     auto fail = [&]() {
@@ -195,6 +202,54 @@ struct Primitive {
     if (literal() != ")" || !remaining.trim().empty())
       fail();
   }
+
+  void parsePostfixFormat(const Record *def, StringRef remaining) {
+    auto fail = [&]() {
+      PrintFatalError(def->getLoc(),
+                      "invalid postfix firrtlFormat: expected a fixed input "
+                      "and field name or index in ODS argument order");
+    };
+    if (hasCustomParser || op.getNumArgs() != 2)
+      fail();
+    auto *input = dyn_cast<NamedTypeConstraint *>(op.getArg(0));
+    auto *indexOperand = dyn_cast<NamedTypeConstraint *>(op.getArg(1));
+    auto *indexAttr = dyn_cast<NamedAttribute *>(op.getArg(1));
+    if (!input || input->isVariableLength() || input->name.empty() ||
+        (!indexOperand && !indexAttr))
+      fail();
+    auto reference = [&](StringRef name) {
+      remaining = remaining.ltrim();
+      if (name.empty() || !remaining.consume_front("$") ||
+          !remaining.consume_front(name) ||
+          (!remaining.empty() &&
+           (isAlnum(remaining.front()) || remaining.front() == '_')))
+        fail();
+    };
+    auto token = [&](StringRef expected) {
+      remaining = remaining.ltrim();
+      if (!remaining.consume_front(expected))
+        fail();
+    };
+    reference(input->name);
+    remaining = remaining.ltrim();
+    if (remaining.starts_with("`.`")) {
+      if (!indexAttr)
+        fail();
+      format = Format::Field;
+      token("`.`");
+      token("fieldName");
+      token("(");
+      reference(indexAttr->name);
+      token(")");
+    } else {
+      format = Format::Index;
+      token("`[`");
+      reference(indexOperand ? indexOperand->name : indexAttr->name);
+      token("`]`");
+    }
+    if (!remaining.trim().empty())
+      fail();
+  }
 };
 
 } // namespace
@@ -206,7 +261,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
     if (def->getValueAsString("firrtlFormat").empty())
       continue;
     primitives.push_back(std::make_unique<Primitive>(def));
-    if (!primitives.back()->transparent &&
+    if (primitives.back()->format == Primitive::Format::Call &&
         !spellings.insert(primitives.back()->spelling).second)
       PrintFatalError(def->getLoc(), "duplicate FIRRTL primitive spelling '" +
                                          primitives.back()->spelling + "'");
@@ -219,7 +274,7 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
   os << "#ifdef GET_FIRRTL_PRIMITIVE_TOKENS\n";
   for (const auto &primitive : primitives) {
     const auto &p = *primitive;
-    if (p.transparent || p.hasCustomParser)
+    if (p.format != Primitive::Format::Call || p.hasCustomParser)
       continue;
     os << "TOK_LPKEYWORD_PRIM(" << p.spelling << ", " << p.op.getCppClassName()
        << ", " << p.numOperands << ", " << p.getters.size() << ", ";
@@ -234,12 +289,28 @@ static bool emitPrimitives(const RecordKeeper &records, raw_ostream &os) {
       os << "  if (failed(requireVersion(";
       p.version.emit(os);
       os << ", op, ";
-      emitString(os, p.transparent ? p.op.getDef().getValueAsString("opName")
-                                   : p.spelling);
+      emitString(os, p.format == Primitive::Format::Call
+                         ? p.spelling
+                         : p.op.getDef().getValueAsString("opName"));
       os << "))) return;\n";
     }
-    if (p.transparent) {
-      os << "  emitExpression(op." << p.operandGetter << "());\n}\n";
+    if (p.format != Primitive::Format::Call) {
+      os << "  emitExpression(op." << p.operandGetter << "());\n";
+      if (p.format == Primitive::Format::Field) {
+        os << "  ps << \".\" << legalize(firrtl::type_cast<"
+           << p.op.getCppClassName() << "::InputType>(op." << p.operandGetter
+           << "().getType()).getElementNameAttr(op." << p.getters.front()
+           << "()));\n";
+      } else if (p.format == Primitive::Format::Index) {
+        os << "  ps << \"[\";\n";
+        if (p.getters.empty())
+          os << "  emitExpression(op."
+             << p.op.getGetterName(p.op.getOperand(1).name) << "());\n";
+        else
+          os << "  ps.addAsString(op." << p.getters.front() << "());\n";
+        os << "  ps << \"]\";\n";
+      }
+      os << "}\n";
       continue;
     }
     // A fixed unary call has no additional call or operand boxes.

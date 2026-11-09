@@ -253,6 +253,7 @@ def InvalidValueOp : FIRRTLOp<"invalidvalue",
 }
 
 class BaseSubfieldOp<string name, Type btype, Type rtype> : FIRRTLExprOp<name> {
+  let firrtlFormat = "$input `.` fieldName($fieldIndex)";
   let summary = "Extract a subfield of another value";
   let description = [{
     The subfield expression refers to a subelement of an expression with a
@@ -318,6 +319,7 @@ def SubfieldOp : BaseSubfieldOp<"subfield", BundleType, FIRRTLBaseType> {
 def OpenSubfieldOp : BaseSubfieldOp<"opensubfield", OpenBundleType, FIRRTLType>;
 
 def SubindexOp : FIRRTLExprOp<"subindex"> {
+  let firrtlFormat = "$input `[` $index `]`";
   let summary = "Extract an element of a vector value";
   let description = [{
     The subindex expression statically refers, by index, to a subelement
@@ -362,6 +364,7 @@ def SubindexOp : FIRRTLExprOp<"subindex"> {
 }
 
 def OpenSubindexOp : FIRRTLExprOp<"opensubindex"> {
+  let firrtlFormat = "$input `[` $index `]`";
   let summary = "Extract an element of a vector value";
   let description = [{
     The subindex expression statically refers, by index, to a subelement
@@ -405,6 +408,7 @@ def OpenSubindexOp : FIRRTLExprOp<"opensubindex"> {
 }
 
 def SubaccessOp : FIRRTLExprOp<"subaccess"> {
+  let firrtlFormat = "$input `[` $index `]`";
   let summary = "Extract a dynamic element of a vector value";
   let description = [{
     The subaccess expression dynamically refers to a subelement of a

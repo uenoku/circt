@@ -13,8 +13,8 @@ wrappers. Both directions use the existing parser and emitter helpers.
 An empty `firrtlFormat` (the default) does not generate source handling. A
 nonempty call format describes both import and export. Operations with a
 handwritten importer set `firrtlHasCustomParser = 1`; the generator then leaves
-import handling to that parser. A bare operand format describes only emission
-because it cannot reconstruct the operation. An operation can set the format
+import handling to that parser. Bare operand and postfix formats describe only
+emission; their import is handled separately. An operation can set the format
 directly or inherit it from a shared TableGen class.
 
 ## Declaring a Format
@@ -59,7 +59,7 @@ commas in its FIRRTL format.
 
 ## Supported Language
 
-The initial format language supports fixed-arity primitive calls:
+The call format supports fixed-arity primitive calls:
 
 ```text
 call-format := name-literal "`(`" operand-group ("`,`" attribute)* "`)`"
@@ -125,6 +125,25 @@ a variadic operand through `operands`; fixed unary calls print directly, while
 other calls use the existing primitive emitter. The handwritten importer and
 lexer registration remain responsible for source semantics and version checks.
 
+## Postfix Formats
+
+Postfix formats generate emission for aggregate selection:
+
+```tablegen
+let firrtlFormat = "$input `.` fieldName($fieldIndex)"; // bundle.field
+let firrtlFormat = "$input `[` $index `]`";             // vector[1] or vector[i]
+```
+
+These formats reference exactly two fixed arguments in ODS order: an input
+operand followed by an `I32Attr` field index, or by an `I32Attr` or expression
+operand for a subscript. `fieldName` looks up the attribute's index in the
+input's bundle type and legalizes the resulting identifier. Operations using it
+must define `InputType` as the bundle type, with `getElementNameAttr`.
+The existing postfix importer selects operations based on the input type,
+validates and resolves names and indices, and caches static accesses. No token
+or parser is generated for these formats. Domain and reference selections still
+use handwritten emitters because their lookup or syntax depends on their types.
+
 ## Version Metadata
 
 Each `FIRRTLOp` has one version used by generated import and export code:
@@ -142,7 +161,7 @@ let firrtlVersion = FIRRTLReleasedVersion<6, 0, 0>;
 
 A version may be shared by operations through a TableGen `let` block or base
 class. Version diagnostics use the FIRRTL source spelling from the format; for
-a bare operand format, they use the operation's MLIR mnemonic. The version
+bare operand and postfix formats, they use the operation's MLIR mnemonic. The version
 records map to existing C++ values:
 
 | TableGen metadata | Generated C++ |

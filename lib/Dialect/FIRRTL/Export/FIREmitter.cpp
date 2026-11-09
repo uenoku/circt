@@ -125,12 +125,7 @@ struct Emitter {
   void emitExpression(Value value);
   void emitExpression(ConstantOp op);
   void emitExpression(SpecialConstantOp op);
-  void emitExpression(SubfieldOp op);
-  void emitExpression(SubindexOp op);
-  void emitExpression(SubaccessOp op);
-  void emitExpression(OpenSubfieldOp op);
   void emitExpression(DomainSubfieldOp op);
-  void emitExpression(OpenSubindexOp op);
   void emitExpression(RefSubOp op);
   void emitExpression(RWProbeOp op);
   void emitExpression(StringConstantOp op);
@@ -1497,8 +1492,7 @@ void Emitter::emitExpression(Value value) {
 #include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
 #undef GET_FIRRTL_PRIMITIVE_DISPATCH
           // Basic expressions
-          ConstantOp, SpecialConstantOp, SubfieldOp, SubindexOp, SubaccessOp,
-          OpenSubfieldOp, OpenSubindexOp, DomainSubfieldOp,
+          ConstantOp, SpecialConstantOp, DomainSubfieldOp,
           // Miscellaneous
           StringConstantOp, FIntegerConstantOp, BoolConstantOp,
           DoubleConstantOp, ListCreateOp, UnresolvedPathOp, GenericIntrinsicOp,
@@ -1547,45 +1541,9 @@ void Emitter::emitExpression(SpecialConstantOp op) {
 }
 
 // NOLINTNEXTLINE(misc-no-recursion)
-void Emitter::emitExpression(SubfieldOp op) {
-  BundleType type = op.getInput().getType();
-  emitExpression(op.getInput());
-  ps << "." << legalize(type.getElementNameAttr(op.getFieldIndex()));
-}
-
-// NOLINTNEXTLINE(misc-no-recursion)
-void Emitter::emitExpression(SubindexOp op) {
-  emitExpression(op.getInput());
-  ps << "[";
-  ps.addAsString(op.getIndex());
-  ps << "]";
-}
-
-// NOLINTNEXTLINE(misc-no-recursion)
-void Emitter::emitExpression(SubaccessOp op) {
-  emitExpression(op.getInput());
-  ps << "[";
-  emitExpression(op.getIndex());
-  ps << "]";
-}
-
-void Emitter::emitExpression(OpenSubfieldOp op) {
-  auto type = op.getInput().getType();
-  emitExpression(op.getInput());
-  ps << "." << legalize(type.getElementNameAttr(op.getFieldIndex()));
-}
-
-// NOLINTNEXTLINE(misc-no-recursion)
 void Emitter::emitExpression(DomainSubfieldOp op) {
   emitExpression(op.getInput());
   ps << "." << legalize(op.getFieldName());
-}
-
-void Emitter::emitExpression(OpenSubindexOp op) {
-  emitExpression(op.getInput());
-  ps << "[";
-  ps.addAsString(op.getIndex());
-  ps << "]";
 }
 
 void Emitter::emitExpression(RefSubOp op) {
