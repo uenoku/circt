@@ -81,12 +81,6 @@ def BadOp : TestFormat<"`bad-name` `(` $input `,` $hi `,` $lo `)`">;
 def BadOp : TestFormat<"`add` `(` $input `,` $hi `,` $lo `)`">;
 // DUP: error: duplicate FIRRTL primitive spelling 'add'
 #endif
-// RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DLEGACY 2>&1 | FileCheck %s --check-prefix=LEGACY
-#ifdef LEGACY
-def BadOp : TestFormat<"`test` `(` $input `,` $hi `,` $lo `)`">,
-            FIRRTLSourceCall<"test", FIRRTLBaseVersion, "test", FIRRTLUnaryCall>;
-// LEGACY: error: firrtlFormat cannot be combined with source call or transparent mixins
-#endif
 // RUN: not circt-tblgen --firrtl-primitives %TABLEGEN_INC% %s -DVERSION 2>&1 | FileCheck %s --check-prefix=VERSION
 #ifdef VERSION
 def BadOp : TestFormat<"`test` `(` $input `,` $hi `,` $lo `)`"> {

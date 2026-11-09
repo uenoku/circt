@@ -81,9 +81,8 @@ struct Emitter {
   void emitStatement(RegOp op);
   void emitStatement(RegResetOp op);
   void emitStatement(NodeOp op);
-#define GET_FIRRTL_STATEMENT_EMITTERS
-#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
-#undef GET_FIRRTL_STATEMENT_EMITTERS
+  void emitStatement(StopOp op);
+  void emitStatement(SkipOp op);
   void emitFormatString(Operation *op, StringRef formatString, OperandRange ops,
                         llvm::SmallVectorImpl<Value> &substitutions);
   template <class T>
@@ -146,8 +145,42 @@ struct Emitter {
 
   void emitPrimExpr(StringRef mnemonic, Operation *op,
                     ArrayRef<uint32_t> attrs = {});
-  void emitUnboxedCall(StringRef mnemonic, Operation *op);
-  void emitUnaryCall(StringRef mnemonic, Operation *op);
+
+  void emitExpression(DomainAnyRefCastOp op) { emitExpression(op.getInput()); }
+  void emitExpression(RefCastOp op) { emitExpression(op.getInput()); }
+  void emitExpression(UninferredResetCastOp op) {
+    emitExpression(op.getInput());
+  }
+  void emitExpression(ConstCastOp op) { emitExpression(op.getInput()); }
+  void emitExpression(RefResolveOp op) {
+    ps << "read(";
+    emitExpression(op.getRef());
+    ps << ")";
+  }
+  void emitExpression(RefSendOp op) {
+    ps << "probe(";
+    emitExpression(op.getBase());
+    ps << ")";
+  }
+  void emitExpression(StringConcatOp op) { emitPrimExpr("string_concat", op); }
+  void emitExpression(PropEqOp op) {
+    if (failed(requireVersion({6, 0, 0}, op, "property equality")))
+      return;
+    emitPrimExpr("prop_eq", op);
+  }
+  void emitExpression(ListContainsOp op) {
+    if (failed(requireVersion(missingSpecFIRVersion, op, "list contains")))
+      return;
+    emitPrimExpr("list_contains", op);
+  }
+  void emitExpression(UnsafeDomainCastOp op) {
+    if (failed(requireVersion(nextFIRVersion, op, "unsafe_domain_cast")))
+      return;
+    ps << "unsafe_domain_cast(" << PP::ibox0;
+    interleaveComma(op.getOperands(),
+                    [&](Value operand) { emitExpression(operand); });
+    ps << ")" << PP::end;
+  }
 
 #define GET_FIRRTL_PRIMITIVE_EMITTERS
 #include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
@@ -754,18 +787,15 @@ void Emitter::emitStatementsInBlock(Block &block) {
     if (isEmittedInline(&bodyOp))
       continue;
     TypeSwitch<Operation *>(&bodyOp)
-        .Case<
-#define GET_FIRRTL_STATEMENT_DISPATCH
-#include "circt/Dialect/FIRRTL/FIRRTLPrimitive.inc"
-#undef GET_FIRRTL_STATEMENT_DISPATCH
-            WhenOp, WireOp, RegOp, RegResetOp, NodeOp, PrintFOp, FPrintFOp,
-            FFlushOp, AssertOp, AssumeOp, CoverOp, ConnectOp, MatchingConnectOp,
-            PropertyAssertOp, PropAssignOp, InstanceOp, InstanceChoiceOp,
-            AttachOp, MemOp, InvalidValueOp, SeqMemOp, CombMemOp, MemoryPortOp,
-            MemoryDebugPortOp, MemoryPortAccessOp, DomainDefineOp, RefDefineOp,
-            RefForceOp, RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
-            LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
-            DomainCreateOp>([&](auto op) { emitStatement(op); })
+        .Case<WhenOp, WireOp, RegOp, RegResetOp, NodeOp, StopOp, SkipOp,
+              PrintFOp, FPrintFOp, FFlushOp, AssertOp, AssumeOp, CoverOp,
+              ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
+              InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
+              SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
+              MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
+              RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
+              LayerBlockOp, GenericIntrinsicOp, DomainCreateAnonOp,
+              DomainCreateOp>([&](auto op) { emitStatement(op); })
         .Default([&](auto op) {
           startStatement();
           ps << "// operation " << PPExtString(op->getName().getStringRef());
@@ -882,6 +912,29 @@ void Emitter::emitStatement(NodeOp op) {
   startStatement();
   emitAssignLike([&]() { ps << "node " << PPExtString(legalName); },
                  [&]() { emitExpression(op.getInput()); });
+  emitLocationAndNewLine(op);
+}
+
+void Emitter::emitStatement(StopOp op) {
+  startStatement();
+  ps.scopedBox(PP::ibox2, [&]() {
+    ps << "stop(" << PP::ibox0;
+    emitExpression(op.getClock());
+    ps << "," << PP::space;
+    emitExpression(op.getCond());
+    ps << "," << PP::space;
+    ps.addAsString(op.getExitCode());
+    ps << ")" << PP::end;
+    if (!op.getName().empty()) {
+      ps << PP::space << ": " << PPExtString(legalize(op.getNameAttr()));
+    }
+  });
+  emitLocationAndNewLine(op);
+}
+
+void Emitter::emitStatement(SkipOp op) {
+  startStatement();
+  ps << "skip";
   emitLocationAndNewLine(op);
 }
 
@@ -1485,9 +1538,11 @@ void Emitter::emitExpression(Value value) {
           // Miscellaneous
           StringConstantOp, FIntegerConstantOp, BoolConstantOp,
           DoubleConstantOp, ListCreateOp, UnresolvedPathOp, GenericIntrinsicOp,
-          CatPrimOp, UnknownValueOp,
+          CatPrimOp, UnknownValueOp, StringConcatOp, PropEqOp, ListContainsOp,
+          UnsafeDomainCastOp, DomainAnyRefCastOp, UninferredResetCastOp,
+          ConstCastOp,
           // Reference expressions
-          RefSubOp, RWProbeOp,
+          RefSendOp, RefResolveOp, RefSubOp, RWProbeOp, RefCastOp,
           // Format String expressions
           TimeOp>([&](auto op) {
         ps.scopedBox(PP::ibox0, [&]() { emitExpression(op); });
@@ -1688,19 +1743,6 @@ void Emitter::emitPrimExpr(StringRef mnemonic, Operation *op,
     ps << "," << PP::space;
   interleaveComma(attrs, [&](auto attr) { ps.addAsString(attr); });
   ps << ")" << PP::end;
-}
-
-void Emitter::emitUnboxedCall(StringRef mnemonic, Operation *op) {
-  ps << mnemonic << "(" << PP::ibox0;
-  interleaveComma(op->getOperands(),
-                  [&](Value operand) { emitExpression(operand); });
-  ps << ")" << PP::end;
-}
-
-void Emitter::emitUnaryCall(StringRef mnemonic, Operation *op) {
-  ps << mnemonic << "(";
-  emitExpression(op->getOperand(0));
-  ps << ")";
 }
 
 void Emitter::emitExpression(CatPrimOp op) {

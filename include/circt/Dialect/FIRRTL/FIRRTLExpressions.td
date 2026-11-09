@@ -1086,7 +1086,7 @@ class SameGroundTypeOperandConstness<string a, string b>
       "operand constness must match",
       CPred<"isConst($" # a # ".getType()) == isConst($" # b # ".getType())">>;
 
-def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]>, FIRRTLSourceTransparent {
+def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameGroundTypeOperandConstness<"input", "result">]> {
   let description = [{
     Cast between reset types.  This is used to enable matchingconnects early in
     the pipeline by isolating all uninferred reset connections to a single op.
@@ -1098,7 +1098,7 @@ def UninferredResetCastOp : FIRRTLOp<"resetCast", [HasCustomSSAName, Pure, SameG
     "$input attr-dict `:` functional-type($input, $result)";
 }
 
-def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]>, FIRRTLSourceTransparent {
+def ConstCastOp : FIRRTLOp<"constCast", [HasCustomSSAName, Pure]> {
   let description = [{
     Cast from a 'const' to a non-'const' type.
     ```
@@ -1211,7 +1211,7 @@ def ObjectAnyRefCastOp : FIRRTLOp<"object.anyref_cast", [Pure]> {
      "$input attr-dict `:` type($input)";
 }
 
-def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]>, FIRRTLSourceTransparent {
+def DomainAnyRefCastOp : FIRRTLOp<"domain.anyref_cast", [Pure]> {
   let summary = "Cast domain reference to anyref.";
   let description = [{
     Cast a domain reference to AnyRef type.  This is primarily used for allowing
@@ -1336,9 +1336,7 @@ def ListConcatOp : FIRRTLOp<"list.concat", [Pure, SameOperandsAndResultType]> {
 def ListContainsOp : FIRRTLOp<"list.contains", [Pure,
     TypesMatchWith<"list element type should match search element type",
                    "list", "element",
-                   "type_cast<ListType>($_self).getElementType()">]>,
-    FIRRTLSourceCall<"list_contains", FIRRTLUnspecifiedVersion, "list contains",
-                     FIRRTLPrimitiveCall> {
+                   "type_cast<ListType>($_self).getElementType()">]> {
   let summary = "Test whether a list contains a property value";
   let description = [{
     Returns true if the list contains an element equal to the specified value.
@@ -1546,9 +1544,7 @@ def IntegerNotOp : IntegerUnaryPrimOp<"integer.not"> {
   }];
 }
 
-def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]>,
-    FIRRTLSourceCall<"string_concat", FIRRTLBaseVersion, "string_concat",
-                     FIRRTLPrimitiveCall> {
+def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]> {
   let summary = "Concatenate multiple string values";
   let description = [{
     Produces a value of string type by concatenating multiple string operands.
@@ -1568,9 +1564,7 @@ def StringConcatOp : FIRRTLOp<"string.concat", [Pure, SameOperandsAndResultType]
   let hasCanonicalizer = 1;
 }
 
-def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]>,
-    FIRRTLSourceCall<"prop_eq", FIRRTLReleasedVersion<6, 0, 0>,
-                     "property equality", FIRRTLPrimitiveCall> {
+def PropEqOp : FIRRTLOp<"prop.eq", [Pure, AllTypesMatch<["lhs", "rhs"]>]> {
   let summary = "Compare two property values for equality";
   let description = [{
     Compares two property values (String, Bool, or Integer) of the same type
@@ -1708,7 +1702,7 @@ def UnknownValueOp : FIRRTLOp<"unknown", [
 def RefCastOp : FIRRTLOp<"ref.cast",
     [HasCustomSSAName,
      Pure,
-     CompatibleRefTypes<"result","input">]>, FIRRTLSourceTransparent {
+     CompatibleRefTypes<"result","input">]> {
   let summary = "Cast between compatible reference types";
   let description = [{
     Losslessly cast between compatible reference types.
@@ -1730,8 +1724,7 @@ def RefCastOp : FIRRTLOp<"ref.cast",
 }
 
 def RefResolveOp: FIRRTLExprOp<"ref.resolve",
-                              [RefTypeConstraint<"ref","result">]>,
-    FIRRTLSourceCall<"read", FIRRTLBaseVersion, "read", FIRRTLUnaryCall> {
+                              [RefTypeConstraint<"ref","result">]> {
   let summary = "FIRRTL Resolve a Reference";
   let description = [{
     Resolve a remote reference for reading a remote value.
@@ -1748,8 +1741,7 @@ def RefResolveOp: FIRRTLExprOp<"ref.resolve",
   let assemblyFormat = "$ref attr-dict `:` qualified(type($ref))";
 }
 
-def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]>,
-    FIRRTLSourceCall<"probe", FIRRTLBaseVersion, "probe", FIRRTLUnaryCall> {
+def RefSendOp: FIRRTLExprOp<"ref.send", [RefResultTypeConstraint<"base", "result">]> {
   let summary = "FIRRTL Send through Reference";
   let description = [{
     Endpoint of a remote reference. Send a value through a reference
@@ -2014,8 +2006,7 @@ def UnsafeDomainCastOp :
   FIRRTLOp<"unsafe_domain_cast", [
     AllTypesMatch<["input", "result"]>,
     Pure
-  ]>, FIRRTLSourceCall<"unsafe_domain_cast", FIRRTLNextVersion,
-                       "unsafe_domain_cast", FIRRTLUnboxedCall> {
+  ]> {
   let summary = "cast an operand from one domain to another";
   let description = [{
     This operation is used to _unsafely_ convert from the domain of an operand
