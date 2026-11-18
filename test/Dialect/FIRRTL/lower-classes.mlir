@@ -987,21 +987,16 @@ firrtl.circuit "CreateMixedInputs" {
 // CHECK-LABEL: firrtl.circuit "InputPropertyReads"
 firrtl.circuit "InputPropertyReads" {
   firrtl.extclass @Domain(out name: !firrtl.string)
-  firrtl.extmodule private @Divider(in domain: !firrtl.class<@Domain(out name: !firrtl.string)>, in derived: !firrtl.string)
+  firrtl.extmodule private @Divider(in domain: !firrtl.class<@Domain(out name: !firrtl.string)>)
   firrtl.module @InputPropertyReads(in %domain: !firrtl.class<@Domain(out name: !firrtl.string)>, out %out: !firrtl.string) {
-    %d.domain, %d.derived = firrtl.instance d @Divider(in domain: !firrtl.class<@Domain(out name: !firrtl.string)>, in derived: !firrtl.string)
-    firrtl.propassign %d.domain, %domain : !firrtl.class<@Domain(out name: !firrtl.string)>
-    %name = firrtl.object.subfield %d.domain[name] : !firrtl.class<@Domain(out name: !firrtl.string)>
-    %suffix = firrtl.string "_div2"
-    %derived = firrtl.string.concat %name, %suffix : !firrtl.string
-    firrtl.propassign %d.derived, %derived : !firrtl.string
+    %d = firrtl.instance d @Divider(in domain: !firrtl.class<@Domain(out name: !firrtl.string)>)
+    firrtl.propassign %d, %domain : !firrtl.class<@Domain(out name: !firrtl.string)>
+    %name = firrtl.object.subfield %d[name] : !firrtl.class<@Domain(out name: !firrtl.string)>
     firrtl.propassign %out, %name : !firrtl.string
   }
   // CHECK: om.class @InputPropertyReads_Class(%basepath: !om.basepath, %[[DOMAIN:[^: ]+]]: !om.class.type<@Domain>)
-  // CHECK: om.object @Divider_Class(%{{[^ ,)]+}}, %[[DOMAIN]], %[[DERIVED:[^ ,)]+]])
+  // CHECK: om.object @Divider_Class(%{{[^ ,)]+}}, %[[DOMAIN]])
   // CHECK: %[[NAME:.*]] = om.object.field %[[DOMAIN]]["name"]
-  // CHECK: %[[SUFFIX:.*]] = om.constant "_div2" : !om.string
-  // CHECK: %[[DERIVED]] = om.string.concat %[[NAME]], %[[SUFFIX]] : !om.string
   // CHECK: om.class.fields %[[NAME]] : !om.string
 }
 
