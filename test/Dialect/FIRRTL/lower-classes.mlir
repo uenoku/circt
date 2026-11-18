@@ -983,6 +983,24 @@ firrtl.circuit "CreateMixedInputs" {
   }
 }
 
+// Instance input properties may be read after assignment.
+// https://github.com/llvm/circt/issues/11601
+// CHECK-LABEL: firrtl.circuit "InputPropertyReads"
+firrtl.circuit "InputPropertyReads" {
+  firrtl.extclass @Metadata(out name: !firrtl.string)
+  firrtl.extmodule private @Child(in metadata: !firrtl.class<@Metadata(out name: !firrtl.string)>)
+  firrtl.module @InputPropertyReads(in %metadata: !firrtl.class<@Metadata(out name: !firrtl.string)>, out %out: !firrtl.string) {
+    %child = firrtl.instance child @Child(in metadata: !firrtl.class<@Metadata(out name: !firrtl.string)>)
+    firrtl.propassign %child, %metadata : !firrtl.class<@Metadata(out name: !firrtl.string)>
+    %name = firrtl.object.subfield %child[name] : !firrtl.class<@Metadata(out name: !firrtl.string)>
+    firrtl.propassign %out, %name : !firrtl.string
+  }
+  // CHECK: om.class @InputPropertyReads_Class(%basepath: !om.basepath, %[[METADATA:[^: ]+]]: !om.class.type<@Metadata>)
+  // CHECK: om.object @Child_Class(%{{[^ ,)]+}}, %[[METADATA]])
+  // CHECK: %[[NAME:.*]] = om.object.field %[[METADATA]]["name"]
+  // CHECK: om.class.fields %[[NAME]] : !om.string
+}
+
 // Lower value-like object creation to an OM object.
 // CHECK-LABEL: firrtl.circuit "Create"
 firrtl.circuit "Create" {

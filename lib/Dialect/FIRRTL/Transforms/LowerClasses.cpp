@@ -1570,18 +1570,21 @@ updateInstanceInClass(InstanceOp firrtlInstance, hw::HierPathOp hierPath,
       om::ObjectOp::create(builder, firrtlInstance.getLoc(), classType,
                            className.getAttr(), actualParameters);
 
-  // Replace uses of the FIRRTL instance outputs with field access into
-  // the OM Object. The later dialect conversion will take care of
-  // converting the types.
+  // Replace input reads with their assigned values and output reads with
+  // fields of the OM object.
   for (auto result : firrtlInstance.getResults()) {
-    // If the port isn't an output, continue.
-    if (firrtlInstance.getPortDirection(result.getResultNumber()) !=
-        Direction::Out)
+    auto propertyResult = dyn_cast<FIRRTLPropertyValue>(result);
+    if (!propertyResult)
       continue;
 
-    // If the port is not a property type, continue.
-    if (!isa<PropertyType>(result.getType()))
+    if (firrtlInstance.getPortDirection(result.getResultNumber()) ==
+        Direction::In) {
+      auto propertyAssignment = getPropertyAssignment(propertyResult);
+      // Preserve the assignment destination until it is erased.
+      result.replaceAllUsesExcept(propertyAssignment.getSrcMutable().get(),
+                                  propertyAssignment);
       continue;
+    }
 
     // Create the field access.
     auto objectField = om::ObjectFieldOp::create(
